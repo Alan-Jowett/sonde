@@ -127,18 +127,17 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | Key | Field name | Used in |
 |---|---|---|
 | 1 | `firmware_abi_version` | WAKE |
-| 2 | `program_hash` | WAKE, UPDATE_PROGRAM, PROGRAM_ACK |
+| 2 | `program_hash` | WAKE, UPDATE_PROGRAM / RUN_EPHEMERAL, PROGRAM_ACK |
 | 3 | `battery_mv` | WAKE |
 | 4 | `command_type` | COMMAND |
 | 5 | `payload` | COMMAND |
-| 6 | `program_size` | UPDATE_PROGRAM |
-| 7 | `chunk_size` | UPDATE_PROGRAM |
-| 8 | `chunk_count` | UPDATE_PROGRAM |
-| 9 | `program` | RUN_EPHEMERAL |
-| 10 | `interval_s` | UPDATE_SCHEDULE |
-| 11 | `blob` | APP_MSG, APP_DATA |
-| 12 | `chunk_index` | GET_CHUNK, CHUNK |
-| 13 | `chunk_data` | CHUNK |
+| 6 | `program_size` | UPDATE_PROGRAM / RUN_EPHEMERAL |
+| 7 | `chunk_size` | UPDATE_PROGRAM / RUN_EPHEMERAL |
+| 8 | `chunk_count` | UPDATE_PROGRAM / RUN_EPHEMERAL |
+| 9 | `interval_s` | UPDATE_SCHEDULE |
+| 10 | `blob` | APP_MSG, APP_DATA |
+| 11 | `chunk_index` | GET_CHUNK, CHUNK |
+| 12 | `chunk_data` | CHUNK |
 
 ### 5.1  WAKE (Node → Gateway)
 
@@ -169,12 +168,14 @@ The `nonce` is in the fixed header (echoing the node's nonce to bind the respons
 |---|---|---|---|
 | `0x00` | `NOP` | None | Proceed to BPF execution. No state change. |
 | `0x01` | `UPDATE_PROGRAM` | See §5.2.1 | A new resident program is available; begin chunked transfer. |
-| `0x02` | `RUN_EPHEMERAL` | See §5.2.2 | Execute an ephemeral (one-shot) program. |
+| `0x02` | `RUN_EPHEMERAL` | See §5.2.1 | An ephemeral (one-shot) program is available; begin chunked transfer. |
 | `0x03` | `UPDATE_SCHEDULE` | See §5.2.3 | Change the node's base wake interval. |
 | `0x04` | `REBOOT` | None | Restart the node firmware. |
 | `0x05` | `APP_MSG` | See §5.2.4 | Deliver an opaque blob to the BPF program. |
 
-#### 5.2.1  UPDATE_PROGRAM payload
+#### 5.2.1  UPDATE_PROGRAM / RUN_EPHEMERAL payload
+
+Both `UPDATE_PROGRAM` and `RUN_EPHEMERAL` use the same payload format and the same chunked transfer sub-protocol (GET_CHUNK/CHUNK). The `command_type` in the COMMAND message distinguishes the two — the node uses it to decide whether to store the program in flash (resident) or RAM (ephemeral).
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
@@ -195,26 +196,13 @@ The node does not need to know the transport — it simply uses the `chunk_size`
 |---|---|---|
 | ESP-NOW | 250 bytes | ~190 bytes (207 payload minus CBOR map overhead for `chunk_index` + `chunk_data`) |
 
-#### 5.2.2  RUN_EPHEMERAL payload
-
-| Field | CBOR type | Required | Description |
-|---|---|---|---|
-| `program` | bstr | Yes | Complete ephemeral BPF ELF bytecode. |
-
-**⚠ OPEN:** The maximum payload per frame is ~205 bytes, but ephemeral programs can be up to 2 KB. If the program doesn't fit in a single frame, does the node use the same chunked transfer sub-protocol, or is there a separate mechanism? Options:
-1. Ephemeral programs must fit in one frame (~205 bytes max). Simple but very limiting.
-2. Reuse the chunked transfer protocol (GET_CHUNK/CHUNK) for ephemeral programs too.
-3. Define a separate inline chunking within the COMMAND frame sequence.
-
-Recommendation: option 2 — reuse chunked transfer with a flag distinguishing resident vs. ephemeral.
-
-#### 5.2.3  UPDATE_SCHEDULE payload
+#### 5.2.2  UPDATE_SCHEDULE payload
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
 | `interval_s` | uint | Yes | New base wake interval in seconds. |
 
-#### 5.2.4  APP_MSG payload
+#### 5.2.3  APP_MSG payload
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
@@ -460,7 +448,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-4~~ | ~~§5~~ | ~~CBOR map keys~~ — **Resolved:** Integer keys with a documented mapping table. See §5. |
 | ~~O-5~~ | ~~§5.1~~ | ~~Duplicate `key_hint`/`nonce`~~ — **Resolved:** No duplication. Header-only; not repeated in CBOR payload. |
 | ~~O-6~~ | ~~§5.2.1~~ | ~~`chunk_size`~~ — **Resolved:** Specified per-transfer, derived from transport layer frame budget. See §5.2.1. |
-| O-7 | §5.2.2 | Ephemeral programs larger than one frame: reuse chunked transfer? |
+| ~~O-7~~ | ~~§5.2.2~~ | ~~Ephemeral delivery~~ — **Resolved:** Reuse chunked transfer. `command_type` distinguishes resident vs. ephemeral. See §5.2.1. |
 | O-8 | §5.3 | Fresh nonce per `GET_CHUNK` or reuse wake nonce? |
 | O-9 | §5.6 | Multiple `APP_DATA` per wake cycle and nonce handling? |
 | O-10 | §6.2 | Execute new program immediately after `PROGRAM_ACK` or sleep first? |

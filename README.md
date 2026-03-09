@@ -16,7 +16,7 @@ Nodes run uniform firmware and execute behavior defined by [uBPF](https://github
 │          │  ◄── COMMAND ────  │          │
 │  ┌────┐  │                    │  ┌────┐  │
 │  │ BPF│──│── APP_DATA ─────►  │  │ App│  │
-│  └────┘  │  ◄── APP_MSG ───   │  └────┘  │
+│  └────┘  │  ◄─APP_DATA_REPLY  │  └────┘  │
 │          │                    │          │
 │  sleep   │                    │  compile │
 │          │                    │  verify  │
@@ -83,7 +83,6 @@ The program hash lets the gateway detect stale programs without version numberin
 | `RUN_EPHEMERAL` | One-shot program available (chunked transfer, same as UPDATE_PROGRAM) |
 | `UPDATE_SCHEDULE` | New base wake interval |
 | `REBOOT` | Restart firmware |
-| `APP_MSG` | Opaque blob passed into BPF context |
 
 ### Schedule model
 
@@ -107,7 +106,7 @@ Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from
 Node → Gateway:  APP_DATA { nonce, blob }
 ```
 
-Firmware wraps `send(ptr, len)` output as `APP_DATA`. A node may send multiple `APP_DATA` messages per wake cycle. Delivery semantics are entirely up to the application protocol defined between the BPF program and the gateway.
+Firmware wraps `send(ptr, len)` output as `APP_DATA`. The gateway replies with `APP_DATA_REPLY`, creating a bidirectional application channel. The BPF program and gateway application define their own request/response semantics on top — the protocol treats all blobs as opaque. Multiple round-trips per wake cycle are supported.
 
 ---
 

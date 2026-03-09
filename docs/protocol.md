@@ -113,6 +113,7 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 |---|---|---|
 | `0x81` | `COMMAND` | Response to `WAKE`. Contains a command for the node. |
 | `0x82` | `CHUNK` | Response to `GET_CHUNK`. Contains one program chunk. |
+| `0x83` | `APP_DATA_REPLY` | Response to `APP_DATA`. Opaque blob from the gateway application. |
 
 ---
 
@@ -135,7 +136,7 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 7 | `chunk_size` | UPDATE_PROGRAM / RUN_EPHEMERAL |
 | 8 | `chunk_count` | UPDATE_PROGRAM / RUN_EPHEMERAL |
 | 9 | `interval_s` | UPDATE_SCHEDULE |
-| 10 | `blob` | APP_MSG, APP_DATA |
+| 10 | `blob` | APP_DATA, APP_DATA_REPLY |
 | 11 | `chunk_index` | GET_CHUNK, CHUNK |
 | 12 | `chunk_data` | CHUNK |
 
@@ -169,9 +170,8 @@ The `nonce` is in the fixed header (echoing the node's nonce to bind the respons
 | `0x00` | `NOP` | None | Proceed to BPF execution. No state change. |
 | `0x01` | `UPDATE_PROGRAM` | See §5.2.1 | A new resident program is available; begin chunked transfer. |
 | `0x02` | `RUN_EPHEMERAL` | See §5.2.1 | An ephemeral (one-shot) program is available; begin chunked transfer. |
-| `0x03` | `UPDATE_SCHEDULE` | See §5.2.3 | Change the node's base wake interval. |
+| `0x03` | `UPDATE_SCHEDULE` | See §5.2.2 | Change the node's base wake interval. |
 | `0x04` | `REBOOT` | None | Restart the node firmware. |
-| `0x05` | `APP_MSG` | See §5.2.4 | Deliver an opaque blob to the BPF program. |
 
 #### 5.2.1  UPDATE_PROGRAM / RUN_EPHEMERAL payload
 
@@ -201,12 +201,6 @@ The node does not need to know the transport — it simply uses the `chunk_size`
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
 | `interval_s` | uint | Yes | New base wake interval in seconds. |
-
-#### 5.2.3  APP_MSG payload
-
-| Field | CBOR type | Required | Description |
-|---|---|---|---|
-| `blob` | bstr | Yes | Opaque application data passed into the BPF execution context. |
 
 ### 5.3  GET_CHUNK (Node → Gateway)
 
@@ -247,6 +241,18 @@ Sent by the firmware when the BPF program calls `send(ptr, len)`.
 
 A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()` call in the BPF program). Each `APP_DATA` frame carries a **fresh nonce**, consistent with the per-request nonce policy (see §5.3). The gateway accepts them as independent authenticated messages.
 
+### 5.7  APP_DATA_REPLY (Gateway → Node)
+
+Sent by the gateway in response to an `APP_DATA` message. This creates a bidirectional application-layer channel: the BPF program sends data, the gateway application processes it and replies.
+
+| Field | CBOR type | Required | Description |
+|---|---|---|---|
+| `blob` | bstr | Yes | Opaque application data. Content defined by the gateway application. |
+
+The `nonce` in the header echoes the `APP_DATA` nonce, binding the reply to the request. The blob content is opaque to the protocol — the BPF program and gateway application define their own semantics on top.
+
+**Empty reply:** If the gateway application has no data to return, it sends an `APP_DATA_REPLY` with a zero-length `blob`. This acknowledges receipt and allows the BPF program to continue or sleep. A missing reply (timeout) is handled by the node's standard retry logic (see §9).
+
 ---
 
 ## 6  Message flows
@@ -264,6 +270,7 @@ A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()
      │  [execute resident BPF]       │
      │                               │
      │──── APP_DATA ────────────────►│  (zero or more)
+     │◄──── APP_DATA_REPLY ─────────│
      │                               │
      │  [sleep]                      │
 ```
@@ -327,20 +334,28 @@ After sending `PROGRAM_ACK`, the node **executes the new program immediately** i
      │  [sleep for new interval]     │
 ```
 
-### 6.5  App message delivery
+### 6.5  Application data exchange
+
+The BPF program and gateway application communicate through `APP_DATA` / `APP_DATA_REPLY` pairs. This creates a request-response channel that applications can use to define their own protocols on top of the transport layer.
 
 ```
     Node                          Gateway
      │                               │
      │──── WAKE ────────────────────►│
-     │◄──── COMMAND {APP_MSG} ──────│  (blob for BPF context)
+     │◄──── COMMAND {NOP} ──────────│
      │                               │
-     │  [execute BPF with blob       │
-     │   available in context]       │
+     │  [execute BPF]                │
      │                               │
-     │──── APP_DATA ────────────────►│  (optional response)
+     │──── APP_DATA {request} ──────►│
+     │◄──── APP_DATA_REPLY {resp} ──│  (gateway app processes and replies)
+     │                               │
+     │──── APP_DATA {request 2} ────►│  (BPF can do multiple round-trips)
+     │◄──── APP_DATA_REPLY {resp} ──│
+     │                               │
      │  [sleep]                      │
 ```
+
+The number of exchanges per wake cycle is determined by the BPF program. The protocol imposes no limit beyond the node's power budget.
 
 ---
 

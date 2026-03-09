@@ -194,21 +194,6 @@ The gateway MUST support the `REBOOT` command, instructing the node to restart i
 
 ---
 
-### GW-0205  APP_MSG command
-
-**Priority:** Must  
-**Source:** README § Commands
-
-**Description:**  
-The gateway MUST support the `APP_MSG` command, delivering an opaque blob that is passed into the BPF program's execution context on the node.
-
-**Acceptance criteria:**
-
-1. The gateway can attach an arbitrary byte blob to the `APP_MSG` command.
-2. The blob content is opaque to the gateway; no interpretation or validation of its content is performed.
-
----
-
 ## 5  Chunked program transfer
 
 ### GW-0300  Chunk serving
@@ -340,28 +325,45 @@ The gateway SHOULD enforce maximum program sizes: 4 KB for resident programs and
 **Source:** README § Application data
 
 **Description:**  
-The gateway MUST receive and store `APP_DATA { nonce, blob }` messages from nodes. The blob content is opaque to the gateway's transport layer.
+The gateway MUST receive `APP_DATA { blob }` messages from nodes. The blob content is opaque to the gateway's transport layer.
 
 **Acceptance criteria:**
 
 1. The gateway accepts `APP_DATA` messages from authenticated nodes.
-2. The blob is stored or forwarded without modification.
+2. The blob is forwarded to the gateway application without modification.
 3. The gateway associates each blob with the originating node (identified via `key_hint` and HMAC) and a reception timestamp.
 
 ---
 
-### GW-0501  Application data forwarding
+### GW-0501  APP_DATA_REPLY response
+
+**Priority:** Must  
+**Source:** README § Application data
+
+**Description:**  
+The gateway MUST respond to every `APP_DATA` message with an `APP_DATA_REPLY { blob }` message. This creates a bidirectional application-layer channel: the BPF program sends data, the gateway application processes it and replies. The protocol treats all blobs as opaque — the BPF program and gateway application define their own request/response semantics on top.
+
+**Acceptance criteria:**
+
+1. Every authenticated `APP_DATA` message receives exactly one `APP_DATA_REPLY`.
+2. The reply's nonce (in the header) echoes the `APP_DATA` nonce, binding the reply to the request.
+3. The gateway application can provide an arbitrary response blob or a zero-length blob (acknowledgement only).
+4. Multiple `APP_DATA` / `APP_DATA_REPLY` round-trips per wake cycle are supported.
+
+---
+
+### GW-0502  Application data handler
 
 **Priority:** Should  
 **Source:** README § Application data
 
 **Description:**  
-The gateway SHOULD provide a mechanism (API, callback, or event system) for application-level code to consume received `APP_DATA` blobs.
+The gateway SHOULD provide a mechanism (API, callback, or event system) for application-level code to process `APP_DATA` blobs and produce `APP_DATA_REPLY` responses.
 
 **Acceptance criteria:**
 
-1. An application running on the gateway can register to receive `APP_DATA` for one or more nodes.
-2. Blobs are delivered to the application in the order received from each node.
+1. An application running on the gateway can register a handler to process `APP_DATA` for one or more nodes.
+2. The handler receives the blob and returns a response blob (or empty) for the `APP_DATA_REPLY`.
 
 ---
 
@@ -572,7 +574,6 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0202 | RUN_EPHEMERAL command | Must |
 | GW-0203 | UPDATE_SCHEDULE command | Must |
 | GW-0204 | REBOOT command | Must |
-| GW-0205 | APP_MSG command | Must |
 | GW-0300 | Chunk serving | Must |
 | GW-0301 | Transfer resumption | Must |
 | GW-0302 | Program acknowledgement | Must |
@@ -581,7 +582,8 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0402 | Program identity by content hash | Must |
 | GW-0403 | Program size enforcement | Should |
 | GW-0500 | APP_DATA reception | Must |
-| GW-0501 | Application data forwarding | Should |
+| GW-0501 | APP_DATA_REPLY response | Must |
+| GW-0502 | Application data handler | Should |
 | GW-0600 | HMAC-SHA256 message authentication | Must |
 | GW-0601 | Per-node key management | Must |
 | GW-0602 | Replay protection — nonce sliding window | Must |

@@ -245,7 +245,7 @@ Sent by the firmware when the BPF program calls `send(ptr, len)`.
 |---|---|---|---|
 | `blob` | bstr | Yes | Opaque application data. Content defined by the BPF program. |
 
-**⚠ OPEN:** Can a node send multiple `APP_DATA` messages per wake cycle? The BPF program can call `send()` multiple times. If yes, each should carry the same wake-cycle nonce (already in the header). The gateway must accept multiple `APP_DATA` frames with the same nonce without treating them as replays.
+A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()` call in the BPF program). Each `APP_DATA` frame carries a **fresh nonce**, consistent with the per-request nonce policy (see §5.3). The gateway accepts them as independent authenticated messages.
 
 ---
 
@@ -448,7 +448,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-6~~ | ~~§5.2.1~~ | ~~`chunk_size`~~ — **Resolved:** Specified per-transfer, derived from transport layer frame budget. See §5.2.1. |
 | ~~O-7~~ | ~~§5.2.2~~ | ~~Ephemeral delivery~~ — **Resolved:** Reuse chunked transfer. `command_type` distinguishes resident vs. ephemeral. See §5.2.1. |
 | ~~O-8~~ | ~~§5.3~~ | ~~GET_CHUNK nonce~~ — **Resolved:** Fresh nonce per request. See §5.3. |
-| O-9 | §5.6 | Multiple `APP_DATA` per wake cycle and nonce handling? |
+| ~~O-9~~ | ~~§5.6~~ | ~~Multiple APP_DATA~~ — **Resolved:** Yes, multiple allowed. Fresh nonce per APP_DATA frame. See §5.6. |
 | O-10 | §6.2 | Execute new program immediately after `PROGRAM_ACK` or sleep first? |
 | O-11 | §7.4 | Sliding window mechanism and size? |
 | O-12 | §8 | Out-of-range `chunk_index`: silent discard or error response? |

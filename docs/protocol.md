@@ -60,7 +60,15 @@ The `key_hint` is **not** the node's identity — the HMAC key is. A node is aut
 
 **Why 16-bit:** A 16-bit space (65,535 values) makes collisions effectively zero for any practical deployment while costing only 2 bytes per frame.
 
-**⚠ OPEN:** Is the header itself CBOR-encoded, or is it a fixed binary layout with only the payload in CBOR? A fixed header is simpler to parse before authentication (you need `key_hint` to look up the HMAC key). Recommendation: fixed binary header, CBOR payload.
+**Header encoding:** The header uses a **fixed binary layout** (not CBOR). Fields are read at fixed byte offsets with no parsing required:
+
+| Offset | Field | Size |
+|---|---|---|
+| 0 | `key_hint` | 2 bytes, big-endian |
+| 2 | `msg_type` | 1 byte |
+| 3 | `nonce` | 8 bytes, big-endian |
+
+This allows the gateway to extract `key_hint` for key lookup and compute the HMAC before any CBOR decoding. CBOR is used only for the payload, which is decoded after authentication succeeds — avoiding wasted work on forged or corrupted frames.
 
 ### 3.2  HMAC trailer
 
@@ -416,7 +424,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ID | Section | Question |
 |---|---|---|
 | ~~O-1~~ | ~~§3.1~~ | ~~`key_hint` size~~ — **Resolved:** 16-bit. `key_hint` is a key-lookup hint, not identity. See §3.1.1. |
-| O-2 | §3.1 | Fixed binary header vs. fully CBOR-encoded frame? |
+| ~~O-2~~ | ~~§3.1~~ | ~~Header encoding~~ — **Resolved:** Fixed binary header (not CBOR). CBOR used only for payload. See §3.1. |
 | O-3 | §4.2 | Gateway msg_type range: high-bit convention? |
 | O-4 | §5 | CBOR map keys: string or integer? |
 | O-5 | §5.1 | Duplicate `key_hint`/`nonce` in header and payload? |

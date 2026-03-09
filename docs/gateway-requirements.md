@@ -331,7 +331,7 @@ The gateway MUST receive `APP_DATA { blob }` messages from nodes. The blob conte
 
 1. The gateway accepts `APP_DATA` messages from authenticated nodes.
 2. The blob is forwarded to the gateway application without modification.
-3. The gateway associates each blob with the originating node (identified via `key_hint` and HMAC) and a reception timestamp.
+3. The gateway associates each blob with the originating node (identified by the pre-shared key that verified the HMAC) and a reception timestamp.
 
 ---
 
@@ -535,7 +535,7 @@ The gateway SHOULD support exporting and importing its full state (node registry
 **Source:** README § Authentication
 
 **Description:**  
-The gateway MUST silently discard messages from nodes whose `key_hint` does not match any key in the registry. No error response is sent (to avoid information leakage).
+The gateway MUST silently discard messages when no candidate key for the `key_hint` verifies the HMAC. No error response is sent (to avoid information leakage).
 
 **Acceptance criteria:**
 

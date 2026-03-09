@@ -68,8 +68,8 @@ Communication is always **node-initiated**. The gateway never wakes a node. Cont
 ### Wake handshake
 
 ```
-Node → Gateway:  WAKE { key_hint, nonce, firmware_abi_version, program_hash, battery_mv }
-Gateway → Node:  COMMAND { nonce, command_type, ... }
+Node → Gateway:  WAKE  [header: key_hint, nonce]  { firmware_abi_version, program_hash, battery_mv }
+Gateway → Node:  COMMAND  [header: key_hint, nonce]  { command_type, ... }
 ```
 
 The program hash lets the gateway detect stale programs without version numbering — the program's identity is its content.
@@ -91,11 +91,11 @@ The gateway sets a base interval. The BPF program can request an **earlier** wak
 ### Chunked program transfer
 
 ```
-Node → Gateway:  GET_CHUNK { nonce, chunk_index }
-Gateway → Node:  CHUNK { nonce, chunk_index, chunk_data }
+Node → Gateway:  GET_CHUNK  [header: key_hint, nonce]  { chunk_index }
+Gateway → Node:  CHUNK  [header: key_hint, nonce]  { chunk_index, chunk_data }
    ... repeat ...
 Node:            Verify hash over complete program → store to flash
-Node → Gateway:  PROGRAM_ACK { nonce, program_hash }
+Node → Gateway:  PROGRAM_ACK  [header: key_hint, nonce]  { program_hash }
 ```
 
 Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from chunk 0 on the next wake. After `PROGRAM_ACK`, the node executes the new program immediately in the same wake cycle.
@@ -103,7 +103,8 @@ Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from
 ### Application data
 
 ```
-Node → Gateway:  APP_DATA { nonce, blob }
+Node → Gateway:  APP_DATA  [header: key_hint, nonce]  { blob }
+Gateway → Node:  APP_DATA_REPLY  [header: key_hint, nonce]  { blob }
 ```
 
 Firmware wraps `send(ptr, len)` output as `APP_DATA`. The gateway replies with `APP_DATA_REPLY`, creating a bidirectional application channel. The BPF program and gateway application define their own request/response semantics on top — the protocol treats all blobs as opaque. Multiple round-trips per wake cycle are supported.

@@ -2,7 +2,8 @@
 
 > **Document status:** Draft  
 > **Source:** Derived from [README.md](../README.md) (design-phase specification).  
-> **Scope:** This document covers the Sonde **gateway** component only. Node firmware requirements are out of scope.
+> **Scope:** This document covers the Sonde **gateway** component only. Node firmware requirements are out of scope.  
+> **Related:** [protocol.md](protocol.md), [gateway-api.md](gateway-api.md)
 
 ---
 

@@ -260,18 +260,19 @@ The gateway MUST accept `PROGRAM_ACK { nonce, program_hash }` messages from node
 
 ## 6  BPF program management
 
-### GW-0400  Program compilation
+### GW-0400  Program ingestion (pre-compiled ELF)
 
 **Priority:** Must  
 **Source:** README § How it works (diagram), § Development and testing
 
 **Description:**  
-The gateway MUST be capable of compiling BPF source into BPF bytecode (ELF format) suitable for node execution.
+The gateway MUST accept BPF programs as pre-compiled ELF files. The gateway does not compile programs from source — compilation is the responsibility of an external toolchain or build pipeline. This avoids an LLVM/clang dependency on the gateway.
 
 **Acceptance criteria:**
 
-1. The gateway accepts BPF program source and produces a valid BPF ELF binary.
-2. The output conforms to the helper API and ABI expected by node firmware.
+1. The gateway accepts a valid BPF ELF binary as input.
+2. The gateway rejects files that are not valid BPF ELF binaries with a clear diagnostic.
+3. The gateway does not depend on LLVM, clang, or any compiler toolchain at build time or runtime.
 
 ---
 
@@ -575,7 +576,7 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0300 | Chunk serving | Must |
 | GW-0301 | Transfer resumption | Must |
 | GW-0302 | Program acknowledgement | Must |
-| GW-0400 | Program compilation | Must |
+| GW-0400 | Program ingestion (pre-compiled ELF) | Must |
 | GW-0401 | Program verification (Prevail) | Must |
 | GW-0402 | Program identity by content hash | Must |
 | GW-0403 | Program size enforcement | Should |

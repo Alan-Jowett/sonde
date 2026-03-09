@@ -216,9 +216,7 @@ Sent during a chunked program transfer. The node drives the transfer.
 |---|---|---|---|
 | `chunk_index` | uint | Yes | Zero-based index of the requested chunk. |
 
-The `key_hint` and `nonce` are in the frame header.
-
-**⚠ OPEN:** Does the node generate a new nonce for each `GET_CHUNK` request, or does it reuse the nonce from the `WAKE` that initiated the transfer? A new nonce per request is safer for replay protection but requires the gateway's sliding window to be large enough. Recommendation: fresh nonce per `GET_CHUNK`.
+The `key_hint` and `nonce` are in the frame header. The node generates a **fresh nonce for each `GET_CHUNK` request**, providing independent replay protection per chunk. The gateway's sliding window must accommodate all nonces from a single transfer (e.g., ~20 for a 4 KB program over ESP-NOW).
 
 ### 5.4  CHUNK (Gateway → Node)
 
@@ -449,7 +447,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-5~~ | ~~§5.1~~ | ~~Duplicate `key_hint`/`nonce`~~ — **Resolved:** No duplication. Header-only; not repeated in CBOR payload. |
 | ~~O-6~~ | ~~§5.2.1~~ | ~~`chunk_size`~~ — **Resolved:** Specified per-transfer, derived from transport layer frame budget. See §5.2.1. |
 | ~~O-7~~ | ~~§5.2.2~~ | ~~Ephemeral delivery~~ — **Resolved:** Reuse chunked transfer. `command_type` distinguishes resident vs. ephemeral. See §5.2.1. |
-| O-8 | §5.3 | Fresh nonce per `GET_CHUNK` or reuse wake nonce? |
+| ~~O-8~~ | ~~§5.3~~ | ~~GET_CHUNK nonce~~ — **Resolved:** Fresh nonce per request. See §5.3. |
 | O-9 | §5.6 | Multiple `APP_DATA` per wake cycle and nonce handling? |
 | O-10 | §6.2 | Execute new program immediately after `PROGRAM_ACK` or sleep first? |
 | O-11 | §7.4 | Sliding window mechanism and size? |

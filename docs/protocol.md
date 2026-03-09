@@ -180,10 +180,20 @@ The `nonce` is in the fixed header (echoing the node's nonce to bind the respons
 |---|---|---|---|
 | `program_hash` | bstr | Yes | Hash of the new program. Used by the node to verify the complete download. |
 | `program_size` | uint | Yes | Total program size in bytes. |
-| `chunk_size` | uint | Yes | Size of each chunk in bytes (last chunk may be smaller). |
+| `chunk_size` | uint | Yes | Size of each chunk in bytes (last chunk may be smaller). Derived from the transport layer's frame budget. |
 | `chunk_count` | uint | Yes | Total number of chunks. |
 
-**⚠ OPEN:** Should `chunk_size` be fixed by the protocol (derived from frame budget) or specified per transfer? Specifying it gives flexibility; fixing it simplifies node logic.
+**Chunk size derivation:** The `chunk_size` is specified per-transfer in this payload, but its value is derived from the physical transport layer's frame budget:
+
+```
+chunk_size = frame_size − header(11) − hmac(32) − cbor_overhead
+```
+
+The node does not need to know the transport — it simply uses the `chunk_size` provided by the gateway.
+
+| Transport | Frame size | Approx. chunk_size |
+|---|---|---|
+| ESP-NOW | 250 bytes | ~190 bytes (207 payload minus CBOR map overhead for `chunk_index` + `chunk_data`) |
 
 #### 5.2.2  RUN_EPHEMERAL payload
 
@@ -449,7 +459,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-3~~ | ~~§4.2~~ | ~~msg_type range~~ — **Resolved:** High-bit convention. `0x01–0x7F` node→gateway, `0x80–0xFF` gateway→node. See §4. |
 | ~~O-4~~ | ~~§5~~ | ~~CBOR map keys~~ — **Resolved:** Integer keys with a documented mapping table. See §5. |
 | ~~O-5~~ | ~~§5.1~~ | ~~Duplicate `key_hint`/`nonce`~~ — **Resolved:** No duplication. Header-only; not repeated in CBOR payload. |
-| O-6 | §5.2.1 | `chunk_size`: protocol-fixed or per-transfer? |
+| ~~O-6~~ | ~~§5.2.1~~ | ~~`chunk_size`~~ — **Resolved:** Specified per-transfer, derived from transport layer frame budget. See §5.2.1. |
 | O-7 | §5.2.2 | Ephemeral programs larger than one frame: reuse chunked transfer? |
 | O-8 | §5.3 | Fresh nonce per `GET_CHUNK` or reuse wake nonce? |
 | O-9 | §5.6 | Multiple `APP_DATA` per wake cycle and nonce handling? |

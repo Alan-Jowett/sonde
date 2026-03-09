@@ -299,6 +299,7 @@ The `nonce` in the header echoes the `APP_DATA` nonce, binding the reply to the 
      │  [execute new program]        │
      │                               │
      │──── APP_DATA ────────────────►│  (zero or more)
+     │◄──── APP_DATA_REPLY ──────────│
      │                               │
      │  [sleep]                      │
 ```
@@ -314,13 +315,13 @@ Ephemeral programs use the same chunked transfer as resident programs (see §6.2
      │                               │
      │──── WAKE ────────────────────►│
      │                               │  (gateway wants diagnostics)
-     │◄── COMMAND {RUN_EPHEMERAL} ──│  (includes program_hash, size, chunk info)
+     │◄── COMMAND {RUN_EPHEMERAL} ───│  (includes program_hash, size, chunk info)
      │                               │
      │──── GET_CHUNK {index=0} ─────►│
-     │◄──── CHUNK {index=0, data} ──│
+     │◄──── CHUNK {index=0, data} ───│
      │                               │
      │──── GET_CHUNK {index=1} ─────►│
-     │◄──── CHUNK {index=1, data} ──│
+     │◄──── CHUNK {index=1, data} ───│
      │                               │
      │        ... repeat ...         │
      │                               │
@@ -331,7 +332,7 @@ Ephemeral programs use the same chunked transfer as resident programs (see §6.2
      │  [execute ephemeral program]  │
      │                               │
      │──── APP_DATA ────────────────►│  (diagnostic results)
-     │◄──── APP_DATA_REPLY ─────────│
+     │◄──── APP_DATA_REPLY ──────────│
      │                               │
      │  [sleep — ephemeral discarded]│
 ```
@@ -357,7 +358,7 @@ The BPF program and gateway application communicate through `APP_DATA` / `APP_DA
     Node                          Gateway
      │                               │
      │──── WAKE ────────────────────►│
-     │◄──── COMMAND {NOP} ──────────│
+     │◄──── COMMAND {NOP} ───────────│
      │                               │
      │  [execute BPF]                │
      │                               │
@@ -483,25 +484,3 @@ There is no separate wire protocol version field. The protocol evolves through:
 
 This avoids version negotiation complexity and matches the reality that node firmware updates require physical access and are rare.
 
----
-
-## 11  Summary of open questions
-
-| ID | Section | Question |
-|---|---|---|
-| ~~O-1~~ | ~~§3.1~~ | ~~`key_hint` size~~ — **Resolved:** 16-bit. `key_hint` is a key-lookup hint, not identity. See §3.1.1. |
-| ~~O-2~~ | ~~§3.1~~ | ~~Header encoding~~ — **Resolved:** Fixed binary header (not CBOR). CBOR used only for payload. See §3.1. |
-| ~~O-3~~ | ~~§4.2~~ | ~~msg_type range~~ — **Resolved:** High-bit convention. `0x01–0x7F` node→gateway, `0x80–0xFF` gateway→node. See §4. |
-| ~~O-4~~ | ~~§5~~ | ~~CBOR map keys~~ — **Resolved:** Integer keys with a documented mapping table. See §5. |
-| ~~O-5~~ | ~~§5.1~~ | ~~Duplicate `key_hint`/`nonce`~~ — **Resolved:** No duplication. Header-only; not repeated in CBOR payload. |
-| ~~O-6~~ | ~~§5.2.1~~ | ~~`chunk_size`~~ — **Resolved:** Specified per-transfer, derived from transport layer frame budget. See §5.2.1. |
-| ~~O-7~~ | ~~§5.2.2~~ | ~~Ephemeral delivery~~ — **Resolved:** Reuse chunked transfer. `command_type` distinguishes resident vs. ephemeral. See §5.2.1. |
-| ~~O-8~~ | ~~§5.3~~ | ~~GET_CHUNK nonce~~ — **Resolved:** Fresh nonce per request. See §5.3. |
-| ~~O-9~~ | ~~§5.6~~ | ~~Multiple APP_DATA~~ — **Resolved:** Yes, multiple allowed. Fresh nonce per APP_DATA frame. See §5.6. |
-| ~~O-10~~ | ~~§6.2~~ | ~~Post-ACK behavior~~ — **Resolved:** Execute new program immediately in the same wake cycle. See §6.2. |
-| ~~O-11~~ | ~~§7.4~~ | ~~Sliding window~~ — **Resolved:** Fixed-size set of 64 entries per node, evicting oldest. See §7.4. |
-| ~~O-12~~ | ~~§8~~ | ~~Out-of-range chunk_index~~ — **Resolved:** Silently discard, consistent with all other error handling. See §8. |
-| ~~O-13~~ | ~~§9.1~~ | ~~Wake retry~~ — **Resolved:** 3 retries, 100 ms fixed delay, then sleep. See §9.1. |
-| ~~O-14~~ | ~~§9.2~~ | ~~Chunk retry~~ — **Resolved:** 3 retries per chunk, 100 ms fixed delay, then abort. See §9.2. |
-| ~~O-15~~ | ~~§9.3~~ | ~~Response timeout~~ — **Resolved:** Transport-dependent (50 ms for ESP-NOW). See §9.3. |
-| ~~O-16~~ | ~~§10~~ | ~~Protocol versioning~~ — **Resolved:** No separate version. CBOR extensibility + `firmware_abi_version` gating. See §10. |

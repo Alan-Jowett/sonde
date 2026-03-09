@@ -120,9 +120,27 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 
 ## 5  Message definitions
 
-All payload fields below are CBOR-encoded. CBOR map keys are shown as strings for readability.
+All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used.
 
-**⚠ OPEN:** Should CBOR map keys be strings (human-readable, larger) or integers (compact, less readable)? Integer keys save ~3–5 bytes per field on a very constrained frame. Recommendation: integer keys with a mapping table.
+### CBOR key mapping
+
+| Key | Field name | Used in |
+|---|---|---|
+| 1 | `key_hint` | WAKE |
+| 2 | `nonce` | WAKE, COMMAND |
+| 3 | `firmware_abi_version` | WAKE |
+| 4 | `program_hash` | WAKE, UPDATE_PROGRAM, PROGRAM_ACK |
+| 5 | `battery_mv` | WAKE |
+| 6 | `command_type` | COMMAND |
+| 7 | `payload` | COMMAND |
+| 8 | `program_size` | UPDATE_PROGRAM |
+| 9 | `chunk_size` | UPDATE_PROGRAM |
+| 10 | `chunk_count` | UPDATE_PROGRAM |
+| 11 | `program` | RUN_EPHEMERAL |
+| 12 | `interval_s` | UPDATE_SCHEDULE |
+| 13 | `blob` | APP_MSG, APP_DATA |
+| 14 | `chunk_index` | GET_CHUNK, CHUNK |
+| 15 | `chunk_data` | CHUNK |
 
 ### 5.1  WAKE (Node → Gateway)
 
@@ -431,7 +449,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-1~~ | ~~§3.1~~ | ~~`key_hint` size~~ — **Resolved:** 16-bit. `key_hint` is a key-lookup hint, not identity. See §3.1.1. |
 | ~~O-2~~ | ~~§3.1~~ | ~~Header encoding~~ — **Resolved:** Fixed binary header (not CBOR). CBOR used only for payload. See §3.1. |
 | ~~O-3~~ | ~~§4.2~~ | ~~msg_type range~~ — **Resolved:** High-bit convention. `0x01–0x7F` node→gateway, `0x80–0xFF` gateway→node. See §4. |
-| O-4 | §5 | CBOR map keys: string or integer? |
+| ~~O-4~~ | ~~§5~~ | ~~CBOR map keys~~ — **Resolved:** Integer keys with a documented mapping table. See §5. |
 | O-5 | §5.1 | Duplicate `key_hint`/`nonce` in header and payload? |
 | O-6 | §5.2.1 | `chunk_size`: protocol-fixed or per-transfer? |
 | O-7 | §5.2.2 | Ephemeral programs larger than one frame: reuse chunked transfer? |

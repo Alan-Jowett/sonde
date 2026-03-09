@@ -289,10 +289,14 @@ A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()
      │                               │
      │──── PROGRAM_ACK ─────────────►│
      │                               │
-     │  [sleep or execute new program]
+     │  [execute new program]        │
+     │                               │
+     │──── APP_DATA ────────────────►│  (zero or more)
+     │                               │
+     │  [sleep]                      │
 ```
 
-**⚠ OPEN:** After `PROGRAM_ACK`, does the node execute the new program in the same wake cycle, or does it sleep and execute on the next wake? Executing immediately avoids an unnecessary sleep cycle but increases power consumption for this wake.
+After sending `PROGRAM_ACK`, the node **executes the new program immediately** in the same wake cycle. This avoids wasting a sleep/wake cycle and battery. The node then sleeps on the program's schedule as normal.
 
 ### 6.3  Ephemeral program execution
 
@@ -449,7 +453,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-7~~ | ~~§5.2.2~~ | ~~Ephemeral delivery~~ — **Resolved:** Reuse chunked transfer. `command_type` distinguishes resident vs. ephemeral. See §5.2.1. |
 | ~~O-8~~ | ~~§5.3~~ | ~~GET_CHUNK nonce~~ — **Resolved:** Fresh nonce per request. See §5.3. |
 | ~~O-9~~ | ~~§5.6~~ | ~~Multiple APP_DATA~~ — **Resolved:** Yes, multiple allowed. Fresh nonce per APP_DATA frame. See §5.6. |
-| O-10 | §6.2 | Execute new program immediately after `PROGRAM_ACK` or sleep first? |
+| ~~O-10~~ | ~~§6.2~~ | ~~Post-ACK behavior~~ — **Resolved:** Execute new program immediately in the same wake cycle. See §6.2. |
 | O-11 | §7.4 | Sliding window mechanism and size? |
 | O-12 | §8 | Out-of-range `chunk_index`: silent discard or error response? |
 | O-13 | §9.1 | Wake retry count and backoff strategy? |

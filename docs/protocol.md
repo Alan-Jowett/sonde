@@ -403,7 +403,7 @@ The protocol has no explicit error message type. Errors are handled by silence a
 | Malformed CBOR | Silently discard. Log internally. | Discard frame. |
 | No response received | N/A | Retry with backoff (see §9). |
 | Unexpected `msg_type` | Silently discard. Log internally. | Discard frame. |
-| `chunk_index` out of range | **⚠ OPEN:** Silently discard or respond with an error chunk? | Retry or abort transfer. |
+| `chunk_index` out of range | Silently discard. Log internally. | Retry or abort transfer. |
 
 ---
 
@@ -457,7 +457,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-9~~ | ~~§5.6~~ | ~~Multiple APP_DATA~~ — **Resolved:** Yes, multiple allowed. Fresh nonce per APP_DATA frame. See §5.6. |
 | ~~O-10~~ | ~~§6.2~~ | ~~Post-ACK behavior~~ — **Resolved:** Execute new program immediately in the same wake cycle. See §6.2. |
 | ~~O-11~~ | ~~§7.4~~ | ~~Sliding window~~ — **Resolved:** Fixed-size set of 64 entries per node, evicting oldest. See §7.4. |
-| O-12 | §8 | Out-of-range `chunk_index`: silent discard or error response? |
+| ~~O-12~~ | ~~§8~~ | ~~Out-of-range chunk_index~~ — **Resolved:** Silently discard, consistent with all other error handling. See §8. |
 | O-13 | §9.1 | Wake retry count and backoff strategy? |
 | O-14 | §9.2 | Chunk transfer retry count? |
 | O-15 | §9.3 | Response timeout duration? |

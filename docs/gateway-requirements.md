@@ -75,7 +75,7 @@ All control-plane messages produced by the gateway MUST be encoded in CBOR.
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST accept `WAKE` messages containing the fields: `node_id`, `nonce`, `firmware_abi_version`, `program_hash`, and `battery_mv`.
+The gateway MUST accept `WAKE` messages containing the fields: `key_hint`, `nonce`, `firmware_abi_version`, `program_hash`, and `battery_mv`.
 
 **Acceptance criteria:**
 
@@ -346,7 +346,7 @@ The gateway MUST receive and store `APP_DATA { nonce, blob }` messages from node
 
 1. The gateway accepts `APP_DATA` messages from authenticated nodes.
 2. The blob is stored or forwarded without modification.
-3. The gateway associates each blob with the originating `node_id` and a reception timestamp.
+3. The gateway associates each blob with the originating node (identified via `key_hint` and HMAC) and a reception timestamp.
 
 ---
 
@@ -389,12 +389,12 @@ The gateway MUST authenticate all inbound messages using HMAC-SHA256 and MUST ap
 **Source:** README § Key provisioning
 
 **Description:**  
-The gateway MUST maintain a mapping of `node_id` to 256-bit pre-shared key. Each node has a unique key. There is no runtime key exchange.
+The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-shared keys. Each node has a unique key. There is no runtime key exchange. The `key_hint` is a lookup optimization; the HMAC key is the true node identity (see [protocol.md](protocol.md) §3.1.1).
 
 **Acceptance criteria:**
 
-1. The gateway can look up the correct key for any registered node by `node_id`.
-2. Messages from unknown `node_id` values (no key on file) are discarded.
+1. The gateway can look up candidate keys for any registered node by `key_hint`.
+2. Messages from `key_hint` values with no matching key are discarded.
 3. The key store supports addition and removal of nodes.
 
 ---
@@ -438,7 +438,7 @@ Authentication adds 40 bytes per frame (32-byte HMAC + 8-byte nonce). The gatewa
 **Source:** README § Key provisioning, § Gateway failover
 
 **Description:**  
-The gateway MUST maintain a registry of known nodes, including at minimum: `node_id`, pre-shared key, assigned program (hash), and current schedule.
+The gateway MUST maintain a registry of known nodes, including at minimum: `key_hint`, pre-shared key, assigned program (hash), and current schedule.
 
 **Acceptance criteria:**
 
@@ -533,7 +533,7 @@ The gateway SHOULD support exporting and importing its full state (node registry
 **Source:** README § Authentication
 
 **Description:**  
-The gateway MUST silently discard messages from nodes whose `node_id` is not in the key registry. No error response is sent (to avoid information leakage).
+The gateway MUST silently discard messages from nodes whose `key_hint` does not match any key in the registry. No error response is sent (to avoid information leakage).
 
 **Acceptance criteria:**
 

@@ -68,7 +68,7 @@ Communication is always **node-initiated**. The gateway never wakes a node. Cont
 ### Wake handshake
 
 ```
-Node → Gateway:  WAKE { node_id, nonce, firmware_abi_version, program_hash, battery_mv }
+Node → Gateway:  WAKE { key_hint, nonce, firmware_abi_version, program_hash, battery_mv }
 Gateway → Node:  COMMAND { nonce, command_type, ... }
 ```
 
@@ -161,7 +161,7 @@ Data is **authenticated but not encrypted** (integrity, not confidentiality). Al
 
 ```
 ┌─────────────────────────────────────────┐
-│ Header: node_id | msg_type | nonce      │
+│ Header: key_hint | msg_type | nonce      │
 │ Payload: BPF bytecode / data / etc.     │
 │ HMAC-SHA256(header + payload, node_key) │
 └─────────────────────────────────────────┘

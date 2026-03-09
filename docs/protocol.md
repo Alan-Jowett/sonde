@@ -126,21 +126,19 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 
 | Key | Field name | Used in |
 |---|---|---|
-| 1 | `key_hint` | WAKE |
-| 2 | `nonce` | WAKE, COMMAND |
-| 3 | `firmware_abi_version` | WAKE |
-| 4 | `program_hash` | WAKE, UPDATE_PROGRAM, PROGRAM_ACK |
-| 5 | `battery_mv` | WAKE |
-| 6 | `command_type` | COMMAND |
-| 7 | `payload` | COMMAND |
-| 8 | `program_size` | UPDATE_PROGRAM |
-| 9 | `chunk_size` | UPDATE_PROGRAM |
-| 10 | `chunk_count` | UPDATE_PROGRAM |
-| 11 | `program` | RUN_EPHEMERAL |
-| 12 | `interval_s` | UPDATE_SCHEDULE |
-| 13 | `blob` | APP_MSG, APP_DATA |
-| 14 | `chunk_index` | GET_CHUNK, CHUNK |
-| 15 | `chunk_data` | CHUNK |
+| 1 | `firmware_abi_version` | WAKE |
+| 2 | `program_hash` | WAKE, UPDATE_PROGRAM, PROGRAM_ACK |
+| 3 | `battery_mv` | WAKE |
+| 4 | `command_type` | COMMAND |
+| 5 | `payload` | COMMAND |
+| 6 | `program_size` | UPDATE_PROGRAM |
+| 7 | `chunk_size` | UPDATE_PROGRAM |
+| 8 | `chunk_count` | UPDATE_PROGRAM |
+| 9 | `program` | RUN_EPHEMERAL |
+| 10 | `interval_s` | UPDATE_SCHEDULE |
+| 11 | `blob` | APP_MSG, APP_DATA |
+| 12 | `chunk_index` | GET_CHUNK, CHUNK |
+| 13 | `chunk_data` | CHUNK |
 
 ### 5.1  WAKE (Node → Gateway)
 
@@ -148,13 +146,11 @@ Sent once per wake cycle as the first message.
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
-| `key_hint` | uint | Yes | Redundant with header; allows payload-level validation. |
-| `nonce` | uint (64-bit) | Yes | Redundant with header; same purpose. |
 | `firmware_abi_version` | uint | Yes | ABI version of the node firmware. |
 | `program_hash` | bstr | Yes | Hash of the currently installed resident program. Zero-length if no program installed. |
 | `battery_mv` | uint | Yes | Battery voltage in millivolts. |
 
-**⚠ OPEN:** Should `key_hint` and `nonce` appear in both the header and the CBOR payload? Duplicating them aids payload-level validation but wastes bytes. Alternative: header only, payload references implicitly.
+`key_hint` and `nonce` are in the fixed header and are not duplicated in the payload. Both are already authenticated by the HMAC.
 
 ### 5.2  COMMAND (Gateway → Node)
 
@@ -162,9 +158,10 @@ Sent exactly once in response to a valid, authenticated `WAKE`.
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
-| `nonce` | uint (64-bit) | Yes | Echo of the node's nonce (binds response to request). |
 | `command_type` | uint | Yes | One of the command codes below. |
 | `payload` | varies | Depends on command | Command-specific data. |
+
+The `nonce` is in the fixed header (echoing the node's nonce to bind the response to the request) and is not duplicated in the payload.
 
 #### Command types
 
@@ -231,9 +228,10 @@ Response to `GET_CHUNK`.
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
-| `nonce` | uint (64-bit) | Yes | Echo of the requesting `GET_CHUNK` nonce. |
 | `chunk_index` | uint | Yes | Index of this chunk (must match request). |
 | `chunk_data` | bstr | Yes | Raw program bytes for this chunk. |
+
+The `nonce` is in the fixed header (echoing the `GET_CHUNK` nonce) and is not duplicated in the payload.
 
 ### 5.5  PROGRAM_ACK (Node → Gateway)
 
@@ -450,7 +448,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-2~~ | ~~§3.1~~ | ~~Header encoding~~ — **Resolved:** Fixed binary header (not CBOR). CBOR used only for payload. See §3.1. |
 | ~~O-3~~ | ~~§4.2~~ | ~~msg_type range~~ — **Resolved:** High-bit convention. `0x01–0x7F` node→gateway, `0x80–0xFF` gateway→node. See §4. |
 | ~~O-4~~ | ~~§5~~ | ~~CBOR map keys~~ — **Resolved:** Integer keys with a documented mapping table. See §5. |
-| O-5 | §5.1 | Duplicate `key_hint`/`nonce` in header and payload? |
+| ~~O-5~~ | ~~§5.1~~ | ~~Duplicate `key_hint`/`nonce`~~ — **Resolved:** No duplication. Header-only; not repeated in CBOR payload. |
 | O-6 | §5.2.1 | `chunk_size`: protocol-fixed or per-transfer? |
 | O-7 | §5.2.2 | Ephemeral programs larger than one frame: reuse chunked transfer? |
 | O-8 | §5.3 | Fresh nonce per `GET_CHUNK` or reuse wake nonce? |

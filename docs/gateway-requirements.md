@@ -75,11 +75,11 @@ All control-plane messages produced by the gateway MUST be encoded in CBOR.
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST accept `WAKE` messages containing the fields: `node_id`, `nonce`, `firmware_abi_version`, `program_hash`, and `battery_mv`.
+The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the fixed binary header; the CBOR payload contains `firmware_abi_version`, `program_hash`, and `battery_mv`.
 
 **Acceptance criteria:**
 
-1. The gateway parses all five fields from a valid `WAKE` message.
+1. The gateway extracts `key_hint` and `nonce` from the fixed header and the three CBOR payload fields from a valid `WAKE` message.
 2. The gateway rejects `WAKE` messages missing any required field.
 3. Parsed values are made available for command-selection logic.
 
@@ -107,7 +107,7 @@ The gateway MUST respond to every valid, authenticated `WAKE` message with exact
 **Source:** README § Reference implementation
 
 **Description:**  
-When using ESP-NOW transport, all gateway-originated frames MUST fit within 250 bytes total, yielding approximately 210 bytes of payload after authentication overhead (32-byte HMAC + 8-byte nonce).
+When using ESP-NOW transport, all gateway-originated frames MUST fit within 250 bytes total, yielding 207 bytes of payload after overhead (11-byte fixed header + 32-byte HMAC = 43 bytes).
 
 **Acceptance criteria:**
 
@@ -191,21 +191,6 @@ The gateway MUST support the `REBOOT` command, instructing the node to restart i
 
 1. The gateway can issue `REBOOT` to any known node.
 2. The command carries no payload beyond the nonce and command type.
-
----
-
-### GW-0205  APP_MSG command
-
-**Priority:** Must  
-**Source:** README § Commands
-
-**Description:**  
-The gateway MUST support the `APP_MSG` command, delivering an opaque blob that is passed into the BPF program's execution context on the node.
-
-**Acceptance criteria:**
-
-1. The gateway can attach an arbitrary byte blob to the `APP_MSG` command.
-2. The blob content is opaque to the gateway; no interpretation or validation of its content is performed.
 
 ---
 
@@ -340,28 +325,45 @@ The gateway SHOULD enforce maximum program sizes: 4 KB for resident programs and
 **Source:** README § Application data
 
 **Description:**  
-The gateway MUST receive and store `APP_DATA { nonce, blob }` messages from nodes. The blob content is opaque to the gateway's transport layer.
+The gateway MUST receive `APP_DATA { blob }` messages from nodes. The blob content is opaque to the gateway's transport layer.
 
 **Acceptance criteria:**
 
 1. The gateway accepts `APP_DATA` messages from authenticated nodes.
-2. The blob is stored or forwarded without modification.
-3. The gateway associates each blob with the originating `node_id` and a reception timestamp.
+2. The blob is forwarded to the gateway application without modification.
+3. The gateway associates each blob with the originating node (identified by the pre-shared key that verified the HMAC) and a reception timestamp.
 
 ---
 
-### GW-0501  Application data forwarding
+### GW-0501  APP_DATA_REPLY response
+
+**Priority:** Must  
+**Source:** README § Application data
+
+**Description:**  
+The gateway MUST respond to every `APP_DATA` message with an `APP_DATA_REPLY { blob }` message. This creates a bidirectional application-layer channel: the BPF program sends data, the gateway application processes it and replies. The protocol treats all blobs as opaque — the BPF program and gateway application define their own request/response semantics on top.
+
+**Acceptance criteria:**
+
+1. Every authenticated `APP_DATA` message receives exactly one `APP_DATA_REPLY`.
+2. The reply's nonce (in the header) echoes the `APP_DATA` nonce, binding the reply to the request.
+3. The gateway application can provide an arbitrary response blob or a zero-length blob (acknowledgement only).
+4. Multiple `APP_DATA` / `APP_DATA_REPLY` round-trips per wake cycle are supported.
+
+---
+
+### GW-0502  Application data handler
 
 **Priority:** Should  
 **Source:** README § Application data
 
 **Description:**  
-The gateway SHOULD provide a mechanism (API, callback, or event system) for application-level code to consume received `APP_DATA` blobs.
+The gateway SHOULD provide a mechanism (API, callback, or event system) for application-level code to process `APP_DATA` blobs and produce `APP_DATA_REPLY` responses.
 
 **Acceptance criteria:**
 
-1. An application running on the gateway can register to receive `APP_DATA` for one or more nodes.
-2. Blobs are delivered to the application in the order received from each node.
+1. An application running on the gateway can register a handler to process `APP_DATA` for one or more nodes.
+2. The handler receives the blob and returns a response blob (or empty) for the `APP_DATA_REPLY`.
 
 ---
 
@@ -389,12 +391,12 @@ The gateway MUST authenticate all inbound messages using HMAC-SHA256 and MUST ap
 **Source:** README § Key provisioning
 
 **Description:**  
-The gateway MUST maintain a mapping of `node_id` to 256-bit pre-shared key. Each node has a unique key. There is no runtime key exchange.
+The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-shared keys. Each node has a unique key. There is no runtime key exchange. The `key_hint` is a lookup optimization; the HMAC key is the true node identity (see [protocol.md](protocol.md) §3.1.1).
 
 **Acceptance criteria:**
 
-1. The gateway can look up the correct key for any registered node by `node_id`.
-2. Messages from unknown `node_id` values (no key on file) are discarded.
+1. The gateway can look up candidate keys for any registered node by `key_hint`.
+2. Messages from `key_hint` values with no matching key are discarded.
 3. The key store supports addition and removal of nodes.
 
 ---
@@ -410,7 +412,7 @@ The gateway MUST implement per-node replay protection using a sliding window of 
 **Acceptance criteria:**
 
 1. A message replayed with the same nonce as a previously accepted message is rejected.
-2. The sliding window is sized to tolerate reasonable network reordering.
+2. The sliding window holds at least 64 entries per node, sufficient for the worst-case wake cycle (chunked transfer + application data).
 3. Nonce state is maintained per node.
 
 ---
@@ -421,11 +423,11 @@ The gateway MUST implement per-node replay protection using a sliding window of 
 **Source:** README § Overhead
 
 **Description:**  
-Authentication adds 40 bytes per frame (32-byte HMAC + 8-byte nonce). The gateway MUST account for this overhead when constructing frames.
+Authentication adds 43 bytes per frame: an 11-byte fixed binary header (`key_hint` 2B + `msg_type` 1B + `nonce` 8B) and a 32-byte HMAC-SHA256 trailer. The gateway MUST account for this overhead when constructing frames.
 
 **Acceptance criteria:**
 
-1. The gateway reserves 40 bytes of every outbound frame for authentication fields.
+1. The gateway reserves 43 bytes of every outbound frame for the header and HMAC.
 2. Payload sizing logic correctly subtracts authentication overhead from the maximum frame size.
 
 ---
@@ -438,7 +440,7 @@ Authentication adds 40 bytes per frame (32-byte HMAC + 8-byte nonce). The gatewa
 **Source:** README § Key provisioning, § Gateway failover
 
 **Description:**  
-The gateway MUST maintain a registry of known nodes, including at minimum: `node_id`, pre-shared key, assigned program (hash), and current schedule.
+The gateway MUST maintain a registry of known nodes, including at minimum: `key_hint`, pre-shared key, assigned program (hash), and current schedule.
 
 **Acceptance criteria:**
 
@@ -533,7 +535,7 @@ The gateway SHOULD support exporting and importing its full state (node registry
 **Source:** README § Authentication
 
 **Description:**  
-The gateway MUST silently discard messages from nodes whose `node_id` is not in the key registry. No error response is sent (to avoid information leakage).
+The gateway MUST silently discard messages when no candidate key for the `key_hint` verifies the HMAC. No error response is sent (to avoid information leakage).
 
 **Acceptance criteria:**
 
@@ -572,7 +574,6 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0202 | RUN_EPHEMERAL command | Must |
 | GW-0203 | UPDATE_SCHEDULE command | Must |
 | GW-0204 | REBOOT command | Must |
-| GW-0205 | APP_MSG command | Must |
 | GW-0300 | Chunk serving | Must |
 | GW-0301 | Transfer resumption | Must |
 | GW-0302 | Program acknowledgement | Must |
@@ -581,7 +582,8 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0402 | Program identity by content hash | Must |
 | GW-0403 | Program size enforcement | Should |
 | GW-0500 | APP_DATA reception | Must |
-| GW-0501 | Application data forwarding | Should |
+| GW-0501 | APP_DATA_REPLY response | Must |
+| GW-0502 | Application data handler | Should |
 | GW-0600 | HMAC-SHA256 message authentication | Must |
 | GW-0601 | Per-node key management | Must |
 | GW-0602 | Replay protection — nonce sliding window | Must |

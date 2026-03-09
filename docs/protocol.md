@@ -37,7 +37,7 @@ Every frame on the wire has the following layout:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Header               │  Payload              │  HMAC      │
+│  Header               │  Payload               │  HMAC      │
 │  (node_id, msg_type,  │  (CBOR-encoded         │  (32 bytes)│
 │   nonce)              │   message body)        │            │
 └─────────────────────────────────────────────────────────────┘
@@ -48,9 +48,17 @@ Every frame on the wire has the following layout:
 
 | Field | Type | Size | Description |
 |---|---|---|---|
-| `node_id` | Unsigned integer | **⚠ OPEN:** Size TBD (16-bit? 32-bit?) | Identifies the node. Present in both directions. |
+| `node_id` | Unsigned integer | 2 bytes (16-bit) | Key-lookup hint for the gateway (see §3.1.1). Present in both directions. |
 | `msg_type` | Unsigned integer | 1 byte | Message type discriminator (see §4). |
 | `nonce` | Unsigned integer | 8 bytes (64-bit) | Node-generated random nonce for the current wake cycle. Gateway responses echo the node's nonce. |
+
+#### 3.1.1  `node_id` semantics
+
+The `node_id` is **not** the node's identity — the HMAC key is. A node is authenticated when its message passes HMAC-SHA256 verification with the correct pre-shared key. The `node_id` serves only as an optimization hint that lets the gateway quickly narrow down which key(s) to try.
+
+**Collision handling:** If multiple nodes share the same `node_id` (unlikely with 16-bit assignment across a small network), the gateway tries all candidate keys for that `node_id` and accepts the first HMAC match. This means `node_id` values do not need to be globally unique — they only need to minimize collisions within a single gateway's network to keep lookup fast.
+
+**Why 16-bit:** A 16-bit space (65,535 values) makes collisions effectively zero for any practical deployment while costing only 2 bytes per frame.
 
 **⚠ OPEN:** Is the header itself CBOR-encoded, or is it a fixed binary layout with only the payload in CBOR? A fixed header is simpler to parse before authentication (you need `node_id` to look up the HMAC key). Recommendation: fixed binary header, CBOR payload.
 
@@ -67,9 +75,9 @@ For the reference ESP-NOW transport:
 | Component | Bytes |
 |---|---|
 | Maximum frame size | 250 |
-| Header (node_id + msg_type + nonce) | **⚠ OPEN:** depends on `node_id` size. Estimated 11–13 bytes. |
+| Header (node_id + msg_type + nonce) | 11 |
 | HMAC trailer | 32 |
-| **Available for payload** | **~205–207** |
+| **Available for payload** | **207** |
 
 ---
 
@@ -407,7 +415,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 
 | ID | Section | Question |
 |---|---|---|
-| O-1 | §3.1 | `node_id` size: 16-bit or 32-bit? |
+| ~~O-1~~ | ~~§3.1~~ | ~~`node_id` size~~ — **Resolved:** 16-bit. `node_id` is a key-lookup hint, not identity. See §3.1.1. |
 | O-2 | §3.1 | Fixed binary header vs. fully CBOR-encoded frame? |
 | O-3 | §4.2 | Gateway msg_type range: high-bit convention? |
 | O-4 | §5 | CBOR map keys: string or integer? |

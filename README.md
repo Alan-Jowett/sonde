@@ -63,7 +63,7 @@ This gives you OTA-like flexibility without OTA complexity. New sensors, new log
 
 ## Node-gateway protocol
 
-Communication is always **node-initiated**. The gateway never wakes a node. Control plane messages use CBOR encoding.
+Communication is always **node-initiated**. The gateway never wakes a node. Control plane messages use a fixed binary header followed by a CBOR-encoded payload (see [protocol.md](docs/protocol.md) for the full wire specification).
 
 ### Wake handshake
 
@@ -80,7 +80,7 @@ The program hash lets the gateway detect stale programs without version numberin
 |---|---|
 | `NOP` | Proceed to BPF execution |
 | `UPDATE_PROGRAM` | New resident program available (chunked transfer) |
-| `RUN_EPHEMERAL` | One-shot program follows |
+| `RUN_EPHEMERAL` | One-shot program available (chunked transfer, same as UPDATE_PROGRAM) |
 | `UPDATE_SCHEDULE` | New base wake interval |
 | `REBOOT` | Restart firmware |
 | `APP_MSG` | Opaque blob passed into BPF context |
@@ -99,7 +99,7 @@ Node:            Verify hash over complete program → store to flash
 Node → Gateway:  PROGRAM_ACK { nonce, program_hash }
 ```
 
-Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from chunk 0 on the next wake.
+Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from chunk 0 on the next wake. After `PROGRAM_ACK`, the node executes the new program immediately in the same wake cycle.
 
 ### Application data
 
@@ -107,7 +107,7 @@ Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from
 Node → Gateway:  APP_DATA { nonce, blob }
 ```
 
-Firmware wraps `send(ptr, len)` output as `APP_DATA`. Delivery semantics are entirely up to the application protocol defined between the BPF program and the gateway.
+Firmware wraps `send(ptr, len)` output as `APP_DATA`. A node may send multiple `APP_DATA` messages per wake cycle. Delivery semantics are entirely up to the application protocol defined between the BPF program and the gateway.
 
 ---
 
@@ -160,21 +160,22 @@ All programs are verified before loading. Two profiles enforce different safety 
 Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with pre-shared keys.
 
 ```
-┌─────────────────────────────────────────┐
-│ Header: key_hint | msg_type | nonce      │
-│ Payload: BPF bytecode / data / etc.     │
-│ HMAC-SHA256(header + payload, node_key) │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│ Header (fixed binary, big-endian):               │
+│   key_hint (2B) | msg_type (1B) | nonce (8B)     │
+│ Payload: CBOR-encoded message body               │
+│ HMAC-SHA256(header + payload, node_key) (32B)    │
+└──────────────────────────────────────────────────┘
 ```
 
 ### Key provisioning
 Each node receives a unique 256-bit key in secure storage during initial firmware flash. The gateway maintains the node-to-key mapping. No runtime key exchange.
 
 ### Replay protection
-The node generates a fresh **64-bit random nonce** each wake cycle using a hardware RNG. The gateway tracks a per-node sliding window of seen nonces. Gateway responses include the node's nonce, binding them to the request. **No persistent counter storage is needed on the node** — no flash wear, survives power loss.
+The node generates a fresh **64-bit random nonce** for every outbound message using a hardware RNG. The gateway tracks a per-node sliding window of seen nonces (64 entries). Gateway responses include the node's nonce, binding them to the request. **No persistent counter storage is needed on the node** — no flash wear, survives power loss.
 
 ### Overhead
-40 bytes per frame (32-byte HMAC + 8-byte nonce). Negligible computation with hardware acceleration.
+43 bytes per frame (11-byte header + 32-byte HMAC). Negligible computation with hardware acceleration.
 
 ---
 
@@ -215,7 +216,7 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 
 | Aspect | Detail |
 |---|---|
-| **Radio transport** | ESP-NOW — connectionless 802.11, 250-byte frames (~210 bytes after auth overhead) |
+| **Radio transport** | ESP-NOW — connectionless 802.11, 250-byte frames (~207 bytes payload after auth overhead) |
 | **Sleep-persistent memory** | RTC slow SRAM: 8 KB on C3, 8+8 KB on S3 (~4–6 KB usable for maps) |
 | **Secure key storage** | eFuse blocks (up to 6, HMAC-purpose-only, inaccessible to software) |
 | **Hardware crypto** | SHA-256, HMAC-SHA256, AES-128/256, hardware RNG (~10x faster than software) |

@@ -75,11 +75,11 @@ All control-plane messages produced by the gateway MUST be encoded in CBOR.
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST accept `WAKE` messages containing the fields: `key_hint`, `nonce`, `firmware_abi_version`, `program_hash`, and `battery_mv`.
+The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the fixed binary header; the CBOR payload contains `firmware_abi_version`, `program_hash`, and `battery_mv`.
 
 **Acceptance criteria:**
 
-1. The gateway parses all five fields from a valid `WAKE` message.
+1. The gateway extracts `key_hint` and `nonce` from the fixed header and the three CBOR payload fields from a valid `WAKE` message.
 2. The gateway rejects `WAKE` messages missing any required field.
 3. Parsed values are made available for command-selection logic.
 
@@ -107,7 +107,7 @@ The gateway MUST respond to every valid, authenticated `WAKE` message with exact
 **Source:** README § Reference implementation
 
 **Description:**  
-When using ESP-NOW transport, all gateway-originated frames MUST fit within 250 bytes total, yielding approximately 210 bytes of payload after authentication overhead (32-byte HMAC + 8-byte nonce).
+When using ESP-NOW transport, all gateway-originated frames MUST fit within 250 bytes total, yielding 207 bytes of payload after overhead (11-byte fixed header + 32-byte HMAC = 43 bytes).
 
 **Acceptance criteria:**
 
@@ -410,7 +410,7 @@ The gateway MUST implement per-node replay protection using a sliding window of 
 **Acceptance criteria:**
 
 1. A message replayed with the same nonce as a previously accepted message is rejected.
-2. The sliding window is sized to tolerate reasonable network reordering.
+2. The sliding window holds at least 64 entries per node, sufficient for the worst-case wake cycle (chunked transfer + application data).
 3. Nonce state is maintained per node.
 
 ---
@@ -421,11 +421,11 @@ The gateway MUST implement per-node replay protection using a sliding window of 
 **Source:** README § Overhead
 
 **Description:**  
-Authentication adds 40 bytes per frame (32-byte HMAC + 8-byte nonce). The gateway MUST account for this overhead when constructing frames.
+Authentication adds 43 bytes per frame: an 11-byte fixed binary header (`key_hint` 2B + `msg_type` 1B + `nonce` 8B) and a 32-byte HMAC-SHA256 trailer. The gateway MUST account for this overhead when constructing frames.
 
 **Acceptance criteria:**
 
-1. The gateway reserves 40 bytes of every outbound frame for authentication fields.
+1. The gateway reserves 43 bytes of every outbound frame for the header and HMAC.
 2. Payload sizing logic correctly subtracts authentication overhead from the maximum frame size.
 
 ---

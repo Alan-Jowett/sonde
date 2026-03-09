@@ -96,7 +96,7 @@ Node → Gateway:  GET_CHUNK { nonce, chunk_index }
 Gateway → Node:  CHUNK { nonce, chunk_index, chunk_data }
    ... repeat ...
 Node:            Verify hash over complete program → store to flash
-Node → Gateway:  PROGRAM_ACK { nonce, version }
+Node → Gateway:  PROGRAM_ACK { nonce, program_hash }
 ```
 
 Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from chunk 0 on the next wake.

@@ -263,7 +263,7 @@ The gateway MUST accept `PROGRAM_ACK { nonce, program_hash }` messages from node
 ### GW-0400  Program ingestion (pre-compiled ELF)
 
 **Priority:** Must  
-**Source:** README § How it works (diagram), § Development and testing
+**Source:** Design decision (not directly stated in README; the README diagram shows "compile" on the gateway but this was revised to keep the gateway lightweight).
 
 **Description:**  
 The gateway MUST accept BPF programs as pre-compiled ELF files. The gateway does not compile programs from source — compilation is the responsibility of an external toolchain or build pipeline. This avoids an LLVM/clang dependency on the gateway.
@@ -327,7 +327,7 @@ The gateway SHOULD enforce maximum program sizes: 4 KB for resident programs and
 
 **Acceptance criteria:**
 
-1. Programs exceeding the configured size limit are rejected at compilation or distribution time.
+1. Programs exceeding the configured size limit are rejected by the gateway during ingestion, verification, or distribution.
 2. The size limits are configurable to accommodate different hardware targets.
 
 ---

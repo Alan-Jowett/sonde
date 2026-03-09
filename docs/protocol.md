@@ -265,12 +265,12 @@ The `nonce` in the header echoes the `APP_DATA` nonce, binding the reply to the 
      │──── WAKE ────────────────────►│
      │                               │  (lookup node, verify HMAC,
      │                               │   check program_hash — matches)
-     │◄──── COMMAND {NOP} ──────────│
+     │◄──── COMMAND {NOP} ───────────│
      │                               │
      │  [execute resident BPF]       │
      │                               │
      │──── APP_DATA ────────────────►│  (zero or more)
-     │◄──── APP_DATA_REPLY ─────────│
+     │◄──── APP_DATA_REPLY ──────────│
      │                               │
      │  [sleep]                      │
 ```
@@ -285,10 +285,10 @@ The `nonce` in the header echoes the `APP_DATA` nonce, binding the reply to the 
      │◄── COMMAND {UPDATE_PROGRAM} ──│  (includes program_hash, size, chunk info)
      │                               │
      │──── GET_CHUNK {index=0} ─────►│
-     │◄──── CHUNK {index=0, data} ──│
+     │◄──── CHUNK {index=0, data} ───│
      │                               │
      │──── GET_CHUNK {index=1} ─────►│
-     │◄──── CHUNK {index=1, data} ──│
+     │◄──── CHUNK {index=1, data} ───│
      │                               │
      │        ... repeat ...         │
      │                               │
@@ -307,16 +307,31 @@ After sending `PROGRAM_ACK`, the node **executes the new program immediately** i
 
 ### 6.3  Ephemeral program execution
 
+Ephemeral programs use the same chunked transfer as resident programs (see §6.2). The `command_type` (`RUN_EPHEMERAL`) tells the node to store the program in RAM and discard it after execution.
+
 ```
     Node                          Gateway
      │                               │
      │──── WAKE ────────────────────►│
      │                               │  (gateway wants diagnostics)
-     │◄── COMMAND {RUN_EPHEMERAL} ──│  (includes program bytecode)
+     │◄── COMMAND {RUN_EPHEMERAL} ──│  (includes program_hash, size, chunk info)
      │                               │
-     │  [verify & execute ephemeral] │
+     │──── GET_CHUNK {index=0} ─────►│
+     │◄──── CHUNK {index=0, data} ──│
+     │                               │
+     │──── GET_CHUNK {index=1} ─────►│
+     │◄──── CHUNK {index=1, data} ──│
+     │                               │
+     │        ... repeat ...         │
+     │                               │
+     │  [verify hash, load to RAM]   │
+     │                               │
+     │──── PROGRAM_ACK ─────────────►│
+     │                               │
+     │  [execute ephemeral program]  │
      │                               │
      │──── APP_DATA ────────────────►│  (diagnostic results)
+     │◄──── APP_DATA_REPLY ─────────│
      │                               │
      │  [sleep — ephemeral discarded]│
 ```
@@ -347,10 +362,10 @@ The BPF program and gateway application communicate through `APP_DATA` / `APP_DA
      │  [execute BPF]                │
      │                               │
      │──── APP_DATA {request} ──────►│
-     │◄──── APP_DATA_REPLY {resp} ──│  (gateway app processes and replies)
+     │◄──── APP_DATA_REPLY {resp} ───│  (gateway app processes and replies)
      │                               │
      │──── APP_DATA {request 2} ────►│  (BPF can do multiple round-trips)
-     │◄──── APP_DATA_REPLY {resp} ──│
+     │◄──── APP_DATA_REPLY {resp} ───│
      │                               │
      │  [sleep]                      │
 ```

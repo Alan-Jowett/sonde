@@ -227,6 +227,12 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 
 ---
 
+## Further reading
+
+- [Why BPF?](docs/why-bpf.md) — rationale for using uBPF + Prevail as the execution model
+
+---
+
 ## License
 
 [MIT](LICENSE)

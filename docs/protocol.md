@@ -91,7 +91,12 @@ For the reference ESP-NOW transport:
 
 ## 4  Message types
 
-Each message has a `msg_type` discriminator. Messages are grouped by direction.
+Each message has a `msg_type` discriminator in the fixed header. The high bit indicates direction:
+
+- **`0x01–0x7F`** — Node → Gateway
+- **`0x80–0xFF`** — Gateway → Node
+
+This makes direction unambiguous from `msg_type` alone, simplifying routing, logging, and debugging.
 
 ### 4.1  Node → Gateway
 
@@ -109,7 +114,7 @@ Each message has a `msg_type` discriminator. Messages are grouped by direction.
 | `0x81` | `COMMAND` | Response to `WAKE`. Contains a command for the node. |
 | `0x82` | `CHUNK` | Response to `GET_CHUNK`. Contains one program chunk. |
 
-**⚠ OPEN:** Should gateway → node messages use a distinct msg_type range (e.g., `0x80+`) or share the same namespace? Using high-bit-set values for gateway responses makes direction unambiguous from `msg_type` alone.
+---
 
 ---
 
@@ -425,7 +430,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 |---|---|---|
 | ~~O-1~~ | ~~§3.1~~ | ~~`key_hint` size~~ — **Resolved:** 16-bit. `key_hint` is a key-lookup hint, not identity. See §3.1.1. |
 | ~~O-2~~ | ~~§3.1~~ | ~~Header encoding~~ — **Resolved:** Fixed binary header (not CBOR). CBOR used only for payload. See §3.1. |
-| O-3 | §4.2 | Gateway msg_type range: high-bit convention? |
+| ~~O-3~~ | ~~§4.2~~ | ~~msg_type range~~ — **Resolved:** High-bit convention. `0x01–0x7F` node→gateway, `0x80–0xFF` gateway→node. See §4. |
 | O-4 | §5 | CBOR map keys: string or integer? |
 | O-5 | §5.1 | Duplicate `key_hint`/`nonce` in header and payload? |
 | O-6 | §5.2.1 | `chunk_size`: protocol-fixed or per-transfer? |

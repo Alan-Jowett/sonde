@@ -415,9 +415,11 @@ If the node sends `WAKE` and receives no `COMMAND` response:
 
 | Parameter | Value |
 |---|---|
-| Retry count | **⚠ OPEN:** TBD (bounded). |
-| Retry backoff | **⚠ OPEN:** Fixed delay? Exponential? |
+| Retry count | 3 |
+| Retry delay | Fixed, 100 ms between attempts |
 | After max retries | Sleep until next scheduled wake interval. |
+
+Exponential backoff is unnecessary — if the gateway isn't responding after 3 quick attempts, it's likely unavailable. Sleeping preserves battery.
 
 ### 9.2  Chunk transfer retry
 
@@ -425,20 +427,31 @@ If the node sends `GET_CHUNK` and receives no `CHUNK` response:
 
 | Parameter | Value |
 |---|---|
-| Retry count | **⚠ OPEN:** TBD per chunk. |
+| Retry count | 3 per chunk |
+| Retry delay | Fixed, 100 ms between attempts |
 | After max retries | Abort transfer, sleep. Retry from chunk 0 on next wake. |
 
 ### 9.3  Response timeout
 
-**⚠ OPEN:** How long does the node wait for a response before considering it lost? This depends on the radio transport latency. For ESP-NOW, a reasonable timeout might be in the tens of milliseconds.
+The node waits for a response before considering it lost and retrying (or sleeping). The timeout is transport-dependent:
+
+| Transport | Timeout |
+|---|---|
+| ESP-NOW | 50 ms |
+
+This should comfortably exceed the round-trip time for the transport plus gateway processing. Implementations may make this configurable.
 
 ---
 
-## 10  Protocol versioning
+## 10  Protocol evolution
 
-**⚠ OPEN:** The `firmware_abi_version` in `WAKE` covers the BPF helper API. Is there a separate protocol version for the node-gateway wire protocol itself? If the frame format or message types change, how does the gateway detect which protocol version the node speaks?
+There is no separate wire protocol version field. The protocol evolves through:
 
-Recommendation: include a `protocol_version` field in the `WAKE` message (or in the frame header) to allow future evolution.
+1. **CBOR extensibility** — both sides ignore unknown map keys. New optional fields and new command types can be added without breaking existing nodes.
+2. **`firmware_abi_version` gating** — the gateway knows each node's ABI version from the `WAKE` message and only sends commands/fields the node understands.
+3. **Immutability rule** — existing field semantics and message types are never redefined. All changes are additive only.
+
+This avoids version negotiation complexity and matches the reality that node firmware updates require physical access and are rare.
 
 ---
 
@@ -458,7 +471,7 @@ Recommendation: include a `protocol_version` field in the `WAKE` message (or in 
 | ~~O-10~~ | ~~§6.2~~ | ~~Post-ACK behavior~~ — **Resolved:** Execute new program immediately in the same wake cycle. See §6.2. |
 | ~~O-11~~ | ~~§7.4~~ | ~~Sliding window~~ — **Resolved:** Fixed-size set of 64 entries per node, evicting oldest. See §7.4. |
 | ~~O-12~~ | ~~§8~~ | ~~Out-of-range chunk_index~~ — **Resolved:** Silently discard, consistent with all other error handling. See §8. |
-| O-13 | §9.1 | Wake retry count and backoff strategy? |
-| O-14 | §9.2 | Chunk transfer retry count? |
-| O-15 | §9.3 | Response timeout duration? |
-| O-16 | §10 | Separate wire protocol version field? |
+| ~~O-13~~ | ~~§9.1~~ | ~~Wake retry~~ — **Resolved:** 3 retries, 100 ms fixed delay, then sleep. See §9.1. |
+| ~~O-14~~ | ~~§9.2~~ | ~~Chunk retry~~ — **Resolved:** 3 retries per chunk, 100 ms fixed delay, then abort. See §9.2. |
+| ~~O-15~~ | ~~§9.3~~ | ~~Response timeout~~ — **Resolved:** Transport-dependent (50 ms for ESP-NOW). See §9.3. |
+| ~~O-16~~ | ~~§10~~ | ~~Protocol versioning~~ — **Resolved:** No separate version. CBOR extensibility + `firmware_abi_version` gating. See §10. |

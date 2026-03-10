@@ -175,13 +175,23 @@ The `program_hash` used throughout the protocol is the SHA-256 hash of the **com
 
 **Deterministic encoding:** The program image MUST be encoded using CBOR deterministic encoding (RFC 8949 §4.2) to ensure that all gateways produce identical bytes (and therefore identical hashes) for the same program.
 
+#### Map relocations in bytecode
+
+BPF programs reference maps via `LDDW` instructions (RFC 9669 §4.3). In the original ELF, these appear as `LDDW src=0, imm=0` with an ELF relocation pointing to the map section. The gateway resolves these relocations during ingestion:
+
+- **Transmitted encoding:** `LDDW src=1, imm=<map_index>`, where `map_index` is a zero-based index into the `maps` array in the program image.
+- **Resolution:** Prevail's loader performs this transformation as part of verification — no additional pass is required.
+- **Node-side handling:** The node's BPF interpreter recognizes `LDDW src=1` and replaces the immediate with the runtime pointer to the corresponding map (allocated from sleep-persistent memory at program install time).
+
+This encoding is consistent with the standard BPF loader convention (`src=1` = map reference by index) and is already supported by uBPF.
+
 #### Ingestion pipeline
 
 ```
 BPF ELF file (developer artifact)
   │
   ├── Parse ELF: extract .text (bytecode) and .maps (map definitions)
-  ├── Verify with Prevail (resident or ephemeral profile)
+  ├── Verify with Prevail (resolves map relocations to LDDW src=1)
   ├── Encode program image as CBOR: { 1: bytecode, 2: [map_defs...] }
   ├── Compute program_hash = SHA-256(program image CBOR)
   ├── Store in program library (keyed by hash)

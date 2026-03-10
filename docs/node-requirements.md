@@ -379,13 +379,14 @@ After reassembling all chunks, the node MUST compute the SHA-256 hash of the com
 **Source:** protocol.md § Program image format
 
 **Description:**  
-After hash verification, the node MUST decode the CBOR program image to extract the bytecode and map definitions. The node uses the map definitions to allocate map storage in sleep-persistent memory and the bytecode for BPF execution.
+After hash verification, the node MUST decode the CBOR program image to extract the bytecode and map definitions. The node uses the map definitions to allocate map storage in sleep-persistent memory. The bytecode contains `LDDW src=1, imm=<map_index>` instructions referencing maps by index; the node's BPF interpreter MUST resolve these to runtime map pointers at load time.
 
 **Acceptance criteria:**
 
 1. The node correctly decodes the CBOR program image (bytecode + map definitions).
 2. Map storage is allocated according to the map definitions.
-3. If map definitions exceed the sleep-persistent memory budget, installation fails and the existing program remains active (see ND-0606).
+3. `LDDW src=1` instructions are resolved to runtime map pointers before execution.
+4. If map definitions exceed the sleep-persistent memory budget, installation fails and the existing program remains active (see ND-0606).
 
 ---
 

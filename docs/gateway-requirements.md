@@ -739,13 +739,14 @@ The admin API SHOULD provide real-time node status including: current program ha
 **Source:** GW-1001
 
 **Description:**  
-The admin API SHOULD support exporting and importing the gateway's portable state (node registry, cryptographic keys, program library, schedules, and handler routing configuration) for failover and backup.
+The admin API SHOULD support exporting and importing the gateway's portable state (node registry, cryptographic keys, program library, schedules, and handler routing configuration) for failover and backup. Because this includes cryptographic material, export/import mechanisms MUST comply with GW-0601a (operator authorization and protection of exported state).
 
 **Acceptance criteria:**
 
 1. `ExportState` returns the complete gateway state as a portable binary.
 2. `ImportState` restores state from a previously exported binary.
-3. After import, all nodes and programs are available.
+3. Export and import operations require authenticated and authorized administrative access, and exported state is protected (e.g., via encryption) in accordance with GW-0601a.
+4. After import, all nodes and programs are available.
 
 ---
 

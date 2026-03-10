@@ -40,7 +40,7 @@ TestNode {
     key_hint: u16,
     psk: [u8; 32],
     
-    fn wake(firmware_abi: u32, program_hash: &[u8], battery_mv: u32) -> Frame
+    fn wake(firmware_abi_version: u32, program_hash: &[u8], battery_mv: u32) -> Frame
     fn get_chunk(seq: u64, chunk_index: u32) -> Frame
     fn program_ack(seq: u64, program_hash: &[u8]) -> Frame
     fn app_data(seq: u64, blob: &[u8]) -> Frame
@@ -703,7 +703,7 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Start the gateway.
 2. Connect to the gRPC admin API on the configured address.
-3. Assert: connection succeeds, service responds to health check.
+3. Assert: connection succeeds and a defined admin RPC (e.g., `ListNodes`) can be called successfully.
 
 ---
 
@@ -941,7 +941,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0803 | T-0805, T-0806, T-0807, T-0808 |
 | GW-0804 | T-0809 |
 | GW-0805 | T-0810 |
-| GW-0806 | *(validated by CLI integration tests — see note below)* |
+| GW-0806 | *(validated by CLI integration tests against a running gateway)* |
 | GW-1000 | T-1000 |
 | GW-1001 | T-1002 |
 | GW-1002 | T-0609 |

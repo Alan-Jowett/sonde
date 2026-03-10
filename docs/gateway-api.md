@@ -245,21 +245,37 @@ Both examples use the same framing and message format. The only difference is wh
 
 ## 6  Configuration
 
-The gateway administrator configures which handler to invoke. This is an ops/admin concern, not a developer concern.
+The gateway administrator configures handler routing. This is an ops/admin concern, not a developer concern.
+
+Handlers are mapped by **program_hash**. When a node's BPF program sends `APP_DATA`, the gateway routes it to the handler configured for that program's hash. At deployment time, the administrator decides the granularity:
 
 ```yaml
 # Example gateway configuration (format TBD)
-application:
-  handler: "/usr/local/bin/my-soil-app"
-  timeout_s: 5
+handlers:
+  # One handler per program
+  - program_hash: "a1b2c3..."
+    command: "/usr/local/bin/soil-moisture-app"
+    timeout_s: 5
+
+  - program_hash: "d4e5f6..."
+    command: "/usr/local/bin/temperature-alert-app"
+    timeout_s: 3
+
+  # Or one handler for multiple programs
+  - program_hash: ["7a8b9c...", "0d1e2f..."]
+    command: "/usr/local/bin/multi-sensor-app"
+    timeout_s: 5
+
+  # Catch-all for unmatched programs (optional)
+  - program_hash: "*"
+    command: "/usr/local/bin/default-handler"
+    timeout_s: 5
 ```
 
-**⚠ OPEN:** Should a single gateway support multiple handlers (one per program_hash)? This would allow different applications for different BPF programs on the same gateway.
+If no handler matches a program_hash and no catch-all is configured, the gateway sends a zero-length `APP_DATA_REPLY` to the node.
 
 ---
 
 ## 7  Open questions
 
-| ID | Section | Question |
-|---|---|---|
-| A-1 | §6 | Multiple handlers per gateway (routed by program_hash)? |
+All open questions have been resolved.

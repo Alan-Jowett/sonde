@@ -11,7 +11,7 @@
 
 A Sonde application consists of two parts:
 
-1. **A BPF program** — runs on the node, reads sensors, and calls `send()` to emit data.
+1. **A BPF program** — runs on the node, reads sensors, and calls `send()` or `send_recv()` to communicate with the handler.
 2. **An application handler** — runs alongside the gateway, receives that data, and replies.
 
 The gateway handles everything in between: protocol, authentication, program distribution, scheduling, node management. The developer never interacts with nodes, keys, or the radio protocol.

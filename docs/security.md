@@ -298,3 +298,42 @@ All gateway instances in a failover group MUST serve identical programs for any 
 | Key storage | Dedicated flash partition | Software-accessible; mitigate with secure boot / flash encryption |
 | Key provisioning | USB-mediated pairing | Requires physical USB access |
 | Identity binding | PSK = node identity | Factory reset + re-pair to revoke / replace identity |
+
+---
+
+## 9  Design tradeoffs
+
+The security model makes deliberate tradeoffs between security and usability. This section documents the alternatives considered and the rationale for each choice.
+
+### 9.1  Key storage: eFuse vs flash
+
+| | eFuse (hardware fuse) | Flash partition |
+|---|---|---|
+| **Key accessibility** | Hardware-inaccessible after provisioning; only the HMAC peripheral can use the key | Software-accessible; firmware can read the raw key bytes |
+| **Resistance to firmware compromise** | Compromised firmware cannot extract the key | Compromised firmware can read the key |
+| **Factory reset** | Not possible — key is permanently fused | Supported — key partition can be erased |
+| **Key rotation** | Not possible — node must be physically replaced on compromise | Supported — factory reset + re-pair provisions a new key |
+
+**Chosen: flash.** The ability to factory-reset and re-pair nodes is more valuable in practice than hardware key isolation. Flash-based keys can be mitigated with secure boot (prevents unauthorized firmware from running) and flash encryption (prevents physical flash readout). eFuse storage remains a valid hardening option for deployments that do not require field re-provisioning.
+
+### 9.2  Key provisioning: factory-set vs on-site pairing
+
+| | Factory-set (at manufacturing) | On-site pairing |
+|---|---|---|
+| **Provisioning environment** | Controlled manufacturing facility | Field / deployment site |
+| **Operator skill required** | Provisioning is part of the manufacturing pipeline; end user does not handle keys | Operator must have physical access and a provisioning tool |
+| **Flexibility** | Key is fixed at manufacturing; cannot adapt to deployment-specific gateways | Node can be paired to any gateway at deployment time |
+| **Factory reset** | Re-provisioning requires return to factory or a secure key-injection station | Re-provisioning is performed on-site with the same pairing tool |
+
+**Chosen: on-site pairing.** Factory-set keys are the most secure option (provisioning happens in a controlled environment, keys never traverse a field channel), but on-site pairing enables simpler logistics: nodes ship as blank devices and are paired to the target gateway during installation. This is essential for deployments where the operator and the manufacturer are different parties, or where nodes may be redeployed across gateways.
+
+### 9.3  Pairing channel: USB vs over-the-air
+
+| | USB-mediated pairing | Over-the-air (OTA) pairing |
+|---|---|---|
+| **Channel security** | Physical point-to-point connection; no eavesdropping or interception | Radio channel is broadcast; vulnerable to eavesdropping and man-in-the-middle (MITM) attacks |
+| **MITM resistance** | Inherent — an attacker must physically intercept the USB cable | Requires a key-agreement protocol (e.g., Diffie–Hellman with out-of-band verification) to resist MITM |
+| **Convenience** | Operator must physically connect each node | Nodes could be paired at range without physical contact |
+| **Complexity** | Simple: generate key, write to both ends | Requires a secure pairing protocol, trust-on-first-use policy, or out-of-band verification step |
+
+**Chosen: USB.** USB-mediated pairing eliminates the MITM attack surface entirely — the key is transferred over a physically controlled channel. OTA pairing would require a secure key-agreement protocol over the untrusted ESP-NOW radio, adding protocol complexity and a new class of attacks. Since nodes must be physically installed anyway, requiring a USB connection during that process is an acceptable cost.

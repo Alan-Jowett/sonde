@@ -78,6 +78,14 @@ BPF programs have access to raw bus primitives (I2C, SPI, GPIO, ADC), communicat
 
 ---
 
+## Application handlers
+
+The gateway is a platform service — application logic runs in a separate **handler process**. When a BPF program calls `send()` or `send_recv()`, the gateway forwards the data to the handler via stdin (length-prefixed CBOR). The handler processes it and replies via stdout. Handlers are routed by `program_hash`, so different BPF programs can have different handlers.
+
+The developer ships two artifacts: a **BPF ELF** (node-side) and a **handler** in any language (gateway-side). See [gateway-api.md](docs/gateway-api.md) for the full handler protocol, message format, and examples.
+
+---
+
 ## Operational concerns
 
 - **Gateway failover** — replace the gateway with another instance provisioned with the same key database. Nodes won't notice.

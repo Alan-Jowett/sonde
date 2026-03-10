@@ -491,14 +491,16 @@ The firmware MUST provide `map_lookup_elem` (read) and `map_update_elem` (write)
 **Source:** bpf-environment.md §6.4
 
 **Description:**  
-The firmware MUST provide `get_time()`, `get_battery_mv()`, and `set_next_wake()` helpers. `set_next_wake()` is available only to resident programs.
+The firmware MUST provide `get_time()`, `get_battery_mv()`, `delay_us()`, `set_next_wake()`, and `bpf_trace_printk()` helpers. `set_next_wake()` is available only to resident programs. See [bpf-environment.md §6](bpf-environment.md) for the complete helper API reference.
 
 **Acceptance criteria:**
 
 1. `get_time()` returns the current time in milliseconds since epoch.
 2. `get_battery_mv()` returns the current battery voltage.
-3. `set_next_wake()` sets the interval for the next wake cycle only.
-4. Ephemeral programs calling `set_next_wake()` receive an error.
+3. `delay_us()` busy-waits for the specified microseconds; the firmware enforces a maximum delay value.
+4. `set_next_wake()` sets the interval for the next wake cycle only; the firmware applies `min(requested, base interval)`.
+5. Ephemeral programs calling `set_next_wake()` receive an error.
+6. `bpf_trace_printk()` emits a debug trace message to the platform's debug output.
 
 ---
 
@@ -579,7 +581,7 @@ The node MUST wait for a response for the transport-appropriate timeout before r
 
 1. On ESP-NOW, the node uses a response timeout of 50 ms, measured from completion of frame transmission to the point where the node treats the response as lost.
 2. The node waits the full configured timeout interval before treating a response as lost or initiating a retry.
-3. For transports other than ESP-NOW, the transport definition SHALL specify a numeric response timeout in milliseconds.
+3. For transports other than ESP-NOW, the transport definition MUST specify a numeric response timeout in milliseconds.
 
 ---
 

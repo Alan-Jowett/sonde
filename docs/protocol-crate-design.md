@@ -135,7 +135,7 @@ pub trait HmacProvider {
 }
 ```
 
-The default `verify` uses constant-time comparison in production implementations. The trait provides a default implementation for convenience but implementers SHOULD override with a constant-time comparison.
+Implementations MUST use constant-time comparison to prevent timing side-channel attacks.
 
 ### 5.2  Encoding
 
@@ -168,12 +168,11 @@ pub struct DecodedFrame {
 pub fn decode_frame(raw: &[u8]) -> Result<DecodedFrame, DecodeError>
 ```
 
-1. Validate `raw.len() >= MIN_FRAME_SIZE`.
-2. Split into header (11), payload (middle), HMAC (last 32).
-3. Parse header.
-4. Return `DecodedFrame`. Payload is **not** CBOR-decoded — caller does that after HMAC verification.
-
-Errors: `DecodeError::TooShort`, `DecodeError::TooLong`.
+1. Validate `raw.len() >= MIN_FRAME_SIZE`, otherwise return `DecodeError::TooShort`.
+2. Validate `raw.len() <= MAX_FRAME_SIZE`, otherwise return `DecodeError::TooLong`.
+3. Split into header (11), payload (middle), HMAC (last 32).
+4. Parse header.
+5. Return `DecodedFrame`. Payload is **not** CBOR-decoded — caller does that after HMAC verification.
 
 ### 5.4  HMAC verification helper
 

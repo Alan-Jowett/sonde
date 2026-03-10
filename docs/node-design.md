@@ -134,7 +134,7 @@ The wake cycle engine is the central state machine. It runs once per wake and th
 
 ```
 for chunk_index in 0..chunk_count:
-    seq = starting_seq + chunk_index + 1   (starting_seq used for first GET_CHUNK)
+    seq = starting_seq + chunk_index       (GET_CHUNK #0 uses starting_seq)
     send GET_CHUNK { chunk_index } with seq
     await CHUNK response (50 ms timeout, 3 retries per chunk)
     if all retries fail → abort, sleep

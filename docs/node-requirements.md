@@ -88,7 +88,7 @@ Every outbound frame MUST follow the wire format: `header || payload || hmac`, w
 ### ND-0103  Frame size constraint (reference implementation)
 
 **Priority:** Must  
-**Source:** protocol.md §3.2
+**Source:** protocol.md §3.3
 
 **Description:**  
 On the ESP-NOW reference implementation, the node MUST NOT transmit frames exceeding 250 bytes. The usable payload budget is 250 − 11 (header) − 32 (HMAC) = 207 bytes.
@@ -96,7 +96,7 @@ On the ESP-NOW reference implementation, the node MUST NOT transmit frames excee
 **Acceptance criteria:**
 
 1. No outbound frame exceeds 250 bytes.
-2. The BPF `send()` and `send_recv()` helpers reject data blobs that would exceed the payload budget.
+2. The BPF `send()` and `send_recv()` helpers reject data blobs for which the resulting fully encoded frame (header + CBOR `APP_DATA` payload + HMAC) would exceed 250 bytes.
 
 ---
 
@@ -167,13 +167,13 @@ The node MUST extract the `starting_seq` from the COMMAND payload and use it as 
 **Source:** protocol.md §5.2.2, bpf-environment.md §6.4
 
 **Description:**  
-The node MUST sleep for the configured wake interval after completing a wake cycle. The interval is set by `UPDATE_SCHEDULE` or by the BPF program via `set_next_wake()`. The firmware MUST persist the base interval across deep sleep.
+The node MUST sleep for the configured wake interval after completing a wake cycle. The *base* interval is configured by `UPDATE_SCHEDULE` and persisted across deep sleep. Resident BPF programs MAY request an earlier next wake via `set_next_wake()`, but the effective next interval is `min(requested, base interval)` and the base interval itself is not modified by `set_next_wake()`.
 
 **Acceptance criteria:**
 
-1. The node sleeps for the configured interval (within platform timer accuracy).
-2. `set_next_wake()` overrides the interval for the next wake only; the base interval is restored afterward unless changed by another `UPDATE_SCHEDULE`.
-3. The base interval survives deep sleep.
+1. The node sleeps for the base interval in the absence of any `set_next_wake()` request (within platform timer accuracy).
+2. For the next wake only, a resident BPF program MAY call `set_next_wake()` to request an earlier wake; the firmware MUST apply `min(requested, base interval)` and MUST NOT allow `set_next_wake()` to extend the interval beyond the base or change the persisted base interval.
+3. The base interval, as last set by `UPDATE_SCHEDULE`, survives deep sleep.
 
 ---
 
@@ -513,7 +513,7 @@ The firmware MUST enforce BPF execution constraints: 512-byte stack per call fra
 
 1. A program exceeding the instruction budget is terminated.
 2. A program exceeding the call depth is terminated.
-3. Stack overflow is prevented by the verifier and enforced at runtime.
+3. Stack-unsafe programs are rejected during gateway-side verification, and the node firmware enforces per-frame stack and call-depth limits at runtime.
 
 ---
 

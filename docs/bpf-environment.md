@@ -183,23 +183,137 @@ The resident program binary and schedule configuration. Managed by firmware — 
 
 The firmware exposes the following helpers to BPF programs. The ABI remains stable across firmware versions.
 
-### 6.1  Sensor access
+### 6.1  Bus access
 
-#### `read_sensor`
+The firmware provides raw bus primitives. Sensor-specific protocols (register sequences, calibration, timing) are encoded in the BPF program — not the firmware. This means adding new sensor types never requires a firmware update.
+
+#### `i2c_read`
 
 ```c
-int read_sensor(uint32_t sensor_id, void *buf, uint32_t buf_len);
+int i2c_read(uint8_t bus, uint8_t addr, void *buf, uint32_t buf_len);
 ```
 
-Read a value from a sensor.
+Read bytes from an I2C device.
 
 | Parameter | Description |
 |---|---|
-| `sensor_id` | Platform-defined sensor identifier. |
-| `buf` | Buffer to write the sensor value into. |
-| `buf_len` | Size of the buffer in bytes. |
+| `bus` | I2C bus index (platform-dependent). |
+| `addr` | 7-bit I2C device address. |
+| `buf` | Buffer to read into. |
+| `buf_len` | Number of bytes to read. |
 
-**Returns:** `0` on success, negative error code on failure (sensor not found, read error, buffer too small).
+**Returns:** `0` on success, negative on failure (NACK, bus error, timeout).
+
+**Availability:** Resident and ephemeral.
+
+#### `i2c_write`
+
+```c
+int i2c_write(uint8_t bus, uint8_t addr, const void *data, uint32_t data_len);
+```
+
+Write bytes to an I2C device.
+
+| Parameter | Description |
+|---|---|
+| `bus` | I2C bus index. |
+| `addr` | 7-bit I2C device address. |
+| `data` | Data to write. |
+| `data_len` | Number of bytes to write. |
+
+**Returns:** `0` on success, negative on failure.
+
+**Availability:** Resident and ephemeral.
+
+#### `i2c_write_read`
+
+```c
+int i2c_write_read(uint8_t bus, uint8_t addr,
+                   const void *write_ptr, uint32_t write_len,
+                   void *read_ptr, uint32_t read_len);
+```
+
+Write bytes then read bytes in a single I2C transaction (repeated start). This is the common pattern for reading a register: write the register address, then read the value.
+
+| Parameter | Description |
+|---|---|
+| `bus` | I2C bus index. |
+| `addr` | 7-bit I2C device address. |
+| `write_ptr` | Data to write (typically a register address). |
+| `write_len` | Number of bytes to write. |
+| `read_ptr` | Buffer to read into. |
+| `read_len` | Number of bytes to read. |
+
+**Returns:** `0` on success, negative on failure.
+
+**Availability:** Resident and ephemeral.
+
+#### `spi_transfer`
+
+```c
+int spi_transfer(uint8_t bus, const void *tx, void *rx, uint32_t len);
+```
+
+Full-duplex SPI transfer. Simultaneously transmits and receives `len` bytes.
+
+| Parameter | Description |
+|---|---|
+| `bus` | SPI bus index (platform-dependent). |
+| `tx` | Transmit buffer (can be NULL for read-only). |
+| `rx` | Receive buffer (can be NULL for write-only). |
+| `len` | Number of bytes to transfer. |
+
+**Returns:** `0` on success, negative on failure.
+
+**Availability:** Resident and ephemeral.
+
+#### `gpio_read`
+
+```c
+int gpio_read(uint8_t pin);
+```
+
+Read the state of a GPIO pin.
+
+| Parameter | Description |
+|---|---|
+| `pin` | GPIO pin number (platform-dependent). |
+
+**Returns:** `0` (low) or `1` (high), negative on failure (invalid pin).
+
+**Availability:** Resident and ephemeral.
+
+#### `gpio_write`
+
+```c
+int gpio_write(uint8_t pin, uint8_t value);
+```
+
+Set the state of a GPIO pin.
+
+| Parameter | Description |
+|---|---|
+| `pin` | GPIO pin number. |
+| `value` | `0` (low) or `1` (high). |
+
+**Returns:** `0` on success, negative on failure.
+
+**Availability:** Resident and ephemeral.
+
+#### `adc_read`
+
+```c
+int adc_read(uint8_t channel, uint32_t *value);
+```
+
+Read a raw value from an ADC channel.
+
+| Parameter | Description |
+|---|---|
+| `channel` | ADC channel index (platform-dependent). |
+| `value` | Pointer to store the raw ADC reading. |
+
+**Returns:** `0` on success, negative on failure.
 
 **Availability:** Resident and ephemeral.
 
@@ -350,7 +464,7 @@ All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on
 | **Loops** | Bounded | None or tightly bounded |
 | **Map access** | Read/write | Read-only |
 | **Instruction budget** | Larger | Small |
-| **Helper set** | Full | Limited (`send`, `send_recv`, `read_sensor`, `map_lookup_elem`, `get_time`, `get_battery_mv`, `bpf_trace_printk`) |
+| **Helper set** | Full | Limited (`send`, `send_recv`, `i2c_read`, `i2c_write`, `i2c_write_read`, `spi_transfer`, `gpio_read`, `adc_read`, `map_lookup_elem`, `get_time`, `get_battery_mv`, `bpf_trace_printk`) |
 | **Side effects** | Allowed | None |
 
 A program that fails verification is rejected with a diagnostic explaining why. It never reaches the node.

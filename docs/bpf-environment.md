@@ -133,10 +133,11 @@ The `sonde_context` structure (§4). Populated by firmware before each invocatio
 
 ### 5.2  Scratch (volatile)
 
-The BPF program's stack and any local variables. Allocated from RAM (not sleep-persistent memory). Lost on sleep. Used for working memory during a single execution.
+The BPF program's stack and registers (R0–R10). Allocated from RAM (not sleep-persistent memory). Lost on sleep.
 
 | Property | Value |
 |---|---|
+| Registers | R0–R10 (11 general-purpose 64-bit registers) |
 | Stack size | 512 bytes per call frame |
 | Max call depth | 8 frames (4 KB total stack) |
 | Lifetime | Single execution |

@@ -24,10 +24,11 @@ The firmware is **uniform across all nodes** — application behavior is defined
 | Decision | Choice | Rationale |
 |---|---|---|
 | Language | Rust | Same language as gateway; memory safety on bare metal |
+| Protocol crate | `sonde-protocol` (shared with gateway) | `no_std`-compatible; frame codec, CBOR messages, constants |
 | Platform bindings | `esp-idf-hal` + `esp-idf-svc` | Full ESP-IDF feature access (ESP-NOW, deep sleep, hardware crypto, flash partitions) |
 | BPF interpreter | `rbpf` (extended) | Pure Rust; must be extended to support BPF-to-BPF function calls |
-| CBOR | `ciborium` (or `minicbor` for smaller footprint) | serde-compatible; `minicbor` is an alternative if binary size is a concern |
-| HMAC | ESP-IDF hardware HMAC peripheral | Hardware-accelerated; ~10x faster than software |
+| CBOR | Via `sonde-protocol` (`ciborium` or `minicbor`) | serde-compatible; `minicbor` is an alternative if binary size is a concern |
+| HMAC | ESP-IDF hardware HMAC peripheral (implements `sonde-protocol::Hmac` trait) | Hardware-accelerated; ~10x faster than software |
 | SHA-256 | ESP-IDF hardware SHA peripheral | Hardware-accelerated; used for program hash verification |
 | RNG | ESP-IDF hardware TRNG | True random number generator; used for WAKE nonce |
 | Toolchain | Upstream Rust (C3) / `espup` (S3) | C3 is RISC-V (upstream); S3 is Xtensa (custom toolchain) |
@@ -40,18 +41,18 @@ The firmware is **uniform across all nodes** — application behavior is defined
 ┌──────────────────────────────────────────────────────────────┐
 │                      node firmware                           │
 │                                                              │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
-│  │Transport │  │ Protocol │  │   Wake    │  │   BPF      │  │
-│  │ (ESP-NOW)│──│  Codec   │──│  Cycle    │──│  Runtime   │  │
-│  └──────────┘  └──────────┘  │  Engine   │  └────────────┘  │
-│                              └───────────┘       │          │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
-│  │  HAL     │  │  Key     │  │ Program   │  │   Map      │  │
-│  │ (buses)  │  │  Store   │  │ Store     │  │  Storage   │  │
-│  └──────────┘  └──────────┘  └───────────┘  └────────────┘  │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐   │
+│  │Transport │  │ Protocol │  │   Wake    │  │   BPF      │   │
+│  │ (ESP-NOW)│──│  Codec   │──│  Cycle    │──│  Runtime   │   │
+│  └──────────┘  └──────────┘  │  Engine   │  └────────────┘   │
+│                              └───────────┘       │           │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐   │
+│  │  HAL     │  │  Key     │  │ Program   │  │   Map      │   │
+│  │ (buses)  │  │  Store   │  │ Store     │  │  Storage   │   │
+│  └──────────┘  └──────────┘  └───────────┘  └────────────┘   │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────────┐│
-│  │  Sleep Manager (deep sleep, wake interval, RTC memory)  ││
+│  │  Sleep Manager (deep sleep, wake interval, RTC memory)   ││
 │  └──────────────────────────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -153,38 +154,28 @@ send PROGRAM_ACK { program_hash }
 
 ## 5  Protocol codec
 
-Shared design with the gateway (same wire format). The node implementation is simpler — it only produces node→gateway message types and consumes gateway→node types.
+The protocol codec is provided by the shared `sonde-protocol` crate (see § Shared protocol crate below). The node uses the same frame format, CBOR message types, and constants as the gateway. Platform-specific behavior (HMAC computation) is injected via a trait.
 
 ### 5.1  Frame construction
 
+Uses `sonde_protocol::encode_frame()` with the node's HMAC implementation:
+
 ```rust
-pub fn build_frame(
-    key_hint: u16,
-    msg_type: u8,
-    nonce_or_seq: u64,
-    payload_cbor: &[u8],
-    psk: &[u8; 32],
-) -> Vec<u8>
+let frame = sonde_protocol::encode_frame(
+    key_hint, msg_type, nonce_or_seq, &payload_cbor, &hmac_impl,
+);
 ```
 
-1. Write 11-byte header (key_hint BE, msg_type, nonce/seq BE).
-2. Append CBOR payload.
-3. Compute HMAC-SHA256 over header + payload using hardware peripheral.
-4. Append 32-byte HMAC.
-5. Assert total ≤ 250 bytes (ND-0103).
+The hardware HMAC implementation wraps the ESP-IDF HMAC peripheral behind the `sonde_protocol::HmacProvider` trait. Total frame size is asserted ≤ 250 bytes (ND-0103).
 
 ### 5.2  Frame verification (inbound)
 
-1. Validate minimum size (43 bytes).
-2. Split: header (11), payload (middle), HMAC (last 32).
-3. Compute HMAC over header + payload using hardware peripheral.
-4. Compare with received HMAC. Mismatch → discard.
-5. Verify echoed nonce/seq matches the value sent. Mismatch → discard.
-6. Decode CBOR payload.
+Uses `sonde_protocol::decode_frame()` and `verify_hmac()`:
 
-### 5.3  Hardware HMAC
-
-The ESP32-C3/S3 hardware HMAC peripheral computes HMAC-SHA256 directly, using the PSK read from flash at boot. This avoids exposing the key in a software buffer during HMAC computation (the key is loaded into the peripheral's registers once).
+1. Decode frame into header + payload + HMAC.
+2. Verify HMAC via hardware peripheral (through `HmacProvider` trait).
+3. Verify echoed nonce/seq matches the value sent. Mismatch → discard.
+4. Decode CBOR payload into typed `GatewayMessage`.
 
 ---
 
@@ -460,3 +451,38 @@ All inbound protocol errors result in **silent discard** — the node does not s
 6. Allocate map storage in RTC SRAM from program's map definitions (if maps survived sleep, data is preserved; if new program, zero-initialize).
 7. Resolve LDDW `src=1` instructions in bytecode to runtime map pointers.
 8. Enter wake cycle engine.
+
+---
+
+## 15  Shared protocol crate (`sonde-protocol`)
+
+The `sonde-protocol` crate is a `no_std`-compatible Rust library shared between the gateway and the node. It contains all wire-format logic so that both sides encode and decode frames identically.
+
+### 15.1  Contents
+
+| Component | Description |
+|---|---|
+| **Constants** | `msg_type` codes, command codes, CBOR key numbers, frame sizes, HMAC size |
+| **Frame codec** | `encode_frame()`, `decode_frame()`, header parsing at fixed offsets |
+| **CBOR messages** | `NodeMessage` and `GatewayMessage` enums with typed fields; CBOR encode/decode using integer keys |
+| **Program image** | `ProgramImage` and `MapDef` structs; CBOR deterministic encode/decode |
+| **HMAC trait** | `HmacProvider` trait — platform provides the implementation |
+
+### 15.2  HMAC trait
+
+```rust
+pub trait HmacProvider {
+    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32];
+    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool;
+}
+```
+
+| Platform | Implementation |
+|---|---|
+| Gateway | `hmac` + `sha2` crates (RustCrypto, software) |
+| Node | ESP-IDF hardware HMAC peripheral |
+| Tests | Software implementation (same as gateway) |
+
+### 15.3  `no_std` compatibility
+
+The crate uses `#![no_std]` with `alloc` (for `Vec<u8>` in message types). Both the gateway (std) and the node (ESP-IDF std) can use it. The crate has no platform-specific dependencies — all platform behavior is injected via traits.

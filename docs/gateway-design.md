@@ -26,10 +26,11 @@ The gateway is **stateless with respect to replay protection** — active sessio
 | Decision | Choice | Rationale |
 |---|---|---|
 | Language | Rust | Memory safety, async ecosystem, strong typing, no GC pauses |
+| Protocol crate | `sonde-protocol` (shared with node) | `no_std`-compatible; frame codec, CBOR messages, constants |
 | Async runtime | tokio | Industry-standard async runtime; per-node task spawning |
 | BPF verification | [prevail-rust](https://github.com/elazarg/prevail-rust) | Native Rust, feature-parity with C++ Prevail, no FFI |
-| CBOR | `ciborium` crate | Well-maintained, serde-compatible |
-| HMAC | `hmac` + `sha2` crates (RustCrypto) | Pure Rust, audited, no OpenSSL dependency |
+| CBOR | Via `sonde-protocol` (`ciborium`) | Well-maintained, serde-compatible |
+| HMAC | `hmac` + `sha2` crates (RustCrypto, implements `sonde-protocol::HmacProvider` trait) | Pure Rust, audited, no OpenSSL dependency |
 | Transport | Abstract trait (ESP-NOW as first adapter) | Decouples protocol logic from radio hardware |
 | Storage | Abstract trait | Decouples persistence from storage engine |
 
@@ -109,7 +110,7 @@ The ESP-NOW adapter wraps the platform's ESP-NOW API:
 
 ## 5  Protocol codec
 
-The codec handles frame serialization and deserialization. It operates on raw byte buffers and produces/consumes typed messages.
+The protocol codec is provided by the shared `sonde-protocol` crate (see node-design.md §15 for the full crate specification). The gateway uses the same frame format, CBOR message types, and constants as the node. The gateway provides a software `HmacProvider` implementation using the `hmac` + `sha2` RustCrypto crates.
 
 ### 5.1  Frame layout
 

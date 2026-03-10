@@ -214,9 +214,13 @@ def read_exact(stream, n):
         data += chunk
     return data
 
-# Read one DATA message from stdin
+# Read one message from stdin
 length = int.from_bytes(read_exact(sys.stdin.buffer, 4), 'big')
 request = cbor2.loads(read_exact(sys.stdin.buffer, length))
+
+# Ignore EVENT messages (msg_type 0x02)
+if request[1] == 0x02:
+    sys.exit(0)
 
 # Process the sensor data
 sensor_data = request[5]  # data field

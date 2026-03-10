@@ -118,8 +118,6 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 
 ---
 
----
-
 ## 5  Message definitions
 
 All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used.
@@ -141,10 +139,11 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 11 | `chunk_index` | GET_CHUNK, CHUNK |
 | 12 | `chunk_data` | CHUNK |
 | 13 | `starting_seq` | COMMAND |
+| 14 | `timestamp_ms` | COMMAND |
 
 ### 5.1  WAKE (Node → Gateway)
 
-Sent once per wake cycle as the first message.
+Sent at the start of each wake cycle (retransmitted up to 3 times if no COMMAND is received — see §9.1).
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
@@ -162,9 +161,10 @@ Sent exactly once in response to a valid, authenticated `WAKE`.
 |---|---|---|---|
 | `command_type` | uint | Yes | One of the command codes below. |
 | `starting_seq` | uint | Yes | Random starting sequence number for this session. The node uses this value in the `nonce` header field of its next outbound message and increments for each subsequent message. |
+| `timestamp_ms` | uint | Yes | Gateway's current UTC time in milliseconds since Unix epoch. The node uses this as its time reference for `sonde_context.timestamp` and `get_time()`. |
 | `payload` | varies | Depends on command | Command-specific data. |
 
-The `nonce` in the fixed header echoes the WAKE nonce, binding the response to the request. The `starting_seq` is a CBOR payload field that tells the node where to begin its sequence counter for this wake cycle.
+The `nonce` in the fixed header echoes the WAKE nonce, binding the response to the request. The `starting_seq` is a CBOR payload field that tells the node where to begin its sequence counter for this wake cycle. The `timestamp_ms` provides the node with an accurate time reference — the node has no independent clock source across deep sleep.
 
 #### Command types
 
@@ -440,7 +440,7 @@ The protocol has no explicit error message type. Errors are handled by silence a
 |---|---|---|
 | No matching key for `key_hint` | Silently discard. Log internally. | N/A |
 | HMAC verification failure | Silently discard. Log internally. | Discard frame. |
-| Replay (wrong sequence number or no active session) | Silently discard. | N/A |
+| Replay (wrong sequence number or no active session) | Silently discard. Log internally. | N/A |
 | Malformed CBOR | Silently discard. Log internally. | Discard frame. |
 | No response received | N/A | Retry with backoff (see §9). |
 | Unexpected `msg_type` | Silently discard. Log internally. | Discard frame. |

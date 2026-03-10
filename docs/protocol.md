@@ -233,17 +233,19 @@ Sent after the node has reassembled all chunks, verified the hash, and stored th
 
 ### 5.6  APP_DATA (Node → Gateway)
 
-Sent by the firmware when the BPF program calls `send(ptr, len)`.
+Sent by the firmware when the BPF program calls `send()` or `send_recv()`.
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
 | `blob` | bstr | Yes | Opaque application data. Content defined by the BPF program. |
 
-A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()` call in the BPF program). Each `APP_DATA` frame carries a **fresh nonce**, consistent with the per-request nonce policy (see §5.3). The gateway accepts them as independent authenticated messages.
+A node may send **multiple `APP_DATA` messages per wake cycle** (one per `send()` or `send_recv()` call in the BPF program). Each `APP_DATA` frame carries a **fresh nonce**, consistent with the per-request nonce policy (see §5.3). The gateway accepts them as independent authenticated messages.
+
+The BPF program and its corresponding gateway-side handler agree a priori on whether a reply is expected for each message. The protocol carries no explicit flag — the gateway sends `APP_DATA_REPLY` only when the handler provides a non-zero-length response.
 
 ### 5.7  APP_DATA_REPLY (Gateway → Node)
 
-Sent by the gateway in response to an `APP_DATA` message. This creates a bidirectional application-layer channel: the BPF program sends data, the gateway application processes it and replies.
+Sent by the gateway **only** when the handler provides a non-zero-length response. The BPF program and handler agree a priori on whether a reply is expected — the protocol carries no explicit flag.
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
@@ -251,7 +253,7 @@ Sent by the gateway in response to an `APP_DATA` message. This creates a bidirec
 
 The `nonce` in the header echoes the `APP_DATA` nonce, binding the reply to the request. The blob content is opaque to the protocol — the BPF program and gateway application define their own semantics on top.
 
-**Empty reply:** If the gateway application has no data to return, it sends an `APP_DATA_REPLY` with a zero-length `blob`. This acknowledges receipt and allows the BPF program to continue or sleep. A missing reply (timeout) is handled by the node's standard retry logic (see §9).
+If a `send_recv()` call on the node times out waiting for `APP_DATA_REPLY`, the BPF helper returns a negative value and the program decides how to proceed.
 
 ---
 
@@ -269,8 +271,8 @@ The `nonce` in the header echoes the `APP_DATA` nonce, binding the reply to the 
      │                               │
      │  [execute resident BPF]       │
      │                               │
-     │──── APP_DATA ────────────────►│  (zero or more)
-     │◄──── APP_DATA_REPLY ──────────│
+     │──── APP_DATA ────────────────►│  (zero or more, send or send_recv)
+     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
      │                               │
      │  [sleep]                      │
 ```
@@ -299,7 +301,7 @@ The `nonce` in the header echoes the `APP_DATA` nonce, binding the reply to the 
      │  [execute new program]        │
      │                               │
      │──── APP_DATA ────────────────►│  (zero or more)
-     │◄──── APP_DATA_REPLY ──────────│
+     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
      │                               │
      │  [sleep]                      │
 ```
@@ -332,7 +334,7 @@ Ephemeral programs use the same chunked transfer as resident programs (see §6.2
      │  [execute ephemeral program]  │
      │                               │
      │──── APP_DATA ────────────────►│  (diagnostic results)
-     │◄──── APP_DATA_REPLY ──────────│
+     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
      │                               │
      │  [sleep — ephemeral discarded]│
 ```
@@ -352,7 +354,10 @@ Ephemeral programs use the same chunked transfer as resident programs (see §6.2
 
 ### 6.5  Application data exchange
 
-The BPF program and gateway application communicate through `APP_DATA` / `APP_DATA_REPLY` pairs. This creates a request-response channel that applications can use to define their own protocols on top of the transport layer.
+The BPF program and gateway application communicate through `APP_DATA` messages. Two modes are available:
+
+- **Fire-and-forget** (`send()`): The BPF program sends data without waiting for a reply.
+- **Request-response** (`send_recv()`): The BPF program sends data and blocks until `APP_DATA_REPLY` arrives or the timeout expires.
 
 ```
     Node                          Gateway
@@ -362,11 +367,10 @@ The BPF program and gateway application communicate through `APP_DATA` / `APP_DA
      │                               │
      │  [execute BPF]                │
      │                               │
-     │──── APP_DATA {request} ──────►│
-     │◄──── APP_DATA_REPLY {resp} ───│  (gateway app processes and replies)
+     │──── APP_DATA (send) ─────────►│  (fire-and-forget, no reply)
      │                               │
-     │──── APP_DATA {request 2} ────►│  (BPF can do multiple round-trips)
-     │◄──── APP_DATA_REPLY {resp} ───│
+     │──── APP_DATA (send_recv) ────►│  (node waits for reply)
+     │◄──── APP_DATA_REPLY {resp} ───│  (handler replied with data)
      │                               │
      │  [sleep]                      │
 ```

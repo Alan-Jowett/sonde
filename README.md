@@ -18,8 +18,8 @@ Nodes run uniform firmware and execute behavior defined by [uBPF](https://github
 │  │ BPF│──│── APP_DATA ─────►  │  │ App│  │
 │  └────┘  │  ◄─APP_DATA_REPLY  │  └────┘  │
 │          │                    │          │
-│  sleep   │                    │  compile │
-│          │                    │  verify  │
+│  sleep   │                    │  verify  │
+│          │                    │          │
 └──────────┘                    └──────────┘
 ```
 
@@ -104,10 +104,14 @@ Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from
 
 ```
 Node → Gateway:  APP_DATA  [header: key_hint, nonce]  { blob }
-Gateway → Node:  APP_DATA_REPLY  [header: key_hint, nonce]  { blob }
+Gateway → Node:  APP_DATA_REPLY  [header: key_hint, nonce]  { blob }  (only if handler provides data)
 ```
 
-Firmware wraps `send(ptr, len)` output as `APP_DATA`. The gateway replies with `APP_DATA_REPLY`, creating a bidirectional application channel. The BPF program and gateway application define their own request/response semantics on top — the protocol treats all blobs as opaque. Multiple round-trips per wake cycle are supported.
+Two modes, controlled by the BPF program:
+- **`send(ptr, len)`** — fire-and-forget. Emits `APP_DATA`, node does not wait for a reply.
+- **`send_recv(ptr, len, reply_buf, reply_len, timeout_ms)`** — request-response. Emits `APP_DATA` and blocks until `APP_DATA_REPLY` arrives or the timeout expires.
+
+The protocol treats all blobs as opaque — the BPF program and gateway application define their own semantics on top. Multiple calls per wake cycle are supported.
 
 ---
 
@@ -128,7 +132,9 @@ Map layout is defined in the BPF program ELF using standard BPF map definitions 
 
 ```c
 read_sensor(id, buf_ptr, buf_len)   // returns 0 on success, nonzero on failure
-send(ptr, len)                       // emit opaque APP_DATA blob
+send(ptr, len)                       // fire-and-forget: emit APP_DATA, no reply expected
+send_recv(ptr, len, reply_buf,       // send APP_DATA and block until APP_DATA_REPLY
+          reply_len, timeout_ms)     // returns bytes received, or negative on timeout
 map_lookup_elem(map_id, key_ptr)
 map_update_elem(map_id, key_ptr, value_ptr)  // resident only
 get_time()
@@ -231,6 +237,9 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 ## Further reading
 
 - [Why BPF?](docs/why-bpf.md) — rationale for using uBPF + Prevail as the execution model
+- [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform
+- [Protocol](docs/protocol.md) — node-gateway wire protocol specification
+- [Gateway Requirements](docs/gateway-requirements.md) — formal gateway requirements
 
 ---
 

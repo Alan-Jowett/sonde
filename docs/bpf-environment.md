@@ -90,8 +90,11 @@ int program(struct sonde_context *ctx) {
 |---|---|---|
 | **Loops** | Bounded (verifier-checked) | None or tightly bounded |
 | **Instruction budget** | Larger (platform-dependent) | Small (platform-dependent) |
-| **Stack size** | Limited (512 bytes typical for BPF) | Same |
+| **Stack size** | 512 bytes per frame | Same |
+| **BPF-to-BPF calls** | Supported, bounded depth (max 8 frames) | Same |
 | **Execution time** | Bounded by instruction budget | Same |
+
+**BPF-to-BPF calls:** Programs can span multiple non-inlined functions. Each call frame gets its own 512-byte stack. The verifier enforces a maximum call depth of 8 (4 KB total stack). Stack memory is volatile (allocated from RAM, not sleep-persistent memory), so the cost is negligible against the ~400 KB RAM budget on ESP32-C3. This allows natural code organization for complex sensor protocols (e.g., separate init, read, and calibrate functions).
 
 All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) before loading. Programs that fail verification are rejected by the gateway and never reach the node.
 
@@ -130,11 +133,12 @@ The `sonde_context` structure (§4). Populated by firmware before each invocatio
 
 ### 5.2  Scratch (volatile)
 
-The BPF program's stack and any local variables. Lost on sleep. Used for working memory during a single execution.
+The BPF program's stack and any local variables. Allocated from RAM (not sleep-persistent memory). Lost on sleep. Used for working memory during a single execution.
 
 | Property | Value |
 |---|---|
-| Stack size | 512 bytes (typical BPF limit) |
+| Stack size | 512 bytes per call frame |
+| Max call depth | 8 frames (4 KB total stack) |
 | Lifetime | Single execution |
 
 ### 5.3  Maps (sleep-persistent)

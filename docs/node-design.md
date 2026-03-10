@@ -27,8 +27,8 @@ The firmware is **uniform across all nodes** — application behavior is defined
 | Protocol crate | `sonde-protocol` (shared with gateway) | `no_std`-compatible; frame codec, CBOR messages, constants |
 | Platform bindings | `esp-idf-hal` + `esp-idf-svc` | Full ESP-IDF feature access (ESP-NOW, deep sleep, hardware crypto, flash partitions) |
 | BPF interpreter | **⚠ OPEN** — `rbpf` (pure Rust) or `uBPF` (C, via FFI). Both require extension for BPF-to-BPF function calls. |
-| CBOR | Via `sonde-protocol` (`ciborium` or `minicbor`) | serde-compatible; `minicbor` is an alternative if binary size is a concern |
-| HMAC | ESP-IDF hardware HMAC peripheral (implements `sonde-protocol::Hmac` trait) | Hardware-accelerated; ~10x faster than software |
+| CBOR | Via `sonde-protocol` (`ciborium`) | serde-compatible; matches protocol crate implementation |
+| HMAC | ESP-IDF hardware HMAC peripheral (implements `sonde-protocol::HmacProvider` trait) | Hardware-accelerated; ~10x faster than software |
 | SHA-256 | ESP-IDF hardware SHA peripheral | Hardware-accelerated; used for program hash verification |
 | RNG | ESP-IDF hardware TRNG | True random number generator; used for WAKE nonce |
 | Toolchain | Upstream Rust (C3) / `espup` (S3) | C3 is RISC-V (upstream); S3 is Xtensa (custom toolchain) |
@@ -158,11 +158,16 @@ The protocol codec is provided by the shared `sonde-protocol` crate (see § Shar
 
 ### 5.1  Frame construction
 
-Uses `sonde_protocol::encode_frame()` with the node's HMAC implementation:
+Uses `sonde_protocol::encode_frame()` with a constructed `FrameHeader`, the node's PSK, and the node's HMAC implementation:
 
 ```rust
+let header = sonde_protocol::FrameHeader {
+    key_hint,
+    msg_type,
+    nonce: nonce_or_seq,
+};
 let frame = sonde_protocol::encode_frame(
-    key_hint, msg_type, nonce_or_seq, &payload_cbor, &hmac_impl,
+    &header, &payload_cbor, psk, &hmac_impl,
 );
 ```
 
@@ -170,10 +175,10 @@ The hardware HMAC implementation wraps the ESP-IDF HMAC peripheral behind the `s
 
 ### 5.2  Frame verification (inbound)
 
-Uses `sonde_protocol::decode_frame()` and `verify_hmac()`:
+Uses `sonde_protocol::decode_frame()` and `sonde_protocol::verify_frame()`:
 
 1. Decode frame into header + payload + HMAC.
-2. Verify HMAC via hardware peripheral (through `HmacProvider` trait).
+2. Verify HMAC via `sonde_protocol::verify_frame()` using the hardware peripheral (through `HmacProvider` trait).
 3. Verify echoed nonce/seq matches the value sent. Mismatch → discard.
 4. Decode CBOR payload into typed `GatewayMessage`.
 

@@ -110,7 +110,7 @@ The ESP-NOW adapter wraps the platform's ESP-NOW API:
 
 ## 5  Protocol codec
 
-The protocol codec is provided by the shared `sonde-protocol` crate (see node-design.md §15 for the full crate specification). The gateway uses the same frame format, CBOR message types, and constants as the node. The gateway provides a software `HmacProvider` implementation using the `hmac` + `sha2` RustCrypto crates.
+The protocol codec is provided by the shared `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full crate specification). The gateway uses the same frame format, CBOR message types, and constants as the node. The gateway provides a software `HmacProvider` implementation using the `hmac` + `sha2` RustCrypto crates.
 
 ### 5.1  Frame layout
 
@@ -140,6 +140,12 @@ impl sonde_protocol::HmacProvider for RustCryptoHmac {
         let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
         mac.update(data);
         mac.finalize().into_bytes().into()
+    }
+
+    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+        mac.update(data);
+        mac.verify_slice(expected).is_ok() // constant-time comparison
     }
 }
 ```

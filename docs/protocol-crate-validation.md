@@ -9,7 +9,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 41 test cases total.
 
 ### Test HMAC/SHA providers
 
@@ -352,11 +352,12 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P050  chunk_count calculation
 
 **Procedure:**
-1. `chunk_count(4000, 190)` → assert 22 (4000/190 = 21.05, ceiling = 22).
-2. `chunk_count(190, 190)` → assert 1.
-3. `chunk_count(0, 190)` → assert 0.
-4. `chunk_count(1, 190)` → assert 1.
-5. `chunk_count(380, 190)` → assert 2 (exact multiple).
+1. `chunk_count(4000, 190)` → assert `Some(22)`.
+2. `chunk_count(190, 190)` → assert `Some(1)`.
+3. `chunk_count(0, 190)` → assert `Some(0)`.
+4. `chunk_count(1, 190)` → assert `Some(1)`.
+5. `chunk_count(380, 190)` → assert `Some(2)` (exact multiple).
+6. `chunk_count(100, 0)` → assert `None` (invalid chunk size).
 
 ---
 

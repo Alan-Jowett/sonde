@@ -128,9 +128,10 @@ All fields are big-endian. Parsing is at fixed offsets — no branching or varia
 ```rust
 pub trait HmacProvider {
     fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32];
-    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-        self.compute(key, data) == *expected
-    }
+    
+    /// Verify HMAC tag. Implementations MUST use constant-time comparison
+    /// to prevent timing side-channel attacks.
+    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool;
 }
 ```
 
@@ -318,7 +319,7 @@ pub fn program_hash(image_cbor: &[u8]) -> [u8; 32] {
 }
 ```
 
-The crate provides this as a convenience function. The SHA-256 implementation is **not** included in the crate (to avoid pulling in a crypto dependency for all platforms). Instead:
+The crate provides this as a convenience function. The SHA-256 implementation is **not** included in the crate (to avoid pulling in a crypto dependency for all platforms). The platform provides a `Sha256Provider`:
 
 ```rust
 pub trait Sha256Provider {
@@ -359,8 +360,14 @@ pub enum DecodeError {
 ## 9  Chunking helpers
 
 ```rust
-pub fn chunk_count(image_size: usize, chunk_size: usize) -> u32 {
-    ((image_size + chunk_size - 1) / chunk_size) as u32
+pub fn chunk_count(image_size: usize, chunk_size: usize) -> Option<u32> {
+    if image_size == 0 {
+        return Some(0);
+    }
+    if chunk_size == 0 {
+        return None;
+    }
+    Some(((image_size + chunk_size - 1) / chunk_size) as u32)
 }
 
 pub fn get_chunk(image: &[u8], chunk_index: u32, chunk_size: u32) -> Option<&[u8]> {

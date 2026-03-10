@@ -68,7 +68,7 @@ The basic cycle: node sends `WAKE` → gateway responds with a `COMMAND` (procee
 
 ## Authentication
 
-Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with per-node pre-shared keys. Replay protection uses per-message random nonces with a 64-entry sliding window. See [protocol.md § Authentication](docs/protocol.md#7--authentication) for details.
+Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with per-node pre-shared keys. Replay protection uses gateway-assigned monotonic sequence numbers — the node stores no replay state across deep sleep. See [protocol.md § Authentication](docs/protocol.md#7--authentication) for details.
 
 ---
 
@@ -77,7 +77,7 @@ Data is **authenticated but not encrypted** (integrity, not confidentiality). Al
 - Each node has a unique 256-bit pre-shared key stored in a dedicated flash partition.
 - Keys are provisioned via USB-mediated pairing; no over-the-air key exchange.
 - The gateway stores the key database and authenticates all messages with HMAC-SHA256.
-- Nonces provide replay protection; the gateway maintains a 64-entry per-node sliding window.
+- Nonces provide replay protection for WAKE; gateway-assigned sequence numbers protect all subsequent messages.
 - BPF programs are integrity-checked by content hash at every transfer.
 - Nodes can be factory-reset (erasing key, maps, and program) and re-paired with a fresh identity.
 
@@ -130,7 +130,7 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 |---|---|
 | **Radio transport** | ESP-NOW — connectionless 802.11, 250-byte frames (~207 bytes payload after auth overhead) |
 | **Sleep-persistent memory** | RTC slow SRAM: 8 KB on C3, 8+8 KB on S3 (~4–6 KB usable for maps) |
-| **Secure key storage** | Dedicated flash partition (key erased on factory reset) |
+| **Key storage** | Dedicated flash partition (software-accessible; security depends on secure boot / flash encryption; key erased on factory reset) |
 | **Hardware crypto** | SHA-256, HMAC-SHA256, AES-128/256, hardware RNG (~10x faster than software) |
 | **RAM** | C3: 400 KB (16 KB cache). S3: 512 KB |
 | **Flash endurance** | ~100K erase cycles per 4 KB sector (273+ years at 1 update/day) |

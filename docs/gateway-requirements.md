@@ -402,19 +402,20 @@ The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-sha
 
 ---
 
-### GW-0602  Replay protection — nonce sliding window
+### GW-0602  Replay protection — monotonic sequence numbers
 
 **Priority:** Must  
-**Source:** README § Replay protection
+**Source:** security.md § Replay protection
 
 **Description:**  
-The gateway MUST implement per-node replay protection using a sliding window of seen nonces. Messages with previously seen nonces MUST be rejected.
+The gateway MUST implement per-node replay protection using monotonic sequence numbers. On each valid `WAKE`, the gateway assigns a starting sequence number (greater than the last accepted value for that node) in its `COMMAND` response. The node increments the sequence for each subsequent outbound message. The gateway MUST reject any post-WAKE message with a sequence number ≤ the last accepted value.
 
 **Acceptance criteria:**
 
-1. A message replayed with the same nonce as a previously accepted message is rejected.
-2. The sliding window holds at least 64 entries per node, sufficient for the worst-case wake cycle (chunked transfer + application data).
-3. Nonce state is maintained per node.
+1. The gateway persists a `last_accepted_seq` counter per node durably across restarts.
+2. A replayed post-WAKE message with a previously used sequence number is rejected.
+3. The gateway's `COMMAND` response includes a starting sequence number for the node to use.
+4. Sequence state is maintained per node.
 
 ---
 
@@ -619,7 +620,7 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0502 | Application data handler | Should |
 | GW-0600 | HMAC-SHA256 message authentication | Must |
 | GW-0601 | Per-node key management | Must |
-| GW-0602 | Replay protection — nonce sliding window | Must |
+| GW-0602 | Replay protection — monotonic sequence numbers | Must |
 | GW-0603 | Authentication overhead budget | Must |
 | GW-0700 | Node registry | Must |
 | GW-0701 | Stale program detection | Must |

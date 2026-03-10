@@ -151,13 +151,14 @@ The node MUST process the `COMMAND` response and act on the `command_type`:
 | `UPDATE_SCHEDULE` | Store new wake interval. |
 | `REBOOT` | Restart the firmware. |
 
-The node MUST extract the `starting_seq` from the COMMAND payload and use it as the sequence number for its next outbound message.
+The node MUST extract the `starting_seq` and `timestamp_ms` from the COMMAND payload. `starting_seq` is used as the sequence number for the next outbound message. `timestamp_ms` is used as the time reference for `sonde_context.timestamp` and `get_time()`.
 
 **Acceptance criteria:**
 
 1. Each command type is handled correctly.
 2. Unknown command types are ignored (the node proceeds to BPF execution as if `NOP`).
 3. The `starting_seq` value is used for the first post-WAKE outbound message.
+4. The `timestamp_ms` value is stored and used as the basis for all time-related operations during the wake cycle.
 
 ---
 
@@ -410,11 +411,11 @@ The node MUST execute the resident (or ephemeral) BPF program once per wake cycl
 **Source:** bpf-environment.md §4
 
 **Description:**  
-The firmware MUST populate a read-only `sonde_context` structure before each BPF invocation. The structure MUST include: `timestamp` (milliseconds since epoch), `battery_mv`, `firmware_abi_version`, and `wake_reason`.
+The firmware MUST populate a read-only `sonde_context` structure before each BPF invocation. The structure MUST include: `timestamp` (UTC milliseconds since Unix epoch, derived from the gateway's `timestamp_ms` in the COMMAND response), `battery_mv`, `firmware_abi_version`, and `wake_reason`.
 
 **Acceptance criteria:**
 
-1. `timestamp` reflects the current time at invocation.
+1. `timestamp` is derived from the gateway's `timestamp_ms` plus local elapsed time since COMMAND was received.
 2. `battery_mv` is a current ADC reading.
 3. `firmware_abi_version` matches the firmware's actual ABI.
 4. `wake_reason` is set correctly: `WAKE_SCHEDULED` (0x00) for normal wake, `WAKE_EARLY` (0x01) when woken early due to `set_next_wake()`, `WAKE_PROGRAM_UPDATE` (0x02) on first execution after a program update.

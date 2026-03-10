@@ -93,14 +93,15 @@ The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the f
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST respond to every valid, authenticated `WAKE` message with exactly one `COMMAND` message. The response MUST echo the WAKE nonce in the header's `nonce` field and MUST include a `starting_seq` field in the CBOR payload (a random starting sequence number for the session).
+The gateway MUST respond to every valid, authenticated `WAKE` message with exactly one `COMMAND` message. The response MUST echo the WAKE nonce in the header's `nonce` field and MUST include `starting_seq` (a random starting sequence number) and `timestamp_ms` (current UTC time in milliseconds since Unix epoch) in the CBOR payload.
 
 **Acceptance criteria:**
 
 1. For every valid `WAKE`, the gateway emits exactly one `COMMAND` response.
 2. The `nonce` in the response header matches the `nonce` from the `WAKE`.
 3. The CBOR payload includes `starting_seq` (a random 64-bit value).
-4. The `command_type` field is one of the defined command types (see GW-0200–GW-0205).
+4. The CBOR payload includes `timestamp_ms` (current UTC time in milliseconds since Unix epoch).
+5. The `command_type` field is one of the defined command types (see GW-0200–GW-0205).
 
 ---
 

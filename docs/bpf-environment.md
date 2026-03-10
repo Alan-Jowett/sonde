@@ -106,12 +106,14 @@ The firmware passes a read-only context structure to the program on each invocat
 
 ```c
 struct sonde_context {
-    uint64_t timestamp;           // current time (milliseconds since epoch)
+    uint64_t timestamp;           // UTC time in milliseconds since Unix epoch
     uint16_t battery_mv;          // battery voltage in millivolts
     uint16_t firmware_abi_version; // firmware ABI version
     uint8_t  wake_reason;         // why the node woke (see below)
 };
 ```
+
+The `timestamp` is derived from the gateway's `timestamp_ms` field in the COMMAND response (see [protocol.md §5.2](protocol.md)). The node has no independent clock source across deep sleep — the gateway is the authoritative time reference. Within a wake cycle, the firmware adds local elapsed time to the gateway-supplied value.
 
 ### Wake reasons
 
@@ -417,7 +419,7 @@ Insert or update a key-value pair in a BPF map.
 uint64_t get_time(void);
 ```
 
-Get the current time in milliseconds since epoch.
+Get the current UTC time in milliseconds since Unix epoch. The time is derived from the gateway's `timestamp_ms` (received in the COMMAND response) plus local elapsed time since COMMAND was processed.
 
 **Availability:** Resident and ephemeral.
 

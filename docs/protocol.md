@@ -141,13 +141,15 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 13 | `starting_seq` | COMMAND |
 | 14 | `timestamp_ms` | COMMAND |
 
+<a id="program-image-format"></a>
+
 ### Program image format
 
 The gateway accepts BPF programs as pre-compiled ELF files but does **not** transmit ELF to nodes. Instead, the gateway extracts the bytecode and map definitions from the ELF and encodes them into a **program image** — a CBOR-encoded binary blob. This program image is what gets chunked, transferred, hashed, and stored on the node.
 
 #### Program image structure
 
-The program image is a CBOR map with integer keys:
+The program image is a CBOR map with integer keys. **Note:** These keys are a separate keyspace from the protocol message keys in the CBOR key mapping table above — they apply only to the program image encoding, not to protocol messages.
 
 | Key | Field name | CBOR type | Description |
 |---|---|---|---|
@@ -170,6 +172,7 @@ The `program_hash` used throughout the protocol is the SHA-256 hash of the **com
 - The hash covers both bytecode **and** map definitions.
 - Two programs with identical bytecode but different map layouts have different hashes.
 - The gateway computes the hash after encoding the image; the node computes it after reassembling all chunks.
+- This CBOR-encoded program image is the canonical byte sequence for all size- and chunk-related fields in this specification (i.e., `program_size` and `chunk_count` in UPDATE_PROGRAM / RUN_EPHEMERAL refer to the byte length and chunking of the CBOR-encoded program image, not the ELF file or raw bytecode).
 
 **Deterministic encoding:** The program image MUST be encoded using CBOR deterministic encoding (RFC 8949 §4.2) to ensure that all gateways produce identical bytes (and therefore identical hashes) for the same program.
 

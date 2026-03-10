@@ -47,7 +47,7 @@ Each node is provisioned with a unique 256-bit pre-shared key (PSK) at manufactu
 On the reference hardware (ESP32-C3/S3) the node's PSK is stored in a **dedicated flash partition**. This means:
 
 - The key is **software-accessible** — firmware can read the raw key bytes to compute HMACs.
-- A **factory reset** erases the key partition, returning the node to an un-paired state (see §2.6).
+- A **factory reset** erases the key partition, returning the node to an unpaired state (see §2.6).
 - Flash storage does not provide the same hardware isolation as eFuse-based approaches; a compromised firmware image can read the key. Mitigations include secure boot and flash encryption where available.
 
 ### 2.3  Key storage on the gateway
@@ -81,7 +81,7 @@ If a node's key is compromised (e.g., through firmware exploit or physical flash
 
 ### 2.6  Factory reset
 
-A factory reset returns a node to its initial un-paired state. The reset erases:
+A factory reset returns a node to its initial unpaired state. The reset erases:
 
 - The **pre-shared key** — the node loses its identity.
 - All **persistent map data** — application state is wiped.
@@ -129,7 +129,7 @@ See [protocol.md §3](protocol.md#3--frame-format) for the detailed wire specifi
 1. Extract `key_hint` from the fixed header.
 2. Look up candidate `node_psk`(s) by `key_hint`. If no candidates → silently discard.
 3. For each candidate `node_psk`, compute HMAC over header + payload; if any HMAC matches, accept and bind the frame to that node. If none match → silently discard.
-4. For `WAKE` messages: accept (WAKE replay is tolerated — see §4.8). For post-WAKE messages: look up active session by node PSK and nonce; verify sequence number matches expected next value. If no matching session or wrong sequence → silently discard.
+4. For `WAKE` messages: accept; create an active session for this node (replacing any previous session). For post-WAKE messages: verify the node has an active session and the sequence number matches the expected next value. If no active session or wrong sequence → silently discard.
 5. Advance the session's expected sequence number.
 6. Decode CBOR payload. If malformed → log, discard.
 7. Process message.
@@ -139,7 +139,7 @@ See [protocol.md §7.2](protocol.md#72--verification-procedure-gateway-inbound) 
 ### 3.4  Node verification (inbound from gateway)
 
 1. Compute HMAC over header + payload using the node's own key. If mismatch → discard.
-2. Verify that the `nonce` in the response header matches the nonce the node sent in its request header. If mismatch → discard.
+2. Verify that the echoed value in the response header (nonce for WAKE, sequence number for post-WAKE messages) matches the value sent in the corresponding request header. If mismatch → discard.
 3. Decode CBOR payload and process.
 
 See [protocol.md §7.3](protocol.md#73--verification-procedure-node-inbound) for the normative procedure.
@@ -188,8 +188,8 @@ On receiving a valid `WAKE`, the gateway creates an **active session** identifie
 
 ### 4.4  Session lifecycle
 
-1. **Session created** — gateway receives a valid WAKE, creates an active session entry keyed by (PSK, nonce), assigns a random starting sequence number.
-2. **Session active** — gateway accepts post-WAKE messages only if they match an active session's nonce and carry the expected next sequence number.
+1. **Session created** — gateway receives a valid WAKE, creates (or replaces) an active session for this node, assigns a random starting sequence number.
+2. **Session active** — gateway accepts post-WAKE messages from this node only if a session is active and the message carries the expected next sequence number.
 3. **Session ended** — the node sleeps (no further messages arrive). The gateway discards the session after a timeout.
 
 ### 4.5  Node verification of gateway responses (gateway → node)
@@ -216,7 +216,7 @@ The gateway echoes the node's nonce (for WAKE) or sequence number (for subsequen
 
 An attacker who captures an entire wake session (WAKE + all post-WAKE messages) cannot replay it:
 
-1. **Replayed WAKE** — the gateway creates a new active session with a *different* random starting sequence number. The attacker cannot read this value (it is in the HMAC-authenticated COMMAND response, and while visible on the air, useless without the PSK to forge follow-up messages).
+1. **Replayed WAKE** — the gateway creates a new active session with a *different* random starting sequence number. The attacker can observe this value in the (unencrypted) COMMAND response, but cannot generate valid follow-up messages without the PSK to compute correct HMACs.
 2. **Replayed post-WAKE messages** — these carry the *original* session's sequence numbers, which do not match the new session's expected sequence. The gateway rejects them.
 3. **Replayed post-WAKE without replaying WAKE** — there is no active session with the original nonce. The gateway rejects them.
 

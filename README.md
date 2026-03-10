@@ -62,13 +62,13 @@ Programs are compiled to BPF ELF, verified by [Prevail](https://github.com/vbpf/
 
 Communication is always **node-initiated**. The gateway never wakes a node. Messages use a fixed binary header, CBOR-encoded payload, and HMAC-SHA256 authentication. See [protocol.md](docs/protocol.md) for the full wire specification.
 
-The basic cycle: node sends `WAKE` → gateway responds with a `COMMAND` (proceed, update program, change schedule, reboot) → node executes BPF → node sleeps. Programs are distributed via a node-driven chunked transfer. Application data flows through `APP_DATA` / `APP_DATA_REPLY` pairs using `send()` (fire-and-forget) or `send_recv()` (request-response).
+The basic cycle: node sends `WAKE` → gateway responds with a `COMMAND` (proceed, update program, change schedule, reboot) → node executes BPF → node sleeps. Programs are distributed via a node-driven chunked transfer. Application data is sent as `APP_DATA`; for request/response flows, the gateway replies with `APP_DATA_REPLY` when using `send_recv()`, while `send()` is fire-and-forget.
 
 ---
 
 ## Authentication
 
-Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with pre-shared keys. Each node has a unique 256-bit key provisioned at flash time. Replay protection uses per-message random nonces with a 64-entry sliding window. See [protocol.md § Authentication](docs/protocol.md#7--authentication) for details.
+Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with per-node pre-shared keys. Replay protection uses per-message random nonces with a 64-entry sliding window. See [protocol.md § Authentication](docs/protocol.md#7--authentication) for details.
 
 ---
 

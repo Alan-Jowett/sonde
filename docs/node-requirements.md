@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT
+  Copyright (c) 2026 sonde contributors -->
 # Node Requirements Specification
 
 > **Document status:** Draft  

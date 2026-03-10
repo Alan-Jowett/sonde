@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# pre-commit hook: verify every staged .md and .rs file has an SPDX header.
+#
+# Install: git config core.hooksPath hooks
+
+set -euo pipefail
+
+MD_HEADER_LINE1='<!-- SPDX-License-Identifier: MIT'
+RS_HEADER_LINE1='// SPDX-License-Identifier: MIT'
+
+error=0
+
+while IFS= read -r -d '' file; do
+    case "$file" in
+        *.md)
+            expected="$MD_HEADER_LINE1"
+            ;;
+        *.rs)
+            expected="$RS_HEADER_LINE1"
+            ;;
+        *)
+            continue
+            ;;
+    esac
+
+    if ! head -1 "$file" | grep -qF "$expected"; then
+        echo "ERROR: Missing SPDX header in $file"
+        echo "  Expected first line: $expected"
+        error=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.md' '*.rs')
+
+if [ "$error" -ne 0 ]; then
+    echo ""
+    echo "Add the appropriate SPDX header to each file listed above."
+    echo ""
+    echo "Markdown (.md):"
+    echo "  <!-- SPDX-License-Identifier: MIT"
+    echo "    Copyright (c) 2026 sonde contributors -->"
+    echo ""
+    echo "Rust (.rs):"
+    echo "  // SPDX-License-Identifier: MIT"
+    echo "  // Copyright (c) 2026 sonde contributors"
+    exit 1
+fi

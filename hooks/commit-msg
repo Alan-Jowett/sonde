@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# commit-msg hook: verify the commit message contains a DCO Signed-off-by line.
+#
+# Install: git config core.hooksPath hooks
+
+set -euo pipefail
+
+commit_msg_file="$1"
+
+if ! grep -qE '^Signed-off-by: .+ <.+@.+>$' "$commit_msg_file"; then
+    echo "ERROR: Commit message is missing a DCO Signed-off-by line."
+    echo ""
+    echo "Add the following to your commit message:"
+    echo ""
+    echo "  Signed-off-by: Your Name <your@email.com>"
+    echo ""
+    echo "You can do this automatically by using: git commit -s"
+    exit 1
+fi

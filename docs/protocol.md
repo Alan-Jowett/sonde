@@ -272,7 +272,7 @@ If a `send_recv()` call on the node times out waiting for `APP_DATA_REPLY`, the 
      │  [execute resident BPF]       │
      │                               │
      │──── APP_DATA ────────────────►│  (zero or more, send or send_recv)
-     │◄──── APP_DATA_REPLY ──────────│  (only if reply_expected)
+     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
      │                               │
      │  [sleep]                      │
 ```
@@ -301,7 +301,7 @@ If a `send_recv()` call on the node times out waiting for `APP_DATA_REPLY`, the 
      │  [execute new program]        │
      │                               │
      │──── APP_DATA ────────────────►│  (zero or more)
-     │◄──── APP_DATA_REPLY ──────────│  (only if reply_expected)
+     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
      │                               │
      │  [sleep]                      │
 ```
@@ -334,7 +334,7 @@ Ephemeral programs use the same chunked transfer as resident programs (see §6.2
      │  [execute ephemeral program]  │
      │                               │
      │──── APP_DATA ────────────────►│  (diagnostic results)
-     │◄──── APP_DATA_REPLY ──────────│  (only if reply_expected)
+     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
      │                               │
      │  [sleep — ephemeral discarded]│
 ```
@@ -369,8 +369,8 @@ The BPF program and gateway application communicate through `APP_DATA` messages.
      │                               │
      │──── APP_DATA (send) ─────────►│  (fire-and-forget, no reply)
      │                               │
-     │──── APP_DATA (send_recv) ────►│  (reply_expected=true)
-     │◄──── APP_DATA_REPLY {resp} ───│  (gateway app responds)
+     │──── APP_DATA (send_recv) ────►│  (node waits for reply)
+     │◄──── APP_DATA_REPLY {resp} ───│  (handler replied with data)
      │                               │
      │  [sleep]                      │
 ```

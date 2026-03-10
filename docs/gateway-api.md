@@ -75,6 +75,8 @@ Each message (both directions) is length-prefixed:
 └──────────────────────────────────┘
 ```
 
+Maximum message size: **1 MB** (1,048,576 bytes). Messages with a length field exceeding this value must be rejected and the connection closed. All CBOR payloads use **integer keys** as defined in the field tables below.
+
 ### 2.2  Lifecycle
 
 ```
@@ -93,13 +95,15 @@ Gateway                          Handler process
   │  [respawn on next message]       │
 ```
 
-**Exit handling:** If the handler exits with code 0 between messages, the gateway respawns it on the next `DATA`. If it exits with non-zero (or crashes mid-message), the gateway logs the error and sends a zero-length `APP_DATA_REPLY` to the node.
+**Exit handling:** If the handler exits with code 0 between messages, the gateway respawns it on the next message. If it exits with non-zero (or crashes mid-message), the gateway logs the error and does not send an `APP_DATA_REPLY` to the node (the node's `send_recv()` will timeout if it was waiting).
 
 ---
 
 ## 3  Message types
 
 The application API has only **4 message types** — two in each direction.
+
+> **Note:** These `msg_type` values are specific to the gateway↔handler API and are unrelated to the node↔gateway radio protocol's `msg_type` values defined in [protocol.md](protocol.md). The two protocols operate on separate transports and never share a channel.
 
 ### 3.1  Gateway → Handler
 
@@ -200,9 +204,19 @@ Processes one message and exits. The gateway respawns it for the next message.
 ```python
 import sys, cbor2
 
+def read_exact(stream, n):
+    """Read exactly n bytes from stream, or raise EOFError."""
+    data = b''
+    while len(data) < n:
+        chunk = stream.read(n - len(data))
+        if not chunk:
+            raise EOFError()
+        data += chunk
+    return data
+
 # Read one DATA message from stdin
-length = int.from_bytes(sys.stdin.buffer.read(4), 'big')
-request = cbor2.loads(sys.stdin.buffer.read(length))
+length = int.from_bytes(read_exact(sys.stdin.buffer, 4), 'big')
+request = cbor2.loads(read_exact(sys.stdin.buffer, length))
 
 # Process the sensor data
 sensor_data = request[5]  # data field
@@ -221,25 +235,35 @@ Loops on stdin. Stays alive across messages — no respawn overhead.
 ```python
 import sys, cbor2
 
-while True:
-    # Read length-prefixed message
-    length_bytes = sys.stdin.buffer.read(4)
-    if not length_bytes:
-        break  # stdin closed, gateway shutting down
-    length = int.from_bytes(length_bytes, 'big')
-    request = cbor2.loads(sys.stdin.buffer.read(length))
+def read_exact(stream, n):
+    """Read exactly n bytes from stream, or raise EOFError."""
+    data = b''
+    while len(data) < n:
+        chunk = stream.read(n - len(data))
+        if not chunk:
+            raise EOFError()
+        data += chunk
+    return data
 
-    if request[1] == 0x02:  # EVENT — no reply needed
-        continue
+try:
+    while True:
+        # Read length-prefixed message
+        length = int.from_bytes(read_exact(sys.stdin.buffer, 4), 'big')
+        request = cbor2.loads(read_exact(sys.stdin.buffer, length))
 
-    # Process DATA and reply
-    sensor_data = request[5]
-    # ... application logic ...
+        if request[1] == 0x02:  # EVENT — no reply needed
+            continue
 
-    reply = cbor2.dumps({1: 0x81, 2: request[2], 3: reply_blob})
-    sys.stdout.buffer.write(len(reply).to_bytes(4, 'big'))
-    sys.stdout.buffer.write(reply)
-    sys.stdout.buffer.flush()
+        # Process DATA and reply
+        sensor_data = request[5]
+        # ... application logic ...
+
+        reply = cbor2.dumps({1: 0x81, 2: request[2], 3: reply_blob})
+        sys.stdout.buffer.write(len(reply).to_bytes(4, 'big'))
+        sys.stdout.buffer.write(reply)
+        sys.stdout.buffer.flush()
+except EOFError:
+    pass  # stdin closed, gateway shutting down
 ```
 
 Both examples use the same framing and message format. The only difference is whether the process loops or exits.
@@ -269,10 +293,9 @@ handlers:
   # Catch-all for unmatched programs (optional)
   - program_hash: "*"
     command: "/usr/local/bin/default-handler"
-    timeout_s: 5
 ```
 
-If no handler matches a program_hash and no catch-all is configured, the gateway sends a zero-length `APP_DATA_REPLY` to the node.
+If no handler matches a `program_hash` and no catch-all is configured, the gateway does not send an `APP_DATA_REPLY` to the node. The BPF program's `send_recv()` will timeout if it was waiting for a reply; `send()` calls are unaffected.
 
 ---
 

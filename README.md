@@ -108,8 +108,8 @@ Gateway → Node:  APP_DATA_REPLY  [header: key_hint, nonce]  { blob }  (only if
 ```
 
 Two modes, controlled by the BPF program:
-- **`send(ptr, len)`** — fire-and-forget. Emits `APP_DATA` with no reply expected.
-- **`send_recv(ptr, len, reply_buf, reply_len, timeout_ms)`** — request-response. Emits `APP_DATA` with `reply_expected=true` and blocks until `APP_DATA_REPLY` arrives or the timeout expires.
+- **`send(ptr, len)`** — fire-and-forget. Emits `APP_DATA`, node does not wait for a reply.
+- **`send_recv(ptr, len, reply_buf, reply_len, timeout_ms)`** — request-response. Emits `APP_DATA` and blocks until `APP_DATA_REPLY` arrives or the timeout expires.
 
 The protocol treats all blobs as opaque — the BPF program and gateway application define their own semantics on top. Multiple calls per wake cycle are supported.
 

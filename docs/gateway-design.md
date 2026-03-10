@@ -541,7 +541,98 @@ All protocol errors result in **silent discard** — no error response is sent t
 
 ---
 
-## 13  Configuration
+## 13  Admin API
+
+The gateway exposes a local gRPC API for administrative operations. A CLI tool (`sonde-admin`) wraps the API for operator use.
+
+### 13.1  gRPC service definition
+
+```protobuf
+service GatewayAdmin {
+    // Node management
+    rpc ListNodes(Empty) returns (ListNodesResponse);
+    rpc GetNode(GetNodeRequest) returns (NodeInfo);
+    rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+    rpc RemoveNode(RemoveNodeRequest) returns (Empty);
+
+    // Program management
+    rpc IngestProgram(IngestProgramRequest) returns (IngestProgramResponse);
+    rpc ListPrograms(Empty) returns (ListProgramsResponse);
+    rpc AssignProgram(AssignProgramRequest) returns (Empty);
+    rpc RemoveProgram(RemoveProgramRequest) returns (Empty);
+
+    // Schedule and commands
+    rpc SetSchedule(SetScheduleRequest) returns (Empty);
+    rpc QueueReboot(QueueRebootRequest) returns (Empty);
+    rpc QueueEphemeral(QueueEphemeralRequest) returns (Empty);
+
+    // Status
+    rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+
+    // State export/import
+    rpc ExportState(Empty) returns (ExportStateResponse);
+    rpc ImportState(ImportStateRequest) returns (Empty);
+}
+```
+
+The gRPC server runs on a configurable local address (default: `localhost:50051`). It is implemented with the `tonic` crate.
+
+### 13.2  Key operations
+
+| Operation | gRPC method | Description |
+|---|---|---|
+| Pair node | `RegisterNode` | Called by CLI after USB key provisioning. Registers key_hint, PSK, and admin node_id. |
+| Factory reset | `RemoveNode` | Called by CLI after USB factory reset. Removes node from registry. |
+| Ingest program | `IngestProgram` | Accepts ELF binary + profile. Triggers verification, CBOR encoding, storage. Returns hash or error. |
+| Assign program | `AssignProgram` | Sets a node's assigned program. Next WAKE triggers UPDATE_PROGRAM if hash differs. |
+| Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |
+| Set schedule | `SetSchedule` | Queues an UPDATE_SCHEDULE for a node's next WAKE. |
+| Export state | `ExportState` | Serializes the full gateway state (node registry, program library, and handler routing configuration). |
+| Import state | `ImportState` | Restores node registry, program library, and handler routing configuration from a previous export. |
+
+### 13.3  CLI tool (`sonde-admin`)
+
+The CLI wraps the gRPC API and handles USB communication for pairing/reset:
+
+```
+sonde-admin node list
+sonde-admin node get <node-id>
+sonde-admin node pair --usb <port>           # USB + gRPC
+sonde-admin node reset --usb <port>          # USB + gRPC
+sonde-admin node remove <node-id>
+
+sonde-admin program ingest <elf-file> --profile resident|ephemeral
+sonde-admin program list
+sonde-admin program assign <node-id> <program-hash>
+sonde-admin program remove <program-hash>
+
+sonde-admin schedule set <node-id> <interval-seconds>
+sonde-admin reboot <node-id>
+sonde-admin ephemeral <node-id> <elf-file>
+
+sonde-admin state export <file>
+sonde-admin state import <file>
+
+sonde-admin status <node-id>
+```
+
+All commands support `--format json` for machine-readable output.
+
+**USB pairing flow:**
+1. CLI connects to node via USB serial.
+2. CLI generates a 256-bit PSK (from OS CSPRNG).
+3. CLI writes PSK to node's flash key partition over USB.
+4. CLI calls `RegisterNode` on the gateway gRPC API with the key_hint, PSK, and admin-assigned node_id.
+5. If either step fails, both sides are rolled back.
+
+**USB factory reset flow:**
+1. CLI connects to node via USB serial.
+2. CLI sends factory reset command to node (erases key, maps, program).
+3. CLI calls `RemoveNode` on the gateway gRPC API.
+
+---
+
+## 14  Configuration
 
 The gateway is configured via a configuration file (format TBD — TOML recommended for Rust ecosystem). Configuration includes:
 
@@ -549,6 +640,7 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 |---|---|---|
 | `transport` | Transport backend and connection parameters | Required |
 | `storage` | Storage backend and connection parameters | Required |
+| `admin_listen` | gRPC admin API listen address | `localhost:50051` |
 | `handlers` | Handler routing table (program_hash → command) | `[]` |
 | `session_timeout_s` | Session inactivity timeout | `30` |
 | `node_timeout_multiplier` | Multiple of node's schedule interval before `node_timeout` event | `3` |
@@ -557,20 +649,21 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 
 ---
 
-## 14  Startup sequence
+## 15  Startup sequence
 
 1. Load configuration.
 2. Initialize storage backend.
 3. Load node registry and program library from storage.
 4. Initialize transport (e.g., open ESP-NOW interface).
-5. Start handler processes for configured handlers.
-6. Start session reaper background task.
-7. Start node timeout detector background task.
-8. Enter main recv loop.
+5. Start gRPC admin API server.
+6. Start handler processes for configured handlers.
+7. Start session reaper background task.
+8. Start node timeout detector background task.
+9. Enter main recv loop.
 
 ---
 
-## 15  Shutdown sequence
+## 16  Shutdown sequence
 
 1. Stop accepting new frames.
 2. Wait for in-flight sessions to complete (with timeout).

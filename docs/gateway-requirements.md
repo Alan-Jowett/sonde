@@ -649,6 +649,124 @@ The gateway (or provisioning tool) MUST support triggering a factory reset on a 
 
 ---
 
+## 9A  Admin API
+
+### GW-0800  Admin gRPC API
+
+**Priority:** Must  
+**Source:** gateway-design.md § Admin API
+
+**Description:**  
+The gateway MUST expose a local gRPC API for administrative operations. The API provides node management, program management, schedule management, diagnostics, and state export/import. The API listens on a configurable local address (default: `localhost:50051`).
+
+**Acceptance criteria:**
+
+1. The gRPC API is available when the gateway is running.
+2. All administrative operations listed in GW-0801–GW-0806 are accessible through the API.
+3. The API is local-only by default (bound to localhost).
+
+---
+
+### GW-0801  Admin API — node management
+
+**Priority:** Must  
+**Source:** GW-0700, GW-0704, GW-0705
+
+**Description:**  
+The admin API MUST support: listing all registered nodes, viewing node details (key_hint, assigned program, schedule, last battery, last ABI version, last seen), registering a node (providing key_hint, PSK, and admin node_id), and removing a node from the registry.
+
+**Acceptance criteria:**
+
+1. `ListNodes` returns all registered nodes with their metadata.
+2. `GetNode` returns details for a single node.
+3. `RegisterNode` adds a new node to the registry.
+4. `RemoveNode` deletes a node from the registry and discards its PSK.
+
+---
+
+### GW-0802  Admin API — program management
+
+**Priority:** Must  
+**Source:** GW-0400, GW-0401, GW-0402
+
+**Description:**  
+The admin API MUST support: ingesting a BPF ELF file (triggering verification, CBOR encoding, and storage), listing stored programs, viewing program details (hash, size, verification profile), assigning a program to a node, and removing a program from the library.
+
+**Acceptance criteria:**
+
+1. `IngestProgram` accepts an ELF binary and verification profile, returns the program hash on success or a diagnostic on failure.
+2. `ListPrograms` returns all stored programs.
+3. `AssignProgram` sets a node's assigned program hash.
+4. `RemoveProgram` deletes a program from the library.
+
+---
+
+### GW-0803  Admin API — schedule and commands
+
+**Priority:** Must  
+**Source:** GW-0203, GW-0204, GW-0202
+
+**Description:**  
+The admin API MUST support: setting a node's wake schedule (queues UPDATE_SCHEDULE for next WAKE), queuing a reboot for a node, and queuing an ephemeral program for a node.
+
+**Acceptance criteria:**
+
+1. `SetSchedule` queues a schedule change for the specified node.
+2. `QueueReboot` queues a reboot for the specified node.
+3. `QueueEphemeral` queues an ephemeral program for the specified node.
+4. Queued commands are delivered on the node's next WAKE.
+
+---
+
+### GW-0804  Admin API — node status
+
+**Priority:** Should  
+**Source:** GW-0702, GW-0703
+
+**Description:**  
+The admin API SHOULD provide real-time node status including: current program hash, battery voltage, firmware ABI version, last seen timestamp, and whether the node has an active session.
+
+**Acceptance criteria:**
+
+1. `GetNodeStatus` returns the latest known state for a node.
+2. Status reflects the most recent WAKE data.
+
+---
+
+### GW-0805  Admin API — state export/import
+
+**Priority:** Should  
+**Source:** GW-1001
+
+**Description:**  
+The admin API SHOULD support exporting and importing the gateway's portable state (node registry, cryptographic keys, program library, schedules, and handler routing configuration) for failover and backup. Because this includes cryptographic material, export/import mechanisms MUST comply with GW-0601a (operator authorization and protection of exported state).
+
+**Acceptance criteria:**
+
+1. `ExportState` returns the complete gateway state as a portable binary.
+2. `ImportState` restores state from a previously exported binary.
+3. Export and import operations require authenticated and authorized administrative access, and exported state is protected (e.g., via encryption) in accordance with GW-0601a.
+4. After import, all nodes and programs are available.
+
+---
+
+### GW-0806  Admin CLI tool
+
+**Priority:** Must  
+**Source:** gateway-design.md § Admin API
+
+**Description:**  
+A CLI tool (`sonde-admin` or equivalent) MUST be provided that wraps the gRPC admin API. The CLI handles USB-mediated pairing (direct USB communication with the node + gRPC registration with the gateway) and provides commands for all admin API operations.
+
+**Acceptance criteria:**
+
+1. The CLI can pair a USB-connected node (generates PSK, writes to node, registers via gRPC).
+2. The CLI can factory-reset a USB-connected node (erases node, removes from gateway via gRPC).
+3. The CLI provides commands for: list/get/remove nodes, ingest/list/assign/remove programs, set schedule, queue reboot, queue ephemeral, export/import state.
+4. All commands produce machine-readable output (JSON) when requested.
+
+---
+
 ## 10  Operational requirements
 
 ### GW-1000  Gateway failover / replaceability
@@ -769,6 +887,13 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0703 | Firmware ABI version awareness | Must |
 | GW-0704 | USB-mediated node pairing | Must |
 | GW-0705 | Factory reset support | Must |
+| GW-0800 | Admin gRPC API | Must |
+| GW-0801 | Admin API — node management | Must |
+| GW-0802 | Admin API — program management | Must |
+| GW-0803 | Admin API — schedule and commands | Must |
+| GW-0804 | Admin API — node status | Should |
+| GW-0805 | Admin API — state export/import | Should |
+| GW-0806 | Admin CLI tool | Must |
 | GW-1000 | Gateway failover / replaceability | Must |
 | GW-1004 | Program hash consistency across failover group | Must |
 | GW-1001 | Exportable / importable state | Should |

@@ -392,7 +392,7 @@ The gateway MUST authenticate all inbound messages using HMAC-SHA256 and MUST ap
 **Source:** README § Key provisioning
 
 **Description:**  
-The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-shared keys. Each node has a unique key. There is no runtime key exchange. The `key_hint` is a lookup optimization; the HMAC key is the true node identity (see [protocol.md](protocol.md) §3.1.1).
+The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-shared keys. Each node has a unique key. Keys are provisioned via USB-mediated pairing (see [security.md](security.md) §2.4). The `key_hint` is a lookup optimization; the HMAC key is the true node identity (see [protocol.md](protocol.md) §3.1.1).
 
 **Acceptance criteria:**
 
@@ -497,6 +497,38 @@ The gateway MUST inspect the `firmware_abi_version` from `WAKE` messages and ens
 
 ---
 
+### GW-0704  USB-mediated node pairing
+
+**Priority:** Must  
+**Source:** security.md § Key provisioning
+
+**Description:**  
+The gateway (or a dedicated provisioning tool) MUST support USB-mediated pairing for new or factory-reset nodes. During pairing, the tool generates a unique 256-bit PSK, writes it to the node's flash key partition, and registers the key in the gateway's node registry.
+
+**Acceptance criteria:**
+
+1. A factory-reset node connected via USB can be paired with a single operator action.
+2. The generated key is unique and cryptographically random (256-bit).
+3. The key is written to the node and registered in the gateway atomically — a partial failure leaves neither side with a dangling key.
+
+---
+
+### GW-0705  Factory reset support
+
+**Priority:** Must  
+**Source:** security.md § Factory reset
+
+**Description:**  
+The gateway (or provisioning tool) MUST support triggering a factory reset on a connected node. A factory reset erases the node's pre-shared key, all persistent map data, and the resident BPF program. After reset the node is inert and must be re-paired via USB.
+
+**Acceptance criteria:**
+
+1. After factory reset, the node cannot authenticate with any gateway.
+2. After factory reset, the node contains no persistent application state.
+3. The gateway removes the corresponding key from its registry when a factory reset is performed.
+
+---
+
 ## 10  Operational requirements
 
 ### GW-1000  Gateway failover / replaceability
@@ -593,6 +625,8 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0701 | Stale program detection | Must |
 | GW-0702 | Battery level tracking | Should |
 | GW-0703 | Firmware ABI version awareness | Must |
+| GW-0704 | USB-mediated node pairing | Must |
+| GW-0705 | Factory reset support | Must |
 | GW-1000 | Gateway failover / replaceability | Must |
 | GW-1001 | Exportable / importable state | Should |
 | GW-1002 | Graceful handling of unknown nodes | Must |

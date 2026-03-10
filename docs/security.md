@@ -40,15 +40,15 @@ Each node is provisioned with a unique 256-bit pre-shared key (PSK) at manufactu
 
 - Keys are **symmetric** — the same key is used by both the node and the gateway.
 - Keys are **unique per node** — no two nodes share a key.
-- Keys are **not rotatable** — the provisioning process is one-time; key rotation is not supported by the protocol.
+- Keys are **rotatable** via factory reset and re-pairing (see §2.6).
 
-### 2.2  Key storage on the node (ESP32 reference implementation)
+### 2.2  Key storage on the node
 
-On the ESP32-C3/S3 reference hardware, the key is fused into **eFuse blocks** with HMAC-purpose-only access control. This means:
+On the reference hardware (ESP32-C3/S3) the node's PSK is stored in a **dedicated flash partition**. This means:
 
-- The raw key bytes are **never accessible to software** after provisioning.
-- The hardware HMAC peripheral uses the key directly; software provides input and receives the HMAC output.
-- A compromised firmware image cannot extract the key.
+- The key is **software-accessible** — firmware can read the raw key bytes to compute HMACs.
+- A **factory reset** erases the key partition, returning the node to an un-paired state (see §2.6).
+- Flash storage does not provide the same hardware isolation as eFuse-based approaches; a compromised firmware image can read the key. Mitigations include secure boot and flash encryption where available.
 
 ### 2.3  Key storage on the gateway
 
@@ -57,17 +57,39 @@ The gateway stores the per-node key database persistently. The key database maps
 - The key store SHOULD be encrypted at rest.
 - Exporting the key store SHOULD require explicit operator authorization (see [gateway-requirements.md GW-1001](gateway-requirements.md)).
 
-### 2.4  Key registration
+### 2.4  Key provisioning (USB pairing)
 
-Keys are registered with the gateway at provisioning time through an out-of-band process (e.g., during device manufacturing or deployment). There is no runtime key exchange or negotiation.
+Keys are provisioned through a **USB-mediated pairing** process:
+
+1. The node is connected to a provisioning host (gateway or dedicated tool) via USB.
+2. The host generates a unique 256-bit PSK for the node.
+3. The key is written to the node's flash key partition and registered in the gateway's key database in a single atomic operation.
+4. The node is disconnected and deployed.
+
+There is no over-the-air key exchange or negotiation. The USB connection provides a physically controlled channel for key material transfer.
+
+Re-pairing is possible: a factory-reset node (see §2.6) can be paired again, receiving a new key and a new identity.
 
 ### 2.5  Key compromise
 
-If a node's key is compromised (e.g., through physical extraction from an unprotected device):
+If a node's key is compromised (e.g., through firmware exploit or physical flash extraction):
 
 - The compromise is **limited to that node** — other nodes are unaffected.
-- There is no key rotation mechanism; the affected node **must be physically replaced**.
-- The gateway SHOULD allow removal of the compromised node's key from the registry to prevent the compromised key from being used.
+- The gateway SHOULD remove the compromised node's key from the registry immediately.
+- The node can be **factory-reset** (see §2.6) to erase the compromised key and all persistent state.
+- After factory reset, the node is re-paired via USB with a fresh key, effectively giving it a new identity.
+
+### 2.6  Factory reset
+
+A factory reset returns a node to its initial un-paired state. The reset erases:
+
+- The **pre-shared key** — the node loses its identity.
+- All **persistent map data** — application state is wiped.
+- The **resident BPF program** — the node has no program to execute.
+
+After a factory reset, the node is inert: it cannot authenticate with any gateway and will not execute application logic. To return it to service, the operator must re-pair it via USB (§2.4), which provisions a new key and registers the node in the gateway's key database.
+
+Factory reset is the standard remediation path for key compromise, decommissioning, and transferring a node to a different deployment.
 
 ---
 
@@ -222,7 +244,7 @@ The protocol handles all authentication and integrity failures by **silent disca
 | Malformed CBOR (post-auth) | Silently discard. Log internally. | Discard frame. |
 | Program hash mismatch | Issue `UPDATE_PROGRAM`. | N/A |
 | Program transfer hash mismatch | Reject `PROGRAM_ACK`. Log. | Retry transfer. |
-| Key compromise | Remove node from registry. Replace node hardware. | N/A |
+| Key compromise | Remove node from registry. Factory-reset and re-pair node. | N/A |
 
 See [protocol.md §8](protocol.md#8--error-handling) for the full error-handling table.
 
@@ -242,7 +264,7 @@ For failover to work correctly, the replacement gateway must have:
 2. The current program assignments and schedules for all nodes.
 3. The full BPF program library (so it can serve `GET_CHUNK` requests).
 
-Key material MUST be transferred through a secure out-of-band channel. Transmitting keys over the air or through unprotected storage is prohibited.
+Key material MUST be transferred through a physically secured channel (e.g., encrypted export/import via USB media — see [GW-1001](gateway-requirements.md)). Transmitting keys over the air or through unprotected storage is prohibited.
 
 ### 7.3  Nonce synchronization
 
@@ -270,8 +292,9 @@ All gateway instances in a failover group MUST serve identical programs for any 
 | Property | Mechanism | Limitation |
 |---|---|---|
 | Message integrity | HMAC-SHA256 per frame | Not encrypted; content visible to observers |
-| Node authentication | Per-node PSK + HMAC | Key compromise requires node replacement |
+| Node authentication | Per-node PSK + HMAC | Key compromise requires factory reset + re-pair |
 | Replay protection | 64-bit random nonce + sliding window | Brief gap during gateway failover |
 | Program integrity | Content hash (`PROGRAM_ACK`) | Gateway key store must be protected |
-| Key non-extractability | eFuse HMAC-only access (ESP32) | Platform-specific; may not apply to all hardware |
-| Identity binding | PSK = node identity | No credential revocation; replacement is the only remediation |
+| Key storage | Dedicated flash partition | Software-accessible; mitigate with secure boot / flash encryption |
+| Key provisioning | USB-mediated pairing | Requires physical USB access |
+| Identity binding | PSK = node identity | Factory reset + re-pair to revoke / replace identity |

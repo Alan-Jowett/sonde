@@ -153,7 +153,6 @@ Key-value stores that survive deep sleep. Used for accumulating readings, mainta
 | Type | Description |
 |---|---|
 | `BPF_MAP_TYPE_ARRAY` | Fixed-size array indexed by integer key. |
-| `BPF_MAP_TYPE_HASH` | Key-value hash map. |
 
 #### Map definition (in BPF C)
 
@@ -187,18 +186,24 @@ The firmware exposes the following helpers to BPF programs. The ABI remains stab
 
 The firmware provides raw bus primitives. Sensor-specific protocols (register sequences, calibration, timing) are encoded in the BPF program — not the firmware. This means adding new sensor types never requires a firmware update.
 
+Bus and address are packed into a single `uint32_t` handle to stay within the BPF 5-argument limit. The handle format is: `(bus << 16) | addr`.
+
+```c
+#define I2C_HANDLE(bus, addr) (((uint32_t)(bus) << 16) | (uint32_t)(addr))
+#define SPI_HANDLE(bus)       ((uint32_t)(bus) << 16)
+```
+
 #### `i2c_read`
 
 ```c
-int i2c_read(uint8_t bus, uint8_t addr, void *buf, uint32_t buf_len);
+int i2c_read(uint32_t handle, void *buf, uint32_t buf_len);
 ```
 
 Read bytes from an I2C device.
 
 | Parameter | Description |
 |---|---|
-| `bus` | I2C bus index (platform-dependent). |
-| `addr` | 7-bit I2C device address. |
+| `handle` | I2C handle: `(bus << 16) | 7-bit device address`. |
 | `buf` | Buffer to read into. |
 | `buf_len` | Number of bytes to read. |
 
@@ -209,15 +214,14 @@ Read bytes from an I2C device.
 #### `i2c_write`
 
 ```c
-int i2c_write(uint8_t bus, uint8_t addr, const void *data, uint32_t data_len);
+int i2c_write(uint32_t handle, const void *data, uint32_t data_len);
 ```
 
 Write bytes to an I2C device.
 
 | Parameter | Description |
 |---|---|
-| `bus` | I2C bus index. |
-| `addr` | 7-bit I2C device address. |
+| `handle` | I2C handle: `(bus << 16) | 7-bit device address`. |
 | `data` | Data to write. |
 | `data_len` | Number of bytes to write. |
 
@@ -228,7 +232,7 @@ Write bytes to an I2C device.
 #### `i2c_write_read`
 
 ```c
-int i2c_write_read(uint8_t bus, uint8_t addr,
+int i2c_write_read(uint32_t handle,
                    const void *write_ptr, uint32_t write_len,
                    void *read_ptr, uint32_t read_len);
 ```
@@ -237,8 +241,7 @@ Write bytes then read bytes in a single I2C transaction (repeated start). This i
 
 | Parameter | Description |
 |---|---|
-| `bus` | I2C bus index. |
-| `addr` | 7-bit I2C device address. |
+| `handle` | I2C handle: `(bus << 16) | 7-bit device address`. |
 | `write_ptr` | Data to write (typically a register address). |
 | `write_len` | Number of bytes to write. |
 | `read_ptr` | Buffer to read into. |
@@ -251,14 +254,14 @@ Write bytes then read bytes in a single I2C transaction (repeated start). This i
 #### `spi_transfer`
 
 ```c
-int spi_transfer(uint8_t bus, const void *tx, void *rx, uint32_t len);
+int spi_transfer(uint32_t handle, const void *tx, void *rx, uint32_t len);
 ```
 
 Full-duplex SPI transfer. Simultaneously transmits and receives `len` bytes.
 
 | Parameter | Description |
 |---|---|
-| `bus` | SPI bus index (platform-dependent). |
+| `handle` | SPI handle: `(bus << 16)`. |
 | `tx` | Transmit buffer (can be NULL for read-only). |
 | `rx` | Receive buffer (can be NULL for write-only). |
 | `len` | Number of bytes to transfer. |
@@ -270,7 +273,7 @@ Full-duplex SPI transfer. Simultaneously transmits and receives `len` bytes.
 #### `gpio_read`
 
 ```c
-int gpio_read(uint8_t pin);
+int gpio_read(uint32_t pin);
 ```
 
 Read the state of a GPIO pin.
@@ -286,7 +289,7 @@ Read the state of a GPIO pin.
 #### `gpio_write`
 
 ```c
-int gpio_write(uint8_t pin, uint8_t value);
+int gpio_write(uint32_t pin, uint32_t value);
 ```
 
 Set the state of a GPIO pin.
@@ -303,7 +306,7 @@ Set the state of a GPIO pin.
 #### `adc_read`
 
 ```c
-int adc_read(uint8_t channel, uint32_t *value);
+int adc_read(uint32_t channel, uint32_t *value);
 ```
 
 Read a raw value from an ADC channel.
@@ -367,14 +370,14 @@ Send an `APP_DATA` message and block until `APP_DATA_REPLY` arrives or the timeo
 #### `map_lookup_elem`
 
 ```c
-void *map_lookup_elem(uint32_t map_id, const void *key);
+void *map_lookup_elem(struct bpf_map *map, const void *key);
 ```
 
 Look up a value in a BPF map.
 
 | Parameter | Description |
 |---|---|
-| `map_id` | Map identifier (index in the ELF map section). |
+| `map` | Pointer to the map (resolved by the loader via ELF relocation). |
 | `key` | Pointer to the key. |
 
 **Returns:** Pointer to the value on success, `NULL` if the key is not found.
@@ -384,14 +387,14 @@ Look up a value in a BPF map.
 #### `map_update_elem`
 
 ```c
-int map_update_elem(uint32_t map_id, const void *key, const void *value);
+int map_update_elem(struct bpf_map *map, const void *key, const void *value);
 ```
 
 Insert or update a key-value pair in a BPF map.
 
 | Parameter | Description |
 |---|---|
-| `map_id` | Map identifier. |
+| `map` | Pointer to the map (resolved by the loader via ELF relocation). |
 | `key` | Pointer to the key. |
 | `value` | Pointer to the value. |
 
@@ -422,6 +425,22 @@ uint16_t get_battery_mv(void);
 Get the current battery voltage in millivolts. Same value as `ctx->battery_mv` but accessible without the context pointer.
 
 **Availability:** Resident and ephemeral.
+
+#### `delay_us`
+
+```c
+int delay_us(uint32_t microseconds);
+```
+
+Busy-wait for the specified number of microseconds. Used for sensor timing requirements (e.g., waiting for an ADC conversion or an I2C device to become ready after a command).
+
+| Parameter | Description |
+|---|---|
+| `microseconds` | Duration to wait. |
+
+**Returns:** `0` on success.
+
+**Availability:** Resident and ephemeral. The verifier enforces a maximum delay value to prevent BPF programs from monopolizing the CPU.
 
 #### `set_next_wake`
 
@@ -483,27 +502,60 @@ Compile C to BPF ELF using clang:
 clang -target bpf -O2 -c my_program.c -o my_program.o
 ```
 
-### 8.2  Verify
+### 8.2  Test
 
-Run the Prevail verifier locally to check the program before deployment:
+Sonde provides a test library (`libsonde_test`) that lets developers verify, load, and execute BPF programs from unit tests. The library includes:
 
-```bash
-prevail my_program.o --profile resident
+- **Prevail verification** — runs the verifier against the chosen profile (resident or ephemeral).
+- **uBPF execution** — loads and runs the program in a sandboxed environment.
+- **Bus mocking** — register mock I2C/SPI/GPIO/ADC devices so you can observe how the BPF program interacts with sensors (what it reads, what it writes, in what order).
+- **Map inspection** — examine map contents before and after execution.
+- **APP_DATA capture** — capture `send()` / `send_recv()` calls and provide mock replies.
+
+```c
+// Example unit test (C, using libsonde_test)
+sonde_test_ctx *ctx = sonde_test_create("my_program.o", SONDE_PROFILE_RESIDENT);
+
+// Mock a BME280 on I2C bus 0, address 0x76
+sonde_mock_i2c_device(ctx, I2C_HANDLE(0, 0x76));
+sonde_mock_i2c_register(ctx, I2C_HANDLE(0, 0x76), 0xD0, "\x60", 1); // chip ID
+sonde_mock_i2c_register(ctx, I2C_HANDLE(0, 0x76), 0xF7, temp_data, 3); // temperature
+
+// Set context
+sonde_test_set_battery(ctx, 3300);
+sonde_test_set_time(ctx, 1700000000000);
+
+// Run
+int rc = sonde_test_run(ctx);
+assert(rc == 0);
+
+// Inspect results
+assert(sonde_test_send_count(ctx) == 1);
+const void *blob = sonde_test_send_data(ctx, 0, &blob_len);
+// ... verify blob contents ...
+
+sonde_test_destroy(ctx);
 ```
 
-### 8.3  Test locally
+This approach lets developers use their existing test frameworks (Google Test, Unity, pytest via ctypes, etc.) and CI pipelines. No hardware needed.
 
-Execute the program locally using uBPF with mock sensor data and maps:
-
-```bash
-ubpf_run my_program.o --context mock_context.bin --maps mock_maps.bin
-```
-
-Use `bpf_trace_printk` for debug output during local testing.
-
-### 8.4  Deploy
+### 8.3  Deploy
 
 Provide the ELF file to the gateway for distribution. The gateway verifies the program (Prevail), computes its hash, and distributes it to the assigned nodes on their next wake.
+
+---
+
+## 9  ELF loading and relocation
+
+**⚠ OPEN:** The gateway and/or node firmware must process the BPF ELF before execution. This involves:
+
+1. **Map relocation** — BPF programs reference maps by pointer (`&readings`), not by ID. The ELF contains relocations for these references. The loader (on the gateway or node) must resolve them to actual map addresses in sleep-persistent memory. This follows the same pattern as Linux BPF loaders (libbpf).
+
+2. **Helper relocation** — BPF call instructions reference helpers by index. The loader rewrites these to the platform's helper function table.
+
+3. **Stripping** — The gateway may strip ELF metadata (section headers, debug info, symbol tables) before transmitting to the node, sending only the program bytecode and map definitions to minimize transfer size.
+
+**Open question:** Should relocation happen on the gateway (sending pre-relocated bytecode) or on the node (sending raw ELF sections and letting the node firmware relocate)? Gateway-side relocation reduces node complexity but means the gateway needs to know the node's memory layout. Node-side relocation is more flexible but adds firmware complexity.
 
 ---
 

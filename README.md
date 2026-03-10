@@ -130,12 +130,13 @@ BPF programs access four memory regions with different lifetimes. See [BPF envir
 The firmware provides a stable helper API to BPF programs. See [BPF environment § Helper API](docs/bpf-environment.md#6--helper-api) for full documentation.
 
 ```c
-// Bus access (sensor protocol is in the BPF program, not firmware)
-i2c_read(bus, addr, buf, len)        // read from I2C device
-i2c_write(bus, addr, data, len)      // write to I2C device
-i2c_write_read(bus, addr,            // write register addr, read value
+// Bus access — sensor protocol lives in BPF, not firmware
+// bus+addr packed into handle: (bus << 16) | addr
+i2c_read(handle, buf, len)           // read from I2C device
+i2c_write(handle, data, len)         // write to I2C device
+i2c_write_read(handle,               // write register addr, read value
                wr, wr_len, rd, rd_len)
-spi_transfer(bus, tx, rx, len)       // full-duplex SPI transfer
+spi_transfer(handle, tx, rx, len)    // full-duplex SPI transfer
 gpio_read(pin)                       // read GPIO pin
 gpio_write(pin, value)               // set GPIO pin
 adc_read(channel, value_ptr)         // read ADC channel
@@ -145,12 +146,15 @@ send(ptr, len)                       // fire-and-forget: emit APP_DATA
 send_recv(ptr, len, reply_buf,       // send APP_DATA and block for reply
           reply_len, timeout_ms)
 
-// Maps, system, debug
-map_lookup_elem(map_id, key_ptr)     // look up map value
-map_update_elem(map_id, key_ptr,     // update map value (resident only)
+// Maps (pointer-based, loader resolves via ELF relocation)
+map_lookup_elem(map, key_ptr)        // look up map value
+map_update_elem(map, key_ptr,        // update map value (resident only)
                 value_ptr)
+
+// System
 get_time()                           // current time (ms since epoch)
 get_battery_mv()                     // battery voltage
+delay_us(microseconds)               // busy-wait for sensor timing
 set_next_wake(seconds)               // request earlier wake (resident only)
 bpf_trace_printk(fmt, fmt_len, ...)  // debug trace output
 ```

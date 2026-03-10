@@ -347,7 +347,7 @@ The node SHOULD support flash encryption to prevent physical extraction of the P
 **Source:** protocol.md §5.3, §6.2
 
 **Description:**  
-The node MUST support receiving programs via the chunked transfer sub-protocol. The data being transferred is a CBOR-encoded program image (see protocol.md § Program image format), not a raw ELF file. The node drives the transfer by sending `GET_CHUNK` requests for each chunk index in sequence.
+The node MUST support receiving programs via the chunked transfer sub-protocol. The data being transferred is a CBOR-encoded program image (see [protocol.md § Program image format](protocol.md#program-image-format)), not a raw ELF file. The node drives the transfer by sending `GET_CHUNK` requests for each chunk index in sequence.
 
 **Acceptance criteria:**
 
@@ -376,7 +376,7 @@ After reassembling all chunks, the node MUST compute the SHA-256 hash of the com
 ### ND-0501a  Program image decoding
 
 **Priority:** Must  
-**Source:** protocol.md § Program image format
+**Source:** [protocol.md § Program image format](protocol.md#program-image-format)
 
 **Description:**  
 After hash verification, the node MUST decode the CBOR program image to extract the bytecode and map definitions. The node uses the map definitions to allocate map storage in sleep-persistent memory. The bytecode contains `LDDW src=1, imm=<map_index>` instructions referencing maps by index; the node's BPF interpreter MUST resolve these to runtime map pointers at load time.

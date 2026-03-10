@@ -122,8 +122,6 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 
 All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used.
 
-All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used.
-
 ### CBOR key mapping
 
 | Key | Field name | Used in |

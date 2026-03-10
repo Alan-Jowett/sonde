@@ -255,7 +255,7 @@ The gateway MUST accept `PROGRAM_ACK { nonce, program_hash }` messages from node
 **Source:** Design decision
 
 **Description:**  
-The gateway MUST accept BPF programs as pre-compiled ELF files. On ingestion, the gateway extracts the bytecode and map definitions from the ELF, verifies the program, and encodes them into a CBOR program image (see protocol.md § Program image format). Verification and encoding MUST be completed at ingestion time — not deferred to when a node requests the program. The resulting CBOR image and its hash are stored in the program library, ready to serve immediately on demand. The ELF is never transmitted to nodes.
+The gateway MUST accept BPF programs as pre-compiled ELF files. On ingestion, the gateway extracts the bytecode and map definitions from the ELF, verifies the program, and encodes them into a CBOR program image (see [protocol.md § Program image format](protocol.md#program-image-format)). Verification and encoding MUST be completed at ingestion time — not deferred to when a node requests the program. The resulting CBOR image and its hash are stored in the program library, ready to serve immediately on demand. The ELF is never transmitted to nodes.
 
 **Acceptance criteria:**
 

@@ -41,16 +41,16 @@ The gateway is **stateless with respect to replay protection** — active sessio
 ┌──────────────────────────────────────────────────────────────┐
 │                        gateway                               │
 │                                                              │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
-│  │Transport │  │ Protocol │  │  Session   │  │  Handler   │  │
-│  │ (trait)  │──│  Codec   │──│  Manager   │──│  Router    │  │
-│  └──────────┘  └──────────┘  └───────────┘  └────────────┘  │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐   │
+│  │Transport │  │ Protocol │  │  Session  │  │  Handler   │   │
+│  │ (trait)  │──│  Codec   │──│  Manager  │──│  Router    │   │
+│  └──────────┘  └──────────┘  └───────────┘  └────────────┘   │
 │       │                           │               │          │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
-│  │ ESP-NOW  │  │ Node     │  │ Program   │  │  Handler   │  │
-│  │ Adapter  │  │ Registry │  │ Library   │  │  Process   │  │
-│  └──────────┘  └──────────┘  └───────────┘  └────────────┘  │
-│                     │              │                          │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐   │
+│  │ ESP-NOW  │  │ Node     │  │ Program   │  │  Handler   │   │
+│  │ Adapter  │  │ Registry │  │ Library   │  │  Process   │   │
+│  └──────────┘  └──────────┘  └───────────┘  └────────────┘   │
+│                     │              │                         │
 │                ┌──────────┐                                  │
 │                │ Storage  │                                  │
 │                │ (trait)  │                                  │
@@ -76,28 +76,30 @@ The gateway is **stateless with respect to replay protection** — active sessio
 ## 4  Transport trait
 
 ```rust
+/// Opaque address type for the transport layer (e.g., MAC address for ESP-NOW).
+pub type PeerAddress = Vec<u8>;
+
 #[async_trait]
 pub trait Transport: Send + Sync {
     /// Receive the next inbound frame (blocking until available).
-    /// Returns the raw bytes (header + payload + HMAC).
-    async fn recv(&self) -> Result<Vec<u8>, TransportError>;
+    /// Returns the raw bytes (header + payload + HMAC) and the
+    /// sender's transport-layer address.
+    async fn recv(&self) -> Result<(Vec<u8>, PeerAddress), TransportError>;
 
-    /// Send a frame to the node identified by the key_hint from the
-    /// inbound frame. The transport layer maintains the mapping from
-    /// key_hint to physical address.
-    async fn send(&self, frame: &[u8]) -> Result<(), TransportError>;
+    /// Send a frame to a specific peer by transport-layer address.
+    async fn send(&self, frame: &[u8], peer: &PeerAddress) -> Result<(), TransportError>;
 }
 ```
 
-The transport is opaque to the protocol layer. It delivers complete frames. The ESP-NOW adapter handles the 250-byte frame size constraint (GW-0104) and physical-layer addressing.
+The transport returns the sender's address alongside the frame. After the protocol layer authenticates the frame and identifies the node, the session manager stores the peer address in the session. Responses are sent to the address from the session, not looked up by `key_hint`.
 
 ### 4.1  ESP-NOW adapter
 
 The ESP-NOW adapter wraps the platform's ESP-NOW API:
 
-- `recv()` returns one complete ESP-NOW frame (max 250 bytes).
-- `send()` transmits one ESP-NOW frame to the peer address.
-- The adapter maintains a mapping of `key_hint` → peer MAC address, learned from inbound frames (the ESP-NOW callback provides the sender's MAC).
+- `recv()` returns one complete ESP-NOW frame (max 250 bytes) and the sender's MAC address (6 bytes).
+- `send()` transmits one ESP-NOW frame to the specified MAC address. The ESP-NOW peer is registered on first use.
+- The 250-byte frame size constraint (GW-0104) is enforced by ESP-NOW itself.
 
 ---
 
@@ -214,6 +216,7 @@ The session manager is the core orchestration module. It processes authenticated
 ```rust
 pub struct Session {
     pub node_id: NodeId,
+    pub peer_address: PeerAddress,
     pub wake_nonce: u64,
     pub next_expected_seq: u64,
     pub created_at: Instant,

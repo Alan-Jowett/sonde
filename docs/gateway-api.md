@@ -121,16 +121,17 @@ The application API has only **4 message types** — two in each direction.
 
 ### 4.1  DATA (Gateway → Handler)
 
-Sent when a node's BPF program calls `send()`. The handler **must** reply with a `DATA_REPLY`.
+Sent when a node's BPF program calls `send()` or `send_recv()`.
 
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x01` |
-| `request_id` | 2 | uint | Correlation ID. Echo this in the reply. |
+| `request_id` | 2 | uint | Correlation ID. Echo this in the reply (if reply expected). |
 | `node_id` | 3 | tstr | Stable, opaque identifier for the node (assigned by gateway admin). |
 | `program_hash` | 4 | bstr | Hash of the BPF program that sent this data. |
-| `data` | 5 | bstr | The opaque blob from the BPF program's `send()` call. |
+| `data` | 5 | bstr | The opaque blob from the BPF program's `send()` or `send_recv()` call. |
 | `timestamp` | 6 | uint | Unix timestamp of reception (seconds). |
+| `reply_expected` | 7 | bool | If `true`, the handler must reply with a `DATA_REPLY`. If `false`, no reply is needed. |
 
 **Key design decisions:**
 
@@ -142,7 +143,7 @@ Sent when a node's BPF program calls `send()`. The handler **must** reply with a
 
 ### 4.2  DATA_REPLY (Handler → Gateway)
 
-Response to a `DATA` message. The gateway delivers the reply blob to the node via `APP_DATA_REPLY`.
+Response to a `DATA` message where `reply_expected` is `true`. The gateway delivers the reply blob to the node via `APP_DATA_REPLY`. **Do not send a reply when `reply_expected` is `false`.**
 
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
@@ -150,7 +151,7 @@ Response to a `DATA` message. The gateway delivers the reply blob to the node vi
 | `request_id` | 2 | uint | Must match the `DATA` message's `request_id`. |
 | `data` | 3 | bstr | Opaque reply blob for the BPF program. Zero-length for acknowledgement only. |
 
-**Timeout:** If the handler does not reply within a configurable timeout (default: 5 seconds), the gateway sends an `APP_DATA_REPLY` with a zero-length blob to the node.
+The timeout for how long the node waits is controlled by the BPF program (via `send_recv()`'s `timeout_ms` parameter), not by the handler or gateway configuration.
 
 ---
 
@@ -255,16 +256,13 @@ handlers:
   # One handler per program
   - program_hash: "a1b2c3..."
     command: "/usr/local/bin/soil-moisture-app"
-    timeout_s: 5
 
   - program_hash: "d4e5f6..."
     command: "/usr/local/bin/temperature-alert-app"
-    timeout_s: 3
 
   # Or one handler for multiple programs
   - program_hash: ["7a8b9c...", "0d1e2f..."]
     command: "/usr/local/bin/multi-sensor-app"
-    timeout_s: 5
 
   # Catch-all for unmatched programs (optional)
   - program_hash: "*"

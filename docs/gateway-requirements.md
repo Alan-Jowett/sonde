@@ -739,7 +739,7 @@ The admin API SHOULD provide real-time node status including: current program ha
 **Source:** GW-1001
 
 **Description:**  
-The admin API SHOULD support exporting and importing the gateway's full state (node registry, program library, configuration) for failover and backup.
+The admin API SHOULD support exporting and importing the gateway's portable state (node registry, cryptographic keys, program library, schedules, and handler routing configuration) for failover and backup.
 
 **Acceptance criteria:**
 

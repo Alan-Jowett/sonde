@@ -587,8 +587,8 @@ The gRPC server runs on a configurable local address (default: `localhost:50051`
 | Assign program | `AssignProgram` | Sets a node's assigned program. Next WAKE triggers UPDATE_PROGRAM if hash differs. |
 | Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |
 | Set schedule | `SetSchedule` | Queues an UPDATE_SCHEDULE for a node's next WAKE. |
-| Export state | `ExportState` | Serializes the full gateway state (node registry + program library). |
-| Import state | `ImportState` | Restores gateway state from a previous export. |
+| Export state | `ExportState` | Serializes the full gateway state (node registry, program library, and handler routing configuration). |
+| Import state | `ImportState` | Restores node registry, program library, and handler routing configuration from a previous export. |
 
 ### 13.3  CLI tool (`sonde-admin`)
 
@@ -649,7 +649,7 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 
 ---
 
-## 14  Startup sequence
+## 15  Startup sequence
 
 1. Load configuration.
 2. Initialize storage backend.
@@ -663,7 +663,7 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 
 ---
 
-## 15  Shutdown sequence
+## 16  Shutdown sequence
 
 1. Stop accepting new frames.
 2. Wait for in-flight sessions to complete (with timeout).

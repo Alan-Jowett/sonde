@@ -402,20 +402,20 @@ The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-sha
 
 ---
 
-### GW-0602  Replay protection — monotonic sequence numbers
+### GW-0602  Replay protection — session-scoped sequence numbers
 
 **Priority:** Must  
 **Source:** security.md § Replay protection
 
 **Description:**  
-The gateway MUST implement per-node replay protection using monotonic sequence numbers. On each valid `WAKE`, the gateway assigns a starting sequence number (greater than the last accepted value for that node) in its `COMMAND` response. The node increments the sequence for each subsequent outbound message. The gateway MUST reject any post-WAKE message with a sequence number ≤ the last accepted value.
+The gateway MUST implement per-session replay protection using sequence numbers. On each valid `WAKE`, the gateway creates an active session identified by the node's PSK and nonce, assigns a random starting sequence number in its `COMMAND` response, and tracks the expected next sequence for that session. The gateway MUST reject any post-WAKE message that does not match an active session or does not carry the expected sequence number. No persistent replay-protection state is required.
 
 **Acceptance criteria:**
 
-1. The gateway persists a `last_accepted_seq` counter per node durably across restarts.
-2. A replayed post-WAKE message with a previously used sequence number is rejected.
-3. The gateway's `COMMAND` response includes a starting sequence number for the node to use.
-4. Sequence state is maintained per node.
+1. A replayed post-WAKE message with a sequence number from a previous session is rejected.
+2. The gateway's `COMMAND` response includes a starting sequence number for the node.
+3. Active sessions are tracked in memory; no durable persistence is required for replay state.
+4. A replayed WAKE creates a new session with a different starting sequence, invalidating captured post-WAKE messages.
 
 ---
 
@@ -620,7 +620,7 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0502 | Application data handler | Should |
 | GW-0600 | HMAC-SHA256 message authentication | Must |
 | GW-0601 | Per-node key management | Must |
-| GW-0602 | Replay protection — monotonic sequence numbers | Must |
+| GW-0602 | Replay protection — session-scoped sequence numbers | Must |
 | GW-0603 | Authentication overhead budget | Must |
 | GW-0700 | Node registry | Must |
 | GW-0701 | Stale program detection | Must |

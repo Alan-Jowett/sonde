@@ -68,7 +68,7 @@ The basic cycle: node sends `WAKE` → gateway responds with a `COMMAND` (procee
 
 ## Authentication
 
-Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with per-node pre-shared keys. Replay protection uses gateway-assigned monotonic sequence numbers — the node stores no replay state across deep sleep. See [protocol.md § Authentication](docs/protocol.md#7--authentication) for details.
+Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with per-node pre-shared keys. Replay protection uses session-scoped sequence numbers — no persistent replay state is required on either the node or the gateway. See [protocol.md § Authentication](docs/protocol.md#7--authentication) for details.
 
 ---
 

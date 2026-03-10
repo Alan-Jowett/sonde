@@ -346,9 +346,9 @@ The program library stores verified BPF programs and serves chunks.
 
 ```rust
 pub struct ProgramRecord {
-    pub hash: Vec<u8>,         // SHA-256 of program bytes
-    pub bytes: Vec<u8>,        // complete program binary
-    pub size: u32,
+    pub hash: Vec<u8>,         // SHA-256 of CBOR-encoded program image
+    pub image: Vec<u8>,        // CBOR-encoded program image (bytecode + map definitions)
+    pub size: u32,             // byte length of the CBOR image
     pub verification_profile: VerificationProfile,
 }
 
@@ -361,10 +361,12 @@ pub enum VerificationProfile {
 ### 8.2  Program ingestion
 
 1. Accept pre-compiled BPF ELF (GW-0400).
-2. Verify with `prevail-rust` against the appropriate profile (GW-0401).
-3. Enforce size limits: 4 KB resident, 2 KB ephemeral (GW-0403).
-4. Compute SHA-256 hash (GW-0402).
-5. Store in library.
+2. Verify with `prevail-rust` against the appropriate profile (GW-0401). Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`.
+3. Extract bytecode (`.text` section) and map definitions from the ELF.
+4. Encode as CBOR program image using deterministic encoding (RFC 8949 §4.2): `{ 1: bytecode, 2: [map_defs...] }`. See [protocol.md § Program image format](protocol.md#program-image-format).
+5. Enforce size limits on the CBOR image: 4 KB resident, 2 KB ephemeral (GW-0403).
+6. Compute `program_hash` = SHA-256 of the CBOR image (GW-0402).
+7. Store in library. Verification and encoding complete at ingestion time — chunk serving is immediate (GW-0400).
 
 ### 8.3  Chunk serving
 
@@ -377,7 +379,7 @@ pub fn get_chunk(
 ) -> Option<Vec<u8>>
 ```
 
-Returns the bytes for the requested chunk. Chunk boundaries are computed as:
+Returns bytes from the stored CBOR program image for the requested chunk. Chunk boundaries are computed as:
 - Start: `chunk_index * chunk_size`
 - End: `min(start + chunk_size, program_size)`
 - Last chunk may be smaller than `chunk_size`.

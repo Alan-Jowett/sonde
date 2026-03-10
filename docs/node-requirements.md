@@ -404,7 +404,25 @@ The node MUST execute the resident (or ephemeral) BPF program once per wake cycl
 
 ---
 
-### ND-0505  Post-update immediate execution
+### ND-0505  Execution context
+
+**Priority:** Must  
+**Source:** bpf-environment.md §4
+
+**Description:**  
+The firmware MUST populate a read-only `sonde_context` structure before each BPF invocation. The structure MUST include: `timestamp` (milliseconds since epoch), `battery_mv`, `firmware_abi_version`, and `wake_reason`.
+
+**Acceptance criteria:**
+
+1. `timestamp` reflects the current time at invocation.
+2. `battery_mv` is a current ADC reading.
+3. `firmware_abi_version` matches the firmware's actual ABI.
+4. `wake_reason` is set correctly: `WAKE_SCHEDULED` (0x00) for normal wake, `WAKE_EARLY` (0x01) when woken early due to `set_next_wake()`, `WAKE_PROGRAM_UPDATE` (0x02) on first execution after a program update.
+5. The context is read-only — the BPF program cannot modify it.
+
+---
+
+### ND-0506  Post-update immediate execution
 
 **Priority:** Must  
 **Source:** protocol.md §6.2
@@ -585,6 +603,68 @@ The node MUST wait for a response for the transport-appropriate timeout before r
 
 ---
 
+## 10  Error handling
+
+### ND-0800  Malformed CBOR handling
+
+**Priority:** Must  
+**Source:** protocol.md §8
+
+**Description:**  
+If an inbound frame passes HMAC verification but contains malformed CBOR, the node MUST silently discard the frame. No error response is sent.
+
+**Acceptance criteria:**
+
+1. Malformed CBOR in an authenticated frame does not crash the node.
+2. The frame is discarded without further processing.
+
+---
+
+### ND-0801  Unexpected message type handling
+
+**Priority:** Must  
+**Source:** protocol.md §8
+
+**Description:**  
+If an inbound frame passes HMAC verification but contains an unexpected or unknown `msg_type`, the node MUST silently discard the frame.
+
+**Acceptance criteria:**
+
+1. A frame with an unknown `msg_type` is discarded.
+2. A frame with a `msg_type` that does not match the expected response (e.g., receiving CHUNK when waiting for COMMAND) is discarded.
+
+---
+
+### ND-0802  Chunk index validation
+
+**Priority:** Must  
+**Source:** protocol.md §8
+
+**Description:**  
+During chunked transfer, if the node receives a CHUNK response with a `chunk_index` that does not match the requested index, the node MUST discard the response and retry the request (or abort the transfer after exhausting retries).
+
+**Acceptance criteria:**
+
+1. A CHUNK with a mismatched `chunk_index` is discarded.
+2. The node retries the original GET_CHUNK request per the retry policy (ND-0701).
+
+---
+
+### ND-0403a  Flash encryption support
+
+**Priority:** Should  
+**Source:** security.md §2.2
+
+**Description:**  
+The node SHOULD support flash encryption to prevent physical extraction of the PSK from the flash partition. This complements secure boot (ND-0403) as a defense-in-depth measure.
+
+**Acceptance criteria:**
+
+1. When flash encryption is enabled, the PSK partition is encrypted at rest.
+2. The firmware can transparently read the encrypted PSK at boot time.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -606,12 +686,14 @@ The node MUST wait for a response for the transport-appropriate timeout before r
 | ND-0401 | USB-mediated pairing | Must |
 | ND-0402 | Factory reset | Must |
 | ND-0403 | Secure boot support | Should |
+| ND-0403a | Flash encryption support | Should |
 | ND-0500 | Chunked program transfer | Must |
 | ND-0501 | Program hash verification | Must |
 | ND-0502 | Resident program storage (A/B partitions) | Must |
 | ND-0503 | Ephemeral program storage | Must |
 | ND-0504 | BPF execution | Must |
-| ND-0505 | Post-update immediate execution | Must |
+| ND-0505 | Execution context | Must |
+| ND-0506 | Post-update immediate execution | Must |
 | ND-0600 | Helper API stability | Must |
 | ND-0601 | Bus access helpers | Must |
 | ND-0602 | Communication helpers | Must |
@@ -622,3 +704,6 @@ The node MUST wait for a response for the transport-appropriate timeout before r
 | ND-0700 | WAKE retry | Must |
 | ND-0701 | Chunk transfer retry | Must |
 | ND-0702 | Response timeout | Must |
+| ND-0800 | Malformed CBOR handling | Must |
+| ND-0801 | Unexpected message type handling | Must |
+| ND-0802 | Chunk index validation | Must |

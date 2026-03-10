@@ -122,6 +122,8 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 
 All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used.
 
+All payload fields below are CBOR-encoded maps with **integer keys** for compactness (saves ~3–5 bytes per field vs. string keys). The string names in the tables below are for documentation only — on the wire, only the integer key is used.
+
 ### CBOR key mapping
 
 | Key | Field name | Used in |
@@ -140,6 +142,54 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 12 | `chunk_data` | CHUNK |
 | 13 | `starting_seq` | COMMAND |
 | 14 | `timestamp_ms` | COMMAND |
+
+### Program image format
+
+The gateway accepts BPF programs as pre-compiled ELF files but does **not** transmit ELF to nodes. Instead, the gateway extracts the bytecode and map definitions from the ELF and encodes them into a **program image** — a CBOR-encoded binary blob. This program image is what gets chunked, transferred, hashed, and stored on the node.
+
+#### Program image structure
+
+The program image is a CBOR map with integer keys:
+
+| Key | Field name | CBOR type | Description |
+|---|---|---|---|
+| 1 | `bytecode` | bstr | Raw BPF bytecode extracted from the ELF `.text` section. |
+| 2 | `maps` | array | Array of map definitions (see below). Empty array if no maps. |
+
+Each entry in the `maps` array is a CBOR map:
+
+| Key | Field name | CBOR type | Description |
+|---|---|---|---|
+| 1 | `type` | uint | Map type (e.g., 1 = `BPF_MAP_TYPE_ARRAY`). |
+| 2 | `key_size` | uint | Size of each key in bytes. |
+| 3 | `value_size` | uint | Size of each value in bytes. |
+| 4 | `max_entries` | uint | Maximum number of entries. |
+
+#### Program hash
+
+The `program_hash` used throughout the protocol is the SHA-256 hash of the **complete CBOR-encoded program image**:
+
+- The hash covers both bytecode **and** map definitions.
+- Two programs with identical bytecode but different map layouts have different hashes.
+- The gateway computes the hash after encoding the image; the node computes it after reassembling all chunks.
+
+**Deterministic encoding:** The program image MUST be encoded using CBOR deterministic encoding (RFC 8949 §4.2) to ensure that all gateways produce identical bytes (and therefore identical hashes) for the same program.
+
+#### Ingestion pipeline
+
+```
+BPF ELF file (developer artifact)
+  │
+  ├── Parse ELF: extract .text (bytecode) and .maps (map definitions)
+  ├── Verify with Prevail (resident or ephemeral profile)
+  ├── Encode program image as CBOR: { 1: bytecode, 2: [map_defs...] }
+  ├── Compute program_hash = SHA-256(program image CBOR)
+  ├── Store in program library (keyed by hash)
+  │
+  └── Ready for chunked transfer to nodes
+```
+
+The ELF is never transmitted to the node. The node receives only the CBOR program image.
 
 ### 5.1  WAKE (Node → Gateway)
 
@@ -222,7 +272,7 @@ Response to `GET_CHUNK`.
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
 | `chunk_index` | uint | Yes | Index of this chunk (must match request). |
-| `chunk_data` | bstr | Yes | Raw program bytes for this chunk. |
+| `chunk_data` | bstr | Yes | Bytes from the CBOR-encoded program image for this chunk. |
 
 The `nonce` field in the fixed header echoes the sequence number from the `GET_CHUNK` request, binding the response to that specific chunk request.
 

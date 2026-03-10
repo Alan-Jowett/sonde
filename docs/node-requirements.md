@@ -347,13 +347,13 @@ The node SHOULD support flash encryption to prevent physical extraction of the P
 **Source:** protocol.md §5.3, §6.2
 
 **Description:**  
-The node MUST support receiving programs via the chunked transfer sub-protocol. The node drives the transfer by sending `GET_CHUNK` requests for each chunk index in sequence.
+The node MUST support receiving programs via the chunked transfer sub-protocol. The data being transferred is a CBOR-encoded program image (see protocol.md § Program image format), not a raw ELF file. The node drives the transfer by sending `GET_CHUNK` requests for each chunk index in sequence.
 
 **Acceptance criteria:**
 
 1. The node requests chunks in order from index 0 to `chunk_count − 1`.
 2. Each `GET_CHUNK` uses an incrementing sequence number in the `nonce` header field.
-3. The node reassembles chunks into the complete program.
+3. The node reassembles chunks into the complete CBOR program image.
 
 ---
 
@@ -363,13 +363,29 @@ The node MUST support receiving programs via the chunked transfer sub-protocol. 
 **Source:** protocol.md §5.5, security.md §5.3
 
 **Description:**  
-After reassembling all chunks, the node MUST compute the SHA-256 hash of the complete program and compare it to the `program_hash` from the COMMAND payload. If the hash does not match, the node MUST discard the program and abort.
+After reassembling all chunks, the node MUST compute the SHA-256 hash of the complete CBOR program image and compare it to the `program_hash` from the COMMAND payload. If the hash does not match, the node MUST discard the program and abort.
 
 **Acceptance criteria:**
 
-1. A program whose hash matches is accepted and stored.
-2. A program whose hash does not match is discarded.
+1. A program image whose hash matches is accepted.
+2. A program image whose hash does not match is discarded.
 3. The node sends `PROGRAM_ACK` only after successful hash verification.
+
+---
+
+### ND-0501a  Program image decoding
+
+**Priority:** Must  
+**Source:** protocol.md § Program image format
+
+**Description:**  
+After hash verification, the node MUST decode the CBOR program image to extract the bytecode and map definitions. The node uses the map definitions to allocate map storage in sleep-persistent memory and the bytecode for BPF execution.
+
+**Acceptance criteria:**
+
+1. The node correctly decodes the CBOR program image (bytecode + map definitions).
+2. Map storage is allocated according to the map definitions.
+3. If map definitions exceed the sleep-persistent memory budget, installation fails and the existing program remains active (see ND-0606).
 
 ---
 
@@ -690,6 +706,7 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 | ND-0403a | Flash encryption support | Should |
 | ND-0500 | Chunked program transfer | Must |
 | ND-0501 | Program hash verification | Must |
+| ND-0501a | Program image decoding | Must |
 | ND-0502 | Resident program storage (A/B partitions) | Must |
 | ND-0503 | Ephemeral program storage | Must |
 | ND-0504 | BPF execution | Must |

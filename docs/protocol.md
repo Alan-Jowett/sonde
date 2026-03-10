@@ -381,6 +381,8 @@ The number of exchanges per wake cycle is determined by the BPF program. The pro
 
 ## 7  Authentication
 
+> For the complete security model — including trust assumptions, key provisioning, identity binding, failure modes, and gateway failover — see [security.md](security.md).
+
 ### 7.1  HMAC computation
 
 For every frame (both directions):

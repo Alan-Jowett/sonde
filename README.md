@@ -72,6 +72,18 @@ Data is **authenticated but not encrypted** (integrity, not confidentiality). Al
 
 ---
 
+## Security Model
+
+- Each node has a unique 256-bit pre-shared key fused into eFuse (hardware-inaccessible to software).
+- The gateway stores the key database and authenticates all messages with HMAC-SHA256.
+- Nonces provide replay protection; the gateway maintains a 64-entry per-node sliding window.
+- BPF programs are integrity-checked by content hash at every transfer.
+- Keys cannot be rotated; physical node replacement is required if a key is compromised.
+
+See [security.md](docs/security.md) for the complete security model: threat model, key provisioning, authentication, replay protection, identity binding, failure modes, and gateway failover.
+
+---
+
 ## BPF program environment
 
 BPF programs have access to raw bus primitives (I2C, SPI, GPIO, ADC), communication helpers (`send`, `send_recv`), persistent maps, and system functions. The firmware provides bus access; sensor-specific protocols live in the BPF program. See [bpf-environment.md](docs/bpf-environment.md) for the full helper API, memory model, verification profiles, and development workflow.
@@ -134,6 +146,7 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 - [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform
 - [Protocol](docs/protocol.md) — node-gateway wire protocol specification
 - [Gateway Requirements](docs/gateway-requirements.md) — formal gateway requirements
+- [Security Model](docs/security.md) — threat model, key provisioning, authentication, replay protection, and failure modes
 
 ---
 

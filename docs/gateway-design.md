@@ -395,8 +395,15 @@ The handler router maps `program_hash` → handler process and manages the handl
 ### 9.1  Configuration
 
 ```rust
+pub enum ProgramMatcher {
+    /// Match any program hash (catch-all).
+    Any,
+    /// Match a specific program hash.
+    Hash(Vec<u8>),
+}
+
 pub struct HandlerConfig {
-    pub program_hashes: Vec<Vec<u8>>,  // or "*" for catch-all
+    pub matchers: Vec<ProgramMatcher>,
     pub command: String,
     pub args: Vec<String>,
 }
@@ -512,7 +519,7 @@ tokio runtime
         └── reads stdout, routes LOG/DATA_REPLY
 ```
 
-Per-node processing tasks are spawned for each inbound frame. The session map is shared via `Arc<RwLock<HashMap<NodeId, Session>>>`. Since sessions are short-lived and contention is low (each node has at most one concurrent frame), a simple `RwLock` is sufficient.
+Per-node processing tasks are spawned for each inbound frame. The session map is shared via `Arc<tokio::sync::RwLock<HashMap<NodeId, Session>>>`. Since sessions are short-lived and contention is low (each node has at most one concurrent frame), a simple async-aware `RwLock` is sufficient, but implementations MUST NOT hold a lock guard across `.await` points. Implementers MAY instead use a concurrent map (e.g., `DashMap<NodeId, Session>`) to reduce lock contention and avoid common async locking pitfalls.
 
 The node registry and program library are accessed through the storage trait behind an `Arc`. Storage implementations are responsible for their own internal synchronization.
 

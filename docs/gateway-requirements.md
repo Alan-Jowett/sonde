@@ -517,7 +517,7 @@ The gateway's key store SHOULD encrypt PSK material at rest. Plaintext PSKs SHOU
 
 1. When at-rest encryption is enabled, PSKs are not readable without the decryption key.
 2. The gateway can transparently read encrypted PSKs at startup and during operation.
-3. Exporting the key store SHOULD require explicit operator authorization (see GW-1001).
+3. Exporting the key store SHOULD require explicit operator authorization.
 
 ---
 

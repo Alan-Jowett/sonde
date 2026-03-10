@@ -154,6 +154,24 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 
 ---
 
+## Related Work
+
+Prior work has explored the use of eBPF‑derived virtual machines on microcontroller‑class devices to enable safe, dynamically deployable software modules. **Femto‑Containers** and **rBPF** integrate a reduced eBPF virtual machine into [RIOT‑OS](https://www.riot-os.org/), allowing small sandboxed programs to be deployed and executed on low‑power IoT devices, primarily to support DevOps‑style updates and fault isolation without reflashing firmware. These systems demonstrate that an eBPF‑like instruction set can be executed efficiently on resource‑constrained hardware and safely isolated from the host OS. Key references include:
+- [Femto‑Containers paper](https://arxiv.org/abs/2106.12553)
+- [Femto‑Containers code](https://github.com/future-proof-iot/Femto-Container)
+- [rBPF paper](https://arxiv.org/abs/2011.12047)
+
+Subsequent work, including **μBPF**, extends this line of research with just‑in‑time (JIT) compilation, over‑the‑air deployment pipelines, and formal verification to improve performance and provide stronger correctness guarantees for eBPF execution on microcontrollers. Key references include:
+- [μBPF paper](https://marioskogias.github.io/docs/microbpf.pdf)
+- [μBPF code](https://github.com/SzymonKubica/micro-bpf)
+
+Related efforts also focus on formally verified eBPF interpreters and JITs for RIOT‑based systems, emphasizing proof‑carrying safety and memory isolation rather than general application architecture. See also:
+- [End‑to‑end mechanized proof of rBPF](https://link.springer.com/chapter/10.1007/978-3-031-65627-9_16)
+
+In contrast to these systems, which primarily treat eBPF as a *mechanism* for hosting isolated application fragments within a general‑purpose embedded operating system, **Sonde** adopts BPF as the *primary application execution model*. Sonde intentionally freezes node firmware and delegates all application behavior—including sampling logic, thresholds, diagnostics, and scheduling—to verified BPF bytecode managed by a gateway‑driven control plane. This design emphasizes end‑to‑end behavioral control, predictable energy usage, and verification‑first safety guarantees, rather than OS extensibility, multi‑tenant execution, or embedded DevOps tooling.
+
+---
+
 ## License
 
 [MIT](LICENSE)

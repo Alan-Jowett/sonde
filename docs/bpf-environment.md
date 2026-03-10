@@ -403,7 +403,7 @@ Insert or update a key-value pair in a BPF map.
 | `key` | Pointer to the key. |
 | `value` | Pointer to the value. |
 
-**Returns:** `0` on success, negative on failure (map full, key not found for array type).
+**Returns:** `0` on success, negative on failure (key/index out of range for array type).
 
 **Availability:** Resident only. Ephemeral programs cannot modify maps.
 
@@ -488,8 +488,8 @@ All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on
 | **Loops** | Bounded | None or tightly bounded |
 | **Map access** | Read/write | Read-only |
 | **Instruction budget** | Larger | Small |
-| **Helper set** | Full | Limited (`send`, `send_recv`, `i2c_read`, `i2c_write`, `i2c_write_read`, `spi_transfer`, `gpio_read`, `adc_read`, `map_lookup_elem`, `get_time`, `get_battery_mv`, `bpf_trace_printk`) |
-| **Side effects** | Allowed | None |
+| **Helper set** | Full | Limited (`send`, `send_recv`, `i2c_read`, `i2c_write`, `i2c_write_read`, `spi_transfer`, `gpio_read`, `gpio_write`, `adc_read`, `delay_us`, `map_lookup_elem`, `get_time`, `get_battery_mv`, `bpf_trace_printk`) |
+| **Side effects** | Allowed | No persistent node state changes (no map writes, no schedule changes) |
 
 A program that fails verification is rejected with a diagnostic explaining why. It never reaches the node.
 
@@ -564,7 +564,7 @@ Provide the ELF file to the gateway for distribution. The gateway verifies the p
 
 ---
 
-## 9  Platform constraints (reference implementation)
+## 10  Platform constraints (reference implementation)
 
 These values are specific to the ESP32-C3/S3 reference implementation. Other platforms may differ.
 
@@ -576,4 +576,4 @@ These values are specific to the ESP32-C3/S3 reference implementation. Other pla
 | **BPF execution** | Interpreter only | Interpreter only |
 | **Max resident program** | 4 KB | 4 KB |
 | **Max ephemeral program** | 2 KB | 2 KB |
-| **APP_DATA payload** | ~190 bytes per frame | ~190 bytes per frame |
+| **APP_DATA payload** | ~200 bytes per frame | ~200 bytes per frame |

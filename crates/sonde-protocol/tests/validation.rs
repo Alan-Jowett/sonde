@@ -18,15 +18,13 @@ struct SoftwareHmac;
 
 impl HmacProvider for SoftwareHmac {
     fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(key).expect("HMAC can take key of any size");
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC can take key of any size");
         mac.update(data);
         mac.finalize().into_bytes().into()
     }
 
     fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(key).expect("HMAC can take key of any size");
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC can take key of any size");
         mac.update(data);
         mac.verify_slice(expected).is_ok()
     }
@@ -593,7 +591,10 @@ fn test_p042() {
     };
     let cbor_a = make_img().encode_deterministic().unwrap();
     let cbor_b = make_img().encode_deterministic().unwrap();
-    assert_eq!(cbor_a, cbor_b, "deterministic encoding must be byte-identical");
+    assert_eq!(
+        cbor_a, cbor_b,
+        "deterministic encoding must be byte-identical"
+    );
 }
 
 #[test]

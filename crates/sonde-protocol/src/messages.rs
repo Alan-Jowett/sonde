@@ -78,8 +78,8 @@ fn cbor_encode_map(pairs: &[(u64, Value)]) -> Result<Vec<u8>, EncodeError> {
 }
 
 fn cbor_decode_map(cbor: &[u8]) -> Result<Vec<(u64, Value)>, DecodeError> {
-    let value: Value = ciborium::from_reader(cbor)
-        .map_err(|e| DecodeError::CborError(format!("{}", e)))?;
+    let value: Value =
+        ciborium::from_reader(cbor).map_err(|e| DecodeError::CborError(format!("{}", e)))?;
     match value {
         Value::Map(pairs) => {
             let mut result = Vec::new();
@@ -98,7 +98,7 @@ fn cbor_decode_map(cbor: &[u8]) -> Result<Vec<(u64, Value)>, DecodeError> {
     }
 }
 
-fn get_field<'a>(fields: &'a [(u64, Value)], key: u64) -> Result<&'a Value, DecodeError> {
+fn get_field(fields: &[(u64, Value)], key: u64) -> Result<&Value, DecodeError> {
     fields
         .iter()
         .find(|(k, _)| *k == key)
@@ -132,13 +132,19 @@ impl NodeMessage {
                 battery_mv,
             } => {
                 alloc::vec![
-                    (KEY_FIRMWARE_ABI_VERSION, Value::Integer((*firmware_abi_version as i64).into())),
+                    (
+                        KEY_FIRMWARE_ABI_VERSION,
+                        Value::Integer((*firmware_abi_version as i64).into())
+                    ),
                     (KEY_PROGRAM_HASH, Value::Bytes(program_hash.clone())),
                     (KEY_BATTERY_MV, Value::Integer((*battery_mv as i64).into())),
                 ]
             }
             NodeMessage::GetChunk { chunk_index } => {
-                alloc::vec![(KEY_CHUNK_INDEX, Value::Integer((*chunk_index as i64).into()))]
+                alloc::vec![(
+                    KEY_CHUNK_INDEX,
+                    Value::Integer((*chunk_index as i64).into())
+                )]
             }
             NodeMessage::ProgramAck { program_hash } => {
                 alloc::vec![(KEY_PROGRAM_HASH, Value::Bytes(program_hash.clone()))]
@@ -191,9 +197,18 @@ impl GatewayMessage {
                 payload,
             } => {
                 let mut p = alloc::vec![
-                    (KEY_COMMAND_TYPE, Value::Integer((*command_type as i64).into())),
-                    (KEY_STARTING_SEQ, Value::Integer((*starting_seq as i64).into())),
-                    (KEY_TIMESTAMP_MS, Value::Integer((*timestamp_ms as i64).into())),
+                    (
+                        KEY_COMMAND_TYPE,
+                        Value::Integer((*command_type as i64).into())
+                    ),
+                    (
+                        KEY_STARTING_SEQ,
+                        Value::Integer((*starting_seq as i64).into())
+                    ),
+                    (
+                        KEY_TIMESTAMP_MS,
+                        Value::Integer((*timestamp_ms as i64).into())
+                    ),
                 ];
                 match payload {
                     CommandPayload::Nop | CommandPayload::Reboot => {}
@@ -231,7 +246,10 @@ impl GatewayMessage {
                 chunk_data,
             } => {
                 alloc::vec![
-                    (KEY_CHUNK_INDEX, Value::Integer((*chunk_index as i64).into())),
+                    (
+                        KEY_CHUNK_INDEX,
+                        Value::Integer((*chunk_index as i64).into())
+                    ),
                     (KEY_CHUNK_DATA, Value::Bytes(chunk_data.clone())),
                 ]
             }

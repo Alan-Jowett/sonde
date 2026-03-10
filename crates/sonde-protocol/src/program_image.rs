@@ -80,7 +80,11 @@ impl ProgramImage {
 
         let fields = match &value {
             Value::Map(pairs) => pairs,
-            _ => return Err(DecodeError::CborError(alloc::string::String::from("expected CBOR map"))),
+            _ => {
+                return Err(DecodeError::CborError(alloc::string::String::from(
+                    "expected CBOR map",
+                )))
+            }
         };
 
         let mut bytecode: Option<Vec<u8>> = None;
@@ -134,8 +138,7 @@ impl ProgramImage {
                         }
 
                         maps.push(MapDef {
-                            map_type: map_type
-                                .ok_or(DecodeError::MissingField(MAP_KEY_TYPE))?,
+                            map_type: map_type.ok_or(DecodeError::MissingField(MAP_KEY_TYPE))?,
                             key_size: key_size
                                 .ok_or(DecodeError::MissingField(MAP_KEY_KEY_SIZE))?,
                             value_size: value_size

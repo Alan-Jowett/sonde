@@ -11,7 +11,7 @@ pub fn chunk_count(image_size: usize, chunk_size: usize) -> Option<u32> {
     if chunk_size == 0 {
         return None;
     }
-    Some(((image_size + chunk_size - 1) / chunk_size) as u32)
+    Some(image_size.div_ceil(chunk_size) as u32)
 }
 
 /// Get the bytes for a specific chunk from a program image.

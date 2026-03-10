@@ -2,6 +2,8 @@
 
 **A programmable, verifiable runtime for distributed sensor nodes.**
 
+Each node acts as a programmable sonde: a constrained probe that autonomously samples its environment and reports observations upstream.
+
 Nodes run uniform firmware and execute behavior defined by [uBPF](https://github.com/iovisor/ubpf) programs verified with [Prevail](https://github.com/vbpf/ebpf-verifier). A gateway distributes programs, schedules, and configuration over the air — no firmware updates required. The architecture is hardware-agnostic; the reference implementation targets ESP32-C3/S3.
 
 > **Status:** Design phase. This document is the specification.

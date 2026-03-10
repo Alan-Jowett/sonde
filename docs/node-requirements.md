@@ -324,6 +324,21 @@ The node SHOULD support secure boot to prevent unauthorized firmware from runnin
 
 ---
 
+### ND-0403a  Flash encryption support
+
+**Priority:** Should  
+**Source:** security.md §2.2
+
+**Description:**  
+The node SHOULD support flash encryption to prevent physical extraction of the PSK from the flash partition. This complements secure boot (ND-0403) as a defense-in-depth measure.
+
+**Acceptance criteria:**
+
+1. When flash encryption is enabled, the PSK partition is encrypted at rest.
+2. The firmware can transparently read the encrypted PSK at boot time.
+
+---
+
 ## 7  Program transfer and execution
 
 ### ND-0500  Chunked program transfer
@@ -648,21 +663,6 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 
 1. A CHUNK with a mismatched `chunk_index` is discarded.
 2. The node retries the original GET_CHUNK request per the retry policy (ND-0701).
-
----
-
-### ND-0403a  Flash encryption support
-
-**Priority:** Should  
-**Source:** security.md §2.2
-
-**Description:**  
-The node SHOULD support flash encryption to prevent physical extraction of the PSK from the flash partition. This complements secure boot (ND-0403) as a defense-in-depth measure.
-
-**Acceptance criteria:**
-
-1. When flash encryption is enabled, the PSK partition is encrypted at rest.
-2. The firmware can transparently read the encrypted PSK at boot time.
 
 ---
 

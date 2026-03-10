@@ -47,17 +47,14 @@ This gives you OTA-like flexibility without OTA complexity. New sensors, new log
 
 ---
 
-## Two classes of BPF programs
+## BPF programs
 
-### Resident (long-term)
-- Installed by the gateway, stored in flash.
-- Runs on a schedule with full map read/write access.
-- Implements steady-state behavior: sampling, thresholds, batching, transmission.
+Nodes execute [BPF programs](docs/bpf-environment.md) that define all application behavior. Two classes exist:
 
-### Ephemeral (one-shot)
-- Sent for immediate execution, stored in RAM, discarded after.
-- Read-only access to maps. Stricter verifier profile (no map writes, small instruction budget).
-- Used for diagnostics and remote introspection.
+- **Resident** — stored in flash, runs every wake cycle, full map read/write access.
+- **Ephemeral** — one-shot diagnostic, stored in RAM, read-only maps, discarded after execution.
+
+Programs are compiled to BPF ELF, verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on the gateway, and distributed over the air. See the [BPF environment](docs/bpf-environment.md) doc for the full helper API, memory model, verification profiles, and development workflow.
 
 ---
 
@@ -117,46 +114,61 @@ The protocol treats all blobs as opaque — the BPF program and gateway applicat
 
 ## Memory model
 
+BPF programs access four memory regions with different lifetimes. See [BPF environment § Memory model](docs/bpf-environment.md#5--memory-model) for details.
+
 | Region | Persistence | Purpose |
 |---|---|---|
-| **Context** | Per-wake (read-only) | Sensor values, battery, timestamp, metadata |
-| **Scratch** | Volatile | BPF working memory, lost on sleep |
-| **Maps** | Sleep-persistent | BPF maps backed by sleep-persistent memory |
-| **Flash** | Permanent | Resident program, schedule, A/B partitions |
-
-Map layout is defined in the BPF program ELF using standard BPF map definitions and delivered alongside the program. Firmware allocates maps and enforces the platform's memory budget.
+| **Context** | Per-wake (read-only) | Timestamp, battery, wake reason |
+| **Scratch** | Volatile | Stack and local variables |
+| **Maps** | Sleep-persistent | Key-value stores surviving deep sleep |
+| **Flash** | Permanent | Resident program, schedule |
 
 ---
 
 ## Helper API
 
+The firmware provides a stable helper API to BPF programs. See [BPF environment § Helper API](docs/bpf-environment.md#6--helper-api) for full documentation.
+
 ```c
-read_sensor(id, buf_ptr, buf_len)   // returns 0 on success, nonzero on failure
-send(ptr, len)                       // fire-and-forget: emit APP_DATA, no reply expected
-send_recv(ptr, len, reply_buf,       // send APP_DATA and block until APP_DATA_REPLY
-          reply_len, timeout_ms)     // returns bytes received, or negative on timeout
-map_lookup_elem(map_id, key_ptr)
-map_update_elem(map_id, key_ptr, value_ptr)  // resident only
-get_time()
-get_battery_mv()
-set_next_wake(seconds)               // request earlier wake
+// Bus access — sensor protocol lives in BPF, not firmware
+// bus+addr packed into handle: (bus << 16) | addr
+i2c_read(handle, buf, len)           // read from I2C device
+i2c_write(handle, data, len)         // write to I2C device
+i2c_write_read(handle,               // write register addr, read value
+               wr, wr_len, rd, rd_len)
+spi_transfer(handle, tx, rx, len)    // full-duplex SPI transfer
+gpio_read(pin)                       // read GPIO pin
+gpio_write(pin, value)               // set GPIO pin
+adc_read(channel, value_ptr)         // read ADC channel
+
+// Communication
+send(ptr, len)                       // fire-and-forget: emit APP_DATA
+send_recv(ptr, len, reply_buf,       // send APP_DATA and block for reply
+          reply_len, timeout_ms)
+
+// Maps (pointer-based, loader resolves via ELF relocation)
+map_lookup_elem(map, key_ptr)        // look up map value
+map_update_elem(map, key_ptr,        // update map value (resident only)
+                value_ptr)
+
+// System
+get_time()                           // current time (ms since epoch)
+get_battery_mv()                     // battery voltage
+delay_us(microseconds)               // busy-wait for sensor timing
+set_next_wake(seconds)               // request earlier wake (resident only)
 bpf_trace_printk(fmt, fmt_len, ...)  // debug trace output
 ```
-
-The ABI remains stable across firmware versions.
 
 ---
 
 ## Verification (Prevail)
 
-All programs are verified before loading. Two profiles enforce different safety guarantees:
+All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) before loading. See [BPF environment § Verification](docs/bpf-environment.md#7--verification-profiles) for the full profile comparison.
 
 | | Resident | Ephemeral |
 |---|---|---|
-| **Loops** | Bounded | None or tightly bounded |
 | **Map access** | Read/write | Read-only |
 | **Instruction budget** | Larger | Small |
-| **Helper set** | Full | Limited |
 | **Side effects** | Allowed | None |
 
 ---
@@ -237,6 +249,7 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 ## Further reading
 
 - [Why BPF?](docs/why-bpf.md) — rationale for using uBPF + Prevail as the execution model
+- [BPF Environment](docs/bpf-environment.md) — program API, memory model, verification, and development workflow
 - [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform
 - [Protocol](docs/protocol.md) — node-gateway wire protocol specification
 - [Gateway Requirements](docs/gateway-requirements.md) — formal gateway requirements

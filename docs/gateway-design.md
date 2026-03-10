@@ -91,7 +91,11 @@ pub trait Transport: Send + Sync {
 }
 ```
 
-The transport returns the sender's address alongside the frame. After the protocol layer authenticates the frame and identifies the node, the session manager stores the peer address in the session. Responses are sent to the address from the session, not looked up by `key_hint`.
+The transport returns the sender's address alongside the frame. After the protocol layer authenticates the frame (using `key_hint` → candidate PSK lookup → HMAC verification) and identifies the node, the session manager stores the peer address in the session. Responses are sent to the address from the session.
+
+The peer address is **session-scoped** — it is never persisted. Each WAKE re-establishes the address. This is correct because:
+- A node's MAC address may change (hardware replacement after factory reset + re-pair).
+- The `key_hint` → PSK lookup is the durable identity mechanism; the MAC is just a transient delivery address.
 
 ### 4.1  ESP-NOW adapter
 

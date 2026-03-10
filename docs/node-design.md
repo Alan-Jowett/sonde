@@ -26,7 +26,7 @@ The firmware is **uniform across all nodes** — application behavior is defined
 | Language | Rust | Same language as gateway; memory safety on bare metal |
 | Protocol crate | `sonde-protocol` (shared with gateway) | `no_std`-compatible; frame codec, CBOR messages, constants |
 | Platform bindings | `esp-idf-hal` + `esp-idf-svc` | Full ESP-IDF feature access (ESP-NOW, deep sleep, hardware crypto, flash partitions) |
-| BPF interpreter | `rbpf` (extended) | Pure Rust; must be extended to support BPF-to-BPF function calls |
+| BPF interpreter | **⚠ OPEN** — `rbpf` (pure Rust) or `uBPF` (C, via FFI). Both require extension for BPF-to-BPF function calls. |
 | CBOR | Via `sonde-protocol` (`ciborium` or `minicbor`) | serde-compatible; `minicbor` is an alternative if binary size is a concern |
 | HMAC | ESP-IDF hardware HMAC peripheral (implements `sonde-protocol::Hmac` trait) | Hardware-accelerated; ~10x faster than software |
 | SHA-256 | ESP-IDF hardware SHA peripheral | Hardware-accelerated; used for program hash verification |
@@ -259,10 +259,14 @@ Ephemeral programs are stored in RAM (heap allocation), not flash. They are deco
 
 ### 8.1  Interpreter
 
-The node uses `rbpf` as the BPF interpreter, extended to support:
+**⚠ OPEN:** The BPF interpreter choice is an open design decision:
 
-- **BPF-to-BPF function calls** (max 8 call frames, 512 bytes stack each).
-- **Custom helper dispatch** (the firmware registers helpers by number).
+| Option | Pros | Cons |
+|---|---|---|
+| `rbpf` (Rust) | Pure Rust, no FFI, same language as firmware | Less established; needs BPF-to-BPF call extension |
+| `uBPF` (C, via FFI) | Larger ecosystem, used by eBPF for Windows | Requires unsafe FFI; needs BPF-to-BPF call extension |
+
+Both options require extension to support BPF-to-BPF function calls (max 8 call frames, 512 bytes stack each). The firmware wraps whichever interpreter behind a common internal interface, so the choice does not affect the rest of the design.
 
 The interpreter runs in bounded mode — an instruction counter enforces the instruction budget. If the budget is exceeded, execution is terminated and the program returns an error.
 

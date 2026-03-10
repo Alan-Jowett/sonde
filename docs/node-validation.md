@@ -89,10 +89,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0102
 
 **Procedure:**
-1. Capture a WAKE frame.
+1. Capture two WAKE frames from separate wake cycles.
 2. Assert: bytes 0–1 = key_hint (big-endian).
 3. Assert: byte 2 = `MSG_WAKE` (0x01).
-4. Assert: bytes 3–10 = nonce (big-endian, non-zero).
+4. Assert: bytes 3–10 = nonce (big-endian 64-bit value; verify it differs between the two frames).
 5. Assert: last 32 bytes = valid HMAC-SHA256 over preceding bytes.
 6. Assert: total length ≤ 250 bytes.
 
@@ -103,9 +103,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0103
 
 **Procedure:**
-1. Install `send_program` that sends a blob of exactly 207 − CBOR overhead bytes (maximum).
-2. Capture the APP_DATA frame.
-3. Assert: total frame ≤ 250 bytes.
+1. Compute the maximum allowed `blob` length: encode an APP_DATA CBOR map with an empty blob, measure the CBOR overhead, then `max_blob_len = 207 − cbor_overhead`.
+2. Install `send_program` that calls `send()` with a blob of exactly `max_blob_len` bytes.
+3. Capture the APP_DATA frame.
+4. Assert: CBOR payload length ≤ 207 bytes.
+5. Assert: total frame length ≤ 250 bytes.
 
 ---
 
@@ -155,7 +157,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 4. Assert: `firmware_abi_version` matches firmware ABI.
 5. Assert: `program_hash` = hash X.
 6. Assert: `battery_mv` = 3300.
-7. Assert: nonce is non-zero (from hardware RNG).
+7. Assert: WAKE includes a `nonce` field sourced from hardware RNG.
 
 ---
 
@@ -308,7 +310,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0304
 
 **Procedure:**
-1. Run 100 wake cycles.
+1. Run 1000 wake cycles.
 2. Collect the WAKE nonce from each cycle.
 3. Assert: no duplicates.
 
@@ -334,7 +336,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Erase the key partition.
 2. Boot the node.
-3. Assert: no frames transmitted. Node sleeps indefinitely.
+3. Assert: no frames transmitted. Node enters deep sleep with radio off.
 
 ---
 
@@ -803,7 +805,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0504 | T-N506 |
 | ND-0505 | T-N507, T-N508, T-N509 |
 | ND-0506 | T-N508, T-N510 |
-| ND-0600 | *(covered by helper-specific tests below)* |
+| ND-0600 | *(validated by automated helper ABI conformance test that asserts exported helper IDs and signatures match the published spec across firmware versions)* |
 | ND-0601 | T-N600, T-N601, T-N602, T-N603 |
 | ND-0602 | T-N604, T-N605, T-N606 |
 | ND-0603 | T-N607, T-N608, T-N609 |

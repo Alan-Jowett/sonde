@@ -5,9 +5,8 @@ edition = "2021"
 description = "Shared protocol crate for the Sonde platform"
 
 [features]
-default = ["alloc"]
-alloc = []
-std = ["alloc"]
+default = []
+std = []
 
 [dependencies]
 ciborium = { version = "0.2", default-features = false }

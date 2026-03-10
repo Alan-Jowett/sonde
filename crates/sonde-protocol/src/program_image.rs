@@ -9,7 +9,6 @@ use crate::constants::*;
 use crate::error::{DecodeError, EncodeError};
 use crate::traits::Sha256Provider;
 
-#[cfg(feature = "alloc")]
 use alloc::format;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,20 +36,20 @@ impl ProgramImage {
                 // Keys in ascending order: 1, 2, 3, 4
                 Value::Map(alloc::vec![
                     (
-                        Value::Integer((MAP_KEY_TYPE as i64).into()),
-                        Value::Integer((m.map_type as i64).into()),
+                        Value::Integer(MAP_KEY_TYPE.into()),
+                        Value::Integer(m.map_type.into()),
                     ),
                     (
-                        Value::Integer((MAP_KEY_KEY_SIZE as i64).into()),
-                        Value::Integer((m.key_size as i64).into()),
+                        Value::Integer(MAP_KEY_KEY_SIZE.into()),
+                        Value::Integer(m.key_size.into()),
                     ),
                     (
-                        Value::Integer((MAP_KEY_VALUE_SIZE as i64).into()),
-                        Value::Integer((m.value_size as i64).into()),
+                        Value::Integer(MAP_KEY_VALUE_SIZE.into()),
+                        Value::Integer(m.value_size.into()),
                     ),
                     (
-                        Value::Integer((MAP_KEY_MAX_ENTRIES as i64).into()),
-                        Value::Integer((m.max_entries as i64).into()),
+                        Value::Integer(MAP_KEY_MAX_ENTRIES.into()),
+                        Value::Integer(m.max_entries.into()),
                     ),
                 ])
             })
@@ -59,11 +58,11 @@ impl ProgramImage {
         // Outer map keys in ascending order: 1 (bytecode), 2 (maps)
         let outer = Value::Map(alloc::vec![
             (
-                Value::Integer((IMG_KEY_BYTECODE as i64).into()),
+                Value::Integer(IMG_KEY_BYTECODE.into()),
                 Value::Bytes(self.bytecode.clone()),
             ),
             (
-                Value::Integer((IMG_KEY_MAPS as i64).into()),
+                Value::Integer(IMG_KEY_MAPS.into()),
                 Value::Array(map_values),
             ),
         ]);

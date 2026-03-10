@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -68,7 +69,7 @@ pub enum GatewayMessage {
 fn cbor_encode_map(pairs: &[(u64, Value)]) -> Result<Vec<u8>, EncodeError> {
     let map: Vec<(Value, Value)> = pairs
         .iter()
-        .map(|(k, v)| (Value::Integer((*k as i64).into()), v.clone()))
+        .map(|(k, v)| (Value::Integer((*k).into()), v.clone()))
         .collect();
     let value = Value::Map(map);
     let mut buf = Vec::new();
@@ -131,27 +132,20 @@ fn get_bytes(fields: &[(u64, Value)], key: u64) -> Result<Vec<u8>, DecodeError> 
 }
 
 /// Encode a u64 as a CBOR unsigned integer Value.
-/// For values that fit in i64 (the common case), uses direct conversion.
-/// Values > i64::MAX are not expected in this protocol but are encoded
-/// via the raw CBOR bytes path if needed.
+/// ciborium's Integer supports From<u64> directly, preserving the full range.
 fn uint_val(v: u64) -> Value {
-    // All protocol u64 values (timestamps, sequence numbers) fit in i64
-    // in practice. If a value exceeds i64::MAX, encode as i64 — this
-    // covers the full u63 range which is sufficient.
-    Value::Integer((v as i64).into())
+    Value::Integer(v.into())
 }
 
 /// Encode a u32 as a CBOR unsigned integer Value.
 fn u32_val(v: u32) -> Value {
-    Value::Integer((v as i64).into())
+    Value::Integer(v.into())
 }
 
 /// Encode a u8 as a CBOR unsigned integer Value.
 fn u8_val(v: u8) -> Value {
-    Value::Integer((v as i64).into())
+    Value::Integer(v.into())
 }
-
-use alloc::format;
 
 impl NodeMessage {
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
@@ -225,8 +219,8 @@ impl GatewayMessage {
                     (KEY_STARTING_SEQ, uint_val(*starting_seq)),
                     (KEY_TIMESTAMP_MS, uint_val(*timestamp_ms)),
                 ];
-                match payload {
-                    CommandPayload::Nop | CommandPayload::Reboot => {}
+                let payload_val = match payload {
+                    CommandPayload::Nop | CommandPayload::Reboot => None,
                     CommandPayload::UpdateProgram {
                         program_hash,
                         program_size,
@@ -239,14 +233,33 @@ impl GatewayMessage {
                         chunk_size,
                         chunk_count,
                     } => {
-                        p.push((KEY_PROGRAM_HASH, Value::Bytes(program_hash.clone())));
-                        p.push((KEY_PROGRAM_SIZE, u32_val(*program_size)));
-                        p.push((KEY_CHUNK_SIZE, u32_val(*chunk_size)));
-                        p.push((KEY_CHUNK_COUNT, u32_val(*chunk_count)));
+                        let inner = alloc::vec![
+                            (
+                                Value::Integer(KEY_PROGRAM_HASH.into()),
+                                Value::Bytes(program_hash.clone())
+                            ),
+                            (
+                                Value::Integer(KEY_PROGRAM_SIZE.into()),
+                                u32_val(*program_size)
+                            ),
+                            (Value::Integer(KEY_CHUNK_SIZE.into()), u32_val(*chunk_size)),
+                            (
+                                Value::Integer(KEY_CHUNK_COUNT.into()),
+                                u32_val(*chunk_count)
+                            ),
+                        ];
+                        Some(Value::Map(inner))
                     }
                     CommandPayload::UpdateSchedule { interval_s } => {
-                        p.push((KEY_INTERVAL_S, u32_val(*interval_s)));
+                        let inner = alloc::vec![(
+                            Value::Integer(KEY_INTERVAL_S.into()),
+                            u32_val(*interval_s)
+                        ),];
+                        Some(Value::Map(inner))
                     }
+                };
+                if let Some(pv) = payload_val {
+                    p.push((KEY_PAYLOAD, pv));
                 }
                 p
             }
@@ -275,23 +288,73 @@ impl GatewayMessage {
                 let timestamp_ms = get_uint(&fields, KEY_TIMESTAMP_MS)?;
 
                 let payload = match command_type {
-                    CMD_NOP => CommandPayload::Nop,
-                    CMD_UPDATE_PROGRAM => CommandPayload::UpdateProgram {
-                        program_hash: get_bytes(&fields, KEY_PROGRAM_HASH)?,
-                        program_size: get_u32(&fields, KEY_PROGRAM_SIZE)?,
-                        chunk_size: get_u32(&fields, KEY_CHUNK_SIZE)?,
-                        chunk_count: get_u32(&fields, KEY_CHUNK_COUNT)?,
-                    },
-                    CMD_RUN_EPHEMERAL => CommandPayload::RunEphemeral {
-                        program_hash: get_bytes(&fields, KEY_PROGRAM_HASH)?,
-                        program_size: get_u32(&fields, KEY_PROGRAM_SIZE)?,
-                        chunk_size: get_u32(&fields, KEY_CHUNK_SIZE)?,
-                        chunk_count: get_u32(&fields, KEY_CHUNK_COUNT)?,
-                    },
-                    CMD_UPDATE_SCHEDULE => CommandPayload::UpdateSchedule {
-                        interval_s: get_u32(&fields, KEY_INTERVAL_S)?,
-                    },
-                    CMD_REBOOT => CommandPayload::Reboot,
+                    CMD_NOP | CMD_REBOOT => {
+                        if command_type == CMD_REBOOT {
+                            CommandPayload::Reboot
+                        } else {
+                            CommandPayload::Nop
+                        }
+                    }
+                    CMD_UPDATE_PROGRAM | CMD_RUN_EPHEMERAL => {
+                        let payload_val = get_field(&fields, KEY_PAYLOAD)?;
+                        let inner_fields = match payload_val {
+                            Value::Map(pairs) => {
+                                let mut result = Vec::new();
+                                for (k, v) in pairs {
+                                    if let Some(key) = k.as_integer() {
+                                        if let Ok(key_u64) = u64::try_from(key) {
+                                            result.push((key_u64, v.clone()));
+                                        }
+                                    }
+                                }
+                                result
+                            }
+                            _ => {
+                                return Err(DecodeError::InvalidFieldType(KEY_PAYLOAD));
+                            }
+                        };
+                        let program_hash = get_bytes(&inner_fields, KEY_PROGRAM_HASH)?;
+                        let program_size = get_u32(&inner_fields, KEY_PROGRAM_SIZE)?;
+                        let chunk_size = get_u32(&inner_fields, KEY_CHUNK_SIZE)?;
+                        let chunk_count = get_u32(&inner_fields, KEY_CHUNK_COUNT)?;
+                        if command_type == CMD_UPDATE_PROGRAM {
+                            CommandPayload::UpdateProgram {
+                                program_hash,
+                                program_size,
+                                chunk_size,
+                                chunk_count,
+                            }
+                        } else {
+                            CommandPayload::RunEphemeral {
+                                program_hash,
+                                program_size,
+                                chunk_size,
+                                chunk_count,
+                            }
+                        }
+                    }
+                    CMD_UPDATE_SCHEDULE => {
+                        let payload_val = get_field(&fields, KEY_PAYLOAD)?;
+                        let inner_fields = match payload_val {
+                            Value::Map(pairs) => {
+                                let mut result = Vec::new();
+                                for (k, v) in pairs {
+                                    if let Some(key) = k.as_integer() {
+                                        if let Ok(key_u64) = u64::try_from(key) {
+                                            result.push((key_u64, v.clone()));
+                                        }
+                                    }
+                                }
+                                result
+                            }
+                            _ => {
+                                return Err(DecodeError::InvalidFieldType(KEY_PAYLOAD));
+                            }
+                        };
+                        CommandPayload::UpdateSchedule {
+                            interval_s: get_u32(&inner_fields, KEY_INTERVAL_S)?,
+                        }
+                    }
                     _ => CommandPayload::Nop,
                 };
 

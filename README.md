@@ -103,8 +103,8 @@ Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from
 ### Application data
 
 ```
-Node → Gateway:  APP_DATA  [header: key_hint, nonce]  { blob, reply_expected?, timeout_ms? }
-Gateway → Node:  APP_DATA_REPLY  [header: key_hint, nonce]  { blob }
+Node → Gateway:  APP_DATA  [header: key_hint, nonce]  { blob }
+Gateway → Node:  APP_DATA_REPLY  [header: key_hint, nonce]  { blob }  (only if handler provides data)
 ```
 
 Two modes, controlled by the BPF program:

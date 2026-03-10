@@ -121,17 +121,16 @@ The application API has only **4 message types** — two in each direction.
 
 ### 4.1  DATA (Gateway → Handler)
 
-Sent when a node's BPF program calls `send()` or `send_recv()`.
+Sent when a node's BPF program calls `send()` or `send_recv()`. The handler processes the data and replies with a `DATA_REPLY`.
 
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x01` |
-| `request_id` | 2 | uint | Correlation ID. Echo this in the reply (if reply expected). |
+| `request_id` | 2 | uint | Correlation ID. Echo this in the reply. |
 | `node_id` | 3 | tstr | Stable, opaque identifier for the node (assigned by gateway admin). |
 | `program_hash` | 4 | bstr | Hash of the BPF program that sent this data. |
 | `data` | 5 | bstr | The opaque blob from the BPF program's `send()` or `send_recv()` call. |
 | `timestamp` | 6 | uint | Unix timestamp of reception (seconds). |
-| `reply_expected` | 7 | bool | If `true`, the handler must reply with a `DATA_REPLY`. If `false`, no reply is needed. |
 
 **Key design decisions:**
 
@@ -143,15 +142,18 @@ Sent when a node's BPF program calls `send()` or `send_recv()`.
 
 ### 4.2  DATA_REPLY (Handler → Gateway)
 
-Response to a `DATA` message where `reply_expected` is `true`. The gateway delivers the reply blob to the node via `APP_DATA_REPLY`. **Do not send a reply when `reply_expected` is `false`.**
+Response to a `DATA` message. The handler **always** replies:
+
+- **Non-zero-length `data`**: The gateway sends an `APP_DATA_REPLY` to the node (the node's BPF program receives it via `send_recv()`).
+- **Zero-length `data`**: The gateway does not send anything to the node (used when the BPF program called `send()` fire-and-forget).
+
+The handler and BPF program are written by the same developer — they agree a priori on which messages expect data back.
 
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
 | `msg_type` | 1 | uint | `0x81` |
 | `request_id` | 2 | uint | Must match the `DATA` message's `request_id`. |
-| `data` | 3 | bstr | Opaque reply blob for the BPF program. Zero-length for acknowledgement only. |
-
-The timeout for how long the node waits is controlled by the BPF program (via `send_recv()`'s `timeout_ms` parameter), not by the handler or gateway configuration.
+| `data` | 3 | bstr | Reply blob for the BPF program. Zero-length = no reply to node. |
 
 ---
 

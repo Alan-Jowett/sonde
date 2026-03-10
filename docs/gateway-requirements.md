@@ -392,7 +392,7 @@ The gateway MUST authenticate all inbound messages using HMAC-SHA256 and MUST ap
 **Source:** README § Key provisioning
 
 **Description:**  
-The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-shared keys. Each node has a unique key. There is no runtime key exchange. The `key_hint` is a lookup optimization; the HMAC key is the true node identity (see [protocol.md](protocol.md) §3.1.1).
+The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-shared keys. Each node has a unique key. Keys are provisioned via USB-mediated pairing (see [security.md](security.md) §2.4). The `key_hint` is a lookup optimization; the HMAC key is the true node identity (see [protocol.md](protocol.md) §3.1.1).
 
 **Acceptance criteria:**
 
@@ -402,19 +402,20 @@ The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-sha
 
 ---
 
-### GW-0602  Replay protection — nonce sliding window
+### GW-0602  Replay protection — session-scoped sequence numbers
 
 **Priority:** Must  
-**Source:** README § Replay protection
+**Source:** security.md § Replay protection
 
 **Description:**  
-The gateway MUST implement per-node replay protection using a sliding window of seen nonces. Messages with previously seen nonces MUST be rejected.
+The gateway MUST implement per-session replay protection using sequence numbers. On each valid `WAKE`, the gateway creates an active session for that node (replacing any previous session), assigns a random starting sequence number in its `COMMAND` response (CBOR key `starting_seq`), and tracks the expected next sequence. The gateway maintains at most one active session per node (keyed by PSK); any new valid `WAKE` replaces the previous session. Post-WAKE frames do not carry an explicit session identifier on the wire: a post-WAKE message is considered to match the active session if it is authenticated under the node's PSK and carries the expected next sequence number. The gateway MUST reject any post-WAKE message that does not correspond to an active session or does not carry the expected sequence number. No persistent replay-protection state is required.
 
 **Acceptance criteria:**
 
-1. A message replayed with the same nonce as a previously accepted message is rejected.
-2. The sliding window holds at least 64 entries per node, sufficient for the worst-case wake cycle (chunked transfer + application data).
-3. Nonce state is maintained per node.
+1. A replayed post-WAKE message with a sequence number from a previous session is rejected.
+2. The gateway's `COMMAND` response includes a starting sequence number for the node.
+3. Active sessions are tracked in memory; no durable persistence is required for replay state.
+4. A replayed WAKE creates a new session with a different starting sequence, invalidating captured post-WAKE messages.
 
 ---
 
@@ -494,6 +495,38 @@ The gateway MUST inspect the `firmware_abi_version` from `WAKE` messages and ens
 1. The gateway records each node's `firmware_abi_version`.
 2. The gateway does not distribute a program compiled for an incompatible ABI version.
 3. An ABI mismatch is reported as a clear error or warning.
+
+---
+
+### GW-0704  USB-mediated node pairing
+
+**Priority:** Must  
+**Source:** security.md § Key provisioning
+
+**Description:**  
+The gateway (or a dedicated provisioning tool) MUST support USB-mediated pairing for new or factory-reset nodes. During pairing, the tool generates a unique 256-bit PSK, writes it to the node's flash key partition, and registers the key in the gateway's node registry.
+
+**Acceptance criteria:**
+
+1. A factory-reset node connected via USB can be paired with a single operator action.
+2. The generated key is unique and cryptographically random (256-bit).
+3. The key is written to the node and registered in the gateway atomically — a partial failure leaves neither side with a dangling key.
+
+---
+
+### GW-0705  Factory reset support
+
+**Priority:** Must  
+**Source:** security.md § Factory reset
+
+**Description:**  
+The gateway (or provisioning tool) MUST support triggering a factory reset on a connected node. A factory reset erases the node's pre-shared key, all persistent map data, and the resident BPF program. After reset the node is inert and must be re-paired via USB.
+
+**Acceptance criteria:**
+
+1. After factory reset, the node cannot authenticate with any gateway.
+2. After factory reset, the node contains no persistent application state.
+3. The gateway removes the corresponding key from its registry when a factory reset is performed.
 
 ---
 
@@ -587,12 +620,14 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0502 | Application data handler | Should |
 | GW-0600 | HMAC-SHA256 message authentication | Must |
 | GW-0601 | Per-node key management | Must |
-| GW-0602 | Replay protection — nonce sliding window | Must |
+| GW-0602 | Replay protection — session-scoped sequence numbers | Must |
 | GW-0603 | Authentication overhead budget | Must |
 | GW-0700 | Node registry | Must |
 | GW-0701 | Stale program detection | Must |
 | GW-0702 | Battery level tracking | Should |
 | GW-0703 | Firmware ABI version awareness | Must |
+| GW-0704 | USB-mediated node pairing | Must |
+| GW-0705 | Factory reset support | Must |
 | GW-1000 | Gateway failover / replaceability | Must |
 | GW-1001 | Exportable / importable state | Should |
 | GW-1002 | Graceful handling of unknown nodes | Must |

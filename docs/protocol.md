@@ -141,6 +141,67 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 13 | `starting_seq` | COMMAND |
 | 14 | `timestamp_ms` | COMMAND |
 
+<a id="program-image-format"></a>
+
+### Program image format
+
+The gateway accepts BPF programs as pre-compiled ELF files but does **not** transmit ELF to nodes. Instead, the gateway extracts the bytecode and map definitions from the ELF and encodes them into a **program image** — a CBOR-encoded binary blob. This program image is what gets chunked, transferred, hashed, and stored on the node.
+
+#### Program image structure
+
+The program image is a CBOR map with integer keys. **Note:** These keys are a separate keyspace from the protocol message keys in the CBOR key mapping table above — they apply only to the program image encoding, not to protocol messages.
+
+| Key | Field name | CBOR type | Description |
+|---|---|---|---|
+| 1 | `bytecode` | bstr | Raw BPF bytecode extracted from the ELF `.text` section. |
+| 2 | `maps` | array | Array of map definitions (see below). Empty array if no maps. |
+
+Each entry in the `maps` array is a CBOR map:
+
+| Key | Field name | CBOR type | Description |
+|---|---|---|---|
+| 1 | `type` | uint | Map type (e.g., 1 = `BPF_MAP_TYPE_ARRAY`). |
+| 2 | `key_size` | uint | Size of each key in bytes. |
+| 3 | `value_size` | uint | Size of each value in bytes. |
+| 4 | `max_entries` | uint | Maximum number of entries. |
+
+#### Program hash
+
+The `program_hash` used throughout the protocol is the SHA-256 hash of the **complete CBOR-encoded program image**:
+
+- The hash covers both bytecode **and** map definitions.
+- Two programs with identical bytecode but different map layouts have different hashes.
+- The gateway computes the hash after encoding the image; the node computes it after reassembling all chunks.
+- This CBOR-encoded program image is the canonical byte sequence for all size- and chunk-related fields in this specification (i.e., `program_size` and `chunk_count` in UPDATE_PROGRAM / RUN_EPHEMERAL refer to the byte length and chunking of the CBOR-encoded program image, not the ELF file or raw bytecode).
+
+**Deterministic encoding:** The program image MUST be encoded using CBOR deterministic encoding (RFC 8949 §4.2) to ensure that all gateways produce identical bytes (and therefore identical hashes) for the same program.
+
+#### Map relocations in bytecode
+
+BPF programs reference maps via `LDDW` instructions (RFC 9669 §4.3). In the original ELF, these appear as `LDDW src=0, imm=0` with an ELF relocation pointing to the map section. The gateway resolves these relocations during ingestion:
+
+- **Transmitted encoding:** `LDDW src=1, imm=<map_index>`, where `map_index` is a zero-based index into the `maps` array in the program image.
+- **Resolution:** Prevail's loader performs this transformation as part of verification — no additional pass is required.
+- **Node-side handling:** The node's BPF interpreter recognizes `LDDW src=1` and replaces the immediate with the runtime pointer to the corresponding map (allocated from sleep-persistent memory at program install time).
+
+This encoding is consistent with the standard BPF loader convention (`src=1` = map reference by index) and is already supported by uBPF.
+
+#### Ingestion pipeline
+
+```
+BPF ELF file (developer artifact)
+  │
+  ├── Parse ELF: extract .text (bytecode) and .maps (map definitions)
+  ├── Verify with Prevail (resolves map relocations to LDDW src=1)
+  ├── Encode program image as CBOR: { 1: bytecode, 2: [map_defs...] }
+  ├── Compute program_hash = SHA-256(program image CBOR)
+  ├── Store in program library (keyed by hash)
+  │
+  └── Ready for chunked transfer to nodes
+```
+
+The ELF is never transmitted to the node. The node receives only the CBOR program image.
+
 ### 5.1  WAKE (Node → Gateway)
 
 Sent at the start of each wake cycle (retransmitted up to 3 times if no COMMAND is received — see §9.1).
@@ -222,7 +283,7 @@ Response to `GET_CHUNK`.
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
 | `chunk_index` | uint | Yes | Index of this chunk (must match request). |
-| `chunk_data` | bstr | Yes | Raw program bytes for this chunk. |
+| `chunk_data` | bstr | Yes | Bytes from the CBOR-encoded program image for this chunk. |
 
 The `nonce` field in the fixed header echoes the sequence number from the `GET_CHUNK` request, binding the response to that specific chunk request.
 

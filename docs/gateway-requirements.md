@@ -252,16 +252,19 @@ The gateway MUST accept `PROGRAM_ACK { nonce, program_hash }` messages from node
 ### GW-0400  Program ingestion (pre-compiled ELF)
 
 **Priority:** Must  
-**Source:** Design decision (not directly stated in README; the README diagram shows "compile" on the gateway but this was revised to keep the gateway lightweight).
+**Source:** Design decision
 
 **Description:**  
-The gateway MUST accept BPF programs as pre-compiled ELF files. The gateway does not compile programs from source — compilation is the responsibility of an external toolchain or build pipeline. This avoids an LLVM/clang dependency on the gateway.
+The gateway MUST accept BPF programs as pre-compiled ELF files. On ingestion, the gateway extracts the bytecode and map definitions from the ELF, verifies the program, and encodes them into a CBOR program image (see [protocol.md § Program image format](protocol.md#program-image-format)). Verification and encoding MUST be completed at ingestion time — not deferred to when a node requests the program. The resulting CBOR image and its hash are stored in the program library, ready to serve immediately on demand. The ELF is never transmitted to nodes.
 
 **Acceptance criteria:**
 
 1. The gateway accepts a valid BPF ELF binary as input.
-2. The gateway rejects files that are not valid BPF ELF binaries with a clear diagnostic.
-3. The gateway does not depend on LLVM, clang, or any compiler toolchain at build time or runtime.
+2. The gateway extracts bytecode (`.text` section) and map definitions from the ELF.
+3. The gateway verifies the program and encodes the extracted data as a CBOR program image during ingestion — before the program is available for distribution.
+4. The gateway rejects files that are not valid BPF ELF binaries with a clear diagnostic.
+5. The gateway does not depend on LLVM, clang, or any compiler toolchain at build time or runtime.
+6. Chunk serving (GW-0300) reads from the pre-built CBOR image with no additional processing.
 
 ---
 
@@ -296,13 +299,13 @@ The gateway MUST verify all BPF programs using the Prevail verifier before distr
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST identify programs by their content hash, not by version numbers. The program's identity is its hash.
+The gateway MUST identify programs by the SHA-256 hash of their CBOR-encoded program image (bytecode + map definitions). The hash covers both bytecode and map definitions, so two programs with identical bytecode but different map layouts have different hashes. The program image MUST use CBOR deterministic encoding (RFC 8949 §4.2).
 
 **Acceptance criteria:**
 
-1. The gateway computes a hash over the compiled program bytecode.
+1. The gateway computes the hash over the CBOR-encoded program image, not the original ELF.
 2. The gateway compares this hash with the `program_hash` reported by a node to determine whether an update is needed.
-3. Identical program content always produces the same hash.
+3. Identical program content (bytecode + maps) always produces the same hash.
 
 ---
 

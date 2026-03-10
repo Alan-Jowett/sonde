@@ -60,159 +60,32 @@ Programs are compiled to BPF ELF, verified by [Prevail](https://github.com/vbpf/
 
 ## Node-gateway protocol
 
-Communication is always **node-initiated**. The gateway never wakes a node. Control plane messages use a fixed binary header followed by a CBOR-encoded payload (see [protocol.md](docs/protocol.md) for the full wire specification).
+Communication is always **node-initiated**. The gateway never wakes a node. Messages use a fixed binary header, CBOR-encoded payload, and HMAC-SHA256 authentication. See [protocol.md](docs/protocol.md) for the full wire specification.
 
-### Wake handshake
-
-```
-Node → Gateway:  WAKE  [header: key_hint, nonce]  { firmware_abi_version, program_hash, battery_mv }
-Gateway → Node:  COMMAND  [header: key_hint, nonce]  { command_type, ... }
-```
-
-The program hash lets the gateway detect stale programs without version numbering — the program's identity is its content.
-
-### Commands
-
-| Command | Description |
-|---|---|
-| `NOP` | Proceed to BPF execution |
-| `UPDATE_PROGRAM` | New resident program available (chunked transfer) |
-| `RUN_EPHEMERAL` | One-shot program available (chunked transfer, same as UPDATE_PROGRAM) |
-| `UPDATE_SCHEDULE` | New base wake interval |
-| `REBOOT` | Restart firmware |
-
-### Schedule model
-
-The gateway sets a base interval. The BPF program can request an **earlier** wake via `set_next_wake(seconds)` but cannot extend beyond the gateway's interval.
-
-### Chunked program transfer
-
-```
-Node → Gateway:  GET_CHUNK  [header: key_hint, nonce]  { chunk_index }
-Gateway → Node:  CHUNK  [header: key_hint, nonce]  { chunk_index, chunk_data }
-   ... repeat ...
-Node:            Verify hash over complete program → store to flash
-Node → Gateway:  PROGRAM_ACK  [header: key_hint, nonce]  { program_hash }
-```
-
-Node-driven, stop-and-wait. If power is lost mid-transfer, the node retries from chunk 0 on the next wake. After `PROGRAM_ACK`, the node executes the new program immediately in the same wake cycle.
-
-### Application data
-
-```
-Node → Gateway:  APP_DATA  [header: key_hint, nonce]  { blob }
-Gateway → Node:  APP_DATA_REPLY  [header: key_hint, nonce]  { blob }  (only if handler provides data)
-```
-
-Two modes, controlled by the BPF program:
-- **`send(ptr, len)`** — fire-and-forget. Emits `APP_DATA`, node does not wait for a reply.
-- **`send_recv(ptr, len, reply_buf, reply_len, timeout_ms)`** — request-response. Emits `APP_DATA` and blocks until `APP_DATA_REPLY` arrives or the timeout expires.
-
-The protocol treats all blobs as opaque — the BPF program and gateway application define their own semantics on top. Multiple calls per wake cycle are supported.
-
----
-
-## Memory model
-
-BPF programs access four memory regions with different lifetimes. See [BPF environment § Memory model](docs/bpf-environment.md#5--memory-model) for details.
-
-| Region | Persistence | Purpose |
-|---|---|---|
-| **Context** | Per-wake (read-only) | Timestamp, battery, wake reason |
-| **Scratch** | Volatile | Stack and local variables |
-| **Maps** | Sleep-persistent | Key-value stores surviving deep sleep |
-| **Flash** | Permanent | Resident program, schedule |
-
----
-
-## Helper API
-
-The firmware provides a stable helper API to BPF programs. See [BPF environment § Helper API](docs/bpf-environment.md#6--helper-api) for full documentation.
-
-```c
-// Bus access — sensor protocol lives in BPF, not firmware
-// bus+addr packed into handle: (bus << 16) | addr
-i2c_read(handle, buf, len)           // read from I2C device
-i2c_write(handle, data, len)         // write to I2C device
-i2c_write_read(handle,               // write register addr, read value
-               wr, wr_len, rd, rd_len)
-spi_transfer(handle, tx, rx, len)    // full-duplex SPI transfer
-gpio_read(pin)                       // read GPIO pin
-gpio_write(pin, value)               // set GPIO pin
-adc_read(channel, value_ptr)         // read ADC channel
-
-// Communication
-send(ptr, len)                       // fire-and-forget: emit APP_DATA
-send_recv(ptr, len, reply_buf,       // send APP_DATA and block for reply
-          reply_len, timeout_ms)
-
-// Maps (pointer-based, loader resolves via ELF relocation)
-map_lookup_elem(map, key_ptr)        // look up map value
-map_update_elem(map, key_ptr,        // update map value (resident only)
-                value_ptr)
-
-// System
-get_time()                           // current time (ms since epoch)
-get_battery_mv()                     // battery voltage
-delay_us(microseconds)               // busy-wait for sensor timing
-set_next_wake(seconds)               // request earlier wake (resident only)
-bpf_trace_printk(fmt, fmt_len, ...)  // debug trace output
-```
-
----
-
-## Verification (Prevail)
-
-All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) before loading. See [BPF environment § Verification](docs/bpf-environment.md#7--verification-profiles) for the full profile comparison.
-
-| | Resident | Ephemeral |
-|---|---|---|
-| **Map access** | Read/write | Read-only |
-| **Instruction budget** | Larger | Small |
-| **Side effects** | Allowed | None |
+The basic cycle: node sends `WAKE` → gateway responds with a `COMMAND` (proceed, update program, change schedule, reboot) → node executes BPF → node sleeps. Programs are distributed via a node-driven chunked transfer. Application data flows through `APP_DATA` / `APP_DATA_REPLY` pairs using `send()` (fire-and-forget) or `send_recv()` (request-response).
 
 ---
 
 ## Authentication
 
-Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with pre-shared keys.
+Data is **authenticated but not encrypted** (integrity, not confidentiality). All messages use HMAC-SHA256 with pre-shared keys. Each node has a unique 256-bit key provisioned at flash time. Replay protection uses per-message random nonces with a 64-entry sliding window. See [protocol.md § Authentication](docs/protocol.md#7--authentication) for details.
 
-```
-┌──────────────────────────────────────────────────┐
-│ Header (fixed binary, big-endian):               │
-│   key_hint (2B) | msg_type (1B) | nonce (8B)     │
-│ Payload: CBOR-encoded message body               │
-│ HMAC-SHA256(header + payload, node_key) (32B)    │
-└──────────────────────────────────────────────────┘
-```
+---
 
-### Key provisioning
-Each node receives a unique 256-bit key in secure storage during initial firmware flash. The gateway maintains the node-to-key mapping. No runtime key exchange.
+## BPF program environment
 
-### Replay protection
-The node generates a fresh **64-bit random nonce** for every outbound message using a hardware RNG. The gateway tracks a per-node sliding window of seen nonces (64 entries). Gateway responses include the node's nonce, binding them to the request. **No persistent counter storage is needed on the node** — no flash wear, survives power loss.
-
-### Overhead
-43 bytes per frame (11-byte header + 32-byte HMAC). Negligible computation with hardware acceleration.
+BPF programs have access to raw bus primitives (I2C, SPI, GPIO, ADC), communication helpers (`send`, `send_recv`), persistent maps, and system functions. The firmware provides bus access; sensor-specific protocols live in the BPF program. See [bpf-environment.md](docs/bpf-environment.md) for the full helper API, memory model, verification profiles, and development workflow.
 
 ---
 
 ## Operational concerns
 
-### Gateway failover
-The gateway is identified only by its knowledge of node keys. Replace it with another gateway provisioned with the same key database. Nodes won't notice.
+- **Gateway failover** — replace the gateway with another instance provisioned with the same key database. Nodes won't notice.
+- **Development** — BPF programs are platform-agnostic. Compile, verify, and test locally with `libsonde_test` — no hardware needed.
+- **Diagnostics** — push an ephemeral program to inspect node state without disturbing the resident program.
+- **Firmware updates** — physical access only. By design, firmware changes are rare — new features ship as BPF programs.
 
-### Gateway unavailable
-Bounded retries, then sleep until next interval. No gateway means no point running.
-
-### Development and testing
-BPF programs are platform-agnostic. Compile, verify, and run locally with uBPF — no hardware needed. Use `bpf_trace_printk` for debug output.
-
-### Diagnostics
-Push an ephemeral program to inspect map contents, read sensors, or report node state — without disturbing the resident program.
-
-### Firmware updates
-Physical access, same as initial provisioning. By design, firmware changes are rare — new features ship as BPF programs.
+See [gateway-requirements.md](docs/gateway-requirements.md) for formal operational requirements.
 
 ---
 

@@ -122,7 +122,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 
 **Design doc:** [protocol-crate-design.md](protocol-crate-design.md)  
 **Validation:** [protocol-crate-validation.md](protocol-crate-validation.md) (41 tests)  
-**Dependencies:** `ciborium` only.
+**Runtime dependencies:** `ciborium` only. **Dev-dependencies (for tests):** `hmac`, `sha2`.
 
 **Module order:**
 
@@ -149,7 +149,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 **Goal:** A working gateway service that can authenticate nodes, manage sessions, serve programs, and route application data.
 
 **Design doc:** [gateway-design.md](gateway-design.md)  
-**Validation:** [gateway-validation.md](gateway-validation.md) (61 tests)  
+**Validation:** [gateway-validation.md](gateway-validation.md)  
 **Dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail-rust`, `hmac`, `sha2`, `ciborium`, `toml`.
 
 **Module order:**
@@ -178,7 +178,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 **Goal:** Working node firmware for ESP32-C3/S3.
 
 **Design doc:** [node-design.md](node-design.md)  
-**Validation:** [node-validation.md](node-validation.md) (55 tests)  
+**Validation:** [node-validation.md](node-validation.md)  
 **Dependencies:** `sonde-protocol`, `esp-idf-hal`, `esp-idf-svc`, BPF interpreter (rbpf or uBPF).
 
 **Module order:**

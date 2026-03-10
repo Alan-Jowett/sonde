@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 use crate::constants::{HEADER_SIZE, OFFSET_KEY_HINT, OFFSET_MSG_TYPE, OFFSET_NONCE};
 
 #[derive(Debug, Clone, PartialEq)]

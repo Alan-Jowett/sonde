@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 /// Provides HMAC-SHA256 computation and verification.
 /// Implementations MUST use constant-time comparison in `verify`
 /// to prevent timing side-channel attacks.

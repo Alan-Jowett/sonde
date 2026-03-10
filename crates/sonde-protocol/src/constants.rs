@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 // Frame structure
 pub const HEADER_SIZE: usize = 11;
 pub const HMAC_SIZE: usize = 32;

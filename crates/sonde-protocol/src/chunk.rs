@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 /// Calculate the number of chunks needed to transfer an image.
 /// Returns `None` if `chunk_size` is 0 (invalid).
 /// Returns `Some(0)` if `image_size` is 0.

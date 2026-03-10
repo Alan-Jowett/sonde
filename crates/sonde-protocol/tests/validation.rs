@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 //! Protocol crate validation tests (T-P001 … T-P062).
 //!
 //! All 41 test cases from `docs/protocol-crate-validation.md`.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 use alloc::vec::Vec;
 
 use crate::constants::{HEADER_SIZE, HMAC_SIZE, MAX_FRAME_SIZE, MIN_FRAME_SIZE};

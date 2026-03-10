@@ -106,7 +106,7 @@ The developer ships two artifacts: a **BPF ELF** (node-side) and a **handler** i
 - **Diagnostics** — push an ephemeral program to inspect node state without disturbing the resident program.
 - **Firmware updates** — physical access only. By design, firmware changes are rare — new features ship as BPF programs.
 
-See [gateway-requirements.md](docs/gateway-requirements.md) for formal operational requirements.
+See [gateway-requirements.md](docs/gateway-requirements.md) and [node-requirements.md](docs/node-requirements.md) for formal requirements.
 
 ---
 

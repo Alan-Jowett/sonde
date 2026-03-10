@@ -266,7 +266,42 @@ Ephemeral programs are stored in RAM (heap allocation), not flash. They are deco
 | `rbpf` (Rust) | Pure Rust, no FFI, same language as firmware | Less established; needs BPF-to-BPF call extension |
 | `uBPF` (C, via FFI) | Larger ecosystem, used by eBPF for Windows | Requires unsafe FFI; needs BPF-to-BPF call extension |
 
-Both options require extension to support BPF-to-BPF function calls (max 8 call frames, 512 bytes stack each). The firmware wraps whichever interpreter behind a common internal interface, so the choice does not affect the rest of the design.
+Both options require extension to support BPF-to-BPF function calls (max 8 call frames, 512 bytes stack each). The firmware wraps whichever interpreter behind a `BpfInterpreter` trait, so the choice can be changed without affecting the rest of the design.
+
+### 8.1a  BPF interpreter trait
+
+```rust
+pub type HelperFn = fn(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64;
+
+pub trait BpfInterpreter {
+    /// Register a helper function by call number.
+    fn register_helper(&mut self, id: u32, func: HelperFn) -> Result<(), BpfError>;
+
+    /// Load bytecode and resolve LDDW src=1 map references.
+    /// `map_ptrs` maps map_index → runtime pointer for relocation.
+    fn load(&mut self, bytecode: &[u8], map_ptrs: &[u64]) -> Result<(), BpfError>;
+
+    /// Execute the loaded program with the given context pointer.
+    /// `instruction_budget` limits execution; returns the program's
+    /// return value or an error if budget/call-depth is exceeded.
+    fn execute(
+        &mut self,
+        ctx_ptr: u64,
+        instruction_budget: u64,
+    ) -> Result<u64, BpfError>;
+}
+
+#[derive(Debug)]
+pub enum BpfError {
+    InstructionBudgetExceeded,
+    CallDepthExceeded,
+    InvalidBytecode,
+    HelperNotRegistered(u32),
+    LoadError(String),
+}
+```
+
+This trait is defined in the node firmware (not in `sonde-protocol`, since the gateway does not execute BPF). Both `rbpf` and `uBPF` adapters implement it.
 
 The interpreter runs in bounded mode — an instruction counter enforces the instruction budget. If the budget is exceeded, execution is terminated and the program returns an error.
 

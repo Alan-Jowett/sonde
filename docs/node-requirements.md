@@ -108,13 +108,13 @@ On the ESP-NOW reference implementation, the node MUST NOT transmit frames excee
 **Source:** protocol.md §6.1
 
 **Description:**  
-Each wake cycle MUST follow this sequence: wake → send `WAKE` → receive `COMMAND` → execute command (program transfer, BPF execution, schedule update, or reboot) → sleep.
+Each wake cycle MUST follow this structure: wake → send one or more `WAKE` messages as defined by the protocol (including retries when no `COMMAND` is received) → receive at most one `COMMAND` → execute the commanded action (program transfer, BPF execution, schedule update, or reboot) if a `COMMAND` was received → sleep.
 
 **Acceptance criteria:**
 
-1. The node sends exactly one `WAKE` message per wake cycle.
-2. The node processes exactly one `COMMAND` response per wake cycle.
-3. The node returns to sleep after completing the commanded action.
+1. The node MAY send multiple `WAKE` messages per wake cycle, but MUST stop sending `WAKE` once either (a) a `COMMAND` is received, or (b) the protocol-defined retry limit is reached without receiving a `COMMAND`.
+2. The node processes at most one `COMMAND` response per wake cycle and MUST NOT initiate a second `COMMAND` exchange before returning to sleep.
+3. The node returns to sleep after completing the commanded action or after exhausting `WAKE` retries without receiving a `COMMAND`.
 
 ---
 
@@ -252,7 +252,8 @@ The node MUST generate the WAKE nonce using the hardware random number generator
 **Acceptance criteria:**
 
 1. The WAKE nonce is sourced from the hardware RNG.
-2. Consecutive WAKE nonces are statistically independent.
+2. Over at least 1000 WAKE cycles, no WAKE nonce value repeats.
+3. If the platform hardware RNG exposes a health or self-test API, the firmware invokes it at boot and aborts nonce generation if the health test fails.
 
 ---
 
@@ -461,7 +462,7 @@ The firmware MUST provide `send()` (fire-and-forget `APP_DATA`) and `send_recv()
 
 **Acceptance criteria:**
 
-1. `send()` transmits an `APP_DATA` frame and returns immediately.
+1. `send()` initiates transmission of an `APP_DATA` frame as a fire-and-forget operation and MUST NOT wait for any `APP_DATA_REPLY` before returning (it may still block briefly while queuing or transmitting the frame).
 2. `send_recv()` transmits an `APP_DATA` frame and blocks until `APP_DATA_REPLY` or timeout.
 3. Each call increments the session sequence number.
 
@@ -576,8 +577,9 @@ The node MUST wait for a response for the transport-appropriate timeout before r
 
 **Acceptance criteria:**
 
-1. The node waits the configured timeout before considering a response lost.
-2. The timeout is sufficient for round-trip time plus gateway processing.
+1. On ESP-NOW, the node uses a response timeout of 50 ms, measured from completion of frame transmission to the point where the node treats the response as lost.
+2. The node waits the full configured timeout interval before treating a response as lost or initiating a retry.
+3. For transports other than ESP-NOW, the transport definition SHALL specify a numeric response timeout in milliseconds.
 
 ---
 

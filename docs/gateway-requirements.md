@@ -505,6 +505,22 @@ The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-sha
 
 ---
 
+### GW-0601a  Key store encryption at rest
+
+**Priority:** Should  
+**Source:** security.md §2.3
+
+**Description:**  
+The gateway's key store SHOULD encrypt PSK material at rest. Plaintext PSKs SHOULD NOT be stored in unprotected files or databases. This mitigates the risk of key exposure if the gateway's storage is accessed by an unauthorized party.
+
+**Acceptance criteria:**
+
+1. When at-rest encryption is enabled, PSKs are not readable without the decryption key.
+2. The gateway can transparently read encrypted PSKs at startup and during operation.
+3. Exporting the key store SHOULD require explicit operator authorization (see GW-1001).
+
+---
+
 ### GW-0602  Replay protection — session-scoped sequence numbers
 
 **Priority:** Must  
@@ -744,6 +760,7 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-0508 | Handler LOG messages | Should |
 | GW-0600 | HMAC-SHA256 message authentication | Must |
 | GW-0601 | Per-node key management | Must |
+| GW-0601a | Key store encryption at rest | Should |
 | GW-0602 | Replay protection — session-scoped sequence numbers | Must |
 | GW-0603 | Authentication overhead budget | Must |
 | GW-0700 | Node registry | Must |

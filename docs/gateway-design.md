@@ -487,6 +487,8 @@ pub trait Storage: Send + Sync {
 
 The storage trait is async to support different backends (file, SQLite, network) without blocking the event loop.
 
+Storage implementations SHOULD encrypt PSK material at rest (GW-0601a). The `NodeRecord.psk` field contains the raw 256-bit key — implementations are responsible for encrypting it before persisting and decrypting on read. The storage trait itself is agnostic to the encryption mechanism.
+
 ---
 
 ## 11  Concurrency model

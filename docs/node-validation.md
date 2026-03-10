@@ -153,11 +153,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Install a known program (hash X). Set battery to 3300 mV via mock ADC.
 2. Boot node.
-3. Capture WAKE frame, decode payload.
+3. Capture WAKE frame, parse the fixed 11-byte frame header, and decode the CBOR payload.
 4. Assert: `firmware_abi_version` matches firmware ABI.
 5. Assert: `program_hash` = hash X.
 6. Assert: `battery_mv` = 3300.
-7. Assert: WAKE includes a `nonce` field sourced from hardware RNG.
+7. Assert: the WAKE frame header `nonce` field (in the fixed 11-byte header, not the CBOR payload) is present and sourced from the hardware RNG.
 
 ---
 
@@ -472,7 +472,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Mock gateway sends `timestamp_ms = 1710000000000`.
 2. Install a program that reads `ctx->timestamp`, `ctx->battery_mv`, `ctx->firmware_abi_version`, `ctx->wake_reason` and sends them via `send()`.
-3. Assert: `timestamp` ≈ 1710000000000 (within a few ms of local elapsed).
+3. Assert: `timestamp` ≈ 1710000000000 + elapsed time since COMMAND was processed (within a few ms tolerance).
 4. Assert: `battery_mv` matches ADC reading.
 5. Assert: `firmware_abi_version` matches firmware.
 6. Assert: `wake_reason` = `WAKE_SCHEDULED` (0x00).
@@ -635,7 +635,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Mock gateway sends `timestamp_ms = 1710000000000`.
 2. Install program that calls `get_time()` and `get_battery_mv()`.
-3. Assert: `get_time()` ≈ 1710000000000.
+3. Assert: `get_time()` ≈ 1710000000000 + elapsed time since COMMAND was processed (within a few ms tolerance).
 4. Assert: `get_battery_mv()` matches mock ADC.
 
 ---

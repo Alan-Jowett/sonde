@@ -147,6 +147,7 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 - [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform
 - [Protocol](docs/protocol.md) — node-gateway wire protocol specification
 - [Gateway Requirements](docs/gateway-requirements.md) — formal gateway requirements
+- [Node Requirements](docs/node-requirements.md) — formal node firmware requirements
 - [Security Model](docs/security.md) — threat model, key provisioning, authentication, replay protection, and failure modes
 
 ---

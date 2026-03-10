@@ -231,7 +231,7 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 ## Further reading
 
 - [Why BPF?](docs/why-bpf.md) — rationale for using uBPF + Prevail as the execution model
-- [Gateway API](docs/gateway-api.md) — API for building applications on the Sonde platform
+- [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform
 - [Protocol](docs/protocol.md) — node-gateway wire protocol specification
 - [Gateway Requirements](docs/gateway-requirements.md) — formal gateway requirements
 

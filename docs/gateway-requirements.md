@@ -255,15 +255,16 @@ The gateway MUST accept `PROGRAM_ACK { nonce, program_hash }` messages from node
 **Source:** Design decision
 
 **Description:**  
-The gateway MUST accept BPF programs as pre-compiled ELF files. On ingestion, the gateway extracts the bytecode and map definitions from the ELF, verifies the program, and encodes them into a CBOR program image (see protocol.md § Program image format). The ELF is never transmitted to nodes — only the CBOR program image is chunked and transferred.
+The gateway MUST accept BPF programs as pre-compiled ELF files. On ingestion, the gateway extracts the bytecode and map definitions from the ELF, verifies the program, and encodes them into a CBOR program image (see protocol.md § Program image format). Verification and encoding MUST be completed at ingestion time — not deferred to when a node requests the program. The resulting CBOR image and its hash are stored in the program library, ready to serve immediately on demand. The ELF is never transmitted to nodes.
 
 **Acceptance criteria:**
 
 1. The gateway accepts a valid BPF ELF binary as input.
 2. The gateway extracts bytecode (`.text` section) and map definitions from the ELF.
-3. The gateway encodes the extracted data as a CBOR program image.
+3. The gateway verifies the program and encodes the extracted data as a CBOR program image during ingestion — before the program is available for distribution.
 4. The gateway rejects files that are not valid BPF ELF binaries with a clear diagnostic.
 5. The gateway does not depend on LLVM, clang, or any compiler toolchain at build time or runtime.
+6. Chunk serving (GW-0300) reads from the pre-built CBOR image with no additional processing.
 
 ---
 

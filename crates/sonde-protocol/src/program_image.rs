@@ -126,7 +126,7 @@ impl ProgramImage {
                             let mval = mv
                                 .as_integer()
                                 .and_then(|i| u64::try_from(i).ok())
-                                .map(|v| v as u32);
+                                .and_then(|v| u32::try_from(v).ok());
 
                             match mkey {
                                 MAP_KEY_TYPE => map_type = mval,

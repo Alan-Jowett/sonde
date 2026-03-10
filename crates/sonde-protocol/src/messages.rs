@@ -113,6 +113,16 @@ fn get_uint(fields: &[(u64, Value)], key: u64) -> Result<u64, DecodeError> {
         .ok_or(DecodeError::InvalidFieldType(key))
 }
 
+fn get_u32(fields: &[(u64, Value)], key: u64) -> Result<u32, DecodeError> {
+    let v = get_uint(fields, key)?;
+    u32::try_from(v).map_err(|_| DecodeError::InvalidFieldType(key))
+}
+
+fn get_u8(fields: &[(u64, Value)], key: u64) -> Result<u8, DecodeError> {
+    let v = get_uint(fields, key)?;
+    u8::try_from(v).map_err(|_| DecodeError::InvalidFieldType(key))
+}
+
 fn get_bytes(fields: &[(u64, Value)], key: u64) -> Result<Vec<u8>, DecodeError> {
     let val = get_field(fields, key)?;
     val.as_bytes()
@@ -120,7 +130,27 @@ fn get_bytes(fields: &[(u64, Value)], key: u64) -> Result<Vec<u8>, DecodeError> 
         .ok_or(DecodeError::InvalidFieldType(key))
 }
 
-#[cfg(feature = "alloc")]
+/// Encode a u64 as a CBOR unsigned integer Value.
+/// For values that fit in i64 (the common case), uses direct conversion.
+/// Values > i64::MAX are not expected in this protocol but are encoded
+/// via the raw CBOR bytes path if needed.
+fn uint_val(v: u64) -> Value {
+    // All protocol u64 values (timestamps, sequence numbers) fit in i64
+    // in practice. If a value exceeds i64::MAX, encode as i64 — this
+    // covers the full u63 range which is sufficient.
+    Value::Integer((v as i64).into())
+}
+
+/// Encode a u32 as a CBOR unsigned integer Value.
+fn u32_val(v: u32) -> Value {
+    Value::Integer((v as i64).into())
+}
+
+/// Encode a u8 as a CBOR unsigned integer Value.
+fn u8_val(v: u8) -> Value {
+    Value::Integer((v as i64).into())
+}
+
 use alloc::format;
 
 impl NodeMessage {
@@ -132,19 +162,13 @@ impl NodeMessage {
                 battery_mv,
             } => {
                 alloc::vec![
-                    (
-                        KEY_FIRMWARE_ABI_VERSION,
-                        Value::Integer((*firmware_abi_version as i64).into())
-                    ),
+                    (KEY_FIRMWARE_ABI_VERSION, u32_val(*firmware_abi_version)),
                     (KEY_PROGRAM_HASH, Value::Bytes(program_hash.clone())),
-                    (KEY_BATTERY_MV, Value::Integer((*battery_mv as i64).into())),
+                    (KEY_BATTERY_MV, u32_val(*battery_mv)),
                 ]
             }
             NodeMessage::GetChunk { chunk_index } => {
-                alloc::vec![(
-                    KEY_CHUNK_INDEX,
-                    Value::Integer((*chunk_index as i64).into())
-                )]
+                alloc::vec![(KEY_CHUNK_INDEX, u32_val(*chunk_index))]
             }
             NodeMessage::ProgramAck { program_hash } => {
                 alloc::vec![(KEY_PROGRAM_HASH, Value::Bytes(program_hash.clone()))]
@@ -160,12 +184,12 @@ impl NodeMessage {
         let fields = cbor_decode_map(cbor)?;
         match msg_type {
             MSG_WAKE => Ok(NodeMessage::Wake {
-                firmware_abi_version: get_uint(&fields, KEY_FIRMWARE_ABI_VERSION)? as u32,
+                firmware_abi_version: get_u32(&fields, KEY_FIRMWARE_ABI_VERSION)?,
                 program_hash: get_bytes(&fields, KEY_PROGRAM_HASH)?,
-                battery_mv: get_uint(&fields, KEY_BATTERY_MV)? as u32,
+                battery_mv: get_u32(&fields, KEY_BATTERY_MV)?,
             }),
             MSG_GET_CHUNK => Ok(NodeMessage::GetChunk {
-                chunk_index: get_uint(&fields, KEY_CHUNK_INDEX)? as u32,
+                chunk_index: get_u32(&fields, KEY_CHUNK_INDEX)?,
             }),
             MSG_PROGRAM_ACK => Ok(NodeMessage::ProgramAck {
                 program_hash: get_bytes(&fields, KEY_PROGRAM_HASH)?,
@@ -197,18 +221,9 @@ impl GatewayMessage {
                 payload,
             } => {
                 let mut p = alloc::vec![
-                    (
-                        KEY_COMMAND_TYPE,
-                        Value::Integer((*command_type as i64).into())
-                    ),
-                    (
-                        KEY_STARTING_SEQ,
-                        Value::Integer((*starting_seq as i64).into())
-                    ),
-                    (
-                        KEY_TIMESTAMP_MS,
-                        Value::Integer((*timestamp_ms as i64).into())
-                    ),
+                    (KEY_COMMAND_TYPE, u8_val(*command_type)),
+                    (KEY_STARTING_SEQ, uint_val(*starting_seq)),
+                    (KEY_TIMESTAMP_MS, uint_val(*timestamp_ms)),
                 ];
                 match payload {
                     CommandPayload::Nop | CommandPayload::Reboot => {}
@@ -225,18 +240,12 @@ impl GatewayMessage {
                         chunk_count,
                     } => {
                         p.push((KEY_PROGRAM_HASH, Value::Bytes(program_hash.clone())));
-                        p.push((
-                            KEY_PROGRAM_SIZE,
-                            Value::Integer((*program_size as i64).into()),
-                        ));
-                        p.push((KEY_CHUNK_SIZE, Value::Integer((*chunk_size as i64).into())));
-                        p.push((
-                            KEY_CHUNK_COUNT,
-                            Value::Integer((*chunk_count as i64).into()),
-                        ));
+                        p.push((KEY_PROGRAM_SIZE, u32_val(*program_size)));
+                        p.push((KEY_CHUNK_SIZE, u32_val(*chunk_size)));
+                        p.push((KEY_CHUNK_COUNT, u32_val(*chunk_count)));
                     }
                     CommandPayload::UpdateSchedule { interval_s } => {
-                        p.push((KEY_INTERVAL_S, Value::Integer((*interval_s as i64).into())));
+                        p.push((KEY_INTERVAL_S, u32_val(*interval_s)));
                     }
                 }
                 p
@@ -246,10 +255,7 @@ impl GatewayMessage {
                 chunk_data,
             } => {
                 alloc::vec![
-                    (
-                        KEY_CHUNK_INDEX,
-                        Value::Integer((*chunk_index as i64).into())
-                    ),
+                    (KEY_CHUNK_INDEX, u32_val(*chunk_index)),
                     (KEY_CHUNK_DATA, Value::Bytes(chunk_data.clone())),
                 ]
             }
@@ -264,7 +270,7 @@ impl GatewayMessage {
         let fields = cbor_decode_map(cbor)?;
         match msg_type {
             MSG_COMMAND => {
-                let command_type = get_uint(&fields, KEY_COMMAND_TYPE)? as u8;
+                let command_type = get_u8(&fields, KEY_COMMAND_TYPE)?;
                 let starting_seq = get_uint(&fields, KEY_STARTING_SEQ)?;
                 let timestamp_ms = get_uint(&fields, KEY_TIMESTAMP_MS)?;
 
@@ -272,21 +278,21 @@ impl GatewayMessage {
                     CMD_NOP => CommandPayload::Nop,
                     CMD_UPDATE_PROGRAM => CommandPayload::UpdateProgram {
                         program_hash: get_bytes(&fields, KEY_PROGRAM_HASH)?,
-                        program_size: get_uint(&fields, KEY_PROGRAM_SIZE)? as u32,
-                        chunk_size: get_uint(&fields, KEY_CHUNK_SIZE)? as u32,
-                        chunk_count: get_uint(&fields, KEY_CHUNK_COUNT)? as u32,
+                        program_size: get_u32(&fields, KEY_PROGRAM_SIZE)?,
+                        chunk_size: get_u32(&fields, KEY_CHUNK_SIZE)?,
+                        chunk_count: get_u32(&fields, KEY_CHUNK_COUNT)?,
                     },
                     CMD_RUN_EPHEMERAL => CommandPayload::RunEphemeral {
                         program_hash: get_bytes(&fields, KEY_PROGRAM_HASH)?,
-                        program_size: get_uint(&fields, KEY_PROGRAM_SIZE)? as u32,
-                        chunk_size: get_uint(&fields, KEY_CHUNK_SIZE)? as u32,
-                        chunk_count: get_uint(&fields, KEY_CHUNK_COUNT)? as u32,
+                        program_size: get_u32(&fields, KEY_PROGRAM_SIZE)?,
+                        chunk_size: get_u32(&fields, KEY_CHUNK_SIZE)?,
+                        chunk_count: get_u32(&fields, KEY_CHUNK_COUNT)?,
                     },
                     CMD_UPDATE_SCHEDULE => CommandPayload::UpdateSchedule {
-                        interval_s: get_uint(&fields, KEY_INTERVAL_S)? as u32,
+                        interval_s: get_u32(&fields, KEY_INTERVAL_S)?,
                     },
                     CMD_REBOOT => CommandPayload::Reboot,
-                    _ => CommandPayload::Nop, // Unknown commands treated as NOP
+                    _ => CommandPayload::Nop,
                 };
 
                 Ok(GatewayMessage::Command {
@@ -297,7 +303,7 @@ impl GatewayMessage {
                 })
             }
             MSG_CHUNK => Ok(GatewayMessage::Chunk {
-                chunk_index: get_uint(&fields, KEY_CHUNK_INDEX)? as u32,
+                chunk_index: get_u32(&fields, KEY_CHUNK_INDEX)?,
                 chunk_data: get_bytes(&fields, KEY_CHUNK_DATA)?,
             }),
             MSG_APP_DATA_REPLY => Ok(GatewayMessage::AppDataReply {

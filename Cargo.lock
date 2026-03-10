@@ -180,7 +180,6 @@ name = "sonde-protocol"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "ciborium-io",
  "hmac",
  "sha2",
 ]

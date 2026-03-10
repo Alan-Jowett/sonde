@@ -29,7 +29,7 @@ The gateway handles everything in between: protocol, authentication, program dis
             │                                   │
     ┌───────▼───────┐   radio   ┌───────────────▼───────────┐
     │  Sonde Node   │◄─────────►│  Sonde Gateway            │
-    │  (firmware)   │           │  (protocol, auth, admin)   │
+    │  (firmware)   │           │  (protocol, auth, admin)  │
     └───────────────┘           └───────────────────────────┘
 ```
 
@@ -54,44 +54,46 @@ These are the gateway's responsibility, managed by operations staff (see [gatewa
 
 ## 2  Transport
 
-The gateway invokes the application handler for each data exchange. Two models are supported:
+The gateway communicates with the handler via **stdin/stdout** using length-prefixed CBOR messages. One unified model handles both one-shot and long-running handlers:
 
-### 2.1  Process handler (simple)
+1. Gateway spawns the configured handler command.
+2. Gateway writes `DATA` and `EVENT` messages to the handler's stdin.
+3. Handler writes `DATA_REPLY` and `LOG` messages to stdout.
+4. If the handler **stays running** → gateway keeps streaming messages to it.
+5. If the handler **exits** → gateway respawns it when the next message arrives.
 
-The gateway executes a configured command for each `APP_DATA`, passing data via stdin/stdout.
+The developer doesn't choose a model — the gateway adapts. A simple script that processes one message and exits just works. A long-running service that loops on stdin also just works.
 
-```
-Gateway                          Handler process
-  │                                  │
-  │──── stdin: request (CBOR) ──────►│
-  │                                  │  (process data)
-  │◄──── stdout: response (CBOR) ───│
-  │                                  │
-  │  [process exits]                 │
-```
+### 2.1  Framing
 
-- One process per APP_DATA message.
-- Stateless — each invocation is independent.
-- Simplest integration: a Python script, a shell command, a compiled binary.
-
-**⚠ OPEN:** Is per-invocation process spawning too expensive for high-frequency data? Should there be a persistent-process option too?
-
-### 2.2  Long-running handler (streaming)
-
-The gateway connects to a long-running handler process over a local socket (Unix domain socket or named pipe). Messages are length-prefixed CBOR, full-duplex.
+Each message (both directions) is length-prefixed:
 
 ```
 ┌──────────────────────────────────┐
 │  Length (4 bytes, big-endian)    │
-│  CBOR payload (Length bytes)    │
+│  CBOR payload (Length bytes)     │
 └──────────────────────────────────┘
 ```
 
-- Handler stays running — no startup overhead per message.
-- Can maintain state across invocations.
-- Gateway reconnects if the handler restarts.
+### 2.2  Lifecycle
 
-**⚠ OPEN:** Should the gateway connect to the handler, or should the handler connect to the gateway? Handler-connects-to-gateway is simpler for deployment (gateway is always running first).
+```
+Gateway                          Handler process
+  │                                  │
+  │  [spawn]                         │
+  │                                  │
+  │──── stdin: DATA (CBOR) ─────────►│
+  │◄──── stdout: DATA_REPLY (CBOR) ──│
+  │                                  │
+  │──── stdin: DATA (CBOR) ─────────►│  (handler still alive — keep going)
+  │◄──── stdout: DATA_REPLY (CBOR) ──│
+  │                                  │
+  │  ... or handler exits ...        │
+  │                                  │
+  │  [respawn on next message]       │
+```
+
+**Exit handling:** If the handler exits with code 0 between messages, the gateway respawns it on the next `DATA`. If it exits with non-zero (or crashes mid-message), the gateway logs the error and sends a zero-length `APP_DATA_REPLY` to the node.
 
 ---
 
@@ -186,32 +188,58 @@ Optional: the handler can emit log messages through the gateway's logging system
 
 ---
 
-## 5  Process handler protocol
+## 5  Examples
 
-For the simple process-per-message model (§2.1):
+### One-shot handler (Python)
 
-1. Gateway spawns the configured handler command.
-2. Gateway writes a single `DATA` message (CBOR) to stdin, then closes stdin.
-3. Handler reads stdin, processes the data, writes a single `DATA_REPLY` (CBOR) to stdout, and exits.
-4. Gateway reads stdout and sends the reply blob to the node.
-
-Exit code 0 = success. Non-zero = the gateway logs the error and sends a zero-length reply.
-
-**Example (Python):**
+Processes one message and exits. The gateway respawns it for the next message.
 
 ```python
 import sys, cbor2
 
-# Read DATA from stdin
-request = cbor2.load(sys.stdin.buffer)
+# Read one DATA message from stdin
+length = int.from_bytes(sys.stdin.buffer.read(4), 'big')
+request = cbor2.loads(sys.stdin.buffer.read(length))
 
 # Process the sensor data
 sensor_data = request[5]  # data field
 # ... application logic ...
 
 # Write DATA_REPLY to stdout
-cbor2.dump({1: 0x81, 2: request[2], 3: reply_blob}, sys.stdout.buffer)
+reply = cbor2.dumps({1: 0x81, 2: request[2], 3: reply_blob})
+sys.stdout.buffer.write(len(reply).to_bytes(4, 'big'))
+sys.stdout.buffer.write(reply)
 ```
+
+### Long-running handler (Python)
+
+Loops on stdin. Stays alive across messages — no respawn overhead.
+
+```python
+import sys, cbor2
+
+while True:
+    # Read length-prefixed message
+    length_bytes = sys.stdin.buffer.read(4)
+    if not length_bytes:
+        break  # stdin closed, gateway shutting down
+    length = int.from_bytes(length_bytes, 'big')
+    request = cbor2.loads(sys.stdin.buffer.read(length))
+
+    if request[1] == 0x02:  # EVENT — no reply needed
+        continue
+
+    # Process DATA and reply
+    sensor_data = request[5]
+    # ... application logic ...
+
+    reply = cbor2.dumps({1: 0x81, 2: request[2], 3: reply_blob})
+    sys.stdout.buffer.write(len(reply).to_bytes(4, 'big'))
+    sys.stdout.buffer.write(reply)
+    sys.stdout.buffer.flush()
+```
+
+Both examples use the same framing and message format. The only difference is whether the process loops or exits.
 
 ---
 
@@ -223,9 +251,7 @@ The gateway administrator configures which handler to invoke. This is an ops/adm
 # Example gateway configuration (format TBD)
 application:
   handler: "/usr/local/bin/my-soil-app"
-  mode: "process"          # or "streaming"
   timeout_s: 5
-  socket: "/var/run/sonde/app.sock"  # for streaming mode
 ```
 
 **⚠ OPEN:** Should a single gateway support multiple handlers (one per program_hash)? This would allow different applications for different BPF programs on the same gateway.
@@ -236,6 +262,4 @@ application:
 
 | ID | Section | Question |
 |---|---|---|
-| A-1 | §2.1 | Is per-invocation process spawning too expensive for high-frequency data? |
-| A-2 | §2.2 | Handler-connects-to-gateway or gateway-connects-to-handler? |
-| A-3 | §6 | Multiple handlers per gateway (routed by program_hash)? |
+| A-1 | §6 | Multiple handlers per gateway (routed by program_hash)? |

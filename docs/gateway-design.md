@@ -3,7 +3,7 @@
 > **Document status:** Draft  
 > **Scope:** Architecture and internal design of the Sonde gateway service.  
 > **Audience:** Implementers (human or LLM agent) building the gateway.  
-> **Related:** [gateway-requirements.md](gateway-requirements.md), [protocol.md](protocol.md), [security.md](security.md), [gateway-api.md](gateway-api.md)
+> **Related:** [gateway-requirements.md](gateway-requirements.md), [protocol.md](protocol.md), [protocol-crate-design.md](protocol-crate-design.md), [security.md](security.md), [gateway-api.md](gateway-api.md)
 
 ---
 
@@ -26,10 +26,11 @@ The gateway is **stateless with respect to replay protection** — active sessio
 | Decision | Choice | Rationale |
 |---|---|---|
 | Language | Rust | Memory safety, async ecosystem, strong typing, no GC pauses |
+| Protocol crate | `sonde-protocol` (shared with node) | `no_std`-compatible; frame codec, CBOR messages, constants |
 | Async runtime | tokio | Industry-standard async runtime; per-node task spawning |
 | BPF verification | [prevail-rust](https://github.com/elazarg/prevail-rust) | Native Rust, feature-parity with C++ Prevail, no FFI |
-| CBOR | `ciborium` crate | Well-maintained, serde-compatible |
-| HMAC | `hmac` + `sha2` crates (RustCrypto) | Pure Rust, audited, no OpenSSL dependency |
+| CBOR | Via `sonde-protocol` (`ciborium`) | Well-maintained, serde-compatible |
+| HMAC | `hmac` + `sha2` crates (RustCrypto, implements `sonde-protocol::HmacProvider` trait) | Pure Rust, audited, no OpenSSL dependency |
 | Transport | Abstract trait (ESP-NOW as first adapter) | Decouples protocol logic from radio hardware |
 | Storage | Abstract trait | Decouples persistence from storage engine |
 
@@ -109,9 +110,11 @@ The ESP-NOW adapter wraps the platform's ESP-NOW API:
 
 ## 5  Protocol codec
 
-The codec handles frame serialization and deserialization. It operates on raw byte buffers and produces/consumes typed messages.
+The protocol codec is provided by the shared `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full crate specification). The gateway uses the same frame format, CBOR message types, and constants as the node. The gateway provides a software `HmacProvider` implementation using the `hmac` + `sha2` RustCrypto crates.
 
 ### 5.1  Frame layout
+
+All types, constants, and functions in this section are provided by the `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full API). The gateway-specific code only provides the `HmacProvider` implementation.
 
 ```
 Offset 0:  key_hint    (2 bytes, big-endian)
@@ -123,91 +126,39 @@ Offset -32: hmac       (32 bytes, HMAC-SHA256 over bytes 0..len-32)
 
 ### 5.2  Inbound decoding
 
-```rust
-pub struct InboundFrame {
-    pub key_hint: u16,
-    pub msg_type: u8,
-    pub nonce: u64,
-    pub payload: Vec<u8>,  // raw CBOR bytes (pre-auth, not yet decoded)
-    pub hmac: [u8; 32],
-}
-```
-
-Decoding steps:
-1. Validate minimum frame size (11 header + 32 HMAC = 43 bytes).
-2. Split frame into header (11 bytes), payload (middle), HMAC (last 32 bytes).
-3. Parse header fields at fixed offsets.
-4. Return `InboundFrame`. CBOR payload is **not** decoded until after HMAC verification.
+Uses `sonde_protocol::decode_frame()` → returns `DecodedFrame { header, payload, hmac }`. CBOR payload is **not** decoded until after HMAC verification.
 
 ### 5.3  HMAC verification
 
+The gateway implements `sonde_protocol::HmacProvider` using the `hmac` + `sha2` RustCrypto crates:
+
 ```rust
-pub fn verify_hmac(key: &[u8; 32], frame: &InboundFrame) -> bool {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-    mac.update(&frame.header_and_payload_bytes());
-    mac.verify_slice(&frame.hmac).is_ok()
+struct RustCryptoHmac;
+
+impl sonde_protocol::HmacProvider for RustCryptoHmac {
+    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+        mac.update(data);
+        mac.finalize().into_bytes().into()
+    }
+
+    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+        mac.update(data);
+        mac.verify_slice(expected).is_ok() // constant-time comparison
+    }
 }
 ```
 
-The codec provides this as a pure function. The session manager calls it with candidate keys from the node registry.
+The session manager calls `sonde_protocol::verify_frame()` with candidate keys from the node registry.
 
 ### 5.4  Outbound encoding
 
-```rust
-pub fn encode_frame(
-    key_hint: u16,
-    msg_type: u8,
-    nonce: u64,
-    payload_cbor: &[u8],
-    key: &[u8; 32],
-) -> Vec<u8>
-```
-
-1. Write header (11 bytes) + payload.
-2. Compute HMAC over header + payload.
-3. Append HMAC (32 bytes).
-4. Return complete frame.
+Uses `sonde_protocol::encode_frame()` with the gateway's `RustCryptoHmac` provider.
 
 ### 5.5  CBOR message types
 
-Each protocol message is a Rust enum variant with typed fields:
-
-```rust
-pub enum NodeMessage {
-    Wake {
-        firmware_abi_version: u32,
-        program_hash: Vec<u8>,
-        battery_mv: u32,
-    },
-    GetChunk {
-        chunk_index: u32,
-    },
-    ProgramAck {
-        program_hash: Vec<u8>,
-    },
-    AppData {
-        blob: Vec<u8>,
-    },
-}
-
-pub enum GatewayMessage {
-    Command {
-        command_type: u8,
-        starting_seq: u64,
-        timestamp_ms: u64,
-        payload: Option<CommandPayload>,
-    },
-    Chunk {
-        chunk_index: u32,
-        chunk_data: Vec<u8>,
-    },
-    AppDataReply {
-        blob: Vec<u8>,
-    },
-}
-```
-
-CBOR encoding/decoding uses integer keys as defined in protocol.md § CBOR key mapping.
+All message types (`NodeMessage`, `GatewayMessage`, `CommandPayload`) and their CBOR encode/decode logic are defined in the `sonde-protocol` crate. The gateway uses `NodeMessage::decode()` for inbound messages and `GatewayMessage::encode()` for outbound.
 
 ---
 
@@ -363,26 +314,20 @@ pub enum VerificationProfile {
 1. Accept pre-compiled BPF ELF (GW-0400).
 2. Verify with `prevail-rust` against the appropriate profile (GW-0401). Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`.
 3. Extract bytecode (`.text` section) and map definitions from the ELF.
-4. Encode as CBOR program image using deterministic encoding (RFC 8949 §4.2): `{ 1: bytecode, 2: [map_defs...] }`. See [protocol.md § Program image format](protocol.md#program-image-format).
+4. Encode as CBOR program image using `sonde_protocol::ProgramImage::encode_deterministic()`. See [protocol-crate-design.md §7](protocol-crate-design.md) and [protocol.md § Program image format](protocol.md#program-image-format).
 5. Enforce size limits on the CBOR image: 4 KB resident, 2 KB ephemeral (GW-0403).
-6. Compute `program_hash` = SHA-256 of the CBOR image (GW-0402).
+6. Compute `program_hash` using `sonde_protocol::program_hash()` with the gateway's SHA-256 provider (GW-0402).
 7. Store in library. Verification and encoding complete at ingestion time — chunk serving is immediate (GW-0400).
 
 ### 8.3  Chunk serving
 
+Uses `sonde_protocol::get_chunk()` on the stored CBOR image:
+
 ```rust
-pub fn get_chunk(
-    &self,
-    program_hash: &[u8],
-    chunk_index: u32,
-    chunk_size: u32,
-) -> Option<Vec<u8>>
+let chunk_data = sonde_protocol::get_chunk(&record.image, chunk_index, chunk_size);
 ```
 
-Returns bytes from the stored CBOR program image for the requested chunk. Chunk boundaries are computed as:
-- Start: `chunk_index * chunk_size`
-- End: `min(start + chunk_size, program_size)`
-- Last chunk may be smaller than `chunk_size`.
+Returns bytes from the stored CBOR program image for the requested chunk. Last chunk may be smaller than `chunk_size`.
 
 All gateway instances in a failover group serve identical bytes for the same hash (GW-1004).
 

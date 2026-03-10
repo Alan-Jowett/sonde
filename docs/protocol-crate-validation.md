@@ -1,0 +1,430 @@
+# Protocol Crate Validation Specification (`sonde-protocol`)
+
+> **Document status:** Draft  
+> **Scope:** Test plan for the `sonde-protocol` shared crate.  
+> **Audience:** Implementers (human or LLM agent) writing protocol crate tests.  
+> **Related:** [protocol-crate-design.md](protocol-crate-design.md), [protocol.md](protocol.md)
+
+---
+
+## 1  Overview
+
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`.
+
+### Test HMAC/SHA providers
+
+```rust
+struct SoftwareHmac;
+impl HmacProvider for SoftwareHmac { /* RustCrypto hmac+sha2 */ }
+
+struct SoftwareSha256;
+impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
+```
+
+---
+
+## 2  Frame header tests
+
+### T-P001  Header round-trip
+
+**Procedure:**
+1. Create `FrameHeader { key_hint: 0x1234, msg_type: 0x01, nonce: 0xDEADBEEFCAFEBABE }`.
+2. Serialize to bytes.
+3. Deserialize back.
+4. Assert: all fields match the original.
+
+---
+
+### T-P002  Header byte layout
+
+**Procedure:**
+1. Create header with known values.
+2. Serialize.
+3. Assert: bytes[0..2] = key_hint big-endian.
+4. Assert: bytes[2] = msg_type.
+5. Assert: bytes[3..11] = nonce big-endian.
+6. Assert: total length = 11.
+
+---
+
+### T-P003  Header zero values
+
+**Procedure:**
+1. Create header with all fields = 0.
+2. Serialize, deserialize.
+3. Assert: round-trip succeeds, all fields are 0.
+
+---
+
+### T-P004  Header max values
+
+**Procedure:**
+1. Create header with `key_hint = 0xFFFF`, `msg_type = 0xFF`, `nonce = u64::MAX`.
+2. Serialize, deserialize.
+3. Assert: round-trip succeeds.
+
+---
+
+## 3  Frame codec tests
+
+### T-P010  Encode and decode round-trip
+
+**Procedure:**
+1. Create a header and CBOR payload.
+2. Encode with `encode_frame()`.
+3. Decode with `decode_frame()`.
+4. Assert: header matches, payload matches, HMAC matches.
+
+---
+
+### T-P011  HMAC verification — valid
+
+**Procedure:**
+1. Encode a frame with PSK_A.
+2. Decode and verify with PSK_A.
+3. Assert: `verify_frame()` returns true.
+
+---
+
+### T-P012  HMAC verification — wrong key
+
+**Procedure:**
+1. Encode a frame with PSK_A.
+2. Decode and verify with PSK_B.
+3. Assert: `verify_frame()` returns false.
+
+---
+
+### T-P013  HMAC verification — tampered payload
+
+**Procedure:**
+1. Encode a frame.
+2. Flip one bit in the payload portion of the raw bytes.
+3. Decode and verify with the correct PSK.
+4. Assert: `verify_frame()` returns false.
+
+---
+
+### T-P014  HMAC verification — tampered header
+
+**Procedure:**
+1. Encode a frame.
+2. Flip one bit in the header portion (e.g., msg_type).
+3. Decode and verify.
+4. Assert: `verify_frame()` returns false.
+
+---
+
+### T-P015  HMAC verification — tampered HMAC
+
+**Procedure:**
+1. Encode a frame.
+2. Flip one bit in the HMAC trailer.
+3. Decode and verify.
+4. Assert: `verify_frame()` returns false.
+
+---
+
+### T-P016  Frame too short
+
+**Procedure:**
+1. Call `decode_frame()` with 42 bytes (less than MIN_FRAME_SIZE).
+2. Assert: `DecodeError::TooShort`.
+
+---
+
+### T-P017  Frame exactly minimum size
+
+**Procedure:**
+1. Encode a frame with empty payload.
+2. Assert: total length = 43 (11 header + 0 payload + 32 HMAC).
+3. Decode succeeds.
+
+---
+
+### T-P018  Frame too large
+
+**Procedure:**
+1. Call `encode_frame()` with a payload that would make the total exceed 250 bytes.
+2. Assert: `EncodeError::FrameTooLarge`.
+
+---
+
+### T-P019  Frame exactly max size
+
+**Procedure:**
+1. Encode a frame with payload exactly 207 bytes.
+2. Assert: total length = 250.
+3. Decode succeeds.
+
+---
+
+## 4  Message encoding tests
+
+### T-P020  Wake encode/decode round-trip
+
+**Procedure:**
+1. Create `NodeMessage::Wake { firmware_abi_version: 1, program_hash: vec![0xAA; 32], battery_mv: 3300 }`.
+2. Encode to CBOR.
+3. Decode with `msg_type = MSG_WAKE`.
+4. Assert: all fields match.
+
+---
+
+### T-P021  Wake with empty program hash
+
+**Procedure:**
+1. Create Wake with `program_hash: vec![]` (no program installed).
+2. Round-trip.
+3. Assert: `program_hash` is empty.
+
+---
+
+### T-P022  Command NOP round-trip
+
+**Procedure:**
+1. Create `GatewayMessage::Command { command_type: CMD_NOP, starting_seq: 42, timestamp_ms: 1710000000000, payload: CommandPayload::Nop }`.
+2. Round-trip.
+3. Assert: all fields match.
+
+---
+
+### T-P023  Command UPDATE_PROGRAM round-trip
+
+**Procedure:**
+1. Create Command with `CommandPayload::UpdateProgram { program_hash, program_size: 4000, chunk_size: 190, chunk_count: 22 }`.
+2. Round-trip.
+3. Assert: all fields match.
+
+---
+
+### T-P024  Command UPDATE_SCHEDULE round-trip
+
+**Procedure:**
+1. Create Command with `CommandPayload::UpdateSchedule { interval_s: 300 }`.
+2. Round-trip.
+3. Assert: `interval_s = 300`.
+
+---
+
+### T-P025  GetChunk round-trip
+
+**Procedure:**
+1. Create `NodeMessage::GetChunk { chunk_index: 7 }`.
+2. Round-trip.
+3. Assert: `chunk_index = 7`.
+
+---
+
+### T-P026  Chunk round-trip
+
+**Procedure:**
+1. Create `GatewayMessage::Chunk { chunk_index: 7, chunk_data: vec![0x55; 190] }`.
+2. Round-trip.
+3. Assert: fields match, data length = 190.
+
+---
+
+### T-P027  AppData round-trip
+
+**Procedure:**
+1. Create `NodeMessage::AppData { blob: vec![1, 2, 3, 4, 5] }`.
+2. Round-trip.
+3. Assert: blob matches.
+
+---
+
+### T-P028  AppDataReply round-trip
+
+**Procedure:**
+1. Create `GatewayMessage::AppDataReply { blob: vec![0xAA, 0xBB] }`.
+2. Round-trip.
+3. Assert: blob matches.
+
+---
+
+### T-P029  Unknown CBOR keys ignored
+
+**Procedure:**
+1. Encode a Wake message.
+2. Manually inject an extra CBOR key (e.g., key 99 with value "unknown").
+3. Decode.
+4. Assert: decoding succeeds, extra key is ignored.
+
+---
+
+### T-P030  Missing required field
+
+**Procedure:**
+1. Manually construct CBOR for a Wake with `battery_mv` omitted.
+2. Decode.
+3. Assert: `DecodeError::MissingField(KEY_BATTERY_MV)`.
+
+---
+
+### T-P031  Invalid msg_type
+
+**Procedure:**
+1. Call `NodeMessage::decode(0xFF, &valid_cbor)`.
+2. Assert: `DecodeError::InvalidMsgType(0xFF)`.
+
+---
+
+### T-P032  CBOR integer keys used on wire
+
+**Procedure:**
+1. Encode a Wake message.
+2. Manually inspect the CBOR bytes.
+3. Assert: map keys are small positive integers (1, 2, 3), not text strings.
+
+---
+
+## 5  Program image tests
+
+### T-P040  ProgramImage encode/decode round-trip
+
+**Procedure:**
+1. Create `ProgramImage { bytecode: vec![0x18, 0x01, ...], maps: vec![MapDef { map_type: 1, key_size: 4, value_size: 64, max_entries: 16 }] }`.
+2. Encode with `encode_deterministic()`.
+3. Decode.
+4. Assert: all fields match.
+
+---
+
+### T-P041  ProgramImage empty maps
+
+**Procedure:**
+1. Create image with `maps: vec![]`.
+2. Round-trip.
+3. Assert: maps is empty.
+
+---
+
+### T-P042  ProgramImage deterministic encoding
+
+**Procedure:**
+1. Create the same ProgramImage twice (independent construction).
+2. Encode both with `encode_deterministic()`.
+3. Assert: byte-for-byte identical.
+
+---
+
+### T-P043  ProgramImage hash stability
+
+**Procedure:**
+1. Create a ProgramImage.
+2. Encode and hash.
+3. Repeat 100 times.
+4. Assert: all hashes are identical.
+
+---
+
+### T-P044  Different maps produce different hashes
+
+**Procedure:**
+1. Create image A with `max_entries: 16`.
+2. Create image B with identical bytecode but `max_entries: 32`.
+3. Encode and hash both.
+4. Assert: hashes differ.
+
+---
+
+### T-P045  Different bytecode produces different hashes
+
+**Procedure:**
+1. Create two images with different bytecode but same maps.
+2. Hash both.
+3. Assert: hashes differ.
+
+---
+
+### T-P046  ProgramImage deterministic encoding — key ordering
+
+**Procedure:**
+1. Encode a ProgramImage.
+2. Inspect CBOR bytes.
+3. Assert: map keys are in ascending numeric order (RFC 8949 §4.2 deterministic encoding).
+
+---
+
+## 6  Chunking helper tests
+
+### T-P050  chunk_count calculation
+
+**Procedure:**
+1. `chunk_count(4000, 190)` → assert 22 (4000/190 = 21.05, ceiling = 22).
+2. `chunk_count(190, 190)` → assert 1.
+3. `chunk_count(0, 190)` → assert 0.
+4. `chunk_count(1, 190)` → assert 1.
+5. `chunk_count(380, 190)` → assert 2 (exact multiple).
+
+---
+
+### T-P051  get_chunk — valid indices
+
+**Procedure:**
+1. Create a 400-byte image, chunk_size = 190.
+2. `get_chunk(image, 0, 190)` → first 190 bytes.
+3. `get_chunk(image, 1, 190)` → next 190 bytes.
+4. `get_chunk(image, 2, 190)` → last 20 bytes.
+
+---
+
+### T-P052  get_chunk — out of range
+
+**Procedure:**
+1. 400-byte image, chunk_size = 190.
+2. `get_chunk(image, 3, 190)` → None.
+3. `get_chunk(image, 100, 190)` → None.
+
+---
+
+### T-P053  Reassembled chunks match original
+
+**Procedure:**
+1. Create a program image, encode it.
+2. Split into chunks using `get_chunk()`.
+3. Reassemble by concatenating all chunks.
+4. Assert: reassembled bytes == original CBOR image.
+5. Hash reassembled bytes.
+6. Assert: hash matches the original image hash.
+
+---
+
+## 7  Full integration tests
+
+### T-P060  Complete frame encode → verify → decode message
+
+**Procedure:**
+1. Create a `NodeMessage::Wake`.
+2. Encode to CBOR.
+3. Build `FrameHeader` with appropriate msg_type.
+4. Call `encode_frame()` with PSK.
+5. Call `decode_frame()` on the result.
+6. Call `verify_frame()` with PSK → assert true.
+7. Call `NodeMessage::decode()` on the payload → assert fields match.
+
+---
+
+### T-P061  Gateway Command full round-trip
+
+**Procedure:**
+1. Create a `GatewayMessage::Command` with `UpdateProgram` payload.
+2. Encode CBOR, build frame, encode frame.
+3. Decode frame, verify HMAC, decode message.
+4. Assert: all fields match including `starting_seq`, `timestamp_ms`, `program_hash`, `chunk_size`, `chunk_count`.
+
+---
+
+### T-P062  Program image → chunk → reassemble → hash → decode
+
+**Procedure:**
+1. Create `ProgramImage` with bytecode and 3 maps.
+2. Encode deterministically.
+3. Compute hash.
+4. Split into chunks (chunk_size = 190).
+5. Reassemble from chunks.
+6. Compute hash of reassembly.
+7. Assert: hashes match.
+8. Decode reassembled CBOR.
+9. Assert: decoded `ProgramImage` matches original.

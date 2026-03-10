@@ -694,6 +694,143 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 9A  Admin API tests
+
+### T-0800  gRPC API availability
+
+**Validates:** GW-0800
+
+**Procedure:**
+1. Start the gateway.
+2. Connect to the gRPC admin API on the configured address.
+3. Assert: connection succeeds, service responds to health check.
+
+---
+
+### T-0801  Node registration via gRPC
+
+**Validates:** GW-0801
+
+**Procedure:**
+1. Call `RegisterNode` with key_hint, PSK, and admin node_id.
+2. Assert: success response.
+3. Call `ListNodes`.
+4. Assert: new node appears in the list with correct metadata.
+5. Send WAKE from the registered node.
+6. Assert: gateway recognizes the node and responds.
+
+---
+
+### T-0802  Node removal via gRPC
+
+**Validates:** GW-0801
+
+**Procedure:**
+1. Register a node.
+2. Call `RemoveNode`.
+3. Assert: node no longer appears in `ListNodes`.
+4. Send WAKE from the removed node.
+5. Assert: silently discarded (unknown node).
+
+---
+
+### T-0803  Program ingestion via gRPC
+
+**Validates:** GW-0802
+
+**Procedure:**
+1. Call `IngestProgram` with a valid ELF binary and `resident` profile.
+2. Assert: success response with program hash.
+3. Call `ListPrograms`.
+4. Assert: program appears with correct hash, size, and profile.
+
+---
+
+### T-0804  Program ingestion failure via gRPC
+
+**Validates:** GW-0802
+
+**Procedure:**
+1. Call `IngestProgram` with an invalid ELF (random bytes).
+2. Assert: error response with diagnostic message.
+3. Assert: no program stored.
+
+---
+
+### T-0805  Program assignment via gRPC
+
+**Validates:** GW-0802, GW-0803
+
+**Procedure:**
+1. Ingest a program. Register a node.
+2. Call `AssignProgram` with the node and program hash.
+3. Send WAKE with a different `program_hash`.
+4. Assert: COMMAND is UPDATE_PROGRAM for the assigned program.
+
+---
+
+### T-0806  Schedule change via gRPC
+
+**Validates:** GW-0803
+
+**Procedure:**
+1. Register a node.
+2. Call `SetSchedule` with node_id and interval_s = 300.
+3. Send WAKE.
+4. Assert: COMMAND is UPDATE_SCHEDULE with `interval_s = 300`.
+
+---
+
+### T-0807  Queue reboot via gRPC
+
+**Validates:** GW-0803
+
+**Procedure:**
+1. Register a node.
+2. Call `QueueReboot` with node_id.
+3. Send WAKE.
+4. Assert: COMMAND is REBOOT.
+
+---
+
+### T-0808  Queue ephemeral via gRPC
+
+**Validates:** GW-0803
+
+**Procedure:**
+1. Ingest an ephemeral program. Register a node.
+2. Call `QueueEphemeral` with node_id and program hash.
+3. Send WAKE.
+4. Assert: COMMAND is RUN_EPHEMERAL with correct program metadata.
+
+---
+
+### T-0809  Node status
+
+**Validates:** GW-0804
+
+**Procedure:**
+1. Register a node.
+2. Send WAKE with `battery_mv = 3100`, `firmware_abi_version = 2`.
+3. Call `GetNodeStatus`.
+4. Assert: status reflects battery 3100, ABI 2, recent `last_seen`.
+
+---
+
+### T-0810  State export and import via gRPC
+
+**Validates:** GW-0805
+
+**Procedure:**
+1. Register nodes and ingest programs.
+2. Call `ExportState` → save response bytes.
+3. Start a fresh gateway.
+4. Call `ImportState` with the saved bytes.
+5. Call `ListNodes` and `ListPrograms`.
+6. Assert: all nodes and programs are restored.
+
+---
+
 ## 10  Operational tests
 
 ### T-1000  Gateway failover
@@ -796,8 +933,15 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0701 | T-0201, T-0701 |
 | GW-0702 | T-0702 |
 | GW-0703 | T-0703, T-0704 |
-| GW-0704 | *(verified via admin API / provisioning tool tests)* |
-| GW-0705 | *(verified via admin API / provisioning tool tests)* |
+| GW-0704 | T-0801 *(registration side; USB provisioning is CLI-level)* |
+| GW-0705 | T-0802 *(removal side; USB reset is CLI-level)* |
+| GW-0800 | T-0800 |
+| GW-0801 | T-0801, T-0802 |
+| GW-0802 | T-0803, T-0804, T-0805 |
+| GW-0803 | T-0805, T-0806, T-0807, T-0808 |
+| GW-0804 | T-0809 |
+| GW-0805 | T-0810 |
+| GW-0806 | *(validated by CLI integration tests — see note below)* |
 | GW-1000 | T-1000 |
 | GW-1001 | T-1002 |
 | GW-1002 | T-0609 |

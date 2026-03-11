@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Configuration for the pre-commit framework (https://pre-commit.com).
+# Install: pip install pre-commit && pre-commit install --hook-type pre-commit --hook-type commit-msg
+
+repos:
+  - repo: local
+    hooks:
+      - id: spdx-header
+        name: SPDX License Header
+        entry: hooks/pre-commit
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: dco-signed-off-by
+        name: DCO Signed-off-by
+        entry: hooks/commit-msg
+        language: script
+        stages: [commit-msg]
+        always_run: true

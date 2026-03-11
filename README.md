@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT
+  Copyright (c) 2026 sonde contributors -->
 # Sonde
 
 **A programmable, verifiable runtime for distributed sensor nodes.**
@@ -169,6 +171,40 @@ Related efforts also focus on formally verified eBPF interpreters and JITs for R
 - [End‑to‑end mechanized proof of rBPF](https://link.springer.com/chapter/10.1007/978-3-031-65627-9_16)
 
 In contrast to these systems, which primarily treat eBPF as a *mechanism* for hosting isolated application fragments within a general‑purpose embedded operating system, **Sonde** adopts BPF as the *primary application execution model*. Sonde intentionally freezes node firmware and delegates all application behavior—including sampling logic, thresholds, diagnostics, and scheduling—to verified BPF bytecode managed by a gateway‑driven control plane. This design emphasizes end‑to‑end behavioral control, predictable energy usage, and verification‑first safety guarantees, rather than OS extensibility, multi‑tenant execution, or embedded DevOps tooling.
+
+---
+
+## Contributing
+
+All contributions must include:
+
+1. **SPDX license headers** — every `.md` and `.rs` file must start with:
+
+   *Markdown:*
+   ```
+   <!-- SPDX-License-Identifier: MIT
+     Copyright (c) 2026 sonde contributors -->
+   ```
+   *Rust:*
+   ```rust
+   // SPDX-License-Identifier: MIT
+   // Copyright (c) 2026 sonde contributors
+   ```
+
+2. **DCO sign-off** — every commit must include a `Signed-off-by:` trailer (use `git commit -s`).
+
+Install the repository's git hooks so these rules are enforced locally:
+
+```sh
+git config core.hooksPath hooks
+```
+
+Alternatively, if you use the [pre-commit](https://pre-commit.com) framework:
+
+```sh
+pip install pre-commit
+pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
 
 ---
 

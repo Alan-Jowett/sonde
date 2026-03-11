@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# commit-msg hook: verify the commit message contains a DCO Signed-off-by trailer.
+#
+# Install: git config core.hooksPath hooks
+
+set -euo pipefail
+
+commit_msg_file="$1"
+
+# Use `git interpret-trailers --parse` to extract only the trailer block,
+# preventing the check from being bypassed by quoting "Signed-off-by:" in
+# the commit message body.
+if ! git interpret-trailers --parse < "$commit_msg_file" | grep -qE '^Signed-off-by: .+ <.+@.+>$'; then
+    echo "ERROR: Commit message is missing a DCO Signed-off-by trailer."
+    echo ""
+    echo "Add the following to your commit message:"
+    echo ""
+    echo "  Signed-off-by: Your Name <your@email.com>"
+    echo ""
+    echo "You can do this automatically by using: git commit -s"
+    exit 1
+fi

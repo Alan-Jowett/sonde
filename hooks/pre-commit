@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# pre-commit hook: verify every staged .md and .rs file has an SPDX header.
+#
+# Install: git config core.hooksPath hooks
+
+set -euo pipefail
+
+MD_HEADER_LINE1='<!-- SPDX-License-Identifier: MIT'
+MD_HEADER_LINE2='  Copyright (c) 2026 sonde contributors -->'
+RS_HEADER_LINE1='// SPDX-License-Identifier: MIT'
+RS_HEADER_LINE2='// Copyright (c) 2026 sonde contributors'
+
+error=0
+
+while IFS= read -r -d '' file; do
+    case "$file" in
+        *.md)
+            header_type="md"
+            ;;
+        *.rs)
+            header_type="rs"
+            ;;
+        *)
+            continue
+            ;;
+    esac
+
+    # Read from the staged index, not the working tree, so unstaged edits
+    # cannot bypass or spoof the check.
+    header="$(git cat-file -p :"$file" | head -2)"
+    line1="$(echo "$header" | sed -n '1p')"
+    line2="$(echo "$header" | sed -n '2p')"
+
+    missing_header=0
+
+    case "$header_type" in
+        md)
+            if [[ "$line1" != "$MD_HEADER_LINE1" ]] || [[ "$line2" != "$MD_HEADER_LINE2" ]]; then
+                missing_header=1
+            fi
+            ;;
+        rs)
+            if [[ "$line1" != "$RS_HEADER_LINE1" ]] || [[ "$line2" != "$RS_HEADER_LINE2" ]]; then
+                missing_header=1
+            fi
+            ;;
+    esac
+
+    if [ "$missing_header" -ne 0 ]; then
+        echo "ERROR: Missing or incomplete SPDX header in $file"
+        error=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.md' '*.rs')
+
+if [ "$error" -ne 0 ]; then
+    echo ""
+    echo "Add the appropriate SPDX header to each file listed above."
+    echo ""
+    echo "Markdown (.md):"
+    echo "<!-- SPDX-License-Identifier: MIT"
+    echo "  Copyright (c) 2026 sonde contributors -->"
+    echo ""
+    echo "Rust (.rs):"
+    echo "// SPDX-License-Identifier: MIT"
+    echo "// Copyright (c) 2026 sonde contributors"
+    exit 1
+fi

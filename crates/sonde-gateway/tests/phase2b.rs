@@ -117,13 +117,22 @@ fn make_gateway(storage: Arc<InMemoryStorage>) -> Gateway {
 
 /// Create a small program image, ingest it, store it, and return its hash.
 async fn store_test_program(storage: &InMemoryStorage, bytecode: &[u8]) -> Vec<u8> {
+    store_test_program_with_profile(storage, bytecode, VerificationProfile::Resident).await
+}
+
+/// Create a program image with a specific verification profile, ingest, store, and return its hash.
+async fn store_test_program_with_profile(
+    storage: &InMemoryStorage,
+    bytecode: &[u8],
+    profile: VerificationProfile,
+) -> Vec<u8> {
     let lib = ProgramLibrary::new();
     let image = sonde_protocol::ProgramImage {
         bytecode: bytecode.to_vec(),
         maps: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
-    let record = lib.ingest(cbor, VerificationProfile::Resident).unwrap();
+    let record = lib.ingest(cbor, profile).unwrap();
     let hash = record.hash.clone();
     storage.store_program(&record).await.unwrap();
     hash
@@ -414,6 +423,48 @@ async fn t0201_update_program_when_hash_differs() {
     }
 }
 
+/// T-0202: RUN_EPHEMERAL via pending command.
+#[tokio::test]
+async fn t0202_run_ephemeral() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-202", 0x0202, [0x22; 32]);
+    storage.upsert_node(&node.to_record()).await.unwrap();
+
+    let ephemeral_hash = store_test_program_with_profile(
+        &storage,
+        b"ephemeral-diag",
+        VerificationProfile::Ephemeral,
+    )
+    .await;
+
+    gw.queue_command(
+        "node-202",
+        PendingCommand::RunEphemeral {
+            program_hash: ephemeral_hash.clone(),
+        },
+    )
+    .await;
+
+    let (_, _, payload) = do_wake(&gw, &node, 1, &[0u8; 32]).await;
+    assert_eq!(payload.command_type(), sonde_protocol::CMD_RUN_EPHEMERAL);
+    match &payload {
+        CommandPayload::RunEphemeral {
+            program_hash,
+            program_size,
+            chunk_size,
+            chunk_count,
+        } => {
+            assert_eq!(program_hash, &ephemeral_hash);
+            assert!(*program_size > 0);
+            assert!(*chunk_size > 0);
+            assert!(*chunk_count > 0);
+        }
+        other => panic!("expected RunEphemeral, got {:?}", other),
+    }
+}
+
 /// T-0203: UPDATE_SCHEDULE via pending command.
 #[tokio::test]
 async fn t0203_update_schedule() {
@@ -463,7 +514,12 @@ async fn t0205_command_priority_ordering() {
 
     let node = TestNode::new("node-205", 0x0205, [0x25; 32]);
     let assigned_hash = store_test_program(&storage, b"assigned-prog").await;
-    let ephemeral_hash = store_test_program(&storage, b"ephemeral-prog").await;
+    let ephemeral_hash = store_test_program_with_profile(
+        &storage,
+        b"ephemeral-prog",
+        VerificationProfile::Ephemeral,
+    )
+    .await;
 
     let mut record = node.to_record();
     record.assigned_program_hash = Some(assigned_hash.clone());

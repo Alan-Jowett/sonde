@@ -1,0 +1,16 @@
+[package]
+name = "sonde-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Shared protocol crate for the Sonde platform"
+
+[features]
+default = []
+std = []
+
+[dependencies]
+ciborium = { version = "0.2", default-features = false }
+
+[dev-dependencies]
+hmac = "0.12"
+sha2 = "0.10"

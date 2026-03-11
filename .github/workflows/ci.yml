@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check, lint, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Check formatting
+        run: cargo fmt --check --all
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+  fuzz:
+    name: Fuzz test (protocol crate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz decode_frame
+        run: cd crates/sonde-protocol && cargo fuzz run fuzz_decode_frame -- -max_total_time=30
+
+      - name: Fuzz node_message
+        run: cd crates/sonde-protocol && cargo fuzz run fuzz_node_message -- -max_total_time=30
+
+      - name: Fuzz gateway_message
+        run: cd crates/sonde-protocol && cargo fuzz run fuzz_gateway_message -- -max_total_time=30
+
+      - name: Fuzz program_image
+        run: cd crates/sonde-protocol && cargo fuzz run fuzz_program_image -- -max_total_time=30

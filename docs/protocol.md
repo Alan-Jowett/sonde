@@ -225,9 +225,11 @@ Sent exactly once in response to a valid, authenticated `WAKE`.
 | `command_type` | uint | Yes | One of the command codes below. |
 | `starting_seq` | uint | Yes | Random starting sequence number for this session. The node uses this value in the `nonce` header field of its next outbound message and increments for each subsequent message. |
 | `timestamp_ms` | uint | Yes | Gateway's current UTC time in milliseconds since Unix epoch. The node uses this as its time reference for `sonde_context.timestamp` and `get_time()`. |
-| `payload` | varies | Depends on command | Command-specific data. |
+| `payload` | map | Depends on command | **Nested** CBOR map containing command-specific fields (see §5.2.1, §5.2.2). Omitted for `NOP` and `REBOOT`. |
 
 The `nonce` in the fixed header echoes the WAKE nonce, binding the response to the request. The `starting_seq` is a CBOR payload field that tells the node where to begin its sequence counter for this wake cycle. The `timestamp_ms` provides the node with an accurate time reference — the node has no independent clock source across deep sleep.
+
+**COMMAND structure:** The top-level CBOR map contains `command_type` (key 4), `starting_seq` (key 13), and `timestamp_ms` (key 14). Command-specific fields are nested inside `payload` (key 5) as a separate CBOR map. For `NOP` and `REBOOT`, key 5 is omitted entirely.
 
 #### Command types
 
@@ -242,6 +244,8 @@ The `nonce` in the fixed header echoes the WAKE nonce, binding the response to t
 #### 5.2.1  UPDATE_PROGRAM / RUN_EPHEMERAL payload
 
 Both `UPDATE_PROGRAM` and `RUN_EPHEMERAL` use the same payload format and the same chunked transfer sub-protocol (GET_CHUNK/CHUNK). The `command_type` in the COMMAND message distinguishes the two — the node uses it to decide whether to store the program in flash (resident) or RAM (ephemeral).
+
+The following fields are encoded as a CBOR map inside the `payload` field (key 5) of the COMMAND message:
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|
@@ -263,6 +267,8 @@ The node does not need to know the transport — it simply uses the `chunk_size`
 | ESP-NOW | 250 bytes | ~190 bytes (207 payload minus CBOR map overhead for `chunk_index` + `chunk_data`) |
 
 #### 5.2.2  UPDATE_SCHEDULE payload
+
+The following field is encoded as a CBOR map inside the `payload` field (key 5) of the COMMAND message:
 
 | Field | CBOR type | Required | Description |
 |---|---|---|---|

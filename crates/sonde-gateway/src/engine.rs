@@ -227,25 +227,35 @@ impl Gateway {
         header: &FrameHeader,
         payload: &[u8],
     ) -> Option<Vec<u8>> {
-        // 1. Verify session exists + sequence number matches
+        // 1. Verify session exists + sequence number matches (non-mutating)
         self.session_manager
-            .verify_and_advance_seq(&node.node_id, header.nonce)
+            .verify_seq(&node.node_id, header.nonce)
             .await
             .ok()?;
 
-        // 2. Dispatch by msg_type
-        match header.msg_type {
-            MSG_GET_CHUNK => self.handle_get_chunk(node, header, payload).await,
+        // 2. Dispatch by msg_type — only advance seq if message is accepted
+        let (accepted, response) = match header.msg_type {
+            MSG_GET_CHUNK => {
+                let resp = self.handle_get_chunk(node, header, payload).await;
+                (resp.is_some(), resp)
+            }
             MSG_PROGRAM_ACK => {
-                self.handle_program_ack(node, payload).await;
-                None
+                let ok = self.handle_program_ack(node, payload).await;
+                (ok, None)
             }
             MSG_APP_DATA => {
                 // Phase 2B: accept but no routing yet (Phase 2C)
-                None
+                (true, None)
             }
-            _ => None,
+            _ => (false, None),
+        };
+
+        // 3. Advance the sequence counter only after successful dispatch
+        if accepted {
+            let _ = self.session_manager.advance_seq(&node.node_id).await;
         }
+
+        response
     }
 
     /// Serve a chunk from the program library.
@@ -304,14 +314,25 @@ impl Gateway {
         Some(frame)
     }
 
-    /// Handle PROGRAM_ACK: update the node's current_program_hash in the registry.
-    async fn handle_program_ack(&self, node: &NodeRecord, payload: &[u8]) {
+    /// Handle PROGRAM_ACK: update the node's current_program_hash in the registry
+    /// and transition the session out of ChunkedTransfer.
+    /// Returns `true` if the message was successfully decoded and accepted.
+    async fn handle_program_ack(&self, node: &NodeRecord, payload: &[u8]) -> bool {
         if let Ok(NodeMessage::ProgramAck { program_hash }) =
             NodeMessage::decode(MSG_PROGRAM_ACK, payload)
         {
             let mut updated_node = node.clone();
             updated_node.confirm_program(program_hash);
             let _ = self.storage.upsert_node(&updated_node).await;
+
+            // Transition session from ChunkedTransfer to BpfExecuting
+            let _ = self
+                .session_manager
+                .set_state(&node.node_id, SessionState::BpfExecuting)
+                .await;
+            true
+        } else {
+            false
         }
     }
 
@@ -322,53 +343,70 @@ impl Gateway {
         node_program_hash: &[u8],
     ) -> Option<CommandPayload> {
         // Priority 1: Pending ephemeral program
-        // Extract from the vec under a short lock, then do async work outside.
+        // Peek with a read lock first; only remove after successful program load.
         let ephemeral_hash = {
-            let mut pending = self.pending_commands.write().await;
-            if let Some(cmds) = pending.get_mut(&node.node_id) {
-                if let Some(pos) = cmds
-                    .iter()
-                    .position(|c| matches!(c, PendingCommand::RunEphemeral { .. }))
-                {
-                    match cmds.remove(pos) {
-                        PendingCommand::RunEphemeral { program_hash } => Some(program_hash),
-                        _ => None,
+            let pending = self.pending_commands.read().await;
+            if let Some(cmds) = pending.get(&node.node_id) {
+                cmds.iter().find_map(|c| {
+                    if let PendingCommand::RunEphemeral { program_hash } = c {
+                        Some(program_hash.clone())
+                    } else {
+                        None
                     }
-                } else {
-                    None
-                }
+                })
             } else {
                 None
             }
         };
         if let Some(program_hash) = ephemeral_hash {
-            let program = self.storage.get_program(&program_hash).await.ok()??;
-            let chunk_size = DEFAULT_CHUNK_SIZE;
-            let chunk_count = self
-                .program_library
-                .chunk_count(program.image.len(), chunk_size as usize)?;
-            return Some(CommandPayload::RunEphemeral {
-                program_hash: program.hash,
-                program_size: program.size,
-                chunk_size,
-                chunk_count,
-            });
+            if let Ok(Some(program)) = self.storage.get_program(&program_hash).await {
+                let chunk_size = DEFAULT_CHUNK_SIZE;
+                if let Some(chunk_count) = self
+                    .program_library
+                    .chunk_count(program.image.len(), chunk_size as usize)
+                {
+                    // Program loaded successfully — now remove from queue
+                    {
+                        let mut pending = self.pending_commands.write().await;
+                        if let Some(cmds) = pending.get_mut(&node.node_id) {
+                            if let Some(pos) = cmds
+                                .iter()
+                                .position(|c| matches!(c, PendingCommand::RunEphemeral { .. }))
+                            {
+                                cmds.remove(pos);
+                            }
+                        }
+                    }
+                    return Some(CommandPayload::RunEphemeral {
+                        program_hash: program.hash,
+                        program_size: program.size,
+                        chunk_size,
+                        chunk_count,
+                    });
+                }
+            }
+            // Program load/chunking failed — fall through to lower-priority commands
         }
 
         // Priority 2: program_hash mismatch → UPDATE_PROGRAM
+        // Treat missing/failed program lookup as non-fatal; fall through to NOP.
         if let Some(assigned_hash) = &node.assigned_program_hash {
             if assigned_hash.as_slice() != node_program_hash {
-                let program = self.storage.get_program(assigned_hash).await.ok()??;
-                let chunk_size = DEFAULT_CHUNK_SIZE;
-                let chunk_count = self
-                    .program_library
-                    .chunk_count(program.image.len(), chunk_size as usize)?;
-                return Some(CommandPayload::UpdateProgram {
-                    program_hash: program.hash,
-                    program_size: program.size,
-                    chunk_size,
-                    chunk_count,
-                });
+                if let Ok(Some(program)) = self.storage.get_program(assigned_hash).await {
+                    let chunk_size = DEFAULT_CHUNK_SIZE;
+                    if let Some(chunk_count) = self
+                        .program_library
+                        .chunk_count(program.image.len(), chunk_size as usize)
+                    {
+                        return Some(CommandPayload::UpdateProgram {
+                            program_hash: program.hash,
+                            program_size: program.size,
+                            chunk_size,
+                            chunk_count,
+                        });
+                    }
+                }
+                // Program not found or chunk_count failed — fall through
             }
         }
 

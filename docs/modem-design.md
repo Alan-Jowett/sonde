@@ -94,9 +94,10 @@ The frame envelope encoder/decoder and message type constants live in `sonde-pro
 ### 5.2  Inbound decoding (gateway → modem)
 
 1. Read 2 bytes → `len` (big-endian u16).
-2. If `len` = 0 or `len` > 512 → discard, trigger `RESET`-based resync.
-3. Read `len` bytes → `type` (1 byte) + `body` (remaining).
-4. Dispatch by `type`:
+2. If `len` = 0 → silently discard (no resync needed).
+3. If `len` > 512 → discard, trigger `RESET`-based resync.
+4. Read `len` bytes → `type` (1 byte) + `body` (remaining).
+5. Dispatch by `type`:
 
 | Type | Handler |
 |------|---------|
@@ -141,8 +142,8 @@ On `SEND_FRAME`:
 
 1. Extract `peer_mac` (first 6 bytes) and `frame_data` (remaining bytes).
 2. If `peer_mac` is not in the ESP-NOW peer table → call `add_peer()`.
-3. Call `esp_now_send(peer_mac, frame_data, len)`.
-4. The send callback increments `tx_count`, and on failure, also `tx_fail_count`.
+3. Call `esp_now_send(peer_mac, frame_data, len)` and increment `tx_count`.
+4. In the send callback, if delivery failed, increment `tx_fail_count`.
 
 ### 6.4  Channel configuration
 

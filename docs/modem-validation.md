@@ -198,8 +198,9 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 2. Send `SCAN_CHANNELS`.
 3. Wait up to 10 seconds for `SCAN_RESULT`.
 4. Assert: `SCAN_RESULT` is received.
-5. Assert: `count` is between 1 and 14.
-6. Assert: each entry has valid `channel` (1–14), `ap_count` ≥ 0, `strongest_rssi` ≤ 0 (or 0 if no APs).
+5. Assert: `count` is 14.
+6. Assert: the result contains exactly one entry for each WiFi channel 1–14 (no missing channels, no duplicates).
+7. Assert: each entry has valid `channel` (1–14), `ap_count` ≥ 0, `strongest_rssi` ≤ 0 (or 0 if no APs).
 
 ---
 
@@ -221,13 +222,13 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
-### T-0301  USB disconnection and reconnection
+### T-0301  USB-CDC serial link drop and reconnection
 
 **Validates:** MD-0301
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
-2. Close the serial port (simulate USB disconnect).
+2. Close the host-side serial port (drop DTR, simulating USB-CDC link drop without physical unplug).
 3. Wait 2 seconds.
 4. Re-open the serial port.
 5. Assert: `MODEM_READY` is received on the new connection.
@@ -318,7 +319,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 1. Send `RESET`, wait for `MODEM_READY`.
 2. Send `SEND_FRAME` with `frame_data` containing invalid CBOR (e.g., `0xFF 0xFF 0xFF`).
 3. Assert: the radio peer receives the frame with the exact same invalid bytes.
-4. Assert: modem did not reject, modify, or log an error about the frame contents.
+4. Assert: modem does not send any `ERROR` or diagnostic message over the serial protocol in response to the invalid payload.
 
 ---
 
@@ -339,7 +340,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0205 | Channel change | MD-0206 |
 | T-0206 | Channel scanning | MD-0207 |
 | T-0300 | RESET clears state | MD-0300 |
-| T-0301 | USB disconnection and reconnection | MD-0301 |
+| T-0301 | USB-CDC serial link drop and reconnection | MD-0301 |
 | T-0302 | Status counter accuracy | MD-0303 |
 | T-0303 | MODEM_READY after RESET | MD-0300, MD-0104 |
 | T-0400 | SEND_FRAME with body too short | MD-0202 |

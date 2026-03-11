@@ -273,13 +273,13 @@ pub async fn write_message<W: AsyncWriteExt + Unpin>(
     let payload = msg
         .encode()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let len = payload.len() as u32;
-    if len > MAX_MESSAGE_SIZE {
+    if payload.len() > MAX_MESSAGE_SIZE as usize {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "message exceeds 1 MB limit",
+            "message too large",
         ));
     }
+    let len = payload.len() as u32;
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(&payload).await?;
     writer.flush().await?;
@@ -523,9 +523,8 @@ impl HandlerProcess {
                     break;
                 }
                 Err(_) => {
-                    // Timeout while reading — the stream may be mid-frame and
-                    // desynchronized. Kill the child to prevent corrupt state.
-                    self.kill_child().await;
+                    // Timeout — no more messages pending, stop draining.
+                    // This is the normal case when no stdout data is available.
                     break;
                 }
             }

@@ -86,7 +86,7 @@ impl EspNowDriver {
         if let Some(evicted) = self.peer_table.ensure_peer(peer_mac) {
             let _ = self.espnow.del_peer(&evicted);
         }
-        if !self.espnow.peer_exists(&peer_mac).unwrap_or(true) {
+        if !self.espnow.peer_exists(&peer_mac).unwrap_or(false) {
             let peer_info = PeerInfo {
                 peer_addr: *peer_mac,
                 channel: self.current_channel,
@@ -115,7 +115,8 @@ impl EspNowDriver {
         }
     }
 
-    /// Set the WiFi/ESP-NOW channel. Clears the peer table.
+    /// Set the WiFi/ESP-NOW channel. Clears the peer table and removes
+    /// all peers from the ESP-NOW stack.
     pub fn set_channel(&mut self, channel: u8) -> Result<(), ()> {
         if channel == 0 || channel > 14 {
             return Err(());
@@ -125,8 +126,8 @@ impl EspNowDriver {
             .set_channel(channel)
             .map_err(|_| ())?;
 
-        // Clear all peers on channel change.
-        self.peer_table.clear();
+        // Remove all peers from the ESP-NOW stack and local table.
+        self.clear_all_peers();
         self.current_channel = channel;
         info!("channel set to {}", channel);
         Ok(())
@@ -140,12 +141,12 @@ impl EspNowDriver {
     /// Perform a WiFi AP scan across all channels and return per-channel results.
     pub fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
         let scan_result = self.wifi.scan().unwrap_or_default();
-        let mut channels = [(0u8, 0i8); 15]; // index 1-14: (count, strongest_rssi)
+        let mut channels = [(0u16, 0i8); 15]; // index 1-14: (count, strongest_rssi)
 
         for ap in &scan_result {
             let ch = ap.channel as usize;
             if ch >= 1 && ch <= 14 {
-                channels[ch].0 += 1;
+                channels[ch].0 = channels[ch].0.saturating_add(1);
                 if channels[ch].1 == 0 || ap.signal_strength > channels[ch].1 {
                     channels[ch].1 = ap.signal_strength;
                 }
@@ -153,7 +154,10 @@ impl EspNowDriver {
         }
 
         (1..=14)
-            .map(|ch| (ch as u8, channels[ch].0, channels[ch].1))
+            .map(|ch| {
+                let count = core::cmp::min(channels[ch].0, 255) as u8;
+                (ch as u8, count, channels[ch].1)
+            })
             .collect()
     }
 
@@ -164,12 +168,28 @@ impl EspNowDriver {
 
     /// De-initialize and re-initialize ESP-NOW (used during RESET).
     pub fn reinit(&mut self) {
-        self.peer_table.clear();
+        // Remove all peers from the ESP-NOW stack.
+        self.clear_all_peers();
+
+        // Reset WiFi channel back to 1.
+        if let Err(e) = self.wifi.wifi().set_channel(1) {
+            warn!("failed to reset WiFi channel to 1: {:?}", e);
+        }
         self.current_channel = 1;
+
         // Clear the RX queue.
         if let Ok(mut q) = self.rx_queue.lock() {
             q.clear();
         }
         info!("ESP-NOW re-initialized on channel 1");
+    }
+
+    /// Remove all peers from both the ESP-NOW stack and the local table.
+    fn clear_all_peers(&mut self) {
+        // Remove each tracked peer from the ESP-NOW stack.
+        for mac in self.peer_table.all_macs() {
+            let _ = self.espnow.del_peer(&mac);
+        }
+        self.peer_table.clear();
     }
 }

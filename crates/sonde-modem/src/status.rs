@@ -4,9 +4,9 @@
 //! Modem counters and status tracking.
 //!
 //! Maintains `tx_count`, `rx_count`, `tx_fail_count`, and `uptime_s`.
-//! All counters reset to zero on boot and on RESET.
+//! All counters (including uptime) reset to zero on boot and on RESET.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,6 +16,10 @@ pub struct ModemCounters {
     tx_count: AtomicU32,
     rx_count: AtomicU32,
     tx_fail_count: AtomicU32,
+    /// Microsecond timestamp of the last reset (from `Instant`).
+    /// We store elapsed micros at reset time so `uptime_s` reflects
+    /// time since last RESET, not since boot.
+    reset_epoch_us: AtomicU64,
     boot_time: Instant,
 }
 
@@ -25,6 +29,7 @@ impl ModemCounters {
             tx_count: AtomicU32::new(0),
             rx_count: AtomicU32::new(0),
             tx_fail_count: AtomicU32::new(0),
+            reset_epoch_us: AtomicU64::new(0),
             boot_time: Instant::now(),
         })
     }
@@ -53,18 +58,19 @@ impl ModemCounters {
         self.tx_fail_count.load(Ordering::Relaxed)
     }
 
+    /// Returns seconds since last boot or RESET.
     pub fn uptime_s(&self) -> u32 {
-        self.boot_time.elapsed().as_secs() as u32
+        let total_us = self.boot_time.elapsed().as_micros() as u64;
+        let epoch_us = self.reset_epoch_us.load(Ordering::Relaxed);
+        ((total_us - epoch_us) / 1_000_000) as u32
     }
 
-    /// Reset all counters to zero (called on RESET command).
+    /// Reset all counters to zero and restart uptime (called on RESET command).
     pub fn reset(&self) {
         self.tx_count.store(0, Ordering::Relaxed);
         self.rx_count.store(0, Ordering::Relaxed);
         self.tx_fail_count.store(0, Ordering::Relaxed);
-        // Note: boot_time is not reset here because Instant cannot be
-        // reassigned through &self. The uptime will reflect time since
-        // last power-on, not since last RESET. For accurate uptime-since-
-        // reset, use esp_timer_get_time() directly in the STATUS handler.
+        let now_us = self.boot_time.elapsed().as_micros() as u64;
+        self.reset_epoch_us.store(now_us, Ordering::Relaxed);
     }
 }

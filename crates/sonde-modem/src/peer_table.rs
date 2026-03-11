@@ -94,6 +94,11 @@ impl PeerTable {
     pub fn contains(&self, mac: &[u8; MAC_SIZE]) -> bool {
         self.entries.iter().any(|e| e.mac == *mac)
     }
+
+    /// Returns all MAC addresses currently in the table.
+    pub fn all_macs(&self) -> Vec<[u8; MAC_SIZE]> {
+        self.entries.iter().map(|e| e.mac).collect()
+    }
 }
 
 #[cfg(test)]

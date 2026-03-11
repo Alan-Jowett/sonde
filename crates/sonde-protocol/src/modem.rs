@@ -103,6 +103,8 @@ pub enum ModemCodecError {
         expected_min: usize,
         actual: usize,
     },
+    /// The encoded frame length (TYPE + BODY) exceeds `SERIAL_MAX_LEN`.
+    EncodeTooLong,
     /// Need more bytes to complete the current frame.
     Incomplete,
 }
@@ -124,6 +126,9 @@ impl fmt::Display for ModemCodecError {
                     "modem msg 0x{:02x} body too short: need {} bytes, got {}",
                     msg_type, expected_min, actual
                 )
+            }
+            ModemCodecError::EncodeTooLong => {
+                write!(f, "modem frame body exceeds max {}", SERIAL_MAX_LEN)
             }
             ModemCodecError::Incomplete => write!(f, "incomplete modem frame"),
         }
@@ -218,14 +223,21 @@ pub struct ModemError {
 // ---------------------------------------------------------------------------
 
 /// Encode a `ModemMessage` into a complete serial frame (LEN || TYPE || BODY).
-pub fn encode_modem_frame(msg: &ModemMessage) -> Vec<u8> {
+///
+/// Returns `Err(EncodeTooLong)` if the encoded body exceeds the protocol
+/// maximum (`SERIAL_MAX_LEN` minus 1 byte for the TYPE field).
+pub fn encode_modem_frame(msg: &ModemMessage) -> Result<Vec<u8>, ModemCodecError> {
     let (msg_type, body) = encode_body(msg);
-    let len = 1u16 + body.len() as u16; // TYPE + BODY
-    let mut frame = Vec::with_capacity(SERIAL_LEN_SIZE + len as usize);
+    let total_len = 1 + body.len(); // TYPE + BODY
+    if total_len > SERIAL_MAX_LEN as usize {
+        return Err(ModemCodecError::EncodeTooLong);
+    }
+    let len = total_len as u16;
+    let mut frame = Vec::with_capacity(SERIAL_LEN_SIZE + total_len);
     frame.extend_from_slice(&len.to_be_bytes());
     frame.push(msg_type);
     frame.extend_from_slice(&body);
-    frame
+    Ok(frame)
 }
 
 fn encode_body(msg: &ModemMessage) -> (u8, Vec<u8>) {
@@ -491,8 +503,16 @@ impl FrameDecoder {
     }
 
     /// Append bytes to the internal buffer.
+    ///
+    /// To prevent unbounded memory growth from garbage or desynchronized
+    /// streams, the buffer is capped at `SERIAL_MAX_FRAME_SIZE`. Any input
+    /// beyond the cap is silently dropped.
     pub fn push(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
+        let remaining = SERIAL_MAX_FRAME_SIZE.saturating_sub(self.buf.len());
+        let to_take = core::cmp::min(remaining, data.len());
+        if to_take > 0 {
+            self.buf.extend_from_slice(&data[..to_take]);
+        }
     }
 
     /// Reset the decoder state, discarding any buffered data.
@@ -565,7 +585,7 @@ mod tests {
     #[test]
     fn round_trip_reset() {
         let msg = ModemMessage::Reset;
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -576,7 +596,7 @@ mod tests {
             peer_mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
             frame_data: alloc::vec![1, 2, 3, 4, 5],
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -584,7 +604,7 @@ mod tests {
     #[test]
     fn round_trip_set_channel() {
         let msg = ModemMessage::SetChannel(6);
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -592,7 +612,7 @@ mod tests {
     #[test]
     fn round_trip_get_status() {
         let msg = ModemMessage::GetStatus;
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -600,7 +620,7 @@ mod tests {
     #[test]
     fn round_trip_scan_channels() {
         let msg = ModemMessage::ScanChannels;
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -611,7 +631,7 @@ mod tests {
             firmware_version: [1, 0, 3, 7],
             mac_address: [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC],
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -623,7 +643,7 @@ mod tests {
             rssi: -42,
             frame_data: alloc::vec![0xDE, 0xAD, 0xBE, 0xEF],
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -631,7 +651,7 @@ mod tests {
     #[test]
     fn round_trip_set_channel_ack() {
         let msg = ModemMessage::SetChannelAck(11);
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -645,7 +665,7 @@ mod tests {
             rx_count: 200,
             tx_fail_count: 3,
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -657,21 +677,21 @@ mod tests {
                 ScanEntry {
                     channel: 1,
                     ap_count: 5,
-                    strongest_rssi: -30
+                    strongest_rssi: -30,
                 },
                 ScanEntry {
                     channel: 6,
                     ap_count: 2,
-                    strongest_rssi: -55
+                    strongest_rssi: -55,
                 },
                 ScanEntry {
                     channel: 11,
                     ap_count: 0,
-                    strongest_rssi: 0
+                    strongest_rssi: 0,
                 },
             ],
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -682,7 +702,7 @@ mod tests {
             error_code: MODEM_ERR_ESPNOW_INIT_FAILED,
             message: b"ESP-NOW init failed".to_vec(),
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -693,7 +713,7 @@ mod tests {
             msg_type: 0x7F,
             body: alloc::vec![1, 2, 3],
         };
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -703,7 +723,7 @@ mod tests {
     #[test]
     fn frame_envelope_structure() {
         let msg = ModemMessage::SetChannel(6);
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         // LEN = 2 (TYPE + 1 byte body)
         assert_eq!(frame[0], 0x00);
         assert_eq!(frame[1], 0x02);
@@ -720,7 +740,7 @@ mod tests {
             firmware_version: [1, 2, 3, 4],
             mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         // LEN = 11 (TYPE + 10 bytes body) → 0x00 0x0B
         assert_eq!(frame[0], 0x00);
         assert_eq!(frame[1], 0x0B);
@@ -789,7 +809,7 @@ mod tests {
     #[test]
     fn streaming_complete_frame() {
         let mut decoder = FrameDecoder::new();
-        let frame = encode_modem_frame(&ModemMessage::GetStatus);
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
         decoder.push(&frame);
         let msg = decoder.decode().unwrap().unwrap();
         assert_eq!(msg, ModemMessage::GetStatus);
@@ -799,7 +819,7 @@ mod tests {
     #[test]
     fn streaming_partial_then_complete() {
         let mut decoder = FrameDecoder::new();
-        let frame = encode_modem_frame(&ModemMessage::SetChannel(3));
+        let frame = encode_modem_frame(&ModemMessage::SetChannel(3)).unwrap();
 
         // Push one byte at a time
         for (i, &byte) in frame.iter().enumerate() {
@@ -816,9 +836,9 @@ mod tests {
     #[test]
     fn streaming_multiple_frames() {
         let mut decoder = FrameDecoder::new();
-        let f1 = encode_modem_frame(&ModemMessage::Reset);
-        let f2 = encode_modem_frame(&ModemMessage::GetStatus);
-        let f3 = encode_modem_frame(&ModemMessage::SetChannel(11));
+        let f1 = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        let f2 = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        let f3 = encode_modem_frame(&ModemMessage::SetChannel(11)).unwrap();
 
         // Push all frames at once
         decoder.push(&f1);
@@ -891,7 +911,7 @@ mod tests {
             rssi: -90,
             frame_data: alloc::vec![0x42],
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         if let ModemMessage::RecvFrame(rf) = decoded {
             assert_eq!(rf.rssi, -90);
@@ -911,7 +931,7 @@ mod tests {
             rx_count: u32::MAX,
             tx_fail_count: u32::MAX,
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }
@@ -928,7 +948,7 @@ mod tests {
             })
             .collect();
         let msg = ModemMessage::ScanResult(ScanResult { entries });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         // body = 1 (count) + 14*3 (entries) = 43, total frame = 2 + 1 + 43 = 46
         assert_eq!(frame.len(), 46);
         let decoded = decode_modem_frame(&frame).unwrap();
@@ -943,8 +963,31 @@ mod tests {
             peer_mac: [0xFF; MAC_SIZE],
             frame_data: alloc::vec![0xAA; 250], // max ESP-NOW payload
         });
-        let frame = encode_modem_frame(&msg);
+        let frame = encode_modem_frame(&msg).unwrap();
         let decoded = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    // -- Encode overflow test --
+
+    #[test]
+    fn encode_oversized_body_returns_error() {
+        // Body of 512 bytes + 1 byte TYPE = 513 > SERIAL_MAX_LEN (512)
+        let msg = ModemMessage::Unknown {
+            msg_type: 0x7F,
+            body: alloc::vec![0u8; 512],
+        };
+        let err = encode_modem_frame(&msg).unwrap_err();
+        assert_eq!(err, ModemCodecError::EncodeTooLong);
+    }
+
+    // -- Push buffer cap test --
+
+    #[test]
+    fn push_caps_buffer_at_max_frame_size() {
+        let mut decoder = FrameDecoder::new();
+        let big_data = alloc::vec![0u8; SERIAL_MAX_FRAME_SIZE + 100];
+        decoder.push(&big_data);
+        assert_eq!(decoder.buffered(), SERIAL_MAX_FRAME_SIZE);
     }
 }

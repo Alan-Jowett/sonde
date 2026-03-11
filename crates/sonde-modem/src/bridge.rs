@@ -12,8 +12,7 @@ use std::sync::Arc;
 
 use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady,
-    ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame, MODEM_ERR_CHANNEL_SET_FAILED,
-    MODEM_MSG_SEND_FRAME, RECV_FRAME_MIN_BODY_SIZE, SEND_FRAME_MIN_BODY_SIZE,
+    ModemStatus, ScanEntry, ScanResult, SendFrame, MODEM_ERR_CHANNEL_SET_FAILED,
 };
 
 use crate::espnow::EspNowDriver;
@@ -43,6 +42,16 @@ impl Bridge {
         }
     }
 
+    /// Encode and write a modem message to USB. Firmware-generated messages
+    /// are always within size limits, so encoding failures are logged but
+    /// otherwise ignored.
+    fn send_msg(&mut self, msg: &ModemMessage) {
+        match encode_modem_frame(msg) {
+            Ok(frame) => self.usb.write(&frame),
+            Err(e) => warn!("encode error: {}", e),
+        }
+    }
+
     /// Send MODEM_READY to the gateway.
     pub fn send_modem_ready(&mut self) {
         let mac = self.espnow.mac_address();
@@ -50,8 +59,7 @@ impl Bridge {
             firmware_version: FIRMWARE_VERSION,
             mac_address: mac,
         });
-        let frame = encode_modem_frame(&msg);
-        self.usb.write(&frame);
+        self.send_msg(&msg);
         info!(
             "sent MODEM_READY (fw={}.{}.{}.{}, mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
             FIRMWARE_VERSION[0],
@@ -69,12 +77,6 @@ impl Bridge {
 
     /// Poll for USB data and ESP-NOW received frames.
     pub fn poll(&mut self) {
-        // Check for USB reconnection.
-        if self.usb.set_connected() {
-            info!("USB reconnected, sending MODEM_READY");
-            self.send_modem_ready();
-        }
-
         // Read from USB and feed to the decoder.
         let n = self.usb.read(&mut self.rx_buf);
         if n > 0 {
@@ -91,9 +93,10 @@ impl Bridge {
                     continue;
                 }
                 Err(ModemCodecError::FrameTooLarge(len)) => {
-                    warn!("framing error: len={}, awaiting RESET", len);
-                    // Do NOT drain the decoder — caller must send RESET
-                    // which will call handle_reset() and clear the decoder.
+                    warn!("framing error: len={}, resetting decoder", len);
+                    // Clear the decoder so we can parse subsequent commands
+                    // (including RESET) after the framing error.
+                    self.decoder.reset();
                     break;
                 }
                 Err(e) => {
@@ -107,8 +110,7 @@ impl Bridge {
         let rx_frames = self.espnow.drain_rx();
         for rf in rx_frames {
             let msg = ModemMessage::RecvFrame(rf);
-            let frame = encode_modem_frame(&msg);
-            self.usb.write(&frame);
+            self.send_msg(&msg);
         }
     }
 
@@ -151,16 +153,14 @@ impl Bridge {
         match self.espnow.set_channel(channel) {
             Ok(()) => {
                 let ack = ModemMessage::SetChannelAck(channel);
-                let frame = encode_modem_frame(&ack);
-                self.usb.write(&frame);
+                self.send_msg(&ack);
             }
             Err(()) => {
                 let err = ModemMessage::Error(ModemError {
                     error_code: MODEM_ERR_CHANNEL_SET_FAILED,
                     message: b"invalid channel".to_vec(),
                 });
-                let frame = encode_modem_frame(&err);
-                self.usb.write(&frame);
+                self.send_msg(&err);
             }
         }
     }
@@ -173,8 +173,7 @@ impl Bridge {
             rx_count: self.counters.rx_count(),
             tx_fail_count: self.counters.tx_fail_count(),
         });
-        let frame = encode_modem_frame(&status);
-        self.usb.write(&frame);
+        self.send_msg(&status);
     }
 
     fn handle_scan_channels(&mut self) {
@@ -188,7 +187,6 @@ impl Bridge {
             })
             .collect();
         let msg = ModemMessage::ScanResult(ScanResult { entries });
-        let frame = encode_modem_frame(&msg);
-        self.usb.write(&frame);
+        self.send_msg(&msg);
     }
 }

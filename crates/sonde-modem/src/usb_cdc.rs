@@ -3,7 +3,10 @@
 
 //! USB-CDC ACM driver for the ESP32-S3 native USB peripheral.
 //!
-//! Provides byte-level read/write and DTR-based disconnection detection.
+//! Provides byte-level read/write. The `connected` flag is set to false
+//! on read/write errors and must be re-asserted by the caller (e.g., on
+//! receiving data after a gap). Real DTR line-state detection should be
+//! added when the ESP-IDF HAL exposes line-state callbacks.
 
 use esp_idf_hal::usb::UsbSerial;
 use log::{info, warn};

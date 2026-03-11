@@ -17,7 +17,6 @@ use esp_idf_hal::prelude::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::log::EspLogger;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_sys as _;
 use log::info;
 
 use crate::bridge::Bridge;
@@ -47,21 +46,10 @@ fn main() {
 
     info!("entering main loop");
 
-    // Register the ESP-IDF task watchdog for this task (10s timeout).
-    #[cfg(feature = "watchdog")]
-    {
-        use esp_idf_hal::task::watchdog::TWDTConfig;
-        // Watchdog configuration is handled via sdkconfig; the main
-        // loop feeds it via esp_task_wdt_reset().
-    }
-
     loop {
         bridge.poll();
         // The ESP-NOW receive callback fires from the WiFi task and
         // enqueues RECV_FRAME messages into the bridge's TX buffer.
         // No explicit polling needed for inbound radio frames.
-        unsafe {
-            esp_idf_sys::esp_task_wdt_reset();
-        }
     }
 }

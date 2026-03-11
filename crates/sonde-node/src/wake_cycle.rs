@@ -8,9 +8,8 @@
 
 use sonde_protocol::{
     decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
-    NodeMessage, Sha256Provider, HmacProvider,
-    MSG_COMMAND, MSG_CHUNK, MSG_APP_DATA_REPLY, MSG_WAKE, MSG_GET_CHUNK, MSG_PROGRAM_ACK,
-    MSG_APP_DATA,
+    HmacProvider, NodeMessage, Sha256Provider, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK,
+    MSG_COMMAND, MSG_GET_CHUNK, MSG_PROGRAM_ACK, MSG_WAKE,
 };
 
 use crate::bpf_helpers::{ProgramClass, SondeContext};
@@ -148,7 +147,6 @@ where
             chunk_count,
             ..
         } => {
-
             // Chunked transfer
             let transfer_result = chunked_transfer(
                 transport,
@@ -293,9 +291,9 @@ fn wake_command_exchange<T: Transport>(
         program_hash: program_hash.to_vec(),
         battery_mv,
     };
-    let payload_cbor = wake_msg.encode().map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let payload_cbor = wake_msg
+        .encode()
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -303,9 +301,8 @@ fn wake_command_exchange<T: Transport>(
         nonce: wake_nonce,
     };
 
-    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     // Try sending WAKE up to (1 + WAKE_MAX_RETRIES) times
     for attempt in 0..=WAKE_MAX_RETRIES {
@@ -320,12 +317,7 @@ fn wake_command_exchange<T: Transport>(
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
             Some(raw_response) => {
                 // Try to verify and decode
-                match verify_and_decode_command(
-                    &raw_response,
-                    identity,
-                    wake_nonce,
-                    hmac,
-                ) {
+                match verify_and_decode_command(&raw_response, identity, wake_nonce, hmac) {
                     Ok(result) => return Ok(result),
                     Err(_) => {
                         // Invalid response — discard and retry
@@ -350,9 +342,7 @@ fn verify_and_decode_command(
     expected_nonce: u64,
     hmac: &impl HmacProvider,
 ) -> NodeResult<(u64, u64, CommandPayload)> {
-    let decoded = decode_frame(raw).map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let decoded = decode_frame(raw).map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     // Verify HMAC
     if !verify_frame(&decoded, &identity.psk, hmac) {
@@ -401,13 +391,7 @@ fn chunked_transfer<T: Transport>(
         let seq = *current_seq;
         *current_seq += 1;
 
-        let chunk_data = get_chunk_with_retry(
-            transport,
-            identity,
-            seq,
-            chunk_index,
-            hmac,
-        )?;
+        let chunk_data = get_chunk_with_retry(transport, identity, seq, chunk_index, hmac)?;
 
         image_data.extend_from_slice(&chunk_data);
     }
@@ -424,9 +408,9 @@ fn get_chunk_with_retry<T: Transport>(
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
     let get_chunk_msg = NodeMessage::GetChunk { chunk_index };
-    let payload_cbor = get_chunk_msg.encode().map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let payload_cbor = get_chunk_msg
+        .encode()
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -434,9 +418,8 @@ fn get_chunk_with_retry<T: Transport>(
         nonce: seq,
     };
 
-    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     for attempt in 0..=WAKE_MAX_RETRIES {
         if attempt > 0 {
@@ -447,13 +430,7 @@ fn get_chunk_with_retry<T: Transport>(
 
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
             Some(raw_response) => {
-                match verify_and_decode_chunk(
-                    &raw_response,
-                    identity,
-                    seq,
-                    chunk_index,
-                    hmac,
-                ) {
+                match verify_and_decode_chunk(&raw_response, identity, seq, chunk_index, hmac) {
                     Ok(data) => return Ok(data),
                     Err(_) => continue,
                 }
@@ -473,9 +450,7 @@ fn verify_and_decode_chunk(
     expected_index: u32,
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
-    let decoded = decode_frame(raw).map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let decoded = decode_frame(raw).map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     if !verify_frame(&decoded, &identity.psk, hmac) {
         return Err(NodeError::AuthFailure);
@@ -523,9 +498,9 @@ fn send_program_ack<T: Transport>(
     let ack_msg = NodeMessage::ProgramAck {
         program_hash: program_hash.to_vec(),
     };
-    let payload_cbor = ack_msg.encode().map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let payload_cbor = ack_msg
+        .encode()
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -533,9 +508,8 @@ fn send_program_ack<T: Transport>(
         nonce: seq,
     };
 
-    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     transport.send(&frame)
 }
@@ -554,9 +528,9 @@ pub fn send_app_data<T: Transport>(
     let msg = NodeMessage::AppData {
         blob: blob.to_vec(),
     };
-    let payload_cbor = msg.encode().map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let payload_cbor = msg
+        .encode()
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -564,9 +538,8 @@ pub fn send_app_data<T: Transport>(
         nonce: seq,
     };
 
-    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     transport.send(&frame)
 }
@@ -586,9 +559,9 @@ pub fn send_recv_app_data<T: Transport>(
     let msg = NodeMessage::AppData {
         blob: blob.to_vec(),
     };
-    let payload_cbor = msg.encode().map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let payload_cbor = msg
+        .encode()
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -596,18 +569,16 @@ pub fn send_recv_app_data<T: Transport>(
         nonce: seq,
     };
 
-    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
-        NodeError::MalformedPayload(format!("{}", e))
-    })?;
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     transport.send(&frame)?;
 
     // Wait for reply
     match transport.recv(timeout_ms)? {
         Some(raw_response) => {
-            let decoded = decode_frame(&raw_response).map_err(|e| {
-                NodeError::MalformedPayload(format!("{}", e))
-            })?;
+            let decoded = decode_frame(&raw_response)
+                .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
             if !verify_frame(&decoded, &identity.psk, hmac) {
                 return Err(NodeError::AuthFailure);
@@ -621,9 +592,8 @@ pub fn send_recv_app_data<T: Transport>(
                 return Err(NodeError::ResponseBindingMismatch);
             }
 
-            let gateway_msg =
-                GatewayMessage::decode(decoded.header.msg_type, &decoded.payload)
-                    .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+            let gateway_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload)
+                .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
             match gateway_msg {
                 GatewayMessage::AppDataReply { blob } => Ok(blob),
@@ -649,8 +619,7 @@ mod tests {
     impl HmacProvider for TestHmac {
         fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
             use hmac::Mac;
-            let mut mac =
-                hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key");
+            let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key");
             mac.update(data);
             mac.finalize().into_bytes().into()
         }
@@ -731,7 +700,9 @@ mod tests {
     }
 
     impl PlatformStorage for MockStorage {
-        fn read_key(&self) -> Option<(u16, [u8; 32])> { self.key }
+        fn read_key(&self) -> Option<(u16, [u8; 32])> {
+            self.key
+        }
         fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
             self.key = Some((key_hint, *psk));
             Ok(())
@@ -786,18 +757,40 @@ mod tests {
 
     struct MockHal;
     impl Hal for MockHal {
-        fn i2c_read(&mut self, _h: u32, _buf: &mut [u8]) -> i32 { 0 }
-        fn i2c_write(&mut self, _h: u32, _data: &[u8]) -> i32 { 0 }
-        fn i2c_write_read(&mut self, _h: u32, _w: &[u8], _r: &mut [u8]) -> i32 { 0 }
-        fn spi_transfer(&mut self, _h: u32, _tx: Option<&[u8]>, _rx: Option<&mut [u8]>, _l: usize) -> i32 { 0 }
-        fn gpio_read(&self, _pin: u32) -> i32 { 0 }
-        fn gpio_write(&mut self, _pin: u32, _val: u32) -> i32 { 0 }
-        fn adc_read(&self, _ch: u32) -> i32 { 0 }
+        fn i2c_read(&mut self, _h: u32, _buf: &mut [u8]) -> i32 {
+            0
+        }
+        fn i2c_write(&mut self, _h: u32, _data: &[u8]) -> i32 {
+            0
+        }
+        fn i2c_write_read(&mut self, _h: u32, _w: &[u8], _r: &mut [u8]) -> i32 {
+            0
+        }
+        fn spi_transfer(
+            &mut self,
+            _h: u32,
+            _tx: Option<&[u8]>,
+            _rx: Option<&mut [u8]>,
+            _l: usize,
+        ) -> i32 {
+            0
+        }
+        fn gpio_read(&self, _pin: u32) -> i32 {
+            0
+        }
+        fn gpio_write(&mut self, _pin: u32, _val: u32) -> i32 {
+            0
+        }
+        fn adc_read(&self, _ch: u32) -> i32 {
+            0
+        }
     }
 
     struct MockBattery;
     impl BatteryReader for MockBattery {
-        fn battery_mv(&self) -> u32 { 3300 }
+        fn battery_mv(&self) -> u32 {
+            3300
+        }
     }
 
     // --- Mock Rng ---
@@ -812,7 +805,9 @@ mod tests {
     // --- Mock Clock ---
     struct MockClock;
     impl Clock for MockClock {
-        fn elapsed_ms(&self) -> u64 { 100 }
+        fn elapsed_ms(&self) -> u64 {
+            100
+        }
     }
 
     // --- Mock BPF interpreter ---
@@ -831,7 +826,11 @@ mod tests {
     }
 
     impl BpfInterpreter for MockBpfInterpreter {
-        fn register_helper(&mut self, _id: u32, _func: crate::bpf_runtime::HelperFn) -> Result<(), BpfError> {
+        fn register_helper(
+            &mut self,
+            _id: u32,
+            _func: crate::bpf_runtime::HelperFn,
+        ) -> Result<(), BpfError> {
             Ok(())
         }
         fn load(&mut self, _bytecode: &[u8], _map_ptrs: &[u64]) -> Result<(), BpfError> {
@@ -920,10 +919,7 @@ mod tests {
             &TestSha256,
         );
 
-        assert_eq!(
-            outcome,
-            WakeCycleOutcome::Sleep { seconds: 60 }
-        );
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         // Should have sent 4 WAKE frames
         assert_eq!(transport.outbound.len(), 4);
     }
@@ -963,10 +959,7 @@ mod tests {
             &TestSha256,
         );
 
-        assert_eq!(
-            outcome,
-            WakeCycleOutcome::Sleep { seconds: 60 }
-        );
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         // Should have sent exactly 1 WAKE
         assert_eq!(transport.outbound.len(), 1);
     }
@@ -978,7 +971,12 @@ mod tests {
         let mut transport = MockTransport::new();
 
         let command_frame = build_command_response(
-            &psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Reboot,
+            &psk,
+            key_hint,
+            1,
+            1000,
+            1710000000000,
+            CommandPayload::Reboot,
         );
         transport.queue_response(Some(command_frame));
 
@@ -1037,10 +1035,7 @@ mod tests {
             &TestSha256,
         );
 
-        assert_eq!(
-            outcome,
-            WakeCycleOutcome::Sleep { seconds: 120 }
-        );
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 120 });
         assert_eq!(storage.schedule_interval, 120);
     }
 
@@ -1053,7 +1048,12 @@ mod tests {
 
         // Build a response signed with the wrong key
         let bad_frame = build_command_response(
-            &wrong_psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop,
+            &wrong_psk,
+            key_hint,
+            1,
+            1000,
+            1710000000000,
+            CommandPayload::Nop,
         );
         // Queue: bad response, then 3 more timeouts
         transport.queue_response(Some(bad_frame));
@@ -1080,10 +1080,7 @@ mod tests {
         );
 
         // Should exhaust retries after discarding the bad frame
-        assert_eq!(
-            outcome,
-            WakeCycleOutcome::Sleep { seconds: 60 }
-        );
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     }
 
     #[test]
@@ -1093,9 +1090,8 @@ mod tests {
         let mut transport = MockTransport::new();
 
         // Response echoes wrong nonce (99 instead of 1)
-        let bad_frame = build_command_response(
-            &psk, key_hint, 99, 1000, 1710000000000, CommandPayload::Nop,
-        );
+        let bad_frame =
+            build_command_response(&psk, key_hint, 99, 1000, 1710000000000, CommandPayload::Nop);
         transport.queue_response(Some(bad_frame));
         transport.queue_response(None);
         transport.queue_response(None);
@@ -1119,9 +1115,6 @@ mod tests {
             &TestSha256,
         );
 
-        assert_eq!(
-            outcome,
-            WakeCycleOutcome::Sleep { seconds: 60 }
-        );
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     }
 }

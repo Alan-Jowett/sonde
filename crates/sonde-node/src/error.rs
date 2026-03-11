@@ -73,7 +73,11 @@ impl fmt::Display for NodeError {
                 write!(f, "helper {} returned error {}", helper_id, code)
             }
             NodeError::EphemeralRestriction { helper_id } => {
-                write!(f, "helper {} not permitted for ephemeral programs", helper_id)
+                write!(
+                    f,
+                    "helper {} not permitted for ephemeral programs",
+                    helper_id
+                )
             }
             NodeError::ChunkTransferFailed { chunk_index } => {
                 write!(f, "chunk transfer failed at index {}", chunk_index)

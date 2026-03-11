@@ -33,12 +33,7 @@ pub trait Hal {
     fn i2c_write(&mut self, handle: u32, data: &[u8]) -> i32;
 
     /// Combined I2C write-then-read in a single transaction (repeated start).
-    fn i2c_write_read(
-        &mut self,
-        handle: u32,
-        write_data: &[u8],
-        read_buf: &mut [u8],
-    ) -> i32;
+    fn i2c_write_read(&mut self, handle: u32, write_data: &[u8], read_buf: &mut [u8]) -> i32;
 
     /// Full-duplex SPI transfer.
     fn spi_transfer(

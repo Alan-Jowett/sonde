@@ -240,10 +240,7 @@ mod tests {
         let mut ms = MapStorage::new(4096);
         let defs = vec![array_map_def(4, 4)];
         ms.allocate(&defs).unwrap();
-        ms.get_mut(0)
-            .unwrap()
-            .update(0, &[1, 2, 3, 4])
-            .unwrap();
+        ms.get_mut(0).unwrap().update(0, &[1, 2, 3, 4]).unwrap();
         ms.clear_all();
         let val = ms.get(0).unwrap().lookup(0).unwrap();
         assert_eq!(val, &[0, 0, 0, 0]);
@@ -252,8 +249,8 @@ mod tests {
     #[test]
     fn test_required_bytes() {
         let defs = vec![
-            array_map_def(8, 16),  // 16 * (4+8) = 192
-            array_map_def(32, 4),  // 4 * (4+32) = 144
+            array_map_def(8, 16), // 16 * (4+8) = 192
+            array_map_def(32, 4), // 4 * (4+32) = 144
         ];
         assert_eq!(MapStorage::required_bytes(&defs), 336);
     }

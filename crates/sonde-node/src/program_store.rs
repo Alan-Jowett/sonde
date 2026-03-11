@@ -75,14 +75,14 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         }
 
         // Decode the CBOR program image
-        let image = ProgramImage::decode(image_bytes).map_err(|e| {
-            NodeError::ProgramDecodeFailed(format!("{}", e))
-        })?;
+        let image = ProgramImage::decode(image_bytes)
+            .map_err(|e| NodeError::ProgramDecodeFailed(format!("{}", e)))?;
 
         // Write to the inactive partition
         let (_interval, active_partition) = self.storage.read_schedule();
         let inactive_partition = 1 - active_partition;
-        self.storage.write_program(inactive_partition, image_bytes)?;
+        self.storage
+            .write_program(inactive_partition, image_bytes)?;
 
         // Flip active partition
         self.storage.write_active_partition(inactive_partition)?;
@@ -110,9 +110,8 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
             return Err(NodeError::ProgramHashMismatch);
         }
 
-        let image = ProgramImage::decode(image_bytes).map_err(|e| {
-            NodeError::ProgramDecodeFailed(format!("{}", e))
-        })?;
+        let image = ProgramImage::decode(image_bytes)
+            .map_err(|e| NodeError::ProgramDecodeFailed(format!("{}", e)))?;
 
         Ok(LoadedProgram {
             bytecode: image.bytecode,
@@ -216,9 +215,15 @@ mod tests {
     }
 
     impl PlatformStorage for MockStorage {
-        fn read_key(&self) -> Option<(u16, [u8; 32])> { None }
-        fn write_key(&mut self, _kh: u16, _psk: &[u8; 32]) -> NodeResult<()> { Ok(()) }
-        fn erase_key(&mut self) -> NodeResult<()> { Ok(()) }
+        fn read_key(&self) -> Option<(u16, [u8; 32])> {
+            None
+        }
+        fn write_key(&mut self, _kh: u16, _psk: &[u8; 32]) -> NodeResult<()> {
+            Ok(())
+        }
+        fn erase_key(&mut self) -> NodeResult<()> {
+            Ok(())
+        }
         fn read_schedule(&self) -> (u32, u8) {
             (self.schedule_interval, self.active_partition)
         }
@@ -241,10 +246,18 @@ mod tests {
             self.programs[partition as usize] = None;
             Ok(())
         }
-        fn take_early_wake_flag(&mut self) -> bool { false }
-        fn set_early_wake_flag(&mut self) -> NodeResult<()> { Ok(()) }
-        fn take_program_updated_flag(&mut self) -> bool { false }
-        fn set_program_updated_flag(&mut self) -> NodeResult<()> { Ok(()) }
+        fn take_early_wake_flag(&mut self) -> bool {
+            false
+        }
+        fn set_early_wake_flag(&mut self) -> NodeResult<()> {
+            Ok(())
+        }
+        fn take_program_updated_flag(&mut self) -> bool {
+            false
+        }
+        fn set_program_updated_flag(&mut self) -> NodeResult<()> {
+            Ok(())
+        }
     }
 
     fn make_test_image(bytecode: &[u8], maps: &[MapDef]) -> (Vec<u8>, Vec<u8>) {
@@ -269,8 +282,7 @@ mod tests {
 
     #[test]
     fn test_load_ephemeral_hash_mismatch() {
-        let (cbor, _hash) =
-            make_test_image(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], &[]);
+        let (cbor, _hash) = make_test_image(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], &[]);
         let wrong_hash = vec![0xFF; 32];
         let mut storage = MockStorage::new();
         let store = ProgramStore::new(&mut storage);
@@ -299,7 +311,7 @@ mod tests {
         let mut bytecode = vec![0u8; 16];
         bytecode[0] = 0x18; // LDDW opcode
         bytecode[1] = 0x10; // src=1, dst=0
-        // imm = 0 (map index 0)
+                            // imm = 0 (map index 0)
         bytecode[4..8].copy_from_slice(&0u32.to_le_bytes());
 
         let map_pointers = vec![0xDEAD_BEEF_CAFE_BABEu64];

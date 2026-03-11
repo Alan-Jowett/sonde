@@ -11,6 +11,7 @@ pub mod constants;
 pub mod error;
 pub mod header;
 pub mod messages;
+pub mod modem;
 pub mod program_image;
 pub mod traits;
 

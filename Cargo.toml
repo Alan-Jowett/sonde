@@ -3,4 +3,9 @@ resolver = "2"
 members = [
     "crates/sonde-protocol",
     "crates/sonde-gateway",
+    "crates/sonde-modem",
+]
+default-members = [
+    "crates/sonde-protocol",
+    "crates/sonde-gateway",
 ]

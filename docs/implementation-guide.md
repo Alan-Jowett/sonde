@@ -362,7 +362,7 @@ cargo build -p sonde-node --target riscv32imc-esp-espidf
 cargo build -p sonde-node --target xtensa-esp32s3-espidf
 
 # Build modem firmware for ESP32-S3
-cargo build -p sonde-modem --target xtensa-esp32s3-espidf
+cargo build -p sonde-modem --features esp --target xtensa-esp32s3-espidf
 
 # Build admin CLI
 cargo build -p sonde-admin
@@ -377,7 +377,7 @@ The CI pipeline should run:
 3. `cargo test -p sonde-protocol` — protocol crate tests (fast, no deps).
 4. `cargo test -p sonde-gateway` — gateway tests (mock transport/storage, PTY modem mock).
 5. `cargo build -p sonde-node --target riscv32imc-esp-espidf` — node firmware compiles.
-6. `cargo build -p sonde-modem --target xtensa-esp32s3-espidf` — modem firmware compiles.
+6. `cargo build -p sonde-modem --features esp --target xtensa-esp32s3-espidf` — modem firmware compiles.
 7. `cargo build -p sonde-admin` — admin CLI compiles.
 
 Node and modem firmware tests that require hardware run in a separate hardware-in-the-loop CI stage.

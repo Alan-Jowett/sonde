@@ -155,7 +155,7 @@ After setup, verify you can target the ESP32 chips. These commands will work onc
 rustup target list --installed
 
 # Build the modem firmware (ESP32-S3, Xtensa) — requires sonde-modem crate
-cargo build -p sonde-modem --target xtensa-esp32s3-espidf
+cargo build -p sonde-modem --features esp --target xtensa-esp32s3-espidf
 
 # Build the node firmware (ESP32-C3, RISC-V) — requires sonde-node crate
 cargo build -p sonde-node --target riscv32imc-esp-espidf
@@ -175,7 +175,7 @@ cargo build -p sonde-node --target xtensa-esp32s3-espidf
 Connect the ESP32-S3 board via USB, then:
 
 ```sh
-cargo espflash flash -p sonde-modem --target xtensa-esp32s3-espidf --monitor
+cargo espflash flash -p sonde-modem --features esp --target xtensa-esp32s3-espidf --monitor
 ```
 
 The `--monitor` flag opens a serial console after flashing so you can see log output.
@@ -269,9 +269,9 @@ See [implementation-guide.md](implementation-guide.md) for the full module break
 | Test protocol crate | `cargo test -p sonde-protocol` |
 | Test gateway | `cargo test -p sonde-gateway` |
 | Build host crates | `cargo build -p sonde-protocol -p sonde-gateway` |
-| Build modem firmware (planned) | `cargo build -p sonde-modem --target xtensa-esp32s3-espidf` |
+| Build modem firmware (planned) | `cargo build -p sonde-modem --features esp --target xtensa-esp32s3-espidf` |
 | Build node firmware (planned) | `cargo build -p sonde-node --target riscv32imc-esp-espidf` |
-| Flash modem (planned) | `cargo espflash flash -p sonde-modem --target xtensa-esp32s3-espidf --monitor` |
+| Flash modem (planned) | `cargo espflash flash -p sonde-modem --features esp --target xtensa-esp32s3-espidf --monitor` |
 | Flash node (planned) | `cargo espflash flash -p sonde-node --target riscv32imc-esp-espidf --monitor` |
 
 ---

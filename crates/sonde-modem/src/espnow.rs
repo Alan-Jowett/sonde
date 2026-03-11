@@ -67,9 +67,11 @@ impl EspNowDriver {
                     // if USB is disconnected or the host can't keep up.
                     if q.len() < 64 {
                         q.push(frame);
+                        counters_clone.inc_rx();
                     }
+                    // Frames dropped when queue is full are not counted
+                    // in rx_count per protocol spec (MD-0303).
                 }
-                counters_clone.inc_rx();
             })
             .expect("failed to register ESP-NOW recv callback");
 

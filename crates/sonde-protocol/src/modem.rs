@@ -26,6 +26,10 @@ pub const SERIAL_MAX_LEN: u16 = 512;
 /// Maximum on-wire frame size including the LEN field.
 pub const SERIAL_MAX_FRAME_SIZE: usize = SERIAL_LEN_SIZE + SERIAL_MAX_LEN as usize; // 514
 
+/// Maximum bytes the streaming decoder will buffer. Sized for multiple
+/// back-to-back frames in a single read.
+const DECODER_BUF_CAP: usize = SERIAL_MAX_FRAME_SIZE * 4;
+
 /// Size of a MAC address.
 pub const MAC_SIZE: usize = 6;
 
@@ -154,7 +158,11 @@ impl fmt::Display for ModemCodecError {
                 )
             }
             ModemCodecError::EncodeTooLong => {
-                write!(f, "modem frame body exceeds max {}", SERIAL_MAX_LEN)
+                write!(
+                    f,
+                    "modem frame (TYPE + BODY) exceeds max {} bytes",
+                    SERIAL_MAX_LEN
+                )
             }
             ModemCodecError::Incomplete => write!(f, "incomplete modem frame"),
         }
@@ -270,11 +278,18 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
     match msg {
         ModemMessage::Reset => Ok((MODEM_MSG_RESET, Vec::new())),
         ModemMessage::SendFrame(sf) => {
-            if sf.frame_data.is_empty() || sf.frame_data.len() > ESPNOW_MAX_DATA_SIZE {
+            if sf.frame_data.is_empty() {
+                return Err(ModemCodecError::BodyTooShort {
+                    msg_type: MODEM_MSG_SEND_FRAME,
+                    expected_min: SEND_FRAME_MIN_BODY_SIZE,
+                    actual: MAC_SIZE, // only MAC, no data
+                });
+            }
+            if sf.frame_data.len() > ESPNOW_MAX_DATA_SIZE {
                 return Err(ModemCodecError::BodyTooLong {
                     msg_type: MODEM_MSG_SEND_FRAME,
-                    expected_max: ESPNOW_MAX_DATA_SIZE,
-                    actual: sf.frame_data.len(),
+                    expected_max: SEND_FRAME_MAX_BODY_SIZE,
+                    actual: MAC_SIZE + sf.frame_data.len(),
                 });
             }
             let mut body = Vec::with_capacity(MAC_SIZE + sf.frame_data.len());
@@ -292,11 +307,18 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             Ok((MODEM_MSG_MODEM_READY, body))
         }
         ModemMessage::RecvFrame(rf) => {
-            if rf.frame_data.is_empty() || rf.frame_data.len() > ESPNOW_MAX_DATA_SIZE {
+            if rf.frame_data.is_empty() {
+                return Err(ModemCodecError::BodyTooShort {
+                    msg_type: MODEM_MSG_RECV_FRAME,
+                    expected_min: RECV_FRAME_MIN_BODY_SIZE,
+                    actual: MAC_SIZE + 1, // MAC + RSSI, no data
+                });
+            }
+            if rf.frame_data.len() > ESPNOW_MAX_DATA_SIZE {
                 return Err(ModemCodecError::BodyTooLong {
                     msg_type: MODEM_MSG_RECV_FRAME,
-                    expected_max: ESPNOW_MAX_DATA_SIZE,
-                    actual: rf.frame_data.len(),
+                    expected_max: RECV_FRAME_MAX_BODY_SIZE,
+                    actual: MAC_SIZE + 1 + rf.frame_data.len(),
                 });
             }
             let mut body = Vec::with_capacity(MAC_SIZE + 1 + rf.frame_data.len());
@@ -580,11 +602,10 @@ impl FrameDecoder {
 
     /// Append bytes to the internal buffer.
     ///
-    /// To prevent unbounded memory growth from garbage or desynchronized
-    /// streams, the buffer is capped at `SERIAL_MAX_FRAME_SIZE`. Any input
-    /// beyond the cap is silently dropped.
+    /// The buffer is capped at `DECODER_BUF_CAP` to prevent unbounded growth.
+    /// Any input beyond the cap is silently dropped.
     pub fn push(&mut self, data: &[u8]) {
-        let remaining = SERIAL_MAX_FRAME_SIZE.saturating_sub(self.buf.len());
+        let remaining = DECODER_BUF_CAP.saturating_sub(self.buf.len());
         let to_take = core::cmp::min(remaining, data.len());
         if to_take > 0 {
             self.buf.extend_from_slice(&data[..to_take]);
@@ -1060,10 +1081,10 @@ mod tests {
     // -- Push buffer cap test --
 
     #[test]
-    fn push_caps_buffer_at_max_frame_size() {
+    fn push_caps_buffer_at_max() {
         let mut decoder = FrameDecoder::new();
-        let big_data = alloc::vec![0u8; SERIAL_MAX_FRAME_SIZE + 100];
+        let big_data = alloc::vec![0u8; DECODER_BUF_CAP + 100];
         decoder.push(&big_data);
-        assert_eq!(decoder.buffered(), SERIAL_MAX_FRAME_SIZE);
+        assert_eq!(decoder.buffered(), DECODER_BUF_CAP);
     }
 }

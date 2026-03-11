@@ -13,13 +13,13 @@ const MAX_PEERS: usize = 20;
 #[derive(Clone)]
 struct PeerEntry {
     mac: [u8; MAC_SIZE],
-    last_used: u32,
+    last_used: u64,
 }
 
 /// Fixed-capacity peer table with LRU eviction.
 pub struct PeerTable {
     entries: Vec<PeerEntry>,
-    tick: u32,
+    tick: u64,
 }
 
 impl Default for PeerTable {
@@ -43,7 +43,7 @@ impl PeerTable {
     /// If not present and the table is full, evicts the LRU peer,
     /// inserts the new one, and returns `Some(evicted_mac)`.
     pub fn ensure_peer(&mut self, mac: &[u8; MAC_SIZE]) -> Option<[u8; MAC_SIZE]> {
-        self.tick = self.tick.wrapping_add(1);
+        self.tick = self.tick.saturating_add(1);
 
         // Check if already present.
         for entry in &mut self.entries {

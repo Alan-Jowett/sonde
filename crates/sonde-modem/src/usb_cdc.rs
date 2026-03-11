@@ -26,8 +26,10 @@ impl UsbCdcDriver {
         info!("USB-CDC initialized");
         Self {
             serial,
-            // Start disconnected; will flip to true when first bytes arrive.
-            connected: Arc::new(AtomicBool::new(false)),
+            // Start connected so boot MODEM_READY is sent. The flag will
+            // flip to false on write/read errors and back to true when
+            // data arrives.
+            connected: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -59,15 +61,18 @@ impl UsbCdcDriver {
     }
 
     /// Write bytes to the USB transmit buffer.
-    /// If the host is disconnected, the data is silently discarded.
-    /// Sets `connected` to false on write errors.
+    /// Always attempts the write so critical messages like MODEM_READY
+    /// are sent even when the connection state is uncertain. Updates
+    /// `connected` based on the result.
     pub fn write(&mut self, data: &[u8]) {
-        if !self.is_connected() {
-            return;
-        }
-        if let Err(e) = self.serial.write_all(data) {
-            warn!("USB-CDC write error: {:?}", e);
-            self.connected.store(false, Ordering::Relaxed);
+        match self.serial.write_all(data) {
+            Ok(()) => {
+                self.connected.store(true, Ordering::Relaxed);
+            }
+            Err(e) => {
+                warn!("USB-CDC write error: {:?}", e);
+                self.connected.store(false, Ordering::Relaxed);
+            }
         }
     }
 

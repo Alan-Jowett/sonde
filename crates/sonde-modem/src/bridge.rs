@@ -128,9 +128,11 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
                     self.decoder.reset();
                     break;
                 }
-                Err(e) => {
-                    warn!("decode error: {}", e);
-                    break;
+                Err(_) => {
+                    // Malformed body (too short, too long, etc.) — the frame
+                    // has already been consumed from the buffer by decode().
+                    // Silently discard and continue to the next frame.
+                    continue;
                 }
             }
         }

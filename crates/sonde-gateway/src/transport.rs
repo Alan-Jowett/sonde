@@ -35,7 +35,12 @@ impl std::error::Error for TransportError {}
 /// network layer (ESP-NOW, UDP, etc.).
 #[async_trait]
 pub trait Transport: Send + Sync {
-    /// Receive the next inbound frame (blocking until available).
+    /// Receive the next inbound frame.
+    ///
+    /// For real transports, this awaits until a frame arrives.
+    /// For test mocks, this may return `TransportError::NoMoreFrames`
+    /// immediately if the inbound queue is empty.
+    ///
     /// Returns the raw bytes (header + payload + HMAC) and the
     /// sender's transport-layer address.
     async fn recv(&self) -> Result<(Vec<u8>, PeerAddress), TransportError>;

@@ -193,21 +193,30 @@ where
 
                     match install_result {
                         Ok(program) => {
-                            // Send PROGRAM_ACK
-                            let _ = send_program_ack(
+                            // Send PROGRAM_ACK; abort cycle on failure to
+                            // keep session sequencing consistent.
+                            if send_program_ack(
                                 transport,
                                 &identity,
                                 &mut current_seq,
                                 &program.hash,
                                 hmac,
-                            );
-
-                            if !is_ephemeral && storage.set_program_updated_flag().is_err() {
+                            )
+                            .is_err()
+                            {
                                 return WakeCycleOutcome::Sleep {
                                     seconds: sleep_mgr.effective_sleep_s(),
                                 };
                             }
+
                             if !is_ephemeral {
+                                // Set the in-cycle wake reason so the BPF
+                                // program executing immediately below sees
+                                // ProgramUpdate. We do NOT persist a flag
+                                // for the next boot — the program already
+                                // runs in this cycle (ND-0506), so the next
+                                // boot should report Scheduled, not
+                                // ProgramUpdate again.
                                 sleep_mgr.set_wake_reason(WakeReason::ProgramUpdate);
                             }
                             loaded_program = Some(program);

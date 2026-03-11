@@ -87,8 +87,11 @@ impl SleepManager {
         }
     }
 
-    /// Mark the wake reason as ProgramUpdate (called after a successful
-    /// program installation, to be picked up on the next boot).
+    /// Update the wake reason for the current cycle.
+    ///
+    /// Typically called after a successful program installation to set
+    /// `WakeReason::ProgramUpdate`, which is observed immediately in the
+    /// `SondeContext` passed to the BPF program executing in this cycle.
     pub fn set_wake_reason(&mut self, reason: WakeReason) {
         self.wake_reason = reason;
     }

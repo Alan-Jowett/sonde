@@ -901,3 +901,71 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 | GW-1001 | Exportable / importable state | Should |
 | GW-1002 | Graceful handling of unknown nodes | Must |
 | GW-1003 | Concurrent node handling | Should |
+| GW-1100 | Modem transport trait implementation | Must |
+| GW-1101 | Modem startup sequence | Must |
+| GW-1102 | Modem health monitoring | Should |
+| GW-1103 | Modem error handling | Must |
+
+---
+
+## 11  Modem transport adapter
+
+### GW-1100  Modem transport trait implementation
+
+**Priority:** Must
+**Source:** modem-protocol.md §5.2
+
+**Description:**
+The gateway MUST implement a `UsbEspNowTransport` that satisfies the existing `Transport` trait using the modem serial protocol defined in [modem-protocol.md](modem-protocol.md).
+
+**Acceptance criteria:**
+
+1. `recv()` reads serial frames, filters for `RECV_FRAME`, and returns `(frame_data, peer_mac)`.
+2. `send(frame, peer)` constructs and writes a `SEND_FRAME` message and returns immediately (fire-and-forget).
+3. Non-`RECV_FRAME` messages (e.g., `STATUS`, `ERROR`) are handled internally by the adapter, not surfaced to protocol callers.
+
+---
+
+### GW-1101  Modem startup sequence
+
+**Priority:** Must
+**Source:** modem-protocol.md §5.1, §7
+
+**Description:**
+On startup, the gateway modem transport adapter MUST open the serial port, send `RESET`, wait for `MODEM_READY`, send `SET_CHANNEL` with the configured channel, and wait for `SET_CHANNEL_ACK` before entering normal operation.
+
+**Acceptance criteria:**
+
+1. If `MODEM_READY` is not received within the configured timeout (default 5 seconds), the adapter returns an error.
+2. The modem's MAC address from `MODEM_READY` is logged.
+3. The channel from gateway configuration is applied via `SET_CHANNEL`.
+
+---
+
+### GW-1102  Modem health monitoring
+
+**Priority:** Should
+**Source:** modem-protocol.md §4.6
+
+**Description:**
+The gateway modem transport adapter SHOULD poll `GET_STATUS` periodically (recommended: every 30 seconds) and log `tx_fail_count` deltas and `uptime_s` to detect send failures and unexpected modem reboots.
+
+**Acceptance criteria:**
+
+1. A rising `tx_fail_count` is logged as a warning.
+2. An `uptime_s` reset (decrease) is logged as a modem reboot event.
+
+---
+
+### GW-1103  Modem error handling
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.8, §6.2
+
+**Description:**
+On receiving an `ERROR` message from the modem, the gateway MUST log the error code and human-readable message. The gateway MAY attempt a `RESET` to recover.
+
+**Acceptance criteria:**
+
+1. `ERROR` messages are logged with the error code and message text.
+2. After `RESET`, the startup sequence (§5.1 of modem-protocol.md) is re-executed.

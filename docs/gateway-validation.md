@@ -896,6 +896,127 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 11  Modem transport adapter tests
+
+### T-1100  UsbEspNowTransport — recv delivers RECV_FRAME
+
+**Validates:** GW-1100
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` connected to a PTY-based `MockModem`.
+2. Complete startup (RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK).
+3. Inject a `RECV_FRAME` message from the mock modem with known `peer_mac`, `rssi`, and `frame_data`.
+4. Call `Transport::recv()`.
+5. Assert: returns `(frame_data, peer_mac)` matching the injected values.
+
+---
+
+### T-1101  UsbEspNowTransport — send produces SEND_FRAME
+
+**Validates:** GW-1100
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` connected to a PTY-based `MockModem`.
+2. Complete startup.
+3. Call `Transport::send(frame, peer_mac)`.
+4. Assert: the mock modem receives a well-formed `SEND_FRAME` message with the correct `peer_mac` and `frame_data`.
+5. Assert: `send()` does not wait for any modem response or RF delivery acknowledgement before completing (fire-and-forget).
+
+---
+
+### T-1102  UsbEspNowTransport — internal message demux
+
+**Validates:** GW-1100
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` connected to a PTY-based `MockModem`.
+2. Complete startup.
+3. Inject a `STATUS` message from the mock modem.
+4. Inject a `RECV_FRAME` message from the mock modem.
+5. Call `Transport::recv()`.
+6. Assert: returns the `RECV_FRAME` data (the `STATUS` was handled internally, not surfaced).
+
+---
+
+### T-1103  Startup — RESET then MODEM_READY then SET_CHANNEL
+
+**Validates:** GW-1101
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` with a PTY-based `MockModem` configured for channel 6.
+2. Assert: mock modem receives `RESET` as the first command.
+3. Mock modem sends `MODEM_READY` with a known firmware version and MAC.
+4. Assert: mock modem receives `SET_CHANNEL(6)`.
+5. Mock modem sends `SET_CHANNEL_ACK(6)`.
+6. Assert: startup completes successfully.
+7. Assert: modem MAC address is logged.
+
+---
+
+### T-1104  Startup — MODEM_READY timeout
+
+**Validates:** GW-1101
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` with a PTY-based `MockModem` that does not send `MODEM_READY`.
+2. Assert: startup returns an error after the configured timeout (5 seconds).
+
+---
+
+### T-1105  Health monitoring — tx_fail_count rising
+
+**Validates:** GW-1102
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` connected to a PTY-based `MockModem`.
+2. Complete startup.
+3. Trigger a health poll (or wait for the periodic interval).
+4. Mock modem responds to `GET_STATUS` with `tx_fail_count = 0`.
+5. Trigger a second health poll.
+6. Mock modem responds to `GET_STATUS` with `tx_fail_count = 5`.
+7. Assert: a warning is logged indicating 5 new send failures.
+
+---
+
+### T-1106  Health monitoring — uptime reset detection
+
+**Validates:** GW-1102
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` connected to a PTY-based `MockModem`.
+2. Complete startup.
+3. First `GET_STATUS` response: `uptime_s = 120`.
+4. Second `GET_STATUS` response: `uptime_s = 3`.
+5. Assert: a modem reboot event is logged.
+
+---
+
+### T-1107  Modem ERROR handling
+
+**Validates:** GW-1103
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` connected to a PTY-based `MockModem`.
+2. Complete startup.
+3. Inject an `ERROR(ESPNOW_INIT_FAILED, "test error")` message from the mock modem.
+4. Assert: the error code and message are logged.
+
+---
+
+### T-1108  End-to-end wake cycle over PTY
+
+**Validates:** GW-1100, GW-1101
+
+**Procedure:**
+1. Create a full gateway instance with `UsbEspNowTransport` connected to a PTY-based `MockModem`.
+2. Complete modem startup.
+3. Register a test node in the gateway.
+4. Inject a `RECV_FRAME` containing a valid WAKE from the test node.
+5. Assert: the mock modem receives a `SEND_FRAME` containing a valid COMMAND response.
+6. Decode the COMMAND and verify it contains a valid `starting_seq` and `timestamp_ms`.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -949,3 +1070,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1002 | T-0609 |
 | GW-1003 | T-1003 |
 | GW-1004 | T-1001 |
+| GW-1100 | T-1100, T-1101, T-1102, T-1108 |
+| GW-1101 | T-1103, T-1104, T-1108 |
+| GW-1102 | T-1105, T-1106 |
+| GW-1103 | T-1107 |

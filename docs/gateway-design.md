@@ -108,6 +108,59 @@ The ESP-NOW adapter wraps the platform's ESP-NOW API:
 - `send()` transmits one ESP-NOW frame to the specified MAC address. The ESP-NOW peer is registered on first use.
 - The 250-byte frame size constraint (GW-0104) is enforced by ESP-NOW itself.
 
+### 4.2  USB modem adapter (`UsbEspNowTransport`)
+
+When the gateway runs on a host without ESP-NOW hardware, a USB-attached ESP32-S3 radio modem provides the radio link. The `UsbEspNowTransport` implements the `Transport` trait by speaking the modem serial protocol defined in [modem-protocol.md](modem-protocol.md).
+
+**Internal architecture:**
+
+The adapter spawns a serial reader task that demultiplexes incoming modem messages:
+
+- `RECV_FRAME` → pushed to an async channel consumed by `Transport::recv()`.
+- `STATUS` / `SET_CHANNEL_ACK` / `SCAN_RESULT` → delivered to pending command futures.
+- `ERROR` → logged; optionally triggers recovery.
+- `MODEM_READY` → delivered to the startup/reset future.
+
+```rust
+pub struct UsbEspNowTransport {
+    /// Async serial port (e.g., tokio_serial::SerialStream).
+    port: Arc<Mutex<Box<dyn AsyncRead + AsyncWrite + Send + Unpin>>>,
+    /// Channel for RECV_FRAME messages from the serial reader task.
+    recv_rx: mpsc::Receiver<(Vec<u8>, PeerAddress)>,
+    /// Modem's MAC address (from MODEM_READY).
+    modem_mac: [u8; 6],
+}
+```
+
+**Startup sequence (GW-1101):**
+
+1. Open the serial port (device path from configuration).
+2. Start the serial reader task (it demultiplexes all incoming frames, including `MODEM_READY` and `SET_CHANNEL_ACK`, and routes them to the appropriate pending futures).
+3. Send `RESET`.
+4. Wait for `MODEM_READY` (timeout: 5 seconds, up to 3 retries).
+5. Extract `firmware_version` and `mac_address` from `MODEM_READY`; log both.
+6. Send `SET_CHANNEL` with the configured channel.
+7. Wait for `SET_CHANNEL_ACK` (timeout: 2 seconds).
+8. Start the health monitor task.
+
+**Health monitor (GW-1102):**
+
+A background task polls `GET_STATUS` every 30 seconds and logs:
+- `tx_fail_count` delta since last poll (warns on rising failures).
+- `uptime_s` decrease (indicates unexpected modem reboot).
+
+**Error handling (GW-1103):**
+
+On `ERROR` from the modem, the adapter logs the error code and message. If the error is unrecoverable, it sends `RESET` and re-executes the startup sequence.
+
+**`send()` implementation:**
+
+Constructs a `SEND_FRAME` envelope (`peer_mac || frame_data`) and writes it to the serial port. Does not wait for any modem or radio delivery acknowledgement — fire-and-forget at the radio layer, while still awaiting the serial write as needed. The 250-byte ESP-NOW frame limit is enforced by the modem.
+
+**`recv()` implementation:**
+
+Awaits the next `RECV_FRAME` from the async channel. Returns `(frame_data, peer_mac)`, where `peer_mac` is the `PeerAddress` obtained by converting the modem's 6-byte MAC address at the adapter boundary. RSSI is available but not surfaced through the `Transport` trait (logged internally for diagnostics).
+
 ---
 
 ## 5  Protocol codec
@@ -601,7 +654,7 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 1. Load configuration.
 2. Initialize storage backend.
 3. Load node registry and program library from storage.
-4. Initialize transport (e.g., open ESP-NOW interface).
+4. Initialize transport (e.g., open ESP-NOW interface, or for USB modem: open serial port → `RESET` → `MODEM_READY` → `SET_CHANNEL`; see §4.2).
 5. Start gRPC admin API server.
 6. Start handler processes for configured handlers.
 7. Start session reaper background task.

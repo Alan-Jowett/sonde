@@ -9,29 +9,51 @@
 set -euo pipefail
 
 MD_HEADER_LINE1='<!-- SPDX-License-Identifier: MIT'
+MD_HEADER_LINE2='  Copyright (c) 2026 sonde contributors -->'
 RS_HEADER_LINE1='// SPDX-License-Identifier: MIT'
+RS_HEADER_LINE2='// Copyright (c) 2026 sonde contributors'
 
 error=0
 
 while IFS= read -r -d '' file; do
     case "$file" in
         *.md)
-            expected="$MD_HEADER_LINE1"
+            header_type="md"
             ;;
         *.rs)
-            expected="$RS_HEADER_LINE1"
+            header_type="rs"
             ;;
         *)
             continue
             ;;
     esac
 
-    if ! head -1 "$file" | grep -qF "$expected"; then
-        echo "ERROR: Missing SPDX header in $file"
-        echo "  Expected first line: $expected"
+    # Read from the staged index, not the working tree, so unstaged edits
+    # cannot bypass or spoof the check.
+    header="$(git cat-file -p :"$file" | head -2)"
+    line1="$(echo "$header" | sed -n '1p')"
+    line2="$(echo "$header" | sed -n '2p')"
+
+    missing_header=0
+
+    case "$header_type" in
+        md)
+            if [[ "$line1" != "$MD_HEADER_LINE1" ]] || [[ "$line2" != "$MD_HEADER_LINE2" ]]; then
+                missing_header=1
+            fi
+            ;;
+        rs)
+            if [[ "$line1" != "$RS_HEADER_LINE1" ]] || [[ "$line2" != "$RS_HEADER_LINE2" ]]; then
+                missing_header=1
+            fi
+            ;;
+    esac
+
+    if [ "$missing_header" -ne 0 ]; then
+        echo "ERROR: Missing or incomplete SPDX header in $file"
         error=1
     fi
-done < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.md' '*.rs')
+done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.md' '*.rs')
 
 if [ "$error" -ne 0 ]; then
     echo ""

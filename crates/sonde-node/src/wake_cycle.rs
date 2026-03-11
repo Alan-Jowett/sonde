@@ -295,6 +295,16 @@ where
         };
 
         // Load and execute
+        //
+        // TODO: Register BPF helper functions before load(). The 16
+        // helpers (HAL bus access, send/send_recv, map ops, system
+        // helpers) require platform-specific state (hal, transport,
+        // map_storage, sleep_mgr, clock) that cannot be captured by
+        // the `HelperFn` function pointer type (`fn` — no closures).
+        // The ESP-IDF integration layer will use thread-local or
+        // static dispatch to wire these up. Until then, only programs
+        // that call no helpers (e.g. nop_program) will execute
+        // correctly. See node-design.md §8.2 for the helper table.
         if let Ok(()) = interpreter.load(&program.bytecode, map_ptrs) {
             let ctx_ptr = &ctx as *const SondeContext as u64;
             let _ = interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET);
@@ -631,8 +641,9 @@ fn send_program_ack<T: Transport>(
 /// `transport.send()` fails, `current_seq` is not advanced so the
 /// gateway's expected sequence stays in sync.
 ///
-/// Rejects blobs that would exceed the frame payload budget up front,
-/// avoiding unnecessary allocation.
+/// Rejects payloads that exceed the frame payload budget after CBOR
+/// encoding (the encoded size includes map overhead, not just the
+/// raw blob length).
 pub fn send_app_data<T: Transport>(
     transport: &mut T,
     identity: &NodeIdentity,

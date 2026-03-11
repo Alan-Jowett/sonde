@@ -848,66 +848,6 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 
 ---
 
-## Appendix A  Requirement index
-
-| ID | Title | Priority |
-|---|---|---|
-| GW-0100 | Node-initiated communication | Must |
-| GW-0101 | CBOR message encoding | Must |
-| GW-0102 | Wake handshake — WAKE reception | Must |
-| GW-0103 | Wake handshake — COMMAND response | Must |
-| GW-0104 | Frame size constraint (reference impl.) | Must |
-| GW-0200 | NOP command | Must |
-| GW-0201 | UPDATE_PROGRAM command | Must |
-| GW-0202 | RUN_EPHEMERAL command | Must |
-| GW-0203 | UPDATE_SCHEDULE command | Must |
-| GW-0204 | REBOOT command | Must |
-| GW-0300 | Chunk serving | Must |
-| GW-0301 | Transfer resumption | Must |
-| GW-0302 | Program acknowledgement | Must |
-| GW-0400 | Program ingestion (pre-compiled ELF) | Must |
-| GW-0401 | Program verification (Prevail) | Must |
-| GW-0402 | Program identity by content hash | Must |
-| GW-0403 | Program size enforcement | Should |
-| GW-0500 | APP_DATA reception | Must |
-| GW-0501 | APP_DATA_REPLY response | Must |
-| GW-0502 | Handler transport (stdin/stdout, length-prefixed CBOR) | Must |
-| GW-0503 | Handler lifecycle management | Must |
-| GW-0504 | Handler routing by program hash | Must |
-| GW-0505 | Handler DATA message | Must |
-| GW-0506 | Handler DATA_REPLY processing | Must |
-| GW-0507 | Handler EVENT messages | Should |
-| GW-0508 | Handler LOG messages | Should |
-| GW-0600 | HMAC-SHA256 message authentication | Must |
-| GW-0601 | Per-node key management | Must |
-| GW-0601a | Key store encryption at rest | Should |
-| GW-0602 | Replay protection — session-scoped sequence numbers | Must |
-| GW-0603 | Authentication overhead budget | Must |
-| GW-0700 | Node registry | Must |
-| GW-0701 | Stale program detection | Must |
-| GW-0702 | Battery level tracking | Should |
-| GW-0703 | Firmware ABI version awareness | Must |
-| GW-0704 | USB-mediated node pairing | Must |
-| GW-0705 | Factory reset support | Must |
-| GW-0800 | Admin gRPC API | Must |
-| GW-0801 | Admin API — node management | Must |
-| GW-0802 | Admin API — program management | Must |
-| GW-0803 | Admin API — schedule and commands | Must |
-| GW-0804 | Admin API — node status | Should |
-| GW-0805 | Admin API — state export/import | Should |
-| GW-0806 | Admin CLI tool | Must |
-| GW-1000 | Gateway failover / replaceability | Must |
-| GW-1004 | Program hash consistency across failover group | Must |
-| GW-1001 | Exportable / importable state | Should |
-| GW-1002 | Graceful handling of unknown nodes | Must |
-| GW-1003 | Concurrent node handling | Should |
-| GW-1100 | Modem transport trait implementation | Must |
-| GW-1101 | Modem startup sequence | Must |
-| GW-1102 | Modem health monitoring | Should |
-| GW-1103 | Modem error handling | Must |
-
----
-
 ## 11  Modem transport adapter
 
 ### GW-1100  Modem transport trait implementation
@@ -969,3 +909,63 @@ On receiving an `ERROR` message from the modem, the gateway MUST log the error c
 
 1. `ERROR` messages are logged with the error code and message text.
 2. After `RESET`, the startup sequence (§5.1 of modem-protocol.md) is re-executed.
+
+---
+
+## Appendix A  Requirement index
+
+| ID | Title | Priority |
+|---|---|---|
+| GW-0100 | Node-initiated communication | Must |
+| GW-0101 | CBOR message encoding | Must |
+| GW-0102 | Wake handshake — WAKE reception | Must |
+| GW-0103 | Wake handshake — COMMAND response | Must |
+| GW-0104 | Frame size constraint (reference impl.) | Must |
+| GW-0200 | NOP command | Must |
+| GW-0201 | UPDATE_PROGRAM command | Must |
+| GW-0202 | RUN_EPHEMERAL command | Must |
+| GW-0203 | UPDATE_SCHEDULE command | Must |
+| GW-0204 | REBOOT command | Must |
+| GW-0300 | Chunk serving | Must |
+| GW-0301 | Transfer resumption | Must |
+| GW-0302 | Program acknowledgement | Must |
+| GW-0400 | Program ingestion (pre-compiled ELF) | Must |
+| GW-0401 | Program verification (Prevail) | Must |
+| GW-0402 | Program identity by content hash | Must |
+| GW-0403 | Program size enforcement | Should |
+| GW-0500 | APP_DATA reception | Must |
+| GW-0501 | APP_DATA_REPLY response | Must |
+| GW-0502 | Handler transport (stdin/stdout, length-prefixed CBOR) | Must |
+| GW-0503 | Handler lifecycle management | Must |
+| GW-0504 | Handler routing by program hash | Must |
+| GW-0505 | Handler DATA message | Must |
+| GW-0506 | Handler DATA_REPLY processing | Must |
+| GW-0507 | Handler EVENT messages | Should |
+| GW-0508 | Handler LOG messages | Should |
+| GW-0600 | HMAC-SHA256 message authentication | Must |
+| GW-0601 | Per-node key management | Must |
+| GW-0601a | Key store encryption at rest | Should |
+| GW-0602 | Replay protection — session-scoped sequence numbers | Must |
+| GW-0603 | Authentication overhead budget | Must |
+| GW-0700 | Node registry | Must |
+| GW-0701 | Stale program detection | Must |
+| GW-0702 | Battery level tracking | Should |
+| GW-0703 | Firmware ABI version awareness | Must |
+| GW-0704 | USB-mediated node pairing | Must |
+| GW-0705 | Factory reset support | Must |
+| GW-0800 | Admin gRPC API | Must |
+| GW-0801 | Admin API — node management | Must |
+| GW-0802 | Admin API — program management | Must |
+| GW-0803 | Admin API — schedule and commands | Must |
+| GW-0804 | Admin API — node status | Should |
+| GW-0805 | Admin API — state export/import | Should |
+| GW-0806 | Admin CLI tool | Must |
+| GW-1000 | Gateway failover / replaceability | Must |
+| GW-1004 | Program hash consistency across failover group | Must |
+| GW-1001 | Exportable / importable state | Should |
+| GW-1002 | Graceful handling of unknown nodes | Must |
+| GW-1003 | Concurrent node handling | Should |
+| GW-1100 | Modem transport trait implementation | Must |
+| GW-1101 | Modem startup sequence | Must |
+| GW-1102 | Modem health monitoring | Should |
+| GW-1103 | Modem error handling | Must |

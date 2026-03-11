@@ -611,13 +611,16 @@ impl FrameDecoder {
     /// Append bytes to the internal buffer.
     ///
     /// The buffer is capped at `DECODER_BUF_CAP` to prevent unbounded growth.
-    /// Any input beyond the cap is silently dropped.
+    /// If appending `data` would exceed the cap, the buffer is reset to
+    /// recover from a stuck state (e.g., a partial frame that can never
+    /// be completed because subsequent bytes were dropped).
     pub fn push(&mut self, data: &[u8]) {
-        let remaining = DECODER_BUF_CAP.saturating_sub(self.buf.len());
-        let to_take = core::cmp::min(remaining, data.len());
-        if to_take > 0 {
-            self.buf.extend_from_slice(&data[..to_take]);
+        if self.buf.len() + data.len() > DECODER_BUF_CAP {
+            // Overflow — reset rather than silently dropping bytes,
+            // which would leave the decoder stuck on an incomplete frame.
+            self.buf.clear();
         }
+        self.buf.extend_from_slice(data);
     }
 
     /// Reset the decoder state, discarding any buffered data.
@@ -1089,10 +1092,16 @@ mod tests {
     // -- Push buffer cap test --
 
     #[test]
-    fn push_caps_buffer_at_max() {
+    fn push_resets_buffer_on_overflow() {
         let mut decoder = FrameDecoder::new();
-        let big_data = alloc::vec![0u8; DECODER_BUF_CAP + 100];
-        decoder.push(&big_data);
-        assert_eq!(decoder.buffered(), DECODER_BUF_CAP);
+        // Fill with some data
+        let initial = alloc::vec![0u8; DECODER_BUF_CAP - 10];
+        decoder.push(&initial);
+        assert_eq!(decoder.buffered(), DECODER_BUF_CAP - 10);
+
+        // Push more than remaining capacity — triggers reset + fresh append
+        let overflow = alloc::vec![0xAAu8; 20];
+        decoder.push(&overflow);
+        assert_eq!(decoder.buffered(), 20); // buffer was cleared then refilled
     }
 }

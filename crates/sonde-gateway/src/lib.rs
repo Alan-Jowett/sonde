@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+pub mod admin;
 pub mod crypto;
 pub mod engine;
 pub mod handler;
@@ -10,6 +11,7 @@ pub mod session;
 pub mod storage;
 pub mod transport;
 
+pub use admin::AdminService;
 pub use crypto::{RustCryptoHmac, RustCryptoSha256};
 pub use engine::{Gateway, PendingCommand};
 pub use handler::{HandlerConfig, HandlerMessage, HandlerRouter, ProgramMatcher};

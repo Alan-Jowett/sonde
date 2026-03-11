@@ -1,0 +1,445 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::UNIX_EPOCH;
+
+use tokio::sync::RwLock;
+use tonic::{Request, Response, Status};
+
+use crate::engine::PendingCommand;
+use crate::program::{ProgramLibrary, VerificationProfile};
+use crate::registry::NodeRecord;
+use crate::session::SessionManager;
+use crate::storage::Storage;
+
+pub mod pb {
+    tonic::include_proto!("sonde.admin");
+}
+
+use pb::gateway_admin_server::GatewayAdmin;
+use pb::*;
+
+/// gRPC admin service implementation backed by the gateway's shared state.
+pub struct AdminService {
+    storage: Arc<dyn Storage>,
+    pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+    program_library: ProgramLibrary,
+    session_manager: Arc<SessionManager>,
+}
+
+impl AdminService {
+    pub fn new(
+        storage: Arc<dyn Storage>,
+        pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+        session_manager: Arc<SessionManager>,
+    ) -> Self {
+        Self {
+            storage,
+            pending_commands,
+            program_library: ProgramLibrary::new(),
+            session_manager,
+        }
+    }
+}
+
+fn node_to_info(n: &NodeRecord) -> NodeInfo {
+    let last_seen_ms = n.last_seen.and_then(|t| {
+        t.duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_millis() as u64)
+    });
+    NodeInfo {
+        node_id: n.node_id.clone(),
+        key_hint: n.key_hint as u32,
+        assigned_program_hash: n.assigned_program_hash.clone().unwrap_or_default(),
+        current_program_hash: n.current_program_hash.clone().unwrap_or_default(),
+        last_battery_mv: n.last_battery_mv,
+        last_firmware_abi_version: n.firmware_abi_version,
+        last_seen_ms,
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_profile(s: &str) -> Result<VerificationProfile, Status> {
+    match s.to_lowercase().as_str() {
+        "resident" => Ok(VerificationProfile::Resident),
+        "ephemeral" => Ok(VerificationProfile::Ephemeral),
+        _ => Err(Status::invalid_argument(format!(
+            "unknown `verification_profile`: {s:?}; expected \"resident\" or \"ephemeral\""
+        ))),
+    }
+}
+
+fn profile_to_string(p: &VerificationProfile) -> String {
+    match p {
+        VerificationProfile::Resident => "resident".to_string(),
+        VerificationProfile::Ephemeral => "ephemeral".to_string(),
+    }
+}
+
+fn storage_err(e: crate::storage::StorageError) -> Status {
+    Status::internal(e.to_string())
+}
+
+#[tonic::async_trait]
+impl GatewayAdmin for AdminService {
+    async fn list_nodes(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ListNodesResponse>, Status> {
+        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let nodes = nodes.iter().map(node_to_info).collect();
+        Ok(Response::new(ListNodesResponse { nodes }))
+    }
+
+    async fn get_node(
+        &self,
+        request: Request<GetNodeRequest>,
+    ) -> Result<Response<NodeInfo>, Status> {
+        let node_id = &request.get_ref().node_id;
+        let node = self
+            .storage
+            .get_node(node_id)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        Ok(Response::new(node_to_info(&node)))
+    }
+
+    async fn register_node(
+        &self,
+        request: Request<RegisterNodeRequest>,
+    ) -> Result<Response<RegisterNodeResponse>, Status> {
+        let req = request.into_inner();
+        if req.psk.len() != 32 {
+            return Err(Status::invalid_argument(format!(
+                "`psk` must be exactly 32 bytes, got {}",
+                req.psk.len()
+            )));
+        }
+        if req.node_id.is_empty() {
+            return Err(Status::invalid_argument("`node_id` must not be empty"));
+        }
+        let key_hint = req.key_hint as u16;
+        let mut psk = [0u8; 32];
+        psk.copy_from_slice(&req.psk);
+        let record = NodeRecord::new(req.node_id.clone(), key_hint, psk);
+        self.storage
+            .upsert_node(&record)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(RegisterNodeResponse {
+            node_id: req.node_id,
+        }))
+    }
+
+    async fn remove_node(
+        &self,
+        request: Request<RemoveNodeRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let node_id = &request.get_ref().node_id;
+        self.storage
+            .get_node(node_id)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        self.storage
+            .delete_node(node_id)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn ingest_program(
+        &self,
+        request: Request<IngestProgramRequest>,
+    ) -> Result<Response<IngestProgramResponse>, Status> {
+        let req = request.into_inner();
+        let profile = parse_profile(&req.verification_profile)?;
+        let record = self
+            .program_library
+            .ingest(req.elf_data, profile)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let resp = IngestProgramResponse {
+            program_hash: record.hash.clone(),
+            program_size: record.size,
+        };
+        self.storage
+            .store_program(&record)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn list_programs(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ListProgramsResponse>, Status> {
+        let programs = self.storage.list_programs().await.map_err(storage_err)?;
+        let programs = programs
+            .iter()
+            .map(|p| ProgramInfo {
+                hash: p.hash.clone(),
+                size: p.size,
+                verification_profile: profile_to_string(&p.verification_profile),
+            })
+            .collect();
+        Ok(Response::new(ListProgramsResponse { programs }))
+    }
+
+    async fn assign_program(
+        &self,
+        request: Request<AssignProgramRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.get_ref();
+        let mut node = self
+            .storage
+            .get_node(&req.node_id)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found(format!("node `{}` not found", req.node_id)))?;
+        self.storage
+            .get_program(&req.program_hash)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("program not found"))?;
+        node.assigned_program_hash = Some(req.program_hash.clone());
+        self.storage.upsert_node(&node).await.map_err(storage_err)?;
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn remove_program(
+        &self,
+        request: Request<RemoveProgramRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let hash = &request.get_ref().program_hash;
+        self.storage
+            .get_program(hash)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("program not found"))?;
+        self.storage
+            .delete_program(hash)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn set_schedule(
+        &self,
+        request: Request<SetScheduleRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.get_ref();
+        self.storage
+            .get_node(&req.node_id)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found(format!("node `{}` not found", req.node_id)))?;
+        self.pending_commands
+            .write()
+            .await
+            .entry(req.node_id.clone())
+            .or_default()
+            .push(PendingCommand::UpdateSchedule {
+                interval_s: req.interval_s,
+            });
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn queue_reboot(
+        &self,
+        request: Request<QueueRebootRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let node_id = &request.get_ref().node_id;
+        self.storage
+            .get_node(node_id)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        self.pending_commands
+            .write()
+            .await
+            .entry(node_id.clone())
+            .or_default()
+            .push(PendingCommand::Reboot);
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn queue_ephemeral(
+        &self,
+        request: Request<QueueEphemeralRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.get_ref();
+        self.storage
+            .get_node(&req.node_id)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found(format!("node `{}` not found", req.node_id)))?;
+        self.storage
+            .get_program(&req.program_hash)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found("program not found"))?;
+        self.pending_commands
+            .write()
+            .await
+            .entry(req.node_id.clone())
+            .or_default()
+            .push(PendingCommand::RunEphemeral {
+                program_hash: req.program_hash.clone(),
+            });
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn get_node_status(
+        &self,
+        request: Request<GetNodeStatusRequest>,
+    ) -> Result<Response<NodeStatus>, Status> {
+        let node_id = &request.get_ref().node_id;
+        let node = self
+            .storage
+            .get_node(node_id)
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        let has_active_session = self.session_manager.get_session(node_id).await.is_some();
+        let last_seen_ms = node.last_seen.and_then(|t| {
+            t.duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as u64)
+        });
+        Ok(Response::new(NodeStatus {
+            node_id: node.node_id,
+            current_program_hash: node.current_program_hash.unwrap_or_default(),
+            battery_mv: node.last_battery_mv,
+            firmware_abi_version: node.firmware_abi_version,
+            last_seen_ms,
+            has_active_session,
+        }))
+    }
+
+    async fn export_state(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ExportStateResponse>, Status> {
+        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let programs = self.storage.list_programs().await.map_err(storage_err)?;
+
+        let mut buf = Vec::new();
+        ciborium::into_writer(&(&nodes.len(), &programs.len()), &mut buf)
+            .map_err(|e| Status::internal(format!("cbor encode error: {e}")))?;
+        for node in &nodes {
+            let last_seen_ms: Option<u64> = node.last_seen.and_then(|t| {
+                t.duration_since(UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            });
+            ciborium::into_writer(
+                &(
+                    &node.node_id,
+                    node.key_hint,
+                    &node.psk[..],
+                    &node.assigned_program_hash,
+                    &node.current_program_hash,
+                    node.schedule_interval_s,
+                    node.firmware_abi_version,
+                    node.last_battery_mv,
+                    last_seen_ms,
+                ),
+                &mut buf,
+            )
+            .map_err(|e| Status::internal(format!("cbor encode error: {e}")))?;
+        }
+        for program in &programs {
+            let profile_str = profile_to_string(&program.verification_profile);
+            ciborium::into_writer(
+                &(&program.hash, &program.image, program.size, &profile_str),
+                &mut buf,
+            )
+            .map_err(|e| Status::internal(format!("cbor encode error: {e}")))?;
+        }
+        Ok(Response::new(ExportStateResponse { data: buf }))
+    }
+
+    async fn import_state(
+        &self,
+        request: Request<ImportStateRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let data = &request.get_ref().data;
+        let mut cursor = std::io::Cursor::new(data);
+
+        let (node_count, program_count): (usize, usize) = ciborium::from_reader(&mut cursor)
+            .map_err(|e| Status::invalid_argument(format!("cbor decode error: {e}")))?;
+
+        for _ in 0..node_count {
+            let (
+                node_id,
+                key_hint,
+                psk_bytes,
+                assigned_program_hash,
+                current_program_hash,
+                schedule_interval_s,
+                firmware_abi_version,
+                last_battery_mv,
+                last_seen_ms,
+            ): (
+                String,
+                u16,
+                Vec<u8>,
+                Option<Vec<u8>>,
+                Option<Vec<u8>>,
+                u32,
+                Option<u32>,
+                Option<u32>,
+                Option<u64>,
+            ) = ciborium::from_reader(&mut cursor)
+                .map_err(|e| Status::invalid_argument(format!("cbor decode error: {e}")))?;
+
+            if psk_bytes.len() != 32 {
+                return Err(Status::invalid_argument("invalid PSK length in import"));
+            }
+            let mut psk = [0u8; 32];
+            psk.copy_from_slice(&psk_bytes);
+
+            let last_seen =
+                last_seen_ms.map(|ms| UNIX_EPOCH + std::time::Duration::from_millis(ms));
+
+            let record = NodeRecord {
+                node_id,
+                key_hint,
+                psk,
+                assigned_program_hash,
+                current_program_hash,
+                schedule_interval_s,
+                firmware_abi_version,
+                last_battery_mv,
+                last_seen,
+            };
+            self.storage
+                .upsert_node(&record)
+                .await
+                .map_err(storage_err)?;
+        }
+
+        for _ in 0..program_count {
+            let (hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String) =
+                ciborium::from_reader(&mut cursor)
+                    .map_err(|e| Status::invalid_argument(format!("cbor decode error: {e}")))?;
+            let verification_profile = parse_profile(&profile_str)?;
+            let record = crate::program::ProgramRecord {
+                hash,
+                image,
+                size,
+                verification_profile,
+            };
+            self.storage
+                .store_program(&record)
+                .await
+                .map_err(storage_err)?;
+        }
+
+        Ok(Response::new(Empty {}))
+    }
+}

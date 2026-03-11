@@ -140,13 +140,16 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
 
     /// Load an ephemeral program (stored in RAM, not flash).
     ///
-    /// Verifies the hash and decodes the image, but does not write
-    /// to flash or change the active partition.
+    /// Verifies the hash, decodes the image, and validates map definitions
+    /// (type, key_size, budget). Does not write to flash or change the
+    /// active partition. Validation happens before the caller sends
+    /// `PROGRAM_ACK`, so an unrunnable ephemeral program is never ACK'd.
     pub fn load_ephemeral(
         &self,
         image_bytes: &[u8],
         expected_hash: &[u8],
         sha: &impl Sha256Provider,
+        map_budget: usize,
     ) -> NodeResult<LoadedProgram> {
         let actual_hash = sha.hash(image_bytes);
         if actual_hash.as_slice() != expected_hash {
@@ -155,6 +158,17 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
 
         let image = ProgramImage::decode(image_bytes)
             .map_err(|e| NodeError::ProgramDecodeFailed(format!("{}", e)))?;
+
+        // Validate map definitions before returning Ok, so the caller
+        // won't send PROGRAM_ACK for an unrunnable program.
+        crate::map_storage::MapStorage::validate_map_defs(&image.maps)?;
+        let required = crate::map_storage::MapStorage::required_bytes(&image.maps);
+        if required > map_budget {
+            return Err(NodeError::MapBudgetExceeded {
+                required,
+                available: map_budget,
+            });
+        }
 
         Ok(LoadedProgram {
             bytecode: image.bytecode,
@@ -321,7 +335,9 @@ mod tests {
         let (cbor, hash) = make_test_image(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], &[]);
         let mut storage = MockStorage::new();
         let store = ProgramStore::new(&mut storage);
-        let loaded = store.load_ephemeral(&cbor, &hash, &TestSha256).unwrap();
+        let loaded = store
+            .load_ephemeral(&cbor, &hash, &TestSha256, 4096)
+            .unwrap();
         assert!(loaded.is_ephemeral);
         assert_eq!(loaded.hash, hash);
     }
@@ -332,7 +348,7 @@ mod tests {
         let wrong_hash = vec![0xFF; 32];
         let mut storage = MockStorage::new();
         let store = ProgramStore::new(&mut storage);
-        let result = store.load_ephemeral(&cbor, &wrong_hash, &TestSha256);
+        let result = store.load_ephemeral(&cbor, &wrong_hash, &TestSha256, 4096);
         assert!(matches!(result, Err(NodeError::ProgramHashMismatch)));
     }
 

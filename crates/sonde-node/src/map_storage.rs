@@ -215,6 +215,22 @@ impl MapStorage {
         self.maps.len()
     }
 
+    /// Check if the current map layout matches the given definitions.
+    ///
+    /// Returns `true` if the number of maps and each map's definition
+    /// (type, key_size, value_size, max_entries) match exactly. Used
+    /// to detect when re-allocation is needed (e.g. after an ephemeral
+    /// program ran with different map definitions).
+    pub fn layout_matches(&self, map_defs: &[MapDef]) -> bool {
+        if self.maps.len() != map_defs.len() {
+            return false;
+        }
+        self.maps
+            .iter()
+            .zip(map_defs.iter())
+            .all(|(instance, def)| instance.def == *def)
+    }
+
     /// Clear all map data to zero (used on program change).
     pub fn clear_all(&mut self) {
         for map in &mut self.maps {

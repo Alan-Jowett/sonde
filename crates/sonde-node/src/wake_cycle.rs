@@ -180,7 +180,12 @@ where
                     let install_result = {
                         let mut program_store = ProgramStore::new(storage);
                         if is_ephemeral {
-                            program_store.load_ephemeral(&image_bytes, &expected_hash, sha)
+                            program_store.load_ephemeral(
+                                &image_bytes,
+                                &expected_hash,
+                                sha,
+                                map_storage.budget_bytes(),
+                            )
                         } else {
                             program_store.install_resident(
                                 &image_bytes,
@@ -241,7 +246,6 @@ where
 
     // 9. BPF execution
     // Load program if not already loaded from transfer
-    let program_is_new = loaded_program.is_some();
     if loaded_program.is_none() {
         let program_store = ProgramStore::new(storage);
         loaded_program = program_store.load_active(sha);
@@ -254,13 +258,12 @@ where
             ProgramClass::Resident
         };
 
-        // Re-allocate maps only when a new program was installed this
-        // cycle. On a normal NOP wake the caller-owned map_storage
-        // already contains the correct layout with data surviving from
-        // the previous cycle (backed by RTC slow SRAM on real hardware).
-        if (program_is_new || map_storage.map_count() == 0)
-            && map_storage.allocate(&program.map_defs).is_err()
-        {
+        // Re-allocate maps when the layout doesn't match the current
+        // program's definitions. This covers: first boot (map_count==0),
+        // new program installed this cycle, and the cycle after an
+        // ephemeral program ran with different map definitions.
+        let needs_realloc = !map_storage.layout_matches(&program.map_defs);
+        if needs_realloc && map_storage.allocate(&program.map_defs).is_err() {
             // Map budget exceeded. The newly installed resident program
             // is already active (install_resident swapped partitions),
             // so we do not roll back here. This is a firmware-level
@@ -286,7 +289,7 @@ where
             battery_mv as u16
         };
         let ctx = SondeContext {
-            timestamp: timestamp_ms + elapsed_since_command,
+            timestamp: timestamp_ms.saturating_add(elapsed_since_command),
             battery_mv: battery_mv_clamped,
             firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
                 .expect("FIRMWARE_ABI_VERSION must fit in u16"),

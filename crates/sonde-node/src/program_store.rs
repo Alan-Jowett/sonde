@@ -113,6 +113,18 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         self.storage
             .write_program(inactive_partition, image_bytes)?;
 
+        // Re-read the written program and verify its hash to detect
+        // flash write corruption or partial writes before committing
+        // the A/B swap.
+        let written_bytes = self
+            .storage
+            .read_program(inactive_partition)
+            .ok_or_else(|| NodeError::StorageError("failed to re-read written program".into()))?;
+        let written_hash = sha.hash(&written_bytes);
+        if written_hash.as_slice() != expected_hash {
+            return Err(NodeError::ProgramHashMismatch);
+        }
+
         // Flip active partition
         self.storage.write_active_partition(inactive_partition)?;
 

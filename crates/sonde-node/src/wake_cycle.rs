@@ -207,6 +207,9 @@ where
                                     seconds: sleep_mgr.effective_sleep_s(),
                                 };
                             }
+                            if !is_ephemeral {
+                                sleep_mgr.set_wake_reason(WakeReason::ProgramUpdate);
+                            }
                             loaded_program = Some(program);
                         }
                         Err(_) => {
@@ -278,7 +281,7 @@ where
             battery_mv: battery_mv_clamped,
             firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
                 .expect("FIRMWARE_ABI_VERSION must fit in u16"),
-            wake_reason: wake_reason as u8,
+            wake_reason: sleep_mgr.wake_reason() as u8,
             _padding: [0; 3],
         };
 
@@ -655,12 +658,16 @@ pub fn send_app_data<T: Transport>(
 /// The sequence number is consumed after a successful send. On send
 /// failure `current_seq` is not advanced. On recv timeout `current_seq`
 /// remains advanced because the gateway likely received the request.
-pub fn send_recv_app_data<T: Transport>(
+///
+/// An overall deadline is enforced via `clock` so that a stream of
+/// invalid frames cannot keep the node awake indefinitely.
+pub fn send_recv_app_data<T: Transport, C: Clock>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
     blob: &[u8],
     timeout_ms: u32,
+    clock: &C,
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
     let seq = *current_seq;
@@ -687,9 +694,17 @@ pub fn send_recv_app_data<T: Transport>(
     *current_seq += 1;
 
     // Wait for reply: silently discard malformed/unexpected frames until
-    // a valid APP_DATA_REPLY arrives or the timeout expires (ND-0800/ND-0801).
+    // a valid APP_DATA_REPLY arrives or the overall deadline expires
+    // (ND-0800/ND-0801). The deadline prevents a stream of junk frames
+    // from keeping the node awake indefinitely.
+    let deadline = clock.elapsed_ms() + timeout_ms as u64;
     loop {
-        match transport.recv(timeout_ms)? {
+        let now = clock.elapsed_ms();
+        if now >= deadline {
+            return Err(NodeError::Timeout);
+        }
+        let remaining = (deadline - now) as u32;
+        match transport.recv(remaining)? {
             Some(raw_response) => {
                 let decoded = match decode_frame(&raw_response) {
                     Ok(frame) => frame,
@@ -1491,6 +1506,7 @@ mod tests {
             &mut seq,
             &[0xAA, 0xBB],
             RESPONSE_TIMEOUT_MS,
+            &MockClock,
             &TestHmac,
         );
 
@@ -1514,6 +1530,7 @@ mod tests {
             &mut seq,
             &[0x01],
             RESPONSE_TIMEOUT_MS,
+            &MockClock,
             &TestHmac,
         );
 
@@ -1541,6 +1558,7 @@ mod tests {
             &mut seq,
             &[0x01],
             RESPONSE_TIMEOUT_MS,
+            &MockClock,
             &TestHmac,
         );
 

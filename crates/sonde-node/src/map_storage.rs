@@ -70,6 +70,17 @@ impl MapInstance {
 }
 
 /// Manages all map instances for the current program.
+///
+/// **Persistence contract:** On real hardware the caller must keep the
+/// `MapStorage` instance in RTC slow SRAM (or an equivalent sleep-
+/// persistent region) so that map contents survive deep sleep (ND-0603).
+/// The current implementation uses heap-backed `Vec` storage, which is
+/// suitable for host-based testing. The ESP-IDF platform layer will
+/// replace this with a fixed RTC SRAM buffer at integration time.
+///
+/// `run_wake_cycle()` accepts `&mut MapStorage` from the caller and only
+/// re-allocates maps when a new program is installed (not every cycle),
+/// preserving map data across normal wake/sleep transitions.
 pub struct MapStorage {
     maps: Vec<MapInstance>,
     budget_bytes: usize,

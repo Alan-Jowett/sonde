@@ -5,7 +5,7 @@
 > **Document status:** Draft
 > **Scope:** Wire-level protocol between the Sonde gateway and a USB-attached ESP-NOW radio modem.
 > **Audience:** Implementers building the gateway transport adapter or the modem firmware.
-> **Related:** [protocol.md](protocol.md), [gateway-design.md](gateway-design.md), [gateway-requirements.md](gateway-requirements.md)
+> **Related:** [modem-requirements.md](modem-requirements.md), [protocol.md](protocol.md), [gateway-design.md](gateway-design.md)
 
 ---
 
@@ -14,15 +14,13 @@
 The gateway runs on a host computer that has no ESP-NOW radio hardware. An ESP32-S3 connected via USB acts as a **radio modem** — a transparent bridge between the host and the ESP-NOW wireless network:
 
 ```
-┌──────────┐   USB-CDC   ┌──────────────┐  ESP-NOW  ┌─────────────┐
-│  Gateway  │◄──────────►│  ESP32-S3     │◄ ─ ─ ─ ─►│  Sensor Node │
-│  (host)   │   serial    │  Radio Modem │   radio   │  (ESP32-C3)  │
-└──────────┘             └──────────────┘           └─────────────┘
+┌──────────┐   USB-CDC   ┌──────────────┐  ESP-NOW  ┌──────────────┐
+│  Gateway │◄───────────►│  ESP32-S3    │◄ ─ ─ ─ ─ ►│  Sensor Node │
+│  (host)  │   serial    │  Radio Modem │   radio   │  (ESP32-C3)  │
+└──────────┘             └──────────────┘           └──────────────┘
 ```
 
 The modem is **protocol-unaware**: it does not perform HMAC verification, CBOR parsing, session management, or any cryptographic operation. It relays opaque byte frames between USB and radio, adding only the peer MAC address and RSSI metadata.
-
-This protocol defines the serial framing and message types used on the USB-CDC link between the gateway and the modem.
 
 ### 1.1  Design principles
 
@@ -233,148 +231,3 @@ Reports an unrecoverable modem error. The gateway should log this and may attemp
 | 0x02 | `WIFI_INIT_FAILED` | WiFi stack initialization failed. |
 | 0x03 | `CHANNEL_SET_FAILED` | Failed to set the requested channel. |
 | 0xFF | `UNKNOWN` | Unclassified error. |
-
----
-
-## 5  Modem firmware behavior
-
-This section describes the expected behavior of the modem firmware. The modem is a simple bidirectional bridge with no awareness of the Sonde node–gateway protocol.
-
-### 5.1  Initialization sequence
-
-1. Initialize USB-CDC ACM device.
-2. Initialize WiFi in station mode.
-3. Initialize ESP-NOW on the default channel (channel 1).
-4. Register the ESP-NOW receive callback to forward frames to USB.
-5. Send `MODEM_READY` to the gateway.
-
-The modem MUST send `MODEM_READY` within 2 seconds of USB enumeration.
-
-### 5.2  Receive path (radio → USB)
-
-When the ESP-NOW receive callback fires:
-
-1. Extract the sender MAC address and RSSI from the callback parameters.
-2. Construct a `RECV_FRAME` message with `peer_mac`, `rssi`, and `frame_data`.
-3. Write the length-prefixed frame to USB-CDC.
-
-Frames MUST be forwarded in the order received. The modem MUST NOT buffer, reorder, filter, or modify frame data.
-
-### 5.3  Send path (USB → radio)
-
-When a `SEND_FRAME` message is received from the gateway:
-
-1. If `peer_mac` is not in the ESP-NOW peer table, auto-register it.
-2. If the peer table is full (~20 entries), evict the least-recently-used peer.
-3. Call `esp_now_send(peer_mac, frame_data, len)`.
-4. On the send callback: increment `tx_count`. If delivery failed, also increment `tx_fail_count`.
-
-### 5.4  Channel scanning
-
-When a `SCAN_CHANNELS` command is received:
-
-1. Call `esp_wifi_scan_start()` with `channel = 0` (scan all channels).
-2. Wait for scan completion.
-3. Call `esp_wifi_scan_get_ap_records()` to retrieve AP details.
-4. Aggregate results per channel: count APs and find the strongest RSSI.
-5. Send `SCAN_RESULT` to the gateway.
-
-Scanning uses `esp_wifi_scan_start()` which temporarily interrupts ESP-NOW reception. The modem resumes normal operation after the scan completes.
-
-### 5.5  Reset behavior
-
-On receiving a `RESET` command or on detecting a USB-CDC reconnection:
-
-1. De-initialize ESP-NOW.
-2. Clear the peer table.
-3. Reset all counters (`tx_count`, `rx_count`, `tx_fail_count`, `uptime_s`).
-4. Re-initialize ESP-NOW on channel 1.
-5. Reset the receive-side framing parser (for synchronization recovery, see §2.3).
-6. Send `MODEM_READY`.
-
-### 5.6  USB disconnection
-
-If the USB-CDC connection is lost, the modem MUST:
-
-- Continue running (do not reset or power down).
-- Discard any incoming ESP-NOW frames (nowhere to forward them).
-- On reconnection, re-send `MODEM_READY`.
-
----
-
-## 6  Gateway transport adapter
-
-The gateway implements its `Transport` trait using a `UsbEspNowTransport` adapter that speaks this serial protocol.
-
-### 6.1  Mapping to the Transport trait
-
-```rust
-#[async_trait]
-pub trait Transport: Send + Sync {
-    async fn recv(&self) -> Result<(Vec<u8>, PeerAddress), TransportError>;
-    async fn send(&self, frame: &[u8], peer: &PeerAddress) -> Result<(), TransportError>;
-}
-```
-
-| Transport method | Serial protocol mapping |
-|------------------|------------------------|
-| `recv()` | Read frames from the serial port, filter for `RECV_FRAME` messages. Return `(frame_data, peer_mac)`. Other message types (e.g., `STATUS`, `ERROR`) are handled internally by the adapter. |
-| `send(frame, peer)` | Construct a `SEND_FRAME` message with `peer_mac = peer` and `frame_data = frame`. Write to the serial port. Return immediately (fire-and-forget). |
-
-### 6.2  Startup sequence
-
-1. Open the serial port (USB-CDC device path from gateway config).
-2. Send `RESET`.
-3. Wait for `MODEM_READY` (with timeout).
-4. Extract the modem's MAC address from `MODEM_READY` for logging.
-5. Send `SET_CHANNEL` with the configured channel.
-6. Wait for `SET_CHANNEL_ACK`.
-7. Begin normal operation (call `recv()` / `send()` as needed).
-
-### 6.3  Periodic health check
-
-The adapter polls `GET_STATUS` periodically (recommended: every 30 seconds) and logs:
-- `tx_fail_count` delta since last poll (indicates radio delivery problems).
-- `uptime_s` (detects unexpected modem reboots if uptime resets).
-
----
-
-## 7  Testing over PTY
-
-The length-prefixed protocol is transport-agnostic. For end-to-end gateway testing without hardware:
-
-```
-┌──────────┐   PTY master   ┌─────────────────┐
-│  Gateway  │◄──────────────►│  MockModem       │
-│  (under   │   PTY slave    │  (test harness)  │
-│   test)   │                │                  │
-└──────────┘                └─────────────────┘
-```
-
-A `MockModem` test harness speaks this serial protocol on a PTY. It can:
-
-- Send `MODEM_READY` on connection.
-- Inject `RECV_FRAME` messages (simulating inbound node traffic).
-- Consume `SEND_FRAME` messages (capturing gateway responses for assertions).
-- Respond to `GET_STATUS`, `SET_CHANNEL`, and `SCAN_CHANNELS`.
-- Simulate error conditions (`ERROR`, delayed `MODEM_READY`, USB disconnection).
-
-This enables full gateway integration tests — WAKE → COMMAND → chunked transfer → PROGRAM_ACK — over the real `UsbEspNowTransport` code path with no radio hardware.
-
----
-
-## 8  Code sharing
-
-### 8.1  Serial protocol codec (`sonde-protocol`)
-
-The frame envelope encoder/decoder and message type definitions are `no_std` compatible and live in the `sonde-protocol` crate (new `modem` module). This ensures wire-format compatibility between the gateway and modem firmware, both of which depend on `sonde-protocol`.
-
-### 8.2  ESP-NOW driver (shared between `sonde-modem` and `sonde-node`)
-
-Both the modem firmware and the node firmware need ESP-NOW send/receive functionality. A shared ESP-NOW abstraction layer provides:
-
-- WiFi + ESP-NOW initialization.
-- Send with auto peer registration and LRU eviction.
-- Receive callback registration.
-
-The modem adds channel scanning and USB bridging. The node adds wake-cycle integration and key storage. The shared layer avoids duplicating platform-specific ESP-IDF bindings.

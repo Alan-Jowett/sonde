@@ -22,7 +22,7 @@ esp-idf-svc = { version = "0.50", features = ["binstart"], optional = true }
 esp-idf-sys = { version = "0.36", features = ["binstart"], optional = true }
 
 [build-dependencies]
-embuild = { version = "0.32", optional = true }
+embuild = { version = "0.33", optional = true }
 
 [dev-dependencies]
 sonde-protocol = { path = "../sonde-protocol" }

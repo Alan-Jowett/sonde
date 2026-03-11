@@ -63,7 +63,11 @@ impl EspNowDriver {
                 };
 
                 if let Ok(mut q) = rx_clone.lock() {
-                    q.push(frame);
+                    // Cap the queue to prevent unbounded memory growth
+                    // if USB is disconnected or the host can't keep up.
+                    if q.len() < 64 {
+                        q.push(frame);
+                    }
                 }
                 counters_clone.inc_rx();
             })

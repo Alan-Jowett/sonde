@@ -253,7 +253,7 @@ pub struct ModemError {
 /// Returns `Err(EncodeTooLong)` if the encoded body exceeds the protocol
 /// maximum (`SERIAL_MAX_LEN` minus 1 byte for the TYPE field).
 pub fn encode_modem_frame(msg: &ModemMessage) -> Result<Vec<u8>, ModemCodecError> {
-    let (msg_type, body) = encode_body(msg);
+    let (msg_type, body) = encode_body(msg)?;
     let total_len = 1 + body.len(); // TYPE + BODY
     if total_len > SERIAL_MAX_LEN as usize {
         return Err(ModemCodecError::EncodeTooLong);
@@ -266,32 +266,46 @@ pub fn encode_modem_frame(msg: &ModemMessage) -> Result<Vec<u8>, ModemCodecError
     Ok(frame)
 }
 
-fn encode_body(msg: &ModemMessage) -> (u8, Vec<u8>) {
+fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
     match msg {
-        ModemMessage::Reset => (MODEM_MSG_RESET, Vec::new()),
+        ModemMessage::Reset => Ok((MODEM_MSG_RESET, Vec::new())),
         ModemMessage::SendFrame(sf) => {
+            if sf.frame_data.is_empty() || sf.frame_data.len() > ESPNOW_MAX_DATA_SIZE {
+                return Err(ModemCodecError::BodyTooLong {
+                    msg_type: MODEM_MSG_SEND_FRAME,
+                    expected_max: ESPNOW_MAX_DATA_SIZE,
+                    actual: sf.frame_data.len(),
+                });
+            }
             let mut body = Vec::with_capacity(MAC_SIZE + sf.frame_data.len());
             body.extend_from_slice(&sf.peer_mac);
             body.extend_from_slice(&sf.frame_data);
-            (MODEM_MSG_SEND_FRAME, body)
+            Ok((MODEM_MSG_SEND_FRAME, body))
         }
-        ModemMessage::SetChannel(ch) => (MODEM_MSG_SET_CHANNEL, alloc::vec![*ch]),
-        ModemMessage::GetStatus => (MODEM_MSG_GET_STATUS, Vec::new()),
-        ModemMessage::ScanChannels => (MODEM_MSG_SCAN_CHANNELS, Vec::new()),
+        ModemMessage::SetChannel(ch) => Ok((MODEM_MSG_SET_CHANNEL, alloc::vec![*ch])),
+        ModemMessage::GetStatus => Ok((MODEM_MSG_GET_STATUS, Vec::new())),
+        ModemMessage::ScanChannels => Ok((MODEM_MSG_SCAN_CHANNELS, Vec::new())),
         ModemMessage::ModemReady(mr) => {
             let mut body = Vec::with_capacity(MODEM_READY_BODY_SIZE);
             body.extend_from_slice(&mr.firmware_version);
             body.extend_from_slice(&mr.mac_address);
-            (MODEM_MSG_MODEM_READY, body)
+            Ok((MODEM_MSG_MODEM_READY, body))
         }
         ModemMessage::RecvFrame(rf) => {
+            if rf.frame_data.is_empty() || rf.frame_data.len() > ESPNOW_MAX_DATA_SIZE {
+                return Err(ModemCodecError::BodyTooLong {
+                    msg_type: MODEM_MSG_RECV_FRAME,
+                    expected_max: ESPNOW_MAX_DATA_SIZE,
+                    actual: rf.frame_data.len(),
+                });
+            }
             let mut body = Vec::with_capacity(MAC_SIZE + 1 + rf.frame_data.len());
             body.extend_from_slice(&rf.peer_mac);
             body.push(rf.rssi as u8);
             body.extend_from_slice(&rf.frame_data);
-            (MODEM_MSG_RECV_FRAME, body)
+            Ok((MODEM_MSG_RECV_FRAME, body))
         }
-        ModemMessage::SetChannelAck(ch) => (MODEM_MSG_SET_CHANNEL_ACK, alloc::vec![*ch]),
+        ModemMessage::SetChannelAck(ch) => Ok((MODEM_MSG_SET_CHANNEL_ACK, alloc::vec![*ch])),
         ModemMessage::Status(s) => {
             let mut body = Vec::with_capacity(STATUS_BODY_SIZE);
             body.push(s.channel);
@@ -299,7 +313,7 @@ fn encode_body(msg: &ModemMessage) -> (u8, Vec<u8>) {
             body.extend_from_slice(&s.tx_count.to_be_bytes());
             body.extend_from_slice(&s.rx_count.to_be_bytes());
             body.extend_from_slice(&s.tx_fail_count.to_be_bytes());
-            (MODEM_MSG_STATUS, body)
+            Ok((MODEM_MSG_STATUS, body))
         }
         ModemMessage::ScanResult(sr) => {
             let count = core::cmp::min(sr.entries.len(), u8::MAX as usize);
@@ -310,15 +324,15 @@ fn encode_body(msg: &ModemMessage) -> (u8, Vec<u8>) {
                 body.push(entry.ap_count);
                 body.push(entry.strongest_rssi as u8);
             }
-            (MODEM_MSG_SCAN_RESULT, body)
+            Ok((MODEM_MSG_SCAN_RESULT, body))
         }
         ModemMessage::Error(e) => {
             let mut body = Vec::with_capacity(1 + e.message.len());
             body.push(e.error_code);
             body.extend_from_slice(&e.message);
-            (MODEM_MSG_ERROR, body)
+            Ok((MODEM_MSG_ERROR, body))
         }
-        ModemMessage::Unknown { msg_type, body } => (*msg_type, body.clone()),
+        ModemMessage::Unknown { msg_type, body } => Ok((*msg_type, body.clone())),
     }
 }
 
@@ -354,25 +368,63 @@ pub fn decode_modem_frame(data: &[u8]) -> Result<ModemMessage, ModemCodecError> 
     decode_typed_message(msg_type, body)
 }
 
+/// Validate that `body` has exactly `expected` bytes.
+fn check_exact_body(msg_type: u8, body: &[u8], expected: usize) -> Result<(), ModemCodecError> {
+    if body.len() < expected {
+        return Err(ModemCodecError::BodyTooShort {
+            msg_type,
+            expected_min: expected,
+            actual: body.len(),
+        });
+    }
+    if body.len() > expected {
+        return Err(ModemCodecError::BodyTooLong {
+            msg_type,
+            expected_max: expected,
+            actual: body.len(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate that `body.len()` is within `[min, max]`.
+fn check_body_range(
+    msg_type: u8,
+    body: &[u8],
+    min: usize,
+    max: usize,
+) -> Result<(), ModemCodecError> {
+    if body.len() < min {
+        return Err(ModemCodecError::BodyTooShort {
+            msg_type,
+            expected_min: min,
+            actual: body.len(),
+        });
+    }
+    if body.len() > max {
+        return Err(ModemCodecError::BodyTooLong {
+            msg_type,
+            expected_max: max,
+            actual: body.len(),
+        });
+    }
+    Ok(())
+}
+
 fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, ModemCodecError> {
     match msg_type {
-        MODEM_MSG_RESET => Ok(ModemMessage::Reset),
+        MODEM_MSG_RESET => {
+            check_exact_body(msg_type, body, 0)?;
+            Ok(ModemMessage::Reset)
+        }
 
         MODEM_MSG_SEND_FRAME => {
-            if body.len() < SEND_FRAME_MIN_BODY_SIZE {
-                return Err(ModemCodecError::BodyTooShort {
-                    msg_type,
-                    expected_min: SEND_FRAME_MIN_BODY_SIZE,
-                    actual: body.len(),
-                });
-            }
-            if body.len() > SEND_FRAME_MAX_BODY_SIZE {
-                return Err(ModemCodecError::BodyTooLong {
-                    msg_type,
-                    expected_max: SEND_FRAME_MAX_BODY_SIZE,
-                    actual: body.len(),
-                });
-            }
+            check_body_range(
+                msg_type,
+                body,
+                SEND_FRAME_MIN_BODY_SIZE,
+                SEND_FRAME_MAX_BODY_SIZE,
+            )?;
             let mut peer_mac = [0u8; MAC_SIZE];
             peer_mac.copy_from_slice(&body[..MAC_SIZE]);
             let frame_data = body[MAC_SIZE..].to_vec();
@@ -383,28 +435,22 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
         }
 
         MODEM_MSG_SET_CHANNEL => {
-            if body.is_empty() {
-                return Err(ModemCodecError::BodyTooShort {
-                    msg_type,
-                    expected_min: 1,
-                    actual: 0,
-                });
-            }
+            check_exact_body(msg_type, body, 1)?;
             Ok(ModemMessage::SetChannel(body[0]))
         }
 
-        MODEM_MSG_GET_STATUS => Ok(ModemMessage::GetStatus),
+        MODEM_MSG_GET_STATUS => {
+            check_exact_body(msg_type, body, 0)?;
+            Ok(ModemMessage::GetStatus)
+        }
 
-        MODEM_MSG_SCAN_CHANNELS => Ok(ModemMessage::ScanChannels),
+        MODEM_MSG_SCAN_CHANNELS => {
+            check_exact_body(msg_type, body, 0)?;
+            Ok(ModemMessage::ScanChannels)
+        }
 
         MODEM_MSG_MODEM_READY => {
-            if body.len() < MODEM_READY_BODY_SIZE {
-                return Err(ModemCodecError::BodyTooShort {
-                    msg_type,
-                    expected_min: MODEM_READY_BODY_SIZE,
-                    actual: body.len(),
-                });
-            }
+            check_exact_body(msg_type, body, MODEM_READY_BODY_SIZE)?;
             let mut firmware_version = [0u8; 4];
             firmware_version.copy_from_slice(&body[..4]);
             let mut mac_address = [0u8; MAC_SIZE];
@@ -416,20 +462,12 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
         }
 
         MODEM_MSG_RECV_FRAME => {
-            if body.len() < RECV_FRAME_MIN_BODY_SIZE {
-                return Err(ModemCodecError::BodyTooShort {
-                    msg_type,
-                    expected_min: RECV_FRAME_MIN_BODY_SIZE,
-                    actual: body.len(),
-                });
-            }
-            if body.len() > RECV_FRAME_MAX_BODY_SIZE {
-                return Err(ModemCodecError::BodyTooLong {
-                    msg_type,
-                    expected_max: RECV_FRAME_MAX_BODY_SIZE,
-                    actual: body.len(),
-                });
-            }
+            check_body_range(
+                msg_type,
+                body,
+                RECV_FRAME_MIN_BODY_SIZE,
+                RECV_FRAME_MAX_BODY_SIZE,
+            )?;
             let mut peer_mac = [0u8; MAC_SIZE];
             peer_mac.copy_from_slice(&body[..MAC_SIZE]);
             let rssi = body[MAC_SIZE] as i8;
@@ -442,24 +480,12 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
         }
 
         MODEM_MSG_SET_CHANNEL_ACK => {
-            if body.is_empty() {
-                return Err(ModemCodecError::BodyTooShort {
-                    msg_type,
-                    expected_min: 1,
-                    actual: 0,
-                });
-            }
+            check_exact_body(msg_type, body, 1)?;
             Ok(ModemMessage::SetChannelAck(body[0]))
         }
 
         MODEM_MSG_STATUS => {
-            if body.len() < STATUS_BODY_SIZE {
-                return Err(ModemCodecError::BodyTooShort {
-                    msg_type,
-                    expected_min: STATUS_BODY_SIZE,
-                    actual: body.len(),
-                });
-            }
+            check_exact_body(msg_type, body, STATUS_BODY_SIZE)?;
             let channel = body[0];
             let uptime_s = u32::from_be_bytes([body[1], body[2], body[3], body[4]]);
             let tx_count = u32::from_be_bytes([body[5], body[6], body[7], body[8]]);
@@ -483,14 +509,23 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
                 });
             }
             let count = body[0] as usize;
-            let entries_data = &body[1..];
-            if entries_data.len() < count * 3 {
-                return Err(ModemCodecError::BodyTooShort {
-                    msg_type,
-                    expected_min: 1 + count * 3,
-                    actual: body.len(),
-                });
+            let expected_len = 1 + count * 3;
+            if body.len() != expected_len {
+                if body.len() < expected_len {
+                    return Err(ModemCodecError::BodyTooShort {
+                        msg_type,
+                        expected_min: expected_len,
+                        actual: body.len(),
+                    });
+                } else {
+                    return Err(ModemCodecError::BodyTooLong {
+                        msg_type,
+                        expected_max: expected_len,
+                        actual: body.len(),
+                    });
+                }
             }
+            let entries_data = &body[1..];
             let mut entries = Vec::with_capacity(count);
             for i in 0..count {
                 let offset = i * 3;

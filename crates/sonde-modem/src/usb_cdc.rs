@@ -26,11 +26,12 @@ impl UsbCdcDriver {
         info!("USB-CDC initialized");
         Self {
             serial,
-            connected: Arc::new(AtomicBool::new(true)),
+            // Start disconnected; will flip to true when first bytes arrive.
+            connected: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Returns true if the USB host has the port open (DTR asserted).
+    /// Returns true if we have recently exchanged data successfully.
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }

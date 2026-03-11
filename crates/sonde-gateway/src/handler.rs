@@ -336,34 +336,22 @@ impl HandlerProcess {
     }
 
     fn ensure_running(&mut self) -> io::Result<()> {
-        let (needs_spawn, prev_crashed) = match &mut self.child {
-            Some(child) => match child.try_wait()? {
-                Some(status) => {
-                    let crashed = !status.success();
-                    if crashed {
-                        error!(
-                            command = %self.config.command,
-                            exit_code = ?status.code(),
-                            "handler exited with non-zero status"
-                        );
-                    }
-                    self.stdin = None;
-                    self.stdout_reader = None;
-                    self.child = None;
-                    (true, crashed)
+        if let Some(child) = &mut self.child {
+            if let Some(status) = child.try_wait()? {
+                if !status.success() {
+                    error!(
+                        command = %self.config.command,
+                        exit_code = ?status.code(),
+                        "handler exited with non-zero status"
+                    );
                 }
-                None => (false, false),
-            },
-            None => (true, false),
-        };
-
-        // If the handler crashed (non-zero exit), fail this request.
-        // The handler will be respawned on the *next* request.
-        if prev_crashed {
-            return Err(io::Error::other("handler crashed with non-zero exit"));
+                self.stdin = None;
+                self.stdout_reader = None;
+                self.child = None;
+            }
         }
 
-        if needs_spawn {
+        if self.child.is_none() {
             let mut child = Command::new(&self.config.command)
                 .args(&self.config.args)
                 .stdin(Stdio::piped())
@@ -386,7 +374,7 @@ impl HandlerProcess {
     /// with a matching `request_id`, or `None` on handler crash / mismatch.
     pub async fn send_data(&mut self, msg: &HandlerMessage) -> Option<HandlerMessage> {
         if let Err(e) = self.ensure_running() {
-            error!(error = %e, "failed to spawn handler");
+            error!(error = %e, command = %self.config.command, "handler process unavailable");
             return None;
         }
 
@@ -531,18 +519,19 @@ impl HandlerProcess {
                 break;
             }
 
-            // Data is available — safe to read a full frame (won't block
-            // indefinitely because we know bytes are buffered).
-            match read_message(reader).await {
-                Ok(HandlerMessage::Log { level, message }) => match level.as_str() {
+            // Data is available — read a full frame. Wrap in a short timeout
+            // in case the handler wrote a partial frame and stalled.
+            match tokio::time::timeout(Duration::from_secs(2), read_message(reader)).await {
+                Ok(Ok(HandlerMessage::Log { level, message })) => match level.as_str() {
                     "error" => error!(handler = %self.config.command, "{message}"),
                     "warn" => warn!(handler = %self.config.command, "{message}"),
                     "info" => info!(handler = %self.config.command, "{message}"),
                     "debug" => debug!(handler = %self.config.command, "{message}"),
                     _ => debug!(handler = %self.config.command, level = %level, "{message}"),
                 },
-                Ok(_) => {}
-                Err(_) => {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => {
+                    // Read error or timeout mid-frame — stream is corrupt, kill child
                     self.kill_child().await;
                     break;
                 }

@@ -36,10 +36,11 @@ const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
 #[cfg(test)]
 const DEFAULT_MAP_BUDGET: usize = 4096;
 
-/// Maximum allowed program image size in bytes. Protects against
-/// excessive allocation from a large (but authenticated) `program_size`
-/// in the COMMAND payload. Derived from the flash partition size (4 KB).
-const MAX_PROGRAM_IMAGE_SIZE: usize = 4096;
+/// Maximum resident program image size (4 KB, matches flash partition).
+const MAX_RESIDENT_IMAGE_SIZE: usize = 4096;
+
+/// Maximum ephemeral program image size (2 KB, stored in RAM).
+const MAX_EPHEMERAL_IMAGE_SIZE: usize = 2048;
 
 /// Outcome of a wake cycle.
 #[derive(Debug, PartialEq)]
@@ -162,6 +163,12 @@ where
             chunk_count,
             ..
         } => {
+            let max_image_size = if is_ephemeral {
+                MAX_EPHEMERAL_IMAGE_SIZE
+            } else {
+                MAX_RESIDENT_IMAGE_SIZE
+            };
+
             // Chunked transfer
             let transfer_result = chunked_transfer(
                 transport,
@@ -170,6 +177,7 @@ where
                 program_size,
                 chunk_size,
                 chunk_count,
+                max_image_size,
                 clock,
                 hmac,
             );
@@ -258,19 +266,31 @@ where
             ProgramClass::Resident
         };
 
-        // Re-allocate maps when the layout doesn't match the current
-        // program's definitions. This covers: first boot (map_count==0),
-        // new program installed this cycle, and the cycle after an
-        // ephemeral program ran with different map definitions.
-        let needs_realloc = !map_storage.layout_matches(&program.map_defs);
-        if needs_realloc && map_storage.allocate(&program.map_defs).is_err() {
-            // Map budget exceeded. The newly installed resident program
-            // is already active (install_resident swapped partitions),
-            // so we do not roll back here. This is a firmware-level
-            // configuration issue.
-            return WakeCycleOutcome::Sleep {
-                seconds: sleep_mgr.effective_sleep_s(),
-            };
+        if program.is_ephemeral {
+            // Ephemeral programs use the existing resident map layout
+            // (read-only access only, per ND-0503 / bpf-environment §2.2).
+            // They must not declare their own maps — reject if they do,
+            // as re-allocating would destroy the resident program's
+            // sleep-persistent map state.
+            if !program.map_defs.is_empty() {
+                return WakeCycleOutcome::Sleep {
+                    seconds: sleep_mgr.effective_sleep_s(),
+                };
+            }
+        } else {
+            // For resident programs, re-allocate maps when the layout
+            // doesn't match. Covers first boot, new program install, and
+            // recovery after an ephemeral cycle.
+            let needs_realloc = !map_storage.layout_matches(&program.map_defs);
+            if needs_realloc && map_storage.allocate(&program.map_defs).is_err() {
+                // Map budget exceeded. The newly installed resident program
+                // is already active (install_resident swapped partitions),
+                // so we do not roll back here. This is a firmware-level
+                // configuration issue.
+                return WakeCycleOutcome::Sleep {
+                    seconds: sleep_mgr.effective_sleep_s(),
+                };
+            }
         }
 
         // Resolve LDDW map references
@@ -445,6 +465,7 @@ fn chunked_transfer<T: Transport, C: Clock>(
     program_size: u32,
     chunk_size: u32,
     chunk_count: u32,
+    max_image_size: usize,
     clock: &C,
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
@@ -452,10 +473,10 @@ fn chunked_transfer<T: Transport, C: Clock>(
     let chunk_size_usize = chunk_size as usize;
 
     // Reject transfers that exceed the maximum program image size
-    if program_size_usize > MAX_PROGRAM_IMAGE_SIZE {
+    if program_size_usize > max_image_size {
         return Err(NodeError::MalformedPayload(format!(
             "program_size {} exceeds maximum {}",
-            program_size, MAX_PROGRAM_IMAGE_SIZE
+            program_size, max_image_size
         )));
     }
 
@@ -644,9 +665,9 @@ fn send_program_ack<T: Transport>(
 /// `transport.send()` fails, `current_seq` is not advanced so the
 /// gateway's expected sequence stays in sync.
 ///
-/// Rejects payloads that exceed the frame payload budget after CBOR
-/// encoding (the encoded size includes map overhead, not just the
-/// raw blob length).
+/// Rejects payloads that exceed the frame payload budget. A pre-check
+/// on blob length avoids allocating for obviously oversized inputs;
+/// the exact check is done after CBOR encoding.
 pub fn send_app_data<T: Transport>(
     transport: &mut T,
     identity: &NodeIdentity,
@@ -654,6 +675,14 @@ pub fn send_app_data<T: Transport>(
     blob: &[u8],
     hmac: &impl HmacProvider,
 ) -> NodeResult<()> {
+    // Fast pre-check: blob alone exceeds payload budget (CBOR overhead
+    // only makes it larger), so reject before allocating.
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA blob exceeds frame payload budget".into(),
+        ));
+    }
+
     let seq = *current_seq;
 
     let msg = NodeMessage::AppData {
@@ -701,6 +730,14 @@ pub fn send_recv_app_data<T: Transport, C: Clock>(
     clock: &C,
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
+    // Fast pre-check: blob alone exceeds payload budget, reject before
+    // allocating.
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA blob exceeds frame payload budget".into(),
+        ));
+    }
+
     let seq = *current_seq;
 
     let msg = NodeMessage::AppData {

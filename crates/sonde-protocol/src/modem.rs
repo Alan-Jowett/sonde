@@ -338,7 +338,10 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             Ok((MODEM_MSG_STATUS, body))
         }
         ModemMessage::ScanResult(sr) => {
-            let count = core::cmp::min(sr.entries.len(), u8::MAX as usize);
+            // Max body = SERIAL_MAX_LEN - 1 (TYPE) = 511 bytes.
+            // Body = 1 (count) + count * 3 (entries), so max count = (511 - 1) / 3 = 170.
+            let max_entries = core::cmp::min(u8::MAX as usize, 170);
+            let count = core::cmp::min(sr.entries.len(), max_entries);
             let mut body = Vec::with_capacity(1 + count * 3);
             body.push(count as u8);
             for entry in sr.entries.iter().take(count) {
@@ -364,13 +367,10 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
 
 /// Decode a complete serial frame (LEN || TYPE || BODY) into a `ModemMessage`.
 ///
-/// Returns `Err(EmptyFrame)` if `len` = 0, `Err(FrameTooLarge)` if `len` > 512.
-/// Unknown message types are returned as `ModemMessage::Unknown`.
-/// Decode a complete serial frame (LEN || TYPE || BODY) into a `ModemMessage`.
-///
-/// Decodes the first frame from `data` based on the LEN prefix. If `data`
-/// contains more bytes than one frame, the trailing bytes are ignored — use
-/// `bytes_consumed()` or the streaming `FrameDecoder` for multi-frame input.
+/// Decodes the first frame from `data` based on the LEN prefix. Returns
+/// `(message, bytes_consumed)`. If `data` contains trailing bytes beyond
+/// the first frame, they are not consumed — use the returned byte count
+/// or the streaming `FrameDecoder` for multi-frame input.
 ///
 /// Returns `Err(EmptyFrame)` if `len` = 0, `Err(FrameTooLarge)` if `len` > 512.
 /// Unknown message types are returned as `ModemMessage::Unknown`.

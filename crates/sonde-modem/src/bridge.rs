@@ -31,7 +31,8 @@ pub trait SerialPort {
     fn read(&mut self, buf: &mut [u8]) -> (usize, bool);
     /// Write bytes to the serial port. Always attempts the write so
     /// critical messages (e.g., MODEM_READY) are never silently dropped.
-    fn write(&mut self, data: &[u8]);
+    /// Returns true if the write succeeded.
+    fn write(&mut self, data: &[u8]) -> bool;
     /// Returns true if the last I/O operation succeeded.
     fn is_connected(&self) -> bool;
 }
@@ -74,13 +75,15 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
         }
     }
 
-    /// Encode and write a modem message to the serial port. Firmware-generated
-    /// messages are always within size limits, so encoding failures are logged
-    /// but otherwise ignored.
-    fn send_msg(&mut self, msg: &ModemMessage) {
+    /// Encode and write a modem message to the serial port. Returns true
+    /// if the write succeeded.
+    fn send_msg(&mut self, msg: &ModemMessage) -> bool {
         match encode_modem_frame(msg) {
             Ok(frame) => self.usb.write(&frame),
-            Err(e) => warn!("encode error: {}", e),
+            Err(e) => {
+                warn!("encode error: {}", e);
+                false
+            }
         }
     }
 
@@ -142,8 +145,9 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
         let rx_frames = self.radio.drain_rx();
         for rf in rx_frames {
             let msg = ModemMessage::RecvFrame(rf);
-            self.send_msg(&msg);
-            self.counters.inc_rx();
+            if self.send_msg(&msg) {
+                self.counters.inc_rx();
+            }
         }
     }
 
@@ -250,8 +254,9 @@ mod tests {
             self.rx_data.drain(..n);
             (n, false)
         }
-        fn write(&mut self, data: &[u8]) {
+        fn write(&mut self, data: &[u8]) -> bool {
             self.tx_data.extend_from_slice(data);
+            true
         }
         fn is_connected(&self) -> bool {
             self.connected

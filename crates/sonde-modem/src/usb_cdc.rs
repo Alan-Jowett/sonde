@@ -59,15 +59,17 @@ impl UsbCdcDriver {
     /// Write bytes to the USB transmit buffer.
     /// Always attempts the write so critical messages like MODEM_READY
     /// are sent even when the connection state is uncertain. Updates
-    /// `connected` based on the result.
-    pub fn write(&mut self, data: &[u8]) {
+    /// `connected` based on the result. Returns true on success.
+    pub fn write(&mut self, data: &[u8]) -> bool {
         match self.serial.write_all(data) {
             Ok(()) => {
                 self.connected.store(true, Ordering::Relaxed);
+                true
             }
             Err(e) => {
                 warn!("USB-CDC write error: {:?}", e);
                 self.connected.store(false, Ordering::Relaxed);
+                false
             }
         }
     }

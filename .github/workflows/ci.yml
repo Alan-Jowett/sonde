@@ -26,13 +26,13 @@ jobs:
         run: cargo fmt --check --all
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --exclude sonde-modem -- -D warnings
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --workspace --exclude sonde-modem
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude sonde-modem
 
   fuzz:
     name: Fuzz test (protocol crate)

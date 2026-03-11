@@ -501,10 +501,8 @@ impl HandlerProcess {
         self.drain_stdout().await;
     }
 
-    /// Drain pending stdout messages (LOG) without blocking. Uses a short
-    /// timeout so we don't stall if the handler has nothing to send.
-    /// If the timeout fires mid-frame, kill the child to avoid desynchronized
-    /// framing state.
+    /// Drain pending stdout messages (LOG) without blocking. Caps at 16
+    /// messages to prevent unbounded draining if the handler emits continuously.
     async fn drain_stdout(&mut self) {
         let reader = match self.stdout_reader.as_mut() {
             Some(r) => r,
@@ -512,7 +510,9 @@ impl HandlerProcess {
         };
 
         let drain_timeout = Duration::from_millis(100);
-        loop {
+        const MAX_DRAIN_MESSAGES: usize = 16;
+
+        for _ in 0..MAX_DRAIN_MESSAGES {
             match tokio::time::timeout(drain_timeout, read_message(reader)).await {
                 Ok(Ok(HandlerMessage::Log { level, message })) => match level.as_str() {
                     "error" => error!(handler = %self.config.command, "{message}"),

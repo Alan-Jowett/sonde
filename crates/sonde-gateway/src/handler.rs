@@ -501,37 +501,49 @@ impl HandlerProcess {
         self.drain_stdout().await;
     }
 
-    /// Drain pending stdout messages (LOG) without blocking. Caps at 16
-    /// messages to prevent unbounded draining if the handler emits continuously.
+    /// Drain pending stdout messages (LOG) without blocking. Uses `fill_buf()`
+    /// to peek for available data before committing to a full frame read,
+    /// avoiding the risk of cancelling `read_message` mid-frame and
+    /// desynchronizing the stream. Caps at 16 messages.
     async fn drain_stdout(&mut self) {
         let reader = match self.stdout_reader.as_mut() {
             Some(r) => r,
             None => return,
         };
 
-        let drain_timeout = Duration::from_millis(100);
         const MAX_DRAIN_MESSAGES: usize = 16;
+        let peek_timeout = Duration::from_millis(50);
 
         for _ in 0..MAX_DRAIN_MESSAGES {
-            match tokio::time::timeout(drain_timeout, read_message(reader)).await {
-                Ok(Ok(HandlerMessage::Log { level, message })) => match level.as_str() {
+            // Peek: check if any bytes are buffered or available without
+            // consuming them. If fill_buf times out, nothing is pending.
+            let has_data = match tokio::time::timeout(
+                peek_timeout,
+                tokio::io::AsyncBufReadExt::fill_buf(reader),
+            )
+            .await
+            {
+                Ok(Ok(buf)) => !buf.is_empty(),
+                _ => false,
+            };
+
+            if !has_data {
+                break;
+            }
+
+            // Data is available — safe to read a full frame (won't block
+            // indefinitely because we know bytes are buffered).
+            match read_message(reader).await {
+                Ok(HandlerMessage::Log { level, message }) => match level.as_str() {
                     "error" => error!(handler = %self.config.command, "{message}"),
                     "warn" => warn!(handler = %self.config.command, "{message}"),
                     "info" => info!(handler = %self.config.command, "{message}"),
                     "debug" => debug!(handler = %self.config.command, "{message}"),
                     _ => debug!(handler = %self.config.command, level = %level, "{message}"),
                 },
-                Ok(Ok(_)) => {
-                    // Unexpected message type during drain — ignore
-                }
-                Ok(Err(_)) => {
-                    // Read/decode error — framing may be corrupt, kill child
-                    self.kill_child().await;
-                    break;
-                }
+                Ok(_) => {}
                 Err(_) => {
-                    // Timeout — no more messages pending, stop draining.
-                    // This is the normal case when no stdout data is available.
+                    self.kill_child().await;
                     break;
                 }
             }

@@ -650,8 +650,11 @@ impl FrameDecoder {
         }
 
         if len > SERIAL_MAX_LEN {
-            // Framing error — do NOT consume bytes (value is untrusted).
-            // Caller must send RESET and call `reset()`.
+            // Framing error — the len value is untrusted so we cannot skip
+            // that many bytes. Clear the entire buffer to avoid getting stuck
+            // returning FrameTooLarge on every subsequent decode() call.
+            // The caller should send RESET to resynchronize.
+            self.buf.clear();
             return Err(ModemCodecError::FrameTooLarge(len));
         }
 
@@ -978,8 +981,8 @@ mod tests {
         decoder.push(&[0xFF, 0xFF]); // len = 65535
         let err = decoder.decode().unwrap_err();
         assert_eq!(err, ModemCodecError::FrameTooLarge(65535));
-        // Buffer is NOT drained (caller must reset)
-        assert_eq!(decoder.buffered(), 2);
+        // Buffer is cleared to avoid getting stuck.
+        assert_eq!(decoder.buffered(), 0);
     }
 
     #[test]

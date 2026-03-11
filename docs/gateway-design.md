@@ -159,7 +159,7 @@ Constructs a `SEND_FRAME` envelope (`peer_mac || frame_data`) and writes it to t
 
 **`recv()` implementation:**
 
-Awaits the next `RECV_FRAME` from the async channel. Returns `(frame_data, peer_mac.to_vec())`. RSSI is available but not surfaced through the `Transport` trait (logged internally for diagnostics).
+Awaits the next `RECV_FRAME` from the async channel. Returns `(frame_data, peer_mac)`, where `peer_mac` is the `PeerAddress` obtained by converting the modem's 6-byte MAC address at the adapter boundary. RSSI is available but not surfaced through the `Transport` trait (logged internally for diagnostics).
 
 ---
 

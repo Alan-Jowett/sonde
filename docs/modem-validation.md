@@ -70,15 +70,20 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
-### T-0102  Serial framing — valid frame
+### T-0102  Serial framing — valid frame and max length
 
-**Validates:** MD-0101
+**Validates:** MD-0101, MD-0102
 
 **Procedure:**
 1. Send `RESET` to the modem.
 2. Wait for `MODEM_READY`.
 3. Send `GET_STATUS`.
 4. Assert: response is a well-formed `STATUS` message with correct `LEN || TYPE || BODY` envelope.
+5. Construct a well-formed serial frame with `len` = 512 (maximum allowed). Use `type` = 0x7F (unknown) and 511 bytes of padding as body.
+6. Send the `len` = 512 frame to the modem.
+7. Assert: modem silently discards the unknown type (no crash, no `ERROR`).
+8. Send `GET_STATUS`.
+9. Assert: `STATUS` response is received (framing remains synchronized after max-length frame).
 
 ---
 
@@ -167,7 +172,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
-### T-0204  Frame ordering preserved
+### T-0204  Frame ordering preserved (radio → USB)
 
 **Validates:** MD-0205
 
@@ -181,6 +186,23 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
    - At least 2 sequential payloads were observed to make the ordering check meaningful.
 
 **Note:** ESP-NOW may drop frames under adverse RF conditions. The test validates ordering of delivered frames, not guaranteed delivery.
+
+---
+
+### T-0204a  Frame ordering preserved (USB → radio)
+
+**Validates:** MD-0205
+
+**Procedure:**
+1. Send `RESET`, wait for `MODEM_READY`.
+2. Send `SET_CHANNEL(CH)` to match the radio peer; wait for `SET_CHANNEL_ACK(CH)`.
+3. Send 10 `SEND_FRAME` messages with sequential payload values (0x01 through 0x0A) to the radio peer's MAC.
+4. Have the radio peer collect received ESP-NOW frames for a bounded period.
+5. From the collected frames, extract payload values and assert that:
+   - The sequence of observed payloads is strictly increasing (no reordering or duplicates).
+   - At least 2 sequential payloads were observed.
+
+**Note:** Same loss-tolerant approach as T-0204.
 
 ---
 
@@ -281,7 +303,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0400  SEND_FRAME with body too short
 
-**Validates:** MD-0202
+**Validates:** modem-protocol.md §6.1
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -294,7 +316,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0401  SET_CHANNEL with invalid channel
 
-**Validates:** MD-0206
+**Validates:** modem-protocol.md §6.1
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -339,21 +361,22 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 |----|-------|-----------|
 | T-0100 | USB-CDC device enumeration | MD-0100 |
 | T-0101 | MODEM_READY on boot | MD-0104 |
-| T-0102 | Serial framing — valid frame | MD-0101 |
+| T-0102 | Serial framing — valid frame and max length | MD-0101, MD-0102 |
 | T-0103 | Serial framing — oversized len | MD-0102 |
 | T-0104 | Unknown message type | MD-0103 |
 | T-0200 | Frame forwarding — radio to USB | MD-0201, MD-0205 |
 | T-0201 | Frame transmission — USB to radio | MD-0202 |
 | T-0202 | Automatic peer registration | MD-0203 |
 | T-0203 | Peer table LRU eviction | MD-0204 |
-| T-0204 | Frame ordering preserved | MD-0205 |
+| T-0204 | Frame ordering preserved (radio → USB) | MD-0205 |
+| T-0204a | Frame ordering preserved (USB → radio) | MD-0205 |
 | T-0205 | Channel change | MD-0206 |
 | T-0206 | Channel scanning | MD-0207 |
 | T-0300 | RESET clears state | MD-0300 |
 | T-0301 | USB-CDC serial link drop and reconnection | MD-0301 |
 | T-0302 | Status counter accuracy | MD-0303 |
 | T-0303 | MODEM_READY after RESET | MD-0300, MD-0104 |
-| T-0400 | SEND_FRAME with body too short | MD-0202 |
-| T-0401 | SET_CHANNEL with invalid channel | MD-0206 |
+| T-0400 | SEND_FRAME with body too short | modem-protocol.md §6.1 |
+| T-0401 | SET_CHANNEL with invalid channel | modem-protocol.md §6.1 |
 | T-0402 | Framing error recovery | MD-0102 |
 | T-0500 | Modem does not interpret frame contents | §6 Non-requirements |

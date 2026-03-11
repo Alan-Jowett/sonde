@@ -75,7 +75,7 @@ The CDC receive callback is invoked when the host writes data. Received bytes ar
 
 ### 4.3  Write path
 
-Outbound frames (e.g., `RECV_FRAME`, `MODEM_READY`) are written to the USB-CDC TX endpoint. Writes block if the TX buffer is full (back-pressure from the host).
+Outbound frames (e.g., `RECV_FRAME`, `MODEM_READY`) are enqueued into a TX ring buffer from any producer context (including ESP-NOW receive callbacks). The main loop drains this buffer and writes to the USB-CDC TX endpoint. If the host-side TX buffer is full, the main loop retries with back-pressure, but callbacks never perform blocking USB writes.
 
 ### 4.4  Disconnection detection
 

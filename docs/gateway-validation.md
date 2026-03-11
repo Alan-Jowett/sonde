@@ -920,7 +920,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Complete startup.
 3. Call `Transport::send(frame, peer_mac)`.
 4. Assert: the mock modem receives a well-formed `SEND_FRAME` message with the correct `peer_mac` and `frame_data`.
-5. Assert: `send()` returns immediately (fire-and-forget, no response awaited).
+5. Assert: `send()` does not wait for any modem response or RF delivery acknowledgement before completing (fire-and-forget).
 
 ---
 

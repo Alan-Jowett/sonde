@@ -123,8 +123,8 @@ The adapter spawns a serial reader task that demultiplexes incoming modem messag
 
 ```rust
 pub struct UsbEspNowTransport {
-    /// Async serial port (e.g., tokio-serial).
-    port: Arc<Mutex<AsyncSerialPort>>,
+    /// Async serial port (e.g., tokio_serial::SerialStream).
+    port: Arc<Mutex<Box<dyn AsyncRead + AsyncWrite + Send + Unpin>>>,
     /// Channel for RECV_FRAME messages from the serial reader task.
     recv_rx: mpsc::Receiver<(Vec<u8>, PeerAddress)>,
     /// Modem's MAC address (from MODEM_READY).
@@ -135,12 +135,12 @@ pub struct UsbEspNowTransport {
 **Startup sequence (GW-1101):**
 
 1. Open the serial port (device path from configuration).
-2. Send `RESET`.
-3. Wait for `MODEM_READY` (timeout: 5 seconds, up to 3 retries).
-4. Extract `firmware_version` and `mac_address` from `MODEM_READY`; log both.
-5. Send `SET_CHANNEL` with the configured channel.
-6. Wait for `SET_CHANNEL_ACK` (timeout: 2 seconds).
-7. Start the serial reader task.
+2. Start the serial reader task (it demultiplexes all incoming frames, including `MODEM_READY` and `SET_CHANNEL_ACK`, and routes them to the appropriate pending futures).
+3. Send `RESET`.
+4. Wait for `MODEM_READY` (timeout: 5 seconds, up to 3 retries).
+5. Extract `firmware_version` and `mac_address` from `MODEM_READY`; log both.
+6. Send `SET_CHANNEL` with the configured channel.
+7. Wait for `SET_CHANNEL_ACK` (timeout: 2 seconds).
 8. Start the health monitor task.
 
 **Health monitor (GW-1102):**
@@ -155,7 +155,7 @@ On `ERROR` from the modem, the adapter logs the error code and message. If the e
 
 **`send()` implementation:**
 
-Constructs a `SEND_FRAME` envelope (`peer_mac || frame_data`) and writes it to the serial port. Returns immediately — fire-and-forget. The 250-byte ESP-NOW frame limit is enforced by the modem.
+Constructs a `SEND_FRAME` envelope (`peer_mac || frame_data`) and writes it to the serial port. Does not wait for any modem or radio delivery acknowledgement — fire-and-forget at the radio layer, while still awaiting the serial write as needed. The 250-byte ESP-NOW frame limit is enforced by the modem.
 
 **`recv()` implementation:**
 

@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-The Sonde codebase is a Rust workspace containing five crates. This document defines the workspace layout and the order in which crates and modules should be implemented and tested.
+The Sonde codebase is a Rust workspace that will contain five crates. This document defines the target workspace layout and the order in which crates and modules should be implemented and tested.
 
 **Key principle:** Each phase produces a working, tested artifact before the next phase begins. An LLM agent should complete one phase (including passing all validation tests for that phase) before moving to the next.
 

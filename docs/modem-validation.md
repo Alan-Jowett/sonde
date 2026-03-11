@@ -156,10 +156,14 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
-2. Send `SEND_FRAME` to 21 unique MAC addresses (exceeds ~20 peer limit).
-3. Assert: modem does not crash or return errors.
-4. Send `SEND_FRAME` to the 1st MAC again.
-5. Assert: frame is transmitted (peer was re-registered after eviction).
+2. Send `SEND_FRAME` to 21 unique MAC addresses (exceeds ~20 peer limit). Since most of these MACs have no real radio peer, the modem may report send failures — this is expected. The test validates peer table management, not delivery.
+3. Assert: modem does not crash or send `ERROR`.
+4. Send `GET_STATUS`.
+5. Assert: `tx_count` = 21 (all sends were attempted despite evictions).
+6. Send `SEND_FRAME` to the 1st MAC again (which was evicted).
+7. Assert: `tx_count` increments (peer was re-registered after eviction).
+
+**Note:** For a stronger test, use a test firmware build with a reduced peer table capacity (e.g., 3 entries) so eviction can be validated with a small number of real radio peers.
 
 ---
 
@@ -168,9 +172,15 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Validates:** MD-0205
 
 **Procedure:**
-1. Have the radio peer send 10 ESP-NOW frames with sequential payload values (0x01 through 0x0A).
-2. Collect all 10 `RECV_FRAME` messages from USB.
-3. Assert: payloads arrive in order (0x01, 0x02, ..., 0x0A).
+1. Send `RESET`, wait for `MODEM_READY`.
+2. Send `SET_CHANNEL(CH)` to match the radio peer; wait for `SET_CHANNEL_ACK(CH)`.
+3. Have the radio peer send 10 ESP-NOW frames with sequential payload values (0x01 through 0x0A) on channel CH.
+4. Collect `RECV_FRAME` messages from USB for a bounded period (until no new frames arrive for 500ms, or after a maximum timeout).
+5. From the collected `RECV_FRAME` messages, extract payload values and assert that:
+   - The sequence of observed payloads is strictly increasing (no reordering or duplicates).
+   - At least 2 sequential payloads were observed to make the ordering check meaningful.
+
+**Note:** ESP-NOW may drop frames under adverse RF conditions. The test validates ordering of delivered frames, not guaranteed delivery.
 
 ---
 

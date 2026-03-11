@@ -54,6 +54,11 @@ pub enum WakeCycleOutcome {
 ///
 /// This is the top-level function that orchestrates the entire wake cycle.
 /// It is generic over all platform traits so it can be tested on the host.
+///
+/// `map_storage` is caller-owned and backed by sleep-persistent memory
+/// (RTC slow SRAM on ESP32). The caller preserves it across deep sleep
+/// so that map contents survive between wake cycles. This function only
+/// re-allocates maps when a new program is installed.
 #[allow(clippy::too_many_arguments)]
 pub fn run_wake_cycle<T, S, H, R, C, B, I>(
     transport: &mut T,
@@ -63,6 +68,7 @@ pub fn run_wake_cycle<T, S, H, R, C, B, I>(
     clock: &C,
     battery: &B,
     interpreter: &mut I,
+    map_storage: &mut MapStorage,
     hmac: &impl HmacProvider,
     sha: &impl Sha256Provider,
 ) -> WakeCycleOutcome
@@ -221,6 +227,7 @@ where
 
     // 9. BPF execution
     // Load program if not already loaded from transfer
+    let program_is_new = loaded_program.is_some();
     if loaded_program.is_none() {
         let program_store = ProgramStore::new(storage);
         loaded_program = program_store.load_active(sha);
@@ -233,13 +240,17 @@ where
             ProgramClass::Resident
         };
 
-        // Allocate maps
-        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
-        if map_storage.allocate(&program.map_defs).is_err() {
-            // Map budget exceeded — sleep (existing program remains active
-            // because install_resident already swapped partitions; on next
-            // boot the old program's maps should fit, but if this is the
-            // newly installed program, it's a firmware-level issue).
+        // Re-allocate maps only when a new program was installed this
+        // cycle. On a normal NOP wake the caller-owned map_storage
+        // already contains the correct layout with data surviving from
+        // the previous cycle (backed by RTC slow SRAM on real hardware).
+        if (program_is_new || map_storage.map_count() == 0)
+            && map_storage.allocate(&program.map_defs).is_err()
+        {
+            // Map budget exceeded. The newly installed resident program
+            // is already active (install_resident swapped partitions),
+            // so we do not roll back here. This is a firmware-level
+            // configuration issue.
             return WakeCycleOutcome::Sleep {
                 seconds: sleep_mgr.effective_sleep_s(),
             };
@@ -263,7 +274,8 @@ where
         let ctx = SondeContext {
             timestamp: timestamp_ms + elapsed_since_command,
             battery_mv: battery_mv_clamped,
-            firmware_abi_version: FIRMWARE_ABI_VERSION as u16,
+            firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
+                .expect("FIRMWARE_ABI_VERSION must fit in u16"),
             wake_reason: wake_reason as u8,
             _padding: [0; 3],
         };
@@ -1010,6 +1022,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1019,6 +1032,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1040,6 +1054,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1049,6 +1064,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1080,6 +1096,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1089,6 +1106,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1119,6 +1137,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1128,6 +1147,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1156,6 +1176,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1165,6 +1186,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1200,6 +1222,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1209,6 +1232,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1236,6 +1260,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1245,6 +1270,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1306,6 +1332,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1315,6 +1342,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1360,6 +1388,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1369,6 +1398,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );
@@ -1413,6 +1443,7 @@ mod tests {
         let mut rng = MockRng(0);
         let clock = MockClock;
         let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
             &mut transport,
@@ -1422,6 +1453,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp,
+            &mut map_storage,
             &TestHmac,
             &TestSha256,
         );

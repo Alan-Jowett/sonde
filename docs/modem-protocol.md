@@ -106,7 +106,7 @@ All multi-byte integers are big-endian unless otherwise stated.
 
 ### 4.1  SEND_FRAME (Gateway → Modem)
 
-Transmit `frame_data` to the specified peer via ESP-NOW. The modem auto-registers unknown peer MACs transparently (see §5.3). This is a fire-and-forget operation — no per-frame response is sent. Delivery failures are counted in `tx_fail_count` (see §4.6).
+Transmit `frame_data` to the specified peer via ESP-NOW. The modem auto-registers unknown peer MACs transparently. This is a fire-and-forget operation — no per-frame response is sent. Delivery failures are counted in `tx_fail_count` (see §4.6).
 
 ```
 ┌──────────────────┬──────────────────────────────────┐
@@ -231,3 +231,160 @@ Reports an unrecoverable modem error. The gateway should log this and may attemp
 | 0x02 | `WIFI_INIT_FAILED` | WiFi stack initialization failed. |
 | 0x03 | `CHANNEL_SET_FAILED` | Failed to set the requested channel. |
 | 0xFF | `UNKNOWN` | Unclassified error. |
+
+---
+
+## 5  Message flows
+
+### 5.1  Startup
+
+```
+Gateway                          Modem
+   │                               │
+   │──── [open serial port] ──────►│
+   │                               │
+   │◄──── MODEM_READY ────────────│  (auto on USB enumeration)
+   │                               │
+   │──── SET_CHANNEL(ch) ────────►│
+   │◄──── SET_CHANNEL_ACK(ch) ───│
+   │                               │
+   │  ════ normal operation ════   │
+```
+
+If the gateway opens a port that was already active (hot-plug, restart), it sends `RESET` first and waits for `MODEM_READY` (see §2.3).
+
+### 5.2  Normal operation (frame relay)
+
+During normal operation, two independent flows run concurrently:
+
+**Inbound (radio → gateway):** The modem sends `RECV_FRAME` whenever an ESP-NOW frame arrives. These are asynchronous — they can arrive at any time, interleaved with responses to gateway commands.
+
+```
+Gateway                          Modem
+   │                               │
+   │◄──── RECV_FRAME ────────────│  (node sent a WAKE)
+   │                               │
+   │──── SEND_FRAME ─────────────►│  (gateway sends COMMAND)
+   │                               │
+   │◄──── RECV_FRAME ────────────│  (node sent GET_CHUNK)
+   │──── SEND_FRAME ─────────────►│  (gateway sends CHUNK)
+   │          ⋮                    │
+```
+
+**Outbound (gateway → radio):** The gateway sends `SEND_FRAME` which the modem transmits immediately. No per-frame response is expected.
+
+### 5.3  Health check
+
+```
+Gateway                          Modem
+   │                               │
+   │──── GET_STATUS ──────────────►│
+   │◄──── STATUS ─────────────────│
+   │                               │
+```
+
+The gateway polls periodically (recommended: every 30 seconds). A rising `tx_fail_count` indicates radio delivery problems.
+
+### 5.4  Channel survey
+
+```
+Gateway                          Modem
+   │                               │
+   │──── SCAN_CHANNELS ──────────►│
+   │        (radio scanning        │
+   │         ~2–3 seconds)         │
+   │◄──── SCAN_RESULT ───────────│
+   │                               │
+```
+
+ESP-NOW reception is interrupted during the scan. This flow is only used during setup or maintenance.
+
+### 5.5  Error recovery
+
+```
+Gateway                          Modem
+   │                               │
+   │◄──── ERROR(code, msg) ──────│
+   │                               │
+   │──── RESET ──────────────────►│
+   │◄──── MODEM_READY ───────────│
+   │──── SET_CHANNEL(ch) ────────►│
+   │◄──── SET_CHANNEL_ACK(ch) ───│
+   │                               │
+```
+
+On `ERROR`, the gateway logs the error and sends `RESET` to attempt recovery.
+
+---
+
+## 6  Error handling
+
+### 6.1  Invalid frames
+
+| Condition | Receiver behavior |
+|-----------|-------------------|
+| `len` = 0 | Silently discard. |
+| `len` > 512 | Silently discard; skip `len` bytes to resynchronize. |
+| Unknown `type` | Silently discard (forward compatibility). |
+| `SEND_FRAME` body < 7 bytes (no MAC + data) | Modem silently discards. |
+| `SET_CHANNEL` with `channel` = 0 or > 14 | Modem sends `ERROR` with code `CHANNEL_SET_FAILED`. |
+
+### 6.2  Missing responses
+
+The gateway expects responses for request-response commands. If a response is not received within the timeout (§7), the gateway should:
+
+1. Log the timeout.
+2. Send `RESET` and re-run the startup sequence (§5.1).
+
+`SEND_FRAME` is fire-and-forget and has no expected response — it cannot time out.
+
+### 6.3  USB disconnection
+
+If the USB-CDC link drops:
+
+- **Modem side:** Continues running, discards inbound ESP-NOW frames, re-sends `MODEM_READY` on reconnection.
+- **Gateway side:** Detects the serial port closure, logs the event, and re-opens the port when available. On reconnection, sends `RESET` and re-runs startup (§5.1).
+
+### 6.4  Unsolicited messages
+
+The modem may send `RECV_FRAME` or `ERROR` at any time, interleaved with responses to gateway commands. The gateway's serial reader must demultiplex:
+
+- `RECV_FRAME` → deliver to the `Transport::recv()` caller.
+- `ERROR` → log and optionally trigger recovery.
+- Expected response (e.g., `STATUS`, `SET_CHANNEL_ACK`) → deliver to the waiting command.
+
+---
+
+## 7  Timing
+
+| Event | Timeout | Action on timeout |
+|-------|---------|-------------------|
+| `MODEM_READY` after `RESET` or port open | 5 seconds | Log error, retry `RESET` (up to 3 attempts), then fail. |
+| `SET_CHANNEL_ACK` after `SET_CHANNEL` | 2 seconds | Log error, send `RESET`, re-run startup. |
+| `STATUS` after `GET_STATUS` | 2 seconds | Log warning, skip this poll cycle. |
+| `SCAN_RESULT` after `SCAN_CHANNELS` | 10 seconds | Log error (scan may have failed). |
+
+`SEND_FRAME` and `RECV_FRAME` have no timeouts — sends are fire-and-forget, and receives are asynchronous events.
+
+The gateway does not retry individual commands (other than `RESET`). If a command fails, the recovery path is always: `RESET` → `MODEM_READY` → `SET_CHANNEL` → resume.
+
+---
+
+## 8  Protocol evolution
+
+### 8.1  Forward compatibility
+
+Both sides MUST silently discard frames with unrecognized `type` values. This allows either side to be upgraded independently — a newer gateway can send new command types to an older modem without breaking it, and vice versa.
+
+### 8.2  Version detection
+
+The `firmware_version` field in `MODEM_READY` allows the gateway to detect the modem firmware version and adjust behavior if needed (e.g., skip `SCAN_CHANNELS` if the modem predates that feature).
+
+### 8.3  Reserved type ranges
+
+| Range | Purpose |
+|-------|---------|
+| 0x01 – 0x0F | Core commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS) |
+| 0x10 – 0x7F | Reserved for future gateway → modem commands |
+| 0x81 – 0x8F | Core events/responses |
+| 0x90 – 0xFF | Reserved for future modem → gateway messages |

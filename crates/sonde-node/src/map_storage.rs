@@ -84,6 +84,11 @@ impl MapStorage {
         }
     }
 
+    /// Get the configured memory budget in bytes.
+    pub fn budget_bytes(&self) -> usize {
+        self.budget_bytes
+    }
+
     /// Calculate the total storage required for a set of map definitions.
     /// Returns `None` if arithmetic overflows (malformed map definitions).
     fn required_bytes_checked(map_defs: &[MapDef]) -> Option<usize> {

@@ -32,6 +32,8 @@ const RESPONSE_TIMEOUT_MS: u32 = 50;
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
 
 /// Default map budget in bytes (~4 KB for ESP32-C3 after firmware overhead).
+/// Used by tests; production code receives the budget via `MapStorage`.
+#[cfg(test)]
 const DEFAULT_MAP_BUDGET: usize = 4096;
 
 /// Maximum allowed program image size in bytes. Protects against
@@ -184,7 +186,7 @@ where
                                 &image_bytes,
                                 &expected_hash,
                                 sha,
-                                DEFAULT_MAP_BUDGET,
+                                map_storage.budget_bytes(),
                             )
                         }
                     };
@@ -505,7 +507,6 @@ fn get_chunk_with_retry<T: Transport, C: Clock>(
         }
 
         let attempt_seq = *current_seq;
-        *current_seq += 1;
 
         let header = FrameHeader {
             key_hint: identity.key_hint,
@@ -517,6 +518,7 @@ fn get_chunk_with_retry<T: Transport, C: Clock>(
             .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
         transport.send(&frame)?;
+        *current_seq += 1;
 
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
             Some(raw_response) => {
@@ -684,33 +686,41 @@ pub fn send_recv_app_data<T: Transport>(
     // if the reply is lost or times out.
     *current_seq += 1;
 
-    // Wait for reply
-    match transport.recv(timeout_ms)? {
-        Some(raw_response) => {
-            let decoded = decode_frame(&raw_response)
-                .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+    // Wait for reply: silently discard malformed/unexpected frames until
+    // a valid APP_DATA_REPLY arrives or the timeout expires (ND-0800/ND-0801).
+    loop {
+        match transport.recv(timeout_ms)? {
+            Some(raw_response) => {
+                let decoded = match decode_frame(&raw_response) {
+                    Ok(frame) => frame,
+                    Err(_) => continue,
+                };
 
-            if !verify_frame(&decoded, &identity.psk, hmac) {
-                return Err(NodeError::AuthFailure);
+                if !verify_frame(&decoded, &identity.psk, hmac) {
+                    continue;
+                }
+
+                if decoded.header.msg_type != MSG_APP_DATA_REPLY {
+                    continue;
+                }
+
+                if decoded.header.nonce != seq {
+                    continue;
+                }
+
+                let gateway_msg =
+                    match GatewayMessage::decode(decoded.header.msg_type, &decoded.payload) {
+                        Ok(msg) => msg,
+                        Err(_) => continue,
+                    };
+
+                match gateway_msg {
+                    GatewayMessage::AppDataReply { blob } => return Ok(blob),
+                    _ => continue,
+                }
             }
-
-            if decoded.header.msg_type != MSG_APP_DATA_REPLY {
-                return Err(NodeError::UnexpectedMsgType(decoded.header.msg_type));
-            }
-
-            if decoded.header.nonce != seq {
-                return Err(NodeError::ResponseBindingMismatch);
-            }
-
-            let gateway_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload)
-                .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
-
-            match gateway_msg {
-                GatewayMessage::AppDataReply { blob } => Ok(blob),
-                _ => Err(NodeError::UnexpectedMsgType(decoded.header.msg_type)),
-            }
+            None => return Err(NodeError::Timeout),
         }
-        None => Err(NodeError::Timeout),
     }
 }
 
@@ -1517,9 +1527,11 @@ mod tests {
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
 
-        // Reply echoes wrong seq (99 instead of 20)
+        // Reply echoes wrong seq (99 instead of 20) — silently discarded
         let reply = build_app_data_reply(&psk, key_hint, 99, &[0x01]);
         transport.queue_response(Some(reply));
+        // Next recv returns None → timeout
+        transport.queue_response(None);
 
         let identity = NodeIdentity { key_hint, psk };
         let mut seq = 20u64;
@@ -1532,6 +1544,7 @@ mod tests {
             &TestHmac,
         );
 
-        assert!(matches!(result, Err(NodeError::ResponseBindingMismatch)));
+        // Wrong-nonce frame is discarded per ND-0800/ND-0801; falls through to timeout
+        assert!(matches!(result, Err(NodeError::Timeout)));
     }
 }

@@ -382,12 +382,15 @@ impl Gateway {
             .ok()?
             .into_iter()
             .find(|n| n.node_id == node.node_id)?;
-        let program_hash = fresh_node.current_program_hash.unwrap_or_default();
+        let program_hash = match fresh_node.current_program_hash {
+            Some(hash) => hash,
+            None => return None,
+        };
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u64;
+            .as_secs();
 
         let reply_data = router
             .route_app_data(&node.node_id, &program_hash, &blob, timestamp, header.nonce)

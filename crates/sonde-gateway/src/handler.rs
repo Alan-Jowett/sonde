@@ -4,14 +4,16 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::process::Stdio;
+use std::time::Duration;
 
 use ciborium::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 const MAX_MESSAGE_SIZE: u32 = 1_048_576;
+const HANDLER_TIMEOUT: Duration = Duration::from_secs(30);
 
 const MSG_TYPE_DATA: u64 = 0x01;
 const MSG_TYPE_EVENT: u64 = 0x02;
@@ -331,7 +333,14 @@ impl HandlerProcess {
     fn ensure_running(&mut self) -> io::Result<()> {
         let needs_spawn = match &mut self.child {
             Some(child) => match child.try_wait()? {
-                Some(_status) => {
+                Some(status) => {
+                    if !status.success() {
+                        error!(
+                            command = %self.config.command,
+                            exit_code = ?status.code(),
+                            "handler exited with non-zero status"
+                        );
+                    }
                     self.stdin = None;
                     self.stdout_reader = None;
                     self.child = None;
@@ -382,39 +391,66 @@ impl HandlerProcess {
         }
 
         let reader = self.stdout_reader.as_mut()?;
-        loop {
-            match read_message(reader).await {
-                Ok(HandlerMessage::Log { level, message }) => match level.as_str() {
-                    "error" => error!(handler = %self.config.command, "{message}"),
-                    "warn" => warn!(handler = %self.config.command, "{message}"),
-                    "debug" => debug!(handler = %self.config.command, "{message}"),
-                    _ => debug!(handler = %self.config.command, level = %level, "{message}"),
-                },
-                Ok(reply @ HandlerMessage::DataReply { .. }) => {
-                    if let HandlerMessage::DataReply { request_id, .. } = &reply {
-                        if *request_id != expected_request_id {
-                            warn!(
-                                expected = expected_request_id,
-                                got = *request_id,
-                                "handler reply request_id mismatch — discarding"
-                            );
-                            return None;
+        let result = tokio::time::timeout(HANDLER_TIMEOUT, async {
+            loop {
+                match read_message(reader).await {
+                    Ok(HandlerMessage::Log { level, message }) => match level.as_str() {
+                        "error" => error!(handler = %self.config.command, "{message}"),
+                        "warn" => warn!(handler = %self.config.command, "{message}"),
+                        "info" => info!(handler = %self.config.command, "{message}"),
+                        "debug" => debug!(handler = %self.config.command, "{message}"),
+                        _ => debug!(handler = %self.config.command, level = %level, "{message}"),
+                    },
+                    Ok(reply @ HandlerMessage::DataReply { .. }) => {
+                        if let HandlerMessage::DataReply { request_id, .. } = &reply {
+                            if *request_id != expected_request_id {
+                                warn!(
+                                    expected = expected_request_id,
+                                    got = *request_id,
+                                    "handler reply request_id mismatch — discarding"
+                                );
+                                return None;
+                            }
                         }
+                        return Some(reply);
                     }
-                    return Some(reply);
-                }
-                Ok(other) => {
-                    warn!(msg_type = ?other, "unexpected message type from handler — ignoring");
-                }
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::UnexpectedEof {
-                        debug!("handler process closed stdout");
-                    } else {
-                        error!(error = %e, "error reading from handler stdout");
+                    Ok(other) => {
+                        warn!(msg_type = ?other, "unexpected message type from handler — ignoring");
                     }
-                    self.check_exit_status().await;
-                    return None;
+                    Err(e) => {
+                        return if e.kind() == io::ErrorKind::UnexpectedEof {
+                            None // caller will check exit status
+                        } else {
+                            Some(HandlerMessage::Log {
+                                level: "_read_error".to_string(),
+                                message: e.to_string(),
+                            })
+                        };
+                    }
                 }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Some(HandlerMessage::Log { level, message })) if level == "_read_error" => {
+                error!(error = %message, "error reading from handler stdout — killing child");
+                self.kill_child().await;
+                None
+            }
+            Ok(Some(reply)) => Some(reply),
+            Ok(None) => {
+                self.check_exit_status().await;
+                None
+            }
+            Err(_) => {
+                error!(
+                    command = %self.config.command,
+                    timeout_secs = HANDLER_TIMEOUT.as_secs(),
+                    "handler timed out — killing child"
+                );
+                self.kill_child().await;
+                None
             }
         }
     }
@@ -548,7 +584,7 @@ impl HandlerRouter {
         }
     }
 
-    /// Route an EVENT to all handlers matching the given program hash.
+    /// Broadcast an EVENT to all configured handlers.
     pub async fn route_event(
         &self,
         node_id: &str,

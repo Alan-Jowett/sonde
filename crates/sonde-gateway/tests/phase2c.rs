@@ -1369,12 +1369,12 @@ async fn t0511_request_id_mismatch_discarded() {
     assert!(resp.is_none(), "mismatched request_id must suppress reply");
 }
 
-/// T-0512: EVENT forwarding on WAKE — handler receives `node_online` event.
-/// Smoke test: verifies the gateway can route events without panicking.
-/// (Full event verification would require inspecting handler stdin, which is
-/// impractical in an integration test; we just verify no crash.)
+/// T-0512: WAKE + APP_DATA with handler — smoke test for handler routing.
+/// Verifies that the gateway can run WAKE and post-WAKE APP_DATA with a
+/// configured handler without panicking, and that APP_DATA still works.
+/// (EVENT forwarding from engine to handler is not wired in Phase 2C-i.)
 #[tokio::test]
-async fn t0512_event_no_crash_on_wake() {
+async fn t0512_handler_no_crash_on_wake() {
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
 

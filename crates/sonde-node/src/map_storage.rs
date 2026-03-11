@@ -41,9 +41,9 @@ impl MapInstance {
             });
         }
         if value.len() != self.def.value_size as usize {
-            return Err(NodeError::MapKeyOutOfBounds {
-                key,
-                max_entries: self.def.max_entries,
+            return Err(NodeError::MapValueSizeMismatch {
+                expected: self.def.value_size,
+                actual: value.len(),
             });
         }
         let offset = (key as usize) * self.entry_size + self.def.key_size as usize;

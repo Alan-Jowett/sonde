@@ -26,6 +26,8 @@ pub enum NodeError {
     MapBudgetExceeded { required: usize, available: usize },
     /// Map key/index is out of bounds.
     MapKeyOutOfBounds { key: u32, max_entries: u32 },
+    /// Map value size does not match the map definition.
+    MapValueSizeMismatch { expected: u32, actual: usize },
     /// BPF execution error.
     BpfError(String),
     /// A BPF helper returned an error.
@@ -67,6 +69,13 @@ impl fmt::Display for NodeError {
             ),
             NodeError::MapKeyOutOfBounds { key, max_entries } => {
                 write!(f, "map key {} out of bounds (max {})", key, max_entries)
+            }
+            NodeError::MapValueSizeMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "map value size mismatch: expected {} bytes, got {} bytes",
+                    expected, actual
+                )
             }
             NodeError::BpfError(msg) => write!(f, "BPF error: {}", msg),
             NodeError::HelperError { helper_id, code } => {

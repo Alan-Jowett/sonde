@@ -24,6 +24,11 @@ pub trait Rng {
 pub trait Clock {
     /// Milliseconds elapsed since boot (or since the clock was started).
     fn elapsed_ms(&self) -> u64;
+
+    /// Busy-wait for the specified number of milliseconds.
+    /// Used for retry backoff. Implementations on real hardware should
+    /// use a platform timer; test mocks can be a no-op.
+    fn delay_ms(&self, ms: u32);
 }
 
 /// Deep sleep controller.

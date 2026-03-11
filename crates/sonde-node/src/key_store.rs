@@ -40,8 +40,9 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         self.storage.write_key(key_hint, psk)
     }
 
-    /// Factory reset: erase PSK, programs, maps, and schedule.
+    /// Factory reset: erase PSK and all stored programs.
     /// After this, the node is inert until re-paired via USB.
+    /// Schedule and RTC flags reset to defaults on next boot when no key is found.
     pub fn factory_reset(&mut self) -> NodeResult<()> {
         self.storage.erase_key()?;
         self.storage.erase_program(0)?;

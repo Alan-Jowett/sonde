@@ -80,6 +80,11 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
 
         // Write to the inactive partition
         let (_interval, active_partition) = self.storage.read_schedule();
+        if active_partition > 1 {
+            return Err(NodeError::StorageError(
+                "invalid active partition index".into(),
+            ));
+        }
         let inactive_partition = 1 - active_partition;
         self.storage
             .write_program(inactive_partition, image_bytes)?;
@@ -177,6 +182,15 @@ pub fn resolve_map_references(bytecode: &mut [u8], map_pointers: &[u64]) -> Node
         } else {
             i += 8; // Normal instruction
         }
+    }
+
+    // Check for a trailing incomplete LDDW: if the last 8-byte slot starts
+    // an LDDW (opcode 0x18) but there is no second slot, the bytecode is
+    // malformed.
+    if i < bytecode.len() && bytecode[i] == 0x18 {
+        return Err(NodeError::ProgramDecodeFailed(
+            "incomplete trailing LDDW instruction (missing second slot)".into(),
+        ));
     }
 
     Ok(())
@@ -337,5 +351,27 @@ mod tests {
         let map_pointers = vec![0x1234u64]; // only 1 map
         let result = resolve_map_references(&mut bytecode, &map_pointers);
         assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_resolve_map_references_trailing_incomplete_lddw() {
+        // 8-byte trailing LDDW with no second slot
+        let mut bytecode = vec![0u8; 8];
+        bytecode[0] = 0x18; // LDDW opcode
+        bytecode[1] = 0x10; // src=1
+
+        let map_pointers = vec![0x1234u64];
+        let result = resolve_map_references(&mut bytecode, &map_pointers);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_install_resident_invalid_active_partition() {
+        let (cbor, hash) = make_test_image(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], &[]);
+        let mut storage = MockStorage::new();
+        storage.active_partition = 5; // invalid
+        let mut store = ProgramStore::new(&mut storage);
+        let result = store.install_resident(&cbor, &hash, &TestSha256);
+        assert!(matches!(result, Err(NodeError::StorageError(_))));
     }
 }

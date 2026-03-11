@@ -100,6 +100,7 @@ where
         wake_nonce,
         &program_hash,
         battery_mv,
+        clock,
         hmac,
     );
 
@@ -130,8 +131,9 @@ where
             return WakeCycleOutcome::Reboot;
         }
         CommandPayload::UpdateSchedule { interval_s } => {
-            let _ = storage.write_schedule_interval(interval_s);
-            sleep_mgr.set_base_interval(interval_s);
+            if storage.write_schedule_interval(interval_s).is_ok() {
+                sleep_mgr.set_base_interval(interval_s);
+            }
         }
         CommandPayload::UpdateProgram {
             program_hash: expected_hash,
@@ -155,6 +157,7 @@ where
                 program_size,
                 chunk_size,
                 chunk_count,
+                clock,
                 hmac,
             );
 
@@ -181,8 +184,10 @@ where
                                 hmac,
                             );
 
-                            if !is_ephemeral {
-                                let _ = storage.set_program_updated_flag();
+                            if !is_ephemeral && storage.set_program_updated_flag().is_err() {
+                                return WakeCycleOutcome::Sleep {
+                                    seconds: sleep_mgr.effective_sleep_s(),
+                                };
                             }
                             loaded_program = Some(program);
                         }
@@ -239,12 +244,18 @@ where
         }
 
         // Build execution context
-        let elapsed_since_command = clock.elapsed_ms() - command_received_at;
+        let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
+        let battery_mv_clamped = if battery_mv > u16::MAX as u32 {
+            u16::MAX
+        } else {
+            battery_mv as u16
+        };
         let ctx = SondeContext {
             timestamp: timestamp_ms + elapsed_since_command,
-            battery_mv: battery_mv as u16,
+            battery_mv: battery_mv_clamped,
             firmware_abi_version: FIRMWARE_ABI_VERSION as u16,
             wake_reason: wake_reason as u8,
+            _padding: [0; 3],
         };
 
         // Load and execute
@@ -256,7 +267,10 @@ where
 
     // 10. Determine sleep duration
     if sleep_mgr.will_wake_early() {
-        let _ = storage.set_early_wake_flag();
+        // Best-effort: retry once if the first write fails.
+        if storage.set_early_wake_flag().is_err() {
+            let _ = storage.set_early_wake_flag();
+        }
     }
 
     WakeCycleOutcome::Sleep {
@@ -278,12 +292,13 @@ fn determine_wake_reason<S: PlatformStorage>(storage: &mut S) -> WakeReason {
 /// Execute the WAKE/COMMAND exchange with retry logic.
 ///
 /// Returns `(starting_seq, timestamp_ms, CommandPayload)` on success.
-fn wake_command_exchange<T: Transport>(
+fn wake_command_exchange<T: Transport, C: Clock>(
     transport: &mut T,
     identity: &NodeIdentity,
     wake_nonce: u64,
     program_hash: &[u8],
     battery_mv: u32,
+    clock: &C,
     hmac: &impl HmacProvider,
 ) -> NodeResult<(u64, u64, CommandPayload)> {
     let wake_msg = NodeMessage::Wake {
@@ -307,8 +322,7 @@ fn wake_command_exchange<T: Transport>(
     // Try sending WAKE up to (1 + WAKE_MAX_RETRIES) times
     for attempt in 0..=WAKE_MAX_RETRIES {
         if attempt > 0 {
-            // Delay between retries
-            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS as u64));
+            clock.delay_ms(RETRY_DELAY_MS);
         }
 
         transport.send(&frame)?;
@@ -376,35 +390,70 @@ fn verify_and_decode_command(
 /// Execute the chunked transfer sub-protocol.
 ///
 /// Returns the reassembled program image bytes on success.
-fn chunked_transfer<T: Transport>(
+#[allow(clippy::too_many_arguments)]
+fn chunked_transfer<T: Transport, C: Clock>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
-    _program_size: u32,
-    _chunk_size: u32,
+    program_size: u32,
+    chunk_size: u32,
     chunk_count: u32,
+    clock: &C,
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
-    let mut image_data: Vec<u8> = Vec::new();
+    let program_size_usize = program_size as usize;
+    let chunk_size_usize = chunk_size as usize;
+
+    // Validate chunk layout consistency
+    let max_transfer_bytes = (chunk_count as u64).saturating_mul(chunk_size as u64);
+    if max_transfer_bytes < program_size as u64 {
+        return Err(NodeError::MalformedPayload(
+            "inconsistent chunk layout: chunk_count * chunk_size < program_size".into(),
+        ));
+    }
+
+    let mut image_data: Vec<u8> = Vec::with_capacity(program_size_usize);
 
     for chunk_index in 0..chunk_count {
         let seq = *current_seq;
         *current_seq += 1;
 
-        let chunk_data = get_chunk_with_retry(transport, identity, seq, chunk_index, hmac)?;
+        let chunk_data = get_chunk_with_retry(transport, identity, seq, chunk_index, clock, hmac)?;
+
+        // Enforce per-chunk size limit
+        if chunk_data.len() > chunk_size_usize {
+            return Err(NodeError::MalformedPayload(
+                "received chunk larger than declared chunk_size".into(),
+            ));
+        }
+
+        // Enforce overall program size limit
+        if image_data.len() + chunk_data.len() > program_size_usize {
+            return Err(NodeError::MalformedPayload(
+                "received data exceeds declared program_size".into(),
+            ));
+        }
 
         image_data.extend_from_slice(&chunk_data);
+    }
+
+    // Final validation: assembled size must match declared program_size
+    if image_data.len() != program_size_usize {
+        return Err(NodeError::MalformedPayload(
+            "assembled program size does not match declared program_size".into(),
+        ));
     }
 
     Ok(image_data)
 }
 
 /// Request a single chunk with retry logic.
-fn get_chunk_with_retry<T: Transport>(
+fn get_chunk_with_retry<T: Transport, C: Clock>(
     transport: &mut T,
     identity: &NodeIdentity,
     seq: u64,
     chunk_index: u32,
+    clock: &C,
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
     let get_chunk_msg = NodeMessage::GetChunk { chunk_index };
@@ -423,7 +472,7 @@ fn get_chunk_with_retry<T: Transport>(
 
     for attempt in 0..=WAKE_MAX_RETRIES {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS as u64));
+            clock.delay_ms(RETRY_DELAY_MS);
         }
 
         transport.send(&frame)?;
@@ -808,6 +857,9 @@ mod tests {
         fn elapsed_ms(&self) -> u64 {
             100
         }
+        fn delay_ms(&self, _ms: u32) {
+            // No-op in tests
+        }
     }
 
     // --- Mock BPF interpreter ---
@@ -862,6 +914,39 @@ mod tests {
             key_hint,
             msg_type: MSG_COMMAND,
             nonce: echo_nonce,
+        };
+        encode_frame(&header, &payload_cbor, psk, &TestHmac).unwrap()
+    }
+
+    fn build_chunk_response(
+        psk: &[u8; 32],
+        key_hint: u16,
+        echo_seq: u64,
+        chunk_index: u32,
+        chunk_data: &[u8],
+    ) -> Vec<u8> {
+        let msg = GatewayMessage::Chunk {
+            chunk_index,
+            chunk_data: chunk_data.to_vec(),
+        };
+        let payload_cbor = msg.encode().unwrap();
+        let header = FrameHeader {
+            key_hint,
+            msg_type: MSG_CHUNK,
+            nonce: echo_seq,
+        };
+        encode_frame(&header, &payload_cbor, psk, &TestHmac).unwrap()
+    }
+
+    fn build_app_data_reply(psk: &[u8; 32], key_hint: u16, echo_seq: u64, blob: &[u8]) -> Vec<u8> {
+        let msg = GatewayMessage::AppDataReply {
+            blob: blob.to_vec(),
+        };
+        let payload_cbor = msg.encode().unwrap();
+        let header = FrameHeader {
+            key_hint,
+            msg_type: MSG_APP_DATA_REPLY,
+            nonce: echo_seq,
         };
         encode_frame(&header, &payload_cbor, psk, &TestHmac).unwrap()
     }
@@ -1116,5 +1201,256 @@ mod tests {
         );
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    }
+
+    // --- Chunked transfer tests ---
+
+    #[test]
+    fn test_chunked_transfer_success() {
+        let psk = [0x22; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Build a small program image
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+        let image_hash = TestSha256.hash(&image_cbor);
+
+        let chunk_size = 10u32;
+        let chunk_count =
+            sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
+
+        // WAKE nonce will be 1
+        let starting_seq = 5000u64;
+
+        // Queue COMMAND response with UPDATE_PROGRAM
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: image_hash.to_vec(),
+                program_size: image_cbor.len() as u32,
+                chunk_size,
+                chunk_count,
+            },
+        );
+        transport.queue_response(Some(command_frame));
+
+        // Queue CHUNK responses for each chunk
+        for i in 0..chunk_count {
+            let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
+                .unwrap()
+                .to_vec();
+            let seq = starting_seq + i as u64;
+            let chunk_frame = build_chunk_response(&psk, key_hint, seq, i, &chunk_data);
+            transport.queue_response(Some(chunk_frame));
+        }
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // Should have sent: 1 WAKE + chunk_count GET_CHUNKs + 1 PROGRAM_ACK
+        assert_eq!(transport.outbound.len(), 1 + chunk_count as usize + 1);
+        // Program should be installed on the inactive partition (1)
+        assert!(storage.read_program(1).is_some());
+        assert_eq!(storage.active_partition, 1);
+        // BPF interpreter should have been loaded and executed
+        assert!(interp.loaded);
+    }
+
+    #[test]
+    fn test_chunked_transfer_chunk_retry_exhausted() {
+        let psk = [0x33; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        let starting_seq = 100u64;
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: vec![0xAA; 32],
+                program_size: 20,
+                chunk_size: 10,
+                chunk_count: 2,
+            },
+        );
+        transport.queue_response(Some(command_frame));
+        // No chunk responses — all 4 attempts (1 + 3 retries) will timeout
+        for _ in 0..4 {
+            transport.queue_response(None);
+        }
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Should sleep after exhausting chunk retries
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // BPF should NOT have executed
+        assert!(!interp.loaded);
+    }
+
+    #[test]
+    fn test_chunked_transfer_wrong_chunk_index() {
+        let psk = [0x44; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        let starting_seq = 200u64;
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: vec![0xBB; 32],
+                program_size: 10,
+                chunk_size: 10,
+                chunk_count: 1,
+            },
+        );
+        transport.queue_response(Some(command_frame));
+
+        // Respond with wrong chunk index (5 instead of 0), then timeout the rest
+        let bad_chunk = build_chunk_response(&psk, key_hint, starting_seq, 5, &[0u8; 10]);
+        transport.queue_response(Some(bad_chunk));
+        transport.queue_response(None);
+        transport.queue_response(None);
+        transport.queue_response(None);
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    }
+
+    // --- send_recv_app_data tests ---
+
+    #[test]
+    fn test_send_recv_app_data_success() {
+        let psk = [0x55; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Queue reply
+        let reply = build_app_data_reply(&psk, key_hint, 42, &[0xCC, 0xDD]);
+        transport.queue_response(Some(reply));
+
+        let identity = NodeIdentity { key_hint, psk };
+        let mut seq = 42u64;
+        let result = send_recv_app_data(
+            &mut transport,
+            &identity,
+            &mut seq,
+            &[0xAA, 0xBB],
+            RESPONSE_TIMEOUT_MS,
+            &TestHmac,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![0xCC, 0xDD]);
+        assert_eq!(seq, 43); // seq incremented
+    }
+
+    #[test]
+    fn test_send_recv_app_data_timeout() {
+        let psk = [0x66; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+        transport.queue_response(None); // timeout
+
+        let identity = NodeIdentity { key_hint, psk };
+        let mut seq = 10u64;
+        let result = send_recv_app_data(
+            &mut transport,
+            &identity,
+            &mut seq,
+            &[0x01],
+            RESPONSE_TIMEOUT_MS,
+            &TestHmac,
+        );
+
+        assert!(matches!(result, Err(NodeError::Timeout)));
+        assert_eq!(seq, 11); // seq still incremented
+    }
+
+    #[test]
+    fn test_send_recv_app_data_wrong_nonce() {
+        let psk = [0x77; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Reply echoes wrong seq (99 instead of 20)
+        let reply = build_app_data_reply(&psk, key_hint, 99, &[0x01]);
+        transport.queue_response(Some(reply));
+
+        let identity = NodeIdentity { key_hint, psk };
+        let mut seq = 20u64;
+        let result = send_recv_app_data(
+            &mut transport,
+            &identity,
+            &mut seq,
+            &[0x01],
+            RESPONSE_TIMEOUT_MS,
+            &TestHmac,
+        );
+
+        assert!(matches!(result, Err(NodeError::ResponseBindingMismatch)));
     }
 }

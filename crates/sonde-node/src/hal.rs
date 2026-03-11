@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-/// Handle encoding for I2C: `(bus << 16) | 7-bit_addr`.
+/// Handle encoding for I2C: `(bus << 16) | 7-bit_addr` (low 7 bits of `addr`).
 pub const fn i2c_handle(bus: u16, addr: u8) -> u32 {
-    ((bus as u32) << 16) | (addr as u32)
+    ((bus as u32) << 16) | ((addr as u32) & 0x7F)
 }
 
 /// Handle encoding for SPI: `(bus << 16)`.

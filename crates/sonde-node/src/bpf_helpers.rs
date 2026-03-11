@@ -39,15 +39,18 @@ pub enum ProgramClass {
 ///     uint16_t battery_mv;
 ///     uint16_t firmware_abi_version;
 ///     uint8_t  wake_reason;
+///     uint8_t  _padding[3];
 /// };
 /// ```
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SondeContext {
     pub timestamp: u64,
     pub battery_mv: u16,
     pub firmware_abi_version: u16,
     pub wake_reason: u8,
+    /// Explicit padding to match C struct layout (3 bytes trailing padding).
+    pub _padding: [u8; 3],
 }
 
 impl SondeContext {
@@ -61,8 +64,8 @@ mod tests {
 
     #[test]
     fn test_sonde_context_size() {
-        // timestamp(8) + battery_mv(2) + firmware_abi_version(2) + wake_reason(1) = 13
-        assert_eq!(SondeContext::SIZE, 13);
+        // timestamp(8) + battery_mv(2) + firmware_abi_version(2) + wake_reason(1) + padding(3) = 16
+        assert_eq!(SondeContext::SIZE, 16);
     }
 
     #[test]

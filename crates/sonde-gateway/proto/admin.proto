@@ -41,7 +41,7 @@ message ProgramInfo {
     uint32 size = 2;
     string verification_profile = 3;
 }
-message IngestProgramRequest { bytes elf_data = 1; string verification_profile = 2; }
+message IngestProgramRequest { bytes image_data = 1; string verification_profile = 2; }
 message IngestProgramResponse { bytes program_hash = 1; uint32 program_size = 2; }
 message ListProgramsResponse { repeated ProgramInfo programs = 1; }
 message AssignProgramRequest { string node_id = 1; bytes program_hash = 2; }

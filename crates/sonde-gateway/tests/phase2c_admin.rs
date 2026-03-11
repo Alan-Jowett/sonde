@@ -101,7 +101,6 @@ impl TestHarness {
     fn make_gateway(&self) -> Gateway {
         Gateway::new_with_pending(
             self.storage.clone(),
-            Duration::from_secs(30),
             self.pending_commands.clone(),
             self.session_manager.clone(),
         )
@@ -292,7 +291,7 @@ async fn t0802_ingest_and_list_programs() {
     let resp = h
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
-            elf_data: cbor.clone(),
+            image_data: cbor.clone(),
             verification_profile: "resident".into(),
         }))
         .await
@@ -329,7 +328,7 @@ async fn t0802b_ingest_invalid_profile() {
     let err = h
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
-            elf_data: make_cbor_image(&[0x01]),
+            image_data: make_cbor_image(&[0x01]),
             verification_profile: "invalid".into(),
         }))
         .await
@@ -345,7 +344,7 @@ async fn t0802c_ingest_empty_image() {
     let err = h
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
-            elf_data: vec![],
+            image_data: vec![],
             verification_profile: "resident".into(),
         }))
         .await
@@ -374,7 +373,7 @@ async fn t0803_assign_program() {
     let ingest = h
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
-            elf_data: cbor,
+            image_data: cbor,
             verification_profile: "resident".into(),
         }))
         .await
@@ -454,7 +453,7 @@ async fn t0804_remove_program() {
     let ingest = h
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
-            elf_data: cbor,
+            image_data: cbor,
             verification_profile: "ephemeral".into(),
         }))
         .await
@@ -604,7 +603,7 @@ async fn t0807_queue_ephemeral_via_wake() {
     let ingest = h
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
-            elf_data: cbor,
+            image_data: cbor,
             verification_profile: "ephemeral".into(),
         }))
         .await
@@ -742,7 +741,7 @@ async fn t0809_assign_program_wake_delivers_update() {
     let ingest = h
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
-            elf_data: cbor,
+            image_data: cbor,
             verification_profile: "resident".into(),
         }))
         .await
@@ -790,7 +789,7 @@ async fn t0810_export_import_roundtrip() {
     let cbor = make_cbor_image(&[0x42]);
     h.admin
         .ingest_program(Request::new(IngestProgramRequest {
-            elf_data: cbor,
+            image_data: cbor,
             verification_profile: "resident".into(),
         }))
         .await

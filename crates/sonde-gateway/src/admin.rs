@@ -122,6 +122,12 @@ impl GatewayAdmin for AdminService {
         if req.node_id.is_empty() {
             return Err(Status::invalid_argument("`node_id` must not be empty"));
         }
+        if req.key_hint > u16::MAX as u32 {
+            return Err(Status::invalid_argument(format!(
+                "`key_hint` must be <= 65535, got {}",
+                req.key_hint
+            )));
+        }
         let key_hint = req.key_hint as u16;
         let mut psk = [0u8; 32];
         psk.copy_from_slice(&req.psk);
@@ -160,7 +166,7 @@ impl GatewayAdmin for AdminService {
         let profile = parse_profile(&req.verification_profile)?;
         let record = self
             .program_library
-            .ingest(req.elf_data, profile)
+            .ingest(req.image_data, profile)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
@@ -232,11 +238,18 @@ impl GatewayAdmin for AdminService {
         request: Request<SetScheduleRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.get_ref();
-        self.storage
+        let mut node = self
+            .storage
             .get_node(&req.node_id)
             .await
             .map_err(storage_err)?
             .ok_or_else(|| Status::not_found(format!("node `{}` not found", req.node_id)))?;
+
+        // Persist the new schedule in the node record
+        node.schedule_interval_s = req.interval_s;
+        self.storage.upsert_node(&node).await.map_err(storage_err)?;
+
+        // Also queue the command for delivery on next WAKE
         self.pending_commands
             .write()
             .await
@@ -320,6 +333,9 @@ impl GatewayAdmin for AdminService {
         }))
     }
 
+    /// Export gateway state (nodes + programs). Handler routing configuration
+    /// export is deferred to Phase 2C-iii. PSK material is included verbatim;
+    /// production deployments MUST add encryption/authorization per GW-0601a.
     async fn export_state(
         &self,
         _request: Request<Empty>,

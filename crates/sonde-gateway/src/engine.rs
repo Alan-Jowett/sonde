@@ -83,7 +83,6 @@ impl Gateway {
     /// Create a gateway that shares state with an `AdminService`.
     pub fn new_with_pending(
         storage: Arc<dyn Storage>,
-        _session_timeout: Duration,
         pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
         session_manager: Arc<SessionManager>,
     ) -> Self {

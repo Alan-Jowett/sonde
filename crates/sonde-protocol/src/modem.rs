@@ -84,8 +84,17 @@ pub const STATUS_BODY_SIZE: usize = 1 + 4 + 4 + 4 + 4; // 17
 /// Minimum SEND_FRAME body: peer_mac (6B) + at least 1 byte of frame_data.
 pub const SEND_FRAME_MIN_BODY_SIZE: usize = MAC_SIZE + 1; // 7
 
+/// Maximum SEND_FRAME body: peer_mac (6B) + 250 bytes of frame_data.
+pub const SEND_FRAME_MAX_BODY_SIZE: usize = MAC_SIZE + 250; // 256
+
 /// Minimum RECV_FRAME body: peer_mac (6B) + rssi (1B) + at least 1 byte of frame_data.
 pub const RECV_FRAME_MIN_BODY_SIZE: usize = MAC_SIZE + 1 + 1; // 8
+
+/// Maximum RECV_FRAME body: peer_mac (6B) + rssi (1B) + 250 bytes of frame_data.
+pub const RECV_FRAME_MAX_BODY_SIZE: usize = MAC_SIZE + 1 + 250; // 257
+
+/// Maximum ESP-NOW frame payload size.
+pub const ESPNOW_MAX_DATA_SIZE: usize = 250;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -101,6 +110,12 @@ pub enum ModemCodecError {
     BodyTooShort {
         msg_type: u8,
         expected_min: usize,
+        actual: usize,
+    },
+    /// Body exceeds the maximum for the given message type.
+    BodyTooLong {
+        msg_type: u8,
+        expected_max: usize,
         actual: usize,
     },
     /// The encoded frame length (TYPE + BODY) exceeds `SERIAL_MAX_LEN`.
@@ -125,6 +140,17 @@ impl fmt::Display for ModemCodecError {
                     f,
                     "modem msg 0x{:02x} body too short: need {} bytes, got {}",
                     msg_type, expected_min, actual
+                )
+            }
+            ModemCodecError::BodyTooLong {
+                msg_type,
+                expected_max,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "modem msg 0x{:02x} body too long: max {} bytes, got {}",
+                    msg_type, expected_max, actual
                 )
             }
             ModemCodecError::EncodeTooLong => {
@@ -340,6 +366,13 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
                     actual: body.len(),
                 });
             }
+            if body.len() > SEND_FRAME_MAX_BODY_SIZE {
+                return Err(ModemCodecError::BodyTooLong {
+                    msg_type,
+                    expected_max: SEND_FRAME_MAX_BODY_SIZE,
+                    actual: body.len(),
+                });
+            }
             let mut peer_mac = [0u8; MAC_SIZE];
             peer_mac.copy_from_slice(&body[..MAC_SIZE]);
             let frame_data = body[MAC_SIZE..].to_vec();
@@ -387,6 +420,13 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
                 return Err(ModemCodecError::BodyTooShort {
                     msg_type,
                     expected_min: RECV_FRAME_MIN_BODY_SIZE,
+                    actual: body.len(),
+                });
+            }
+            if body.len() > RECV_FRAME_MAX_BODY_SIZE {
+                return Err(ModemCodecError::BodyTooLong {
+                    msg_type,
+                    expected_max: RECV_FRAME_MAX_BODY_SIZE,
                     actual: body.len(),
                 });
             }

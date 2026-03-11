@@ -78,8 +78,16 @@ impl Bridge {
     /// Poll for USB data and ESP-NOW received frames.
     pub fn poll(&mut self) {
         // Read from USB and feed to the decoder.
+        // UsbCdcDriver::read() always attempts the read (even when
+        // previously disconnected) so reconnection is detected when
+        // bytes arrive.
+        let was_connected = self.usb.is_connected();
         let n = self.usb.read(&mut self.rx_buf);
         if n > 0 {
+            if !was_connected {
+                info!("USB reconnected, sending MODEM_READY");
+                self.send_modem_ready();
+            }
             self.decoder.push(&self.rx_buf[..n]);
         }
 
@@ -138,7 +146,7 @@ impl Bridge {
 
     fn handle_reset(&mut self) {
         info!("RESET received");
-        self.espnow.reinit();
+        self.espnow.reset_state();
         self.counters.reset();
         self.decoder.reset();
         self.send_modem_ready();
@@ -154,10 +162,10 @@ impl Bridge {
                 let ack = ModemMessage::SetChannelAck(channel);
                 self.send_msg(&ack);
             }
-            Err(()) => {
+            Err(reason) => {
                 let err = ModemMessage::Error(ModemError {
                     error_code: MODEM_ERR_CHANNEL_SET_FAILED,
-                    message: b"invalid channel".to_vec(),
+                    message: reason.as_bytes().to_vec(),
                 });
                 self.send_msg(&err);
             }

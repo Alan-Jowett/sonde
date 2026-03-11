@@ -3,7 +3,9 @@ resolver = "2"
 members = [
     "crates/sonde-protocol",
     "crates/sonde-gateway",
-]
-exclude = [
     "crates/sonde-modem",
+]
+default-members = [
+    "crates/sonde-protocol",
+    "crates/sonde-gateway",
 ]

@@ -51,5 +51,9 @@ fn main() {
         // The ESP-NOW receive callback fires from the WiFi task and
         // enqueues RECV_FRAME messages into the bridge's TX buffer.
         // No explicit polling needed for inbound radio frames.
+
+        // Yield briefly to avoid pegging the CPU and starving
+        // lower-priority ESP-IDF tasks.
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }

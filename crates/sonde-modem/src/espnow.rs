@@ -35,10 +35,9 @@ impl EspNowDriver {
         counters: &Arc<ModemCounters>,
     ) -> Self {
         // Initialize WiFi in station mode (required for ESP-NOW).
-        let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))
-            .expect("failed to create WiFi");
-        let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)
-            .expect("failed to wrap WiFi");
+        let esp_wifi =
+            EspWifi::new(modem, sysloop.clone(), Some(nvs)).expect("failed to create WiFi");
+        let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop).expect("failed to wrap WiFi");
 
         wifi.start().expect("failed to start WiFi");
         info!("WiFi started in station mode");
@@ -56,7 +55,10 @@ impl EspNowDriver {
 
                 let frame = RecvFrame {
                     peer_mac,
-                    rssi: 0, // RSSI is available from esp_now_recv_info_t in newer APIs
+                    // TODO: Extract real RSSI from esp_now_recv_info_t when
+                    // esp-idf-svc exposes it in the recv callback signature.
+                    // Until then, 0 signals "not available".
+                    rssi: 0,
                     frame_data: data.to_vec(),
                 };
 
@@ -117,14 +119,17 @@ impl EspNowDriver {
 
     /// Set the WiFi/ESP-NOW channel. Clears the peer table and removes
     /// all peers from the ESP-NOW stack.
-    pub fn set_channel(&mut self, channel: u8) -> Result<(), ()> {
+    ///
+    /// Returns `Err("invalid channel")` for out-of-range values, or
+    /// `Err("ESP-IDF set_channel failed")` if the hardware rejects it.
+    pub fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
         if channel == 0 || channel > 14 {
-            return Err(());
+            return Err("invalid channel");
         }
         self.wifi
             .wifi()
             .set_channel(channel)
-            .map_err(|_| ())?;
+            .map_err(|_| "ESP-IDF set_channel failed")?;
 
         // Remove all peers from the ESP-NOW stack and local table.
         self.clear_all_peers();
@@ -163,11 +168,16 @@ impl EspNowDriver {
 
     /// Get the modem's own MAC address.
     pub fn mac_address(&self) -> [u8; MAC_SIZE] {
-        self.wifi.wifi().sta_netif().mac().unwrap_or([0u8; MAC_SIZE])
+        self.wifi
+            .wifi()
+            .sta_netif()
+            .mac()
+            .unwrap_or([0u8; MAC_SIZE])
     }
 
-    /// De-initialize and re-initialize ESP-NOW (used during RESET).
-    pub fn reinit(&mut self) {
+    /// Reset ESP-NOW state: clear peers from the stack, reset WiFi channel
+    /// to 1, and drain the receive queue. Called on RESET command.
+    pub fn reset_state(&mut self) {
         // Remove all peers from the ESP-NOW stack.
         self.clear_all_peers();
 

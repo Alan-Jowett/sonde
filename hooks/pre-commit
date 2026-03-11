@@ -60,11 +60,11 @@ if [ "$error" -ne 0 ]; then
     echo "Add the appropriate SPDX header to each file listed above."
     echo ""
     echo "Markdown (.md):"
-    echo "  <!-- SPDX-License-Identifier: MIT"
-    echo "    Copyright (c) 2026 sonde contributors -->"
+    echo "<!-- SPDX-License-Identifier: MIT"
+    echo "  Copyright (c) 2026 sonde contributors -->"
     echo ""
     echo "Rust (.rs):"
-    echo "  // SPDX-License-Identifier: MIT"
-    echo "  // Copyright (c) 2026 sonde contributors"
+    echo "// SPDX-License-Identifier: MIT"
+    echo "// Copyright (c) 2026 sonde contributors"
     exit 1
 fi

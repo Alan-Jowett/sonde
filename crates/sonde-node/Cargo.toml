@@ -1,0 +1,13 @@
+[package]
+name = "sonde-node"
+version = "0.1.0"
+edition = "2021"
+description = "Sonde node firmware — wake cycle engine, BPF runtime, and platform abstractions"
+
+[dependencies]
+sonde-protocol = { path = "../sonde-protocol" }
+ciborium = { version = "0.2", default-features = false }
+
+[dev-dependencies]
+hmac = "0.12"
+sha2 = "0.10"

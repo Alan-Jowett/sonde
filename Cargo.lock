@@ -1538,6 +1538,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonde-node"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "hmac",
+ "sha2",
+ "sonde-protocol",
+]
+
+[[package]]
 name = "sonde-protocol"
 version = "0.1.0"
 dependencies = [

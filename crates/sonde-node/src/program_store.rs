@@ -5,16 +5,13 @@ use crate::error::{NodeError, NodeResult};
 use crate::traits::PlatformStorage;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
-/// Loaded program ready for execution.
-///
-/// Map reference relocation (LDDW `src=1` map indices) is performed by
-/// `resolve_map_references()` before the bytecode is passed to a
-/// `BpfInterpreter`, so `bytecode` here still contains unresolved
-/// references that the caller must resolve before execution.
+/// Contains raw BPF bytecode as stored in the program image. Map reference
+/// relocation (LDDW `src=1` map indices) is **not** performed automatically;
+/// callers must invoke `resolve_map_references()` to patch `bytecode`
+/// before passing it to a `BpfInterpreter` (e.g. `BpfInterpreter::load`).
 #[derive(Debug, Clone)]
 pub struct LoadedProgram {
-    /// Raw BPF bytecode with LDDW `src=1` map references not yet resolved.
-    /// Call `resolve_map_references()` before passing to a `BpfInterpreter`.
+    /// Raw BPF bytecode with LDDW `src=1` map references not yet relocated.
     pub bytecode: Vec<u8>,
     /// Map definitions from the program image.
     pub map_defs: Vec<MapDef>,
@@ -35,9 +32,13 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
     }
 
     /// Load the currently active resident program from flash.
-    /// Returns `None` if no program is installed.
+    /// Returns `None` if no program is installed or the active partition
+    /// index is invalid.
     pub fn load_active(&self, sha: &impl Sha256Provider) -> Option<LoadedProgram> {
         let (_interval, active_partition) = self.storage.read_schedule();
+        if active_partition > 1 {
+            return None;
+        }
         let image_bytes = self.storage.read_program(active_partition)?;
         let hash = sha.hash(&image_bytes).to_vec();
         let image = ProgramImage::decode(&image_bytes).ok()?;
@@ -50,9 +51,12 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
     }
 
     /// Get the hash of the currently active resident program, or an empty
-    /// vec if no program is installed.
+    /// vec if no program is installed or the active partition index is invalid.
     pub fn active_program_hash(&self, sha: &impl Sha256Provider) -> Vec<u8> {
         let (_interval, active_partition) = self.storage.read_schedule();
+        if active_partition > 1 {
+            return Vec::new();
+        }
         match self.storage.read_program(active_partition) {
             Some(image_bytes) => sha.hash(&image_bytes).to_vec(),
             None => Vec::new(),

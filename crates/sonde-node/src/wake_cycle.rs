@@ -422,12 +422,18 @@ fn chunked_transfer<T: Transport, C: Clock>(
         )));
     }
 
-    // Validate chunk layout consistency
-    let max_transfer_bytes = (chunk_count as u64).saturating_mul(chunk_size as u64);
-    if max_transfer_bytes < program_size as u64 {
-        return Err(NodeError::MalformedPayload(
-            "inconsistent chunk layout: chunk_count * chunk_size < program_size".into(),
-        ));
+    // Validate chunk_size is non-zero
+    if chunk_size == 0 {
+        return Err(NodeError::MalformedPayload("chunk_size is zero".into()));
+    }
+
+    // Validate chunk_count matches expected value from program_size/chunk_size
+    let expected_chunk_count = sonde_protocol::chunk_count(program_size_usize, chunk_size_usize);
+    if expected_chunk_count != Some(chunk_count) {
+        return Err(NodeError::MalformedPayload(format!(
+            "chunk_count {} does not match expected {:?} for program_size={} chunk_size={}",
+            chunk_count, expected_chunk_count, program_size, chunk_size
+        )));
     }
 
     let mut image_data: Vec<u8> = Vec::with_capacity(program_size_usize);
@@ -563,6 +569,8 @@ fn verify_and_decode_chunk(
 }
 
 /// Send a PROGRAM_ACK message.
+///
+/// The sequence number is consumed only after a successful send.
 fn send_program_ack<T: Transport>(
     transport: &mut T,
     identity: &NodeIdentity,
@@ -571,7 +579,6 @@ fn send_program_ack<T: Transport>(
     hmac: &impl HmacProvider,
 ) -> NodeResult<()> {
     let seq = *current_seq;
-    *current_seq += 1;
 
     let ack_msg = NodeMessage::ProgramAck {
         program_hash: program_hash.to_vec(),
@@ -589,7 +596,9 @@ fn send_program_ack<T: Transport>(
     let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
         .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
-    transport.send(&frame)
+    transport.send(&frame)?;
+    *current_seq += 1;
+    Ok(())
 }
 
 /// Send an APP_DATA message (fire-and-forget).

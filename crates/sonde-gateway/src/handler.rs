@@ -412,9 +412,9 @@ impl HandlerProcess {
                                 warn!(
                                     expected = expected_request_id,
                                     got = *request_id,
-                                    "handler reply request_id mismatch — discarding"
+                                    "handler reply request_id mismatch — discarding, continuing"
                                 );
-                                return ReadOutcome::Eof;
+                                continue;
                             }
                         }
                         return ReadOutcome::Reply(reply);
@@ -459,6 +459,8 @@ impl HandlerProcess {
 
     /// Send an EVENT message (fire-and-forget, no response expected).
     /// Uses a timeout to prevent handler I/O from blocking the caller.
+    /// After writing, drains any pending stdout messages (LOG) to prevent
+    /// the handler's stdout pipe from filling up.
     pub async fn send_event(&mut self, msg: &HandlerMessage) {
         if let Err(e) = self.ensure_running() {
             error!(error = %e, "failed to spawn handler for event");
@@ -475,6 +477,7 @@ impl HandlerProcess {
             Ok(Err(e)) => {
                 error!(error = %e, "failed to write event to handler stdin");
                 self.kill_child().await;
+                return;
             }
             Err(_) => {
                 error!(
@@ -482,6 +485,40 @@ impl HandlerProcess {
                     "handler event write timed out — killing child"
                 );
                 self.kill_child().await;
+                return;
+            }
+        }
+
+        // Drain any pending stdout messages (e.g., LOG responses to the event)
+        // with a short timeout to prevent blocking.
+        self.drain_stdout().await;
+    }
+
+    /// Drain pending stdout messages (LOG) without blocking. Uses a short
+    /// timeout so we don't stall if the handler has nothing to send.
+    async fn drain_stdout(&mut self) {
+        let reader = match self.stdout_reader.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+
+        let drain_timeout = Duration::from_millis(100);
+        loop {
+            match tokio::time::timeout(drain_timeout, read_message(reader)).await {
+                Ok(Ok(HandlerMessage::Log { level, message })) => match level.as_str() {
+                    "error" => error!(handler = %self.config.command, "{message}"),
+                    "warn" => warn!(handler = %self.config.command, "{message}"),
+                    "info" => info!(handler = %self.config.command, "{message}"),
+                    "debug" => debug!(handler = %self.config.command, "{message}"),
+                    _ => debug!(handler = %self.config.command, level = %level, "{message}"),
+                },
+                Ok(Ok(_)) => {
+                    // Unexpected message type during drain — ignore
+                }
+                Ok(Err(_)) | Err(_) => {
+                    // EOF, read error, or timeout — stop draining
+                    break;
+                }
             }
         }
     }

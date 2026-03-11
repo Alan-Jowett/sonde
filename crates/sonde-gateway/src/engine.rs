@@ -374,16 +374,9 @@ impl Gateway {
         let router = self.handler_router.as_ref()?;
 
         // Use the node's `current_program_hash` (set via PROGRAM_ACK) for routing.
-        // Re-read from storage to get the latest value.
-        let fresh_node = self
-            .storage
-            .get_nodes_by_key_hint(node.key_hint)
-            .await
-            .ok()?
-            .into_iter()
-            .find(|n| n.node_id == node.node_id)?;
-        let program_hash = match fresh_node.current_program_hash {
-            Some(hash) => hash,
+        // The node record was already loaded during frame authentication.
+        let program_hash = match &node.current_program_hash {
+            Some(hash) => hash.clone(),
             None => return None,
         };
 

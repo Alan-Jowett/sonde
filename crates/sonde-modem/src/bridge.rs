@@ -129,6 +129,10 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
                 Err(ModemCodecError::EmptyFrame) => continue,
                 Err(ModemCodecError::FrameTooLarge(len)) => {
                     warn!("framing error: len={}, resetting decoder", len);
+                    // Clear the decoder buffer so subsequent bytes
+                    // (including a RESET command from the gateway) can be
+                    // parsed. We do NOT send MODEM_READY here — that is
+                    // only sent in response to a RESET command (§2.3).
                     self.decoder.reset();
                     break;
                 }

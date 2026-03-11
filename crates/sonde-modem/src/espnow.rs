@@ -75,6 +75,16 @@ impl EspNowDriver {
             })
             .expect("failed to register ESP-NOW recv callback");
 
+        // Register the send callback to track delivery failures (MD-0202).
+        let counters_for_send = Arc::clone(counters);
+        espnow
+            .register_send_cb(move |_mac, status| {
+                if status != SendStatus::SUCCESS {
+                    counters_for_send.inc_tx_fail();
+                }
+            })
+            .expect("failed to register ESP-NOW send callback");
+
         info!("ESP-NOW initialized on channel 1");
 
         Self {
@@ -106,11 +116,11 @@ impl EspNowDriver {
         }
 
         self.counters.inc_tx();
-        match self.espnow.send(peer_mac, data) {
-            Ok(SendStatus::SUCCESS) => {}
-            _ => {
-                self.counters.inc_tx_fail();
-            }
+        if let Err(e) = self.espnow.send(peer_mac, data) {
+            warn!("esp_now_send failed: {:?}", e);
+            // Note: tx_fail_count for MAC-layer delivery failures is
+            // tracked in the send callback, not here. This error means
+            // the frame could not even be queued (e.g., invalid peer).
         }
     }
 
@@ -153,13 +163,14 @@ impl EspNowDriver {
     /// Restores ESP-NOW on `current_channel` after the scan completes.
     pub fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
         let scan_result = self.wifi.scan().unwrap_or_default();
-        let mut channels = [(0u16, 0i8); 15]; // index 1-14: (count, strongest_rssi)
+        // Use i8::MIN as sentinel for "no APs seen on this channel".
+        let mut channels = [(0u16, i8::MIN); 15];
 
         for ap in &scan_result {
             let ch = ap.channel as usize;
             if ch >= 1 && ch <= 14 {
                 channels[ch].0 = channels[ch].0.saturating_add(1);
-                if channels[ch].1 == 0 || ap.signal_strength > channels[ch].1 {
+                if ap.signal_strength > channels[ch].1 {
                     channels[ch].1 = ap.signal_strength;
                 }
             }
@@ -176,7 +187,9 @@ impl EspNowDriver {
         (1..=14)
             .map(|ch| {
                 let count = core::cmp::min(channels[ch].0, 255) as u8;
-                (ch as u8, count, channels[ch].1)
+                // Per spec: strongest_rssi is 0 if no APs detected.
+                let rssi = if count == 0 { 0 } else { channels[ch].1 };
+                (ch as u8, count, rssi)
             })
             .collect()
     }

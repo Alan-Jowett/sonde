@@ -1,0 +1,34 @@
+[package]
+name = "sonde-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sonde-protocol = { path = ".." }
+
+[[bin]]
+name = "fuzz_decode_frame"
+path = "fuzz_targets/decode_frame.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_node_message"
+path = "fuzz_targets/node_message.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_gateway_message"
+path = "fuzz_targets/gateway_message.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_program_image"
+path = "fuzz_targets/program_image.rs"
+doc = false
+
+[workspace]

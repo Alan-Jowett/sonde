@@ -221,41 +221,42 @@ impl Gateway {
     }
 
     /// Handle post-WAKE messages (GET_CHUNK, PROGRAM_ACK, APP_DATA).
+    ///
+    /// Flow: pre-decode payload → atomically verify+advance seq → dispatch.
+    /// Pre-decoding before the atomic seq advance ensures malformed CBOR
+    /// does not consume a sequence number, while the atomic check+increment
+    /// prevents TOCTOU races on concurrent frames.
     async fn handle_post_wake(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         payload: &[u8],
     ) -> Option<Vec<u8>> {
-        // 1. Verify session exists + sequence number matches (non-mutating)
+        // 1. Pre-decode: validate the message payload before touching session state
+        let msg = NodeMessage::decode(header.msg_type, payload).ok()?;
+
+        // 2. Atomically verify session + sequence and advance counter
         self.session_manager
-            .verify_seq(&node.node_id, header.nonce)
+            .verify_and_advance_seq(&node.node_id, header.nonce)
             .await
             .ok()?;
 
-        // 2. Dispatch by msg_type — only advance seq if message is accepted
-        let (accepted, response) = match header.msg_type {
-            MSG_GET_CHUNK => {
-                let resp = self.handle_get_chunk(node, header, payload).await;
-                (resp.is_some(), resp)
+        // 3. Dispatch with pre-decoded message (side effects applied only after
+        //    both decode and seq check have passed)
+        match msg {
+            NodeMessage::GetChunk { chunk_index } => {
+                self.handle_get_chunk(node, header, chunk_index).await
             }
-            MSG_PROGRAM_ACK => {
-                let ok = self.handle_program_ack(node, payload).await;
-                (ok, None)
+            NodeMessage::ProgramAck { program_hash } => {
+                self.handle_program_ack(node, program_hash).await;
+                None
             }
-            MSG_APP_DATA => {
+            NodeMessage::AppData { .. } => {
                 // Phase 2B: accept but no routing yet (Phase 2C)
-                (true, None)
+                None
             }
-            _ => (false, None),
-        };
-
-        // 3. Advance the sequence counter only after successful dispatch
-        if accepted {
-            let _ = self.session_manager.advance_seq(&node.node_id).await;
+            _ => None,
         }
-
-        response
     }
 
     /// Serve a chunk from the program library.
@@ -263,14 +264,8 @@ impl Gateway {
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
-        payload: &[u8],
+        chunk_index: u32,
     ) -> Option<Vec<u8>> {
-        let get_chunk_msg = NodeMessage::decode(MSG_GET_CHUNK, payload).ok()?;
-        let chunk_index = match get_chunk_msg {
-            NodeMessage::GetChunk { chunk_index } => chunk_index,
-            _ => return None,
-        };
-
         // Look up program transfer state from session
         let session = self.session_manager.get_session(&node.node_id).await?;
         let (program_hash, chunk_size) = match &session.state {
@@ -314,26 +309,37 @@ impl Gateway {
         Some(frame)
     }
 
-    /// Handle PROGRAM_ACK: update the node's current_program_hash in the registry
-    /// and transition the session out of ChunkedTransfer.
-    /// Returns `true` if the message was successfully decoded and accepted.
-    async fn handle_program_ack(&self, node: &NodeRecord, payload: &[u8]) -> bool {
-        if let Ok(NodeMessage::ProgramAck { program_hash }) =
-            NodeMessage::decode(MSG_PROGRAM_ACK, payload)
-        {
-            let mut updated_node = node.clone();
-            updated_node.confirm_program(program_hash);
-            let _ = self.storage.upsert_node(&updated_node).await;
+    /// Handle PROGRAM_ACK: validate against session state, update the node's
+    /// `current_program_hash` in the registry, and transition the session out
+    /// of `ChunkedTransfer`. Silently discards if the session is not in
+    /// `ChunkedTransfer` or the ACK hash does not match the active transfer.
+    async fn handle_program_ack(&self, node: &NodeRecord, program_hash: Vec<u8>) {
+        // Require an active ChunkedTransfer session for this node
+        let session = match self.session_manager.get_session(&node.node_id).await {
+            Some(s) => s,
+            None => return,
+        };
 
-            // Transition session from ChunkedTransfer to BpfExecuting
-            let _ = self
-                .session_manager
-                .set_state(&node.node_id, SessionState::BpfExecuting)
-                .await;
-            true
-        } else {
-            false
+        // Only accept the ACK if it matches the program_hash of the active transfer
+        let matches = matches!(
+            &session.state,
+            SessionState::ChunkedTransfer { program_hash: expected, .. }
+                if *expected == program_hash
+        );
+        if !matches {
+            return;
         }
+
+        // Update node record with the confirmed program
+        let mut updated_node = node.clone();
+        updated_node.confirm_program(program_hash);
+        let _ = self.storage.upsert_node(&updated_node).await;
+
+        // Transition session from ChunkedTransfer to BpfExecuting
+        let _ = self
+            .session_manager
+            .set_state(&node.node_id, SessionState::BpfExecuting)
+            .await;
     }
 
     /// Command selection logic (priority order per design doc 6.4).

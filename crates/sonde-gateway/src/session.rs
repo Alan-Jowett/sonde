@@ -138,38 +138,6 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Non-mutating check: verify that a session exists, is not expired,
-    /// and the received sequence number matches. Does not advance the counter.
-    pub async fn verify_seq(&self, node_id: &str, received_seq: u64) -> Result<(), SessionError> {
-        let sessions = self.sessions.read().await;
-        let session = sessions
-            .get(node_id)
-            .ok_or_else(|| SessionError::NotFound(node_id.to_string()))?;
-
-        if Instant::now().duration_since(session.created_at) > self.timeout {
-            return Err(SessionError::Expired(node_id.to_string()));
-        }
-
-        if received_seq != session.next_expected_seq {
-            return Err(SessionError::SequenceMismatch {
-                expected: session.next_expected_seq,
-                received: received_seq,
-            });
-        }
-        Ok(())
-    }
-
-    /// Advance the sequence counter for a node. Call only after a successful
-    /// `verify_seq` and message dispatch.
-    pub async fn advance_seq(&self, node_id: &str) -> Result<(), SessionError> {
-        let mut sessions = self.sessions.write().await;
-        let session = sessions
-            .get_mut(node_id)
-            .ok_or_else(|| SessionError::NotFound(node_id.to_string()))?;
-        session.next_expected_seq += 1;
-        Ok(())
-    }
-
     /// Update the session state for a node.
     pub async fn set_state(&self, node_id: &str, state: SessionState) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;

@@ -467,7 +467,10 @@ async fn t0205_command_priority_ordering() {
 
     let mut record = node.to_record();
     record.assigned_program_hash = Some(assigned_hash.clone());
-    // Set the node's current program to a different hash so UPDATE_PROGRAM triggers
+    // Keep the stored current_program_hash out of sync with the assigned hash to
+    // mimic a partially-synchronized registry. UPDATE_PROGRAM is actually triggered
+    // by a mismatch between the hash reported in WAKE and assigned_program_hash
+    // (see the do_wake() calls below), not by this field.
     record.current_program_hash = Some(vec![0u8; 32]);
     storage.upsert_node(&record).await.unwrap();
 

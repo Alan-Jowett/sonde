@@ -146,6 +146,7 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 
 ## Further reading
 
+- [Getting Started](docs/getting-started.md) — developer environment setup, toolchain installation, build and flash commands
 - [Why BPF?](docs/why-bpf.md) — rationale for using uBPF + Prevail as the execution model
 - [BPF Environment](docs/bpf-environment.md) — program API, memory model, verification, and development workflow
 - [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform

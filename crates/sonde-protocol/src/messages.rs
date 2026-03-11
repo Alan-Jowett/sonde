@@ -209,13 +209,20 @@ impl GatewayMessage {
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let pairs: Vec<(u64, Value)> = match self {
             GatewayMessage::Command {
-                command_type,
+                command_type: _,
                 starting_seq,
                 timestamp_ms,
                 payload,
             } => {
+                let derived_type: u8 = match payload {
+                    CommandPayload::Nop => CMD_NOP,
+                    CommandPayload::Reboot => CMD_REBOOT,
+                    CommandPayload::UpdateProgram { .. } => CMD_UPDATE_PROGRAM,
+                    CommandPayload::RunEphemeral { .. } => CMD_RUN_EPHEMERAL,
+                    CommandPayload::UpdateSchedule { .. } => CMD_UPDATE_SCHEDULE,
+                };
                 let mut p = alloc::vec![
-                    (KEY_COMMAND_TYPE, u8_val(*command_type)),
+                    (KEY_COMMAND_TYPE, u8_val(derived_type)),
                     (KEY_STARTING_SEQ, uint_val(*starting_seq)),
                     (KEY_TIMESTAMP_MS, uint_val(*timestamp_ms)),
                 ];
@@ -355,7 +362,7 @@ impl GatewayMessage {
                             interval_s: get_u32(&inner_fields, KEY_INTERVAL_S)?,
                         }
                     }
-                    _ => CommandPayload::Nop,
+                    _ => return Err(DecodeError::InvalidFieldType(KEY_COMMAND_TYPE)),
                 };
 
                 Ok(GatewayMessage::Command {

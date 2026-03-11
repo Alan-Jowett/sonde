@@ -15,6 +15,8 @@ use crate::transport::PeerAddress;
 pub enum SessionError {
     /// No active session for the given node.
     NotFound(String),
+    /// Session has expired (timed out).
+    Expired(String),
     /// Sequence number mismatch — expected vs. received.
     SequenceMismatch { expected: u64, received: u64 },
 }
@@ -23,6 +25,7 @@ impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SessionError::NotFound(id) => write!(f, "no active session for node {}", id),
+            SessionError::Expired(id) => write!(f, "session expired for node {}", id),
             SessionError::SequenceMismatch { expected, received } => {
                 write!(
                     f,
@@ -115,6 +118,12 @@ impl SessionManager {
         let session = sessions
             .get_mut(node_id)
             .ok_or_else(|| SessionError::NotFound(node_id.to_string()))?;
+
+        // Check if the session has expired
+        if Instant::now().duration_since(session.created_at) > self.timeout {
+            sessions.remove(node_id);
+            return Err(SessionError::Expired(node_id.to_string()));
+        }
 
         if received_seq != session.next_expected_seq {
             return Err(SessionError::SequenceMismatch {

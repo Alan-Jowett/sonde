@@ -212,20 +212,22 @@ async fn t1004_session_timeout_cleanup() {
         .await;
     assert_eq!(mgr.active_count().await, 1);
 
+    // Verify seq works before timeout.
+    let result = mgr.verify_and_advance_seq("node-expire", 0).await;
+    assert!(result.is_ok(), "seq should work before timeout");
+
     // Wait for timeout to pass.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let expired = mgr.reap_expired().await;
-    assert!(
-        expired.contains(&"node-expire".to_string()),
-        "expired session must be reaped"
-    );
-
-    assert_eq!(mgr.active_count().await, 0, "no sessions after reap");
-
-    // Seq verify on expired session fails.
-    let result = mgr.verify_and_advance_seq("node-expire", 0).await;
+    // Post-timeout message rejected by verify_and_advance_seq (not by manual reap).
+    let result = mgr.verify_and_advance_seq("node-expire", 1).await;
     assert!(result.is_err(), "expired session must reject messages");
+
+    // Reap should also clean up.
+    let expired = mgr.reap_expired().await;
+    assert_eq!(mgr.active_count().await, 0, "no sessions after reap");
+    // Session was already removed by verify_and_advance_seq, so reap may find nothing.
+    let _ = expired;
 }
 
 // ── Program Library (T-0400–T-0407) ─────────────────────────────────
@@ -256,18 +258,17 @@ async fn t0400_valid_program_ingestion() {
 async fn t0401_invalid_program_rejection() {
     let lib = ProgramLibrary::new();
 
-    // Empty image — size 0. Should ingest successfully since size 0 <= limit.
-    // The validation doc says "invalid ELF" but Phase 2A doesn't do ELF parsing yet.
-    // For Phase 2A, we verify that the library processes the image (size check passes).
-    // True ELF validation comes in Phase 2B+ with prevail integration.
+    // Empty image should be rejected.
     let result = lib.ingest(vec![], VerificationProfile::Resident);
-    // Empty image is technically within size limits (0 <= 4096), so it succeeds
-    // at the current Phase 2A level. This test documents expected behavior.
+    assert!(result.is_err(), "empty image must be rejected");
+
+    // Random bytes — accepted at Phase 2A (no ELF/CBOR validation yet).
+    // True ELF validation comes with prevail-rust integration.
+    let result = lib.ingest(vec![0xFF, 0xFE, 0xFD], VerificationProfile::Resident);
     assert!(
         result.is_ok(),
-        "empty image passes size check in Phase 2A (no ELF validation yet)"
+        "non-empty bytes accepted in Phase 2A (no ELF validation yet)"
     );
-    assert_eq!(result.unwrap().size, 0);
 }
 
 /// T-0405: Content hash identity — same image twice produces same hash.

@@ -31,6 +31,8 @@ pub struct ProgramRecord {
 /// Errors from program library operations.
 #[derive(Debug, Clone)]
 pub enum ProgramError {
+    /// Image is empty or invalid.
+    InvalidImage,
     /// Image exceeds the size limit for its profile.
     ImageTooLarge { size: u32, limit: u32 },
     /// Program not found by hash.
@@ -42,6 +44,7 @@ pub enum ProgramError {
 impl fmt::Display for ProgramError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ProgramError::InvalidImage => write!(f, "image is empty or invalid"),
             ProgramError::ImageTooLarge { size, limit } => {
                 write!(f, "image size {} exceeds limit {}", size, limit)
             }
@@ -83,6 +86,10 @@ impl ProgramLibrary {
         image: Vec<u8>,
         profile: VerificationProfile,
     ) -> Result<ProgramRecord, ProgramError> {
+        if image.is_empty() {
+            return Err(ProgramError::InvalidImage);
+        }
+
         let size = image.len() as u32;
         let limit = match profile {
             VerificationProfile::Resident => MAX_RESIDENT_SIZE,

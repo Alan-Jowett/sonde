@@ -415,10 +415,8 @@ fn chunked_transfer<T: Transport, C: Clock>(
     let mut image_data: Vec<u8> = Vec::with_capacity(program_size_usize);
 
     for chunk_index in 0..chunk_count {
-        let seq = *current_seq;
-        *current_seq += 1;
-
-        let chunk_data = get_chunk_with_retry(transport, identity, seq, chunk_index, clock, hmac)?;
+        let chunk_data =
+            get_chunk_with_retry(transport, identity, current_seq, chunk_index, clock, hmac)?;
 
         // Enforce per-chunk size limit
         if chunk_data.len() > chunk_size_usize {
@@ -448,10 +446,14 @@ fn chunked_transfer<T: Transport, C: Clock>(
 }
 
 /// Request a single chunk with retry logic.
+///
+/// Each retry attempt uses a fresh sequence number, since the gateway
+/// may have received (and advanced past) the prior attempt's seq even
+/// though the response was lost.
 fn get_chunk_with_retry<T: Transport, C: Clock>(
     transport: &mut T,
     identity: &NodeIdentity,
-    seq: u64,
+    current_seq: &mut u64,
     chunk_index: u32,
     clock: &C,
     hmac: &impl HmacProvider,
@@ -461,25 +463,34 @@ fn get_chunk_with_retry<T: Transport, C: Clock>(
         .encode()
         .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
-    let header = FrameHeader {
-        key_hint: identity.key_hint,
-        msg_type: MSG_GET_CHUNK,
-        nonce: seq,
-    };
-
-    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
-        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
-
     for attempt in 0..=WAKE_MAX_RETRIES {
         if attempt > 0 {
             clock.delay_ms(RETRY_DELAY_MS);
         }
 
+        let attempt_seq = *current_seq;
+        *current_seq += 1;
+
+        let header = FrameHeader {
+            key_hint: identity.key_hint,
+            msg_type: MSG_GET_CHUNK,
+            nonce: attempt_seq,
+        };
+
+        let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
+            .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
         transport.send(&frame)?;
 
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
             Some(raw_response) => {
-                match verify_and_decode_chunk(&raw_response, identity, seq, chunk_index, hmac) {
+                match verify_and_decode_chunk(
+                    &raw_response,
+                    identity,
+                    attempt_seq,
+                    chunk_index,
+                    hmac,
+                ) {
                     Ok(data) => return Ok(data),
                     Err(_) => continue,
                 }
@@ -564,6 +575,10 @@ fn send_program_ack<T: Transport>(
 }
 
 /// Send an APP_DATA message (fire-and-forget).
+///
+/// The sequence number is consumed only after a successful send. If
+/// `transport.send()` fails, `current_seq` is not advanced so the
+/// gateway's expected sequence stays in sync.
 pub fn send_app_data<T: Transport>(
     transport: &mut T,
     identity: &NodeIdentity,
@@ -572,38 +587,6 @@ pub fn send_app_data<T: Transport>(
     hmac: &impl HmacProvider,
 ) -> NodeResult<()> {
     let seq = *current_seq;
-    *current_seq += 1;
-
-    let msg = NodeMessage::AppData {
-        blob: blob.to_vec(),
-    };
-    let payload_cbor = msg
-        .encode()
-        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
-
-    let header = FrameHeader {
-        key_hint: identity.key_hint,
-        msg_type: MSG_APP_DATA,
-        nonce: seq,
-    };
-
-    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
-        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
-
-    transport.send(&frame)
-}
-
-/// Send an APP_DATA message and wait for APP_DATA_REPLY.
-pub fn send_recv_app_data<T: Transport>(
-    transport: &mut T,
-    identity: &NodeIdentity,
-    current_seq: &mut u64,
-    blob: &[u8],
-    timeout_ms: u32,
-    hmac: &impl HmacProvider,
-) -> NodeResult<Vec<u8>> {
-    let seq = *current_seq;
-    *current_seq += 1;
 
     let msg = NodeMessage::AppData {
         blob: blob.to_vec(),
@@ -622,6 +605,45 @@ pub fn send_recv_app_data<T: Transport>(
         .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
     transport.send(&frame)?;
+    *current_seq += 1;
+    Ok(())
+}
+
+/// Send an APP_DATA message and wait for APP_DATA_REPLY.
+///
+/// The sequence number is consumed after a successful send. On send
+/// failure `current_seq` is not advanced. On recv timeout `current_seq`
+/// remains advanced because the gateway likely received the request.
+pub fn send_recv_app_data<T: Transport>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    blob: &[u8],
+    timeout_ms: u32,
+    hmac: &impl HmacProvider,
+) -> NodeResult<Vec<u8>> {
+    let seq = *current_seq;
+
+    let msg = NodeMessage::AppData {
+        blob: blob.to_vec(),
+    };
+    let payload_cbor = msg
+        .encode()
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_APP_DATA,
+        nonce: seq,
+    };
+
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
+    transport.send(&frame)?;
+    // Advance seq after successful send — the gateway saw this seq even
+    // if the reply is lost or times out.
+    *current_seq += 1;
 
     // Wait for reply
     match transport.recv(timeout_ms)? {

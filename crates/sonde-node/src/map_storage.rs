@@ -48,6 +48,12 @@ impl MapInstance {
         }
         let offset = (key as usize) * self.entry_size + self.def.key_size as usize;
         let end = offset + self.def.value_size as usize;
+        if end > self.data.len() {
+            return Err(NodeError::MapKeyOutOfBounds {
+                key,
+                max_entries: self.def.max_entries,
+            });
+        }
         self.data[offset..end].copy_from_slice(value);
         Ok(())
     }
@@ -79,22 +85,34 @@ impl MapStorage {
     }
 
     /// Calculate the total storage required for a set of map definitions.
+    /// Returns `None` if arithmetic overflows (malformed map definitions).
+    fn required_bytes_checked(map_defs: &[MapDef]) -> Option<usize> {
+        let mut total: usize = 0;
+        for def in map_defs {
+            let entry_size = (def.key_size as usize).checked_add(def.value_size as usize)?;
+            let map_size = entry_size.checked_mul(def.max_entries as usize)?;
+            total = total.checked_add(map_size)?;
+        }
+        Some(total)
+    }
+
+    /// Calculate the total storage required for a set of map definitions.
+    /// Saturates to `usize::MAX` on overflow.
     pub fn required_bytes(map_defs: &[MapDef]) -> usize {
-        map_defs
-            .iter()
-            .map(|def| {
-                let entry_size = def.key_size as usize + def.value_size as usize;
-                entry_size * def.max_entries as usize
-            })
-            .sum()
+        Self::required_bytes_checked(map_defs).unwrap_or(usize::MAX)
     }
 
     /// Allocate map storage from map definitions.
     ///
-    /// Returns an error if the total map storage exceeds the budget.
+    /// Returns an error if the total map storage exceeds the budget or
+    /// if map definitions cause arithmetic overflow.
     /// On success, all maps are zero-initialized.
     pub fn allocate(&mut self, map_defs: &[MapDef]) -> NodeResult<()> {
-        let required = Self::required_bytes(map_defs);
+        let required =
+            Self::required_bytes_checked(map_defs).ok_or(NodeError::MapBudgetExceeded {
+                required: usize::MAX,
+                available: self.budget_bytes,
+            })?;
         if required > self.budget_bytes {
             return Err(NodeError::MapBudgetExceeded {
                 required,
@@ -104,8 +122,12 @@ impl MapStorage {
 
         let mut maps = Vec::with_capacity(map_defs.len());
         for def in map_defs {
-            let entry_size = def.key_size as usize + def.value_size as usize;
-            let total_size = entry_size * def.max_entries as usize;
+            let entry_size = (def.key_size as usize)
+                .checked_add(def.value_size as usize)
+                .expect("overflow already checked");
+            let total_size = entry_size
+                .checked_mul(def.max_entries as usize)
+                .expect("overflow already checked");
             maps.push(MapInstance {
                 def: def.clone(),
                 data: vec![0u8; total_size],

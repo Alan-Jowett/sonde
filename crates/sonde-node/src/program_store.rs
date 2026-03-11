@@ -6,10 +6,15 @@ use crate::traits::PlatformStorage;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
 /// Loaded program ready for execution.
+///
+/// Map reference relocation (LDDW `src=1` map indices) is performed by
+/// `resolve_map_references()` before the bytecode is passed to a
+/// `BpfInterpreter`, so `bytecode` here still contains unresolved
+/// references that the caller must resolve before execution.
 #[derive(Debug, Clone)]
 pub struct LoadedProgram {
-    /// Raw bytecode with LDDW src=1 instructions still present.
-    /// The BPF interpreter resolves them at load time using `map_pointers`.
+    /// Raw BPF bytecode with LDDW `src=1` map references not yet resolved.
+    /// Call `resolve_map_references()` before passing to a `BpfInterpreter`.
     pub bytecode: Vec<u8>,
     /// Map definitions from the program image.
     pub map_defs: Vec<MapDef>,

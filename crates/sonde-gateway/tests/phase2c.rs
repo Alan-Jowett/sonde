@@ -961,8 +961,10 @@ fn python_available() -> bool {
             if !output.status.success() {
                 return false;
             }
-            let version_str = String::from_utf8_lossy(&output.stdout);
-            version_str.starts_with("Python 3")
+            // `python --version` may print to stdout or stderr depending on version/platform
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stdout.starts_with("Python 3") || stderr.starts_with("Python 3")
         }
         Err(_) => false,
     }

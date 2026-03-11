@@ -336,10 +336,11 @@ impl HandlerProcess {
     }
 
     fn ensure_running(&mut self) -> io::Result<()> {
-        let needs_spawn = match &mut self.child {
+        let (needs_spawn, prev_crashed) = match &mut self.child {
             Some(child) => match child.try_wait()? {
                 Some(status) => {
-                    if !status.success() {
+                    let crashed = !status.success();
+                    if crashed {
                         error!(
                             command = %self.config.command,
                             exit_code = ?status.code(),
@@ -349,12 +350,20 @@ impl HandlerProcess {
                     self.stdin = None;
                     self.stdout_reader = None;
                     self.child = None;
-                    true
+                    (true, crashed)
                 }
-                None => false,
+                None => (false, false),
             },
-            None => true,
+            None => (true, false),
         };
+
+        // If the handler crashed (non-zero exit), fail this request.
+        // The handler will be respawned on the *next* request.
+        if prev_crashed {
+            return Err(io::Error::other(
+                "handler crashed with non-zero exit",
+            ));
+        }
 
         if needs_spawn {
             let mut child = Command::new(&self.config.command)
@@ -534,6 +543,7 @@ impl HandlerProcess {
     async fn kill_child(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill().await;
+            let _ = child.wait().await;
         }
         self.stdin = None;
         self.stdout_reader = None;

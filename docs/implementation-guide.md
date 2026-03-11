@@ -216,7 +216,7 @@ Handler process management and APP_DATA routing. The gateway can forward applica
 | 2.10b | `handler.rs` (process) | HandlerProcess: spawn, write DATA, read DATA_REPLY, LOG handling, respawn/crash | T-0505, T-0506, T-0510, T-0511, T-0513 |
 | 2.10c | `handler.rs` (router) | HandlerRouter: program_hash → handler config routing, catch-all, no-match | T-0507, T-0508, T-0509 |
 | 2.10d | `engine.rs` (integration) | Wire APP_DATA dispatch through handler router, APP_DATA_REPLY back to node | T-0500, T-0501, T-0502, T-0503 |
-| 2.10e | `handler.rs` (events) | EVENT messages: node_online, program_updated, node_timeout | T-0512 |
+| 2.10e | `handler.rs` (events) | EVENT messages: node_online, program_updated, node_timeout (engine wiring deferred to Phase 2C-ii) | T-0512 (smoke test) |
 
 **Exit criteria (2C-i):** All handler API tests pass (T-0500 to T-0513). APP_DATA flows end-to-end from node through engine to handler process and back.
 

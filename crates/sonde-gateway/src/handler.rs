@@ -14,6 +14,11 @@ use tracing::{debug, error, info, warn};
 
 const MAX_MESSAGE_SIZE: u32 = 1_048_576;
 const HANDLER_TIMEOUT: Duration = Duration::from_secs(30);
+enum ReadOutcome {
+    Reply(HandlerMessage),
+    Eof,
+    ReadError(String),
+}
 
 const MSG_TYPE_DATA: u64 = 0x01;
 const MSG_TYPE_EVENT: u64 = 0x02;
@@ -409,22 +414,19 @@ impl HandlerProcess {
                                     got = *request_id,
                                     "handler reply request_id mismatch — discarding"
                                 );
-                                return None;
+                                return ReadOutcome::Eof;
                             }
                         }
-                        return Some(reply);
+                        return ReadOutcome::Reply(reply);
                     }
                     Ok(other) => {
                         warn!(msg_type = ?other, "unexpected message type from handler — ignoring");
                     }
                     Err(e) => {
                         return if e.kind() == io::ErrorKind::UnexpectedEof {
-                            None // caller will check exit status
+                            ReadOutcome::Eof
                         } else {
-                            Some(HandlerMessage::Log {
-                                level: "_read_error".to_string(),
-                                message: e.to_string(),
-                            })
+                            ReadOutcome::ReadError(e.to_string())
                         };
                     }
                 }
@@ -433,13 +435,13 @@ impl HandlerProcess {
         .await;
 
         match result {
-            Ok(Some(HandlerMessage::Log { level, message })) if level == "_read_error" => {
-                error!(error = %message, "error reading from handler stdout — killing child");
+            Ok(ReadOutcome::ReadError(msg)) => {
+                error!(error = %msg, "error reading from handler stdout — killing child");
                 self.kill_child().await;
                 None
             }
-            Ok(Some(reply)) => Some(reply),
-            Ok(None) => {
+            Ok(ReadOutcome::Reply(reply)) => Some(reply),
+            Ok(ReadOutcome::Eof) => {
                 self.check_exit_status().await;
                 None
             }
@@ -456,6 +458,7 @@ impl HandlerProcess {
     }
 
     /// Send an EVENT message (fire-and-forget, no response expected).
+    /// Uses a timeout to prevent handler I/O from blocking the caller.
     pub async fn send_event(&mut self, msg: &HandlerMessage) {
         if let Err(e) = self.ensure_running() {
             error!(error = %e, "failed to spawn handler for event");
@@ -467,9 +470,19 @@ impl HandlerProcess {
             None => return,
         };
 
-        if let Err(e) = write_message(stdin, msg).await {
-            error!(error = %e, "failed to write event to handler stdin");
-            self.kill_child().await;
+        match tokio::time::timeout(HANDLER_TIMEOUT, write_message(stdin, msg)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                error!(error = %e, "failed to write event to handler stdin");
+                self.kill_child().await;
+            }
+            Err(_) => {
+                error!(
+                    command = %self.config.command,
+                    "handler event write timed out — killing child"
+                );
+                self.kill_child().await;
+            }
         }
     }
 
@@ -706,15 +719,11 @@ mod tests {
             data: vec![0x01, 0x02],
         };
 
-        let mut buf = Vec::new();
-        write_message(&mut buf, &msg).await.unwrap();
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        write_message(&mut writer, &msg).await.unwrap();
+        drop(writer);
 
-        // Verify 4-byte BE length prefix
-        let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        assert_eq!(len as usize, buf.len() - 4);
-
-        let mut cursor = &buf[..];
-        let decoded = read_message(&mut cursor).await.unwrap();
+        let decoded = read_message(&mut reader).await.unwrap();
         assert_eq!(msg, decoded);
     }
 

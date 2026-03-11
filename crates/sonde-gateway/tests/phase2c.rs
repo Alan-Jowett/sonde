@@ -141,12 +141,19 @@ fn write_handler_script(dir: &std::path::Path, name: &str, script: &str) -> Stri
 const ECHO_HANDLER_PY: &str = r#"
 import sys, struct
 
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
 def read_msg():
-    raw = sys.stdin.buffer.read(4)
-    if len(raw) < 4:
-        sys.exit(0)
+    raw = read_exact(4)
     length = struct.unpack('>I', raw)[0]
-    data = sys.stdin.buffer.read(length)
+    data = read_exact(length)
     return data
 
 def write_msg(payload):
@@ -268,12 +275,19 @@ write_msg(reply)
 const EMPTY_REPLY_HANDLER_PY: &str = r#"
 import sys, struct
 
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
 def read_msg():
-    raw = sys.stdin.buffer.read(4)
-    if len(raw) < 4:
-        sys.exit(0)
+    raw = read_exact(4)
     length = struct.unpack('>I', raw)[0]
-    data = sys.stdin.buffer.read(length)
+    data = read_exact(length)
     return data
 
 def write_msg(payload):
@@ -394,12 +408,19 @@ sys.exit(1)
 const MULTI_ECHO_HANDLER_PY: &str = r#"
 import sys, struct
 
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
 def read_msg():
-    raw = sys.stdin.buffer.read(4)
-    if len(raw) < 4:
-        sys.exit(0)
+    raw = read_exact(4)
     length = struct.unpack('>I', raw)[0]
-    data = sys.stdin.buffer.read(length)
+    data = read_exact(length)
     return data
 
 def write_msg(payload):
@@ -518,12 +539,19 @@ while True:
 const FIXED_REPLY_HANDLER_PY: &str = r#"
 import sys, struct
 
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
 def read_msg():
-    raw = sys.stdin.buffer.read(4)
-    if len(raw) < 4:
-        sys.exit(0)
+    raw = read_exact(4)
     length = struct.unpack('>I', raw)[0]
-    data = sys.stdin.buffer.read(length)
+    data = read_exact(length)
     return data
 
 def write_msg(payload):
@@ -637,12 +665,19 @@ write_msg(reply)
 const LOG_HANDLER_PY: &str = r#"
 import sys, struct
 
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
 def read_msg():
-    raw = sys.stdin.buffer.read(4)
-    if len(raw) < 4:
-        sys.exit(0)
+    raw = read_exact(4)
     length = struct.unpack('>I', raw)[0]
-    data = sys.stdin.buffer.read(length)
+    data = read_exact(length)
     return data
 
 def write_msg(payload):
@@ -767,12 +802,19 @@ write_msg(reply)
 const WRONG_REQUEST_ID_HANDLER_PY: &str = r#"
 import sys, struct
 
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
 def read_msg():
-    raw = sys.stdin.buffer.read(4)
-    if len(raw) < 4:
-        sys.exit(0)
+    raw = read_exact(4)
     length = struct.unpack('>I', raw)[0]
-    data = sys.stdin.buffer.read(length)
+    data = read_exact(length)
     return data
 
 def write_msg(payload):

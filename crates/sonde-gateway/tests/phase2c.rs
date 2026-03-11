@@ -1115,6 +1115,7 @@ async fn t0503_multiple_app_data_per_wake() {
 /// can decode+reply via the 4-byte length-prefix framing.
 #[tokio::test]
 async fn t0504_handler_transport_framing() {
+    require_python!();
     // Covered by T-0500 echo test — the echo handler decodes the full DATA
     // message and echoes the `data` field, proving framing works end-to-end.
     // This test exercises larger payloads.

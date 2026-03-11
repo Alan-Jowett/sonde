@@ -523,9 +523,9 @@ impl HandlerProcess {
                     break;
                 }
                 Err(_) => {
-                    // Timeout — nothing pending, stop draining.
-                    // Since read_message reads length then payload atomically,
-                    // a timeout here means we haven't started reading a frame.
+                    // Timeout while reading — the stream may be mid-frame and
+                    // desynchronized. Kill the child to prevent corrupt state.
+                    self.kill_child().await;
                     break;
                 }
             }

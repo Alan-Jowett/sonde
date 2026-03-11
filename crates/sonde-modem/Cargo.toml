@@ -1,0 +1,16 @@
+[package]
+name = "sonde-modem"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "ESP32-S3 radio modem firmware — USB-CDC to ESP-NOW bridge"
+
+[dependencies]
+sonde-protocol = { path = "../sonde-protocol", default-features = false }
+esp-idf-hal = "0.45"
+esp-idf-svc = { version = "0.50", features = ["binstart"] }
+esp-idf-sys = { version = "0.36", features = ["binstart"] }
+log = "0.4"
+
+[build-dependencies]
+embuild = "0.32"

@@ -34,6 +34,11 @@ const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
 /// Default map budget in bytes (~4 KB for ESP32-C3 after firmware overhead).
 const DEFAULT_MAP_BUDGET: usize = 4096;
 
+/// Maximum allowed program image size in bytes. Protects against
+/// excessive allocation from a large (but authenticated) `program_size`
+/// in the COMMAND payload. Derived from the flash partition size (4 KB).
+const MAX_PROGRAM_IMAGE_SIZE: usize = 4096;
+
 /// Outcome of a wake cycle.
 #[derive(Debug, PartialEq)]
 pub enum WakeCycleOutcome {
@@ -121,7 +126,7 @@ where
     let mut current_seq = starting_seq;
     let mut loaded_program: Option<LoadedProgram> = None;
 
-    let is_ephemeral = matches!(command_payload, CommandPayload::RunEphemeral { .. });
+    let is_ephemeral = matches!(&command_payload, CommandPayload::RunEphemeral { .. });
 
     match command_payload {
         CommandPayload::Nop => {
@@ -169,7 +174,12 @@ where
                         if is_ephemeral {
                             program_store.load_ephemeral(&image_bytes, &expected_hash, sha)
                         } else {
-                            program_store.install_resident(&image_bytes, &expected_hash, sha)
+                            program_store.install_resident(
+                                &image_bytes,
+                                &expected_hash,
+                                sha,
+                                DEFAULT_MAP_BUDGET,
+                            )
                         }
                     };
 
@@ -403,6 +413,14 @@ fn chunked_transfer<T: Transport, C: Clock>(
 ) -> NodeResult<Vec<u8>> {
     let program_size_usize = program_size as usize;
     let chunk_size_usize = chunk_size as usize;
+
+    // Reject transfers that exceed the maximum program image size
+    if program_size_usize > MAX_PROGRAM_IMAGE_SIZE {
+        return Err(NodeError::MalformedPayload(format!(
+            "program_size {} exceeds maximum {}",
+            program_size, MAX_PROGRAM_IMAGE_SIZE
+        )));
+    }
 
     // Validate chunk layout consistency
     let max_transfer_bytes = (chunk_count as u64).saturating_mul(chunk_size as u64);

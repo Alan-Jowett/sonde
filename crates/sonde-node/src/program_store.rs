@@ -61,9 +61,14 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
 
     /// Install a new resident program via chunked transfer.
     ///
-    /// 1. Write to the **inactive** partition.
-    /// 2. Verify the SHA-256 hash against `expected_hash`.
-    /// 3. Flip the active partition flag.
+    /// 1. Verify the SHA-256 hash against `expected_hash`.
+    /// 2. Decode the CBOR program image.
+    /// 3. Validate that map definitions fit within `map_budget`.
+    /// 4. Write to the **inactive** partition.
+    /// 5. Flip the active partition flag.
+    ///
+    /// Map budget is validated *before* the A/B swap so the old program
+    /// remains active if the new program's maps don't fit.
     ///
     /// Returns the decoded program on success. On failure, the existing
     /// active program is untouched (A/B atomicity).
@@ -72,6 +77,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         image_bytes: &[u8],
         expected_hash: &[u8],
         sha: &impl Sha256Provider,
+        map_budget: usize,
     ) -> NodeResult<LoadedProgram> {
         // Verify hash
         let actual_hash = sha.hash(image_bytes);
@@ -82,6 +88,15 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         // Decode the CBOR program image
         let image = ProgramImage::decode(image_bytes)
             .map_err(|e| NodeError::ProgramDecodeFailed(format!("{}", e)))?;
+
+        // Validate map budget before committing the A/B swap
+        let required = crate::map_storage::MapStorage::required_bytes(&image.maps);
+        if required > map_budget {
+            return Err(NodeError::MapBudgetExceeded {
+                required,
+                available: map_budget,
+            });
+        }
 
         // Write to the inactive partition
         let (_interval, active_partition) = self.storage.read_schedule();
@@ -316,7 +331,9 @@ mod tests {
         // Active partition is 0, so install should write to partition 1
         {
             let mut store = ProgramStore::new(&mut storage);
-            let loaded = store.install_resident(&cbor, &hash, &TestSha256).unwrap();
+            let loaded = store
+                .install_resident(&cbor, &hash, &TestSha256, 4096)
+                .unwrap();
             assert!(!loaded.is_ephemeral);
         }
         // Active partition should now be 1
@@ -376,7 +393,7 @@ mod tests {
         let mut storage = MockStorage::new();
         storage.active_partition = 5; // invalid
         let mut store = ProgramStore::new(&mut storage);
-        let result = store.install_resident(&cbor, &hash, &TestSha256);
+        let result = store.install_resident(&cbor, &hash, &TestSha256, 4096);
         assert!(matches!(result, Err(NodeError::StorageError(_))));
     }
 }

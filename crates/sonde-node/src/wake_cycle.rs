@@ -1,0 +1,1127 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
+//! Wake cycle state machine.
+//!
+//! Implements the core node lifecycle per protocol.md §6.1:
+//! `boot → WAKE → COMMAND → dispatch → (transfer/execute) → sleep`
+
+use sonde_protocol::{
+    decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
+    NodeMessage, Sha256Provider, HmacProvider,
+    MSG_COMMAND, MSG_CHUNK, MSG_APP_DATA_REPLY, MSG_WAKE, MSG_GET_CHUNK, MSG_PROGRAM_ACK,
+    MSG_APP_DATA,
+};
+
+use crate::bpf_helpers::{ProgramClass, SondeContext};
+use crate::bpf_runtime::BpfInterpreter;
+use crate::error::{NodeError, NodeResult};
+use crate::hal::{BatteryReader, Hal};
+use crate::key_store::NodeIdentity;
+use crate::map_storage::MapStorage;
+use crate::program_store::{resolve_map_references, LoadedProgram, ProgramStore};
+use crate::sleep::{SleepManager, WakeReason};
+use crate::traits::{Clock, PlatformStorage, Rng, Transport};
+use crate::FIRMWARE_ABI_VERSION;
+
+/// Retry and timing constants (protocol.md §9).
+const WAKE_MAX_RETRIES: u32 = 3;
+const RETRY_DELAY_MS: u32 = 100;
+const RESPONSE_TIMEOUT_MS: u32 = 50;
+
+/// Default instruction budget for BPF execution.
+const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
+
+/// Default map budget in bytes (~4 KB for ESP32-C3 after firmware overhead).
+const DEFAULT_MAP_BUDGET: usize = 4096;
+
+/// Outcome of a wake cycle.
+#[derive(Debug, PartialEq)]
+pub enum WakeCycleOutcome {
+    /// Normal completion — node should sleep for the specified seconds.
+    Sleep { seconds: u32 },
+    /// Reboot was requested by the gateway.
+    Reboot,
+    /// Node is unpaired — sleep indefinitely.
+    Unpaired,
+}
+
+/// Run one complete wake cycle.
+///
+/// This is the top-level function that orchestrates the entire wake cycle.
+/// It is generic over all platform traits so it can be tested on the host.
+#[allow(clippy::too_many_arguments)]
+pub fn run_wake_cycle<T, S, H, R, C, B, I>(
+    transport: &mut T,
+    storage: &mut S,
+    _hal: &mut H,
+    rng: &mut R,
+    clock: &C,
+    battery: &B,
+    interpreter: &mut I,
+    hmac: &impl HmacProvider,
+    sha: &impl Sha256Provider,
+) -> WakeCycleOutcome
+where
+    T: Transport,
+    S: PlatformStorage,
+    H: Hal,
+    R: Rng,
+    C: Clock,
+    B: BatteryReader,
+    I: BpfInterpreter,
+{
+    // 1. Load identity
+    let identity = match storage.read_key() {
+        Some((key_hint, psk)) => NodeIdentity { key_hint, psk },
+        None => return WakeCycleOutcome::Unpaired,
+    };
+
+    // 2. Determine wake reason
+    let wake_reason = determine_wake_reason(storage);
+
+    // 3. Load schedule
+    let (base_interval_s, _active_partition) = storage.read_schedule();
+    let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
+
+    // 4. Get current program hash
+    let program_hash = {
+        let program_store = ProgramStore::new(storage);
+        program_store.active_program_hash(sha)
+    };
+
+    // 5. Generate WAKE nonce
+    let wake_nonce = rng.random_u64();
+    let battery_mv = battery.battery_mv();
+
+    // 6. Send WAKE, await COMMAND (with retries)
+    let command_result = wake_command_exchange(
+        transport,
+        &identity,
+        wake_nonce,
+        &program_hash,
+        battery_mv,
+        hmac,
+    );
+
+    let (starting_seq, timestamp_ms, command_payload) = match command_result {
+        Ok(cmd) => cmd,
+        Err(_) => {
+            // WAKE retries exhausted or transport error — sleep
+            return WakeCycleOutcome::Sleep {
+                seconds: sleep_mgr.effective_sleep_s(),
+            };
+        }
+    };
+
+    // 7. Record gateway timestamp for BPF context
+    let command_received_at = clock.elapsed_ms();
+
+    // 8. Dispatch command
+    let mut current_seq = starting_seq;
+    let mut loaded_program: Option<LoadedProgram> = None;
+
+    let is_ephemeral = matches!(command_payload, CommandPayload::RunEphemeral { .. });
+
+    match command_payload {
+        CommandPayload::Nop => {
+            // Proceed to BPF execution
+        }
+        CommandPayload::Reboot => {
+            return WakeCycleOutcome::Reboot;
+        }
+        CommandPayload::UpdateSchedule { interval_s } => {
+            let _ = storage.write_schedule_interval(interval_s);
+            sleep_mgr.set_base_interval(interval_s);
+        }
+        CommandPayload::UpdateProgram {
+            program_hash: expected_hash,
+            program_size,
+            chunk_size,
+            chunk_count,
+            ..
+        }
+        | CommandPayload::RunEphemeral {
+            program_hash: expected_hash,
+            program_size,
+            chunk_size,
+            chunk_count,
+            ..
+        } => {
+
+            // Chunked transfer
+            let transfer_result = chunked_transfer(
+                transport,
+                &identity,
+                &mut current_seq,
+                program_size,
+                chunk_size,
+                chunk_count,
+                hmac,
+            );
+
+            match transfer_result {
+                Ok(image_bytes) => {
+                    // Verify hash and install/load
+                    let install_result = {
+                        let mut program_store = ProgramStore::new(storage);
+                        if is_ephemeral {
+                            program_store.load_ephemeral(&image_bytes, &expected_hash, sha)
+                        } else {
+                            program_store.install_resident(&image_bytes, &expected_hash, sha)
+                        }
+                    };
+
+                    match install_result {
+                        Ok(program) => {
+                            // Send PROGRAM_ACK
+                            let _ = send_program_ack(
+                                transport,
+                                &identity,
+                                &mut current_seq,
+                                &program.hash,
+                                hmac,
+                            );
+
+                            if !is_ephemeral {
+                                let _ = storage.set_program_updated_flag();
+                            }
+                            loaded_program = Some(program);
+                        }
+                        Err(_) => {
+                            // Hash mismatch or decode failure — discard, sleep
+                            return WakeCycleOutcome::Sleep {
+                                seconds: sleep_mgr.effective_sleep_s(),
+                            };
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Chunk transfer failed — sleep
+                    return WakeCycleOutcome::Sleep {
+                        seconds: sleep_mgr.effective_sleep_s(),
+                    };
+                }
+            }
+        }
+    }
+
+    // 9. BPF execution
+    // Load program if not already loaded from transfer
+    if loaded_program.is_none() {
+        let program_store = ProgramStore::new(storage);
+        loaded_program = program_store.load_active(sha);
+    }
+
+    if let Some(mut program) = loaded_program {
+        let _program_class = if program.is_ephemeral {
+            ProgramClass::Ephemeral
+        } else {
+            ProgramClass::Resident
+        };
+
+        // Allocate maps
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+        if map_storage.allocate(&program.map_defs).is_err() {
+            // Map budget exceeded — sleep (existing program remains active
+            // because install_resident already swapped partitions; on next
+            // boot the old program's maps should fit, but if this is the
+            // newly installed program, it's a firmware-level issue).
+            return WakeCycleOutcome::Sleep {
+                seconds: sleep_mgr.effective_sleep_s(),
+            };
+        }
+
+        // Resolve LDDW map references
+        let map_ptrs = map_storage.map_pointers();
+        if resolve_map_references(&mut program.bytecode, &map_ptrs).is_err() {
+            return WakeCycleOutcome::Sleep {
+                seconds: sleep_mgr.effective_sleep_s(),
+            };
+        }
+
+        // Build execution context
+        let elapsed_since_command = clock.elapsed_ms() - command_received_at;
+        let ctx = SondeContext {
+            timestamp: timestamp_ms + elapsed_since_command,
+            battery_mv: battery_mv as u16,
+            firmware_abi_version: FIRMWARE_ABI_VERSION as u16,
+            wake_reason: wake_reason as u8,
+        };
+
+        // Load and execute
+        if let Ok(()) = interpreter.load(&program.bytecode, &map_ptrs) {
+            let ctx_ptr = &ctx as *const SondeContext as u64;
+            let _ = interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET);
+        }
+    }
+
+    // 10. Determine sleep duration
+    if sleep_mgr.will_wake_early() {
+        let _ = storage.set_early_wake_flag();
+    }
+
+    WakeCycleOutcome::Sleep {
+        seconds: sleep_mgr.effective_sleep_s(),
+    }
+}
+
+/// Determine the wake reason from RTC flags.
+fn determine_wake_reason<S: PlatformStorage>(storage: &mut S) -> WakeReason {
+    if storage.take_program_updated_flag() {
+        WakeReason::ProgramUpdate
+    } else if storage.take_early_wake_flag() {
+        WakeReason::Early
+    } else {
+        WakeReason::Scheduled
+    }
+}
+
+/// Execute the WAKE/COMMAND exchange with retry logic.
+///
+/// Returns `(starting_seq, timestamp_ms, CommandPayload)` on success.
+fn wake_command_exchange<T: Transport>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    wake_nonce: u64,
+    program_hash: &[u8],
+    battery_mv: u32,
+    hmac: &impl HmacProvider,
+) -> NodeResult<(u64, u64, CommandPayload)> {
+    let wake_msg = NodeMessage::Wake {
+        firmware_abi_version: FIRMWARE_ABI_VERSION,
+        program_hash: program_hash.to_vec(),
+        battery_mv,
+    };
+    let payload_cbor = wake_msg.encode().map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_WAKE,
+        nonce: wake_nonce,
+    };
+
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    // Try sending WAKE up to (1 + WAKE_MAX_RETRIES) times
+    for attempt in 0..=WAKE_MAX_RETRIES {
+        if attempt > 0 {
+            // Delay between retries
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS as u64));
+        }
+
+        transport.send(&frame)?;
+
+        // Await COMMAND response
+        match transport.recv(RESPONSE_TIMEOUT_MS)? {
+            Some(raw_response) => {
+                // Try to verify and decode
+                match verify_and_decode_command(
+                    &raw_response,
+                    identity,
+                    wake_nonce,
+                    hmac,
+                ) {
+                    Ok(result) => return Ok(result),
+                    Err(_) => {
+                        // Invalid response — discard and retry
+                        continue;
+                    }
+                }
+            }
+            None => {
+                // Timeout — retry
+                continue;
+            }
+        }
+    }
+
+    Err(NodeError::WakeRetriesExhausted)
+}
+
+/// Verify and decode a COMMAND response.
+fn verify_and_decode_command(
+    raw: &[u8],
+    identity: &NodeIdentity,
+    expected_nonce: u64,
+    hmac: &impl HmacProvider,
+) -> NodeResult<(u64, u64, CommandPayload)> {
+    let decoded = decode_frame(raw).map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    // Verify HMAC
+    if !verify_frame(&decoded, &identity.psk, hmac) {
+        return Err(NodeError::AuthFailure);
+    }
+
+    // Verify msg_type
+    if decoded.header.msg_type != MSG_COMMAND {
+        return Err(NodeError::UnexpectedMsgType(decoded.header.msg_type));
+    }
+
+    // Verify echoed nonce
+    if decoded.header.nonce != expected_nonce {
+        return Err(NodeError::ResponseBindingMismatch);
+    }
+
+    // Decode CBOR
+    let gateway_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
+    match gateway_msg {
+        GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload,
+        } => Ok((starting_seq, timestamp_ms, payload)),
+        _ => Err(NodeError::UnexpectedMsgType(decoded.header.msg_type)),
+    }
+}
+
+/// Execute the chunked transfer sub-protocol.
+///
+/// Returns the reassembled program image bytes on success.
+fn chunked_transfer<T: Transport>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    _program_size: u32,
+    _chunk_size: u32,
+    chunk_count: u32,
+    hmac: &impl HmacProvider,
+) -> NodeResult<Vec<u8>> {
+    let mut image_data: Vec<u8> = Vec::new();
+
+    for chunk_index in 0..chunk_count {
+        let seq = *current_seq;
+        *current_seq += 1;
+
+        let chunk_data = get_chunk_with_retry(
+            transport,
+            identity,
+            seq,
+            chunk_index,
+            hmac,
+        )?;
+
+        image_data.extend_from_slice(&chunk_data);
+    }
+
+    Ok(image_data)
+}
+
+/// Request a single chunk with retry logic.
+fn get_chunk_with_retry<T: Transport>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    seq: u64,
+    chunk_index: u32,
+    hmac: &impl HmacProvider,
+) -> NodeResult<Vec<u8>> {
+    let get_chunk_msg = NodeMessage::GetChunk { chunk_index };
+    let payload_cbor = get_chunk_msg.encode().map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_GET_CHUNK,
+        nonce: seq,
+    };
+
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    for attempt in 0..=WAKE_MAX_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS as u64));
+        }
+
+        transport.send(&frame)?;
+
+        match transport.recv(RESPONSE_TIMEOUT_MS)? {
+            Some(raw_response) => {
+                match verify_and_decode_chunk(
+                    &raw_response,
+                    identity,
+                    seq,
+                    chunk_index,
+                    hmac,
+                ) {
+                    Ok(data) => return Ok(data),
+                    Err(_) => continue,
+                }
+            }
+            None => continue,
+        }
+    }
+
+    Err(NodeError::ChunkTransferFailed { chunk_index })
+}
+
+/// Verify and decode a CHUNK response.
+fn verify_and_decode_chunk(
+    raw: &[u8],
+    identity: &NodeIdentity,
+    expected_seq: u64,
+    expected_index: u32,
+    hmac: &impl HmacProvider,
+) -> NodeResult<Vec<u8>> {
+    let decoded = decode_frame(raw).map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    if !verify_frame(&decoded, &identity.psk, hmac) {
+        return Err(NodeError::AuthFailure);
+    }
+
+    if decoded.header.msg_type != MSG_CHUNK {
+        return Err(NodeError::UnexpectedMsgType(decoded.header.msg_type));
+    }
+
+    if decoded.header.nonce != expected_seq {
+        return Err(NodeError::ResponseBindingMismatch);
+    }
+
+    let gateway_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
+    match gateway_msg {
+        GatewayMessage::Chunk {
+            chunk_index,
+            chunk_data,
+        } => {
+            if chunk_index != expected_index {
+                return Err(NodeError::ChunkIndexMismatch {
+                    expected: expected_index,
+                    received: chunk_index,
+                });
+            }
+            Ok(chunk_data)
+        }
+        _ => Err(NodeError::UnexpectedMsgType(decoded.header.msg_type)),
+    }
+}
+
+/// Send a PROGRAM_ACK message.
+fn send_program_ack<T: Transport>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    program_hash: &[u8],
+    hmac: &impl HmacProvider,
+) -> NodeResult<()> {
+    let seq = *current_seq;
+    *current_seq += 1;
+
+    let ack_msg = NodeMessage::ProgramAck {
+        program_hash: program_hash.to_vec(),
+    };
+    let payload_cbor = ack_msg.encode().map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_PROGRAM_ACK,
+        nonce: seq,
+    };
+
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    transport.send(&frame)
+}
+
+/// Send an APP_DATA message (fire-and-forget).
+pub fn send_app_data<T: Transport>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    blob: &[u8],
+    hmac: &impl HmacProvider,
+) -> NodeResult<()> {
+    let seq = *current_seq;
+    *current_seq += 1;
+
+    let msg = NodeMessage::AppData {
+        blob: blob.to_vec(),
+    };
+    let payload_cbor = msg.encode().map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_APP_DATA,
+        nonce: seq,
+    };
+
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    transport.send(&frame)
+}
+
+/// Send an APP_DATA message and wait for APP_DATA_REPLY.
+pub fn send_recv_app_data<T: Transport>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    blob: &[u8],
+    timeout_ms: u32,
+    hmac: &impl HmacProvider,
+) -> NodeResult<Vec<u8>> {
+    let seq = *current_seq;
+    *current_seq += 1;
+
+    let msg = NodeMessage::AppData {
+        blob: blob.to_vec(),
+    };
+    let payload_cbor = msg.encode().map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_APP_DATA,
+        nonce: seq,
+    };
+
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac).map_err(|e| {
+        NodeError::MalformedPayload(format!("{}", e))
+    })?;
+
+    transport.send(&frame)?;
+
+    // Wait for reply
+    match transport.recv(timeout_ms)? {
+        Some(raw_response) => {
+            let decoded = decode_frame(&raw_response).map_err(|e| {
+                NodeError::MalformedPayload(format!("{}", e))
+            })?;
+
+            if !verify_frame(&decoded, &identity.psk, hmac) {
+                return Err(NodeError::AuthFailure);
+            }
+
+            if decoded.header.msg_type != MSG_APP_DATA_REPLY {
+                return Err(NodeError::UnexpectedMsgType(decoded.header.msg_type));
+            }
+
+            if decoded.header.nonce != seq {
+                return Err(NodeError::ResponseBindingMismatch);
+            }
+
+            let gateway_msg =
+                GatewayMessage::decode(decoded.header.msg_type, &decoded.payload)
+                    .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
+            match gateway_msg {
+                GatewayMessage::AppDataReply { blob } => Ok(blob),
+                _ => Err(NodeError::UnexpectedMsgType(decoded.header.msg_type)),
+            }
+        }
+        None => Err(NodeError::Timeout),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bpf_runtime::BpfError;
+    use crate::error::NodeResult;
+    use crate::traits::PlatformStorage;
+    use sonde_protocol::{HmacProvider, Sha256Provider};
+    use std::collections::VecDeque;
+
+    // --- Test crypto providers ---
+
+    struct TestHmac;
+    impl HmacProvider for TestHmac {
+        fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
+            use hmac::Mac;
+            let mut mac =
+                hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key");
+            mac.update(data);
+            mac.finalize().into_bytes().into()
+        }
+        fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
+            let computed = self.compute(key, data);
+            computed == *expected
+        }
+    }
+
+    struct TestSha256;
+    impl Sha256Provider for TestSha256 {
+        fn hash(&self, data: &[u8]) -> [u8; 32] {
+            use sha2::Digest;
+            sha2::Sha256::digest(data).into()
+        }
+    }
+
+    // --- Mock transport ---
+
+    struct MockTransport {
+        /// Responses queued for recv()
+        inbound: VecDeque<Option<Vec<u8>>>,
+        /// Frames captured from send()
+        outbound: Vec<Vec<u8>>,
+    }
+
+    impl MockTransport {
+        fn new() -> Self {
+            Self {
+                inbound: VecDeque::new(),
+                outbound: Vec::new(),
+            }
+        }
+
+        fn queue_response(&mut self, frame: Option<Vec<u8>>) {
+            self.inbound.push_back(frame);
+        }
+    }
+
+    impl Transport for MockTransport {
+        fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+            self.outbound.push(frame.to_vec());
+            Ok(())
+        }
+
+        fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+            Ok(self.inbound.pop_front().flatten())
+        }
+    }
+
+    // --- Mock storage ---
+
+    pub struct MockStorage {
+        pub key: Option<(u16, [u8; 32])>,
+        pub schedule_interval: u32,
+        pub active_partition: u8,
+        pub programs: [Option<Vec<u8>>; 2],
+        pub early_wake_flag: bool,
+        pub program_updated_flag: bool,
+    }
+
+    impl MockStorage {
+        pub fn new() -> Self {
+            Self {
+                key: None,
+                schedule_interval: 60,
+                active_partition: 0,
+                programs: [None, None],
+                early_wake_flag: false,
+                program_updated_flag: false,
+            }
+        }
+
+        pub fn with_key(mut self, key_hint: u16, psk: [u8; 32]) -> Self {
+            self.key = Some((key_hint, psk));
+            self
+        }
+    }
+
+    impl PlatformStorage for MockStorage {
+        fn read_key(&self) -> Option<(u16, [u8; 32])> { self.key }
+        fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
+            self.key = Some((key_hint, *psk));
+            Ok(())
+        }
+        fn erase_key(&mut self) -> NodeResult<()> {
+            self.key = None;
+            Ok(())
+        }
+        fn read_schedule(&self) -> (u32, u8) {
+            (self.schedule_interval, self.active_partition)
+        }
+        fn write_schedule_interval(&mut self, interval_s: u32) -> NodeResult<()> {
+            self.schedule_interval = interval_s;
+            Ok(())
+        }
+        fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
+            self.active_partition = partition;
+            Ok(())
+        }
+        fn read_program(&self, partition: u8) -> Option<Vec<u8>> {
+            self.programs[partition as usize].clone()
+        }
+        fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
+            self.programs[partition as usize] = Some(image.to_vec());
+            Ok(())
+        }
+        fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
+            self.programs[partition as usize] = None;
+            Ok(())
+        }
+        fn take_early_wake_flag(&mut self) -> bool {
+            let v = self.early_wake_flag;
+            self.early_wake_flag = false;
+            v
+        }
+        fn set_early_wake_flag(&mut self) -> NodeResult<()> {
+            self.early_wake_flag = true;
+            Ok(())
+        }
+        fn take_program_updated_flag(&mut self) -> bool {
+            let v = self.program_updated_flag;
+            self.program_updated_flag = false;
+            v
+        }
+        fn set_program_updated_flag(&mut self) -> NodeResult<()> {
+            self.program_updated_flag = true;
+            Ok(())
+        }
+    }
+
+    // --- Mock HAL ---
+
+    struct MockHal;
+    impl Hal for MockHal {
+        fn i2c_read(&mut self, _h: u32, _buf: &mut [u8]) -> i32 { 0 }
+        fn i2c_write(&mut self, _h: u32, _data: &[u8]) -> i32 { 0 }
+        fn i2c_write_read(&mut self, _h: u32, _w: &[u8], _r: &mut [u8]) -> i32 { 0 }
+        fn spi_transfer(&mut self, _h: u32, _tx: Option<&[u8]>, _rx: Option<&mut [u8]>, _l: usize) -> i32 { 0 }
+        fn gpio_read(&self, _pin: u32) -> i32 { 0 }
+        fn gpio_write(&mut self, _pin: u32, _val: u32) -> i32 { 0 }
+        fn adc_read(&self, _ch: u32) -> i32 { 0 }
+    }
+
+    struct MockBattery;
+    impl BatteryReader for MockBattery {
+        fn battery_mv(&self) -> u32 { 3300 }
+    }
+
+    // --- Mock Rng ---
+    struct MockRng(u64);
+    impl Rng for MockRng {
+        fn random_u64(&mut self) -> u64 {
+            self.0 += 1;
+            self.0
+        }
+    }
+
+    // --- Mock Clock ---
+    struct MockClock;
+    impl Clock for MockClock {
+        fn elapsed_ms(&self) -> u64 { 100 }
+    }
+
+    // --- Mock BPF interpreter ---
+    struct MockBpfInterpreter {
+        loaded: bool,
+        execute_result: Result<u64, BpfError>,
+    }
+
+    impl MockBpfInterpreter {
+        fn new() -> Self {
+            Self {
+                loaded: false,
+                execute_result: Ok(0),
+            }
+        }
+    }
+
+    impl BpfInterpreter for MockBpfInterpreter {
+        fn register_helper(&mut self, _id: u32, _func: crate::bpf_runtime::HelperFn) -> Result<(), BpfError> {
+            Ok(())
+        }
+        fn load(&mut self, _bytecode: &[u8], _map_ptrs: &[u64]) -> Result<(), BpfError> {
+            self.loaded = true;
+            Ok(())
+        }
+        fn execute(&mut self, _ctx_ptr: u64, _budget: u64) -> Result<u64, BpfError> {
+            self.execute_result.clone()
+        }
+    }
+
+    // --- Helper to build a valid COMMAND response frame ---
+
+    fn build_command_response(
+        psk: &[u8; 32],
+        key_hint: u16,
+        echo_nonce: u64,
+        starting_seq: u64,
+        timestamp_ms: u64,
+        payload: CommandPayload,
+    ) -> Vec<u8> {
+        let cmd = GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload,
+        };
+        let payload_cbor = cmd.encode().unwrap();
+        let header = FrameHeader {
+            key_hint,
+            msg_type: MSG_COMMAND,
+            nonce: echo_nonce,
+        };
+        encode_frame(&header, &payload_cbor, psk, &TestHmac).unwrap()
+    }
+
+    // --- Tests ---
+
+    #[test]
+    fn test_unpaired_node_returns_unpaired() {
+        let mut transport = MockTransport::new();
+        let mut storage = MockStorage::new(); // no key
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+        assert_eq!(outcome, WakeCycleOutcome::Unpaired);
+        // No frames should have been sent
+        assert!(transport.outbound.is_empty());
+    }
+
+    #[test]
+    fn test_wake_retries_exhausted() {
+        let psk = [0xAA; 32];
+        let mut transport = MockTransport::new();
+        // Queue 4 timeouts (1 initial + 3 retries)
+        for _ in 0..4 {
+            transport.queue_response(None);
+        }
+        let mut storage = MockStorage::new().with_key(42, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(
+            outcome,
+            WakeCycleOutcome::Sleep { seconds: 60 }
+        );
+        // Should have sent 4 WAKE frames
+        assert_eq!(transport.outbound.len(), 4);
+    }
+
+    #[test]
+    fn test_normal_nop_wake_cycle() {
+        let psk = [0xBB; 32];
+        let key_hint = 7u16;
+        let mut transport = MockTransport::new();
+
+        // The WAKE nonce will be rng.random_u64() = 1 (MockRng starts at 0, +1)
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1, // echo nonce
+            1000,
+            1710000000000,
+            CommandPayload::Nop,
+        );
+        transport.queue_response(Some(command_frame));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(
+            outcome,
+            WakeCycleOutcome::Sleep { seconds: 60 }
+        );
+        // Should have sent exactly 1 WAKE
+        assert_eq!(transport.outbound.len(), 1);
+    }
+
+    #[test]
+    fn test_reboot_command() {
+        let psk = [0xCC; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        let command_frame = build_command_response(
+            &psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Reboot,
+        );
+        transport.queue_response(Some(command_frame));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Reboot);
+    }
+
+    #[test]
+    fn test_update_schedule() {
+        let psk = [0xDD; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            1000,
+            1710000000000,
+            CommandPayload::UpdateSchedule { interval_s: 120 },
+        );
+        transport.queue_response(Some(command_frame));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(
+            outcome,
+            WakeCycleOutcome::Sleep { seconds: 120 }
+        );
+        assert_eq!(storage.schedule_interval, 120);
+    }
+
+    #[test]
+    fn test_invalid_hmac_discarded() {
+        let psk = [0xEE; 32];
+        let wrong_psk = [0xFF; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Build a response signed with the wrong key
+        let bad_frame = build_command_response(
+            &wrong_psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop,
+        );
+        // Queue: bad response, then 3 more timeouts
+        transport.queue_response(Some(bad_frame));
+        transport.queue_response(None);
+        transport.queue_response(None);
+        transport.queue_response(None);
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Should exhaust retries after discarding the bad frame
+        assert_eq!(
+            outcome,
+            WakeCycleOutcome::Sleep { seconds: 60 }
+        );
+    }
+
+    #[test]
+    fn test_wrong_nonce_discarded() {
+        let psk = [0x11; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Response echoes wrong nonce (99 instead of 1)
+        let bad_frame = build_command_response(
+            &psk, key_hint, 99, 1000, 1710000000000, CommandPayload::Nop,
+        );
+        transport.queue_response(Some(bad_frame));
+        transport.queue_response(None);
+        transport.queue_response(None);
+        transport.queue_response(None);
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(
+            outcome,
+            WakeCycleOutcome::Sleep { seconds: 60 }
+        );
+    }
+}

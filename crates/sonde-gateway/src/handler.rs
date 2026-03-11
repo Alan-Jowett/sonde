@@ -419,8 +419,8 @@ impl HandlerProcess {
                         }
                         return ReadOutcome::Reply(reply);
                     }
-                    Ok(other) => {
-                        warn!(msg_type = ?other, "unexpected message type from handler — ignoring");
+                    Ok(_) => {
+                        warn!("unexpected message type from handler — ignoring");
                     }
                     Err(e) => {
                         return if e.kind() == io::ErrorKind::UnexpectedEof {
@@ -496,6 +496,8 @@ impl HandlerProcess {
 
     /// Drain pending stdout messages (LOG) without blocking. Uses a short
     /// timeout so we don't stall if the handler has nothing to send.
+    /// If the timeout fires mid-frame, kill the child to avoid desynchronized
+    /// framing state.
     async fn drain_stdout(&mut self) {
         let reader = match self.stdout_reader.as_mut() {
             Some(r) => r,
@@ -515,8 +517,15 @@ impl HandlerProcess {
                 Ok(Ok(_)) => {
                     // Unexpected message type during drain — ignore
                 }
-                Ok(Err(_)) | Err(_) => {
-                    // EOF, read error, or timeout — stop draining
+                Ok(Err(_)) => {
+                    // Read/decode error — framing may be corrupt, kill child
+                    self.kill_child().await;
+                    break;
+                }
+                Err(_) => {
+                    // Timeout — nothing pending, stop draining.
+                    // Since read_message reads length then payload atomically,
+                    // a timeout here means we haven't started reading a frame.
                     break;
                 }
             }

@@ -928,12 +928,31 @@ write_msg(reply)
 
 /// Find Python 3 executable name.
 fn python_cmd() -> &'static str {
-    // On Windows, `python` is usually Python 3; on Unix, `python3` is safer.
     if cfg!(windows) {
         "python"
     } else {
         "python3"
     }
+}
+
+/// Check if Python 3 is available. Returns false if not installed.
+fn python_available() -> bool {
+    std::process::Command::new(python_cmd())
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
+/// Skip the test if Python 3 is not available.
+macro_rules! require_python {
+    () => {
+        if !python_available() {
+            eprintln!("SKIPPED: Python 3 not available");
+            return;
+        }
+    };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -943,6 +962,7 @@ fn python_cmd() -> &'static str {
 /// T-0500: APP_DATA reception and echo forwarding via handler.
 #[tokio::test]
 async fn t0500_app_data_echo_forwarding() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
 
@@ -984,6 +1004,7 @@ async fn t0500_app_data_echo_forwarding() {
 /// T-0501: APP_DATA_REPLY with fixed non-zero data [0xAA, 0xBB].
 #[tokio::test]
 async fn t0501_app_data_reply_fixed_data() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "fixed.py", FIXED_REPLY_HANDLER_PY);
 
@@ -1020,6 +1041,7 @@ async fn t0501_app_data_reply_fixed_data() {
 /// T-0502: APP_DATA_REPLY suppressed on empty handler reply.
 #[tokio::test]
 async fn t0502_empty_reply_suppressed() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "empty.py", EMPTY_REPLY_HANDLER_PY);
 
@@ -1049,6 +1071,7 @@ async fn t0502_empty_reply_suppressed() {
 /// T-0503: Multiple APP_DATA per wake cycle (persistent handler).
 #[tokio::test]
 async fn t0503_multiple_app_data_per_wake() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
 
@@ -1133,6 +1156,7 @@ async fn t0504_handler_transport_framing() {
 /// T-0505: Handler respawn after clean exit.
 #[tokio::test]
 async fn t0505_handler_respawn_on_clean_exit() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     // Use single-shot echo handler — it processes one message then exits(0).
     let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
@@ -1185,6 +1209,7 @@ async fn t0505_handler_respawn_on_clean_exit() {
 /// T-0506: Handler crash — no reply sent to node.
 #[tokio::test]
 async fn t0506_handler_crash_no_reply() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "crash.py", CRASH_HANDLER_PY);
 
@@ -1214,6 +1239,7 @@ async fn t0506_handler_crash_no_reply() {
 /// T-0507: Handler routing by program hash — two handlers, two programs.
 #[tokio::test]
 async fn t0507_routing_by_program_hash() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let echo_script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
     let fixed_script = write_handler_script(tmp.path(), "fixed.py", FIXED_REPLY_HANDLER_PY);
@@ -1282,6 +1308,7 @@ async fn t0507_routing_by_program_hash() {
 /// T-0508: No matching handler — no reply, no crash.
 #[tokio::test]
 async fn t0508_no_handler_match_no_reply() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
 
@@ -1311,6 +1338,7 @@ async fn t0508_no_handler_match_no_reply() {
 /// T-0509: Catch-all handler (`ProgramMatcher::Any`).
 #[tokio::test]
 async fn t0509_catch_all_handler() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
 
@@ -1349,6 +1377,7 @@ async fn t0509_catch_all_handler() {
 /// nonces; each reply uses the correct nonce.
 #[tokio::test]
 async fn t0510_request_id_correlation() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
 
@@ -1388,6 +1417,7 @@ async fn t0510_request_id_correlation() {
 /// T-0511: Handler replies with wrong `request_id` — reply discarded.
 #[tokio::test]
 async fn t0511_request_id_mismatch_discarded() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "wrong_id.py", WRONG_REQUEST_ID_HANDLER_PY);
 
@@ -1417,6 +1447,7 @@ async fn t0511_request_id_mismatch_discarded() {
 /// (EVENT forwarding from engine to handler is not wired in Phase 2C-i.)
 #[tokio::test]
 async fn t0512_handler_no_crash_on_wake() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
 
@@ -1451,6 +1482,7 @@ async fn t0512_handler_no_crash_on_wake() {
 /// T-0513: LOG messages from handler do not crash the gateway.
 #[tokio::test]
 async fn t0513_log_messages_no_crash() {
+    require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "log.py", LOG_HANDLER_PY);
 

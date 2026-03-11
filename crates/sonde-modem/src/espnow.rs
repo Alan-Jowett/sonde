@@ -150,6 +150,7 @@ impl EspNowDriver {
     }
 
     /// Perform a WiFi AP scan across all channels and return per-channel results.
+    /// Restores ESP-NOW on `current_channel` after the scan completes.
     pub fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
         let scan_result = self.wifi.scan().unwrap_or_default();
         let mut channels = [(0u16, 0i8); 15]; // index 1-14: (count, strongest_rssi)
@@ -162,6 +163,14 @@ impl EspNowDriver {
                     channels[ch].1 = ap.signal_strength;
                 }
             }
+        }
+
+        // Restore the WiFi channel after scanning (scanning disrupts ESP-NOW).
+        if let Err(e) = self.wifi.wifi().set_channel(self.current_channel) {
+            warn!(
+                "failed to restore channel {} after scan: {:?}",
+                self.current_channel, e
+            );
         }
 
         (1..=14)

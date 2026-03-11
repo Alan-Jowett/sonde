@@ -327,7 +327,7 @@ On `ERROR`, the gateway logs the error and sends `RESET` to attempt recovery.
 | Condition | Receiver behavior |
 |-----------|-------------------|
 | `len` = 0 | Silently discard. |
-| `len` > 512 | Silently discard; skip `len` bytes to resynchronize. |
+| `len` > 512 | Framing error. MUST NOT skip `len` bytes (untrusted value). Trigger `RESET`-based resynchronization (§2.3). |
 | Unknown `type` | Silently discard (forward compatibility). |
 | `SEND_FRAME` body < 7 bytes (no MAC + data) | Modem silently discards. |
 | `SET_CHANNEL` with `channel` = 0 or > 14 | Modem sends `ERROR` with code `CHANNEL_SET_FAILED`. |

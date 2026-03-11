@@ -188,12 +188,7 @@ where
                     let install_result = {
                         let mut program_store = ProgramStore::new(storage);
                         if is_ephemeral {
-                            program_store.load_ephemeral(
-                                &image_bytes,
-                                &expected_hash,
-                                sha,
-                                map_storage.budget_bytes(),
-                            )
+                            program_store.load_ephemeral(&image_bytes, &expected_hash, sha)
                         } else {
                             program_store.install_resident(
                                 &image_bytes,
@@ -253,6 +248,10 @@ where
     }
 
     // 9. BPF execution
+    // Track whether a new resident program was installed this cycle.
+    // Used to force map re-initialization even when layout matches.
+    let resident_installed_this_cycle = loaded_program.as_ref().is_some_and(|p| !p.is_ephemeral);
+
     // Load program if not already loaded from transfer
     if loaded_program.is_none() {
         let program_store = ProgramStore::new(storage);
@@ -279,14 +278,16 @@ where
             }
         } else {
             // For resident programs, re-allocate maps when the layout
-            // doesn't match. Covers first boot, new program install, and
-            // recovery after an ephemeral cycle.
-            let needs_realloc = !map_storage.layout_matches(&program.map_defs);
-            if needs_realloc && map_storage.allocate(&program.map_defs).is_err() {
-                // Map budget exceeded. The newly installed resident program
-                // is already active (install_resident swapped partitions),
-                // so we do not roll back here. This is a firmware-level
-                // configuration issue.
+            // doesn't match OR when a new program was installed this
+            // cycle (even with identical layout, map data must be
+            // zero-initialized per node-design.md §9.2).
+            if (resident_installed_this_cycle
+                || !map_storage.layout_matches(&program.map_defs))
+                && map_storage.allocate(&program.map_defs).is_err()
+            {
+                // Map budget exceeded. The newly installed resident
+                // program is already active (install_resident swapped
+                // partitions), so we do not roll back here.
                 return WakeCycleOutcome::Sleep {
                     seconds: sleep_mgr.effective_sleep_s(),
                 };

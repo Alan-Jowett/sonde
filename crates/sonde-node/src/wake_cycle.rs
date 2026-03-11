@@ -281,8 +281,7 @@ where
             // doesn't match OR when a new program was installed this
             // cycle (even with identical layout, map data must be
             // zero-initialized per node-design.md §9.2).
-            if (resident_installed_this_cycle
-                || !map_storage.layout_matches(&program.map_defs))
+            if (resident_installed_this_cycle || !map_storage.layout_matches(&program.map_defs))
                 && map_storage.allocate(&program.map_defs).is_err()
             {
                 // Map budget exceeded. The newly installed resident

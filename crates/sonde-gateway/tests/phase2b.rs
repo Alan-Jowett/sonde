@@ -303,8 +303,9 @@ async fn t0105_command_response_structure() {
             timestamp_ms,
             payload,
         } => {
-            assert!(starting_seq > 0 || starting_seq == 0); // any u64 value is valid
-                                                            // timestamp_ms should be within 5 seconds of now
+            // starting_seq is a valid random u64 — just verify we decoded successfully
+            let _ = starting_seq;
+            // timestamp_ms should be within 5 seconds of now
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -466,9 +467,11 @@ async fn t0205_command_priority_ordering() {
 
     let mut record = node.to_record();
     record.assigned_program_hash = Some(assigned_hash.clone());
+    // Set the node's current program to a different hash so UPDATE_PROGRAM triggers
+    record.current_program_hash = Some(vec![0u8; 32]);
     storage.upsert_node(&record).await.unwrap();
 
-    // Queue ephemeral + schedule + reboot. Program update comes from hash mismatch.
+    // Queue ephemeral + schedule + reboot ALL before the first WAKE
     gw.queue_command(
         "node-205",
         PendingCommand::RunEphemeral {
@@ -476,6 +479,12 @@ async fn t0205_command_priority_ordering() {
         },
     )
     .await;
+    gw.queue_command(
+        "node-205",
+        PendingCommand::UpdateSchedule { interval_s: 60 },
+    )
+    .await;
+    gw.queue_command("node-205", PendingCommand::Reboot).await;
 
     // WAKE 1: must be RUN_EPHEMERAL (highest priority)
     let (_, _, p1) = do_wake(&gw, &node, 1, &[0u8; 32]).await;
@@ -484,13 +493,6 @@ async fn t0205_command_priority_ordering() {
         sonde_protocol::CMD_RUN_EPHEMERAL,
         "first WAKE must yield RUN_EPHEMERAL"
     );
-
-    // Queue schedule and reboot for later wakes
-    gw.queue_command(
-        "node-205",
-        PendingCommand::UpdateSchedule { interval_s: 60 },
-    )
-    .await;
 
     // WAKE 2: must be UPDATE_PROGRAM (hash mismatch has priority 2)
     let (_, _, p2) = do_wake(&gw, &node, 2, &[0u8; 32]).await;
@@ -508,9 +510,6 @@ async fn t0205_command_priority_ordering() {
         sonde_protocol::CMD_UPDATE_SCHEDULE,
         "third WAKE must yield UPDATE_SCHEDULE"
     );
-
-    // Queue reboot for next
-    gw.queue_command("node-205", PendingCommand::Reboot).await;
 
     // WAKE 4: must be REBOOT (priority 4)
     let (_, _, p4) = do_wake(&gw, &node, 4, &assigned_hash).await;

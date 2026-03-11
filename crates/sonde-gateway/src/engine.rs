@@ -41,7 +41,7 @@ pub struct Gateway {
     #[allow(dead_code)]
     crypto_sha: RustCryptoSha256,
     /// Pending commands per node (ephemeral programs, schedule changes, reboots).
-    pending_commands: Arc<RwLock<HashMap<String, PendingCommand>>>,
+    pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
 }
 
 impl Gateway {
@@ -62,7 +62,9 @@ impl Gateway {
         self.pending_commands
             .write()
             .await
-            .insert(node_id.to_string(), cmd);
+            .entry(node_id.to_string())
+            .or_default()
+            .push(cmd);
     }
 
     /// Expose the session manager for test inspection.
@@ -118,19 +120,15 @@ impl Gateway {
         peer: PeerAddress,
     ) -> Option<Vec<u8>> {
         // 1. Decode NodeMessage::Wake from payload
-        let wake = match NodeMessage::decode(MSG_WAKE, payload) {
-            Ok(NodeMessage::Wake { .. }) => NodeMessage::decode(MSG_WAKE, payload).ok()?,
-            _ => return None,
-        };
-
-        let (firmware_abi_version, program_hash, battery_mv) = match wake {
-            NodeMessage::Wake {
-                firmware_abi_version,
-                program_hash,
-                battery_mv,
-            } => (firmware_abi_version, program_hash, battery_mv),
-            _ => return None,
-        };
+        let (firmware_abi_version, program_hash, battery_mv) =
+            match NodeMessage::decode(MSG_WAKE, payload) {
+                Ok(NodeMessage::Wake {
+                    firmware_abi_version,
+                    program_hash,
+                    battery_mv,
+                }) => (firmware_abi_version, program_hash, battery_mv),
+                _ => return None,
+            };
 
         // 2. Create/replace session (random starting_seq, current timestamp_ms)
         let starting_seq: u64 = rand::thread_rng().gen();
@@ -324,24 +322,37 @@ impl Gateway {
         node_program_hash: &[u8],
     ) -> Option<CommandPayload> {
         // Priority 1: Pending ephemeral program
-        {
+        // Extract from the vec under a short lock, then do async work outside.
+        let ephemeral_hash = {
             let mut pending = self.pending_commands.write().await;
-            if let Some(PendingCommand::RunEphemeral { program_hash }) =
-                pending.get(&node.node_id).cloned()
-            {
-                pending.remove(&node.node_id);
-                let program = self.storage.get_program(&program_hash).await.ok()??;
-                let chunk_size = DEFAULT_CHUNK_SIZE;
-                let chunk_count = self
-                    .program_library
-                    .chunk_count(program.image.len(), chunk_size as usize)?;
-                return Some(CommandPayload::RunEphemeral {
-                    program_hash: program.hash,
-                    program_size: program.size,
-                    chunk_size,
-                    chunk_count,
-                });
+            if let Some(cmds) = pending.get_mut(&node.node_id) {
+                if let Some(pos) = cmds
+                    .iter()
+                    .position(|c| matches!(c, PendingCommand::RunEphemeral { .. }))
+                {
+                    match cmds.remove(pos) {
+                        PendingCommand::RunEphemeral { program_hash } => Some(program_hash),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        };
+        if let Some(program_hash) = ephemeral_hash {
+            let program = self.storage.get_program(&program_hash).await.ok()??;
+            let chunk_size = DEFAULT_CHUNK_SIZE;
+            let chunk_count = self
+                .program_library
+                .chunk_count(program.image.len(), chunk_size as usize)?;
+            return Some(CommandPayload::RunEphemeral {
+                program_hash: program.hash,
+                program_size: program.size,
+                chunk_size,
+                chunk_count,
+            });
         }
 
         // Priority 2: program_hash mismatch → UPDATE_PROGRAM
@@ -362,23 +373,47 @@ impl Gateway {
         }
 
         // Priority 3: Pending schedule change
-        {
+        let schedule_interval = {
             let mut pending = self.pending_commands.write().await;
-            if let Some(PendingCommand::UpdateSchedule { interval_s }) =
-                pending.get(&node.node_id).cloned()
-            {
-                pending.remove(&node.node_id);
-                return Some(CommandPayload::UpdateSchedule { interval_s });
+            if let Some(cmds) = pending.get_mut(&node.node_id) {
+                if let Some(pos) = cmds
+                    .iter()
+                    .position(|c| matches!(c, PendingCommand::UpdateSchedule { .. }))
+                {
+                    match cmds.remove(pos) {
+                        PendingCommand::UpdateSchedule { interval_s } => Some(interval_s),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        };
+        if let Some(interval_s) = schedule_interval {
+            return Some(CommandPayload::UpdateSchedule { interval_s });
         }
 
         // Priority 4: Pending reboot
-        {
+        let has_reboot = {
             let mut pending = self.pending_commands.write().await;
-            if let Some(PendingCommand::Reboot) = pending.get(&node.node_id) {
-                pending.remove(&node.node_id);
-                return Some(CommandPayload::Reboot);
+            if let Some(cmds) = pending.get_mut(&node.node_id) {
+                if let Some(pos) = cmds
+                    .iter()
+                    .position(|c| matches!(c, PendingCommand::Reboot))
+                {
+                    cmds.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
             }
+        };
+        if has_reboot {
+            return Some(CommandPayload::Reboot);
         }
 
         // Priority 5: NOP

@@ -4,6 +4,12 @@
 use crate::error::{NodeError, NodeResult};
 use sonde_protocol::MapDef;
 
+/// The only supported map type. Other types are rejected at allocation time.
+const BPF_MAP_TYPE_ARRAY: u32 = 1;
+
+/// Expected key size for array maps (u32 index).
+const ARRAY_MAP_KEY_SIZE: u32 = 4;
+
 /// A single map instance allocated in sleep-persistent memory.
 #[derive(Debug)]
 pub struct MapInstance {
@@ -83,6 +89,8 @@ impl MapInstance {
 /// preserving map data across normal wake/sleep transitions.
 pub struct MapStorage {
     maps: Vec<MapInstance>,
+    /// Cached runtime pointers, updated on `allocate()`.
+    cached_ptrs: Vec<u64>,
     budget_bytes: usize,
 }
 
@@ -91,6 +99,7 @@ impl MapStorage {
     pub fn new(budget_bytes: usize) -> Self {
         Self {
             maps: Vec::new(),
+            cached_ptrs: Vec::new(),
             budget_bytes,
         }
     }
@@ -120,10 +129,30 @@ impl MapStorage {
 
     /// Allocate map storage from map definitions.
     ///
-    /// Returns an error if the total map storage exceeds the budget or
-    /// if map definitions cause arithmetic overflow.
+    /// Returns an error if:
+    /// - A map type other than `BPF_MAP_TYPE_ARRAY` (1) is used
+    /// - An array map has a key_size other than 4 (u32 index)
+    /// - The total map storage exceeds the budget
+    /// - Map definitions cause arithmetic overflow
+    ///
     /// On success, all maps are zero-initialized.
     pub fn allocate(&mut self, map_defs: &[MapDef]) -> NodeResult<()> {
+        // Validate map types before allocating
+        for def in map_defs {
+            if def.map_type != BPF_MAP_TYPE_ARRAY {
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
+                    def.map_type
+                )));
+            }
+            if def.key_size != ARRAY_MAP_KEY_SIZE {
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "array map key_size must be 4 (u32), got {}",
+                    def.key_size
+                )));
+            }
+        }
+
         let required =
             Self::required_bytes_checked(map_defs).ok_or(NodeError::MapBudgetExceeded {
                 required: usize::MAX,
@@ -151,6 +180,7 @@ impl MapStorage {
             });
         }
         self.maps = maps;
+        self.cached_ptrs = self.maps.iter().map(|m| m.data_ptr()).collect();
         Ok(())
     }
 
@@ -165,8 +195,9 @@ impl MapStorage {
     }
 
     /// Get the runtime pointers for all maps (for LDDW relocation).
-    pub fn map_pointers(&self) -> Vec<u64> {
-        self.maps.iter().map(|m| m.data_ptr()).collect()
+    /// Returns a cached slice — no allocation per call.
+    pub fn map_pointers(&self) -> &[u64] {
+        &self.cached_ptrs
     }
 
     /// Number of allocated maps.

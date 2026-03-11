@@ -272,7 +272,7 @@ where
 
         // Resolve LDDW map references
         let map_ptrs = map_storage.map_pointers();
-        if resolve_map_references(&mut program.bytecode, &map_ptrs).is_err() {
+        if resolve_map_references(&mut program.bytecode, map_ptrs).is_err() {
             return WakeCycleOutcome::Sleep {
                 seconds: sleep_mgr.effective_sleep_s(),
             };
@@ -295,7 +295,7 @@ where
         };
 
         // Load and execute
-        if let Ok(()) = interpreter.load(&program.bytecode, &map_ptrs) {
+        if let Ok(()) = interpreter.load(&program.bytecode, map_ptrs) {
             let ctx_ptr = &ctx as *const SondeContext as u64;
             let _ = interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET);
         }
@@ -316,9 +316,7 @@ where
 
 /// Determine the wake reason from RTC flags.
 fn determine_wake_reason<S: PlatformStorage>(storage: &mut S) -> WakeReason {
-    if storage.take_program_updated_flag() {
-        WakeReason::ProgramUpdate
-    } else if storage.take_early_wake_flag() {
+    if storage.take_early_wake_flag() {
         WakeReason::Early
     } else {
         WakeReason::Scheduled
@@ -632,6 +630,9 @@ fn send_program_ack<T: Transport>(
 /// The sequence number is consumed only after a successful send. If
 /// `transport.send()` fails, `current_seq` is not advanced so the
 /// gateway's expected sequence stays in sync.
+///
+/// Rejects blobs that would exceed the frame payload budget up front,
+/// avoiding unnecessary allocation.
 pub fn send_app_data<T: Transport>(
     transport: &mut T,
     identity: &NodeIdentity,
@@ -639,6 +640,15 @@ pub fn send_app_data<T: Transport>(
     blob: &[u8],
     hmac: &impl HmacProvider,
 ) -> NodeResult<()> {
+    // Reject oversized blobs early. MAX_PAYLOAD_SIZE (207) must also
+    // cover the CBOR map overhead for APP_DATA (key + bstr header),
+    // so the blob itself must be strictly smaller.
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA blob exceeds frame payload budget".into(),
+        ));
+    }
+
     let seq = *current_seq;
 
     let msg = NodeMessage::AppData {
@@ -822,7 +832,6 @@ mod tests {
         pub active_partition: u8,
         pub programs: [Option<Vec<u8>>; 2],
         pub early_wake_flag: bool,
-        pub program_updated_flag: bool,
     }
 
     impl MockStorage {
@@ -833,7 +842,6 @@ mod tests {
                 active_partition: 0,
                 programs: [None, None],
                 early_wake_flag: false,
-                program_updated_flag: false,
             }
         }
 
@@ -884,15 +892,6 @@ mod tests {
         }
         fn set_early_wake_flag(&mut self) -> NodeResult<()> {
             self.early_wake_flag = true;
-            Ok(())
-        }
-        fn take_program_updated_flag(&mut self) -> bool {
-            let v = self.program_updated_flag;
-            self.program_updated_flag = false;
-            v
-        }
-        fn set_program_updated_flag(&mut self) -> NodeResult<()> {
-            self.program_updated_flag = true;
             Ok(())
         }
     }

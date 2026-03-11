@@ -87,10 +87,4 @@ pub trait PlatformStorage {
 
     /// Set the "early wake requested" flag (persists through deep sleep).
     fn set_early_wake_flag(&mut self) -> NodeResult<()>;
-
-    /// Read and clear the "program just updated" flag.
-    fn take_program_updated_flag(&mut self) -> bool;
-
-    /// Set the "program just updated" flag (persists through deep sleep).
-    fn set_program_updated_flag(&mut self) -> NodeResult<()>;
 }

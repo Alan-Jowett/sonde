@@ -302,12 +302,6 @@ mod tests {
         fn set_early_wake_flag(&mut self) -> NodeResult<()> {
             Ok(())
         }
-        fn take_program_updated_flag(&mut self) -> bool {
-            false
-        }
-        fn set_program_updated_flag(&mut self) -> NodeResult<()> {
-            Ok(())
-        }
     }
 
     fn make_test_image(bytecode: &[u8], maps: &[MapDef]) -> (Vec<u8>, Vec<u8>) {

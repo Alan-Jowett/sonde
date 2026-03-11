@@ -62,7 +62,6 @@ mod tests {
         active_partition: u8,
         programs: [Option<Vec<u8>>; 2],
         early_wake_flag: bool,
-        program_updated_flag: bool,
     }
 
     impl MockStorage {
@@ -73,7 +72,6 @@ mod tests {
                 active_partition: 0,
                 programs: [None, None],
                 early_wake_flag: false,
-                program_updated_flag: false,
             }
         }
     }
@@ -132,17 +130,6 @@ mod tests {
 
         fn set_early_wake_flag(&mut self) -> NodeResult<()> {
             self.early_wake_flag = true;
-            Ok(())
-        }
-
-        fn take_program_updated_flag(&mut self) -> bool {
-            let v = self.program_updated_flag;
-            self.program_updated_flag = false;
-            v
-        }
-
-        fn set_program_updated_flag(&mut self) -> NodeResult<()> {
-            self.program_updated_flag = true;
             Ok(())
         }
     }

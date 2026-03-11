@@ -689,6 +689,13 @@ pub fn send_recv_app_data<T: Transport, C: Clock>(
     clock: &C,
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
+    // Reject oversized blobs early to avoid unnecessary allocation.
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA blob exceeds frame payload budget".into(),
+        ));
+    }
+
     let seq = *current_seq;
 
     let msg = NodeMessage::AppData {

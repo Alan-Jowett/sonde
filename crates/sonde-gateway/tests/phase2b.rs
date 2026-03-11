@@ -414,6 +414,43 @@ async fn t0201_update_program_when_hash_differs() {
     }
 }
 
+/// T-0202: RUN_EPHEMERAL via pending command.
+#[tokio::test]
+async fn t0202_run_ephemeral() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-202", 0x0202, [0x22; 32]);
+    storage.upsert_node(&node.to_record()).await.unwrap();
+
+    let ephemeral_hash = store_test_program(&storage, b"ephemeral-diag").await;
+
+    gw.queue_command(
+        "node-202",
+        PendingCommand::RunEphemeral {
+            program_hash: ephemeral_hash.clone(),
+        },
+    )
+    .await;
+
+    let (_, _, payload) = do_wake(&gw, &node, 1, &[0u8; 32]).await;
+    assert_eq!(payload.command_type(), sonde_protocol::CMD_RUN_EPHEMERAL);
+    match &payload {
+        CommandPayload::RunEphemeral {
+            program_hash,
+            program_size,
+            chunk_size,
+            chunk_count,
+        } => {
+            assert_eq!(program_hash, &ephemeral_hash);
+            assert!(*program_size > 0);
+            assert!(*chunk_size > 0);
+            assert!(*chunk_count > 0);
+        }
+        other => panic!("expected RunEphemeral, got {:?}", other),
+    }
+}
+
 /// T-0203: UPDATE_SCHEDULE via pending command.
 #[tokio::test]
 async fn t0203_update_schedule() {

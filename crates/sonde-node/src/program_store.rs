@@ -93,7 +93,9 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         let image = ProgramImage::decode(image_bytes)
             .map_err(|e| NodeError::ProgramDecodeFailed(format!("{}", e)))?;
 
-        // Validate map budget before committing the A/B swap
+        // Validate map definitions (type, key_size, overflow) and budget
+        // before committing the A/B swap so a bad program never becomes active.
+        crate::map_storage::MapStorage::validate_map_defs(&image.maps)?;
         let required = crate::map_storage::MapStorage::required_bytes(&image.maps);
         if required > map_budget {
             return Err(NodeError::MapBudgetExceeded {

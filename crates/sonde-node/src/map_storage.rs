@@ -127,17 +127,11 @@ impl MapStorage {
         Self::required_bytes_checked(map_defs).unwrap_or(usize::MAX)
     }
 
-    /// Allocate map storage from map definitions.
+    /// Validate map definitions: checks type, key_size, and arithmetic.
     ///
-    /// Returns an error if:
-    /// - A map type other than `BPF_MAP_TYPE_ARRAY` (1) is used
-    /// - An array map has a key_size other than 4 (u32 index)
-    /// - The total map storage exceeds the budget
-    /// - Map definitions cause arithmetic overflow
-    ///
-    /// On success, all maps are zero-initialized.
-    pub fn allocate(&mut self, map_defs: &[MapDef]) -> NodeResult<()> {
-        // Validate map types before allocating
+    /// Call this before committing program installs to ensure the maps
+    /// are compatible with this platform.
+    pub fn validate_map_defs(map_defs: &[MapDef]) -> NodeResult<()> {
         for def in map_defs {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
                 return Err(NodeError::ProgramDecodeFailed(format!(
@@ -152,12 +146,28 @@ impl MapStorage {
                 )));
             }
         }
+        // Also verify arithmetic doesn't overflow
+        if Self::required_bytes_checked(map_defs).is_none() {
+            return Err(NodeError::ProgramDecodeFailed(
+                "invalid map definitions: size calculation overflowed".into(),
+            ));
+        }
+        Ok(())
+    }
 
-        let required =
-            Self::required_bytes_checked(map_defs).ok_or(NodeError::MapBudgetExceeded {
-                required: usize::MAX,
-                available: self.budget_bytes,
-            })?;
+    /// Allocate map storage from map definitions.
+    ///
+    /// Returns an error if map definitions are invalid (unsupported type,
+    /// wrong key_size, arithmetic overflow) or exceed the budget.
+    /// On success, all maps are zero-initialized.
+    pub fn allocate(&mut self, map_defs: &[MapDef]) -> NodeResult<()> {
+        Self::validate_map_defs(map_defs)?;
+
+        let required = Self::required_bytes_checked(map_defs).ok_or_else(|| {
+            NodeError::ProgramDecodeFailed(
+                "invalid map definitions: size calculation overflowed".into(),
+            )
+        })?;
         if required > self.budget_bytes {
             return Err(NodeError::MapBudgetExceeded {
                 required,

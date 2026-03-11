@@ -640,15 +640,6 @@ pub fn send_app_data<T: Transport>(
     blob: &[u8],
     hmac: &impl HmacProvider,
 ) -> NodeResult<()> {
-    // Reject oversized blobs early. MAX_PAYLOAD_SIZE (207) must also
-    // cover the CBOR map overhead for APP_DATA (key + bstr header),
-    // so the blob itself must be strictly smaller.
-    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
-        return Err(NodeError::MalformedPayload(
-            "APP_DATA blob exceeds frame payload budget".into(),
-        ));
-    }
-
     let seq = *current_seq;
 
     let msg = NodeMessage::AppData {
@@ -657,6 +648,13 @@ pub fn send_app_data<T: Transport>(
     let payload_cbor = msg
         .encode()
         .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
+    // Reject after encoding so the CBOR overhead is accounted for.
+    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA payload exceeds frame payload budget".into(),
+        ));
+    }
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -689,13 +687,6 @@ pub fn send_recv_app_data<T: Transport, C: Clock>(
     clock: &C,
     hmac: &impl HmacProvider,
 ) -> NodeResult<Vec<u8>> {
-    // Reject oversized blobs early to avoid unnecessary allocation.
-    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
-        return Err(NodeError::MalformedPayload(
-            "APP_DATA blob exceeds frame payload budget".into(),
-        ));
-    }
-
     let seq = *current_seq;
 
     let msg = NodeMessage::AppData {
@@ -704,6 +695,13 @@ pub fn send_recv_app_data<T: Transport, C: Clock>(
     let payload_cbor = msg
         .encode()
         .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
+    // Reject after encoding so the CBOR overhead is accounted for.
+    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA payload exceeds frame payload budget".into(),
+        ));
+    }
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -723,7 +721,7 @@ pub fn send_recv_app_data<T: Transport, C: Clock>(
     // a valid APP_DATA_REPLY arrives or the overall deadline expires
     // (ND-0800/ND-0801). The deadline prevents a stream of junk frames
     // from keeping the node awake indefinitely.
-    let deadline = clock.elapsed_ms() + timeout_ms as u64;
+    let deadline = clock.elapsed_ms().saturating_add(timeout_ms as u64);
     loop {
         let now = clock.elapsed_ms();
         if now >= deadline {

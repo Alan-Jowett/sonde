@@ -360,9 +360,7 @@ impl HandlerProcess {
         // If the handler crashed (non-zero exit), fail this request.
         // The handler will be respawned on the *next* request.
         if prev_crashed {
-            return Err(io::Error::other(
-                "handler crashed with non-zero exit",
-            ));
+            return Err(io::Error::other("handler crashed with non-zero exit"));
         }
 
         if needs_spawn {

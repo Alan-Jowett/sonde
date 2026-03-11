@@ -7,9 +7,9 @@
 //! `boot → WAKE → COMMAND → dispatch → (transfer/execute) → sleep`
 
 use sonde_protocol::{
-    decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
-    HmacProvider, NodeMessage, Sha256Provider, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK,
-    MSG_COMMAND, MSG_GET_CHUNK, MSG_PROGRAM_ACK, MSG_WAKE,
+    decode_frame, encode_frame, verify_frame, CommandPayload, DecodeError, FrameHeader,
+    GatewayMessage, HmacProvider, NodeMessage, Sha256Provider, MSG_APP_DATA, MSG_APP_DATA_REPLY,
+    MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK, MSG_PROGRAM_ACK, MSG_WAKE,
 };
 
 use crate::bpf_helpers::{ProgramClass, SondeContext};
@@ -440,9 +440,22 @@ fn verify_and_decode_command(
         return Err(NodeError::ResponseBindingMismatch);
     }
 
-    // Decode CBOR
-    let gateway_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload)
-        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+    // Decode CBOR. If the command_type is unknown, treat it as NOP per
+    // ND-0202: "Unknown command types are ignored (the node proceeds to
+    // BPF execution as if NOP)." We still need starting_seq and
+    // timestamp_ms from the payload, so we attempt a NOP-style decode.
+    let gateway_msg = match GatewayMessage::decode(decoded.header.msg_type, &decoded.payload) {
+        Ok(msg) => msg,
+        Err(DecodeError::InvalidCommandType(_)) => {
+            // Unknown command_type in an otherwise valid, authenticated
+            // COMMAND frame. Extract starting_seq and timestamp_ms by
+            // re-decoding with a NOP command_type substituted. The
+            // simplest approach: parse the top-level CBOR map directly
+            // for the two required fields.
+            return decode_command_as_nop(&decoded.payload);
+        }
+        Err(e) => return Err(NodeError::MalformedPayload(format!("{}", e))),
+    };
 
     match gateway_msg {
         GatewayMessage::Command {
@@ -454,7 +467,48 @@ fn verify_and_decode_command(
     }
 }
 
-/// Execute the chunked transfer sub-protocol.
+/// Extract `starting_seq` and `timestamp_ms` from a COMMAND payload
+/// with an unknown `command_type`, treating it as NOP.
+///
+/// Per ND-0202, unknown command types are treated as NOP. The node
+/// still needs `starting_seq` and `timestamp_ms` from the CBOR map
+/// to maintain session sequencing and time reference.
+fn decode_command_as_nop(payload: &[u8]) -> NodeResult<(u64, u64, CommandPayload)> {
+    // Parse the CBOR map to extract keys 13 (starting_seq) and 14 (timestamp_ms).
+    // We use ciborium directly since GatewayMessage::decode rejected the command_type.
+    let value: ciborium::Value = ciborium::from_reader(payload)
+        .map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
+
+    let fields = match &value {
+        ciborium::Value::Map(pairs) => pairs,
+        _ => return Err(NodeError::MalformedPayload("expected CBOR map".into())),
+    };
+
+    let mut starting_seq: Option<u64> = None;
+    let mut timestamp_ms: Option<u64> = None;
+
+    for (k, v) in fields {
+        let key = k.as_integer().and_then(|i| u64::try_from(i).ok());
+        match key {
+            Some(sonde_protocol::KEY_STARTING_SEQ) => {
+                starting_seq = v.as_integer().and_then(|i| u64::try_from(i).ok());
+            }
+            Some(sonde_protocol::KEY_TIMESTAMP_MS) => {
+                timestamp_ms = v.as_integer().and_then(|i| u64::try_from(i).ok());
+            }
+            _ => {}
+        }
+    }
+
+    let starting_seq = starting_seq.ok_or_else(|| {
+        NodeError::MalformedPayload("missing starting_seq in unknown command".into())
+    })?;
+    let timestamp_ms = timestamp_ms.ok_or_else(|| {
+        NodeError::MalformedPayload("missing timestamp_ms in unknown command".into())
+    })?;
+
+    Ok((starting_seq, timestamp_ms, CommandPayload::Nop))
+}
 ///
 /// Returns the reassembled program image bytes on success.
 #[allow(clippy::too_many_arguments)]
@@ -928,6 +982,11 @@ mod tests {
         }
         fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
             self.active_partition = partition;
+            Ok(())
+        }
+        fn reset_schedule(&mut self) -> NodeResult<()> {
+            self.schedule_interval = 60;
+            self.active_partition = 0;
             Ok(())
         }
         fn read_program(&self, partition: u8) -> Option<Vec<u8>> {

@@ -301,6 +301,11 @@ mod tests {
             self.active_partition = partition;
             Ok(())
         }
+        fn reset_schedule(&mut self) -> NodeResult<()> {
+            self.schedule_interval = 60;
+            self.active_partition = 0;
+            Ok(())
+        }
         fn read_program(&self, partition: u8) -> Option<Vec<u8>> {
             self.programs[partition as usize].clone()
         }

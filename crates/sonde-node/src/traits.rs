@@ -68,6 +68,10 @@ pub trait PlatformStorage {
     /// Write the active program partition flag (0 or 1).
     fn write_active_partition(&mut self, partition: u8) -> NodeResult<()>;
 
+    /// Reset the schedule to default values (default interval, partition 0).
+    /// Called during factory reset.
+    fn reset_schedule(&mut self) -> NodeResult<()>;
+
     // --- Program partitions ---
 
     /// Read a program partition (0 = A, 1 = B). Returns the raw CBOR image bytes

@@ -1541,6 +1541,7 @@ dependencies = [
 name = "sonde-node"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "hmac",
  "sha2",
  "sonde-protocol",

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use crate::error::{NodeError, NodeResult};
+use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
 
 /// Key store operations for PSK management, pairing, and factory reset.
@@ -40,12 +41,21 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         self.storage.write_key(key_hint, psk)
     }
 
-    /// Factory reset: erase PSK and all stored programs.
+    /// Factory reset: erase PSK, programs, map data, and schedule.
+    ///
+    /// Per security.md §2.6 and node-design.md §6.2, this erases:
+    /// 1. Key partition (PSK + key_hint + magic)
+    /// 2. Both program partitions
+    /// 3. All map data in sleep-persistent memory (zeroed)
+    /// 4. Schedule partition (reset to default interval)
+    ///
     /// After this, the node is inert until re-paired via USB.
-    pub fn factory_reset(&mut self) -> NodeResult<()> {
+    pub fn factory_reset(&mut self, map_storage: &mut MapStorage) -> NodeResult<()> {
         self.storage.erase_key()?;
         self.storage.erase_program(0)?;
         self.storage.erase_program(1)?;
+        map_storage.clear_all();
+        self.storage.reset_schedule()?;
         Ok(())
     }
 }
@@ -105,6 +115,12 @@ mod tests {
 
         fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
             self.active_partition = partition;
+            Ok(())
+        }
+
+        fn reset_schedule(&mut self) -> NodeResult<()> {
+            self.schedule_interval = 60;
+            self.active_partition = 0;
             Ok(())
         }
 
@@ -175,14 +191,40 @@ mod tests {
         storage.key = Some((10, psk));
         storage.programs[0] = Some(vec![1, 2, 3]);
         storage.programs[1] = Some(vec![4, 5, 6]);
+        storage.schedule_interval = 300;
+        storage.active_partition = 1;
+
+        let mut map_storage = MapStorage::new(4096);
+        // Allocate some maps to verify they get cleared
+        use sonde_protocol::MapDef;
+        map_storage
+            .allocate(&[MapDef {
+                map_type: 1,
+                key_size: 4,
+                value_size: 4,
+                max_entries: 4,
+            }])
+            .unwrap();
+        map_storage
+            .get_mut(0)
+            .unwrap()
+            .update(0, &[1, 2, 3, 4])
+            .unwrap();
 
         {
             let mut ks = KeyStore::new(&mut storage);
-            ks.factory_reset().unwrap();
+            ks.factory_reset(&mut map_storage).unwrap();
         }
 
         assert!(storage.key.is_none());
         assert!(storage.programs[0].is_none());
         assert!(storage.programs[1].is_none());
+        assert_eq!(storage.schedule_interval, 60); // reset to default
+        assert_eq!(storage.active_partition, 0); // reset to default
+                                                 // Map data should be zeroed
+        assert_eq!(
+            map_storage.get(0).unwrap().lookup(0).unwrap(),
+            &[0, 0, 0, 0]
+        );
     }
 }

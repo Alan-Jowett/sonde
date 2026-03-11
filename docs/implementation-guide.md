@@ -154,7 +154,11 @@ sonde-protocol  (no_std + alloc, no platform deps)
 **Validation:** [gateway-validation.md](gateway-validation.md)  
 **Dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail-rust`, `hmac`, `sha2`, `ciborium`, `toml`.
 
-**Module order:**
+Phase 2 is split into three sub-phases, each producing a testable artifact:
+
+#### Phase 2A: Foundation (steps 2.1–2.6)
+
+Core infrastructure — traits, mocks, and standalone modules. Each module is testable in isolation before the protocol engine is built.
 
 | Step | Module | What to build | Test with |
 |---|---|---|---|
@@ -164,14 +168,32 @@ sonde-protocol  (no_std + alloc, no platform deps)
 | 2.4 | `registry.rs` | `NodeRecord`, key lookup by `key_hint`, CRUD operations | T-0700, T-0702, T-0703 |
 | 2.5 | `session.rs` | `Session`, `SessionManager` — create/replace/timeout/lookup | T-0604 to T-0607, T-1004 |
 | 2.6 | `program.rs` | `ProgramRecord`, ingestion (ELF → verify → CBOR), chunk serving | T-0400 to T-0407 |
+
+**Exit criteria (2A):** All module-level tests pass. Mock transport, mock storage, node registry, session manager, and program library are functional and independently tested.
+
+#### Phase 2B: Protocol engine (steps 2.7–2.9)
+
+Connect the foundation modules into the main frame-processing loop. The gateway can authenticate nodes, dispatch commands, and serve program chunks.
+
+| Step | Module | What to build | Test with |
+|---|---|---|---|
 | 2.7 | Core protocol loop | Frame recv → auth → session → dispatch → response | T-0101 to T-0106, T-0600 to T-0603, T-0609 |
 | 2.8 | Command handling | NOP, UPDATE_PROGRAM, RUN_EPHEMERAL, UPDATE_SCHEDULE, REBOOT | T-0200 to T-0205 |
 | 2.9 | Chunked transfer | GET_CHUNK → CHUNK serving, PROGRAM_ACK | T-0300 to T-0302 |
+
+**Exit criteria (2B):** A node can complete a full wake cycle (WAKE → COMMAND → chunked transfer → PROGRAM_ACK → APP_DATA) against the gateway using the mock transport. All protocol and command tests pass.
+
+#### Phase 2C: Handler API and admin (steps 2.10–2.12)
+
+Application data routing, handler process management, gRPC admin API, configuration, and startup/shutdown.
+
+| Step | Module | What to build | Test with |
+|---|---|---|---|
 | 2.10 | `handler.rs` | Handler router, process lifecycle, DATA/REPLY/EVENT/LOG | T-0500 to T-0513 |
 | 2.11 | `admin.rs` | gRPC admin API | T-0800 to T-0810 |
 | 2.12 | `config.rs` + `main.rs` | Configuration, startup/shutdown | T-1000 to T-1003 |
 
-**Exit criteria:** `cargo test -p sonde-gateway` passes all 61 tests.
+**Exit criteria (2C):** `cargo test -p sonde-gateway` passes all gateway validation tests. The gateway is a complete, runnable service.
 
 ---
 

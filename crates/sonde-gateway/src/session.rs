@@ -47,6 +47,9 @@ pub enum SessionState {
     /// Currently serving program chunks.
     ChunkedTransfer {
         program_hash: Vec<u8>,
+        program_size: u32,
+        chunk_size: u32,
+        chunk_count: u32,
         is_ephemeral: bool,
     },
     /// BPF program executing on node; awaiting APP_DATA.

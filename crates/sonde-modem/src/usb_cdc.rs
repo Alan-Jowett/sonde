@@ -39,23 +39,19 @@ impl UsbCdcDriver {
     }
 
     /// Read available bytes from the USB receive buffer into `buf`.
-    /// Returns the number of bytes read, or 0 if no data is available.
-    /// On I/O errors, sets `connected` to false.
-    /// Always attempts the read even when `connected` is false so that
-    /// reconnection can be detected when bytes arrive again.
-    pub fn read(&mut self, buf: &mut [u8]) -> usize {
+    /// Returns `(bytes_read, reconnected)` where `reconnected` is true
+    /// if this read transitioned from disconnected to connected state.
+    /// Always attempts the read so reconnection can be detected.
+    pub fn read(&mut self, buf: &mut [u8]) -> (usize, bool) {
         match self.serial.read(buf) {
-            Ok(0) => 0,
+            Ok(0) => (0, false),
             Ok(n) => {
-                if !self.connected.swap(true, Ordering::Relaxed) {
-                    // Was disconnected, now have data — caller should
-                    // send MODEM_READY.
-                }
-                n
+                let was_disconnected = !self.connected.swap(true, Ordering::Relaxed);
+                (n, was_disconnected)
             }
             Err(_) => {
                 self.connected.store(false, Ordering::Relaxed);
-                0
+                (0, false)
             }
         }
     }

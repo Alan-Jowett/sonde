@@ -26,11 +26,13 @@ const FIRMWARE_VERSION: [u8; 4] = [0, 1, 0, 0];
 
 /// Abstraction over a serial byte stream (USB-CDC on device, PTY in tests).
 pub trait SerialPort {
-    /// Read available bytes. Returns 0 if no data.
-    fn read(&mut self, buf: &mut [u8]) -> usize;
-    /// Write bytes. Silently discards if disconnected.
+    /// Read available bytes. Returns `(bytes_read, reconnected)` where
+    /// `reconnected` is true if connectivity was just re-established.
+    fn read(&mut self, buf: &mut [u8]) -> (usize, bool);
+    /// Write bytes to the serial port. Always attempts the write so
+    /// critical messages (e.g., MODEM_READY) are never silently dropped.
     fn write(&mut self, data: &[u8]);
-    /// Returns true if the host connection is active.
+    /// Returns true if the last I/O operation succeeded.
     fn is_connected(&self) -> bool;
 }
 
@@ -107,13 +109,12 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
 
     /// Poll for serial data and radio received frames.
     pub fn poll(&mut self) {
-        let was_connected = self.usb.is_connected();
-        let n = self.usb.read(&mut self.rx_buf);
+        let (n, reconnected) = self.usb.read(&mut self.rx_buf);
+        if reconnected {
+            info!("USB reconnected, sending MODEM_READY");
+            self.send_modem_ready();
+        }
         if n > 0 {
-            if !was_connected {
-                info!("USB reconnected, sending MODEM_READY");
-                self.send_modem_ready();
-            }
             self.decoder.push(&self.rx_buf[..n]);
         }
 
@@ -142,6 +143,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
         for rf in rx_frames {
             let msg = ModemMessage::RecvFrame(rf);
             self.send_msg(&msg);
+            self.counters.inc_rx();
         }
     }
 
@@ -242,11 +244,11 @@ mod tests {
     }
 
     impl SerialPort for MockSerial {
-        fn read(&mut self, buf: &mut [u8]) -> usize {
+        fn read(&mut self, buf: &mut [u8]) -> (usize, bool) {
             let n = std::cmp::min(buf.len(), self.rx_data.len());
             buf[..n].copy_from_slice(&self.rx_data[..n]);
             self.rx_data.drain(..n);
-            n
+            (n, false)
         }
         fn write(&mut self, data: &[u8]) {
             self.tx_data.extend_from_slice(data);
@@ -314,7 +316,7 @@ mod tests {
         let mut bridge = make_bridge();
         bridge.send_modem_ready();
         let tx = bridge.usb.take_tx();
-        let msg = decode_modem_frame(&tx).unwrap();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
             ModemMessage::ModemReady(mr) => {
                 assert_eq!(mr.firmware_version, FIRMWARE_VERSION);
@@ -331,7 +333,7 @@ mod tests {
         bridge.usb.inject(&reset_frame);
         bridge.poll();
         let tx = bridge.usb.take_tx();
-        let msg = decode_modem_frame(&tx).unwrap();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
         assert!(matches!(msg, ModemMessage::ModemReady(_)));
     }
 
@@ -358,7 +360,7 @@ mod tests {
         bridge.usb.inject(&frame);
         bridge.poll();
         let tx = bridge.usb.take_tx();
-        let msg = decode_modem_frame(&tx).unwrap();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
         assert_eq!(msg, ModemMessage::SetChannelAck(6));
         assert_eq!(bridge.radio.channel(), 6);
     }
@@ -370,7 +372,7 @@ mod tests {
         bridge.usb.inject(&frame);
         bridge.poll();
         let tx = bridge.usb.take_tx();
-        let msg = decode_modem_frame(&tx).unwrap();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
             ModemMessage::Error(e) => {
                 assert_eq!(e.error_code, MODEM_ERR_CHANNEL_SET_FAILED);
@@ -386,7 +388,7 @@ mod tests {
         bridge.usb.inject(&frame);
         bridge.poll();
         let tx = bridge.usb.take_tx();
-        let msg = decode_modem_frame(&tx).unwrap();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
             ModemMessage::Status(s) => {
                 assert_eq!(s.channel, 1);
@@ -412,7 +414,7 @@ mod tests {
         bridge.usb.inject(&status);
         bridge.poll();
         let tx = bridge.usb.take_tx();
-        let msg = decode_modem_frame(&tx).unwrap();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
         assert!(matches!(msg, ModemMessage::Status(_)));
     }
 
@@ -438,7 +440,7 @@ mod tests {
         bridge.usb.inject(&frame);
         bridge.poll();
         let tx = bridge.usb.take_tx();
-        let msg = decode_modem_frame(&tx).unwrap();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
             ModemMessage::ScanResult(sr) => {
                 assert_eq!(sr.entries.len(), 14);

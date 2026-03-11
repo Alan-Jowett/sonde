@@ -44,7 +44,6 @@ impl EspNowDriver {
 
         let espnow = EspNow::take().expect("failed to take ESP-NOW");
         let rx_queue = Arc::new(Mutex::new(Vec::new()));
-        let counters_clone = Arc::clone(counters);
         let rx_clone = Arc::clone(&rx_queue);
 
         // Register the receive callback.
@@ -57,8 +56,10 @@ impl EspNowDriver {
                     peer_mac,
                     // TODO: Extract real RSSI from esp_now_recv_info_t when
                     // esp-idf-svc exposes it in the recv callback signature.
-                    // Until then, 0 signals "not available".
-                    rssi: 0,
+                    // i8::MIN (−128) signals "not available" — outside the
+                    // typical −30..−90 dBm range so it won't be confused
+                    // with a real measurement.
+                    rssi: i8::MIN,
                     frame_data: data.to_vec(),
                 };
 
@@ -67,10 +68,9 @@ impl EspNowDriver {
                     // if USB is disconnected or the host can't keep up.
                     if q.len() < 64 {
                         q.push(frame);
-                        counters_clone.inc_rx();
                     }
-                    // Frames dropped when queue is full are not counted
-                    // in rx_count per protocol spec (MD-0303).
+                    // rx_count is incremented by the bridge when the frame
+                    // is actually forwarded to USB (per MD-0303).
                 }
             })
             .expect("failed to register ESP-NOW recv callback");

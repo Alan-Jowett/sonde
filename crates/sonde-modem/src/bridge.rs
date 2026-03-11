@@ -126,9 +126,8 @@ impl Bridge {
 
             ModemMessage::ScanChannels => self.handle_scan_channels(),
 
-            ModemMessage::Unknown { msg_type, .. } => {
+            ModemMessage::Unknown { .. } => {
                 // Silently discard unknown types (forward compatibility).
-                info!("discarding unknown msg_type 0x{:02x}", msg_type);
             }
 
             _ => {

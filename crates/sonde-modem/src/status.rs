@@ -60,9 +60,10 @@ impl ModemCounters {
 
     /// Returns seconds since last boot or RESET.
     pub fn uptime_s(&self) -> u32 {
-        let total_us = self.boot_time.elapsed().as_micros() as u64;
         let epoch_us = self.reset_epoch_us.load(Ordering::Relaxed);
-        ((total_us - epoch_us) / 1_000_000) as u32
+        let total_us = self.boot_time.elapsed().as_micros() as u64;
+        let delta_us = total_us.saturating_sub(epoch_us);
+        (delta_us / 1_000_000) as u32
     }
 
     /// Reset all counters to zero and restart uptime (called on RESET command).

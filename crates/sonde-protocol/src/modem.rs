@@ -276,9 +276,10 @@ fn encode_body(msg: &ModemMessage) -> (u8, Vec<u8>) {
             (MODEM_MSG_STATUS, body)
         }
         ModemMessage::ScanResult(sr) => {
-            let mut body = Vec::with_capacity(1 + sr.entries.len() * 3);
-            body.push(sr.entries.len() as u8);
-            for entry in &sr.entries {
+            let count = core::cmp::min(sr.entries.len(), u8::MAX as usize);
+            let mut body = Vec::with_capacity(1 + count * 3);
+            body.push(count as u8);
+            for entry in sr.entries.iter().take(count) {
                 body.push(entry.channel);
                 body.push(entry.ap_count);
                 body.push(entry.strongest_rssi as u8);

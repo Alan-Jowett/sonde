@@ -37,24 +37,30 @@ impl UsbCdcDriver {
 
     /// Read available bytes from the USB receive buffer into `buf`.
     /// Returns the number of bytes read, or 0 if no data is available.
+    /// Sets `connected` to false on I/O errors.
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         if !self.is_connected() {
             return 0;
         }
         match self.serial.read(buf) {
             Ok(n) => n,
-            Err(_) => 0,
+            Err(_) => {
+                self.connected.store(false, Ordering::Relaxed);
+                0
+            }
         }
     }
 
     /// Write bytes to the USB transmit buffer.
     /// If the host is disconnected, the data is silently discarded.
+    /// Sets `connected` to false on write errors.
     pub fn write(&mut self, data: &[u8]) {
         if !self.is_connected() {
             return;
         }
         if let Err(e) = self.serial.write_all(data) {
             warn!("USB-CDC write error: {:?}", e);
+            self.connected.store(false, Ordering::Relaxed);
         }
     }
 

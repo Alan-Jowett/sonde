@@ -86,7 +86,7 @@ impl EspNowDriver {
         if let Some(evicted) = self.peer_table.ensure_peer(peer_mac) {
             let _ = self.espnow.del_peer(&evicted);
         }
-        if !self.espnow.peer_exists(&peer_mac).unwrap_or(false) {
+        if !self.espnow.peer_exists(peer_mac).unwrap_or(false) {
             let peer_info = PeerInfo {
                 peer_addr: *peer_mac,
                 channel: self.current_channel,

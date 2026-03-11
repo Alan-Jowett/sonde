@@ -24,6 +24,7 @@ pub enum DecodeError {
     TooShort,
     TooLong,
     InvalidMsgType(u8),
+    InvalidCommandType(u8),
     MissingField(u64),
     InvalidFieldType(u64),
     CborError(String),
@@ -35,6 +36,9 @@ impl fmt::Display for DecodeError {
             DecodeError::TooShort => write!(f, "frame too short"),
             DecodeError::TooLong => write!(f, "frame too long"),
             DecodeError::InvalidMsgType(t) => write!(f, "invalid msg_type: 0x{:02x}", t),
+            DecodeError::InvalidCommandType(t) => {
+                write!(f, "unsupported command_type: 0x{:02x}", t)
+            }
             DecodeError::MissingField(k) => write!(f, "missing required CBOR key: {}", k),
             DecodeError::InvalidFieldType(k) => write!(f, "invalid type for CBOR key: {}", k),
             DecodeError::CborError(msg) => write!(f, "CBOR decoding error: {}", msg),

@@ -131,6 +131,24 @@ fn get_bytes(fields: &[(u64, Value)], key: u64) -> Result<Vec<u8>, DecodeError> 
         .ok_or(DecodeError::InvalidFieldType(key))
 }
 
+fn decode_nested_map(fields: &[(u64, Value)], key: u64) -> Result<Vec<(u64, Value)>, DecodeError> {
+    let val = get_field(fields, key)?;
+    match val {
+        Value::Map(pairs) => {
+            let mut result = Vec::new();
+            for (k, v) in pairs {
+                if let Some(ik) = k.as_integer() {
+                    if let Ok(key_u64) = u64::try_from(ik) {
+                        result.push((key_u64, v.clone()));
+                    }
+                }
+            }
+            Ok(result)
+        }
+        _ => Err(DecodeError::InvalidFieldType(key)),
+    }
+}
+
 /// Encode a u64 as a CBOR unsigned integer Value.
 /// ciborium's Integer supports From<u64> directly, preserving the full range.
 fn uint_val(v: u64) -> Value {
@@ -209,7 +227,7 @@ impl GatewayMessage {
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let pairs: Vec<(u64, Value)> = match self {
             GatewayMessage::Command {
-                command_type: _,
+                command_type,
                 starting_seq,
                 timestamp_ms,
                 payload,
@@ -221,6 +239,12 @@ impl GatewayMessage {
                     CommandPayload::RunEphemeral { .. } => CMD_RUN_EPHEMERAL,
                     CommandPayload::UpdateSchedule { .. } => CMD_UPDATE_SCHEDULE,
                 };
+                if *command_type != derived_type {
+                    return Err(EncodeError::CborError(format!(
+                        "command_type 0x{:02x} does not match payload variant (expected 0x{:02x})",
+                        command_type, derived_type
+                    )));
+                }
                 let mut p = alloc::vec![
                     (KEY_COMMAND_TYPE, u8_val(derived_type)),
                     (KEY_STARTING_SEQ, uint_val(*starting_seq)),
@@ -303,23 +327,7 @@ impl GatewayMessage {
                         }
                     }
                     CMD_UPDATE_PROGRAM | CMD_RUN_EPHEMERAL => {
-                        let payload_val = get_field(&fields, KEY_PAYLOAD)?;
-                        let inner_fields = match payload_val {
-                            Value::Map(pairs) => {
-                                let mut result = Vec::new();
-                                for (k, v) in pairs {
-                                    if let Some(key) = k.as_integer() {
-                                        if let Ok(key_u64) = u64::try_from(key) {
-                                            result.push((key_u64, v.clone()));
-                                        }
-                                    }
-                                }
-                                result
-                            }
-                            _ => {
-                                return Err(DecodeError::InvalidFieldType(KEY_PAYLOAD));
-                            }
-                        };
+                        let inner_fields = decode_nested_map(&fields, KEY_PAYLOAD)?;
                         let program_hash = get_bytes(&inner_fields, KEY_PROGRAM_HASH)?;
                         let program_size = get_u32(&inner_fields, KEY_PROGRAM_SIZE)?;
                         let chunk_size = get_u32(&inner_fields, KEY_CHUNK_SIZE)?;
@@ -341,28 +349,12 @@ impl GatewayMessage {
                         }
                     }
                     CMD_UPDATE_SCHEDULE => {
-                        let payload_val = get_field(&fields, KEY_PAYLOAD)?;
-                        let inner_fields = match payload_val {
-                            Value::Map(pairs) => {
-                                let mut result = Vec::new();
-                                for (k, v) in pairs {
-                                    if let Some(key) = k.as_integer() {
-                                        if let Ok(key_u64) = u64::try_from(key) {
-                                            result.push((key_u64, v.clone()));
-                                        }
-                                    }
-                                }
-                                result
-                            }
-                            _ => {
-                                return Err(DecodeError::InvalidFieldType(KEY_PAYLOAD));
-                            }
-                        };
+                        let inner_fields = decode_nested_map(&fields, KEY_PAYLOAD)?;
                         CommandPayload::UpdateSchedule {
                             interval_s: get_u32(&inner_fields, KEY_INTERVAL_S)?,
                         }
                     }
-                    _ => return Err(DecodeError::InvalidFieldType(KEY_COMMAND_TYPE)),
+                    _ => return Err(DecodeError::InvalidCommandType(command_type)),
                 };
 
                 Ok(GatewayMessage::Command {

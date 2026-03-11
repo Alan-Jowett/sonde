@@ -81,20 +81,18 @@ Maximum message size: **1 MB** (1,048,576 bytes). Messages with a length field e
 
 ### 2.2  Lifecycle
 
-```
-Gateway                          Handler process
-  │                                  │
-  │  [spawn]                         │
-  │                                  │
-  │──── stdin: DATA (CBOR) ─────────►│
-  │◄──── stdout: DATA_REPLY (CBOR) ──│
-  │                                  │
-  │──── stdin: DATA (CBOR) ─────────►│  (handler still alive — keep going)
-  │◄──── stdout: DATA_REPLY (CBOR) ──│
-  │                                  │
-  │  ... or handler exits ...        │
-  │                                  │
-  │  [respawn on next message]       │
+```mermaid
+sequenceDiagram
+    participant Gateway
+    participant Handler as Handler process
+
+    Note over Gateway,Handler: spawn
+    Gateway->>Handler: stdin: DATA (CBOR)
+    Handler->>Gateway: stdout: DATA_REPLY (CBOR)
+    Gateway->>Handler: stdin: DATA (CBOR) — handler still alive
+    Handler->>Gateway: stdout: DATA_REPLY (CBOR)
+    Note over Gateway,Handler: ... or handler exits ...
+    Note over Gateway: respawn on next message
 ```
 
 **Exit handling:** If the handler exits with code 0 between messages, the gateway respawns it on the next message. If it exits with non-zero (or crashes mid-message), the gateway logs the error and does not send an `APP_DATA_REPLY` to the node (the node's `send_recv()` will timeout if it was waiting).

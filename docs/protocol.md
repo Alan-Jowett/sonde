@@ -333,49 +333,42 @@ If a `send_recv()` call on the node times out waiting for `APP_DATA_REPLY`, the 
 
 ### 6.1  Normal wake cycle (no update needed)
 
-```
-    Node                          Gateway
-     │                               │
-     │──── WAKE ────────────────────►│
-     │                               │  (lookup node, verify HMAC,
-     │                               │   check program_hash — matches)
-     │◄──── COMMAND {NOP} ───────────│
-     │                               │
-     │  [execute resident BPF]       │
-     │                               │
-     │──── APP_DATA ────────────────►│  (zero or more, send or send_recv)
-     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
-     │                               │
-     │  [sleep]                      │
+```mermaid
+sequenceDiagram
+    participant Node
+    participant Gateway
+
+    Node->>Gateway: WAKE
+    Note right of Gateway: lookup node, verify HMAC,<br/>check program_hash — matches
+    Gateway->>Node: COMMAND {NOP}
+    Note left of Node: execute resident BPF
+    Node->>Gateway: APP_DATA (zero or more, send or send_recv)
+    Gateway-->>Node: APP_DATA_REPLY (only if handler replies)
+    Note left of Node: sleep
 ```
 
 ### 6.2  Program update (chunked transfer)
 
-```
-    Node                          Gateway
-     │                               │
-     │──── WAKE ────────────────────►│
-     │                               │  (program_hash mismatch)
-     │◄── COMMAND {UPDATE_PROGRAM} ──│  (includes program_hash, size, chunk info)
-     │                               │
-     │──── GET_CHUNK {index=0} ─────►│
-     │◄──── CHUNK {index=0, data} ───│
-     │                               │
-     │──── GET_CHUNK {index=1} ─────►│
-     │◄──── CHUNK {index=1, data} ───│
-     │                               │
-     │        ... repeat ...         │
-     │                               │
-     │  [verify hash, store to flash]│
-     │                               │
-     │──── PROGRAM_ACK ─────────────►│
-     │                               │
-     │  [execute new program]        │
-     │                               │
-     │──── APP_DATA ────────────────►│  (zero or more)
-     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
-     │                               │
-     │  [sleep]                      │
+```mermaid
+sequenceDiagram
+    participant Node
+    participant Gateway
+
+    Node->>Gateway: WAKE
+    Note right of Gateway: program_hash mismatch
+    Gateway->>Node: COMMAND {UPDATE_PROGRAM}<br/>(program_hash, size, chunk info)
+
+    loop for each chunk
+        Node->>Gateway: GET_CHUNK {index=N}
+        Gateway->>Node: CHUNK {index=N, data}
+    end
+
+    Note left of Node: verify hash, store to flash
+    Node->>Gateway: PROGRAM_ACK
+    Note left of Node: execute new program
+    Node->>Gateway: APP_DATA (zero or more)
+    Gateway-->>Node: APP_DATA_REPLY (only if handler replies)
+    Note left of Node: sleep
 ```
 
 After sending `PROGRAM_ACK`, the node **executes the new program immediately** in the same wake cycle. This avoids wasting a sleep/wake cycle and battery. The node then sleeps on the program's schedule as normal.
@@ -384,44 +377,40 @@ After sending `PROGRAM_ACK`, the node **executes the new program immediately** i
 
 Ephemeral programs use the same chunked transfer as resident programs (see §6.2). The `command_type` (`RUN_EPHEMERAL`) tells the node to store the program in RAM and discard it after execution.
 
-```
-    Node                          Gateway
-     │                               │
-     │──── WAKE ────────────────────►│
-     │                               │  (gateway wants diagnostics)
-     │◄── COMMAND {RUN_EPHEMERAL} ───│  (includes program_hash, size, chunk info)
-     │                               │
-     │──── GET_CHUNK {index=0} ─────►│
-     │◄──── CHUNK {index=0, data} ───│
-     │                               │
-     │──── GET_CHUNK {index=1} ─────►│
-     │◄──── CHUNK {index=1, data} ───│
-     │                               │
-     │        ... repeat ...         │
-     │                               │
-     │  [verify hash, load to RAM]   │
-     │                               │
-     │──── PROGRAM_ACK ─────────────►│
-     │                               │
-     │  [execute ephemeral program]  │
-     │                               │
-     │──── APP_DATA ────────────────►│  (diagnostic results)
-     │◄──── APP_DATA_REPLY ──────────│  (only if handler replies with data)
-     │                               │
-     │  [sleep — ephemeral discarded]│
+```mermaid
+sequenceDiagram
+    participant Node
+    participant Gateway
+
+    Node->>Gateway: WAKE
+    Note right of Gateway: gateway wants diagnostics
+    Gateway->>Node: COMMAND {RUN_EPHEMERAL}<br/>(program_hash, size, chunk info)
+
+    loop for each chunk
+        Node->>Gateway: GET_CHUNK {index=N}
+        Gateway->>Node: CHUNK {index=N, data}
+    end
+
+    Note left of Node: verify hash, load to RAM
+    Node->>Gateway: PROGRAM_ACK
+    Note left of Node: execute ephemeral program
+    Node->>Gateway: APP_DATA (diagnostic results)
+    Gateway-->>Node: APP_DATA_REPLY (only if handler replies)
+    Note left of Node: sleep — ephemeral discarded
 ```
 
 ### 6.4  Schedule update
 
-```
-    Node                          Gateway
-     │                               │
-     │──── WAKE ────────────────────►│
-     │◄── COMMAND {UPDATE_SCHEDULE} ─│  (new interval_s)
-     │                               │
-     │  [store new interval]         │
-     │  [execute resident BPF]       │
-     │  [sleep for new interval]     │
+```mermaid
+sequenceDiagram
+    participant Node
+    participant Gateway
+
+    Node->>Gateway: WAKE
+    Gateway->>Node: COMMAND {UPDATE_SCHEDULE}<br/>(new interval_s)
+    Note left of Node: store new interval
+    Note left of Node: execute resident BPF
+    Note left of Node: sleep for new interval
 ```
 
 ### 6.5  Application data exchange
@@ -431,20 +420,18 @@ The BPF program and gateway application communicate through `APP_DATA` messages.
 - **Fire-and-forget** (`send()`): The BPF program sends data without waiting for a reply.
 - **Request-response** (`send_recv()`): The BPF program sends data and blocks until `APP_DATA_REPLY` arrives or the timeout expires.
 
-```
-    Node                          Gateway
-     │                               │
-     │──── WAKE ────────────────────►│
-     │◄──── COMMAND {NOP} ───────────│
-     │                               │
-     │  [execute BPF]                │
-     │                               │
-     │──── APP_DATA (send) ─────────►│  (fire-and-forget, no reply)
-     │                               │
-     │──── APP_DATA (send_recv) ────►│  (node waits for reply)
-     │◄──── APP_DATA_REPLY {resp} ───│  (handler replied with data)
-     │                               │
-     │  [sleep]                      │
+```mermaid
+sequenceDiagram
+    participant Node
+    participant Gateway
+
+    Node->>Gateway: WAKE
+    Gateway->>Node: COMMAND {NOP}
+    Note left of Node: execute BPF
+    Node->>Gateway: APP_DATA (send) — fire-and-forget
+    Node->>Gateway: APP_DATA (send_recv) — node waits
+    Gateway->>Node: APP_DATA_REPLY {resp}
+    Note left of Node: sleep
 ```
 
 The number of exchanges per wake cycle is determined by the BPF program. The protocol imposes no limit beyond the node's power budget.

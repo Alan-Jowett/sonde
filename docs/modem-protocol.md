@@ -240,18 +240,17 @@ Reports an unrecoverable modem error. The gateway should log this and may attemp
 
 The gateway MUST always send `RESET` when opening the serial port, regardless of whether the modem was just powered on or was already running. This ensures deterministic state.
 
-```
-Gateway                          Modem
-   │                               │
-   │──── [open serial port] ──────►│
-   │──── RESET ───────────────────►│
-   │                               │
-   │◄──── MODEM_READY ─────────────│
-   │                               │
-   │──── SET_CHANNEL(ch) ─────────►│
-   │◄──── SET_CHANNEL_ACK(ch) ─────│
-   │                               │
-   │  ════ normal operation ════   │
+```mermaid
+sequenceDiagram
+    participant Gateway
+    participant Modem
+
+    Gateway->>Modem: [open serial port]
+    Gateway->>Modem: RESET
+    Modem->>Gateway: MODEM_READY
+    Gateway->>Modem: SET_CHANNEL(ch)
+    Modem->>Gateway: SET_CHANNEL_ACK(ch)
+    Note over Gateway,Modem: normal operation
 ```
 
 Any `MODEM_READY` received before `RESET` completes (e.g., from USB enumeration) is discarded. The gateway only accepts `MODEM_READY` after it has sent `RESET`.
@@ -262,58 +261,59 @@ During normal operation, two independent flows run concurrently:
 
 **Inbound (radio → gateway):** The modem sends `RECV_FRAME` whenever an ESP-NOW frame arrives. These are asynchronous — they can arrive at any time, interleaved with responses to gateway commands.
 
-```
-Gateway                          Modem
-   │                               │
-   │◄──── RECV_FRAME ──────────────│  (node sent a WAKE)
-   │                               │
-   │──── SEND_FRAME ──────────────►│  (gateway sends COMMAND)
-   │                               │
-   │◄──── RECV_FRAME ──────────────│  (node sent GET_CHUNK)
-   │──── SEND_FRAME ──────────────►│  (gateway sends CHUNK)
-   │          ⋮                    │
+```mermaid
+sequenceDiagram
+    participant Gateway
+    participant Modem
+
+    Modem->>Gateway: RECV_FRAME (node sent a WAKE)
+    Gateway->>Modem: SEND_FRAME (gateway sends COMMAND)
+    Modem->>Gateway: RECV_FRAME (node sent GET_CHUNK)
+    Gateway->>Modem: SEND_FRAME (gateway sends CHUNK)
+    Note over Gateway,Modem: ⋮
 ```
 
 **Outbound (gateway → radio):** The gateway sends `SEND_FRAME` which the modem transmits immediately. No per-frame response is expected.
 
 ### 5.3  Health check
 
-```
-Gateway                          Modem
-   │                               │
-   │──── GET_STATUS ──────────────►│
-   │◄──── STATUS ──────────────────│
-   │                               │
+```mermaid
+sequenceDiagram
+    participant Gateway
+    participant Modem
+
+    Gateway->>Modem: GET_STATUS
+    Modem->>Gateway: STATUS
 ```
 
 The gateway polls periodically (recommended: every 30 seconds). A rising `tx_fail_count` indicates radio delivery problems.
 
 ### 5.4  Channel survey
 
-```
-Gateway                          Modem
-   │                               │
-   │──── SCAN_CHANNELS ───────────►│
-   │        (radio scanning        │
-   │         ~2–3 seconds)         │
-   │◄──── SCAN_RESULT ─────────────│
-   │                               │
+```mermaid
+sequenceDiagram
+    participant Gateway
+    participant Modem
+
+    Gateway->>Modem: SCAN_CHANNELS
+    Note right of Modem: radio scanning ~2–3 seconds
+    Modem->>Gateway: SCAN_RESULT
 ```
 
 ESP-NOW reception is interrupted during the scan. This flow is only used during setup or maintenance.
 
 ### 5.5  Error recovery
 
-```
-Gateway                          Modem
-   │                               │
-   │◄──── ERROR(code, msg) ────────│
-   │                               │
-   │──── RESET ───────────────────►│
-   │◄──── MODEM_READY ─────────────│
-   │──── SET_CHANNEL(ch) ─────────►│
-   │◄──── SET_CHANNEL_ACK(ch) ─────│
-   │                               │
+```mermaid
+sequenceDiagram
+    participant Gateway
+    participant Modem
+
+    Modem->>Gateway: ERROR(code, msg)
+    Gateway->>Modem: RESET
+    Modem->>Gateway: MODEM_READY
+    Gateway->>Modem: SET_CHANNEL(ch)
+    Modem->>Gateway: SET_CHANNEL_ACK(ch)
 ```
 
 On `ERROR`, the gateway logs the error and sends `RESET` to attempt recovery.

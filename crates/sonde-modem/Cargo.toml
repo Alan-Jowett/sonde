@@ -5,12 +5,24 @@ edition = "2021"
 license = "MIT"
 description = "ESP32-S3 radio modem firmware — USB-CDC to ESP-NOW bridge"
 
+[features]
+default = []
+# Enable ESP-IDF platform support (required for firmware builds).
+# Without this feature, only platform-independent modules compile,
+# enabling host-side testing of bridge logic, peer table, and status.
+esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:embuild"]
+
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol", default-features = false }
-esp-idf-hal = "0.45"
-esp-idf-svc = { version = "0.50", features = ["binstart"] }
-esp-idf-sys = { version = "0.36", features = ["binstart"] }
 log = "0.4"
 
+# ESP-IDF dependencies — only pulled in with the "esp" feature.
+esp-idf-hal = { version = "0.45", optional = true }
+esp-idf-svc = { version = "0.50", features = ["binstart"], optional = true }
+esp-idf-sys = { version = "0.36", features = ["binstart"], optional = true }
+
 [build-dependencies]
-embuild = "0.32"
+embuild = { version = "0.32", optional = true }
+
+[dev-dependencies]
+sonde-protocol = { path = "../sonde-protocol" }

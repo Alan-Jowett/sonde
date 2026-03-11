@@ -22,6 +22,12 @@ pub struct PeerTable {
     tick: u32,
 }
 
+impl Default for PeerTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeerTable {
     pub fn new() -> Self {
         Self {

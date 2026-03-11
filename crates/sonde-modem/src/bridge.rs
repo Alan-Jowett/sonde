@@ -1,50 +1,80 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Bridge logic: connects the USB-CDC serial codec to the ESP-NOW driver.
+//! Bridge logic: connects a serial port to a radio driver.
 //!
 //! Decodes inbound serial frames from the gateway, dispatches commands to
-//! the ESP-NOW driver, and encodes outbound frames (RECV_FRAME, STATUS, etc.)
+//! the radio driver, and encodes outbound frames (RECV_FRAME, STATUS, etc.)
 //! back to the gateway.
+//!
+//! The bridge is generic over `SerialPort` and `Radio` traits, allowing
+//! the same logic to be tested on a host with mock implementations.
 
 use log::{info, warn};
 use std::sync::Arc;
 
 use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady,
-    ModemStatus, ScanEntry, ScanResult, SendFrame, MODEM_ERR_CHANNEL_SET_FAILED,
+    ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame, MAC_SIZE,
+    MODEM_ERR_CHANNEL_SET_FAILED,
 };
 
-use crate::espnow::EspNowDriver;
 use crate::status::ModemCounters;
-use crate::usb_cdc::UsbCdcDriver;
 
 /// Firmware version: major.minor.patch.build (one byte each).
 const FIRMWARE_VERSION: [u8; 4] = [0, 1, 0, 0];
 
-/// Bridge between USB-CDC and ESP-NOW.
-pub struct Bridge {
-    usb: UsbCdcDriver,
-    espnow: EspNowDriver,
+/// Abstraction over a serial byte stream (USB-CDC on device, PTY in tests).
+pub trait SerialPort {
+    /// Read available bytes. Returns 0 if no data.
+    fn read(&mut self, buf: &mut [u8]) -> usize;
+    /// Write bytes. Silently discards if disconnected.
+    fn write(&mut self, data: &[u8]);
+    /// Returns true if the host connection is active.
+    fn is_connected(&self) -> bool;
+}
+
+/// Abstraction over the radio layer (ESP-NOW on device, mock in tests).
+pub trait Radio {
+    /// Send a frame to the given peer MAC.
+    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]);
+    /// Drain received frames from the queue.
+    fn drain_rx(&self) -> Vec<RecvFrame>;
+    /// Set the radio channel. Returns a descriptive error on failure.
+    fn set_channel(&mut self, channel: u8) -> Result<(), &'static str>;
+    /// Get the current channel.
+    fn channel(&self) -> u8;
+    /// Perform a channel scan. Returns (channel, ap_count, strongest_rssi).
+    fn scan_channels(&mut self) -> Vec<(u8, u8, i8)>;
+    /// Get the device's own MAC address.
+    fn mac_address(&self) -> [u8; MAC_SIZE];
+    /// Reset radio state (clear peers, reset channel to 1, drain queues).
+    fn reset_state(&mut self);
+}
+
+/// Bridge between a serial port and a radio driver.
+pub struct Bridge<S: SerialPort, R: Radio> {
+    usb: S,
+    radio: R,
     counters: Arc<ModemCounters>,
     decoder: FrameDecoder,
     rx_buf: [u8; 64],
 }
 
-impl Bridge {
-    pub fn new(usb: UsbCdcDriver, espnow: EspNowDriver, counters: Arc<ModemCounters>) -> Self {
+impl<S: SerialPort, R: Radio> Bridge<S, R> {
+    pub fn new(usb: S, radio: R, counters: Arc<ModemCounters>) -> Self {
         Self {
             usb,
-            espnow,
+            radio,
             counters,
             decoder: FrameDecoder::new(),
             rx_buf: [0u8; 64],
         }
     }
 
-    /// Encode and write a modem message to USB. Firmware-generated messages
-    /// are always within size limits, so encoding failures are logged but
-    /// otherwise ignored.
+    /// Encode and write a modem message to the serial port. Firmware-generated
+    /// messages are always within size limits, so encoding failures are logged
+    /// but otherwise ignored.
     fn send_msg(&mut self, msg: &ModemMessage) {
         match encode_modem_frame(msg) {
             Ok(frame) => self.usb.write(&frame),
@@ -54,7 +84,7 @@ impl Bridge {
 
     /// Send MODEM_READY to the gateway.
     pub fn send_modem_ready(&mut self) {
-        let mac = self.espnow.mac_address();
+        let mac = self.radio.mac_address();
         let msg = ModemMessage::ModemReady(ModemReady {
             firmware_version: FIRMWARE_VERSION,
             mac_address: mac,
@@ -75,12 +105,8 @@ impl Bridge {
         );
     }
 
-    /// Poll for USB data and ESP-NOW received frames.
+    /// Poll for serial data and radio received frames.
     pub fn poll(&mut self) {
-        // Read from USB and feed to the decoder.
-        // UsbCdcDriver::read() always attempts the read (even when
-        // previously disconnected) so reconnection is detected when
-        // bytes arrive.
         let was_connected = self.usb.is_connected();
         let n = self.usb.read(&mut self.rx_buf);
         if n > 0 {
@@ -96,14 +122,9 @@ impl Bridge {
             match self.decoder.decode() {
                 Ok(Some(msg)) => self.dispatch(msg),
                 Ok(None) => break,
-                Err(ModemCodecError::EmptyFrame) => {
-                    // Silently discard zero-length frames; keep decoding.
-                    continue;
-                }
+                Err(ModemCodecError::EmptyFrame) => continue,
                 Err(ModemCodecError::FrameTooLarge(len)) => {
                     warn!("framing error: len={}, resetting decoder", len);
-                    // Clear the decoder so we can parse subsequent commands
-                    // (including RESET) after the framing error.
                     self.decoder.reset();
                     break;
                 }
@@ -114,8 +135,8 @@ impl Bridge {
             }
         }
 
-        // Forward any received ESP-NOW frames to USB.
-        let rx_frames = self.espnow.drain_rx();
+        // Forward any received radio frames to the serial port.
+        let rx_frames = self.radio.drain_rx();
         for rf in rx_frames {
             let msg = ModemMessage::RecvFrame(rf);
             self.send_msg(&msg);
@@ -125,39 +146,29 @@ impl Bridge {
     fn dispatch(&mut self, msg: ModemMessage) {
         match msg {
             ModemMessage::Reset => self.handle_reset(),
-
             ModemMessage::SendFrame(sf) => self.handle_send_frame(sf),
-
             ModemMessage::SetChannel(ch) => self.handle_set_channel(ch),
-
             ModemMessage::GetStatus => self.handle_get_status(),
-
             ModemMessage::ScanChannels => self.handle_scan_channels(),
-
-            ModemMessage::Unknown { .. } => {
-                // Silently discard unknown types (forward compatibility).
-            }
-
-            _ => {
-                // Modem should not receive modem→gateway messages; discard.
-            }
+            ModemMessage::Unknown { .. } => {}
+            _ => {}
         }
     }
 
     fn handle_reset(&mut self) {
         info!("RESET received");
-        self.espnow.reset_state();
+        self.radio.reset_state();
         self.counters.reset();
         self.decoder.reset();
         self.send_modem_ready();
     }
 
     fn handle_send_frame(&mut self, sf: SendFrame) {
-        self.espnow.send(&sf.peer_mac, &sf.frame_data);
+        self.radio.send(&sf.peer_mac, &sf.frame_data);
     }
 
     fn handle_set_channel(&mut self, channel: u8) {
-        match self.espnow.set_channel(channel) {
+        match self.radio.set_channel(channel) {
             Ok(()) => {
                 let ack = ModemMessage::SetChannelAck(channel);
                 self.send_msg(&ack);
@@ -174,7 +185,7 @@ impl Bridge {
 
     fn handle_get_status(&mut self) {
         let status = ModemMessage::Status(ModemStatus {
-            channel: self.espnow.channel(),
+            channel: self.radio.channel(),
             uptime_s: self.counters.uptime_s(),
             tx_count: self.counters.tx_count(),
             rx_count: self.counters.rx_count(),
@@ -184,7 +195,7 @@ impl Bridge {
     }
 
     fn handle_scan_channels(&mut self) {
-        let results = self.espnow.scan_channels();
+        let results = self.radio.scan_channels();
         let entries: Vec<ScanEntry> = results
             .into_iter()
             .map(|(ch, count, rssi)| ScanEntry {
@@ -195,5 +206,242 @@ impl Bridge {
             .collect();
         let msg = ModemMessage::ScanResult(ScanResult { entries });
         self.send_msg(&msg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sonde_protocol::modem::{decode_modem_frame, ModemMessage};
+
+    /// Mock serial port that records writes and plays back reads.
+    struct MockSerial {
+        rx_data: Vec<u8>,
+        tx_data: Vec<u8>,
+        connected: bool,
+    }
+
+    impl MockSerial {
+        fn new() -> Self {
+            Self {
+                rx_data: Vec::new(),
+                tx_data: Vec::new(),
+                connected: true,
+            }
+        }
+
+        fn inject(&mut self, data: &[u8]) {
+            self.rx_data.extend_from_slice(data);
+        }
+
+        fn take_tx(&mut self) -> Vec<u8> {
+            std::mem::take(&mut self.tx_data)
+        }
+    }
+
+    impl SerialPort for MockSerial {
+        fn read(&mut self, buf: &mut [u8]) -> usize {
+            let n = std::cmp::min(buf.len(), self.rx_data.len());
+            buf[..n].copy_from_slice(&self.rx_data[..n]);
+            self.rx_data.drain(..n);
+            n
+        }
+        fn write(&mut self, data: &[u8]) {
+            self.tx_data.extend_from_slice(data);
+        }
+        fn is_connected(&self) -> bool {
+            self.connected
+        }
+    }
+
+    /// Mock radio that captures sends and injects receives.
+    struct MockRadio {
+        sent: Vec<(Vec<u8>, [u8; MAC_SIZE])>,
+        rx_queue: Vec<RecvFrame>,
+        channel: u8,
+        mac: [u8; MAC_SIZE],
+    }
+
+    impl MockRadio {
+        fn new() -> Self {
+            Self {
+                sent: Vec::new(),
+                rx_queue: Vec::new(),
+                channel: 1,
+                mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            }
+        }
+    }
+
+    impl Radio for MockRadio {
+        fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+            self.sent.push((data.to_vec(), *peer_mac));
+        }
+        fn drain_rx(&self) -> Vec<RecvFrame> {
+            Vec::new() // simplified for tests
+        }
+        fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
+            if channel == 0 || channel > 14 {
+                return Err("invalid channel");
+            }
+            self.channel = channel;
+            Ok(())
+        }
+        fn channel(&self) -> u8 {
+            self.channel
+        }
+        fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
+            (1..=14).map(|ch| (ch, 0, 0)).collect()
+        }
+        fn mac_address(&self) -> [u8; MAC_SIZE] {
+            self.mac
+        }
+        fn reset_state(&mut self) {
+            self.channel = 1;
+            self.sent.clear();
+            self.rx_queue.clear();
+        }
+    }
+
+    fn make_bridge() -> Bridge<MockSerial, MockRadio> {
+        Bridge::new(MockSerial::new(), MockRadio::new(), ModemCounters::new())
+    }
+
+    #[test]
+    fn modem_ready_on_boot() {
+        let mut bridge = make_bridge();
+        bridge.send_modem_ready();
+        let tx = bridge.usb.take_tx();
+        let msg = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::ModemReady(mr) => {
+                assert_eq!(mr.firmware_version, FIRMWARE_VERSION);
+                assert_eq!(mr.mac_address, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+            }
+            _ => panic!("expected ModemReady"),
+        }
+    }
+
+    #[test]
+    fn reset_sends_modem_ready() {
+        let mut bridge = make_bridge();
+        let reset_frame = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset_frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let msg = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::ModemReady(_)));
+    }
+
+    #[test]
+    fn send_frame_dispatched() {
+        let mut bridge = make_bridge();
+        let peer = [1, 2, 3, 4, 5, 6];
+        let sf = ModemMessage::SendFrame(SendFrame {
+            peer_mac: peer,
+            frame_data: vec![0xDE, 0xAD],
+        });
+        let frame = encode_modem_frame(&sf).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert_eq!(bridge.radio.sent.len(), 1);
+        assert_eq!(bridge.radio.sent[0].0, vec![0xDE, 0xAD]);
+        assert_eq!(bridge.radio.sent[0].1, peer);
+    }
+
+    #[test]
+    fn set_channel_ack() {
+        let mut bridge = make_bridge();
+        let frame = encode_modem_frame(&ModemMessage::SetChannel(6)).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let msg = decode_modem_frame(&tx).unwrap();
+        assert_eq!(msg, ModemMessage::SetChannelAck(6));
+        assert_eq!(bridge.radio.channel(), 6);
+    }
+
+    #[test]
+    fn set_channel_invalid_returns_error() {
+        let mut bridge = make_bridge();
+        let frame = encode_modem_frame(&ModemMessage::SetChannel(0)).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let msg = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Error(e) => {
+                assert_eq!(e.error_code, MODEM_ERR_CHANNEL_SET_FAILED);
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn get_status_response() {
+        let mut bridge = make_bridge();
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let msg = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                assert_eq!(s.channel, 1);
+                assert_eq!(s.tx_count, 0);
+                assert_eq!(s.rx_count, 0);
+                assert_eq!(s.tx_fail_count, 0);
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    #[test]
+    fn unknown_type_silently_discarded() {
+        let mut bridge = make_bridge();
+        // Send an unknown type, then GET_STATUS to verify bridge still works.
+        let unknown = encode_modem_frame(&ModemMessage::Unknown {
+            msg_type: 0x7F,
+            body: vec![1, 2, 3],
+        })
+        .unwrap();
+        let status = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&unknown);
+        bridge.usb.inject(&status);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let msg = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::Status(_)));
+    }
+
+    #[test]
+    fn reset_clears_counters() {
+        let mut bridge = make_bridge();
+        bridge.counters.inc_tx();
+        bridge.counters.inc_tx();
+        bridge.counters.inc_rx();
+        assert_eq!(bridge.counters.tx_count(), 2);
+
+        let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset);
+        bridge.poll();
+        assert_eq!(bridge.counters.tx_count(), 0);
+        assert_eq!(bridge.counters.rx_count(), 0);
+    }
+
+    #[test]
+    fn scan_channels_response() {
+        let mut bridge = make_bridge();
+        let frame = encode_modem_frame(&ModemMessage::ScanChannels).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let msg = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::ScanResult(sr) => {
+                assert_eq!(sr.entries.len(), 14);
+            }
+            _ => panic!("expected ScanResult"),
+        }
     }
 }

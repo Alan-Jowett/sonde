@@ -10,10 +10,12 @@ use tokio::sync::RwLock;
 
 use sonde_protocol::{
     decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
-    NodeMessage, MSG_APP_DATA, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK, MSG_PROGRAM_ACK, MSG_WAKE,
+    NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK,
+    MSG_PROGRAM_ACK, MSG_WAKE,
 };
 
 use crate::crypto::{RustCryptoHmac, RustCryptoSha256};
+use crate::handler::HandlerRouter;
 use crate::program::ProgramLibrary;
 use crate::registry::NodeRecord;
 use crate::session::{SessionManager, SessionState};
@@ -32,7 +34,7 @@ pub enum PendingCommand {
 }
 
 /// The core protocol engine. Ties together authentication, session management,
-/// program library, and command dispatch.
+/// program library, command dispatch, and handler routing.
 pub struct Gateway {
     storage: Arc<dyn Storage>,
     session_manager: SessionManager,
@@ -42,10 +44,13 @@ pub struct Gateway {
     crypto_sha: RustCryptoSha256,
     /// Pending commands per node (ephemeral programs, schedule changes, reboots).
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+    /// Optional handler router for APP_DATA dispatch (Phase 2C).
+    handler_router: Option<Arc<HandlerRouter>>,
 }
 
 impl Gateway {
     /// Create a new gateway with the given storage backend and session timeout.
+    /// No handler router is configured; APP_DATA is silently accepted.
     pub fn new(storage: Arc<dyn Storage>, session_timeout: Duration) -> Self {
         Self {
             storage,
@@ -54,6 +59,24 @@ impl Gateway {
             crypto_hmac: RustCryptoHmac,
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
+            handler_router: None,
+        }
+    }
+
+    /// Create a new gateway with a handler router for APP_DATA dispatch.
+    pub fn new_with_handler(
+        storage: Arc<dyn Storage>,
+        session_timeout: Duration,
+        handler_router: Arc<HandlerRouter>,
+    ) -> Self {
+        Self {
+            storage,
+            session_manager: SessionManager::new(session_timeout),
+            program_library: ProgramLibrary::new(),
+            crypto_hmac: RustCryptoHmac,
+            crypto_sha: RustCryptoSha256,
+            pending_commands: Arc::new(RwLock::new(HashMap::new())),
+            handler_router: Some(handler_router),
         }
     }
 
@@ -251,10 +274,7 @@ impl Gateway {
                 self.handle_program_ack(node, program_hash).await;
                 None
             }
-            NodeMessage::AppData { .. } => {
-                // Phase 2B: accept but no routing yet (Phase 2C)
-                None
-            }
+            NodeMessage::AppData { blob } => self.handle_app_data(node, header, blob).await,
             _ => None,
         }
     }
@@ -340,6 +360,53 @@ impl Gateway {
             .session_manager
             .set_state(&node.node_id, SessionState::BpfExecuting)
             .await;
+    }
+
+    /// Route APP_DATA to the handler router (Phase 2C). Looks up the node's
+    /// `current_program_hash` from storage, calls the handler, and wraps any
+    /// non-empty reply in a `GatewayMessage::AppDataReply` frame.
+    async fn handle_app_data(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        blob: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        let router = self.handler_router.as_ref()?;
+
+        // Use the node's `current_program_hash` (set via PROGRAM_ACK) for routing.
+        // The node record was already loaded during frame authentication.
+        let program_hash = match &node.current_program_hash {
+            Some(hash) => hash.clone(),
+            None => return None,
+        };
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let reply_data = router
+            .route_app_data(&node.node_id, &program_hash, &blob, timestamp, header.nonce)
+            .await?;
+
+        // Encode APP_DATA_REPLY with the same nonce as the incoming APP_DATA
+        let response_msg = GatewayMessage::AppDataReply { blob: reply_data };
+        let response_cbor = response_msg.encode().ok()?;
+
+        let response_header = FrameHeader {
+            key_hint: node.key_hint,
+            msg_type: MSG_APP_DATA_REPLY,
+            nonce: header.nonce,
+        };
+        let frame = encode_frame(
+            &response_header,
+            &response_cbor,
+            &node.psk,
+            &self.crypto_hmac,
+        )
+        .ok()?;
+
+        Some(frame)
     }
 
     /// Command selection logic (priority order per design doc 6.4).

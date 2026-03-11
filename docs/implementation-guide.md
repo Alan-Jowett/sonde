@@ -204,13 +204,41 @@ Connect the foundation modules into the main frame-processing loop. The gateway 
 
 #### Phase 2C: Handler API and admin (steps 2.10–2.12)
 
-Application data routing, handler process management, gRPC admin API, configuration, and startup/shutdown.
+Application data routing, handler process management, gRPC admin API, configuration, and startup/shutdown. Phase 2C is split into three sub-phases:
+
+#### Phase 2C-i: Handler router (step 2.10)
+
+Handler process management and APP_DATA routing. The gateway can forward application data to external handler processes and relay replies.
 
 | Step | Module | What to build | Test with |
 |---|---|---|---|
-| 2.10 | `handler.rs` | Handler router, process lifecycle, DATA/REPLY/EVENT/LOG | T-0500 to T-0513 |
-| 2.11 | `admin.rs` | gRPC admin API | T-0800 to T-0810 |
-| 2.12 | `config.rs` + `main.rs` | Configuration, startup/shutdown | T-1000 to T-1003 |
+| 2.10a | `handler.rs` (transport) | Handler framing: 4B length-prefix + CBOR encode/decode over stdin/stdout | T-0504 |
+| 2.10b | `handler.rs` (process) | HandlerProcess: spawn, write DATA, read DATA_REPLY, LOG handling, respawn/crash | T-0505, T-0506, T-0510, T-0511, T-0513 |
+| 2.10c | `handler.rs` (router) | HandlerRouter: program_hash → handler config routing, catch-all, no-match | T-0507, T-0508, T-0509 |
+| 2.10d | `engine.rs` (integration) | Wire APP_DATA dispatch through handler router, APP_DATA_REPLY back to node | T-0500, T-0501, T-0502, T-0503 |
+| 2.10e | `handler.rs` (events) | EVENT messages: node_online, program_updated, node_timeout (engine wiring deferred to Phase 2C-ii) | T-0512 (smoke test) |
+
+**Exit criteria (2C-i):** All handler API tests pass (T-0500 to T-0513). APP_DATA flows end-to-end from node through engine to handler process and back.
+
+#### Phase 2C-ii: Admin API (step 2.11)
+
+gRPC admin API for node/program management and operational commands.
+
+| Step | Module | What to build | Test with |
+|---|---|---|---|
+| 2.11a | `proto/admin.proto` | gRPC service definition | Compile check |
+| 2.11b | `admin.rs` | gRPC service: node CRUD, program ingestion, schedule/reboot/ephemeral queueing, status, export/import | T-0800 to T-0810 |
+
+**Exit criteria (2C-ii):** All admin API tests pass (T-0800 to T-0810).
+
+#### Phase 2C-iii: Config and startup (step 2.12)
+
+Configuration loading, startup/shutdown sequence, and operational tests.
+
+| Step | Module | What to build | Test with |
+|---|---|---|---|
+| 2.12a | `config.rs` | Configuration structs, TOML loading | Unit tests |
+| 2.12b | `main.rs` | Startup/shutdown sequence | T-1000 to T-1004 |
 
 **Exit criteria (2C):** `cargo test -p sonde-gateway` passes all gateway validation tests. The gateway is a complete, runnable service.
 

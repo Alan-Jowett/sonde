@@ -49,10 +49,22 @@ pub enum CommandPayload {
     Reboot,
 }
 
+impl CommandPayload {
+    /// Returns the command_type code for this payload variant.
+    pub fn command_type(&self) -> u8 {
+        match self {
+            CommandPayload::Nop => CMD_NOP,
+            CommandPayload::UpdateProgram { .. } => CMD_UPDATE_PROGRAM,
+            CommandPayload::RunEphemeral { .. } => CMD_RUN_EPHEMERAL,
+            CommandPayload::UpdateSchedule { .. } => CMD_UPDATE_SCHEDULE,
+            CommandPayload::Reboot => CMD_REBOOT,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GatewayMessage {
     Command {
-        command_type: u8,
         starting_seq: u64,
         timestamp_ms: u64,
         payload: CommandPayload,
@@ -227,26 +239,12 @@ impl GatewayMessage {
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let pairs: Vec<(u64, Value)> = match self {
             GatewayMessage::Command {
-                command_type,
                 starting_seq,
                 timestamp_ms,
                 payload,
             } => {
-                let derived_type: u8 = match payload {
-                    CommandPayload::Nop => CMD_NOP,
-                    CommandPayload::Reboot => CMD_REBOOT,
-                    CommandPayload::UpdateProgram { .. } => CMD_UPDATE_PROGRAM,
-                    CommandPayload::RunEphemeral { .. } => CMD_RUN_EPHEMERAL,
-                    CommandPayload::UpdateSchedule { .. } => CMD_UPDATE_SCHEDULE,
-                };
-                if *command_type != derived_type {
-                    return Err(EncodeError::CborError(format!(
-                        "command_type 0x{:02x} does not match payload variant (expected 0x{:02x})",
-                        command_type, derived_type
-                    )));
-                }
                 let mut p = alloc::vec![
-                    (KEY_COMMAND_TYPE, u8_val(derived_type)),
+                    (KEY_COMMAND_TYPE, u8_val(payload.command_type())),
                     (KEY_STARTING_SEQ, uint_val(*starting_seq)),
                     (KEY_TIMESTAMP_MS, uint_val(*timestamp_ms)),
                 ];
@@ -358,7 +356,6 @@ impl GatewayMessage {
                 };
 
                 Ok(GatewayMessage::Command {
-                    command_type,
                     starting_seq,
                     timestamp_ms,
                     payload,

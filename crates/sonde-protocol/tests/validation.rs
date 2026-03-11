@@ -293,7 +293,6 @@ fn test_p021() {
 #[test]
 fn test_p022() {
     let msg = GatewayMessage::Command {
-        command_type: CMD_NOP,
         starting_seq: 42,
         timestamp_ms: 1_710_000_000_000,
         payload: CommandPayload::Nop,
@@ -302,12 +301,10 @@ fn test_p022() {
     let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
     match decoded {
         GatewayMessage::Command {
-            command_type,
             starting_seq,
             timestamp_ms,
             payload,
         } => {
-            assert_eq!(command_type, CMD_NOP);
             assert_eq!(starting_seq, 42);
             assert_eq!(timestamp_ms, 1_710_000_000_000);
             assert!(matches!(payload, CommandPayload::Nop));
@@ -320,7 +317,6 @@ fn test_p022() {
 fn test_p023() {
     let hash = vec![0xBB; 32];
     let msg = GatewayMessage::Command {
-        command_type: CMD_UPDATE_PROGRAM,
         starting_seq: 1,
         timestamp_ms: 1_710_000_000_000,
         payload: CommandPayload::UpdateProgram {
@@ -334,7 +330,6 @@ fn test_p023() {
     let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
     match decoded {
         GatewayMessage::Command {
-            command_type,
             starting_seq,
             timestamp_ms,
             payload:
@@ -345,7 +340,6 @@ fn test_p023() {
                     chunk_count,
                 },
         } => {
-            assert_eq!(command_type, CMD_UPDATE_PROGRAM);
             assert_eq!(starting_seq, 1);
             assert_eq!(timestamp_ms, 1_710_000_000_000);
             assert_eq!(program_hash, hash);
@@ -360,7 +354,6 @@ fn test_p023() {
 #[test]
 fn test_p024() {
     let msg = GatewayMessage::Command {
-        command_type: CMD_UPDATE_SCHEDULE,
         starting_seq: 1,
         timestamp_ms: 0,
         payload: CommandPayload::UpdateSchedule { interval_s: 300 },
@@ -803,7 +796,6 @@ fn test_p060() {
 fn test_p061() {
     let hash = vec![0xCC; 32];
     let msg = GatewayMessage::Command {
-        command_type: CMD_UPDATE_PROGRAM,
         starting_seq: 99,
         timestamp_ms: 1_710_000_000_000,
         payload: CommandPayload::UpdateProgram {
@@ -826,7 +818,6 @@ fn test_p061() {
     let msg2 = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
     match msg2 {
         GatewayMessage::Command {
-            command_type,
             starting_seq,
             timestamp_ms,
             payload:
@@ -837,7 +828,6 @@ fn test_p061() {
                     chunk_count,
                 },
         } => {
-            assert_eq!(command_type, CMD_UPDATE_PROGRAM);
             assert_eq!(starting_seq, 99);
             assert_eq!(timestamp_ms, 1_710_000_000_000);
             assert_eq!(program_hash, hash);

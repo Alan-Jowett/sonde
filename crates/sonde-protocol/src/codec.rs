@@ -15,16 +15,6 @@ pub struct DecodedFrame {
     pub hmac: [u8; 32],
 }
 
-impl DecodedFrame {
-    /// Returns the header + payload bytes (the HMAC input).
-    pub fn authenticated_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(HEADER_SIZE + self.payload.len());
-        buf.extend_from_slice(&self.header.to_bytes());
-        buf.extend_from_slice(&self.payload);
-        buf
-    }
-}
-
 pub fn encode_frame(
     header: &FrameHeader,
     payload_cbor: &[u8],
@@ -37,11 +27,14 @@ pub fn encode_frame(
     }
 
     let header_bytes = header.to_bytes();
-    let mut auth_input = Vec::with_capacity(HEADER_SIZE + payload_cbor.len());
-    auth_input.extend_from_slice(&header_bytes);
-    auth_input.extend_from_slice(payload_cbor);
 
-    let mac = hmac.compute(psk, &auth_input);
+    // Compute HMAC over header + payload without an intermediate Vec.
+    // Concat into a stack buffer since total is bounded by MAX_FRAME_SIZE.
+    let mut auth_buf = [0u8; MAX_FRAME_SIZE];
+    auth_buf[..HEADER_SIZE].copy_from_slice(&header_bytes);
+    auth_buf[HEADER_SIZE..HEADER_SIZE + payload_cbor.len()].copy_from_slice(payload_cbor);
+    let auth_len = HEADER_SIZE + payload_cbor.len();
+    let mac = hmac.compute(psk, &auth_buf[..auth_len]);
 
     let mut frame = Vec::with_capacity(total_size);
     frame.extend_from_slice(&header_bytes);
@@ -78,6 +71,10 @@ pub fn decode_frame(raw: &[u8]) -> Result<DecodedFrame, DecodeError> {
 }
 
 pub fn verify_frame(frame: &DecodedFrame, psk: &[u8], hmac: &impl HmacProvider) -> bool {
-    let auth_bytes = frame.authenticated_bytes();
-    hmac.verify(psk, &auth_bytes, &frame.hmac)
+    let mut auth_buf = [0u8; MAX_FRAME_SIZE];
+    let header_bytes = frame.header.to_bytes();
+    auth_buf[..HEADER_SIZE].copy_from_slice(&header_bytes);
+    auth_buf[HEADER_SIZE..HEADER_SIZE + frame.payload.len()].copy_from_slice(&frame.payload);
+    let auth_len = HEADER_SIZE + frame.payload.len();
+    hmac.verify(psk, &auth_buf[..auth_len], &frame.hmac)
 }

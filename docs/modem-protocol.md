@@ -50,12 +50,12 @@ USB-CDC provides reliable, ordered byte delivery. The protocol uses simple lengt
 | `type` | Unsigned integer | 1 byte | Message type discriminator (see §3). |
 | `body` | Bytes | 0 .. 511 bytes | Type-specific payload. |
 
-The maximum body size of 512 bytes provides generous headroom above the 250-byte ESP-NOW frame limit plus the 6-byte MAC address overhead.
+The maximum body size of 511 bytes provides generous headroom above the 250-byte ESP-NOW frame limit plus the 6-byte MAC address overhead.
 
 ### 2.2  Receiver behavior
 
 - Frames with `len` = 0 MUST be silently discarded.
-- Frames with `len` > 512 MUST be silently discarded. The receiver MUST skip `len` bytes to resynchronize.
+- Frames with `len` > 512 MUST be treated as a framing error. The receiver MUST NOT skip `len` bytes (the value is untrusted and could be up to 65,535). Instead, the receiver MUST initiate the `RESET`-based resynchronization procedure (§2.3).
 - Frames with an unknown `type` value MUST be silently discarded (forward compatibility).
 
 ### 2.3  Synchronization recovery
@@ -63,8 +63,8 @@ The maximum body size of 512 bytes provides generous headroom above the 250-byte
 If the gateway opens a serial port mid-stream (e.g., after a modem reset or hot-plug), it may land in the middle of a frame. Recovery procedure:
 
 1. Gateway sends `RESET` (TYPE = 0x01, empty body).
-2. Gateway discards all received bytes until it sees a valid `MODEM_READY` frame.
-3. Modem firmware resets its receive-side framing parser on any `RESET` command, so even a partial frame followed by a valid `RESET` will resynchronize both sides.
+2. Modem firmware resets its receive-side framing parser on any `RESET` command and then sends a `MODEM_READY` frame (`LEN` = 0x00 0x0B, `TYPE` = 0x81, 10-byte body).
+3. After sending `RESET`, the gateway MUST discard received bytes until it observes a valid `MODEM_READY` frame: a two-byte big-endian length of 11 (`0x00 0x0B`), followed by `TYPE` = `0x81`, followed by exactly 10 bytes of body (`firmware_version` + `mac_address`). This deterministic framing pattern allows the gateway to resynchronize even if the `RESET` was sent mid-frame.
 
 ---
 
@@ -201,7 +201,7 @@ Response to `SCAN_CHANNELS`. Reports per-channel WiFi AP activity to help the ad
 
 ```
 ┌────────────┬─────────────────────────────────────────────────────┐
-│ count (1B) │ entries: (channel[1] | ap_count[1] | rssi[1]) × N  │
+│ count (1B) │ entries: (channel[1] | ap_count[1] | strongest_rssi[1]) × N  │
 └────────────┴─────────────────────────────────────────────────────┘
 ```
 
@@ -238,12 +238,15 @@ Reports an unrecoverable modem error. The gateway should log this and may attemp
 
 ### 5.1  Startup
 
+The gateway MUST always send `RESET` when opening the serial port, regardless of whether the modem was just powered on or was already running. This ensures deterministic state.
+
 ```
 Gateway                          Modem
    │                               │
    │──── [open serial port] ──────►│
+   │──── RESET ───────────────────►│
    │                               │
-   │◄──── MODEM_READY ─────────────│  (auto on USB enumeration)
+   │◄──── MODEM_READY ─────────────│
    │                               │
    │──── SET_CHANNEL(ch) ─────────►│
    │◄──── SET_CHANNEL_ACK(ch) ─────│
@@ -251,7 +254,7 @@ Gateway                          Modem
    │  ════ normal operation ════   │
 ```
 
-If the gateway opens a port that was already active (hot-plug, restart), it sends `RESET` first and waits for `MODEM_READY` (see §2.3).
+Any `MODEM_READY` received before `RESET` completes (e.g., from USB enumeration) is discarded. The gateway only accepts `MODEM_READY` after it has sent `RESET`.
 
 ### 5.2  Normal operation (frame relay)
 

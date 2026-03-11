@@ -72,12 +72,12 @@ The modem firmware MUST implement the length-prefixed framing protocol defined i
 **Source:** modem-protocol.md §2.1
 
 **Description:**
-The modem firmware MUST accept serial frames up to 512 bytes total (`LEN` + `TYPE` + `BODY`).
+The modem firmware MUST accept serial frames with `len` values up to 512 (i.e., up to 514 bytes total including the 2-byte `LEN` field).
 
 **Acceptance criteria:**
 
-1. A 512-byte serial frame is accepted and processed without error.
-2. A frame exceeding 512 bytes is silently discarded.
+1. A serial frame with `len` = 512 is accepted and processed without error.
+2. A frame with `len` > 512 triggers the `RESET`-based resynchronization procedure.
 
 ---
 

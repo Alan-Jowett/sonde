@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: MIT
-     Copyright (c) 2026 sonde contributors -->
+  Copyright (c) 2026 sonde contributors -->
 # Getting Started
 
 > **Document status:** Draft
@@ -11,17 +11,17 @@
 
 ## 1  Overview
 
-The Sonde workspace contains five crates with different platform requirements:
+The Sonde workspace will contain five crates with different platform requirements. Currently `sonde-protocol` and `sonde-gateway` are implemented; the remaining crates are planned:
 
 | Crate | Runs on | Toolchain needed |
 |-------|---------|-----------------|
 | `sonde-protocol` | Any (no_std) | Standard Rust |
 | `sonde-gateway` | Host (Linux/macOS/Windows) | Standard Rust |
-| `sonde-admin` | Host (Linux/macOS/Windows) | Standard Rust |
-| `sonde-node` | ESP32-C3 or ESP32-S3 | Espressif Rust (RISC-V and/or Xtensa) |
-| `sonde-modem` | ESP32-S3 | Espressif Rust (Xtensa) |
+| `sonde-admin` (planned) | Host (Linux/macOS/Windows) | Standard Rust |
+| `sonde-node` (planned) | ESP32-C3 or ESP32-S3 | Espressif Rust (RISC-V and/or Xtensa) |
+| `sonde-modem` (planned) | ESP32-S3 | Espressif Rust (Xtensa) |
 
-You only need the Espressif toolchain if you are building firmware for the node or modem. The protocol crate, gateway, and admin CLI build with a standard Rust toolchain on any platform.
+You only need the Espressif toolchain once the node or modem firmware crates are available. The protocol crate, gateway, and admin CLI build with a standard Rust toolchain on any platform.
 
 ---
 
@@ -57,8 +57,8 @@ cargo clippy --workspace -- -D warnings
 cargo test -p sonde-protocol
 cargo test -p sonde-gateway
 
-# Build everything that targets the host
-cargo build --workspace
+# Build host crates
+cargo build -p sonde-protocol -p sonde-gateway
 ```
 
 ---
@@ -148,25 +148,27 @@ cargo install espflash
 
 ### 3.6  Verify the toolchain
 
-After setup, verify you can target the ESP32 chips:
+After setup, verify you can target the ESP32 chips. These commands will work once the firmware crates are added to the workspace (see [implementation-guide.md](implementation-guide.md) Phase 5 and Phase 3):
 
 ```sh
 # List installed targets (should include esp targets)
 rustup target list --installed
 
-# Build the modem firmware (ESP32-S3, Xtensa)
+# Build the modem firmware (ESP32-S3, Xtensa) — requires sonde-modem crate
 cargo build -p sonde-modem --target xtensa-esp32s3-espidf
 
-# Build the node firmware (ESP32-C3, RISC-V)
+# Build the node firmware (ESP32-C3, RISC-V) — requires sonde-node crate
 cargo build -p sonde-node --target riscv32imc-esp-espidf
 
-# Build the node firmware (ESP32-S3, Xtensa)
+# Build the node firmware (ESP32-S3, Xtensa) — requires sonde-node crate
 cargo build -p sonde-node --target xtensa-esp32s3-espidf
 ```
 
 ---
 
 ## 4  Flashing firmware
+
+> **Note:** The firmware crates (`sonde-modem`, `sonde-node`) are not yet in the workspace. The commands below will work once they are added (see [implementation-guide.md](implementation-guide.md) Phase 3 and Phase 5).
 
 ### 4.1  Modem (ESP32-S3)
 
@@ -232,12 +234,14 @@ Every `.rs` file must start with:
 Every `.md` file must start with:
 ```html
 <!-- SPDX-License-Identifier: MIT
-     Copyright (c) 2026 sonde contributors -->
+  Copyright (c) 2026 sonde contributors -->
 ```
 
 ---
 
 ## 6  Project structure
+
+The target workspace layout (see [implementation-guide.md §2](implementation-guide.md) for details):
 
 ```
 sonde/
@@ -245,9 +249,9 @@ sonde/
 ├── crates/
 │   ├── sonde-protocol/           # Shared no_std protocol crate
 │   ├── sonde-gateway/            # Async gateway service (tokio)
-│   ├── sonde-node/               # ESP32 sensor node firmware
-│   ├── sonde-modem/              # ESP32-S3 radio modem firmware
-│   └── sonde-admin/              # CLI admin tool
+│   ├── sonde-node/               # ESP32 sensor node firmware (planned)
+│   ├── sonde-modem/              # ESP32-S3 radio modem firmware (planned)
+│   └── sonde-admin/              # CLI admin tool (planned)
 ├── docs/                         # Specifications and design docs
 └── hooks/                        # Git hooks
 ```
@@ -264,12 +268,11 @@ See [implementation-guide.md](implementation-guide.md) for the full module break
 | Lint all code | `cargo clippy --workspace -- -D warnings` |
 | Test protocol crate | `cargo test -p sonde-protocol` |
 | Test gateway | `cargo test -p sonde-gateway` |
-| Build everything (host) | `cargo build --workspace` |
-| Build modem firmware | `cargo build -p sonde-modem --target xtensa-esp32s3-espidf` |
-| Build node firmware (C3) | `cargo build -p sonde-node --target riscv32imc-esp-espidf` |
-| Build node firmware (S3) | `cargo build -p sonde-node --target xtensa-esp32s3-espidf` |
-| Flash modem | `cargo espflash flash -p sonde-modem --target xtensa-esp32s3-espidf --monitor` |
-| Flash node (C3) | `cargo espflash flash -p sonde-node --target riscv32imc-esp-espidf --monitor` |
+| Build host crates | `cargo build -p sonde-protocol -p sonde-gateway` |
+| Build modem firmware (planned) | `cargo build -p sonde-modem --target xtensa-esp32s3-espidf` |
+| Build node firmware (planned) | `cargo build -p sonde-node --target riscv32imc-esp-espidf` |
+| Flash modem (planned) | `cargo espflash flash -p sonde-modem --target xtensa-esp32s3-espidf --monitor` |
+| Flash node (planned) | `cargo espflash flash -p sonde-node --target riscv32imc-esp-espidf --monitor` |
 
 ---
 
@@ -294,4 +297,4 @@ See [implementation-guide.md](implementation-guide.md) for the full module break
 
 ### cargo build --workspace fails for ESP targets
 
-The workspace `cargo build` only builds host-targeted crates. ESP firmware crates must be built with an explicit `--target` flag. This is expected — the workspace is configured so that `cargo build --workspace` and `cargo test --workspace` operate on host crates only.
+`cargo build --workspace` builds all workspace members for the active toolchain. If firmware crates are added to the workspace, they will fail to build without the Espressif toolchain and an explicit `--target` flag (e.g., `--target xtensa-esp32s3-espidf`). To build only host crates, select them explicitly with `-p` (e.g., `cargo build -p sonde-protocol -p sonde-gateway`).

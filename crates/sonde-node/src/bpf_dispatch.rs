@@ -115,7 +115,8 @@ pub unsafe fn install(
         assert!(borrow.is_none(), "BPF dispatch context already installed");
         // Build pointer→index map for O(1) lookup in map helpers.
         let map_ptr_index = {
-            let ms = &*map_storage;
+            // SAFETY: caller guarantees map_storage is valid until clear().
+            let ms = unsafe { &*map_storage };
             ms.map_pointers()
                 .iter()
                 .enumerate()

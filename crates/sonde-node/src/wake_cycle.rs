@@ -66,7 +66,7 @@ pub enum WakeCycleOutcome {
 pub fn run_wake_cycle<T, S, H, R, C, B, I, M>(
     transport: &mut T,
     storage: &mut S,
-    _hal: &mut H,
+    hal: &mut H,
     rng: &mut R,
     clock: &C,
     battery: &B,
@@ -260,7 +260,7 @@ where
     }
 
     if let Some(mut program) = loaded_program {
-        let _program_class = if program.is_ephemeral {
+        let program_class = if program.is_ephemeral {
             ProgramClass::Ephemeral
         } else {
             ProgramClass::Resident
@@ -326,7 +326,7 @@ where
         // and will not be moved until `_guard` is dropped below.
         unsafe {
             crate::bpf_dispatch::install(
-                _hal as *mut H as *mut dyn crate::hal::Hal,
+                hal as *mut H as *mut dyn crate::hal::Hal,
                 transport as *mut T as *mut dyn crate::traits::Transport,
                 map_storage as *mut MapStorage,
                 &mut sleep_mgr as *mut SleepManager,
@@ -334,7 +334,7 @@ where
                 hmac as *const M as *const dyn HmacProvider,
                 &identity as *const NodeIdentity,
                 &mut current_seq as *mut u64,
-                _program_class,
+                program_class,
                 &mut trace_log as *mut Vec<String>,
                 timestamp_ms,
                 command_received_at,

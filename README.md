@@ -8,7 +8,20 @@ Each node acts as a programmable sonde: a constrained probe that autonomously sa
 
 Nodes run uniform firmware and execute behavior defined by [uBPF](https://github.com/iovisor/ubpf) programs verified with [Prevail](https://github.com/vbpf/ebpf-verifier). A gateway distributes programs, schedules, and configuration over the air — no firmware updates required. The architecture is hardware-agnostic; the reference implementation targets ESP32-C3/S3.
 
-> **Status:** Design phase. This document is the specification.
+> **Status:** Active development — protocol, gateway, modem, and node crates are implemented and tested. See [Project status](#project-status) below.
+
+---
+
+## Project status
+
+| Crate | Purpose | Status |
+|---|---|---|
+| [`sonde-protocol`](crates/sonde-protocol) | `no_std` wire format: frame codec, CBOR messages, program images | ✅ Complete — 41 validation tests, 4 fuzz targets |
+| [`sonde-gateway`](crates/sonde-gateway) | Async gateway service (tokio): sessions, program distribution, handler routing, gRPC admin | ✅ Core complete — handler routing and admin stubs in place |
+| [`sonde-modem`](crates/sonde-modem) | ESP32-S3 USB-to-ESP-NOW bridge firmware | ✅ Functional — bridge logic and ESP-IDF drivers working |
+| [`sonde-node`](crates/sonde-node) | ESP32-C3/S3 node firmware: wake cycle, BPF dispatch, program store | ✅ Core complete — wake cycle engine, 16 BPF helpers, A/B program store |
+
+CI runs on every push and PR: formatting, clippy, build, workspace tests, fuzz (protocol), and an ESP32 QEMU smoke test.
 
 ---
 
@@ -141,6 +154,25 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 | **BPF execution** | Interpreter only (no uBPF JIT for RISC-V/Xtensa) |
 | **Max program size** | 4 KB resident, 2 KB ephemeral (recommended) |
 | **Chunked transfer** | 4 KB program ≈ 20 round-trips over ESP-NOW |
+
+---
+
+## Building
+
+```sh
+# Build and test all host crates
+cargo build --workspace
+cargo test --workspace
+
+# Test protocol crate only (fast, no deps)
+cargo test -p sonde-protocol
+
+# Build modem firmware (requires ESP-IDF + Xtensa toolchain)
+. ~/export-esp.ps1
+cargo +esp build -p sonde-modem --features esp --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
+```
+
+See [Getting Started](docs/getting-started.md) for full toolchain setup.
 
 ---
 

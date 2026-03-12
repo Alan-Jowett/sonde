@@ -355,6 +355,10 @@ pub fn spawn_health_monitor(
     interval: std::time::Duration,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        if interval.is_zero() {
+            warn!("health monitor interval is zero, disabling");
+            return;
+        }
         let mut prev_tx_fail: Option<u32> = None;
         let mut prev_uptime: Option<u32> = None;
 

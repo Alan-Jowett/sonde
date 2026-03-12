@@ -201,7 +201,7 @@ async fn t1105_poll_status_multiple_calls() {
 
 // ─── GW-0507: node_timeout EVENT ───────────────────────────────────────
 
-/// Verify check_node_timeouts identifies nodes that have exceeded 2×
+/// Verify check_node_timeouts identifies nodes that have exceeded 3×
 /// their schedule_interval_s since last_seen. Without a real handler
 /// router, we verify the method runs without error against storage.
 #[tokio::test]
@@ -217,7 +217,7 @@ async fn t0507_check_node_timeouts_no_handler() {
     // Gateway without handler router — check_node_timeouts should return
     // gracefully (no router = no events to emit).
     let gw = Gateway::new(storage, Duration::from_secs(30));
-    gw.check_node_timeouts().await;
+    gw.check_node_timeouts(3).await;
     // No panic = success; events would be emitted if a handler router were
     // configured.
 }
@@ -234,7 +234,7 @@ async fn t0507_check_node_timeouts_not_timed_out() {
     storage.upsert_node(&node).await.unwrap();
 
     let gw = Gateway::new(storage, Duration::from_secs(30));
-    gw.check_node_timeouts().await;
+    gw.check_node_timeouts(3).await;
     // No panic, no timeout detected.
 }
 
@@ -247,7 +247,7 @@ async fn t0507_check_node_timeouts_no_last_seen() {
     storage.upsert_node(&node).await.unwrap();
 
     let gw = Gateway::new(storage, Duration::from_secs(30));
-    gw.check_node_timeouts().await;
+    gw.check_node_timeouts(3).await;
     // No panic — node with no last_seen is skipped.
 }
 
@@ -262,6 +262,6 @@ async fn t0507_check_node_timeouts_zero_interval() {
     storage.upsert_node(&node).await.unwrap();
 
     let gw = Gateway::new(storage, Duration::from_secs(30));
-    gw.check_node_timeouts().await;
+    gw.check_node_timeouts(3).await;
     // No panic — zero interval means no timeout check.
 }

@@ -128,7 +128,19 @@ impl UsbEspNowTransport {
             })
         };
 
-        // Run startup sequence; abort reader task on failure.
+        // Wrap handle in abort-on-drop guard so that if the constructor
+        // future is cancelled/dropped mid-handshake, the task is aborted.
+        struct AbortGuard(Option<tokio::task::JoinHandle<()>>);
+        impl Drop for AbortGuard {
+            fn drop(&mut self) {
+                if let Some(h) = self.0.take() {
+                    h.abort();
+                }
+            }
+        }
+        let mut guard = AbortGuard(Some(reader_handle));
+
+        // Run startup sequence; guard aborts reader on failure or cancel.
         let startup_result = async {
             let modem_ready = Self::reset_and_wait(Arc::clone(&writer), ready_rx).await?;
             let modem_mac = modem_ready.mac_address;
@@ -143,15 +155,18 @@ impl UsbEspNowTransport {
         .await;
 
         match startup_result {
-            Ok(modem_mac) => Ok(Self {
-                writer,
-                recv_rx: Mutex::new(recv_rx),
-                status_slot,
-                modem_mac,
-                reader_handle,
-            }),
+            Ok(modem_mac) => {
+                let reader_handle = guard.0.take().expect("guard still holds handle");
+                Ok(Self {
+                    writer,
+                    recv_rx: Mutex::new(recv_rx),
+                    status_slot,
+                    modem_mac,
+                    reader_handle,
+                })
+            }
             Err(e) => {
-                reader_handle.abort();
+                // Guard will abort the reader task on drop.
                 Err(e)
             }
         }
@@ -247,7 +262,7 @@ impl UsbEspNowTransport {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return Err(TransportError::Io(
-                    "modem did not respond with MODEM_READY after 3 attempts".into(),
+                    "modem did not respond with MODEM_READY (1 initial + 2 retries)".into(),
                 ));
             }
 
@@ -261,7 +276,7 @@ impl UsbEspNowTransport {
                     retries += 1;
                     if retries >= 3 {
                         return Err(TransportError::Io(
-                            "modem did not respond with MODEM_READY after 3 attempts".into(),
+                            "modem did not respond with MODEM_READY (1 initial + 2 retries)".into(),
                         ));
                     }
                     warn!(retry = retries, "modem not ready, resending RESET");
@@ -380,6 +395,20 @@ async fn dispatch_message(
                 message = ?String::from_utf8_lossy(&e.message),
                 "modem error"
             );
+            // Unblock pending waiters so they fail immediately instead
+            // of waiting until timeout.
+            if ready_tx.take().is_some() {
+                debug!("cancelling pending MODEM_READY waiter due to modem error");
+            }
+            if ack_tx.take().is_some() {
+                debug!("cancelling pending SET_CHANNEL_ACK waiter due to modem error");
+            }
+            {
+                let mut slot = status_slot.lock().await;
+                if slot.take().is_some() {
+                    debug!("cancelling pending STATUS waiter due to modem error");
+                }
+            }
         }
         other => {
             debug!(?other, "ignoring modem message");

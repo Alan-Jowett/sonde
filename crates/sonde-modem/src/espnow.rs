@@ -5,11 +5,12 @@
 //! configuration, and channel scanning.
 
 use esp_idf_hal::modem::Modem;
-use esp_idf_svc::espnow::{EspNow, PeerInfo, ReceiveInfo, SendStatus};
+use esp_idf_svc::espnow::{EspNow, PeerInfo, SendStatus};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 use log::{info, warn};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sonde_protocol::modem::{RecvFrame, MAC_SIZE};
@@ -17,6 +18,71 @@ use sonde_protocol::modem::{RecvFrame, MAC_SIZE};
 use crate::bridge::Radio;
 use crate::peer_table::PeerTable;
 use crate::status::ModemCounters;
+
+/// Shared state for the raw ESP-NOW receive callback.
+struct RecvCallbackState {
+    rx_queue: Arc<Mutex<Vec<RecvFrame>>>,
+    usb_connected: Arc<AtomicBool>,
+}
+
+/// Global callback state — set once during `EspNowDriver::new()`.
+static RECV_CB_STATE: std::sync::OnceLock<RecvCallbackState> = std::sync::OnceLock::new();
+
+/// Raw ESP-NOW receive callback that extracts RSSI from `rx_ctrl`.
+///
+/// This bypasses `esp-idf-svc`'s `register_recv_cb` because `ReceiveInfo`
+/// in v0.50 does not expose the `rx_ctrl` field containing RSSI.
+unsafe extern "C" fn raw_recv_cb(
+    recv_info: *const esp_idf_sys::esp_now_recv_info_t,
+    data: *const u8,
+    data_len: core::ffi::c_int,
+) {
+    // Defensive guards: ESP-IDF guarantees valid pointers but we check
+    // to avoid UB if the contract is ever violated.
+    if recv_info.is_null() || data.is_null() || data_len <= 0 {
+        return;
+    }
+
+    let info = unsafe { &*recv_info };
+
+    if info.src_addr.is_null() {
+        return;
+    }
+
+    let src_addr = unsafe { &*(info.src_addr as *const [u8; 6]) };
+
+    // Guard against invalid length — ESP-NOW max payload is 250 bytes.
+    let len = data_len as usize;
+    if len > 250 {
+        return;
+    }
+    let payload = unsafe { core::slice::from_raw_parts(data, len) };
+
+    // Extract RSSI from the rx_ctrl metadata.
+    let rssi = if info.rx_ctrl.is_null() {
+        i8::MIN
+    } else {
+        unsafe { (*info.rx_ctrl).rssi as i8 }
+    };
+
+    if let Some(state) = RECV_CB_STATE.get() {
+        // Discard frames when USB is disconnected (MD-0301).
+        if !state.usb_connected.load(Ordering::Relaxed) {
+            return;
+        }
+        // Use try_lock to avoid blocking the ESP-NOW/WiFi task if the
+        // queue is being drained. Drop the frame if contended.
+        if let Ok(mut q) = state.rx_queue.try_lock() {
+            if q.len() < 64 {
+                q.push(RecvFrame {
+                    peer_mac: *src_addr,
+                    rssi,
+                    frame_data: payload.to_vec(),
+                });
+            }
+        }
+    }
+}
 
 /// Wraps ESP-NOW initialization, send, receive, and channel management.
 pub struct EspNowDriver {
@@ -34,6 +100,7 @@ impl EspNowDriver {
         sysloop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
         counters: &Arc<ModemCounters>,
+        usb_connected: Arc<AtomicBool>,
     ) -> Self {
         // Initialize WiFi in station mode (required for ESP-NOW).
         let esp_wifi =
@@ -45,35 +112,22 @@ impl EspNowDriver {
 
         let espnow = EspNow::take().expect("failed to take ESP-NOW");
         let rx_queue = Arc::new(Mutex::new(Vec::new()));
-        let rx_clone = Arc::clone(&rx_queue);
 
-        // Register the receive callback.
-        espnow
-            .register_recv_cb(move |info: &ReceiveInfo, data: &[u8]| {
-                let peer_mac = *info.src_addr;
-
-                let frame = RecvFrame {
-                    peer_mac,
-                    // TODO: Extract real RSSI from esp_now_recv_info_t when
-                    // esp-idf-svc exposes it in the recv callback signature.
-                    // i8::MIN (−128) signals "not available" — outside the
-                    // typical −30..−90 dBm range so it won't be confused
-                    // with a real measurement.
-                    rssi: i8::MIN,
-                    frame_data: data.to_vec(),
-                };
-
-                if let Ok(mut q) = rx_clone.lock() {
-                    // Cap the queue to prevent unbounded memory growth
-                    // if USB is disconnected or the host can't keep up.
-                    if q.len() < 64 {
-                        q.push(frame);
-                    }
-                    // rx_count is incremented by the bridge when the frame
-                    // is actually forwarded to USB (per MD-0303).
-                }
-            })
-            .expect("failed to register ESP-NOW recv callback");
+        // Install the global recv callback state and register our raw
+        // callback that extracts RSSI from rx_ctrl.
+        assert!(
+            RECV_CB_STATE
+                .set(RecvCallbackState {
+                    rx_queue: Arc::clone(&rx_queue),
+                    usb_connected,
+                })
+                .is_ok(),
+            "RECV_CB_STATE already initialized; EspNowDriver::new must only be called once"
+        );
+        unsafe {
+            esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))
+                .expect("failed to register ESP-NOW recv callback");
+        }
 
         // Register the send callback to track delivery failures (MD-0202).
         let counters_for_send = Arc::clone(counters);

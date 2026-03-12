@@ -53,6 +53,12 @@ impl UsbCdcDriver {
     pub fn set_connected(&self) -> bool {
         !self.connected.swap(true, Ordering::Relaxed)
     }
+
+    /// Return a reference to the shared connected flag.
+    /// Used to share USB state with the ESP-NOW receive callback.
+    pub fn connected(&self) -> &Arc<AtomicBool> {
+        &self.connected
+    }
 }
 
 impl SerialPort for UsbCdcDriver {

@@ -77,6 +77,12 @@ impl BpfInterpreter for RbpfInterpreter {
     }
 
     fn execute(&mut self, ctx_ptr: u64, _instruction_budget: u64) -> Result<u64, BpfError> {
+        // NOTE: rbpf does not expose an instruction-counting / step-limit
+        // mechanism. We rely on Prevail verification on the gateway to
+        // guarantee termination (bounded loops, no infinite recursion).
+        // A future upstream rbpf patch could add metering, at which point
+        // _instruction_budget should be wired in here.
+
         let bytecode = self
             .bytecode
             .as_ref()
@@ -99,7 +105,10 @@ impl BpfInterpreter for RbpfInterpreter {
 
         // Allow access to the SondeContext memory region.
         if ctx_ptr != 0 {
-            vm.register_allowed_memory(ctx_ptr..ctx_ptr + SondeContext::SIZE as u64);
+            let ctx_end = ctx_ptr
+                .checked_add(SondeContext::SIZE as u64)
+                .ok_or_else(|| BpfError::LoadError("context pointer overflow".into()))?;
+            vm.register_allowed_memory(ctx_ptr..ctx_end);
         }
 
         // Allow access to map memory regions.
@@ -107,24 +116,27 @@ impl BpfInterpreter for RbpfInterpreter {
             vm.register_allowed_memory(range.clone());
         }
 
-        // Build the context as a mutable slice for rbpf.
-        // EbpfVmRaw::execute_program takes &mut [u8] as the "packet"
-        // data. We pass the SondeContext bytes as this data, and R1
-        // will point to it.
-        let ctx_slice = if ctx_ptr != 0 {
+        // Copy the context into a temporary mutable buffer so that
+        // rbpf's execute_program (which requires &mut [u8]) cannot
+        // corrupt the caller's real SondeContext. The BPF spec defines
+        // the context as read-only (bpf-environment.md §4).
+        let mut ctx_buf = [0u8; SondeContext::SIZE];
+        if ctx_ptr != 0 {
             // SAFETY: ctx_ptr points to a SondeContext on the caller's
             // stack, which is alive for this call's duration.
-            unsafe { core::slice::from_raw_parts_mut(ctx_ptr as *mut u8, SondeContext::SIZE) }
-        } else {
-            &mut []
-        };
+            unsafe {
+                let src = core::slice::from_raw_parts(ctx_ptr as *const u8, SondeContext::SIZE);
+                ctx_buf.copy_from_slice(src);
+            }
+        }
+        let ctx_slice: &mut [u8] = if ctx_ptr != 0 { &mut ctx_buf } else { &mut [] };
 
-        // TODO: rbpf does not expose an instruction budget mechanism.
-        // For now, we rely on Prevail verification to guarantee
-        // termination. A future rbpf patch could add step-counting.
         vm.execute_program(ctx_slice).map_err(|e| {
-            let msg = format!("{}", e);
-            if msg.contains("call depth") {
+            // rbpf uses a flat Error type with a string message (no
+            // structured variants). Match on known substrings to map
+            // to the appropriate BpfError variant.
+            let msg = e.to_string();
+            if msg.contains("call depth") || msg.contains("stack overflow") {
                 BpfError::CallDepthExceeded
             } else {
                 BpfError::InvalidBytecode(msg)
@@ -229,7 +241,9 @@ mod tests {
 
     #[test]
     fn test_with_context_ptr() {
-        // Program that reads R1 (ctx pointer) as a raw value and returns 0
+        // Program that ignores R1 (ctx pointer) and simply returns 0; this
+        // test ensures that passing a valid non-zero context pointer to
+        // `execute` succeeds and yields the expected return value.
         let prog = prog_return(0);
         let mut interp = RbpfInterpreter::new();
         interp.load(&prog, &[]).unwrap();

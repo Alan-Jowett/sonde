@@ -28,6 +28,7 @@ message NodeInfo {
     optional uint32 last_battery_mv = 5;
     optional uint32 last_firmware_abi_version = 6;
     optional uint64 last_seen_ms = 7;
+    optional uint32 schedule_interval_s = 8;
 }
 
 message ListNodesResponse { repeated NodeInfo nodes = 1; }
@@ -41,6 +42,8 @@ message ProgramInfo {
     uint32 size = 2;
     string verification_profile = 3;
 }
+// `image_data` accepts a CBOR-encoded program image (not a raw ELF binary).
+// ELF→CBOR extraction/verification will be added in a future phase.
 message IngestProgramRequest { bytes image_data = 1; string verification_profile = 2; }
 message IngestProgramResponse { bytes program_hash = 1; uint32 program_size = 2; }
 message ListProgramsResponse { repeated ProgramInfo programs = 1; }

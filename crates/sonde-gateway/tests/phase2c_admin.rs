@@ -769,68 +769,31 @@ async fn t0809_assign_program_wake_delivers_update() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  T-0810: ExportState + ImportState round-trip
+//  T-0810: ExportState + ImportState are disabled (GW-0601a)
 // ═══════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn t0810_export_import_roundtrip() {
+async fn t0810_export_state_disabled() {
     let h = TestHarness::new();
 
-    // Register a node and ingest a program
-    h.admin
-        .register_node(Request::new(RegisterNodeRequest {
-            node_id: "persist-node".into(),
-            key_hint: 10,
-            psk: vec![0xFF; 32],
-        }))
-        .await
-        .unwrap();
-
-    let cbor = make_cbor_image(&[0x42]);
-    h.admin
-        .ingest_program(Request::new(IngestProgramRequest {
-            image_data: cbor,
-            verification_profile: "resident".into(),
-        }))
-        .await
-        .unwrap();
-
-    // Export
-    let exported = h
+    let err = h
         .admin
         .export_state(Request::new(Empty {}))
         .await
-        .unwrap()
-        .into_inner();
-    assert!(!exported.data.is_empty());
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unimplemented);
+}
 
-    // Import into a fresh harness
-    let h2 = TestHarness::new();
-    h2.admin
+#[tokio::test]
+async fn t0810_import_state_disabled() {
+    let h = TestHarness::new();
+
+    let err = h
+        .admin
         .import_state(Request::new(ImportStateRequest {
-            data: exported.data,
+            data: vec![0x01],
         }))
         .await
-        .unwrap();
-
-    // Verify node exists
-    let info = h2
-        .admin
-        .get_node(Request::new(GetNodeRequest {
-            node_id: "persist-node".into(),
-        }))
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(info.node_id, "persist-node");
-    assert_eq!(info.key_hint, 10);
-
-    // Verify program exists
-    let programs = h2
-        .admin
-        .list_programs(Request::new(Empty {}))
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(programs.programs.len(), 1);
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unimplemented);
 }

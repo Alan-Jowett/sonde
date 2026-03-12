@@ -58,6 +58,7 @@ fn node_to_info(n: &NodeRecord) -> NodeInfo {
         last_battery_mv: n.last_battery_mv,
         last_firmware_abi_version: n.firmware_abi_version,
         last_seen_ms,
+        schedule_interval_s: Some(n.schedule_interval_s),
     }
 }
 
@@ -80,7 +81,10 @@ fn profile_to_string(p: &VerificationProfile) -> String {
 }
 
 fn storage_err(e: crate::storage::StorageError) -> Status {
-    Status::internal(e.to_string())
+    match e {
+        crate::storage::StorageError::NotFound(_) => Status::not_found(e.to_string()),
+        _ => Status::internal(e.to_string()),
+    }
 }
 
 #[tonic::async_trait]
@@ -158,6 +162,8 @@ impl GatewayAdmin for AdminService {
         Ok(Response::new(Empty {}))
     }
 
+    /// Ingest a CBOR-encoded program image. ELF→CBOR extraction/verification
+    /// will be added in a future phase; callers must supply pre-encoded CBOR for now.
     async fn ingest_program(
         &self,
         request: Request<IngestProgramRequest>,
@@ -183,7 +189,8 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ListProgramsResponse>, Status> {
-        let programs = self.storage.list_programs().await.map_err(storage_err)?;
+        let mut programs = self.storage.list_programs().await.map_err(storage_err)?;
+        programs.sort_by(|a, b| a.hash.cmp(&b.hash));
         let programs = programs
             .iter()
             .map(|p| ProgramInfo {
@@ -333,129 +340,31 @@ impl GatewayAdmin for AdminService {
         }))
     }
 
-    /// Export gateway state (nodes + programs). Handler routing configuration
-    /// export is deferred to Phase 2C-iii. PSK material is included verbatim;
-    /// production deployments MUST add encryption/authorization per GW-0601a.
+    /// Export gateway state (nodes + programs).
+    ///
+    /// Disabled until GW-0601a-compliant operator authentication/authorization
+    /// and protection (e.g. encryption) of exported PSK material are implemented.
+    /// Handler routing configuration export is also deferred to Phase 2C-iii.
     async fn export_state(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ExportStateResponse>, Status> {
-        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
-        let programs = self.storage.list_programs().await.map_err(storage_err)?;
-
-        let mut buf = Vec::new();
-        ciborium::into_writer(&(&nodes.len(), &programs.len()), &mut buf)
-            .map_err(|e| Status::internal(format!("cbor encode error: {e}")))?;
-        for node in &nodes {
-            let last_seen_ms: Option<u64> = node.last_seen.and_then(|t| {
-                t.duration_since(UNIX_EPOCH)
-                    .ok()
-                    .map(|d| d.as_millis() as u64)
-            });
-            ciborium::into_writer(
-                &(
-                    &node.node_id,
-                    node.key_hint,
-                    &node.psk[..],
-                    &node.assigned_program_hash,
-                    &node.current_program_hash,
-                    node.schedule_interval_s,
-                    node.firmware_abi_version,
-                    node.last_battery_mv,
-                    last_seen_ms,
-                ),
-                &mut buf,
-            )
-            .map_err(|e| Status::internal(format!("cbor encode error: {e}")))?;
-        }
-        for program in &programs {
-            let profile_str = profile_to_string(&program.verification_profile);
-            ciborium::into_writer(
-                &(&program.hash, &program.image, program.size, &profile_str),
-                &mut buf,
-            )
-            .map_err(|e| Status::internal(format!("cbor encode error: {e}")))?;
-        }
-        Ok(Response::new(ExportStateResponse { data: buf }))
+        Err(Status::unimplemented(
+            "`export_state` is disabled until admin authz/authn and protected export are implemented (GW-0601a)",
+        ))
     }
 
+    /// Import gateway state (nodes + programs).
+    ///
+    /// Disabled until GW-0601a-compliant operator authentication/authorization
+    /// and protection (e.g. encryption) of exported PSK material are implemented.
+    /// Handler routing configuration import is also deferred to Phase 2C-iii.
     async fn import_state(
         &self,
-        request: Request<ImportStateRequest>,
+        _request: Request<ImportStateRequest>,
     ) -> Result<Response<Empty>, Status> {
-        let data = &request.get_ref().data;
-        let mut cursor = std::io::Cursor::new(data);
-
-        let (node_count, program_count): (usize, usize) = ciborium::from_reader(&mut cursor)
-            .map_err(|e| Status::invalid_argument(format!("cbor decode error: {e}")))?;
-
-        for _ in 0..node_count {
-            let (
-                node_id,
-                key_hint,
-                psk_bytes,
-                assigned_program_hash,
-                current_program_hash,
-                schedule_interval_s,
-                firmware_abi_version,
-                last_battery_mv,
-                last_seen_ms,
-            ): (
-                String,
-                u16,
-                Vec<u8>,
-                Option<Vec<u8>>,
-                Option<Vec<u8>>,
-                u32,
-                Option<u32>,
-                Option<u32>,
-                Option<u64>,
-            ) = ciborium::from_reader(&mut cursor)
-                .map_err(|e| Status::invalid_argument(format!("cbor decode error: {e}")))?;
-
-            if psk_bytes.len() != 32 {
-                return Err(Status::invalid_argument("invalid PSK length in import"));
-            }
-            let mut psk = [0u8; 32];
-            psk.copy_from_slice(&psk_bytes);
-
-            let last_seen =
-                last_seen_ms.map(|ms| UNIX_EPOCH + std::time::Duration::from_millis(ms));
-
-            let record = NodeRecord {
-                node_id,
-                key_hint,
-                psk,
-                assigned_program_hash,
-                current_program_hash,
-                schedule_interval_s,
-                firmware_abi_version,
-                last_battery_mv,
-                last_seen,
-            };
-            self.storage
-                .upsert_node(&record)
-                .await
-                .map_err(storage_err)?;
-        }
-
-        for _ in 0..program_count {
-            let (hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String) =
-                ciborium::from_reader(&mut cursor)
-                    .map_err(|e| Status::invalid_argument(format!("cbor decode error: {e}")))?;
-            let verification_profile = parse_profile(&profile_str)?;
-            let record = crate::program::ProgramRecord {
-                hash,
-                image,
-                size,
-                verification_profile,
-            };
-            self.storage
-                .store_program(&record)
-                .await
-                .map_err(storage_err)?;
-        }
-
-        Ok(Response::new(Empty {}))
+        Err(Status::unimplemented(
+            "`import_state` is disabled until admin authz/authn and protected export are implemented (GW-0601a)",
+        ))
     }
 }

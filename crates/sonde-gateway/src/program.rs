@@ -89,15 +89,12 @@ impl ProgramLibrary {
         }
     }
 
-    /// Ingest a CBOR-encoded program image.
+    /// Ingest a CBOR-encoded program image **without** BPF verification.
     ///
-    /// Steps:
-    ///   1. Enforce size limits per profile (GW-0403).
-    ///   2. Compute the SHA-256 hash (GW-0402).
-    ///   3. Return a `ProgramRecord` ready for storage.
-    ///
-    /// TODO: Integrate prevail-rust for BPF verification (GW-0401).
-    /// For Phase 2A we store programs without verification.
+    /// This bypasses Prevail verification and should only be used when the
+    /// caller has already verified the program (e.g., via `ingest_elf()`)
+    /// or for testing with pre-built CBOR images. Production ingestion
+    /// should use `ingest_elf()`.
     pub fn ingest(
         &self,
         image: Vec<u8>,
@@ -149,14 +146,23 @@ impl ProgramLibrary {
             .map_err(|e| ProgramError::Internal(format!("failed to create temp file: {e}")))?;
         tmp.write_all(elf_bytes)
             .map_err(|e| ProgramError::Internal(format!("failed to write temp file: {e}")))?;
-        let tmp_path = tmp.path().to_string_lossy().to_string();
+        let tmp_path = tmp.path().to_str().ok_or_else(|| {
+            ProgramError::Internal("temporary file path is not valid UTF-8".into())
+        })?;
 
-        // Configure prevail verifier options.
+        // Configure prevail verifier options based on profile.
         let mut opts = EbpfVerifierOptions::default();
-        opts.cfg_opts.check_for_termination = true;
+        match profile {
+            VerificationProfile::Resident => {
+                opts.cfg_opts.check_for_termination = false;
+            }
+            VerificationProfile::Ephemeral => {
+                opts.cfg_opts.check_for_termination = true;
+            }
+        }
 
         // Parse the ELF.
-        let mut elf = ElfObject::new(&tmp_path, opts)
+        let mut elf = ElfObject::new(tmp_path, opts)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
 
         // Extract programs using the Linux platform.
@@ -199,9 +205,16 @@ impl ProgramLibrary {
             let result = fwd_analyzer::analyze(&program, &ctx, &mut registry);
 
             if result.failed {
+                // Collect verifier notes for diagnostics.
+                let diag: Vec<String> = notes.into_iter().flatten().collect();
+                let diag_str = if diag.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", diag.join("; "))
+                };
                 return Err(ProgramError::VerificationFailed(format!(
-                    "program `{}` failed verification",
-                    raw_prog.function_name
+                    "program `{}` failed verification{}",
+                    raw_prog.function_name, diag_str
                 )));
             }
         }
@@ -299,5 +312,97 @@ mod tests {
             .ingest_elf(&[0x7f, b'E', b'L', b'F'], VerificationProfile::Resident)
             .unwrap_err();
         assert!(matches!(err, ProgramError::ElfParseError(_)));
+    }
+
+    /// Build a minimal valid BPF ELF containing a single `.text` section
+    /// with `mov r0, 0; exit` — the simplest passing eBPF program.
+    fn make_minimal_bpf_elf() -> Vec<u8> {
+        // Construct a minimal 64-bit little-endian ELF relocatable object
+        // with a single .text section containing two BPF instructions.
+        //
+        // Layout: ELF header (64B) | .text (16B) | .shstrtab (17B) | section headers (3*64B)
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+        let shstrtab: &[u8] = b"\0.text\0.shstrtab\0"; // 17 bytes
+
+        let text_offset: u64 = 64; // right after ELF header
+        let shstrtab_offset: u64 = text_offset + bpf_code.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ── ELF header (64 bytes) ──
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']); // e_ident magic
+        elf.push(2); // EI_CLASS = ELFCLASS64
+        elf.push(1); // EI_DATA = ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]); // padding
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
+        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&3u16.to_le_bytes()); // e_shnum (null + .text + .shstrtab)
+        elf.extend_from_slice(&2u16.to_le_bytes()); // e_shstrndx = 2
+        assert_eq!(elf.len(), 64);
+
+        // ── .text section data ──
+        elf.extend_from_slice(&bpf_code);
+
+        // ── .shstrtab section data ──
+        elf.extend_from_slice(shstrtab);
+
+        // ── Section headers (3 entries × 64 bytes each) ──
+
+        // [0] Null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] .text section header
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name = offset of ".text" in shstrtab
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        let flags: u64 = 0x6; // SHF_ALLOC | SHF_EXECINSTR
+        sh[8..16].copy_from_slice(&flags.to_le_bytes()); // sh_flags
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes()); // sh_offset
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes()); // sh_size
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [2] .shstrtab section header
+        let mut sh2 = [0u8; 64];
+        sh2[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name = offset of ".shstrtab"
+        sh2[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh2[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes()); // sh_offset
+        sh2[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes()); // sh_size
+        sh2[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh2);
+
+        elf
+    }
+
+    #[test]
+    fn ingest_elf_valid_minimal_program() {
+        let elf = make_minimal_bpf_elf();
+        let lib = ProgramLibrary::new();
+        let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+
+        // Hash should be non-empty
+        assert!(!record.hash.is_empty());
+        assert!(record.size > 0);
+        assert_eq!(record.verification_profile, VerificationProfile::Resident);
+
+        // Decode the CBOR image and verify it contains the expected bytecode
+        let image = ProgramImage::decode(&record.image).unwrap();
+        // 2 BPF instructions = 16 bytes of bytecode
+        assert_eq!(image.bytecode.len(), 16);
+        assert!(image.maps.is_empty());
     }
 }

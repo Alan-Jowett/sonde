@@ -1,0 +1,24 @@
+# ESP-IDF configuration for sonde-modem firmware.
+#
+# Console output goes to UART0 (the USB-UART bridge chip on most dev
+# boards) so that log::info!/warn! traces do not interfere with the
+# binary modem protocol running on the native USB-CDC port (GPIO19/20).
+#
+# On a typical ESP32-S3-DevKitC-1:
+#   UART port  → diagnostic logs (idf.py monitor / 115200 baud)
+#   USB port   → modem protocol (gateway serial link)
+
+# --- Console ---
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# --- Watchdog (MD-0302) ---
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# --- WiFi / ESP-NOW ---
+CONFIG_ESP_WIFI_ENABLED=y

@@ -108,13 +108,13 @@ impl UsbEspNowTransport {
                                             )
                                         ) =>
                                     {
-                                        error!("modem frame too large, terminating reader: {e}");
+                                        warn!("modem frame too large, resetting decoder: {e}");
                                         decoder.reset();
-                                        return;
+                                        break;
                                     }
                                     Err(e) => {
                                         warn!("modem decode error: {e}");
-                                        break;
+                                        continue;
                                     }
                                 }
                             }

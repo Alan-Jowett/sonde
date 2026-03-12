@@ -1713,14 +1713,8 @@ mod tests {
         let psk = [0xA1; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
-        let command_frame = build_command_response(
-            &psk,
-            key_hint,
-            1,
-            1000,
-            1710000000000,
-            CommandPayload::Nop,
-        );
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
         transport.queue_response(Some(command_frame));
 
         let mut storage = MockStorage::new().with_key(key_hint, psk);
@@ -1772,14 +1766,8 @@ mod tests {
         let psk = [0xA2; 32];
         let key_hint = 42u16;
         let mut transport = MockTransport::new();
-        let command_frame = build_command_response(
-            &psk,
-            key_hint,
-            1,
-            1000,
-            1710000000000,
-            CommandPayload::Nop,
-        );
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
         transport.queue_response(Some(command_frame));
 
         let mut storage = MockStorage::new().with_key(key_hint, psk);
@@ -1873,14 +1861,8 @@ mod tests {
         let psk = [0xB2; 32];
         let key_hint = 5u16;
         let mut transport = MockTransport::new();
-        let command_frame = build_command_response(
-            &psk,
-            key_hint,
-            1,
-            1000,
-            1710000000000,
-            CommandPayload::Nop,
-        );
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
         transport.queue_response(Some(command_frame));
 
         let mut storage = MockStorage::new().with_key(key_hint, psk);
@@ -1913,7 +1895,7 @@ mod tests {
             } => {
                 assert_eq!(firmware_abi_version, FIRMWARE_ABI_VERSION);
                 assert_eq!(battery_mv, 3300); // MockBattery
-                // No program installed → empty hash
+                                              // No program installed → empty hash
                 assert!(program_hash.is_empty());
             }
             _ => panic!("expected Wake message"),
@@ -1955,7 +1937,10 @@ mod tests {
         let wake_msg = NodeMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
         match wake_msg {
             NodeMessage::Wake { program_hash, .. } => {
-                assert!(program_hash.is_empty(), "no program should yield empty hash");
+                assert!(
+                    program_hash.is_empty(),
+                    "no program should yield empty hash"
+                );
             }
             _ => panic!("expected Wake message"),
         }
@@ -2028,14 +2013,8 @@ mod tests {
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
         let timestamp_ms = 1710000000000u64;
-        let command_frame = build_command_response(
-            &psk,
-            key_hint,
-            1,
-            1000,
-            timestamp_ms,
-            CommandPayload::Nop,
-        );
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, timestamp_ms, CommandPayload::Nop);
         transport.queue_response(Some(command_frame));
 
         // Install a resident program so BPF execution happens
@@ -2469,14 +2448,8 @@ mod tests {
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
 
-        let command_frame = build_command_response(
-            &psk,
-            key_hint,
-            1,
-            1000,
-            1710000000000,
-            CommandPayload::Nop,
-        );
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
         transport.queue_response(Some(command_frame));
 
         let mut storage = MockStorage::new().with_key(key_hint, psk);
@@ -2571,7 +2544,10 @@ mod tests {
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         assert!(interp.loaded, "program should be loaded");
-        assert!(interp.executed, "program should execute immediately after install");
+        assert!(
+            interp.executed,
+            "program should execute immediately after install"
+        );
         assert!(storage.programs[1].is_some());
         assert_eq!(storage.active_partition, 1);
     }

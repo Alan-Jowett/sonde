@@ -37,7 +37,7 @@ pub enum PendingCommand {
 /// program library, command dispatch, and handler routing.
 pub struct Gateway {
     storage: Arc<dyn Storage>,
-    session_manager: SessionManager,
+    session_manager: Arc<SessionManager>,
     program_library: ProgramLibrary,
     crypto_hmac: RustCryptoHmac,
     #[allow(dead_code)]
@@ -54,7 +54,7 @@ impl Gateway {
     pub fn new(storage: Arc<dyn Storage>, session_timeout: Duration) -> Self {
         Self {
             storage,
-            session_manager: SessionManager::new(session_timeout),
+            session_manager: Arc::new(SessionManager::new(session_timeout)),
             program_library: ProgramLibrary::new(),
             crypto_hmac: RustCryptoHmac,
             crypto_sha: RustCryptoSha256,
@@ -71,12 +71,29 @@ impl Gateway {
     ) -> Self {
         Self {
             storage,
-            session_manager: SessionManager::new(session_timeout),
+            session_manager: Arc::new(SessionManager::new(session_timeout)),
             program_library: ProgramLibrary::new(),
             crypto_hmac: RustCryptoHmac,
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
             handler_router: Some(handler_router),
+        }
+    }
+
+    /// Create a gateway that shares state with an `AdminService`.
+    pub fn new_with_pending(
+        storage: Arc<dyn Storage>,
+        pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+        session_manager: Arc<SessionManager>,
+    ) -> Self {
+        Self {
+            storage,
+            session_manager,
+            program_library: ProgramLibrary::new(),
+            crypto_hmac: RustCryptoHmac,
+            crypto_sha: RustCryptoSha256,
+            pending_commands,
+            handler_router: None,
         }
     }
 
@@ -92,7 +109,7 @@ impl Gateway {
 
     /// Expose the session manager for test inspection.
     pub fn session_manager(&self) -> &SessionManager {
-        &self.session_manager
+        self.session_manager.as_ref()
     }
 
     /// Main entry point: process a raw inbound frame and optionally return a

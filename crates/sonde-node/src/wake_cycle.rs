@@ -63,7 +63,7 @@ pub enum WakeCycleOutcome {
 /// so that map contents survive between wake cycles. This function only
 /// re-allocates maps when a new program is installed.
 #[allow(clippy::too_many_arguments)]
-pub fn run_wake_cycle<T, S, H, R, C, B, I>(
+pub fn run_wake_cycle<T, S, H, R, C, B, I, M>(
     transport: &mut T,
     storage: &mut S,
     _hal: &mut H,
@@ -72,17 +72,18 @@ pub fn run_wake_cycle<T, S, H, R, C, B, I>(
     battery: &B,
     interpreter: &mut I,
     map_storage: &mut MapStorage,
-    hmac: &impl HmacProvider,
+    hmac: &M,
     sha: &impl Sha256Provider,
 ) -> WakeCycleOutcome
 where
-    T: Transport,
+    T: Transport + 'static,
     S: PlatformStorage,
-    H: Hal,
+    H: Hal + 'static,
     R: Rng,
-    C: Clock,
-    B: BatteryReader,
+    C: Clock + 'static,
+    B: BatteryReader + 'static,
     I: BpfInterpreter,
+    M: HmacProvider + 'static,
 {
     // 1. Load identity
     let identity = match storage.read_key() {
@@ -294,8 +295,8 @@ where
         }
 
         // Resolve LDDW map references
-        let map_ptrs = map_storage.map_pointers();
-        if resolve_map_references(&mut program.bytecode, map_ptrs).is_err() {
+        let map_ptrs = map_storage.map_pointers().to_vec();
+        if resolve_map_references(&mut program.bytecode, &map_ptrs).is_err() {
             return WakeCycleOutcome::Sleep {
                 seconds: sleep_mgr.effective_sleep_s(),
             };
@@ -317,21 +318,45 @@ where
             _padding: [0; 3],
         };
 
-        // Load and execute
-        //
-        // TODO: Register BPF helper functions before load(). The 16
-        // helpers (HAL bus access, send/send_recv, map ops, system
-        // helpers) require platform-specific state (hal, transport,
-        // map_storage, sleep_mgr, clock) that cannot be captured by
-        // the `HelperFn` function pointer type (`fn` — no closures).
-        // The ESP-IDF integration layer will use thread-local or
-        // static dispatch to wire these up. Until then, only programs
-        // that call no helpers (e.g. nop_program) will execute
-        // correctly. See node-design.md §8.2 for the helper table.
-        if let Ok(()) = interpreter.load(&program.bytecode, map_ptrs) {
-            let ctx_ptr = &ctx as *const SondeContext as u64;
-            let _ = interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET);
+        // Load and execute with helper dispatch context installed.
+        let mut trace_log = Vec::new();
+        // SAFETY: all referenced objects are alive on this stack frame
+        // and will not be moved until clear() is called below.
+        unsafe {
+            crate::bpf_dispatch::install(
+                _hal as *mut H as *mut dyn crate::hal::Hal,
+                transport as *mut T as *mut dyn crate::traits::Transport,
+                map_storage as *mut MapStorage,
+                &mut sleep_mgr as *mut SleepManager,
+                clock as *const C as *const dyn crate::traits::Clock,
+                battery as *const B as *const dyn crate::hal::BatteryReader,
+                hmac as *const M as *const dyn HmacProvider,
+                &identity as *const NodeIdentity,
+                &mut current_seq as *mut u64,
+                _program_class,
+                &mut trace_log as *mut Vec<String>,
+            );
         }
+
+        let exec_result = if crate::bpf_dispatch::register_all(interpreter).is_ok() {
+            if let Ok(()) = interpreter.load(&program.bytecode, &map_ptrs) {
+                let ctx_ptr = &ctx as *const SondeContext as u64;
+                interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
+            } else {
+                Err(crate::bpf_runtime::BpfError::LoadError(
+                    "load failed".into(),
+                ))
+            }
+        } else {
+            Err(crate::bpf_runtime::BpfError::LoadError(
+                "helper registration failed".into(),
+            ))
+        };
+
+        crate::bpf_dispatch::clear();
+
+        // Swallow BPF errors — node sleeps normally regardless (ND-0504).
+        let _ = exec_result;
     }
 
     // 10. Determine sleep duration
@@ -724,12 +749,12 @@ fn send_program_ack<T: Transport>(
 /// Rejects payloads that exceed the frame payload budget. A pre-check
 /// on blob length avoids allocating for obviously oversized inputs;
 /// the exact check is done after CBOR encoding.
-pub fn send_app_data<T: Transport>(
+pub fn send_app_data<T: Transport + ?Sized, H: HmacProvider + ?Sized>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
     blob: &[u8],
-    hmac: &impl HmacProvider,
+    hmac: &H,
 ) -> NodeResult<()> {
     // Fast pre-check: blob alone exceeds payload budget (CBOR overhead
     // only makes it larger), so reject before allocating.
@@ -777,14 +802,14 @@ pub fn send_app_data<T: Transport>(
 ///
 /// An overall deadline is enforced via `clock` so that a stream of
 /// invalid frames cannot keep the node awake indefinitely.
-pub fn send_recv_app_data<T: Transport, C: Clock>(
+pub fn send_recv_app_data<T: Transport + ?Sized, C: Clock + ?Sized, H: HmacProvider + ?Sized>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
     blob: &[u8],
     timeout_ms: u32,
     clock: &C,
-    hmac: &impl HmacProvider,
+    hmac: &H,
 ) -> NodeResult<Vec<u8>> {
     // Fast pre-check: blob alone exceeds payload budget, reject before
     // allocating.

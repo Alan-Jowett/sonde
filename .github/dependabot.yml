@@ -9,6 +9,14 @@ updates:
       interval: weekly
     commit-message:
       prefix: "deps:"
+    groups:
+      grpc:
+        patterns:
+          - "tonic"
+          - "tonic-build"
+          - "prost"
+          - "prost-build"
+          - "prost-types"
 
   - package-ecosystem: github-actions
     directory: /

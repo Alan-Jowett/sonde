@@ -20,7 +20,7 @@ log = "0.4"
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.
 esp-idf-hal = { version = "0.45", optional = true }
-esp-idf-svc = { version = "0.50", features = ["binstart"], optional = true }
+esp-idf-svc = { version = "0.51", features = ["binstart"], optional = true }
 esp-idf-sys = { version = "0.36", features = ["binstart"], optional = true }
 
 # Device test dependency — only pulled in with the "device-tests" feature.

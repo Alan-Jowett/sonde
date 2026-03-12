@@ -241,7 +241,7 @@ async fn t0400_valid_program_ingestion() {
     // Simulate a valid CBOR program image (non-empty bytes).
     let image = vec![0xA2, 0x01, 0x42, 0x00, 0x00, 0x02, 0x80]; // small CBOR-ish blob
     let record = lib
-        .ingest(image.clone(), VerificationProfile::Resident)
+        .ingest_unverified(image.clone(), VerificationProfile::Resident)
         .unwrap();
 
     assert_eq!(record.size, image.len() as u32);
@@ -259,12 +259,12 @@ async fn t0401_invalid_program_rejection() {
     let lib = ProgramLibrary::new();
 
     // Empty image should be rejected.
-    let result = lib.ingest(vec![], VerificationProfile::Resident);
+    let result = lib.ingest_unverified(vec![], VerificationProfile::Resident);
     assert!(result.is_err(), "empty image must be rejected");
 
     // Random bytes — accepted at Phase 2A (no ELF/CBOR validation yet).
     // True ELF validation comes with prevail-rust integration.
-    let result = lib.ingest(vec![0xFF, 0xFE, 0xFD], VerificationProfile::Resident);
+    let result = lib.ingest_unverified(vec![0xFF, 0xFE, 0xFD], VerificationProfile::Resident);
     assert!(
         result.is_ok(),
         "non-empty bytes accepted in Phase 2A (no ELF validation yet)"
@@ -280,10 +280,10 @@ async fn t0405_content_hash_identity() {
     let image = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
 
     let r1 = lib
-        .ingest(image.clone(), VerificationProfile::Resident)
+        .ingest_unverified(image.clone(), VerificationProfile::Resident)
         .unwrap();
     let r2 = lib
-        .ingest(image.clone(), VerificationProfile::Resident)
+        .ingest_unverified(image.clone(), VerificationProfile::Resident)
         .unwrap();
 
     // Same image ⇒ same hash.
@@ -310,8 +310,12 @@ async fn t0406_hash_covers_maps() {
     let image_a = vec![0x01, 0x02, 0x03, 0x04, 0xAA];
     let image_b = vec![0x01, 0x02, 0x03, 0x04, 0xBB];
 
-    let ra = lib.ingest(image_a, VerificationProfile::Resident).unwrap();
-    let rb = lib.ingest(image_b, VerificationProfile::Resident).unwrap();
+    let ra = lib
+        .ingest_unverified(image_a, VerificationProfile::Resident)
+        .unwrap();
+    let rb = lib
+        .ingest_unverified(image_b, VerificationProfile::Resident)
+        .unwrap();
 
     assert_ne!(
         ra.hash, rb.hash,
@@ -326,7 +330,7 @@ async fn t0407_program_size_enforcement() {
 
     // Resident limit is 4096 bytes.
     let oversized_resident = vec![0xFF; 4097];
-    let res = lib.ingest(oversized_resident, VerificationProfile::Resident);
+    let res = lib.ingest_unverified(oversized_resident, VerificationProfile::Resident);
     assert!(
         res.is_err(),
         "resident program >4096 bytes must be rejected"
@@ -334,7 +338,7 @@ async fn t0407_program_size_enforcement() {
 
     // Ephemeral limit is 2048 bytes.
     let oversized_ephemeral = vec![0xFF; 2049];
-    let res = lib.ingest(oversized_ephemeral, VerificationProfile::Ephemeral);
+    let res = lib.ingest_unverified(oversized_ephemeral, VerificationProfile::Ephemeral);
     assert!(
         res.is_err(),
         "ephemeral program >2048 bytes must be rejected"
@@ -342,14 +346,14 @@ async fn t0407_program_size_enforcement() {
 
     // At-limit images should be accepted.
     let at_limit_resident = vec![0xAA; 4096];
-    let res = lib.ingest(at_limit_resident, VerificationProfile::Resident);
+    let res = lib.ingest_unverified(at_limit_resident, VerificationProfile::Resident);
     assert!(
         res.is_ok(),
         "resident program at exactly 4096 bytes must be accepted"
     );
 
     let at_limit_ephemeral = vec![0xBB; 2048];
-    let res = lib.ingest(at_limit_ephemeral, VerificationProfile::Ephemeral);
+    let res = lib.ingest_unverified(at_limit_ephemeral, VerificationProfile::Ephemeral);
     assert!(
         res.is_ok(),
         "ephemeral program at exactly 2048 bytes must be accepted"

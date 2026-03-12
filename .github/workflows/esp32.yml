@@ -84,6 +84,7 @@ jobs:
           cargo +esp build \
             -p sonde-node \
             --bin node \
+            --no-default-features \
             --features esp \
             --release \
             --target xtensa-esp32-espidf \

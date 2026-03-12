@@ -173,7 +173,7 @@ impl Gateway {
             };
 
         // 2. Create/replace session (random starting_seq, current timestamp_ms)
-        let starting_seq: u64 = rand::thread_rng().gen();
+        let starting_seq: u64 = rand::rng().random();
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

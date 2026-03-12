@@ -5,6 +5,7 @@ pub mod admin;
 pub mod crypto;
 pub mod engine;
 pub mod handler;
+pub mod modem;
 pub mod program;
 pub mod registry;
 pub mod session;

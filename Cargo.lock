@@ -826,9 +826,9 @@ dependencies = [
 
 [[package]]
 name = "esp-idf-svc"
-version = "0.50.1"
+version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13c55828b65052e23941c1020081c9cc6ac99b86a1cfad8507993313f92aa399"
+checksum = "2bc07aaba257d28d54a96af005ca67d0b38876d8837f5d54a3e0547e100b219c"
 dependencies = [
  "embassy-futures",
  "embedded-hal-async",

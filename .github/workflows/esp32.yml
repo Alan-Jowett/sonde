@@ -20,7 +20,8 @@ jobs:
     container:
       # Pinned ESP-IDF release image — provides IDF_PATH, Python 3, and all
       # ESP-IDF host tools including esptool.py and idf_tools.py.
-      image: espressif/idf:v5.3.2
+      # Tag: espressif/idf:v5.3.2
+      image: espressif/idf@sha256:d85ffe6db6162f16589c4c2221de1d5c40c9d9aa2331099e2fe6f5e33d1b8f09
 
     steps:
       - name: Checkout
@@ -90,10 +91,13 @@ jobs:
           TARGET_DIR="target/xtensa-esp32-espidf/release"
 
           # Locate bootloader and partition table produced by embuild.
+          # Use newest match to avoid stale cached artefacts.
           BOOTLOADER=$(find "$TARGET_DIR/build" \
-            -name "bootloader.bin" -path "*/bootloader/*" | head -1)
+            -name "bootloader.bin" -path "*/bootloader/*" \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
           PARTITION_TABLE=$(find "$TARGET_DIR/build" \
-            -name "partition-table.bin" | head -1)
+            -name "partition-table.bin" \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
 
           if [ -z "$BOOTLOADER" ]; then
             echo "ERROR: bootloader.bin not found under $TARGET_DIR/build" >&2
@@ -139,6 +143,9 @@ jobs:
           # -no-reboot prevents restart loops on early failures.
           # Redirect output to file so we can inspect it after QEMU exits;
           # capture the exit code before asserting on its value.
+          # Disable errexit so the non-zero timeout exit (124) doesn't
+          # abort the step before we can inspect it.
+          set +e
           timeout 60 qemu-system-xtensa \
             -nographic \
             -machine esp32 \
@@ -146,6 +153,7 @@ jobs:
             -no-reboot \
             > "$QEMU_OUTPUT" 2>&1
           QEMU_EXIT=$?
+          set -e
 
           echo ""
           echo "=== QEMU UART output ==="

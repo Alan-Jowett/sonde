@@ -351,7 +351,7 @@ where
         let _guard = crate::bpf_dispatch::DispatchGuard;
 
         let exec_result = if crate::bpf_dispatch::register_all(interpreter).is_ok() {
-            if let Ok(()) = interpreter.load(&program.bytecode, &map_ptrs) {
+            if let Ok(()) = interpreter.load(&program.bytecode, map_ptrs) {
                 let ctx_ptr = &ctx as *const SondeContext as u64;
                 interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
             } else {

@@ -31,7 +31,7 @@ fn allocate_aligned(size: usize) -> Vec<u8> {
     if size == 0 {
         return Vec::new();
     }
-    let u64_count = (size + 7) / 8;
+    let u64_count = size.div_ceil(8);
     let mut v: Vec<u64> = vec![0u64; u64_count];
     let ptr = v.as_mut_ptr() as *mut u8;
     let cap_bytes = v.capacity() * 8;

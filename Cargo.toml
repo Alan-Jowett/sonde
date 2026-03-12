@@ -5,8 +5,10 @@ members = [
     "crates/sonde-gateway",
     "crates/sonde-modem",
     "crates/sonde-node",
+    "crates/sonde-admin",
 ]
 default-members = [
     "crates/sonde-protocol",
     "crates/sonde-gateway",
+    "crates/sonde-admin",
 ]

@@ -54,7 +54,7 @@ impl UsbEspNowTransport {
             Arc::new(Mutex::new(None));
 
         // Start background reader task.
-        {
+        let reader_handle = {
             let status_slot = Arc::clone(&status_slot);
             let mut read_half = read_half;
             let mut decoder = FrameDecoder::new();
@@ -118,28 +118,35 @@ impl UsbEspNowTransport {
                         }
                     }
                 }
-            });
+            })
+        };
+
+        // Run startup sequence; abort reader task on failure.
+        let startup_result = async {
+            let modem_ready = Self::reset_and_wait(Arc::clone(&writer), ready_rx).await?;
+            let modem_mac = modem_ready.mac_address;
+            info!(
+                firmware = ?modem_ready.firmware_version,
+                mac = ?modem_mac,
+                "modem ready"
+            );
+            Self::set_channel(Arc::clone(&writer), channel, ack_rx).await?;
+            Ok::<_, TransportError>((modem_mac,))
         }
+        .await;
 
-        // Startup sequence: send RESET, wait for MODEM_READY (with retries).
-        let modem_ready = Self::reset_and_wait(Arc::clone(&writer), ready_rx).await?;
-        let modem_mac = modem_ready.mac_address;
-
-        info!(
-            firmware = ?modem_ready.firmware_version,
-            mac = ?modem_mac,
-            "modem ready"
-        );
-
-        // Send SET_CHANNEL and wait for ACK.
-        Self::set_channel(Arc::clone(&writer), channel, ack_rx).await?;
-
-        Ok(Self {
-            writer,
-            recv_rx: Mutex::new(recv_rx),
-            status_slot,
-            modem_mac,
-        })
+        match startup_result {
+            Ok((modem_mac,)) => Ok(Self {
+                writer,
+                recv_rx: Mutex::new(recv_rx),
+                status_slot,
+                modem_mac,
+            }),
+            Err(e) => {
+                reader_handle.abort();
+                Err(e)
+            }
+        }
     }
 
     /// Return the modem's MAC address reported during startup.
@@ -159,20 +166,38 @@ impl UsbEspNowTransport {
             rx
         };
 
-        let frame = encode_modem_frame(&ModemMessage::GetStatus)
-            .map_err(|e| TransportError::Io(format!("encode GET_STATUS: {e}")))?;
+        let frame = match encode_modem_frame(&ModemMessage::GetStatus) {
+            Ok(f) => f,
+            Err(e) => {
+                self.status_slot.lock().await.take();
+                return Err(TransportError::Io(format!("encode GET_STATUS: {e}")));
+            }
+        };
 
         {
             let mut w = self.writer.lock().await;
-            w.write_all(&frame)
-                .await
-                .map_err(|e| TransportError::Io(format!("write GET_STATUS: {e}")))?;
+            if let Err(e) = w.write_all(&frame).await {
+                self.status_slot.lock().await.take();
+                return Err(TransportError::Io(format!("write GET_STATUS: {e}")));
+            }
+            if let Err(e) = w.flush().await {
+                self.status_slot.lock().await.take();
+                return Err(TransportError::Io(format!("flush GET_STATUS: {e}")));
+            }
         }
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), rx)
-            .await
-            .map_err(|_| TransportError::Io("STATUS response timeout".into()))?
-            .map_err(|_| TransportError::Io("status channel closed".into()))
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
+            Ok(Ok(status)) => Ok(status),
+            Ok(Err(_)) => {
+                // Channel closed — slot already consumed by dispatch_message
+                Err(TransportError::Io("status channel closed".into()))
+            }
+            Err(_) => {
+                // Timeout — clear the slot so future calls work
+                self.status_slot.lock().await.take();
+                Err(TransportError::Io("STATUS response timeout".into()))
+            }
+        }
     }
 
     // -- internal helpers ---------------------------------------------------
@@ -184,6 +209,9 @@ impl UsbEspNowTransport {
         w.write_all(&frame)
             .await
             .map_err(|e| TransportError::Io(format!("write modem frame: {e}")))?;
+        w.flush()
+            .await
+            .map_err(|e| TransportError::Io(format!("flush modem frame: {e}")))?;
         Ok(())
     }
 
@@ -201,7 +229,8 @@ impl UsbEspNowTransport {
         let total_timeout = std::time::Duration::from_secs(15);
         let retry_interval = std::time::Duration::from_secs(5);
 
-        tokio::pin!(let ready_fut = ready_rx;);
+        let ready_fut = ready_rx;
+        tokio::pin!(ready_fut);
 
         let deadline = tokio::time::Instant::now() + total_timeout;
         let mut retries = 0u32;
@@ -298,8 +327,14 @@ async fn dispatch_message(
     match msg {
         ModemMessage::RecvFrame(rf) => {
             let peer = rf.peer_mac.to_vec();
-            if recv_tx.send((rf.frame_data, peer)).await.is_err() {
-                debug!("recv channel closed, dropping frame");
+            match recv_tx.try_send((rf.frame_data, peer)) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    debug!("recv channel full, dropping frame");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    debug!("recv channel closed, dropping frame");
+                }
             }
         }
         ModemMessage::ModemReady(mr) => {

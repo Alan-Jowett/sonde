@@ -6,49 +6,141 @@
 //! The node communicates with the gateway over ESP-NOW using broadcast
 //! frames (destination MAC `FF:FF:FF:FF:FF:FF`). Received frames are
 //! buffered in a shared queue populated by an ESP-NOW receive callback.
-//!
-//! **Status:** Stub — compiles under `--features esp` but panics at
-//! runtime. The real implementation will be filled in during hardware
-//! bring-up once WiFi driver lifecycle management is integrated.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use esp_idf_hal::modem::Modem;
+use esp_idf_svc::espnow::{EspNow, PeerInfo};
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
+use log::warn;
 
 use crate::error::{NodeError, NodeResult};
 
 /// Broadcast MAC used for all node → gateway transmissions.
 const BROADCAST_MAC: [u8; 6] = [0xFF; 6];
 
+/// Shared state for the raw ESP-NOW receive callback.
+struct RecvState {
+    rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+}
+
+/// Global callback state — set once during [`EspNowTransport::new`].
+static RECV_STATE: std::sync::OnceLock<RecvState> = std::sync::OnceLock::new();
+
+/// Raw ESP-NOW receive callback — pushes frame data to the shared queue.
+///
+/// Uses `try_lock` to avoid blocking the ESP-NOW/WiFi task and caps
+/// the queue at 64 entries to bound memory usage.
+unsafe extern "C" fn raw_recv_cb(
+    recv_info: *const esp_idf_sys::esp_now_recv_info_t,
+    data: *const u8,
+    data_len: core::ffi::c_int,
+) {
+    if recv_info.is_null() || data.is_null() || data_len <= 0 {
+        return;
+    }
+    let len = data_len as usize;
+    if len > 250 {
+        return;
+    }
+    let payload = unsafe { core::slice::from_raw_parts(data, len) };
+    if let Some(state) = RECV_STATE.get() {
+        if let Ok(mut q) = state.rx_queue.try_lock() {
+            if q.len() < 64 {
+                q.push_back(payload.to_vec());
+            }
+        }
+    }
+}
+
 /// ESP-NOW transport backed by `esp-idf-svc`.
 ///
 /// Holds the WiFi + ESP-NOW handles for the lifetime of the transport
 /// and maintains a receive queue filled by a global callback.
 pub struct EspNowTransport {
+    _wifi: BlockingWifi<EspWifi<'static>>,
+    espnow: EspNow<'static>,
     rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
 }
 
 impl EspNowTransport {
     /// Initialise WiFi in STA mode and start ESP-NOW.
     ///
-    /// This requires the WiFi modem peripheral and NVS partition, which
-    /// will be threaded through once the full platform init sequence is
-    /// implemented.
-    pub fn new() -> Result<Self, NodeError> {
-        // WiFi + ESP-NOW initialisation is deferred to hardware bring-up.
-        todo!("ESP-NOW transport requires WiFi initialisation")
+    /// Registers a broadcast peer and installs the raw receive callback.
+    /// Must only be called once per process (the global `RECV_STATE` is
+    /// a `OnceLock`).
+    pub fn new(
+        modem: Modem,
+        sysloop: EspSystemEventLoop,
+        nvs: EspDefaultNvsPartition,
+    ) -> Result<Self, NodeError> {
+        // WiFi STA mode (required for ESP-NOW)
+        let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))
+            .map_err(|e| NodeError::Transport(format!("WiFi init: {:?}", e)))?;
+        let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)
+            .map_err(|e| NodeError::Transport(format!("WiFi wrap: {:?}", e)))?;
+        wifi.start()
+            .map_err(|e| NodeError::Transport(format!("WiFi start: {:?}", e)))?;
+
+        let espnow =
+            EspNow::take().map_err(|e| NodeError::Transport(format!("ESP-NOW init: {:?}", e)))?;
+
+        // Register broadcast peer
+        let peer_info = PeerInfo {
+            peer_addr: BROADCAST_MAC,
+            channel: 0,
+            ..Default::default()
+        };
+        espnow
+            .add_peer(peer_info)
+            .map_err(|e| NodeError::Transport(format!("add peer: {:?}", e)))?;
+
+        // Set up receive callback
+        let rx_queue = Arc::new(Mutex::new(VecDeque::new()));
+        RECV_STATE
+            .set(RecvState {
+                rx_queue: Arc::clone(&rx_queue),
+            })
+            .map_err(|_| NodeError::Transport("recv callback already registered".into()))?;
+        unsafe {
+            esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))
+                .map_err(|e| NodeError::Transport(format!("register recv cb: {:?}", e)))?;
+        }
+
+        Ok(Self {
+            _wifi: wifi,
+            espnow,
+            rx_queue,
+        })
     }
 }
 
 impl crate::traits::Transport for EspNowTransport {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
-        // Will call `esp_now_send` with `BROADCAST_MAC`.
-        let _ = (frame, BROADCAST_MAC);
-        todo!("EspNowTransport::send")
+        if frame.len() > 250 {
+            return Err(NodeError::Transport("frame too large".into()));
+        }
+        self.espnow
+            .send(BROADCAST_MAC, frame)
+            .map_err(|e| NodeError::Transport(format!("send: {:?}", e)))
     }
 
     fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
-        // Will poll `rx_queue` with the given timeout.
-        let _ = (timeout_ms, &self.rx_queue);
-        todo!("EspNowTransport::recv")
+        let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
+        loop {
+            if let Ok(mut q) = self.rx_queue.lock() {
+                if let Some(frame) = q.pop_front() {
+                    return Ok(Some(frame));
+                }
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 }

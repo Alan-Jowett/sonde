@@ -15,7 +15,10 @@ impl crate::traits::SleepController for EspSleepController {
     fn enter_deep_sleep(&mut self, seconds: u32) -> ! {
         let micros = (seconds as u64) * 1_000_000;
         unsafe {
-            esp_idf_sys::esp_sleep_enable_timer_wakeup(micros);
+            let err = esp_idf_sys::esp_sleep_enable_timer_wakeup(micros);
+            if err != esp_idf_sys::ESP_OK as i32 {
+                log::error!("esp_sleep_enable_timer_wakeup failed: {}", err);
+            }
             esp_idf_sys::esp_deep_sleep_start();
         }
         unreachable!()

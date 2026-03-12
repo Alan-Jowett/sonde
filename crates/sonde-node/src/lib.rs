@@ -9,7 +9,6 @@ pub mod hal;
 pub mod key_store;
 pub mod map_storage;
 pub mod program_store;
-#[cfg(feature = "rbpf")]
 pub mod rbpf_adapter;
 pub mod sleep;
 pub mod traits;

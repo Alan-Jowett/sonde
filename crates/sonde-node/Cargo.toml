@@ -5,15 +5,11 @@ edition = "2021"
 description = "Sonde node firmware — wake cycle engine, BPF runtime, and platform abstractions"
 
 [features]
-default = ["rbpf"]
+default = []
 # Enable ESP-IDF platform support (required for firmware builds).
 # Without this feature, only platform-independent modules compile,
 # enabling host-side testing of the wake cycle engine and protocol logic.
 esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:embuild"]
-# rbpf interpreter — available on host builds. Disabled for ESP32
-# firmware because rbpf's JIT module depends on libc mprotect/PROT_EXEC
-# which are not available on ESP-IDF.
-rbpf = ["dep:rbpf"]
 
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
@@ -24,7 +20,7 @@ log = "0.4"
 esp-idf-hal = { version = "0.45", optional = true }
 esp-idf-svc = { version = "0.50", features = ["binstart"], optional = true }
 esp-idf-sys = { version = "0.36", features = ["binstart"], optional = true }
-rbpf = { version = "0.4", optional = true }
+rbpf = { version = "0.4", default-features = false }
 
 [build-dependencies]
 embuild = { version = "0.33", optional = true }

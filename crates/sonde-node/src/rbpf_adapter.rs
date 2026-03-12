@@ -90,18 +90,18 @@ impl BpfInterpreter for RbpfInterpreter {
             .ok_or_else(|| BpfError::LoadError("no program loaded".into()))?;
 
         let mut vm = rbpf::EbpfVmRaw::new(Some(bytecode))
-            .map_err(|e| BpfError::LoadError(format!("{}", e)))?;
+            .map_err(|e| BpfError::LoadError(format!("{:?}", e)))?;
 
         // Disable the default verifier — Prevail on the gateway has
         // already verified the program. rbpf's built-in verifier is
         // too restrictive (rejects valid programs with map accesses).
         vm.set_verifier(|_| Ok(()))
-            .map_err(|e| BpfError::LoadError(format!("{}", e)))?;
+            .map_err(|e| BpfError::LoadError(format!("{:?}", e)))?;
 
         // Register helpers.
         for (&id, &func) in &self.helpers {
             vm.register_helper(id, func)
-                .map_err(|e| BpfError::LoadError(format!("helper {}: {}", id, e)))?;
+                .map_err(|e| BpfError::LoadError(format!("helper {}: {:?}", id, e)))?;
         }
 
         // Allow access to map memory regions.
@@ -136,7 +136,7 @@ impl BpfInterpreter for RbpfInterpreter {
             // rbpf uses a flat Error type with a string message (no
             // structured variants). Match on known substrings to map
             // to the appropriate BpfError variant.
-            let msg = e.to_string();
+            let msg = format!("{:?}", e);
             if msg.contains("call depth") || msg.contains("stack overflow") {
                 BpfError::CallDepthExceeded
             } else {

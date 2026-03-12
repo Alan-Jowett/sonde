@@ -447,7 +447,6 @@ version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
- "bytes",
  "memchr",
 ]
 
@@ -1795,7 +1794,6 @@ dependencies = [
  "byteorder",
  "combine",
  "hashbrown 0.16.1",
- "libc",
  "log",
 ]
 

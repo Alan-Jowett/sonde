@@ -32,6 +32,13 @@ pub struct UsbEspNowTransport {
     recv_rx: Mutex<mpsc::Receiver<(Vec<u8>, PeerAddress)>>,
     status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
     modem_mac: [u8; 6],
+    reader_handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for UsbEspNowTransport {
+    fn drop(&mut self) {
+        self.reader_handle.abort();
+    }
 }
 
 impl UsbEspNowTransport {
@@ -101,9 +108,9 @@ impl UsbEspNowTransport {
                                             )
                                         ) =>
                                     {
-                                        error!("modem frame too large, resetting decoder: {e}");
+                                        error!("modem frame too large, terminating reader: {e}");
                                         decoder.reset();
-                                        break;
+                                        return;
                                     }
                                     Err(e) => {
                                         warn!("modem decode error: {e}");
@@ -131,16 +138,17 @@ impl UsbEspNowTransport {
                 "modem ready"
             );
             Self::set_channel(Arc::clone(&writer), channel, ack_rx).await?;
-            Ok::<_, TransportError>((modem_mac,))
+            Ok::<_, TransportError>(modem_mac)
         }
         .await;
 
         match startup_result {
-            Ok((modem_mac,)) => Ok(Self {
+            Ok(modem_mac) => Ok(Self {
                 writer,
                 recv_rx: Mutex::new(recv_rx),
                 status_slot,
                 modem_mac,
+                reader_handle,
             }),
             Err(e) => {
                 reader_handle.abort();

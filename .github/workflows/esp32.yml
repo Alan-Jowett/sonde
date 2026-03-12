@@ -50,6 +50,9 @@ jobs:
         # v0.16+ does not export RUSTUP_TOOLCHAIN from export-esp.sh).
         run: espup install --targets esp32
 
+      - name: Install ldproxy linker
+        run: cargo install ldproxy --locked
+
       # ------------------------------------------------------------------ #
       # QEMU for Xtensa (ESP32)
       # ------------------------------------------------------------------ #

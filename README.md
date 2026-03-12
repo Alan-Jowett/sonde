@@ -166,8 +166,18 @@ cargo test --workspace
 
 # Test protocol crate only (fast, no deps)
 cargo test -p sonde-protocol
+```
 
-# Build modem firmware (requires ESP-IDF + Xtensa toolchain)
+Building the modem firmware requires the ESP-IDF Xtensa toolchain:
+
+```sh
+# Linux / macOS
+. "$HOME/export-esp.sh"
+cargo +esp build -p sonde-modem --features esp --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
+```
+
+```powershell
+# Windows (PowerShell)
 . ~/export-esp.ps1
 cargo +esp build -p sonde-modem --features esp --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
 ```

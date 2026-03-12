@@ -2682,4 +2682,276 @@ mod tests {
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         assert!(!interp.loaded);
     }
+
+    // ===================================================================
+    // T-N402: USB pairing → node authenticates with new PSK
+    // ===================================================================
+
+    #[test]
+    fn test_usb_pairing_then_authenticated_wake() {
+        // T-N402: Pair via USB (write PSK), then run a wake cycle and
+        // verify the WAKE frame is authenticated with the new PSK.
+        let new_psk = [0x42; 32];
+        let new_key_hint = 99u16;
+
+        // Start unpaired
+        let mut storage = MockStorage::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        // Pair via KeyStore
+        {
+            let mut ks = crate::key_store::KeyStore::new(&mut storage);
+            ks.pair(new_key_hint, &new_psk).unwrap();
+        }
+
+        // Now run a wake cycle — should send WAKE with the new PSK
+        let mut transport = MockTransport::new();
+        let command_frame = build_command_response(
+            &new_psk,
+            new_key_hint,
+            1,
+            1000,
+            1710000000000,
+            CommandPayload::Nop,
+        );
+        transport.queue_response(Some(command_frame));
+
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(!transport.outbound.is_empty());
+
+        // Verify the WAKE frame is authenticated with the new PSK
+        let decoded = decode_frame(&transport.outbound[0]).unwrap();
+        assert!(verify_frame(&decoded, &new_psk, &TestHmac));
+        assert_eq!(decoded.header.msg_type, MSG_WAKE);
+        assert_eq!(
+            u16::from_be_bytes([transport.outbound[0][0], transport.outbound[0][1]]),
+            new_key_hint
+        );
+    }
+
+    // ===================================================================
+    // T-N608: Map persistence across wake cycles
+    // ===================================================================
+
+    #[test]
+    fn test_map_persistence_across_cycles() {
+        // T-N608: Map data survives across wake cycles when MapStorage
+        // is preserved (simulating RTC SRAM persistence).
+        let psk = [0x60; 32];
+        let key_hint = 1u16;
+
+        // Build a program with one map (4 entries × 4B value)
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![sonde_protocol::MapDef {
+                map_type: 1,
+                key_size: 4,
+                value_size: 4,
+                max_entries: 4,
+            }],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+        let image_hash = TestSha256.hash(&image_cbor);
+        let chunk_size = image_cbor.len() as u32;
+        let starting_seq = 100u64;
+
+        // Shared map storage — survives across cycles (like RTC SRAM)
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        // --- Cycle 1: Install program, maps get allocated ---
+        let mut transport = MockTransport::new();
+        let cmd = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: image_hash.to_vec(),
+                program_size: image_cbor.len() as u32,
+                chunk_size,
+                chunk_count: 1,
+            },
+        );
+        transport.queue_response(Some(cmd));
+        transport.queue_response(Some(build_chunk_response(
+            &psk,
+            key_hint,
+            starting_seq,
+            0,
+            &image_cbor,
+        )));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+
+        run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Maps should be allocated
+        assert_eq!(map_storage.map_count(), 1);
+
+        // Write a value into the map (simulating what a BPF program would do)
+        let value = 42u32.to_ne_bytes();
+        map_storage.get_mut(0).unwrap().update(0, &value).unwrap();
+
+        // --- Cycle 2: NOP command, same program, maps preserved ---
+        let mut transport2 = MockTransport::new();
+        let cmd2 = build_command_response(
+            &psk,
+            key_hint,
+            2, // new nonce
+            200,
+            1710000000000,
+            CommandPayload::Nop,
+        );
+        transport2.queue_response(Some(cmd2));
+        let mut rng2 = MockRng(1);
+        let mut interp2 = MockBpfInterpreter::new();
+
+        run_wake_cycle(
+            &mut transport2,
+            &mut storage,
+            &mut hal,
+            &mut rng2,
+            &clock,
+            &MockBattery,
+            &mut interp2,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Map data should still be 42 (persisted across cycles)
+        let read_back = map_storage.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(read_back, &42u32.to_ne_bytes());
+    }
+
+    // ===================================================================
+    // T-N614 / T-N615: BPF execution constraint errors
+    // ===================================================================
+
+    #[test]
+    fn test_instruction_budget_exceeded_graceful() {
+        // T-N614: When the interpreter reports InstructionBudgetExceeded,
+        // the node sleeps normally (no crash, no panic).
+        let psk = [0x61; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command_frame));
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter {
+            loaded: false,
+            executed: false,
+            execute_result: Err(BpfError::InstructionBudgetExceeded),
+            captured_ctx: None,
+        };
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Node should sleep normally despite BPF budget error
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    }
+
+    #[test]
+    fn test_call_depth_exceeded_graceful() {
+        // T-N615: When the interpreter reports CallDepthExceeded,
+        // the node sleeps normally.
+        let psk = [0x62; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command_frame));
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter {
+            loaded: false,
+            executed: false,
+            execute_result: Err(BpfError::CallDepthExceeded),
+            captured_ctx: None,
+        };
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    }
 }

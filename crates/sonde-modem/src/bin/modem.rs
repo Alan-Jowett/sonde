@@ -47,7 +47,7 @@ fn main() {
 
     // Share the USB connected flag with the ESP-NOW receive callback
     // so it can discard frames when USB is disconnected (MD-0301).
-    let usb_connected = Arc::clone(usb.connected());
+    let usb_connected = usb.connected();
     let espnow = sonde_modem::espnow::EspNowDriver::new(
         peripherals.modem,
         sysloop,

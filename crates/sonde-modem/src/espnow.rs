@@ -37,7 +37,18 @@ unsafe extern "C" fn raw_recv_cb(
     data: *const u8,
     data_len: core::ffi::c_int,
 ) {
+    // Defensive guards: ESP-IDF guarantees valid pointers but we check
+    // to avoid UB if the contract is ever violated.
+    if recv_info.is_null() || data.is_null() || data_len <= 0 {
+        return;
+    }
+
     let info = unsafe { &*recv_info };
+
+    if info.src_addr.is_null() {
+        return;
+    }
+
     let src_addr = unsafe { &*(info.src_addr as *const [u8; 6]) };
     let payload = unsafe { core::slice::from_raw_parts(data, data_len as usize) };
 

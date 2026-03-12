@@ -64,7 +64,7 @@ struct DispatchContext {
 }
 
 thread_local! {
-    static CTX: RefCell<Option<DispatchContext>> = RefCell::new(None);
+    static CTX: RefCell<Option<DispatchContext>> = const { RefCell::new(None) };
 }
 
 /// Maximum number of trace entries kept per BPF execution.

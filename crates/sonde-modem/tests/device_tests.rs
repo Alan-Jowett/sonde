@@ -10,7 +10,7 @@
 //!
 //! ```bash
 //! # Set the USB-CDC COM port (not the UART/log port):
-//! MODEM_PORT=COM5 cargo test -p sonde-modem --features device-tests --test device_tests
+//! MODEM_PORT=COM5 cargo test -p sonde-modem --features device-tests --test device_tests -- --test-threads=1
 //! ```
 //!
 //! If `MODEM_PORT` is not set, all tests are skipped (not failed).
@@ -26,7 +26,7 @@ use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, SendFrame,
     MODEM_ERR_CHANNEL_SET_FAILED,
 };
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -87,7 +87,7 @@ fn recv(port: &mut dyn serialport::SerialPort, timeout: Duration) -> Vec<ModemMe
                     match decoder.decode() {
                         Ok(Some(msg)) => messages.push(msg),
                         Ok(None) => break,
-                        Err(_) => continue,
+                        Err(_) => break, // malformed frame consumed; try next
                     }
                 }
             }
@@ -103,7 +103,7 @@ fn recv(port: &mut dyn serialport::SerialPort, timeout: Duration) -> Vec<ModemMe
                         match decoder.decode() {
                             Ok(Some(msg)) => messages.push(msg),
                             Ok(None) => break,
-                            Err(_) => continue,
+                            Err(_) => break,
                         }
                     }
                 }
@@ -146,7 +146,7 @@ fn recv_one(port: &mut dyn serialport::SerialPort, timeout: Duration) -> ModemMe
 /// T-0101: MODEM_READY after RESET.
 #[test]
 fn t0101_modem_ready_after_reset() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -171,7 +171,7 @@ fn t0101_modem_ready_after_reset() {
 /// T-0102: GET_STATUS returns valid status with zeroed counters after RESET.
 #[test]
 fn t0102_get_status_after_reset() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -193,7 +193,7 @@ fn t0102_get_status_after_reset() {
 /// T-0104: Unknown message type is silently discarded.
 #[test]
 fn t0104_unknown_type_discarded() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -220,7 +220,7 @@ fn t0104_unknown_type_discarded() {
 /// T-0205: SET_CHANNEL and ACK.
 #[test]
 fn t0205_set_channel() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -242,7 +242,7 @@ fn t0205_set_channel() {
 /// T-0206: SCAN_CHANNELS returns 14-channel scan result.
 #[test]
 fn t0206_scan_channels() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -273,7 +273,7 @@ fn t0206_scan_channels() {
 /// T-0300: RESET clears state (channel, counters).
 #[test]
 fn t0300_reset_clears_state() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -296,6 +296,16 @@ fn t0300_reset_clears_state() {
     }
     std::thread::sleep(Duration::from_millis(200));
 
+    // Verify tx_count incremented before RESET.
+    send(&mut *port, &ModemMessage::GetStatus);
+    let pre = recv_one(&mut *port, Duration::from_secs(2));
+    match pre {
+        ModemMessage::Status(s) => {
+            assert!(s.tx_count > 0, "tx_count should be > 0 before RESET");
+        }
+        other => panic!("expected Status before RESET, got {:?}", other),
+    }
+
     // RESET should clear everything.
     reset_and_wait(&mut *port);
 
@@ -315,7 +325,7 @@ fn t0300_reset_clears_state() {
 /// T-0303: Repeated RESET → MODEM_READY stability.
 #[test]
 fn t0303_repeated_reset() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -329,7 +339,7 @@ fn t0303_repeated_reset() {
 /// T-0401: SET_CHANNEL with invalid channel returns ERROR.
 #[test]
 fn t0401_invalid_channel() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -367,7 +377,7 @@ fn t0401_invalid_channel() {
 /// T-0402: Framing error recovery via RESET.
 #[test]
 fn t0402_framing_error_recovery() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -387,7 +397,7 @@ fn t0402_framing_error_recovery() {
 /// T-0302: Status counter accuracy (uptime > 0 after delay).
 #[test]
 fn t0302_status_uptime() {
-    let _lock = port_lock().lock().unwrap();
+    let _lock = port_lock().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut port) = open_modem() else {
         return;
     };

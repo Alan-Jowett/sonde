@@ -131,10 +131,10 @@ impl ProgramLibrary {
     /// Steps:
     ///   1. Write ELF bytes to a temp file for prevail.
     ///   2. Parse the ELF with `ElfObject`.
-    ///   3. Extract programs and run prevail verification on the first program.
-    ///   4. Serialize bytecode and map definitions into a `ProgramImage`.
-    ///   5. Enforce size limits per profile (GW-0403).
-    ///   6. Compute the SHA-256 hash (GW-0402).
+    ///   3. Extract programs and run prevail verification on each extracted program.
+    ///   4. Reject ELF files containing multiple programs (ambiguous selection).
+    ///   5. Serialize bytecode and map definitions into a `ProgramImage`.
+    ///   6. Delegate size-limit enforcement and hashing to `ingest()`.
     pub fn ingest_elf(
         &self,
         elf_bytes: &[u8],
@@ -169,6 +169,12 @@ impl ProgramLibrary {
             return Err(ProgramError::ElfParseError(
                 "no programs found in ELF".into(),
             ));
+        }
+        if raw_programs.len() > 1 {
+            return Err(ProgramError::ElfParseError(format!(
+                "ELF contains {} programs; expected exactly one",
+                raw_programs.len()
+            )));
         }
 
         // Verify each program with prevail.
@@ -228,24 +234,8 @@ impl ProgramLibrary {
             .encode_deterministic()
             .map_err(|e| ProgramError::Internal(format!("CBOR encoding failed: {e}")))?;
 
-        // Enforce size limits per profile.
-        let size = cbor.len() as u32;
-        let limit = match profile {
-            VerificationProfile::Resident => MAX_RESIDENT_SIZE,
-            VerificationProfile::Ephemeral => MAX_EPHEMERAL_SIZE,
-        };
-        if size > limit {
-            return Err(ProgramError::ImageTooLarge { size, limit });
-        }
-
-        let hash = self.sha256.hash(&cbor).to_vec();
-
-        Ok(ProgramRecord {
-            hash,
-            image: cbor,
-            size,
-            verification_profile: profile,
-        })
+        // Delegate size-limit and hashing logic to the canonical ingest path.
+        self.ingest(cbor, profile)
     }
 
     /// Look up a program by its hash in the given storage snapshot.
@@ -276,5 +266,38 @@ impl ProgramLibrary {
 impl Default for ProgramLibrary {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ingest_elf_empty_bytes_rejected() {
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&[], VerificationProfile::Resident)
+            .unwrap_err();
+        assert!(matches!(err, ProgramError::InvalidImage));
+    }
+
+    #[test]
+    fn ingest_elf_invalid_bytes_rejected() {
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&[0xDE, 0xAD, 0xBE, 0xEF], VerificationProfile::Resident)
+            .unwrap_err();
+        assert!(matches!(err, ProgramError::ElfParseError(_)));
+    }
+
+    #[test]
+    fn ingest_elf_truncated_elf_header_rejected() {
+        let lib = ProgramLibrary::new();
+        // Valid ELF magic but truncated
+        let err = lib
+            .ingest_elf(&[0x7f, b'E', b'L', b'F'], VerificationProfile::Resident)
+            .unwrap_err();
+        assert!(matches!(err, ProgramError::ElfParseError(_)));
     }
 }

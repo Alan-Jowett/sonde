@@ -1622,7 +1622,7 @@ dependencies = [
 [[package]]
 name = "prevail"
 version = "0.2.0"
-source = "git+https://github.com/elazarg/prevail-rust.git#bc5be2eab5cbcbb92708aa84a878f1ab0c082a11"
+source = "git+https://github.com/elazarg/prevail-rust.git?rev=bc5be2ea#bc5be2eab5cbcbb92708aa84a878f1ab0c082a11"
 dependencies = [
  "clap",
  "object",

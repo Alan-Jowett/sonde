@@ -73,6 +73,8 @@ jobs:
         # Source export-esp.sh to add Xtensa GCC/LLVM to PATH and set
         # LIBCLANG_PATH/CLANG_PATH for bindgen.  Use `+esp` to select the
         # Xtensa Rust toolchain installed by espup (not the default stable).
+        # -Zbuild-std is required because the esp toolchain does not ship
+        # pre-compiled std for the xtensa-esp32-espidf target.
         run: |
           . "$HOME/export-esp.sh"
           cargo +esp build \
@@ -80,7 +82,8 @@ jobs:
             --bin node \
             --features esp \
             --release \
-            --target xtensa-esp32-espidf
+            --target xtensa-esp32-espidf \
+            -Zbuild-std=std,panic_abort
 
       # ------------------------------------------------------------------ #
       # Flash-image assembly

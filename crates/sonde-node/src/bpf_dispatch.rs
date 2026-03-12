@@ -22,15 +22,21 @@ use std::cell::RefCell;
 use sonde_protocol::HmacProvider;
 
 use crate::bpf_helpers::ProgramClass;
-use crate::hal::{BatteryReader, Hal};
+use crate::hal::Hal;
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
 use crate::sleep::SleepManager;
 use crate::traits::{Clock, Transport};
 
-/// Response timeout for `send_recv` helper (ms). Matches the protocol
+/// Default response timeout for `send_recv` helper (ms). Matches the protocol
 /// spec (node-requirements.md ND-0702).
 const SEND_RECV_TIMEOUT_MS: u32 = 50;
+
+/// Maximum allowed timeout for `send_recv` helper (ms).
+const MAX_SEND_RECV_TIMEOUT_MS: u32 = 5000;
+
+/// Maximum delay allowed by `delay_us` helper (1 second).
+const MAX_DELAY_US: u32 = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // Dispatch context
@@ -47,17 +53,15 @@ struct DispatchContext {
     map_storage: *mut MapStorage,
     sleep_mgr: *mut SleepManager,
     clock: *const dyn Clock,
-    battery: *const dyn BatteryReader,
     hmac: *const dyn HmacProvider,
     identity: *const NodeIdentity,
     current_seq: *mut u64,
     program_class: ProgramClass,
     trace_log: *mut Vec<String>,
+    gateway_timestamp_ms: u64,
+    command_received_at_ms: u64,
+    battery_mv: u32,
 }
-
-// SAFETY: pointers are only dereferenced on the thread that installed
-// them, within the lifetime of `run_wake_cycle`.
-unsafe impl Send for DispatchContext {}
 
 thread_local! {
     static CTX: RefCell<Option<DispatchContext>> = const { RefCell::new(None) };
@@ -91,12 +95,14 @@ pub unsafe fn install(
     map_storage: *mut MapStorage,
     sleep_mgr: *mut SleepManager,
     clock: *const dyn Clock,
-    battery: *const dyn BatteryReader,
     hmac: *const dyn HmacProvider,
     identity: *const NodeIdentity,
     current_seq: *mut u64,
     program_class: ProgramClass,
     trace_log: *mut Vec<String>,
+    gateway_timestamp_ms: u64,
+    command_received_at_ms: u64,
+    battery_mv: u32,
 ) {
     CTX.with(|cell| {
         let mut borrow = cell.borrow_mut();
@@ -107,12 +113,14 @@ pub unsafe fn install(
             map_storage,
             sleep_mgr,
             clock,
-            battery,
             hmac,
             identity,
             current_seq,
             program_class,
             trace_log,
+            gateway_timestamp_ms,
+            command_received_at_ms,
+            battery_mv,
         });
     });
 }
@@ -122,6 +130,15 @@ pub fn clear() {
     CTX.with(|cell| {
         cell.borrow_mut().take();
     });
+}
+
+/// RAII guard that clears the dispatch context on drop.
+pub struct DispatchGuard;
+
+impl Drop for DispatchGuard {
+    fn drop(&mut self) {
+        clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +261,7 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
-        if blob_ptr.is_null() || blob_len == 0 || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
+        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
             return (-1i64) as u64;
         }
 
@@ -264,22 +281,27 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
 }
 
 /// Helper 9: send_recv (APP_DATA + wait for APP_DATA_REPLY).
-/// Args: r1=blob_ptr, r2=blob_len, r3=reply_ptr, r4=reply_cap.
+/// Args: r1=blob_ptr, r2=blob_len, r3=reply_ptr, r4=reply_cap, r5=timeout_ms (0=default).
 /// Returns: reply length on success, negative on error.
-pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 {
+pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
     with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
         let reply_ptr = r3 as *mut u8;
         let reply_cap = r4 as usize;
         if blob_ptr.is_null()
-            || blob_len == 0
             || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE
             || reply_ptr.is_null()
             || reply_cap == 0
         {
             return (-1i64) as u64;
         }
+
+        let timeout_ms = if r5 == 0 {
+            SEND_RECV_TIMEOUT_MS
+        } else {
+            (r5 as u32).min(MAX_SEND_RECV_TIMEOUT_MS)
+        };
 
         unsafe {
             let blob = core::slice::from_raw_parts(blob_ptr, blob_len);
@@ -290,18 +312,15 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 {
             let seq = &mut *ctx.current_seq;
 
             match crate::wake_cycle::send_recv_app_data(
-                transport,
-                identity,
-                seq,
-                blob,
-                SEND_RECV_TIMEOUT_MS,
-                clock,
-                hmac,
+                transport, identity, seq, blob, timeout_ms, clock, hmac,
             ) {
                 Ok(reply_blob) => {
-                    let copy_len = reply_blob.len().min(reply_cap);
+                    if reply_blob.len() > reply_cap {
+                        return (-1i64) as u64;
+                    }
+                    let copy_len = reply_blob.len();
                     let reply_buf = core::slice::from_raw_parts_mut(reply_ptr, copy_len);
-                    reply_buf.copy_from_slice(&reply_blob[..copy_len]);
+                    reply_buf.copy_from_slice(&reply_blob);
                     copy_len as u64
                 }
                 Err(_) => (-1i64) as u64,
@@ -311,11 +330,10 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 {
 }
 
 /// Helper 10: map_lookup_elem.
-/// Args: r1=map_index, r2=key_ptr.
+/// Args: r1=relocated map pointer, r2=key_ptr.
 /// Returns: pointer to value, or 0 (NULL) on error/not-found.
 pub fn helper_map_lookup_elem(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     with_ctx(|ctx| {
-        let map_idx = r1 as usize;
         let key_ptr = r2 as *const u32;
         if key_ptr.is_null() {
             return 0;
@@ -323,6 +341,10 @@ pub fn helper_map_lookup_elem(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) ->
         unsafe {
             let key = *key_ptr;
             let maps = &*ctx.map_storage;
+            let map_idx = match maps.map_pointers().iter().position(|&p| p == r1) {
+                Some(idx) => idx,
+                None => return 0,
+            };
             match maps.get(map_idx) {
                 Some(map) => match map.lookup(key) {
                     Some(value) => value.as_ptr() as u64,
@@ -335,7 +357,7 @@ pub fn helper_map_lookup_elem(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) ->
 }
 
 /// Helper 11: map_update_elem (blocked for ephemeral programs).
-/// Args: r1=map_index, r2=key_ptr, r3=value_ptr.
+/// Args: r1=relocated map pointer, r2=key_ptr, r3=value_ptr.
 /// Returns: 0 on success, negative on error.
 pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
     with_ctx(|ctx| {
@@ -343,7 +365,6 @@ pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> 
             return (-1i64) as u64;
         }
 
-        let map_idx = r1 as usize;
         let key_ptr = r2 as *const u32;
         let value_ptr = r3 as *const u8;
         if key_ptr.is_null() || value_ptr.is_null() {
@@ -352,6 +373,10 @@ pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> 
         unsafe {
             let key = *key_ptr;
             let maps = &mut *ctx.map_storage;
+            let map_idx = match maps.map_pointers().iter().position(|&p| p == r1) {
+                Some(idx) => idx,
+                None => return (-1i64) as u64,
+            };
             match maps.get_mut(map_idx) {
                 Some(map) => {
                     let value_size = map.def.value_size as usize;
@@ -368,22 +393,31 @@ pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> 
 }
 
 /// Helper 12: get_time.
-/// Returns: milliseconds elapsed since boot.
+/// Returns: estimated epoch time in milliseconds.
 pub fn helper_get_time(_r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| unsafe { (*ctx.clock).elapsed_ms() })
+    with_ctx(|ctx| unsafe {
+        let elapsed = (*ctx.clock)
+            .elapsed_ms()
+            .saturating_sub(ctx.command_received_at_ms);
+        ctx.gateway_timestamp_ms.saturating_add(elapsed)
+    })
 }
 
 /// Helper 13: get_battery_mv.
 /// Returns: battery voltage in millivolts.
 pub fn helper_get_battery_mv(_r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| unsafe { (*ctx.battery).battery_mv() as u64 })
+    with_ctx(|ctx| ctx.battery_mv as u64)
 }
 
 /// Helper 14: delay_us.
-/// Args: r1=microseconds.
+/// Args: r1=microseconds (max 1 second).
+/// Returns: 0 on success, negative if delay exceeds maximum.
 pub fn helper_delay_us(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     with_ctx(|ctx| {
         let us = r1 as u32;
+        if us > MAX_DELAY_US {
+            return (-1i64) as u64;
+        }
         if us > 0 {
             let ms = (us.saturating_add(999)) / 1000;
             unsafe {
@@ -547,12 +581,6 @@ mod tests {
         }
     }
 
-    impl BatteryReader for TestHal {
-        fn battery_mv(&self) -> u32 {
-            3300
-        }
-    }
-
     struct TestTransport {
         outbound: Vec<Vec<u8>>,
         inbound: std::collections::VecDeque<Option<Vec<u8>>>,
@@ -620,12 +648,14 @@ mod tests {
                 map_storage as *mut MapStorage,
                 sleep_mgr as *mut SleepManager,
                 clock as *const TestClock as *const dyn Clock,
-                hal as *const TestHal as *const dyn BatteryReader,
                 hmac as *const TestHmac as *const dyn HmacProvider,
                 identity as *const NodeIdentity,
                 seq as *mut u64,
                 program_class,
                 trace_log as *mut Vec<String>,
+                1_710_000_000_000,
+                100,
+                3300,
             );
         }
         let result = f();
@@ -668,8 +698,9 @@ mod tests {
             &mut trace,
             || {
                 // Should not panic — context is installed
+                // get_time: 1_710_000_000_000 + (1000 - 100) = 1_710_000_000_900
                 let result = helper_get_time(0, 0, 0, 0, 0);
-                assert_eq!(result, 1000);
+                assert_eq!(result, 1_710_000_000_900);
             },
         );
     }
@@ -836,6 +867,7 @@ mod tests {
             max_entries: 4,
         }])
         .unwrap();
+        let map_ptr = maps.map_pointers()[0];
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
         let hmac = TestHmac;
@@ -860,7 +892,7 @@ mod tests {
 
                 // Update
                 let result = helper_map_update_elem(
-                    0,
+                    map_ptr,
                     &key as *const u32 as u64,
                     value.as_ptr() as u64,
                     0,
@@ -869,7 +901,7 @@ mod tests {
                 assert_eq!(result, 0);
 
                 // Lookup
-                let ptr = helper_map_lookup_elem(0, &key as *const u32 as u64, 0, 0, 0);
+                let ptr = helper_map_lookup_elem(map_ptr, &key as *const u32 as u64, 0, 0, 0);
                 assert_ne!(ptr, 0, "lookup should return non-null pointer");
 
                 let read_value = unsafe { *(ptr as *const u32) };
@@ -891,6 +923,7 @@ mod tests {
             max_entries: 4,
         }])
         .unwrap();
+        let map_ptr = maps.map_pointers()[0];
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
         let hmac = TestHmac;
@@ -913,7 +946,7 @@ mod tests {
                 let key: u32 = 0;
                 let value: [u8; 4] = 99u32.to_ne_bytes();
                 let result = helper_map_update_elem(
-                    0,
+                    map_ptr,
                     &key as *const u32 as u64,
                     value.as_ptr() as u64,
                     0,
@@ -930,33 +963,40 @@ mod tests {
 
     #[test]
     fn test_helper_get_time_and_battery() {
-        // T-N610: get_time and get_battery_mv.
+        // T-N610: get_time returns epoch estimate, get_battery_mv returns captured value.
         let mut hal = TestHal::new();
         let mut transport = TestTransport::new();
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
-        let clock = TestClock(1710000000000);
+        let clock = TestClock(200);
         let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
 
-        with_test_context(
-            &mut hal,
-            &mut transport,
-            &mut maps,
-            &mut sleep,
-            &clock,
-            &hmac,
-            &identity,
-            &mut seq,
-            ProgramClass::Resident,
-            &mut trace,
-            || {
-                assert_eq!(helper_get_time(0, 0, 0, 0, 0), 1710000000000);
-                assert_eq!(helper_get_battery_mv(0, 0, 0, 0, 0), 3300);
-            },
-        );
+        // Override defaults: gateway_timestamp_ms=1_710_000_000_000,
+        // command_received_at_ms=100, battery_mv=3300
+        // Expected get_time: 1_710_000_000_000 + (200 - 100) = 1_710_000_000_100
+        unsafe {
+            install(
+                &mut hal as *mut TestHal as *mut dyn Hal,
+                &mut transport as *mut TestTransport as *mut dyn Transport,
+                &mut maps as *mut MapStorage,
+                &mut sleep as *mut SleepManager,
+                &clock as *const TestClock as *const dyn Clock,
+                &hmac as *const TestHmac as *const dyn HmacProvider,
+                &identity as *const NodeIdentity,
+                &mut seq as *mut u64,
+                ProgramClass::Resident,
+                &mut trace as *mut Vec<String>,
+                1_710_000_000_000,
+                100,
+                3300,
+            );
+        }
+        assert_eq!(helper_get_time(0, 0, 0, 0, 0), 1_710_000_000_100);
+        assert_eq!(helper_get_battery_mv(0, 0, 0, 0, 0), 3300);
+        clear();
     }
 
     #[test]

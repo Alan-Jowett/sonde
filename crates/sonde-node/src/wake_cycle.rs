@@ -321,7 +321,7 @@ where
         // Load and execute with helper dispatch context installed.
         let mut trace_log = Vec::new();
         // SAFETY: all referenced objects are alive on this stack frame
-        // and will not be moved until clear() is called below.
+        // and will not be moved until `_guard` is dropped below.
         unsafe {
             crate::bpf_dispatch::install(
                 _hal as *mut H as *mut dyn crate::hal::Hal,
@@ -329,14 +329,17 @@ where
                 map_storage as *mut MapStorage,
                 &mut sleep_mgr as *mut SleepManager,
                 clock as *const C as *const dyn crate::traits::Clock,
-                battery as *const B as *const dyn crate::hal::BatteryReader,
                 hmac as *const M as *const dyn HmacProvider,
                 &identity as *const NodeIdentity,
                 &mut current_seq as *mut u64,
                 _program_class,
                 &mut trace_log as *mut Vec<String>,
+                timestamp_ms,
+                command_received_at,
+                battery_mv,
             );
         }
+        let _guard = crate::bpf_dispatch::DispatchGuard;
 
         let exec_result = if crate::bpf_dispatch::register_all(interpreter).is_ok() {
             if let Ok(()) = interpreter.load(&program.bytecode, &map_ptrs) {
@@ -353,7 +356,7 @@ where
             ))
         };
 
-        crate::bpf_dispatch::clear();
+        drop(_guard);
 
         // Swallow BPF errors — node sleeps normally regardless (ND-0504).
         let _ = exec_result;

@@ -141,10 +141,9 @@ jobs:
       # ------------------------------------------------------------------ #
 
       - name: Run QEMU smoke test
-        # Source export-esp.sh so the Xtensa QEMU binary found via idf_tools
-        # is reachable if it was installed to a non-default location.
+        # Source IDF export.sh so qemu-system-xtensa is on PATH.
         run: |
-          . "$HOME/export-esp.sh"
+          . "$IDF_PATH/export.sh"
           QEMU_OUTPUT="/tmp/qemu_uart.txt"
 
           # Boot the firmware under QEMU with a hard timeout.

@@ -79,7 +79,11 @@ Outbound frames (e.g., `RECV_FRAME`, `MODEM_READY`) are enqueued into a TX ring 
 
 ### 4.4  Disconnection detection
 
-The firmware monitors the DTR line state. When DTR drops (host closed the port), the firmware sets a `usb_connected` flag to `false` and discards inbound ESP-NOW frames. When DTR reasserts, the firmware resets state and sends `MODEM_READY`.
+Connectivity is inferred from USB read/write success — there is no DTR line-state callback available in the current ESP-IDF Rust HAL (`esp-idf-hal` v0.45). When a read or write returns an error, the firmware sets `usb_connected` to `false`. Successful writes set `usb_connected` back to `true` but do not trigger any notification on their own. When a subsequent read succeeds (data arrives from a re-opened port), `usb_connected` flips to `true` and the bridge sends `MODEM_READY`.
+
+The shared `usb_connected` flag (an `AtomicBool`) is also read by the ESP-NOW receive callback, which discards inbound radio frames while USB is disconnected (MD-0301).
+
+> **Future improvement:** If ESP-IDF exposes a DTR line-state change callback, register it to set `usb_connected` proactively rather than reactively on I/O failure.
 
 ---
 
@@ -274,10 +278,50 @@ The modem extends the shared ESP-NOW driver with channel scanning and USB bridgi
 
 | Condition | Behavior |
 |-----------|----------|
-| USB-CDC disconnection | Set `usb_connected = false`, discard ESP-NOW frames, send `MODEM_READY` on reconnect |
-| ESP-NOW init failure | Send `ERROR(ESPNOW_INIT_FAILED)` to gateway |
-| WiFi init failure | Send `ERROR(WIFI_INIT_FAILED)` to gateway |
+| USB-CDC disconnection | Set `usb_connected = false`, discard ESP-NOW frames; resend `MODEM_READY` when a USB read detects the transition back to connected |
+| ESP-NOW init failure | Panic → automatic reboot |
+| WiFi init failure | Panic → automatic reboot |
 | Channel set failure | Send `ERROR(CHANNEL_SET_FAILED)` to gateway |
-| `SEND_FRAME` with body < 7 bytes | Silently discard (no MAC + data) |
-| Serial frame `len` > 512 | Trigger `RESET`-based resync (§2.3 of modem-protocol.md) |
+| `SEND_FRAME` with body < 7 bytes | Silently discard (codec returns `BodyTooShort`, bridge continues) |
+| Serial frame `len` > 512 | Decoder reset; gateway must send `RESET` to resync (modem-protocol.md §2.3) |
 | Unknown serial message type | Silently discard |
+
+> **Note:** WiFi and ESP-NOW initialization failures are treated as unrecoverable. The firmware uses `.expect()`, so a failed init call will panic. Early in boot this panic is handled directly by the panic handler (before the task watchdog is configured for the current task); later, if the main loop stalls, the task watchdog (configured with `trigger_panic: true`) will trigger a panic and reset. In both cases the observable behavior is an automatic reboot. Sending `ERROR` messages to the gateway before init completes is not possible because USB-CDC may not be ready.
+
+---
+
+## 14  Diagnostics
+
+The modem uses the Rust `log` crate with the ESP-IDF logging backend (`EspLogger`). Diagnostic output is routed to **UART0** (the USB-UART bridge chip on most ESP32-S3 dev boards), **not** the native USB-CDC port.
+
+This separation is critical: the USB-CDC port (GPIO19/20) carries the binary modem protocol exclusively. Mixing log text into the protocol stream would corrupt framing. The UART port is independent and can be monitored concurrently.
+
+### 14.1  Dual-port setup
+
+On a typical ESP32-S3-DevKitC-1 with two USB connectors:
+
+| Port | Connector label | GPIO | Carries | Baud rate |
+|------|----------------|------|---------|-----------|
+| UART | "UART" or "COM" | 43/44 (via USB-UART bridge chip) | Diagnostic logs (`log::info!`, panics) | 115200 |
+| USB | "USB" or "OTG" | 19/20 (native USB peripheral) | Binary modem protocol (gateway link) | N/A (USB full-speed) |
+
+Connect both ports to the host. Use `idf.py monitor` (or any serial terminal at 115200 baud) on the UART port to observe boot messages, state transitions, and warnings.
+
+### 14.2  Log levels
+
+| Level | Usage |
+|-------|-------|
+| `info!` | Startup, channel changes, RESET, MODEM_READY sent, ESP-NOW init |
+| `warn!` | USB write errors, ESP-NOW send failures, peer add failures, encode errors |
+
+The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_INFO`). The maximum compiled-in level is DEBUG, selectable at runtime via ESP-IDF's `esp_log_level_set()`.
+
+### 14.3  Configuration
+
+The following `sdkconfig.defaults` entries control console routing:
+
+```
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+```

@@ -15,12 +15,14 @@ const ARRAY_MAP_KEY_SIZE: u32 = 4;
 pub struct MapInstance {
     pub def: MapDef,
     /// Backing storage: `max_entries * (key_size + value_size)` bytes.
-    /// For BPF_MAP_TYPE_ARRAY, the key is an integer index so key_size
-    /// bytes are not physically stored — but we allocate them for
-    /// consistency with the BPF map ABI.
     data: Vec<u8>,
     /// Size of one entry (key_size + value_size).
     entry_size: usize,
+}
+
+/// Allocate a zero-initialized byte buffer for map storage.
+fn allocate_zeroed(size: usize) -> Vec<u8> {
+    vec![0u8; size]
 }
 
 impl MapInstance {
@@ -185,7 +187,7 @@ impl MapStorage {
                 .expect("overflow already checked");
             maps.push(MapInstance {
                 def: def.clone(),
-                data: vec![0u8; total_size],
+                data: allocate_zeroed(total_size),
                 entry_size,
             });
         }

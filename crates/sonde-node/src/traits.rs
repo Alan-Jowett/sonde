@@ -29,6 +29,15 @@ pub trait Clock {
     /// Used for retry backoff. Implementations on real hardware should
     /// use a platform timer; test mocks can be a no-op.
     fn delay_ms(&self, ms: u32);
+
+    /// Busy-wait for the specified number of microseconds.
+    /// Default implementation rounds up to milliseconds; platform
+    /// implementations should use a hardware timer for µs precision.
+    fn delay_us(&self, us: u32) {
+        if us > 0 {
+            self.delay_ms((us.saturating_add(999)) / 1000);
+        }
+    }
 }
 
 /// Deep sleep controller.

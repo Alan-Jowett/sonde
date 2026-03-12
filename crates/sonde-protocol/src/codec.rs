@@ -15,11 +15,11 @@ pub struct DecodedFrame {
     pub hmac: [u8; 32],
 }
 
-pub fn encode_frame(
+pub fn encode_frame<H: HmacProvider + ?Sized>(
     header: &FrameHeader,
     payload_cbor: &[u8],
     psk: &[u8],
-    hmac: &impl HmacProvider,
+    hmac: &H,
 ) -> Result<Vec<u8>, EncodeError> {
     let total_size = HEADER_SIZE + payload_cbor.len() + HMAC_SIZE;
     if total_size > MAX_FRAME_SIZE {
@@ -70,7 +70,7 @@ pub fn decode_frame(raw: &[u8]) -> Result<DecodedFrame, DecodeError> {
     })
 }
 
-pub fn verify_frame(frame: &DecodedFrame, psk: &[u8], hmac: &impl HmacProvider) -> bool {
+pub fn verify_frame<H: HmacProvider + ?Sized>(frame: &DecodedFrame, psk: &[u8], hmac: &H) -> bool {
     let mut auth_buf = [0u8; MAX_FRAME_SIZE];
     let header_bytes = frame.header.to_bytes();
     auth_buf[..HEADER_SIZE].copy_from_slice(&header_bytes);

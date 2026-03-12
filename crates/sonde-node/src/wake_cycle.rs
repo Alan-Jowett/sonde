@@ -295,9 +295,10 @@ where
         }
 
         // Resolve LDDW map references.
-        // Collect raw pointer + length to avoid a heap allocation; the
-        // underlying cached_ptrs array is not mutated until allocate()
-        // is called again, so the slice remains valid through load().
+        // Collect raw pointer + length so the immutable borrow of
+        // map_storage ends before we pass it mutably into the dispatch
+        // context. The underlying cached_ptrs array is stable until
+        // allocate() is called again.
         let (map_ptrs_ptr, map_ptrs_len) = {
             let cached = map_storage.map_pointers();
             (cached.as_ptr(), cached.len())

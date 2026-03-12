@@ -659,7 +659,7 @@ The gateway (or provisioning tool) MUST support triggering a factory reset on a 
 **Source:** gateway-design.md § Admin API
 
 **Description:**  
-The gateway MUST expose a local gRPC API for administrative operations. The API provides node management, program management, schedule management, diagnostics, and state export/import. The API listens on a configurable local address (default: `localhost:50051`).
+The gateway MUST expose a local gRPC API for administrative operations. The API provides node management, program management, schedule management, diagnostics, and state export/import. The API listens on a configurable local socket: a Unix domain socket on Linux/macOS (default: `/var/run/sonde/admin.sock`) or a named pipe on Windows (default: `\\.\pipe\sonde-admin`). No TCP port is exposed.
 
 **Acceptance criteria:**
 

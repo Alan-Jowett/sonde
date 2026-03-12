@@ -295,16 +295,8 @@ where
         }
 
         // Resolve LDDW map references.
-        // Collect raw pointer + length so the immutable borrow of
-        // map_storage ends before we pass it mutably into the dispatch
-        // context. The underlying cached_ptrs array is stable until
-        // allocate() is called again.
-        let (map_ptrs_ptr, map_ptrs_len) = {
-            let cached = map_storage.map_pointers();
-            (cached.as_ptr(), cached.len())
-        };
-        let map_ptrs = unsafe { core::slice::from_raw_parts(map_ptrs_ptr, map_ptrs_len) };
-        if resolve_map_references(&mut program.bytecode, map_ptrs).is_err() {
+        let map_ptrs = map_storage.map_pointers().to_vec();
+        if resolve_map_references(&mut program.bytecode, &map_ptrs).is_err() {
             return WakeCycleOutcome::Sleep {
                 seconds: sleep_mgr.effective_sleep_s(),
             };
@@ -352,7 +344,7 @@ where
         let _guard = crate::bpf_dispatch::DispatchGuard;
 
         let exec_result = match crate::bpf_dispatch::register_all(interpreter) {
-            Ok(()) => match interpreter.load(&program.bytecode, map_ptrs) {
+            Ok(()) => match interpreter.load(&program.bytecode, &map_ptrs) {
                 Ok(()) => {
                     let ctx_ptr = &ctx as *const SondeContext as u64;
                     interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)

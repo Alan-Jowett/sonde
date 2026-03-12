@@ -1047,9 +1047,9 @@ mod tests {
                 3300,
             );
         }
+        let _guard = DispatchGuard;
         assert_eq!(helper_get_time(0, 0, 0, 0, 0), 1_710_000_000_100);
         assert_eq!(helper_get_battery_mv(0, 0, 0, 0, 0), 3300);
-        clear();
     }
 
     #[test]

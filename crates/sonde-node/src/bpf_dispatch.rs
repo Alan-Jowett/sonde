@@ -451,9 +451,18 @@ pub fn helper_get_time(_r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 
 }
 
 /// Helper 13: get_battery_mv.
-/// Returns: battery voltage in millivolts.
+/// Returns: battery voltage in millivolts, clamped to u16 to match
+/// the BPF execution context `ctx->battery_mv` field.
 pub fn helper_get_battery_mv(_r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| ctx.battery_mv as u64).unwrap_or(0)
+    with_ctx(|ctx| {
+        let clamped = if ctx.battery_mv > u16::MAX as u32 {
+            u16::MAX as u64
+        } else {
+            ctx.battery_mv as u64
+        };
+        clamped
+    })
+    .unwrap_or(0)
 }
 
 /// Helper 14: delay_us.

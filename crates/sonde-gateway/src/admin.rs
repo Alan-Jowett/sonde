@@ -94,7 +94,8 @@ impl GatewayAdmin for AdminService {
         _request: Request<Empty>,
     ) -> Result<Response<ListNodesResponse>, Status> {
         let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
-        let nodes = nodes.iter().map(node_to_info).collect();
+        let mut nodes: Vec<_> = nodes.iter().map(node_to_info).collect();
+        nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         Ok(Response::new(ListNodesResponse { nodes }))
     }
 
@@ -256,15 +257,14 @@ impl GatewayAdmin for AdminService {
         node.schedule_interval_s = req.interval_s;
         self.storage.upsert_node(&node).await.map_err(storage_err)?;
 
-        // Also queue the command for delivery on next WAKE
-        self.pending_commands
-            .write()
-            .await
-            .entry(req.node_id.clone())
-            .or_default()
-            .push(PendingCommand::UpdateSchedule {
-                interval_s: req.interval_s,
-            });
+        // Queue the command for delivery on next WAKE, replacing any
+        // previously-queued schedule update so the node always gets the latest.
+        let mut guard = self.pending_commands.write().await;
+        let commands = guard.entry(req.node_id.clone()).or_default();
+        commands.retain(|cmd| !matches!(cmd, PendingCommand::UpdateSchedule { .. }));
+        commands.push(PendingCommand::UpdateSchedule {
+            interval_s: req.interval_s,
+        });
         Ok(Response::new(Empty {}))
     }
 

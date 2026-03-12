@@ -20,6 +20,8 @@ service GatewayAdmin {
 
 message Empty {}
 
+// `node_id` is the admin-assigned opaque identifier used to correlate a node
+// across sessions, handler API calls, and admin operations.
 message NodeInfo {
     string node_id = 1;
     uint32 key_hint = 2;

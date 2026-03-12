@@ -109,7 +109,7 @@ impl Gateway {
 
     /// Expose the session manager for test inspection.
     pub fn session_manager(&self) -> &SessionManager {
-        &self.session_manager
+        self.session_manager.as_ref()
     }
 
     /// Main entry point: process a raw inbound frame and optionally return a

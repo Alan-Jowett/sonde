@@ -37,18 +37,62 @@ fn main() {
     let nvs = EspDefaultNvsPartition::take().expect("failed to take NVS partition");
 
     let counters = ModemCounters::new();
-    let usb = sonde_modem::usb_cdc::UsbCdcDriver::new();
-    let espnow = sonde_modem::espnow::EspNowDriver::new(peripherals.modem, sysloop, nvs, &counters);
+    let usb = sonde_modem::usb_cdc::UsbCdcDriver::new(
+        peripherals.usb_serial,
+        peripherals.pins.gpio19,
+        peripherals.pins.gpio20,
+    );
+
+    // Share the USB connected flag with the ESP-NOW receive callback
+    // so it can discard frames when USB is disconnected (MD-0301).
+    let usb_connected = usb.connected();
+    let espnow = sonde_modem::espnow::EspNowDriver::new(
+        peripherals.modem,
+        sysloop,
+        nvs,
+        &counters,
+        usb_connected,
+    );
 
     let mut bridge = Bridge::new(usb, espnow, counters);
 
-    // Send MODEM_READY on boot.
-    bridge.send_modem_ready();
+    // Initialize the task watchdog with a 10-second timeout (MD-0302).
+    unsafe {
+        let wdt_config = esp_idf_sys::esp_task_wdt_config_t {
+            timeout_ms: 10_000,
+            idle_core_mask: 0,
+            trigger_panic: true,
+        };
+        esp_idf_sys::esp!(esp_idf_sys::esp_task_wdt_reconfigure(&wdt_config))
+            .expect("failed to configure watchdog");
+        esp_idf_sys::esp!(esp_idf_sys::esp_task_wdt_add(
+            esp_idf_sys::xTaskGetCurrentTaskHandle()
+        ))
+        .expect("failed to add task to watchdog");
+    }
+
+    // Retry MODEM_READY for up to 2 seconds to handle slow USB
+    // enumeration (MD-0104).
+    {
+        let start = std::time::Instant::now();
+        loop {
+            bridge.send_modem_ready();
+            if bridge.is_usb_connected() || start.elapsed().as_millis() >= 2000 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
 
     info!("entering main loop");
 
     loop {
         bridge.poll();
+
+        // Feed the watchdog each iteration (MD-0302).
+        unsafe {
+            esp_idf_sys::esp_task_wdt_reset();
+        }
 
         // Yield briefly to avoid pegging the CPU and starving
         // lower-priority ESP-IDF tasks.

@@ -14,6 +14,8 @@ use sonde_protocol::{
     MSG_PROGRAM_ACK, MSG_WAKE,
 };
 
+use std::collections::BTreeMap;
+
 use crate::crypto::{RustCryptoHmac, RustCryptoSha256};
 use crate::handler::HandlerRouter;
 use crate::program::ProgramLibrary;
@@ -37,7 +39,7 @@ pub enum PendingCommand {
 /// program library, command dispatch, and handler routing.
 pub struct Gateway {
     storage: Arc<dyn Storage>,
-    session_manager: SessionManager,
+    session_manager: Arc<SessionManager>,
     program_library: ProgramLibrary,
     crypto_hmac: RustCryptoHmac,
     #[allow(dead_code)]
@@ -54,7 +56,7 @@ impl Gateway {
     pub fn new(storage: Arc<dyn Storage>, session_timeout: Duration) -> Self {
         Self {
             storage,
-            session_manager: SessionManager::new(session_timeout),
+            session_manager: Arc::new(SessionManager::new(session_timeout)),
             program_library: ProgramLibrary::new(),
             crypto_hmac: RustCryptoHmac,
             crypto_sha: RustCryptoSha256,
@@ -71,12 +73,29 @@ impl Gateway {
     ) -> Self {
         Self {
             storage,
-            session_manager: SessionManager::new(session_timeout),
+            session_manager: Arc::new(SessionManager::new(session_timeout)),
             program_library: ProgramLibrary::new(),
             crypto_hmac: RustCryptoHmac,
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
             handler_router: Some(handler_router),
+        }
+    }
+
+    /// Create a gateway that shares state with an `AdminService`.
+    pub fn new_with_pending(
+        storage: Arc<dyn Storage>,
+        pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+        session_manager: Arc<SessionManager>,
+    ) -> Self {
+        Self {
+            storage,
+            session_manager,
+            program_library: ProgramLibrary::new(),
+            crypto_hmac: RustCryptoHmac,
+            crypto_sha: RustCryptoSha256,
+            pending_commands,
+            handler_router: None,
         }
     }
 
@@ -92,7 +111,7 @@ impl Gateway {
 
     /// Expose the session manager for test inspection.
     pub fn session_manager(&self) -> &SessionManager {
-        &self.session_manager
+        self.session_manager.as_ref()
     }
 
     /// Main entry point: process a raw inbound frame and optionally return a
@@ -217,6 +236,22 @@ impl Gateway {
         let mut updated_node = node.clone();
         updated_node.update_telemetry(battery_mv, firmware_abi_version);
         let _ = self.storage.upsert_node(&updated_node).await;
+
+        // 4a. Emit node_online EVENT to handlers (GW-0507)
+        if let Some(router) = &self.handler_router {
+            let mut details = BTreeMap::new();
+            details.insert(
+                "battery_mv".to_string(),
+                ciborium::Value::Integer(battery_mv.into()),
+            );
+            details.insert(
+                "firmware_abi_version".to_string(),
+                ciborium::Value::Integer(firmware_abi_version.into()),
+            );
+            router
+                .route_event(&node.node_id, "node_online", details, timestamp_ms / 1000)
+                .await;
+        }
 
         // 5. Encode GatewayMessage::Command response
         let response_msg = GatewayMessage::Command {
@@ -352,8 +387,24 @@ impl Gateway {
 
         // Update node record with the confirmed program
         let mut updated_node = node.clone();
-        updated_node.confirm_program(program_hash);
+        updated_node.confirm_program(program_hash.clone());
         let _ = self.storage.upsert_node(&updated_node).await;
+
+        // Emit program_updated EVENT to handlers (GW-0507)
+        if let Some(router) = &self.handler_router {
+            let mut details = BTreeMap::new();
+            details.insert(
+                "program_hash".to_string(),
+                ciborium::Value::Bytes(program_hash),
+            );
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            router
+                .route_event(&node.node_id, "program_updated", details, timestamp)
+                .await;
+        }
 
         // Transition session from ChunkedTransfer to BpfExecuting
         let _ = self

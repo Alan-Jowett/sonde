@@ -4,10 +4,25 @@ version = "0.1.0"
 edition = "2021"
 description = "Sonde node firmware — wake cycle engine, BPF runtime, and platform abstractions"
 
+[features]
+default = []
+# Enable ESP-IDF platform support (required for firmware builds).
+# Without this feature, only platform-independent modules compile,
+# enabling host-side testing of the wake cycle engine and protocol logic.
+esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:embuild"]
+
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
 ciborium = { version = "0.2", default-features = false }
 log = "0.4"
+
+# ESP-IDF dependencies — only pulled in with the "esp" feature.
+esp-idf-hal = { version = "0.45", optional = true }
+esp-idf-svc = { version = "0.50", features = ["binstart"], optional = true }
+esp-idf-sys = { version = "0.36", features = ["binstart"], optional = true }
+
+[build-dependencies]
+embuild = { version = "0.33", optional = true }
 
 [dev-dependencies]
 hmac = "0.12"

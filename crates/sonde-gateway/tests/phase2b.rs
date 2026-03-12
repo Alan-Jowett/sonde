@@ -132,7 +132,7 @@ async fn store_test_program_with_profile(
         maps: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
-    let record = lib.ingest(cbor, profile).unwrap();
+    let record = lib.ingest_unverified(cbor, profile).unwrap();
     let hash = record.hash.clone();
     storage.store_program(&record).await.unwrap();
     hash

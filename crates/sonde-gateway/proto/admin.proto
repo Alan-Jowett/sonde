@@ -1,0 +1,75 @@
+syntax = "proto3";
+package sonde.admin;
+
+service GatewayAdmin {
+    rpc ListNodes(Empty) returns (ListNodesResponse);
+    rpc GetNode(GetNodeRequest) returns (NodeInfo);
+    rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+    rpc RemoveNode(RemoveNodeRequest) returns (Empty);
+    rpc IngestProgram(IngestProgramRequest) returns (IngestProgramResponse);
+    rpc ListPrograms(Empty) returns (ListProgramsResponse);
+    rpc AssignProgram(AssignProgramRequest) returns (Empty);
+    rpc RemoveProgram(RemoveProgramRequest) returns (Empty);
+    rpc SetSchedule(SetScheduleRequest) returns (Empty);
+    rpc QueueReboot(QueueRebootRequest) returns (Empty);
+    rpc QueueEphemeral(QueueEphemeralRequest) returns (Empty);
+    rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+    rpc ExportState(Empty) returns (ExportStateResponse);
+    rpc ImportState(ImportStateRequest) returns (Empty);
+}
+
+message Empty {}
+
+// `node_id` is the admin-assigned opaque identifier used to correlate a node
+// across sessions, handler API calls, and admin operations.
+message NodeInfo {
+    string node_id = 1;
+    uint32 key_hint = 2;
+    bytes assigned_program_hash = 3;
+    bytes current_program_hash = 4;
+    optional uint32 last_battery_mv = 5;
+    optional uint32 last_firmware_abi_version = 6;
+    optional uint64 last_seen_ms = 7;
+    optional uint32 schedule_interval_s = 8;
+}
+
+message ListNodesResponse { repeated NodeInfo nodes = 1; }
+message GetNodeRequest { string node_id = 1; }
+message RegisterNodeRequest { string node_id = 1; uint32 key_hint = 2; bytes psk = 3; }
+message RegisterNodeResponse { string node_id = 1; }
+message RemoveNodeRequest { string node_id = 1; }
+
+message ProgramInfo {
+    bytes hash = 1;
+    uint32 size = 2;
+    VerificationProfile verification_profile = 3;
+}
+
+enum VerificationProfile {
+    VERIFICATION_PROFILE_UNSPECIFIED = 0;
+    VERIFICATION_PROFILE_RESIDENT = 1;
+    VERIFICATION_PROFILE_EPHEMERAL = 2;
+}
+
+// `image_data` accepts a CBOR-encoded program image (not a raw ELF binary).
+// ELF→CBOR extraction/verification will be added in a future phase.
+message IngestProgramRequest { bytes image_data = 1; VerificationProfile verification_profile = 2; }
+message IngestProgramResponse { bytes program_hash = 1; uint32 program_size = 2; }
+message ListProgramsResponse { repeated ProgramInfo programs = 1; }
+message AssignProgramRequest { string node_id = 1; bytes program_hash = 2; }
+message RemoveProgramRequest { bytes program_hash = 1; }
+
+message SetScheduleRequest { string node_id = 1; uint32 interval_s = 2; }
+message QueueRebootRequest { string node_id = 1; }
+message QueueEphemeralRequest { string node_id = 1; bytes program_hash = 2; }
+message GetNodeStatusRequest { string node_id = 1; }
+message NodeStatus {
+    string node_id = 1;
+    bytes current_program_hash = 2;
+    optional uint32 battery_mv = 3;
+    optional uint32 firmware_abi_version = 4;
+    optional uint64 last_seen_ms = 5;
+    bool has_active_session = 6;
+}
+message ExportStateResponse { bytes data = 1; }
+message ImportStateRequest { bytes data = 1; }

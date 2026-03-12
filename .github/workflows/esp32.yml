@@ -1,0 +1,166 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# ESP32 firmware CI: build the sonde-node firmware under ESP-IDF and run a
+# QEMU smoke test that asserts the expected boot-marker strings appear on UART.
+
+name: ESP32 Firmware CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  esp32-build-and-smoke:
+    name: Build ESP32 firmware and QEMU smoke test
+    runs-on: ubuntu-latest
+
+    container:
+      # Pinned ESP-IDF release image — provides IDF_PATH, Python 3, and all
+      # ESP-IDF host tools including esptool.py and idf_tools.py.
+      image: espressif/idf:v5.3.2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # ------------------------------------------------------------------ #
+      # Rust toolchain
+      # ------------------------------------------------------------------ #
+
+      - name: Install Rust (stable)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --no-modify-path --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # ------------------------------------------------------------------ #
+      # Xtensa Rust toolchain (required for xtensa-esp32-espidf target)
+      # ------------------------------------------------------------------ #
+
+      - name: Install espup
+        run: cargo install espup --locked
+
+      - name: Install Xtensa Rust toolchain for ESP32
+        run: espup install --targets esp32
+
+      - name: Export Xtensa toolchain environment
+        # espup writes export-esp.sh; extract KEY=VALUE pairs for GITHUB_ENV.
+        run: |
+          grep -E '^export [A-Z_]+=' "$HOME/export-esp.sh" \
+            | sed 's/^export //' \
+            >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------ #
+      # QEMU for Xtensa (ESP32)
+      # ------------------------------------------------------------------ #
+
+      - name: Install QEMU for Xtensa via idf_tools.py
+        run: |
+          "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
+          "$IDF_PATH/tools/idf_tools.py" export --format key-value \
+            >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------ #
+      # Build
+      # ------------------------------------------------------------------ #
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2
+        with:
+          workspaces: ". -> target"
+          key: esp32-xtensa
+
+      - name: Build node firmware (ESP32, release)
+        run: |
+          cargo build \
+            -p sonde-node \
+            --bin node \
+            --features esp \
+            --release \
+            --target xtensa-esp32-espidf
+
+      # ------------------------------------------------------------------ #
+      # Flash-image assembly
+      # ------------------------------------------------------------------ #
+
+      - name: Create merged flash image
+        run: |
+          TARGET_DIR="target/xtensa-esp32-espidf/release"
+
+          # Locate bootloader and partition table produced by embuild.
+          BOOTLOADER=$(find "$TARGET_DIR/build" \
+            -name "bootloader.bin" -path "*/bootloader/*" | head -1)
+          PARTITION_TABLE=$(find "$TARGET_DIR/build" \
+            -name "partition-table.bin" | head -1)
+
+          if [ -z "$BOOTLOADER" ]; then
+            echo "ERROR: bootloader.bin not found under $TARGET_DIR/build" >&2
+            exit 1
+          fi
+          if [ -z "$PARTITION_TABLE" ]; then
+            echo "ERROR: partition-table.bin not found under $TARGET_DIR/build" >&2
+            exit 1
+          fi
+
+          echo "Bootloader:       $BOOTLOADER"
+          echo "Partition table:  $PARTITION_TABLE"
+
+          # Convert ELF → flat binary.
+          esptool.py --chip esp32 elf2image \
+            --flash_mode  dio \
+            --flash_freq  40m \
+            --flash_size  4MB \
+            --output "$TARGET_DIR/node.bin" \
+            "$TARGET_DIR/node"
+
+          # Merge bootloader + partition table + app into a single image.
+          esptool.py --chip esp32 merge_bin \
+            --output flash_image.bin \
+            0x1000  "$BOOTLOADER" \
+            0x8000  "$PARTITION_TABLE" \
+            0x10000 "$TARGET_DIR/node.bin"
+
+          echo "flash_image.bin created ($(wc -c < flash_image.bin) bytes)"
+
+      # ------------------------------------------------------------------ #
+      # QEMU smoke test
+      # ------------------------------------------------------------------ #
+
+      - name: Run QEMU smoke test
+        run: |
+          QEMU_OUTPUT="/tmp/qemu_uart.txt"
+
+          # Boot the firmware under QEMU with a hard timeout.
+          # -no-reboot prevents restart loops on early failures.
+          timeout 60 qemu-system-xtensa \
+            -nographic \
+            -machine esp32 \
+            -drive file=flash_image.bin,if=mtd,format=raw \
+            -no-reboot \
+            2>&1 | tee "$QEMU_OUTPUT" || true
+
+          echo ""
+          echo "=== QEMU UART output ==="
+          cat "$QEMU_OUTPUT"
+          echo "========================"
+
+          # Assert that the firmware reached each expected boot-marker log line.
+          PASS=true
+          for marker in "sonde-node booting" "sonde-node ready"; do
+            if grep -qF "$marker" "$QEMU_OUTPUT"; then
+              echo "✓  Found marker: '$marker'"
+            else
+              echo "✗  Missing marker: '$marker'" >&2
+              PASS=false
+            fi
+          done
+
+          if [ "$PASS" = "false" ]; then
+            echo "Smoke test FAILED — one or more expected markers were not found." >&2
+            exit 1
+          fi
+
+          echo "Smoke test passed."

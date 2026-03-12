@@ -57,7 +57,8 @@ jobs:
       - name: Install QEMU for Xtensa via idf_tools.py
         # qemu-xtensa is bundled in the espressif/idf image but install is
         # idempotent; this ensures the tool is present regardless of image version.
-        run: $IDF_PATH/tools/idf_tools.py install qemu-xtensa
+        run: |
+          "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
 
       # ------------------------------------------------------------------ #
       # Build

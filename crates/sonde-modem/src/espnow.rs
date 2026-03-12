@@ -48,12 +48,6 @@ unsafe extern "C" fn raw_recv_cb(
         unsafe { (*info.rx_ctrl).rssi as i8 }
     };
 
-    let frame = RecvFrame {
-        peer_mac: *src_addr,
-        rssi,
-        frame_data: payload.to_vec(),
-    };
-
     if let Ok(guard) = RECV_CB_STATE.lock() {
         if let Some(state) = guard.as_ref() {
             // Discard frames when USB is disconnected (MD-0301).
@@ -62,7 +56,11 @@ unsafe extern "C" fn raw_recv_cb(
             }
             if let Ok(mut q) = state.rx_queue.lock() {
                 if q.len() < 64 {
-                    q.push(frame);
+                    q.push(RecvFrame {
+                        peer_mac: *src_addr,
+                        rssi,
+                        frame_data: payload.to_vec(),
+                    });
                 }
             }
         }

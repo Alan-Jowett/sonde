@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
 # ESP-IDF configuration for sonde-modem firmware.
 #
 # Console output goes to UART0 (the USB-UART bridge chip on most dev
@@ -10,6 +13,8 @@
 
 # --- Console ---
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 
 # --- Watchdog (MD-0302) ---
 CONFIG_ESP_TASK_WDT_EN=y

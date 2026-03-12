@@ -790,9 +790,7 @@ async fn t0810_import_state_disabled() {
 
     let err = h
         .admin
-        .import_state(Request::new(ImportStateRequest {
-            data: vec![0x01],
-        }))
+        .import_state(Request::new(ImportStateRequest { data: vec![0x01] }))
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unimplemented);

@@ -137,7 +137,11 @@ impl BpfInterpreter for RbpfInterpreter {
             vm.register_allowed_memory(ctx_buf_ptr..ctx_buf_end);
         }
 
-        let ctx_slice: &mut [u8] = if ctx_ptr != 0 { &mut ctx_buf } else { &mut [] };
+        // When ctx_ptr is 0, pass a zeroed context buffer rather than an
+        // empty slice. rbpf sets R1 to the slice's data pointer, and an
+        // empty slice may have a dangling non-zero pointer, violating the
+        // trait's expectation that R1 == 0 when ctx_ptr == 0.
+        let ctx_slice: &mut [u8] = &mut ctx_buf;
 
         vm.execute_program(ctx_slice).map_err(|e| {
             // rbpf uses a flat Error type with a string message (no
@@ -146,6 +150,14 @@ impl BpfInterpreter for RbpfInterpreter {
             let msg = format!("{:?}", e);
             if msg.contains("call depth") || msg.contains("stack overflow") {
                 BpfError::CallDepthExceeded
+            } else if msg.contains("unknown helper") || msg.contains("helper function") {
+                // Extract helper ID from message if possible.
+                let id = msg
+                    .split(|c: char| !c.is_ascii_digit())
+                    .filter_map(|s| s.parse::<u32>().ok())
+                    .next()
+                    .unwrap_or(0);
+                BpfError::HelperNotRegistered(id)
             } else {
                 BpfError::InvalidBytecode(msg)
             }

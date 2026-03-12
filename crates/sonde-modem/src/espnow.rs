@@ -62,7 +62,7 @@ unsafe extern "C" fn raw_recv_cb(
     let rssi = if info.rx_ctrl.is_null() {
         i8::MIN
     } else {
-        unsafe { (*info.rx_ctrl).rssi as i8 }
+        unsafe { (*info.rx_ctrl).rssi() as i8 }
     };
 
     if let Some(state) = RECV_CB_STATE.get() {

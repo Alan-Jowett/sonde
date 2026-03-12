@@ -35,6 +35,18 @@ impl ModemCounters {
         })
     }
 
+    /// Create counters with a custom boot time (for testing).
+    #[cfg(test)]
+    fn new_with_boot_time(boot_time: Instant) -> Arc<Self> {
+        Arc::new(Self {
+            tx_count: AtomicU32::new(0),
+            rx_count: AtomicU32::new(0),
+            tx_fail_count: AtomicU32::new(0),
+            reset_epoch_ms: AtomicU64::new(0),
+            boot_time,
+        })
+    }
+
     pub fn inc_tx(&self) {
         self.tx_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -143,21 +155,25 @@ mod tests {
     #[test]
     fn uptime_near_zero_at_boot() {
         let c = ModemCounters::new();
-        // Immediately after construction, uptime should be very small.
-        assert!(c.uptime_s() < 2);
+        assert_eq!(c.uptime_s(), 0);
+    }
+
+    #[test]
+    fn uptime_reflects_elapsed_time() {
+        // Backdate boot_time by 5 seconds to avoid wall-clock sleeping.
+        let boot = Instant::now() - Duration::from_secs(5);
+        let c = ModemCounters::new_with_boot_time(boot);
+        let uptime = c.uptime_s();
+        assert!(uptime >= 4 && uptime <= 6, "expected ~5s, got {}", uptime);
     }
 
     #[test]
     fn uptime_resets_on_reset() {
-        let c = ModemCounters::new();
-        // Let a little time pass so uptime > 0.
-        thread::sleep(Duration::from_millis(1100));
-        let before = c.uptime_s();
-        assert!(before >= 1, "uptime should be >= 1s after sleeping 1.1s");
-        // Reset should bring uptime back to ~0.
+        // Backdate boot_time by 5 seconds so uptime starts > 0.
+        let boot = Instant::now() - Duration::from_secs(5);
+        let c = ModemCounters::new_with_boot_time(boot);
+        assert!(c.uptime_s() >= 4);
         c.reset();
-        // Immediately after reset, uptime should be 0 (ms-resolution epoch
-        // ensures no rounding error at second boundaries).
         assert_eq!(c.uptime_s(), 0);
     }
 

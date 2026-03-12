@@ -616,7 +616,7 @@ impl Gateway {
                 None => continue,
             };
 
-            let deadline = last_seen + interval * multiplier;
+            let deadline = last_seen.saturating_add(interval.saturating_mul(multiplier));
             if now.as_secs() > deadline {
                 let mut details = BTreeMap::new();
                 details.insert(

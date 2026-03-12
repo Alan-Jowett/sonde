@@ -353,6 +353,7 @@ impl Transport for UsbEspNowTransport {
 pub fn spawn_health_monitor(
     transport: Arc<UsbEspNowTransport>,
     interval: std::time::Duration,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if interval.is_zero() {
@@ -363,7 +364,13 @@ pub fn spawn_health_monitor(
         let mut prev_uptime: Option<u32> = None;
 
         loop {
-            tokio::time::sleep(interval).await;
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    debug!("health monitor cancelled");
+                    return;
+                }
+                _ = tokio::time::sleep(interval) => {}
+            }
 
             match transport.poll_status().await {
                 Ok(status) => {

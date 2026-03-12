@@ -26,3 +26,4 @@ embuild = { version = "0.33", optional = true }
 
 [dev-dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
+serialport = "4"

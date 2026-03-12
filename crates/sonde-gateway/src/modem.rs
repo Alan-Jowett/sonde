@@ -346,6 +346,82 @@ impl Transport for UsbEspNowTransport {
     }
 }
 
+/// Spawn a periodic health monitor for the modem transport.
+///
+/// Polls `GET_STATUS` every `interval` and logs tx_fail deltas and reboots.
+/// Takes a `Weak` reference so the monitor exits automatically when the
+/// transport is dropped (enabling the "drop + rebuild" recovery pattern).
+pub fn spawn_health_monitor(
+    transport: std::sync::Weak<UsbEspNowTransport>,
+    interval: std::time::Duration,
+    cancel: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if interval.is_zero() {
+            warn!("health monitor interval is zero, disabling");
+            return;
+        }
+        let mut prev_tx_fail: Option<u32> = None;
+        let mut prev_uptime: Option<u32> = None;
+
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    debug!("health monitor cancelled");
+                    return;
+                }
+                _ = tokio::time::sleep(interval) => {}
+            }
+
+            let transport = match transport.upgrade() {
+                Some(t) => t,
+                None => {
+                    debug!("transport dropped, stopping health monitor");
+                    return;
+                }
+            };
+
+            match transport.poll_status().await {
+                Ok(status) => {
+                    if let Some(prev) = prev_tx_fail {
+                        if status.tx_fail_count > prev {
+                            let delta = status.tx_fail_count - prev;
+                            warn!(
+                                delta,
+                                total = status.tx_fail_count,
+                                "modem send failures detected"
+                            );
+                        }
+                    }
+                    if let Some(prev) = prev_uptime {
+                        if status.uptime_s < prev {
+                            warn!(
+                                old_uptime = prev,
+                                new_uptime = status.uptime_s,
+                                "modem reboot detected (uptime decreased)"
+                            );
+                        }
+                    }
+                    prev_tx_fail = Some(status.tx_fail_count);
+                    prev_uptime = Some(status.uptime_s);
+
+                    debug!(
+                        channel = status.channel,
+                        uptime_s = status.uptime_s,
+                        tx = status.tx_count,
+                        rx = status.rx_count,
+                        tx_fail = status.tx_fail_count,
+                        "modem health poll"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "modem health poll failed");
+                }
+            }
+        }
+    })
+}
+
 /// Route a decoded modem message to the appropriate consumer.
 async fn dispatch_message(
     msg: ModemMessage,
@@ -395,8 +471,12 @@ async fn dispatch_message(
                 message = ?String::from_utf8_lossy(&e.message),
                 "modem error"
             );
-            // Unblock pending waiters so they fail immediately instead
-            // of waiting until timeout.
+            // GW-1103: Error is logged and waiters unblocked so pending
+            // operations fail immediately. The reader task continues
+            // running (non-fatal). Full RESET recovery requires the
+            // caller (gateway main loop) to cancel the health monitor,
+            // drop the transport, and reconstruct it — which re-runs
+            // the startup handshake including RESET.
             if ready_tx.take().is_some() {
                 debug!("cancelling pending MODEM_READY waiter due to modem error");
             }

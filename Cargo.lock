@@ -2080,6 +2080,7 @@ dependencies = [
  "sonde-protocol",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

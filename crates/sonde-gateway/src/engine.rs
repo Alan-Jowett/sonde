@@ -581,4 +581,56 @@ impl Gateway {
         // Priority 5: NOP
         Some(CommandPayload::Nop)
     }
+
+    /// Check for nodes that have missed their expected wake interval.
+    ///
+    /// Emits a `node_timeout` EVENT to handlers for each timed-out node.
+    /// A node is considered timed-out when `multiplier × schedule_interval_s`
+    /// has elapsed since its `last_seen` timestamp (default multiplier: 3,
+    /// per gateway-design.md). Call this periodically from the gateway main
+    /// loop.
+    pub async fn check_node_timeouts(&self, multiplier: u64) {
+        let router = match &self.handler_router {
+            Some(r) => r,
+            None => return,
+        };
+
+        let multiplier = if multiplier == 0 { 3 } else { multiplier };
+
+        let nodes = self.storage.list_nodes().await.unwrap_or_default();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+
+        for node in &nodes {
+            let interval = node.schedule_interval_s as u64;
+            if interval == 0 {
+                continue;
+            }
+
+            let last_seen = match node.last_seen {
+                Some(ts) => match ts.duration_since(UNIX_EPOCH) {
+                    Ok(d) => d.as_secs(),
+                    Err(_) => continue,
+                },
+                None => continue,
+            };
+
+            let deadline = last_seen.saturating_add(interval.saturating_mul(multiplier));
+            if now.as_secs() > deadline {
+                let mut details = BTreeMap::new();
+                details.insert(
+                    "last_seen".to_string(),
+                    ciborium::Value::Integer(last_seen.into()),
+                );
+                details.insert(
+                    "expected_interval_s".to_string(),
+                    ciborium::Value::Integer(interval.into()),
+                );
+                router
+                    .route_event(&node.node_id, "node_timeout", details, now.as_secs())
+                    .await;
+            }
+        }
+    }
 }

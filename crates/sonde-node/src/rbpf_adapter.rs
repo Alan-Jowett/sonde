@@ -137,10 +137,12 @@ impl BpfInterpreter for RbpfInterpreter {
             vm.register_allowed_memory(ctx_buf_ptr..ctx_buf_end);
         }
 
-        // When ctx_ptr is 0, pass a zeroed context buffer rather than an
-        // empty slice. rbpf sets R1 to the slice's data pointer, and an
-        // empty slice may have a dangling non-zero pointer, violating the
-        // trait's expectation that R1 == 0 when ctx_ptr == 0.
+        // rbpf::EbpfVmRaw::execute_program sets R1 to the slice's data
+        // pointer. In production, ctx_ptr is always non-zero (run_wake_cycle
+        // passes a stack-allocated SondeContext). When ctx_ptr == 0 (only in
+        // unit tests), we still pass the zeroed ctx_buf; R1 will be non-zero
+        // but the program should not dereference it since no context was
+        // requested. Constructing a null-pointer slice would be UB in Rust.
         let ctx_slice: &mut [u8] = &mut ctx_buf;
 
         vm.execute_program(ctx_slice).map_err(|e| {

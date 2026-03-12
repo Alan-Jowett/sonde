@@ -16,10 +16,10 @@ pub struct ModemCounters {
     tx_count: AtomicU32,
     rx_count: AtomicU32,
     tx_fail_count: AtomicU32,
-    /// Seconds elapsed since boot at the last reset.
-    /// `uptime_s` reports `now_s - reset_epoch_s` so it reflects
-    /// time since last RESET, not since boot.
-    reset_epoch_s: AtomicU32,
+    /// Milliseconds elapsed since boot at the last reset.
+    /// `uptime_s` reports `(now_ms - reset_epoch_ms) / 1000` so it
+    /// reflects time since last RESET, not since boot.
+    reset_epoch_ms: AtomicU32,
     boot_time: Instant,
 }
 
@@ -29,7 +29,7 @@ impl ModemCounters {
             tx_count: AtomicU32::new(0),
             rx_count: AtomicU32::new(0),
             tx_fail_count: AtomicU32::new(0),
-            reset_epoch_s: AtomicU32::new(0),
+            reset_epoch_ms: AtomicU32::new(0),
             boot_time: Instant::now(),
         })
     }
@@ -60,9 +60,9 @@ impl ModemCounters {
 
     /// Returns seconds since last boot or RESET.
     pub fn uptime_s(&self) -> u32 {
-        let total_s = self.boot_time.elapsed().as_secs() as u32;
-        let epoch_s = self.reset_epoch_s.load(Ordering::Relaxed);
-        total_s.saturating_sub(epoch_s)
+        let total_ms = self.boot_time.elapsed().as_millis() as u32;
+        let epoch_ms = self.reset_epoch_ms.load(Ordering::Relaxed);
+        total_ms.saturating_sub(epoch_ms) / 1000
     }
 
     /// Reset all counters to zero and restart uptime (called on RESET command).
@@ -70,8 +70,8 @@ impl ModemCounters {
         self.tx_count.store(0, Ordering::Relaxed);
         self.rx_count.store(0, Ordering::Relaxed);
         self.tx_fail_count.store(0, Ordering::Relaxed);
-        let now_s = self.boot_time.elapsed().as_secs() as u32;
-        self.reset_epoch_s.store(now_s, Ordering::Relaxed);
+        let now_ms = self.boot_time.elapsed().as_millis() as u32;
+        self.reset_epoch_ms.store(now_ms, Ordering::Relaxed);
     }
 }
 
@@ -151,10 +151,13 @@ mod tests {
         let c = ModemCounters::new();
         // Let a little time pass so uptime > 0.
         thread::sleep(Duration::from_millis(1100));
-        assert!(c.uptime_s() >= 1);
+        let before = c.uptime_s();
+        assert!(before >= 1, "uptime should be >= 1s after sleeping 1.1s");
         // Reset should bring uptime back to ~0.
         c.reset();
-        assert!(c.uptime_s() < 2);
+        // Immediately after reset, uptime should be 0 (ms-resolution epoch
+        // ensures no rounding error at second boundaries).
+        assert_eq!(c.uptime_s(), 0);
     }
 
     #[test]

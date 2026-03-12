@@ -522,6 +522,8 @@ mod tests {
     }
 
     /// Validates: T-0302 (status counter accuracy — tx and rx through bridge)
+    /// Note: tx_count is incremented by the ESP-NOW driver (not by bridge),
+    /// so it stays 0 here. Bridge only increments rx_count on forwarded frames.
     #[test]
     fn status_reflects_tx_and_rx_counts() {
         let mut bridge = make_bridge();
@@ -558,6 +560,8 @@ mod tests {
         let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
             ModemMessage::Status(s) => {
+                // tx_count is incremented by the radio driver, not bridge.
+                assert_eq!(s.tx_count, 0);
                 assert_eq!(s.rx_count, 3);
             }
             _ => panic!("expected Status"),
@@ -683,7 +687,11 @@ mod tests {
         let corrupt: [u8; 4] = [0x02, 0x58, 0xFF, 0xFF]; // len=600
         bridge.usb.inject(&corrupt);
         bridge.poll();
-        bridge.usb.take_tx(); // should be empty (no valid response)
+        let tx = bridge.usb.take_tx();
+        assert!(
+            tx.is_empty(),
+            "modem must not emit output on framing errors"
+        );
 
         // Now send a proper RESET — the decoder should recover.
         let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();

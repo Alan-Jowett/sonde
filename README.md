@@ -8,29 +8,42 @@ Each node acts as a programmable sonde: a constrained probe that autonomously sa
 
 Nodes run uniform firmware and execute behavior defined by [uBPF](https://github.com/iovisor/ubpf) programs verified with [Prevail](https://github.com/vbpf/ebpf-verifier). A gateway distributes programs, schedules, and configuration over the air — no firmware updates required. The architecture is hardware-agnostic; the reference implementation targets ESP32-C3/S3.
 
-> **Status:** Design phase. This document is the specification.
+> **Status:** Active development — protocol, gateway, modem, and node crates are implemented and tested. See [Project status](#project-status) below.
+
+---
+
+## Project status
+
+| Crate | Purpose | Status |
+|---|---|---|
+| [`sonde-protocol`](crates/sonde-protocol) | `no_std` wire format: frame codec, CBOR messages, program images | ✅ Complete — 41 validation tests, 4 fuzz targets |
+| [`sonde-gateway`](crates/sonde-gateway) | Async gateway service (tokio): sessions, program distribution, handler routing, gRPC admin | ✅ Core complete — handler routing and admin stubs in place |
+| [`sonde-modem`](crates/sonde-modem) | ESP32-S3 USB-to-ESP-NOW bridge firmware | ✅ Functional — bridge logic and ESP-IDF drivers working |
+| [`sonde-node`](crates/sonde-node) | ESP32-C3/S3 node firmware: wake cycle, BPF dispatch, program store | ✅ Core complete — wake cycle engine, 16 BPF helpers, A/B program store |
+
+CI runs on every push and PR: formatting, clippy, build, workspace tests, fuzz (protocol), and an ESP32 QEMU smoke test.
 
 ---
 
 ## How it works
 
 ```
-┌──────────┐                    ┌──────────┐
-│   Node   │  ── WAKE ───────►  │ Gateway  │
-│          │  ◄── COMMAND ────  │          │
-│  ┌────┐  │                    │  ┌────┐  │
-│  │ BPF│──│── APP_DATA ─────►  │  │ App│  │
-│  └────┘  │  ◄─APP_DATA_REPLY  │  └────┘  │
-│          │                    │          │
-│  sleep   │                    │  verify  │
-│          │                    │          │
-└──────────┘                    └──────────┘
+┌──────────┐              ┌──────────┐              ┌──────────┐
+│   Node   │   ESP-NOW    │  Modem   │     USB      │ Gateway  │
+│          │──────────────│          │──────────────│          │
+│  ┌────┐  │  WAKE ─────► │          │              │  ┌────┐  │
+│  │ BPF│  │ ◄── COMMAND  │  bridge  │  serial ◄──► │  │ App│  │
+│  └────┘  │  APP_DATA ─► │          │              │  └────┘  │
+│          │              │          │              │          │
+│  sleep   │              │ ESP32-S3 │              │  verify  │
+└──────────┘              └──────────┘              └──────────┘
 ```
 
-1. **Node wakes** and sends a `WAKE` message containing its program hash.
-2. **Gateway responds** with a command: proceed, update program, run a diagnostic, change schedule, or reboot.
-3. **Node executes** its resident BPF program, which can read sensors, update persistent maps, and send application data.
-4. **Node sleeps** until the next scheduled interval (or earlier if the BPF program requests it).
+1. **Node wakes** and sends a `WAKE` message containing its program hash over ESP-NOW.
+2. **Modem bridges** the radio frame to the gateway over USB (protocol-unaware, forwards opaque frames in both directions).
+3. **Gateway responds** with a command: proceed, update program, run a diagnostic, change schedule, or reboot.
+4. **Node executes** its resident BPF program, which can read sensors, update persistent maps, and send application data.
+5. **Node sleeps** until the next scheduled interval (or earlier if the BPF program requests it).
 
 The firmware never interprets application data — it just transports opaque blobs between the BPF program and the gateway.
 
@@ -141,6 +154,35 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 | **BPF execution** | Interpreter only (no uBPF JIT for RISC-V/Xtensa) |
 | **Max program size** | 4 KB resident, 2 KB ephemeral (recommended) |
 | **Chunked transfer** | 4 KB program ≈ 20 round-trips over ESP-NOW |
+
+---
+
+## Building
+
+```sh
+# Build and test all host crates
+cargo build --workspace
+cargo test --workspace
+
+# Test protocol crate only (fast, no deps)
+cargo test -p sonde-protocol
+```
+
+Building the modem firmware requires the ESP-IDF Xtensa toolchain:
+
+```sh
+# Linux / macOS
+. "$HOME/export-esp.sh"
+cargo +esp build -p sonde-modem --features esp --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
+```
+
+```powershell
+# Windows (PowerShell)
+. ~/export-esp.ps1
+cargo +esp build -p sonde-modem --features esp --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
+```
+
+See [Getting Started](docs/getting-started.md) for full toolchain setup.
 
 ---
 

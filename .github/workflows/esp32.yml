@@ -1,0 +1,187 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# ESP32 firmware CI: build the sonde-node firmware under ESP-IDF and run a
+# QEMU smoke test that asserts the expected boot-marker strings appear on UART.
+
+name: ESP32 Firmware CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  esp32-build-and-smoke:
+    name: Build ESP32 firmware and QEMU smoke test
+    runs-on: ubuntu-latest
+
+    container:
+      # Pinned ESP-IDF release image — provides IDF_PATH, Python 3, and all
+      # ESP-IDF host tools including esptool.py and idf_tools.py.
+      # Tag: espressif/idf:v5.3.2
+      image: espressif/idf@sha256:d85ffe6db6162f16589c4c2221de1d5c40c9d9aa2331099e2fe6f5e33d1b8f09
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # ------------------------------------------------------------------ #
+      # Rust toolchain
+      # ------------------------------------------------------------------ #
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+
+      # ------------------------------------------------------------------ #
+      # Xtensa Rust toolchain (required for xtensa-esp32-espidf target)
+      # ------------------------------------------------------------------ #
+
+      - name: Install espup
+        run: cargo install espup --locked
+
+      - name: Install Xtensa Rust toolchain for ESP32
+        # espup installs the `esp` Xtensa Rust toolchain and writes ~/export-esp.sh,
+        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for Xtensa GCC/LLVM.
+        # The `esp` toolchain must be selected explicitly via `cargo +esp` (espup
+        # v0.16+ does not export RUSTUP_TOOLCHAIN from export-esp.sh).
+        run: espup install --targets esp32
+
+      # ------------------------------------------------------------------ #
+      # QEMU for Xtensa (ESP32)
+      # ------------------------------------------------------------------ #
+
+      - name: Install QEMU for Xtensa via idf_tools.py
+        # qemu-xtensa is bundled in the espressif/idf image but install is
+        # idempotent; this ensures the tool is present regardless of image version.
+        run: "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
+
+      # ------------------------------------------------------------------ #
+      # Build
+      # ------------------------------------------------------------------ #
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2
+        with:
+          workspaces: ". -> target"
+          key: esp32-xtensa
+
+      - name: Build node firmware (ESP32, release)
+        # Source export-esp.sh to add Xtensa GCC/LLVM to PATH and set
+        # LIBCLANG_PATH/CLANG_PATH for bindgen.  Use `+esp` to select the
+        # Xtensa Rust toolchain installed by espup (not the default stable).
+        run: |
+          . "$HOME/export-esp.sh"
+          cargo +esp build \
+            -p sonde-node \
+            --bin node \
+            --features esp \
+            --release \
+            --target xtensa-esp32-espidf
+
+      # ------------------------------------------------------------------ #
+      # Flash-image assembly
+      # ------------------------------------------------------------------ #
+
+      - name: Create merged flash image
+        run: |
+          TARGET_DIR="target/xtensa-esp32-espidf/release"
+
+          # Locate bootloader and partition table produced by embuild.
+          # Use newest match to avoid stale cached artefacts.
+          BOOTLOADER=$(find "$TARGET_DIR/build" \
+            -name "bootloader.bin" -path "*/bootloader/*" \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
+          PARTITION_TABLE=$(find "$TARGET_DIR/build" \
+            -name "partition-table.bin" \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
+
+          if [ -z "$BOOTLOADER" ]; then
+            echo "ERROR: bootloader.bin not found under $TARGET_DIR/build" >&2
+            exit 1
+          fi
+          if [ -z "$PARTITION_TABLE" ]; then
+            echo "ERROR: partition-table.bin not found under $TARGET_DIR/build" >&2
+            exit 1
+          fi
+
+          echo "Bootloader:       $BOOTLOADER"
+          echo "Partition table:  $PARTITION_TABLE"
+
+          # Convert ELF → flat binary.
+          esptool.py --chip esp32 elf2image \
+            --flash_mode  dio \
+            --flash_freq  40m \
+            --flash_size  4MB \
+            --output "$TARGET_DIR/node.bin" \
+            "$TARGET_DIR/node"
+
+          # Merge bootloader + partition table + app into a single image.
+          esptool.py --chip esp32 merge_bin \
+            --output flash_image.bin \
+            0x1000  "$BOOTLOADER" \
+            0x8000  "$PARTITION_TABLE" \
+            0x10000 "$TARGET_DIR/node.bin"
+
+          echo "flash_image.bin created ($(wc -c < flash_image.bin) bytes)"
+
+      # ------------------------------------------------------------------ #
+      # QEMU smoke test
+      # ------------------------------------------------------------------ #
+
+      - name: Run QEMU smoke test
+        # Source export-esp.sh so the Xtensa QEMU binary found via idf_tools
+        # is reachable if it was installed to a non-default location.
+        run: |
+          . "$HOME/export-esp.sh"
+          QEMU_OUTPUT="/tmp/qemu_uart.txt"
+
+          # Boot the firmware under QEMU with a hard timeout.
+          # -no-reboot prevents restart loops on early failures.
+          # Redirect output to file so we can inspect it after QEMU exits;
+          # capture the exit code before asserting on its value.
+          # Disable errexit so the non-zero timeout exit (124) doesn't
+          # abort the step before we can inspect it.
+          set +e
+          timeout 60 qemu-system-xtensa \
+            -nographic \
+            -machine esp32 \
+            -drive file=flash_image.bin,if=mtd,format=raw \
+            -no-reboot \
+            > "$QEMU_OUTPUT" 2>&1
+          QEMU_EXIT=$?
+          set -e
+
+          echo ""
+          echo "=== QEMU UART output ==="
+          cat "$QEMU_OUTPUT"
+          echo "========================"
+
+          # Exit 124 = timeout (expected — firmware is running the idle loop).
+          # Exit 0   = QEMU exited cleanly (unusual but acceptable for marker check).
+          # Any other non-zero = QEMU crashed or was killed unexpectedly → fail.
+          if [ "$QEMU_EXIT" -ne 0 ] && [ "$QEMU_EXIT" -ne 124 ]; then
+            echo "ERROR: QEMU exited with unexpected code $QEMU_EXIT" >&2
+            exit 1
+          fi
+
+          # Assert that the firmware reached each expected boot-marker log line.
+          PASS=true
+          for marker in "sonde-node booting" "sonde-node ready"; do
+            if grep -qF "$marker" "$QEMU_OUTPUT"; then
+              echo "✓  Found marker: '$marker'"
+            else
+              echo "✗  Missing marker: '$marker'" >&2
+              PASS=false
+            fi
+          done
+
+          if [ "$PASS" = "false" ]; then
+            echo "Smoke test FAILED — one or more expected markers were not found." >&2
+            exit 1
+          fi
+
+          echo "Smoke test passed."

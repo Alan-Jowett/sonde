@@ -74,3 +74,113 @@ impl ModemCounters {
         self.reset_epoch_s.store(now_s, Ordering::Relaxed);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn initial_values_are_zero() {
+        let c = ModemCounters::new();
+        assert_eq!(c.tx_count(), 0);
+        assert_eq!(c.rx_count(), 0);
+        assert_eq!(c.tx_fail_count(), 0);
+    }
+
+    #[test]
+    fn inc_tx_increments() {
+        let c = ModemCounters::new();
+        c.inc_tx();
+        c.inc_tx();
+        c.inc_tx();
+        assert_eq!(c.tx_count(), 3);
+    }
+
+    #[test]
+    fn inc_rx_increments() {
+        let c = ModemCounters::new();
+        c.inc_rx();
+        c.inc_rx();
+        assert_eq!(c.rx_count(), 2);
+    }
+
+    #[test]
+    fn inc_tx_fail_increments() {
+        let c = ModemCounters::new();
+        c.inc_tx_fail();
+        assert_eq!(c.tx_fail_count(), 1);
+    }
+
+    #[test]
+    fn counters_are_independent() {
+        let c = ModemCounters::new();
+        c.inc_tx();
+        c.inc_tx();
+        c.inc_rx();
+        c.inc_tx_fail();
+        c.inc_tx_fail();
+        c.inc_tx_fail();
+        assert_eq!(c.tx_count(), 2);
+        assert_eq!(c.rx_count(), 1);
+        assert_eq!(c.tx_fail_count(), 3);
+    }
+
+    #[test]
+    fn reset_zeroes_all_counters() {
+        let c = ModemCounters::new();
+        c.inc_tx();
+        c.inc_rx();
+        c.inc_tx_fail();
+        c.reset();
+        assert_eq!(c.tx_count(), 0);
+        assert_eq!(c.rx_count(), 0);
+        assert_eq!(c.tx_fail_count(), 0);
+    }
+
+    #[test]
+    fn uptime_near_zero_at_boot() {
+        let c = ModemCounters::new();
+        // Immediately after construction, uptime should be very small.
+        assert!(c.uptime_s() < 2);
+    }
+
+    #[test]
+    fn uptime_resets_on_reset() {
+        let c = ModemCounters::new();
+        // Let a little time pass so uptime > 0.
+        thread::sleep(Duration::from_millis(1100));
+        assert!(c.uptime_s() >= 1);
+        // Reset should bring uptime back to ~0.
+        c.reset();
+        assert!(c.uptime_s() < 2);
+    }
+
+    #[test]
+    fn counters_work_after_reset() {
+        let c = ModemCounters::new();
+        c.inc_tx();
+        c.inc_rx();
+        c.reset();
+        c.inc_tx();
+        c.inc_tx();
+        c.inc_tx_fail();
+        assert_eq!(c.tx_count(), 2);
+        assert_eq!(c.rx_count(), 0);
+        assert_eq!(c.tx_fail_count(), 1);
+    }
+
+    #[test]
+    fn arc_shared_across_threads() {
+        let c = ModemCounters::new();
+        let c2 = Arc::clone(&c);
+        let handle = thread::spawn(move || {
+            c2.inc_tx();
+            c2.inc_rx();
+        });
+        handle.join().unwrap();
+        assert_eq!(c.tx_count(), 1);
+        assert_eq!(c.rx_count(), 1);
+    }
+}

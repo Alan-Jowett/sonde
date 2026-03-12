@@ -224,6 +224,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use sonde_protocol::modem::{decode_modem_frame, ModemMessage};
 
     /// Mock serial port that records writes and plays back reads.
@@ -231,6 +232,7 @@ mod tests {
         rx_data: Vec<u8>,
         tx_data: Vec<u8>,
         connected: bool,
+        reconnect_once: bool,
     }
 
     impl MockSerial {
@@ -239,6 +241,7 @@ mod tests {
                 rx_data: Vec::new(),
                 tx_data: Vec::new(),
                 connected: true,
+                reconnect_once: false,
             }
         }
 
@@ -249,14 +252,20 @@ mod tests {
         fn take_tx(&mut self) -> Vec<u8> {
             std::mem::take(&mut self.tx_data)
         }
+
+        fn set_reconnect_once(&mut self) {
+            self.reconnect_once = true;
+        }
     }
 
     impl SerialPort for MockSerial {
         fn read(&mut self, buf: &mut [u8]) -> (usize, bool) {
+            let reconnected = self.reconnect_once;
+            self.reconnect_once = false;
             let n = std::cmp::min(buf.len(), self.rx_data.len());
             buf[..n].copy_from_slice(&self.rx_data[..n]);
             self.rx_data.drain(..n);
-            (n, false)
+            (n, reconnected)
         }
         fn write(&mut self, data: &[u8]) -> bool {
             self.tx_data.extend_from_slice(data);
@@ -270,7 +279,7 @@ mod tests {
     /// Mock radio that captures sends and injects receives.
     struct MockRadio {
         sent: Vec<(Vec<u8>, [u8; MAC_SIZE])>,
-        rx_queue: Vec<RecvFrame>,
+        rx_queue: RefCell<Vec<RecvFrame>>,
         channel: u8,
         mac: [u8; MAC_SIZE],
     }
@@ -279,10 +288,14 @@ mod tests {
         fn new() -> Self {
             Self {
                 sent: Vec::new(),
-                rx_queue: Vec::new(),
+                rx_queue: RefCell::new(Vec::new()),
                 channel: 1,
                 mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
             }
+        }
+
+        fn inject_rx(&self, frame: RecvFrame) {
+            self.rx_queue.borrow_mut().push(frame);
         }
     }
 
@@ -291,7 +304,7 @@ mod tests {
             self.sent.push((data.to_vec(), *peer_mac));
         }
         fn drain_rx(&self) -> Vec<RecvFrame> {
-            Vec::new() // simplified for tests
+            std::mem::take(&mut *self.rx_queue.borrow_mut())
         }
         fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
             if channel == 0 || channel > 14 {
@@ -312,7 +325,7 @@ mod tests {
         fn reset_state(&mut self) {
             self.channel = 1;
             self.sent.clear();
-            self.rx_queue.clear();
+            self.rx_queue.borrow_mut().clear();
         }
     }
 
@@ -456,5 +469,264 @@ mod tests {
             }
             _ => panic!("expected ScanResult"),
         }
+    }
+
+    // --- Radio → USB forwarding tests ---
+
+    /// Validates: T-0200 (radio → USB forwarding)
+    /// Received radio frames are forwarded as RECV_FRAME on serial.
+    #[test]
+    fn recv_frame_forwarded_to_serial() {
+        let mut bridge = make_bridge();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        bridge.radio.inject_rx(RecvFrame {
+            peer_mac: peer,
+            rssi: -42,
+            frame_data: vec![0xCA, 0xFE],
+        });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::RecvFrame(rf) => {
+                assert_eq!(rf.peer_mac, peer);
+                assert_eq!(rf.rssi, -42);
+                assert_eq!(rf.frame_data, vec![0xCA, 0xFE]);
+            }
+            _ => panic!("expected RecvFrame"),
+        }
+    }
+
+    /// Validates: T-0302 (rx_count incremented on forwarded frames)
+    #[test]
+    fn rx_count_incremented_on_forwarded_frame() {
+        let mut bridge = make_bridge();
+        let peer = [1, 2, 3, 4, 5, 6];
+        bridge.radio.inject_rx(RecvFrame {
+            peer_mac: peer,
+            rssi: -50,
+            frame_data: vec![0x01],
+        });
+        bridge.radio.inject_rx(RecvFrame {
+            peer_mac: peer,
+            rssi: -55,
+            frame_data: vec![0x02],
+        });
+        bridge.radio.inject_rx(RecvFrame {
+            peer_mac: peer,
+            rssi: -60,
+            frame_data: vec![0x03],
+        });
+        bridge.poll();
+        assert_eq!(bridge.counters.rx_count(), 3);
+    }
+
+    /// Validates: T-0302 (status counter accuracy — tx and rx through bridge)
+    #[test]
+    fn status_reflects_tx_and_rx_counts() {
+        let mut bridge = make_bridge();
+        let peer = [1, 2, 3, 4, 5, 6];
+
+        // Send 5 frames USB → radio.
+        for i in 0..5 {
+            let sf = ModemMessage::SendFrame(SendFrame {
+                peer_mac: peer,
+                frame_data: vec![i],
+            });
+            let frame = encode_modem_frame(&sf).unwrap();
+            bridge.usb.inject(&frame);
+        }
+        bridge.poll();
+        bridge.usb.take_tx(); // discard
+
+        // Inject 3 frames radio → USB.
+        for i in 0..3 {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -40,
+                frame_data: vec![i],
+            });
+        }
+        bridge.poll();
+        bridge.usb.take_tx(); // discard RECV_FRAMEs
+
+        // Query status.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                assert_eq!(s.rx_count, 3);
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    /// Validates: T-0204 (multiple radio frames forwarded in order)
+    #[test]
+    fn multiple_recv_frames_forwarded_in_order() {
+        let mut bridge = make_bridge();
+        let peer = [1, 2, 3, 4, 5, 6];
+        for i in 0u8..5 {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -(i as i8) - 30,
+                frame_data: vec![i],
+            });
+        }
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+
+        // Decode all frames and check they arrive in order.
+        let mut offset = 0;
+        for i in 0u8..5 {
+            let (msg, consumed) = decode_modem_frame(&tx[offset..]).unwrap();
+            offset += consumed;
+            match msg {
+                ModemMessage::RecvFrame(rf) => {
+                    assert_eq!(rf.frame_data, vec![i], "frame {} out of order", i);
+                }
+                _ => panic!("expected RecvFrame at position {}", i),
+            }
+        }
+    }
+
+    // --- Validation scenario tests ---
+
+    /// Validates: T-0300 (RESET clears state — including channel)
+    #[test]
+    fn reset_clears_channel_to_default() {
+        let mut bridge = make_bridge();
+        // Set channel to 11.
+        let frame = encode_modem_frame(&ModemMessage::SetChannel(11)).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        bridge.usb.take_tx(); // discard ACK
+        assert_eq!(bridge.radio.channel(), 11);
+
+        // RESET should revert to channel 1.
+        let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset);
+        bridge.poll();
+        bridge.usb.take_tx(); // discard MODEM_READY
+        assert_eq!(bridge.radio.channel(), 1);
+
+        // Verify via GET_STATUS.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                assert_eq!(s.channel, 1);
+                assert_eq!(s.tx_count, 0);
+                assert_eq!(s.rx_count, 0);
+                assert_eq!(s.tx_fail_count, 0);
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    /// Validates: T-0303 (repeated RESET → MODEM_READY)
+    #[test]
+    fn repeated_reset_sends_modem_ready_each_time() {
+        let mut bridge = make_bridge();
+        for _ in 0..5 {
+            let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+            bridge.usb.inject(&reset);
+            bridge.poll();
+            let tx = bridge.usb.take_tx();
+            let (msg, _) = decode_modem_frame(&tx).unwrap();
+            assert!(matches!(msg, ModemMessage::ModemReady(_)));
+        }
+    }
+
+    /// Validates: T-0400 (SEND_FRAME with body too short is silently discarded)
+    #[test]
+    fn send_frame_body_too_short_discarded() {
+        let mut bridge = make_bridge();
+        // Manually craft a frame with SEND_FRAME type but only 3 bytes of body
+        // (less than the 7-byte minimum: 6B MAC + 1B data).
+        let msg_type: u8 = 0x02; // SEND_FRAME
+        let body: [u8; 3] = [0x01, 0x02, 0x03];
+        let len = 1 + body.len(); // type + body
+        let mut raw = Vec::new();
+        raw.push((len >> 8) as u8);
+        raw.push(len as u8);
+        raw.push(msg_type);
+        raw.extend_from_slice(&body);
+        bridge.usb.inject(&raw);
+        bridge.poll();
+
+        // Bridge should still be operational — no crash, no send.
+        assert_eq!(bridge.radio.sent.len(), 0);
+
+        // Verify bridge still works.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::Status(_)));
+    }
+
+    /// Validates: T-0402 (framing error recovery — corrupt bytes → RESET → MODEM_READY)
+    #[test]
+    fn framing_error_recovery_via_reset() {
+        let mut bridge = make_bridge();
+
+        // Inject corrupt data: a length prefix claiming 600 bytes (> SERIAL_MAX_LEN).
+        // This triggers FrameTooLarge and decoder reset.
+        let corrupt: [u8; 4] = [0x02, 0x58, 0xFF, 0xFF]; // len=600
+        bridge.usb.inject(&corrupt);
+        bridge.poll();
+        bridge.usb.take_tx(); // should be empty (no valid response)
+
+        // Now send a proper RESET — the decoder should recover.
+        let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::ModemReady(_)));
+    }
+
+    /// Validates: T-0500 (modem does not interpret frame contents)
+    #[test]
+    fn modem_forwards_opaque_payload() {
+        let mut bridge = make_bridge();
+        let peer = [1, 2, 3, 4, 5, 6];
+        // Invalid CBOR — modem should not inspect it.
+        let garbage_payload = vec![0xFF, 0xFF, 0xFF, 0x00, 0xFE];
+        let sf = ModemMessage::SendFrame(SendFrame {
+            peer_mac: peer,
+            frame_data: garbage_payload.clone(),
+        });
+        let frame = encode_modem_frame(&sf).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+
+        // Radio should receive exact bytes — no parsing or rejection.
+        assert_eq!(bridge.radio.sent.len(), 1);
+        assert_eq!(bridge.radio.sent[0].0, garbage_payload);
+
+        // No ERROR message on serial output.
+        let tx = bridge.usb.take_tx();
+        assert!(tx.is_empty(), "modem should not send any response for SEND_FRAME");
+    }
+
+    /// Validates: T-0301 (USB reconnection triggers MODEM_READY)
+    #[test]
+    fn usb_reconnect_triggers_modem_ready() {
+        let mut bridge = make_bridge();
+        // Simulate a reconnection event on next read.
+        bridge.usb.set_reconnect_once();
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::ModemReady(_)));
     }
 }

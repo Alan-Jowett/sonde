@@ -7,7 +7,7 @@ license = "MIT"
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["sync"] }
 hmac = "0.12"
 sha2 = "0.10"
 async-trait = "0.1"

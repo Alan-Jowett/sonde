@@ -15,12 +15,32 @@ const ARRAY_MAP_KEY_SIZE: u32 = 4;
 pub struct MapInstance {
     pub def: MapDef,
     /// Backing storage: `max_entries * (key_size + value_size)` bytes.
-    /// For BPF_MAP_TYPE_ARRAY, the key is an integer index so key_size
-    /// bytes are not physically stored — but we allocate them for
-    /// consistency with the BPF map ABI.
+    /// Guaranteed 8-byte aligned so BPF programs can safely cast value
+    /// pointers to u32/u64 types.
     data: Vec<u8>,
     /// Size of one entry (key_size + value_size).
     entry_size: usize,
+}
+
+/// Allocate a zero-initialized byte buffer with 8-byte alignment.
+///
+/// Standard `Vec<u8>` only guarantees 1-byte alignment. BPF programs
+/// may cast map value pointers to wider types (u32, u64), so we
+/// allocate as `Vec<u64>` and reinterpret as bytes.
+fn allocate_aligned(size: usize) -> Vec<u8> {
+    if size == 0 {
+        return Vec::new();
+    }
+    let u64_count = (size + 7) / 8;
+    let mut v: Vec<u64> = vec![0u64; u64_count];
+    let ptr = v.as_mut_ptr() as *mut u8;
+    let cap_bytes = v.capacity() * 8;
+    core::mem::forget(v);
+    // SAFETY: Vec<u64> guarantees 8-byte alignment. We reconstruct a
+    // Vec<u8> with the same allocation but byte-granularity length.
+    // The allocator will free with the correct layout since the
+    // capacity preserves the original u64 allocation.
+    unsafe { Vec::from_raw_parts(ptr, size, cap_bytes) }
 }
 
 impl MapInstance {
@@ -185,7 +205,7 @@ impl MapStorage {
                 .expect("overflow already checked");
             maps.push(MapInstance {
                 def: def.clone(),
-                data: vec![0u8; total_size],
+                data: allocate_aligned(total_size),
                 entry_size,
             });
         }

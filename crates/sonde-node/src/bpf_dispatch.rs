@@ -434,9 +434,8 @@ pub fn helper_delay_us(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     let us = r1 as u32;
     with_ctx(|ctx| {
         if us > 0 {
-            let ms = (us.saturating_add(999)) / 1000;
             unsafe {
-                (*ctx.clock).delay_ms(ms);
+                (*ctx.clock).delay_us(us);
             }
         }
         0

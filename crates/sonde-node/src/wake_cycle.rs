@@ -294,9 +294,16 @@ where
             }
         }
 
-        // Resolve LDDW map references
-        let map_ptrs = map_storage.map_pointers().to_vec();
-        if resolve_map_references(&mut program.bytecode, &map_ptrs).is_err() {
+        // Resolve LDDW map references.
+        // Collect raw pointer + length to avoid a heap allocation; the
+        // underlying cached_ptrs array is not mutated until allocate()
+        // is called again, so the slice remains valid through load().
+        let (map_ptrs_ptr, map_ptrs_len) = {
+            let cached = map_storage.map_pointers();
+            (cached.as_ptr(), cached.len())
+        };
+        let map_ptrs = unsafe { core::slice::from_raw_parts(map_ptrs_ptr, map_ptrs_len) };
+        if resolve_map_references(&mut program.bytecode, map_ptrs).is_err() {
             return WakeCycleOutcome::Sleep {
                 seconds: sleep_mgr.effective_sleep_s(),
             };
@@ -362,6 +369,11 @@ where
 
         // Swallow BPF errors — node sleeps normally regardless (ND-0504).
         let _ = exec_result;
+
+        // Flush accumulated trace output (ND-0604 / T-N613).
+        for entry in &trace_log {
+            log::debug!("bpf_trace_printk: {}", entry);
+        }
     }
 
     // 10. Determine sleep duration

@@ -7,6 +7,7 @@ description = "Sonde node firmware — wake cycle engine, BPF runtime, and platf
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
 ciborium = { version = "0.2", default-features = false }
+log = "0.4"
 
 [dev-dependencies]
 hmac = "0.12"

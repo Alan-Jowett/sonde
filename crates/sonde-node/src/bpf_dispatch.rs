@@ -339,7 +339,7 @@ pub fn helper_map_lookup_elem(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) ->
             return 0;
         }
         unsafe {
-            let key = *key_ptr;
+            let key = core::ptr::read_unaligned(key_ptr);
             let maps = &*ctx.map_storage;
             let map_idx = match maps.map_pointers().iter().position(|&p| p == r1) {
                 Some(idx) => idx,
@@ -371,7 +371,7 @@ pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> 
             return (-1i64) as u64;
         }
         unsafe {
-            let key = *key_ptr;
+            let key = core::ptr::read_unaligned(key_ptr);
             let maps = &mut *ctx.map_storage;
             let map_idx = match maps.map_pointers().iter().position(|&p| p == r1) {
                 Some(idx) => idx,
@@ -658,9 +658,8 @@ mod tests {
                 3300,
             );
         }
-        let result = f();
-        clear();
-        result
+        let _guard = DispatchGuard;
+        f()
     }
 
     fn default_identity() -> NodeIdentity {

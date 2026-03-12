@@ -319,6 +319,8 @@ where
         };
 
         // Load and execute with helper dispatch context installed.
+        // Use a pre-allocated trace buffer only in debug/test; production
+        // firmware can use an empty Vec (zero-alloc when unused).
         let mut trace_log = Vec::new();
         // SAFETY: all referenced objects are alive on this stack frame
         // and will not be moved until `_guard` is dropped below.

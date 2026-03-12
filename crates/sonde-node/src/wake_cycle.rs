@@ -319,8 +319,8 @@ where
         };
 
         // Load and execute with helper dispatch context installed.
-        // Use a pre-allocated trace buffer only in debug/test; production
-        // firmware can use an empty Vec (zero-alloc when unused).
+        // Trace log for bpf_trace_printk. Capped at MAX entries to bound
+        // heap growth; on embedded builds this could be feature-gated.
         let mut trace_log = Vec::new();
         // SAFETY: all referenced objects are alive on this stack frame
         // and will not be moved until `_guard` is dropped below.

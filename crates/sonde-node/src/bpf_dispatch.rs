@@ -64,16 +64,19 @@ struct DispatchContext {
 }
 
 thread_local! {
-    static CTX: RefCell<Option<DispatchContext>> = const { RefCell::new(None) };
+    static CTX: RefCell<Option<DispatchContext>> = RefCell::new(None);
 }
 
+/// Maximum number of trace entries kept per BPF execution.
+const MAX_TRACE_ENTRIES: usize = 64;
+
 /// Borrow the context mutably and run `f` inside the borrow.
-/// Panics if no context is installed.
-fn with_ctx<R>(f: impl FnOnce(&mut DispatchContext) -> R) -> R {
+/// Returns `None` if no context is installed (helper called outside BPF
+/// execution). Callers map `None` to the appropriate error sentinel.
+fn with_ctx<R>(f: impl FnOnce(&mut DispatchContext) -> R) -> Option<R> {
     CTX.with(|cell| {
         let mut borrow = cell.borrow_mut();
-        let ctx = borrow.as_mut().expect("BPF dispatch context not installed");
-        f(ctx)
+        borrow.as_mut().map(f)
     })
 }
 
@@ -160,6 +163,7 @@ pub fn helper_i2c_read(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
             (*ctx.hal).i2c_read(handle, buf) as i64 as u64
         }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 2: I2C write.
@@ -177,6 +181,7 @@ pub fn helper_i2c_write(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
             (*ctx.hal).i2c_write(handle, data) as i64 as u64
         }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 3: I2C write-then-read.
@@ -197,6 +202,7 @@ pub fn helper_i2c_write_read(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64
             (*ctx.hal).i2c_write_read(handle, write_data, read_buf) as i64 as u64
         }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 4: SPI full-duplex transfer.
@@ -224,6 +230,7 @@ pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 
             (*ctx.hal).spi_transfer(handle, tx, rx, len) as i64 as u64
         }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 5: GPIO read.
@@ -233,6 +240,7 @@ pub fn helper_gpio_read(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 
         let pin = r1 as u32;
         unsafe { (*ctx.hal).gpio_read(pin) as i64 as u64 }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 6: GPIO write.
@@ -243,6 +251,7 @@ pub fn helper_gpio_write(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 
         let value = r2 as u32;
         unsafe { (*ctx.hal).gpio_write(pin, value) as i64 as u64 }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 7: ADC read.
@@ -252,6 +261,7 @@ pub fn helper_adc_read(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
         let channel = r1 as u32;
         unsafe { (*ctx.hal).adc_read(channel) as i64 as u64 }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 8: send (fire-and-forget APP_DATA).
@@ -278,6 +288,7 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
             }
         }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 9: send_recv (APP_DATA + wait for APP_DATA_REPLY).
@@ -327,6 +338,7 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
             }
         }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 10: map_lookup_elem.
@@ -354,6 +366,7 @@ pub fn helper_map_lookup_elem(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) ->
             }
         }
     })
+    .unwrap_or(0)
 }
 
 /// Helper 11: map_update_elem (blocked for ephemeral programs).
@@ -390,6 +403,7 @@ pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> 
             }
         }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 12: get_time.
@@ -401,23 +415,24 @@ pub fn helper_get_time(_r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 
             .saturating_sub(ctx.command_received_at_ms);
         ctx.gateway_timestamp_ms.saturating_add(elapsed)
     })
+    .unwrap_or(0)
 }
 
 /// Helper 13: get_battery_mv.
 /// Returns: battery voltage in millivolts.
 pub fn helper_get_battery_mv(_r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| ctx.battery_mv as u64)
+    with_ctx(|ctx| ctx.battery_mv as u64).unwrap_or(0)
 }
 
 /// Helper 14: delay_us.
 /// Args: r1=microseconds (max 1 second).
 /// Returns: 0 on success, negative if delay exceeds maximum.
 pub fn helper_delay_us(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
+    if r1 > MAX_DELAY_US as u64 {
+        return (-1i64) as u64;
+    }
+    let us = r1 as u32;
     with_ctx(|ctx| {
-        let us = r1 as u32;
-        if us > MAX_DELAY_US {
-            return (-1i64) as u64;
-        }
         if us > 0 {
             let ms = (us.saturating_add(999)) / 1000;
             unsafe {
@@ -426,6 +441,7 @@ pub fn helper_delay_us(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
         }
         0
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 15: set_next_wake (blocked for ephemeral programs).
@@ -435,12 +451,16 @@ pub fn helper_set_next_wake(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> 
         if ctx.program_class == ProgramClass::Ephemeral {
             return (-1i64) as u64;
         }
-        let seconds = r1 as u32;
+        let seconds = match u32::try_from(r1) {
+            Ok(s) => s,
+            Err(_) => return (-1i64) as u64,
+        };
         unsafe {
             (*ctx.sleep_mgr).set_next_wake(seconds);
         }
         0
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Helper 16: bpf_trace_printk.
@@ -456,13 +476,17 @@ pub fn helper_bpf_trace_printk(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -
             let bytes = core::slice::from_raw_parts(fmt_ptr, fmt_len);
             match core::str::from_utf8(bytes) {
                 Ok(s) => {
-                    (*ctx.trace_log).push(s.to_string());
+                    let log = &mut *ctx.trace_log;
+                    if log.len() < MAX_TRACE_ENTRIES {
+                        log.push(s.to_string());
+                    }
                     0
                 }
                 Err(_) => (-1i64) as u64,
             }
         }
     })
+    .unwrap_or((-1i64) as u64)
 }
 
 /// Register all 16 helpers with the interpreter.

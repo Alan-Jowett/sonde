@@ -304,7 +304,7 @@ async fn t0802_ingest_and_list_programs() {
     // Verify via ProgramLibrary that the hash matches
     let lib = ProgramLibrary::new();
     let expected = lib
-        .ingest(cbor, sonde_gateway::VerificationProfile::Resident)
+        .ingest_unverified(cbor, sonde_gateway::VerificationProfile::Resident)
         .unwrap();
     assert_eq!(resp.program_hash, expected.hash);
 

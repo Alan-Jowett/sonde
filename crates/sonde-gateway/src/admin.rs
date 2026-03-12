@@ -186,7 +186,7 @@ impl GatewayAdmin for AdminService {
         let profile = parse_profile(req.verification_profile)?;
         let record = self
             .program_library
-            .ingest(req.image_data, profile)
+            .ingest_unverified(req.image_data, profile)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),

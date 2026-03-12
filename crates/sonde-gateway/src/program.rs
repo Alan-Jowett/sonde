@@ -91,11 +91,10 @@ impl ProgramLibrary {
 
     /// Ingest a CBOR-encoded program image **without** BPF verification.
     ///
-    /// This bypasses Prevail verification and should only be used when the
-    /// caller has already verified the program (e.g., via `ingest_elf()`)
-    /// or for testing with pre-built CBOR images. Production ingestion
-    /// should use `ingest_elf()`.
-    pub fn ingest(
+    /// **Warning:** This bypasses Prevail verification. Use `ingest_elf()`
+    /// for production ingestion of BPF programs. This method exists for
+    /// testing and for internal use by `ingest_elf()` after verification.
+    pub fn ingest_unverified(
         &self,
         image: Vec<u8>,
         profile: VerificationProfile,
@@ -248,7 +247,7 @@ impl ProgramLibrary {
             .map_err(|e| ProgramError::Internal(format!("CBOR encoding failed: {e}")))?;
 
         // Delegate size-limit and hashing logic to the canonical ingest path.
-        self.ingest(cbor, profile)
+        self.ingest_unverified(cbor, profile)
     }
 
     /// Look up a program by its hash in the given storage snapshot.
@@ -394,15 +393,21 @@ mod tests {
         let lib = ProgramLibrary::new();
         let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
 
-        // Hash should be non-empty
         assert!(!record.hash.is_empty());
         assert!(record.size > 0);
         assert_eq!(record.verification_profile, VerificationProfile::Resident);
 
-        // Decode the CBOR image and verify it contains the expected bytecode
         let image = ProgramImage::decode(&record.image).unwrap();
-        // 2 BPF instructions = 16 bytes of bytecode
         assert_eq!(image.bytecode.len(), 16);
         assert!(image.maps.is_empty());
+    }
+
+    #[test]
+    fn ingest_elf_content_hash_is_deterministic() {
+        let elf = make_minimal_bpf_elf();
+        let lib = ProgramLibrary::new();
+        let r1 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+        let r2 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+        assert_eq!(r1.hash, r2.hash);
     }
 }

@@ -65,6 +65,10 @@ impl UsbEspNowTransport {
             let status_slot = Arc::clone(&status_slot);
             let mut read_half = read_half;
             let mut decoder = FrameDecoder::new();
+            // Oneshots are registered before RESET is sent. A stale
+            // MODEM_READY from a prior session could consume the
+            // oneshot early, but reset_and_wait handles this by
+            // treating a closed channel as an error and retrying.
             let mut ready_tx = Some(ready_tx);
             let mut ack_tx = Some(ack_tx);
 
@@ -108,9 +112,15 @@ impl UsbEspNowTransport {
                                             )
                                         ) =>
                                     {
-                                        warn!("modem frame too large, resetting decoder: {e}");
+                                        error!(
+                                            "modem frame too large — terminating reader to force reconnect: {e}"
+                                        );
                                         decoder.reset();
-                                        break;
+                                        // Reader task does not have write access to send a
+                                        // RESET. Terminate so recv() returns an error and
+                                        // higher-level code can tear down and rebuild the
+                                        // transport (which sends RESET in its constructor).
+                                        return;
                                     }
                                     Err(e) => {
                                         warn!("modem decode error: {e}");
@@ -189,24 +199,9 @@ impl UsbEspNowTransport {
             rx
         };
 
-        let frame = match encode_modem_frame(&ModemMessage::GetStatus) {
-            Ok(f) => f,
-            Err(e) => {
-                self.status_slot.lock().await.take();
-                return Err(TransportError::Io(format!("encode GET_STATUS: {e}")));
-            }
-        };
-
-        {
-            let mut w = self.writer.lock().await;
-            if let Err(e) = w.write_all(&frame).await {
-                self.status_slot.lock().await.take();
-                return Err(TransportError::Io(format!("write GET_STATUS: {e}")));
-            }
-            if let Err(e) = w.flush().await {
-                self.status_slot.lock().await.take();
-                return Err(TransportError::Io(format!("flush GET_STATUS: {e}")));
-            }
+        if let Err(e) = Self::send_encoded(&self.writer, &ModemMessage::GetStatus).await {
+            self.status_slot.lock().await.take();
+            return Err(e);
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {

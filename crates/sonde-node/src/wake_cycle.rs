@@ -351,19 +351,21 @@ where
         }
         let _guard = crate::bpf_dispatch::DispatchGuard;
 
-        let exec_result = if crate::bpf_dispatch::register_all(interpreter).is_ok() {
-            if let Ok(()) = interpreter.load(&program.bytecode, map_ptrs) {
-                let ctx_ptr = &ctx as *const SondeContext as u64;
-                interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
-            } else {
-                Err(crate::bpf_runtime::BpfError::LoadError(
-                    "load failed".into(),
-                ))
+        let exec_result = match crate::bpf_dispatch::register_all(interpreter) {
+            Ok(()) => match interpreter.load(&program.bytecode, map_ptrs) {
+                Ok(()) => {
+                    let ctx_ptr = &ctx as *const SondeContext as u64;
+                    interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
+                }
+                Err(err) => {
+                    log::error!("BPF program load failed: {}", err);
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                log::error!("BPF helper registration failed: {}", err);
+                Err(err)
             }
-        } else {
-            Err(crate::bpf_runtime::BpfError::LoadError(
-                "helper registration failed".into(),
-            ))
         };
 
         drop(_guard);

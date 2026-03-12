@@ -18,6 +18,7 @@
 //! dispatch for wiring helpers to platform state.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use sonde_protocol::HmacProvider;
 
@@ -61,6 +62,8 @@ struct DispatchContext {
     gateway_timestamp_ms: u64,
     command_received_at_ms: u64,
     battery_mv: u32,
+    /// Relocated map pointer → index mapping for O(1) helper dispatch.
+    map_ptr_index: HashMap<u64, usize>,
 }
 
 thread_local! {
@@ -110,6 +113,15 @@ pub unsafe fn install(
     CTX.with(|cell| {
         let mut borrow = cell.borrow_mut();
         assert!(borrow.is_none(), "BPF dispatch context already installed");
+        // Build pointer→index map for O(1) lookup in map helpers.
+        let map_ptr_index = {
+            let ms = &*map_storage;
+            ms.map_pointers()
+                .iter()
+                .enumerate()
+                .map(|(i, &p)| (p, i))
+                .collect()
+        };
         *borrow = Some(DispatchContext {
             hal,
             transport,
@@ -124,6 +136,7 @@ pub unsafe fn install(
             gateway_timestamp_ms,
             command_received_at_ms,
             battery_mv,
+            map_ptr_index,
         });
     });
 }
@@ -147,9 +160,24 @@ impl Drop for DispatchGuard {
 // ---------------------------------------------------------------------------
 // Helper implementations (bare fn pointers for BpfInterpreter)
 // ---------------------------------------------------------------------------
+//
+// # Safety contract for all helpers
+//
+// Each helper dereferences raw pointers from two sources:
+//
+// 1. **Dispatch context pointers** (`ctx.hal`, `ctx.transport`, etc.) —
+//    guaranteed valid by `run_wake_cycle`, which holds all objects on
+//    its stack for the duration of BPF execution.
+//
+// 2. **BPF register values** (`r1`–`r5` used as buffer pointers) —
+//    guaranteed valid by the Prevail static verifier + interpreter
+//    sandboxing. The verifier ensures all memory accesses fall within
+//    the program's stack, context, or map regions. Null checks and
+//    length caps are defence-in-depth against verifier bypass.
 
 /// Helper 1: I2C read.
 /// Args: r1=handle, r2=buf_ptr, r3=buf_len.
+/// Returns: 0 on success, negative on error.
 pub fn helper_i2c_read(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
     with_ctx(|ctx| {
         let handle = r1 as u32;
@@ -158,6 +186,8 @@ pub fn helper_i2c_read(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
         if buf_ptr.is_null() || buf_len == 0 || buf_len > 4096 {
             return (-1i64) as u64;
         }
+        // SAFETY: buf_ptr and buf_len are verified by the BPF verifier
+        // to point within the program's accessible memory regions.
         unsafe {
             let buf = core::slice::from_raw_parts_mut(buf_ptr, buf_len);
             (*ctx.hal).i2c_read(handle, buf) as i64 as u64
@@ -256,6 +286,7 @@ pub fn helper_gpio_write(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 
 
 /// Helper 7: ADC read.
 /// Args: r1=channel.
+/// Returns: raw ADC reading on success, negative on error (invalid channel).
 pub fn helper_adc_read(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     with_ctx(|ctx| {
         let channel = r1 as u32;
@@ -352,11 +383,11 @@ pub fn helper_map_lookup_elem(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) ->
         }
         unsafe {
             let key = core::ptr::read_unaligned(key_ptr);
-            let maps = &*ctx.map_storage;
-            let map_idx = match maps.map_pointers().iter().position(|&p| p == r1) {
-                Some(idx) => idx,
+            let map_idx = match ctx.map_ptr_index.get(&r1) {
+                Some(&idx) => idx,
                 None => return 0,
             };
+            let maps = &*ctx.map_storage;
             match maps.get(map_idx) {
                 Some(map) => match map.lookup(key) {
                     Some(value) => value.as_ptr() as u64,
@@ -385,11 +416,11 @@ pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> 
         }
         unsafe {
             let key = core::ptr::read_unaligned(key_ptr);
-            let maps = &mut *ctx.map_storage;
-            let map_idx = match maps.map_pointers().iter().position(|&p| p == r1) {
-                Some(idx) => idx,
+            let map_idx = match ctx.map_ptr_index.get(&r1) {
+                Some(&idx) => idx,
                 None => return (-1i64) as u64,
             };
+            let maps = &mut *ctx.map_storage;
             match maps.get_mut(map_idx) {
                 Some(map) => {
                     let value_size = map.def.value_size as usize;

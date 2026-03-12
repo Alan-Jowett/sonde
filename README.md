@@ -28,22 +28,22 @@ CI runs on every push and PR: formatting, clippy, build, workspace tests, fuzz (
 ## How it works
 
 ```
-┌──────────┐                    ┌──────────┐
-│   Node   │  ── WAKE ───────►  │ Gateway  │
-│          │  ◄── COMMAND ────  │          │
-│  ┌────┐  │                    │  ┌────┐  │
-│  │ BPF│──│── APP_DATA ─────►  │  │ App│  │
-│  └────┘  │  ◄─APP_DATA_REPLY  │  └────┘  │
-│          │                    │          │
-│  sleep   │                    │  verify  │
-│          │                    │          │
-└──────────┘                    └──────────┘
+┌──────────┐              ┌──────────┐              ┌──────────┐
+│   Node   │   ESP-NOW    │  Modem   │     USB      │ Gateway  │
+│          │──────────────│          │──────────────│          │
+│  ┌────┐  │  WAKE ─────► │          │              │  ┌────┐  │
+│  │ BPF│  │ ◄── COMMAND  │  bridge  │  serial ◄──► │  │ App│  │
+│  └────┘  │  APP_DATA ─► │          │              │  └────┘  │
+│          │              │          │              │          │
+│  sleep   │              │ ESP32-S3 │              │  verify  │
+└──────────┘              └──────────┘              └──────────┘
 ```
 
-1. **Node wakes** and sends a `WAKE` message containing its program hash.
-2. **Gateway responds** with a command: proceed, update program, run a diagnostic, change schedule, or reboot.
-3. **Node executes** its resident BPF program, which can read sensors, update persistent maps, and send application data.
-4. **Node sleeps** until the next scheduled interval (or earlier if the BPF program requests it).
+1. **Node wakes** and sends a `WAKE` message containing its program hash over ESP-NOW.
+2. **Modem bridges** the radio frame to the gateway over USB (protocol-unaware, forwards opaque frames in both directions).
+3. **Gateway responds** with a command: proceed, update program, run a diagnostic, change schedule, or reboot.
+4. **Node executes** its resident BPF program, which can read sensors, update persistent maps, and send application data.
+5. **Node sleeps** until the next scheduled interval (or earlier if the BPF program requests it).
 
 The firmware never interprets application data — it just transports opaque blobs between the BPF program and the gateway.
 

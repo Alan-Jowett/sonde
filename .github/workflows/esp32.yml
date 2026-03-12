@@ -31,10 +31,9 @@ jobs:
       # ------------------------------------------------------------------ #
 
       - name: Install Rust (stable)
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --no-modify-path --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
 
       # ------------------------------------------------------------------ #
       # Xtensa Rust toolchain (required for xtensa-esp32-espidf target)

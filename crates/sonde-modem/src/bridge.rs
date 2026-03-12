@@ -224,8 +224,8 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
     use sonde_protocol::modem::{decode_modem_frame, ModemMessage};
+    use std::cell::RefCell;
 
     /// Mock serial port that records writes and plays back reads.
     struct MockSerial {
@@ -715,7 +715,10 @@ mod tests {
 
         // No ERROR message on serial output.
         let tx = bridge.usb.take_tx();
-        assert!(tx.is_empty(), "modem should not send any response for SEND_FRAME");
+        assert!(
+            tx.is_empty(),
+            "modem should not send any response for SEND_FRAME"
+        );
     }
 
     /// Validates: T-0301 (USB reconnection triggers MODEM_READY)

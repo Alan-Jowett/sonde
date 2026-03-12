@@ -9,7 +9,9 @@
 //! detection should be added when the ESP-IDF HAL exposes callbacks.
 
 use esp_idf_hal::peripheral::Peripheral;
-use esp_idf_hal::usb_serial::{UsbDMinGpio, UsbDPlusGpio, UsbSerialConfig, UsbSerialDriver, USB_SERIAL};
+use esp_idf_hal::usb_serial::{
+    UsbDMinGpio, UsbDPlusGpio, UsbSerialConfig, UsbSerialDriver, USB_SERIAL,
+};
 use log::{info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

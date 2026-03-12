@@ -286,6 +286,11 @@ impl UsbEspNowTransport {
         channel: u8,
         ack_rx: oneshot::Receiver<u8>,
     ) -> Result<(), TransportError> {
+        if !(1..=14).contains(&channel) {
+            return Err(TransportError::Io(format!(
+                "WiFi channel must be 1-14, got {channel}"
+            )));
+        }
         Self::send_encoded(&writer, &ModemMessage::SetChannel(channel)).await?;
 
         let ack = tokio::time::timeout(std::time::Duration::from_secs(2), ack_rx)

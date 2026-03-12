@@ -958,7 +958,7 @@ mod tests {
                 let ptr = helper_map_lookup_elem(map_ptr, &key as *const u32 as u64, 0, 0, 0);
                 assert_ne!(ptr, 0, "lookup should return non-null pointer");
 
-                let read_value = unsafe { *(ptr as *const u32) };
+                let read_value = unsafe { core::ptr::read_unaligned(ptr as *const u32) };
                 assert_eq!(read_value, 42);
             },
         );

@@ -208,6 +208,30 @@ mod tests {
     }
 
     #[test]
+    fn test_register_arithmetic() {
+        // mov r1, 1; mov r2, 2; mov r0, 0; add r0, r1; add r0, r2; exit
+        // Expected: r0 = 0 + 1 + 2 = 3
+        let mut bytecode = Vec::new();
+        // BPF_MOV64_IMM(R1, 1)
+        bytecode.extend_from_slice(&[0xb7, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]);
+        // BPF_MOV64_IMM(R2, 2)
+        bytecode.extend_from_slice(&[0xb7, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00]);
+        // BPF_MOV64_IMM(R0, 0)
+        bytecode.extend_from_slice(&[0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // BPF_ADD64_REG(R0, R1): opcode=0x0f, dst=0, src=1
+        bytecode.extend_from_slice(&[0x0f, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // BPF_ADD64_REG(R0, R2): opcode=0x0f, dst=0, src=2
+        bytecode.extend_from_slice(&[0x0f, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // BPF_EXIT
+        bytecode.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+        let mut interp = RbpfInterpreter::new();
+        interp.load(&bytecode, &[]).unwrap();
+        let result = interp.execute(0, 100_000).unwrap();
+        assert_eq!(result, 3);
+    }
+
+    #[test]
     fn test_execute_return_0() {
         let mut interp = RbpfInterpreter::new();
         let prog = prog_return(0);

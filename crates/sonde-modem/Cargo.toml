@@ -11,6 +11,8 @@ default = []
 # Without this feature, only platform-independent modules compile,
 # enabling host-side testing of bridge logic, peer table, and status.
 esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:embuild"]
+# Enable device integration tests (requires serialport + libudev on Linux).
+device-tests = ["dep:serialport"]
 
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol", default-features = false }
@@ -18,8 +20,11 @@ log = "0.4"
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.
 esp-idf-hal = { version = "0.45", optional = true }
-esp-idf-svc = { version = "0.50", features = ["binstart"], optional = true }
+esp-idf-svc = { version = "0.51", features = ["binstart"], optional = true }
 esp-idf-sys = { version = "0.36", features = ["binstart"], optional = true }
+
+# Device test dependency — only pulled in with the "device-tests" feature.
+serialport = { version = "4", optional = true }
 
 [build-dependencies]
 embuild = { version = "0.33", optional = true }

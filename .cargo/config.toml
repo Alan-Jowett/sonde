@@ -1,0 +1,7 @@
+
+[build]
+target-dir = "C:/st"
+
+[target.xtensa-esp32s3-espidf]
+linker = "ldproxy"
+

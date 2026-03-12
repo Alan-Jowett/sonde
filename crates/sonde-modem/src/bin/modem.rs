@@ -37,7 +37,11 @@ fn main() {
     let nvs = EspDefaultNvsPartition::take().expect("failed to take NVS partition");
 
     let counters = ModemCounters::new();
-    let usb = sonde_modem::usb_cdc::UsbCdcDriver::new();
+    let usb = sonde_modem::usb_cdc::UsbCdcDriver::new(
+        peripherals.usb_serial,
+        peripherals.pins.gpio19,
+        peripherals.pins.gpio20,
+    );
     let espnow = sonde_modem::espnow::EspNowDriver::new(peripherals.modem, sysloop, nvs, &counters);
 
     let mut bridge = Bridge::new(usb, espnow, counters);

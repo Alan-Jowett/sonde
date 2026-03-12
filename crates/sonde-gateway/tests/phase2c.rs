@@ -254,9 +254,13 @@ def encode_item(val):
     else:
         raise ValueError(f"unsupported type {type(val)}")
 
-# Read one DATA message
-cbor_data = read_msg()
-msg = decode_cbor_map(cbor_data)
+# Read messages, skipping EVENTs, until a DATA message arrives
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — no reply expected
+        continue
+    break
 
 # msg_type=1 is DATA, extract request_id (key 2) and data (key 5)
 request_id = msg[2]
@@ -385,8 +389,12 @@ def encode_item(val):
     else:
         raise ValueError(f"unsupported type {type(val)}")
 
-cbor_data = read_msg()
-msg = decode_cbor_map(cbor_data)
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — no reply expected
+        continue
+    break
 request_id = msg[2]
 
 # Reply with empty data
@@ -649,8 +657,12 @@ def encode_item(val):
     else:
         raise ValueError(f"unsupported type {type(val)}")
 
-cbor_data = read_msg()
-msg = decode_cbor_map(cbor_data)
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — no reply expected
+        continue
+    break
 request_id = msg[2]
 
 reply = encode_cbor_map([
@@ -775,8 +787,12 @@ def encode_item(val):
     else:
         raise ValueError(f"unsupported type {type(val)}")
 
-cbor_data = read_msg()
-msg = decode_cbor_map(cbor_data)
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — no reply expected
+        continue
+    break
 request_id = msg[2]
 payload_data = msg[5]
 
@@ -912,8 +928,12 @@ def encode_item(val):
     else:
         raise ValueError(f"unsupported type {type(val)}")
 
-cbor_data = read_msg()
-msg = decode_cbor_map(cbor_data)
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — no reply expected
+        continue
+    break
 request_id = msg[2]
 payload_data = msg[5]
 

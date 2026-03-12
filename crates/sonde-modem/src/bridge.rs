@@ -110,6 +110,11 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
         );
     }
 
+    /// Returns true if the USB serial port is connected.
+    pub fn is_usb_connected(&self) -> bool {
+        self.usb.is_connected()
+    }
+
     /// Poll for serial data and radio received frames.
     pub fn poll(&mut self) {
         let (n, reconnected) = self.usb.read(&mut self.rx_buf);

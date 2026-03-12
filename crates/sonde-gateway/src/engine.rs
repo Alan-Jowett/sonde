@@ -14,6 +14,8 @@ use sonde_protocol::{
     MSG_PROGRAM_ACK, MSG_WAKE,
 };
 
+use std::collections::BTreeMap;
+
 use crate::crypto::{RustCryptoHmac, RustCryptoSha256};
 use crate::handler::HandlerRouter;
 use crate::program::ProgramLibrary;
@@ -235,6 +237,22 @@ impl Gateway {
         updated_node.update_telemetry(battery_mv, firmware_abi_version);
         let _ = self.storage.upsert_node(&updated_node).await;
 
+        // 4a. Emit node_online EVENT to handlers (GW-0507)
+        if let Some(router) = &self.handler_router {
+            let mut details = BTreeMap::new();
+            details.insert(
+                "battery_mv".to_string(),
+                ciborium::Value::Integer(battery_mv.into()),
+            );
+            details.insert(
+                "firmware_abi_version".to_string(),
+                ciborium::Value::Integer(firmware_abi_version.into()),
+            );
+            router
+                .route_event(&node.node_id, "node_online", details, timestamp_ms / 1000)
+                .await;
+        }
+
         // 5. Encode GatewayMessage::Command response
         let response_msg = GatewayMessage::Command {
             starting_seq,
@@ -369,8 +387,24 @@ impl Gateway {
 
         // Update node record with the confirmed program
         let mut updated_node = node.clone();
-        updated_node.confirm_program(program_hash);
+        updated_node.confirm_program(program_hash.clone());
         let _ = self.storage.upsert_node(&updated_node).await;
+
+        // Emit program_updated EVENT to handlers (GW-0507)
+        if let Some(router) = &self.handler_router {
+            let mut details = BTreeMap::new();
+            details.insert(
+                "program_hash".to_string(),
+                ciborium::Value::Bytes(program_hash),
+            );
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            router
+                .route_event(&node.node_id, "program_updated", details, timestamp)
+                .await;
+        }
 
         // Transition session from ChunkedTransfer to BpfExecuting
         let _ = self

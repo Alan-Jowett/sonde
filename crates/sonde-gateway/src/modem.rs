@@ -312,6 +312,13 @@ impl Transport for UsbEspNowTransport {
                 peer.len()
             )));
         }
+        if frame.is_empty() || frame.len() > sonde_protocol::modem::ESPNOW_MAX_DATA_SIZE {
+            return Err(TransportError::Io(format!(
+                "frame size {} out of range (1..={})",
+                frame.len(),
+                sonde_protocol::modem::ESPNOW_MAX_DATA_SIZE
+            )));
+        }
         let mut peer_mac = [0u8; 6];
         peer_mac.copy_from_slice(peer);
 

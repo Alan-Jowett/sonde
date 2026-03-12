@@ -6,7 +6,7 @@
 //! Maintains `tx_count`, `rx_count`, `tx_fail_count`, and `uptime_s`.
 //! All counters (including uptime) reset to zero on boot and on RESET.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,7 +19,8 @@ pub struct ModemCounters {
     /// Milliseconds elapsed since boot at the last reset.
     /// `uptime_s` reports `(now_ms - reset_epoch_ms) / 1000` so it
     /// reflects time since last RESET, not since boot.
-    reset_epoch_ms: AtomicU32,
+    /// Stored as u64 to avoid overflow (~49.7 days with u32).
+    reset_epoch_ms: AtomicU64,
     boot_time: Instant,
 }
 
@@ -29,7 +30,7 @@ impl ModemCounters {
             tx_count: AtomicU32::new(0),
             rx_count: AtomicU32::new(0),
             tx_fail_count: AtomicU32::new(0),
-            reset_epoch_ms: AtomicU32::new(0),
+            reset_epoch_ms: AtomicU64::new(0),
             boot_time: Instant::now(),
         })
     }
@@ -60,9 +61,9 @@ impl ModemCounters {
 
     /// Returns seconds since last boot or RESET.
     pub fn uptime_s(&self) -> u32 {
-        let total_ms = self.boot_time.elapsed().as_millis() as u32;
+        let total_ms = self.boot_time.elapsed().as_millis() as u64;
         let epoch_ms = self.reset_epoch_ms.load(Ordering::Relaxed);
-        total_ms.saturating_sub(epoch_ms) / 1000
+        (total_ms.saturating_sub(epoch_ms) / 1000) as u32
     }
 
     /// Reset all counters to zero and restart uptime (called on RESET command).
@@ -70,7 +71,7 @@ impl ModemCounters {
         self.tx_count.store(0, Ordering::Relaxed);
         self.rx_count.store(0, Ordering::Relaxed);
         self.tx_fail_count.store(0, Ordering::Relaxed);
-        let now_ms = self.boot_time.elapsed().as_millis() as u32;
+        let now_ms = self.boot_time.elapsed().as_millis() as u64;
         self.reset_epoch_ms.store(now_ms, Ordering::Relaxed);
     }
 }

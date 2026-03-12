@@ -44,24 +44,20 @@ jobs:
         run: cargo install espup --locked
 
       - name: Install Xtensa Rust toolchain for ESP32
+        # espup installs the `esp` Xtensa Rust toolchain and writes ~/export-esp.sh,
+        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for Xtensa GCC/LLVM.
+        # The `esp` toolchain must be selected explicitly via `cargo +esp` (espup
+        # v0.16+ does not export RUSTUP_TOOLCHAIN from export-esp.sh).
         run: espup install --targets esp32
-
-      - name: Export Xtensa toolchain environment
-        # espup writes export-esp.sh; extract KEY=VALUE pairs for GITHUB_ENV.
-        run: |
-          grep -E '^export [A-Z_]+=' "$HOME/export-esp.sh" \
-            | sed 's/^export //' \
-            >> "$GITHUB_ENV"
 
       # ------------------------------------------------------------------ #
       # QEMU for Xtensa (ESP32)
       # ------------------------------------------------------------------ #
 
       - name: Install QEMU for Xtensa via idf_tools.py
-        run: |
-          "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
-          "$IDF_PATH/tools/idf_tools.py" export --format key-value \
-            >> "$GITHUB_ENV"
+        # qemu-xtensa is bundled in the espressif/idf image but install is
+        # idempotent; this ensures the tool is present regardless of image version.
+        run: "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
 
       # ------------------------------------------------------------------ #
       # Build
@@ -74,8 +70,12 @@ jobs:
           key: esp32-xtensa
 
       - name: Build node firmware (ESP32, release)
+        # Source export-esp.sh to add Xtensa GCC/LLVM to PATH and set
+        # LIBCLANG_PATH/CLANG_PATH for bindgen.  Use `+esp` to select the
+        # Xtensa Rust toolchain installed by espup (not the default stable).
         run: |
-          cargo build \
+          . "$HOME/export-esp.sh"
+          cargo +esp build \
             -p sonde-node \
             --bin node \
             --features esp \
@@ -130,22 +130,36 @@ jobs:
       # ------------------------------------------------------------------ #
 
       - name: Run QEMU smoke test
+        # Source export-esp.sh so the Xtensa QEMU binary found via idf_tools
+        # is reachable if it was installed to a non-default location.
         run: |
+          . "$HOME/export-esp.sh"
           QEMU_OUTPUT="/tmp/qemu_uart.txt"
 
           # Boot the firmware under QEMU with a hard timeout.
           # -no-reboot prevents restart loops on early failures.
+          # Redirect output to file so we can inspect it after QEMU exits;
+          # capture the exit code before asserting on its value.
           timeout 60 qemu-system-xtensa \
             -nographic \
             -machine esp32 \
             -drive file=flash_image.bin,if=mtd,format=raw \
             -no-reboot \
-            2>&1 | tee "$QEMU_OUTPUT" || true
+            > "$QEMU_OUTPUT" 2>&1
+          QEMU_EXIT=$?
 
           echo ""
           echo "=== QEMU UART output ==="
           cat "$QEMU_OUTPUT"
           echo "========================"
+
+          # Exit 124 = timeout (expected — firmware is running the idle loop).
+          # Exit 0   = QEMU exited cleanly (unusual but acceptable for marker check).
+          # Any other non-zero = QEMU crashed or was killed unexpectedly → fail.
+          if [ "$QEMU_EXIT" -ne 0 ] && [ "$QEMU_EXIT" -ne 124 ]; then
+            echo "ERROR: QEMU exited with unexpected code $QEMU_EXIT" >&2
+            exit 1
+          fi
 
           # Assert that the firmware reached each expected boot-marker log line.
           PASS=true

@@ -50,7 +50,13 @@ unsafe extern "C" fn raw_recv_cb(
     }
 
     let src_addr = unsafe { &*(info.src_addr as *const [u8; 6]) };
-    let payload = unsafe { core::slice::from_raw_parts(data, data_len as usize) };
+
+    // Guard against invalid length — ESP-NOW max payload is 250 bytes.
+    let len = data_len as usize;
+    if len > 250 {
+        return;
+    }
+    let payload = unsafe { core::slice::from_raw_parts(data, len) };
 
     // Extract RSSI from the rx_ctrl metadata.
     let rssi = if info.rx_ctrl.is_null() {
@@ -109,10 +115,15 @@ impl EspNowDriver {
 
         // Install the global recv callback state and register our raw
         // callback that extracts RSSI from rx_ctrl.
-        let _ = RECV_CB_STATE.set(RecvCallbackState {
-            rx_queue: Arc::clone(&rx_queue),
-            usb_connected,
-        });
+        assert!(
+            RECV_CB_STATE
+                .set(RecvCallbackState {
+                    rx_queue: Arc::clone(&rx_queue),
+                    usb_connected,
+                })
+                .is_ok(),
+            "RECV_CB_STATE already initialized; EspNowDriver::new must only be called once"
+        );
         unsafe {
             esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))
                 .expect("failed to register ESP-NOW recv callback");

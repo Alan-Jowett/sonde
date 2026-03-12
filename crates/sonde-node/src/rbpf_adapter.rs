@@ -65,8 +65,12 @@ impl BpfInterpreter for RbpfInterpreter {
         self.allowed_ranges.clear();
         for &ptr in map_ptrs {
             if ptr != 0 {
-                // Cap at 64 KB — Prevail has already verified all accesses
-                // are in-bounds. This is defence-in-depth only.
+                // Defence-in-depth: allow access around each map pointer.
+                // The BpfInterpreter::load trait only receives pointers
+                // (not sizes), so we use a fixed cap. Prevail has already
+                // verified all accesses are in-bounds; this just prevents
+                // the VM from wandering far off if a verifier bug exists.
+                // Actual map sizes are typically < 4 KB (RTC SRAM budget).
                 const MAX_MAP_REGION_SIZE: u64 = 64 * 1024;
                 self.allowed_ranges
                     .push(ptr..ptr.saturating_add(MAX_MAP_REGION_SIZE));
@@ -78,11 +82,14 @@ impl BpfInterpreter for RbpfInterpreter {
 
     /// Execute the loaded program.
     ///
-    /// **Note:** `_instruction_budget` is accepted but unused. rbpf does not
-    /// expose an instruction-counting / step-limit mechanism. We rely on
-    /// Prevail verification on the gateway to guarantee termination (bounded
-    /// loops, no infinite recursion). A future upstream rbpf patch could add
-    /// metering, at which point this parameter should be wired in.
+    /// # Instruction budget limitation
+    ///
+    /// **`instruction_budget` is currently NOT enforced.** rbpf does not
+    /// expose instruction-counting or step-limit hooks. Termination is
+    /// guaranteed by Prevail verification on the gateway (bounded loops,
+    /// no infinite recursion). A future upstream rbpf patch should add
+    /// metering; until then, very large verified programs may run longer
+    /// than the budget intends.
     fn execute(&mut self, ctx_ptr: u64, _instruction_budget: u64) -> Result<u64, BpfError> {
         let bytecode = self
             .bytecode

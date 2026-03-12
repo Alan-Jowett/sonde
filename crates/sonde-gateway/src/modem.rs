@@ -84,6 +84,27 @@ impl UsbEspNowTransport {
                                         .await;
                                     }
                                     Ok(None) => break,
+                                    Err(ref e)
+                                        if matches!(
+                                            e,
+                                            sonde_protocol::modem::ModemCodecError::EmptyFrame
+                                        ) =>
+                                    {
+                                        // EmptyFrame: frame was drained, try again
+                                        continue;
+                                    }
+                                    Err(ref e)
+                                        if matches!(
+                                            e,
+                                            sonde_protocol::modem::ModemCodecError::FrameTooLarge(
+                                                _
+                                            )
+                                        ) =>
+                                    {
+                                        error!("modem frame too large, resetting decoder: {e}");
+                                        decoder.reset();
+                                        break;
+                                    }
                                     Err(e) => {
                                         warn!("modem decode error: {e}");
                                         break;
@@ -128,11 +149,15 @@ impl UsbEspNowTransport {
 
     /// Send GET_STATUS and wait for the STATUS response.
     pub async fn poll_status(&self) -> Result<ModemStatus, TransportError> {
-        let (tx, rx) = oneshot::channel();
-        {
+        let rx = {
             let mut slot = self.status_slot.lock().await;
+            if slot.is_some() {
+                return Err(TransportError::Io("status poll already in progress".into()));
+            }
+            let (tx, rx) = oneshot::channel();
             *slot = Some(tx);
-        }
+            rx
+        };
 
         let frame = encode_modem_frame(&ModemMessage::GetStatus)
             .map_err(|e| TransportError::Io(format!("encode GET_STATUS: {e}")))?;
@@ -216,10 +241,16 @@ impl UsbEspNowTransport {
     ) -> Result<(), TransportError> {
         Self::send_encoded(&writer, &ModemMessage::SetChannel(channel)).await?;
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), ack_rx)
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(2), ack_rx)
             .await
             .map_err(|_| TransportError::Io("SET_CHANNEL_ACK timeout".into()))?
             .map_err(|_| TransportError::Io("ack channel closed".into()))?;
+
+        if ack != channel {
+            return Err(TransportError::Io(format!(
+                "SET_CHANNEL_ACK mismatch: expected channel {channel}, got {ack}"
+            )));
+        }
 
         info!(channel, "modem channel set");
         Ok(())
@@ -314,7 +345,7 @@ async fn dispatch_message(
 mod tests {
     use super::*;
     use sonde_protocol::modem::{
-        encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, RecvFrame,
+        encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, ModemStatus, RecvFrame,
     };
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 
@@ -471,5 +502,44 @@ mod tests {
             Ok(Err(e)) => panic!("unexpected error variant: {e:?}"),
             Err(_) => panic!("outer timeout — test took too long"),
         }
+    }
+
+    #[tokio::test]
+    async fn t1105_poll_status_success() {
+        let (client, mut server) = duplex(1024);
+
+        let startup = tokio::spawn(async move {
+            do_startup_handshake(&mut server, 6).await;
+            server
+        });
+
+        let transport = UsbEspNowTransport::new(client, 6).await.unwrap();
+        let mut server = startup.await.unwrap();
+
+        // Drive poll_status in background.
+        let poll = tokio::spawn(async move { transport.poll_status().await });
+
+        // Read GET_STATUS from mock side and respond with STATUS.
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 256];
+        let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+        assert!(matches!(msg, ModemMessage::GetStatus));
+
+        let status_msg = ModemMessage::Status(ModemStatus {
+            channel: 6,
+            uptime_s: 120,
+            tx_count: 10,
+            rx_count: 5,
+            tx_fail_count: 1,
+        });
+        server
+            .write_all(&encode_modem_frame(&status_msg).unwrap())
+            .await
+            .unwrap();
+
+        let status = poll.await.unwrap().unwrap();
+        assert_eq!(status.channel, 6);
+        assert_eq!(status.uptime_s, 120);
+        assert_eq!(status.tx_fail_count, 1);
     }
 }

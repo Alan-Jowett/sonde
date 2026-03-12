@@ -2741,10 +2741,7 @@ mod tests {
         let decoded = decode_frame(&transport.outbound[0]).unwrap();
         assert!(verify_frame(&decoded, &new_psk, &TestHmac));
         assert_eq!(decoded.header.msg_type, MSG_WAKE);
-        assert_eq!(
-            u16::from_be_bytes([transport.outbound[0][0], transport.outbound[0][1]]),
-            new_key_hint
-        );
+        assert_eq!(decoded.header.key_hint, new_key_hint);
     }
 
     // ===================================================================
@@ -2823,7 +2820,7 @@ mod tests {
         assert_eq!(map_storage.map_count(), 1);
 
         // Write a value into the map (simulating what a BPF program would do)
-        let value = 42u32.to_ne_bytes();
+        let value = 42u32.to_le_bytes();
         map_storage.get_mut(0).unwrap().update(0, &value).unwrap();
 
         // --- Cycle 2: NOP command, same program, maps preserved ---
@@ -2855,7 +2852,7 @@ mod tests {
 
         // Map data should still be 42 (persisted across cycles)
         let read_back = map_storage.get(0).unwrap().lookup(0).unwrap();
-        assert_eq!(read_back, &42u32.to_ne_bytes());
+        assert_eq!(read_back, &42u32.to_le_bytes());
     }
 
     // ===================================================================
@@ -2907,6 +2904,7 @@ mod tests {
 
         // Node should sleep normally despite BPF budget error
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(interp.executed, "interpreter must have executed");
     }
 
     #[test]
@@ -2953,5 +2951,6 @@ mod tests {
         );
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(interp.executed, "interpreter must have executed");
     }
 }

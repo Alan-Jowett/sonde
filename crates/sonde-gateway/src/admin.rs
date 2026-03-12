@@ -413,4 +413,37 @@ impl GatewayAdmin for AdminService {
             "`import_state` is disabled until admin authz/authn and protected export are implemented (GW-0601a)",
         ))
     }
+
+    /// Get modem status (channel, counters, uptime).
+    ///
+    /// Requires a modem transport to be configured. The gateway forwards
+    /// a `GET_STATUS` command to the modem over the serial protocol.
+    async fn get_modem_status(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ModemStatus>, Status> {
+        Err(Status::unimplemented(
+            "`get_modem_status` requires a modem transport — not yet wired",
+        ))
+    }
+
+    /// Set the modem's ESP-NOW radio channel.
+    async fn set_modem_channel(
+        &self,
+        _request: Request<SetModemChannelRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented(
+            "`set_modem_channel` requires a modem transport — not yet wired",
+        ))
+    }
+
+    /// Scan all WiFi channels and report per-channel AP activity.
+    async fn scan_modem_channels(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ScanModemChannelsResponse>, Status> {
+        Err(Status::unimplemented(
+            "`scan_modem_channels` requires a modem transport — not yet wired",
+        ))
+    }
 }

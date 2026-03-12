@@ -16,6 +16,10 @@ service GatewayAdmin {
     rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
     rpc ExportState(Empty) returns (ExportStateResponse);
     rpc ImportState(ImportStateRequest) returns (Empty);
+    // Modem management — forwarded to the modem via serial protocol.
+    rpc GetModemStatus(Empty) returns (ModemStatus);
+    rpc SetModemChannel(SetModemChannelRequest) returns (Empty);
+    rpc ScanModemChannels(Empty) returns (ScanModemChannelsResponse);
 }
 
 message Empty {}
@@ -73,3 +77,19 @@ message NodeStatus {
 }
 message ExportStateResponse { bytes data = 1; }
 message ImportStateRequest { bytes data = 1; }
+
+// Modem management messages.
+message ModemStatus {
+    uint32 channel = 1;
+    uint32 tx_count = 2;
+    uint32 rx_count = 3;
+    uint32 tx_fail_count = 4;
+    uint32 uptime_s = 5;
+}
+message SetModemChannelRequest { uint32 channel = 1; }
+message ChannelSurveyEntry {
+    uint32 channel = 1;
+    uint32 ap_count = 2;
+    int32 strongest_rssi = 3;
+}
+message ScanModemChannelsResponse { repeated ChannelSurveyEntry entries = 1; }

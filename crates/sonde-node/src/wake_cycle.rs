@@ -360,8 +360,6 @@ where
             }
         };
 
-        drop(_guard);
-
         // Swallow BPF errors — node sleeps normally regardless (ND-0504).
         let _ = exec_result;
 

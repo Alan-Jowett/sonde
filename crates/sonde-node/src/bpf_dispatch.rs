@@ -33,6 +33,10 @@ use crate::traits::{Clock, Transport};
 /// spec (node-requirements.md ND-0702).
 const SEND_RECV_TIMEOUT_MS: u32 = 50;
 
+/// Maximum buffer length for bus helper operations (I2C/SPI).
+/// Defence-in-depth cap to prevent oversized stack/heap access.
+const MAX_BUS_TRANSFER_LEN: usize = 4096;
+
 /// Maximum allowed timeout for `send_recv` helper (ms).
 const MAX_SEND_RECV_TIMEOUT_MS: u32 = 5000;
 
@@ -184,7 +188,7 @@ pub fn helper_i2c_read(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
         let handle = r1 as u32;
         let buf_ptr = r2 as *mut u8;
         let buf_len = r3 as usize;
-        if buf_ptr.is_null() || buf_len == 0 || buf_len > 4096 {
+        if buf_ptr.is_null() || buf_len == 0 || buf_len > MAX_BUS_TRANSFER_LEN {
             return (-1i64) as u64;
         }
         // SAFETY: buf_ptr and buf_len are verified by the BPF verifier
@@ -204,7 +208,7 @@ pub fn helper_i2c_write(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
         let handle = r1 as u32;
         let data_ptr = r2 as *const u8;
         let data_len = r3 as usize;
-        if data_ptr.is_null() || data_len == 0 || data_len > 4096 {
+        if data_ptr.is_null() || data_len == 0 || data_len > MAX_BUS_TRANSFER_LEN {
             return (-1i64) as u64;
         }
         unsafe {
@@ -224,7 +228,11 @@ pub fn helper_i2c_write_read(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64
         let write_len = r3 as usize;
         let read_ptr = r4 as *mut u8;
         let read_len = r5 as usize;
-        if write_ptr.is_null() || read_ptr.is_null() || write_len > 4096 || read_len > 4096 {
+        if write_ptr.is_null()
+            || read_ptr.is_null()
+            || write_len > MAX_BUS_TRANSFER_LEN
+            || read_len > MAX_BUS_TRANSFER_LEN
+        {
             return (-1i64) as u64;
         }
         unsafe {
@@ -244,7 +252,7 @@ pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 
         let tx_ptr = r2 as *const u8;
         let rx_ptr = r3 as *mut u8;
         let len = r4 as usize;
-        if len == 0 || len > 4096 {
+        if len == 0 || len > MAX_BUS_TRANSFER_LEN {
             return (-1i64) as u64;
         }
         unsafe {

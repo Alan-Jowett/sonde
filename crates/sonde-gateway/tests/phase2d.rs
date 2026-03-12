@@ -97,26 +97,8 @@ async fn t1105_poll_status_multiple_calls() {
 
     // First poll — baseline
     let poll = {
-        let status_msg = ModemMessage::Status(ModemStatus {
-            channel: 6,
-            uptime_s: 100,
-            tx_count: 10,
-            rx_count: 5,
-            tx_fail_count: 0,
-        });
-
-        let transport_ref = &transport;
-        let handle = tokio::spawn({
-            // We need a workaround since transport isn't Send-safe across
-            // the spawn boundary. Instead use a single-threaded approach.
-            let status_bytes = encode_modem_frame(&status_msg).unwrap();
-            let _ = status_bytes; // consumed below
-            async { Ok::<(), ()>(()) }
-        });
-        let _ = handle;
-
-        // Drive poll in current task context
-        let poll_fut = transport_ref.poll_status();
+        // Drive poll_status in current task alongside mock server
+        let poll_fut = transport.poll_status();
         tokio::pin!(poll_fut);
 
         // Send GET_STATUS response from server side

@@ -349,9 +349,10 @@ impl Transport for UsbEspNowTransport {
 /// Spawn a periodic health monitor for the modem transport.
 ///
 /// Polls `GET_STATUS` every `interval` and logs tx_fail deltas and reboots.
-/// Returns a `JoinHandle` that can be aborted to stop monitoring.
+/// Takes a `Weak` reference so the monitor exits automatically when the
+/// transport is dropped (enabling the "drop + rebuild" recovery pattern).
 pub fn spawn_health_monitor(
-    transport: Arc<UsbEspNowTransport>,
+    transport: std::sync::Weak<UsbEspNowTransport>,
     interval: std::time::Duration,
     cancel: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
@@ -371,6 +372,14 @@ pub fn spawn_health_monitor(
                 }
                 _ = tokio::time::sleep(interval) => {}
             }
+
+            let transport = match transport.upgrade() {
+                Some(t) => t,
+                None => {
+                    debug!("transport dropped, stopping health monitor");
+                    return;
+                }
+            };
 
             match transport.poll_status().await {
                 Ok(status) => {
@@ -462,12 +471,12 @@ async fn dispatch_message(
                 message = ?String::from_utf8_lossy(&e.message),
                 "modem error"
             );
-            // GW-1103: Error is logged and waiters unblocked. Full RESET
-            // recovery requires rebuilding UsbEspNowTransport from the
-            // caller (gateway main loop) since the reader task cannot
-            // perform write operations. This is a design decision: the
-            // transport is a disposable resource, and the gateway should
-            // detect recv() failures and reconstruct it.
+            // GW-1103: Error is logged and waiters unblocked so pending
+            // operations fail immediately. The reader task continues
+            // running (non-fatal). Full RESET recovery requires the
+            // caller (gateway main loop) to cancel the health monitor,
+            // drop the transport, and reconstruct it — which re-runs
+            // the startup handshake including RESET.
             if ready_tx.take().is_some() {
                 debug!("cancelling pending MODEM_READY waiter due to modem error");
             }

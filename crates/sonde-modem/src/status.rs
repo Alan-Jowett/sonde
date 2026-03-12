@@ -7,7 +7,7 @@
 //! All counters (including uptime) reset to zero on boot and on RESET.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Thread-safe modem counters, shareable between the main loop and
@@ -16,10 +16,10 @@ pub struct ModemCounters {
     tx_count: AtomicU32,
     rx_count: AtomicU32,
     tx_fail_count: AtomicU32,
-    /// Milliseconds elapsed since boot at the last reset, stored as
-    /// two 32-bit halves (hi/lo) since Xtensa lacks 64-bit atomics.
-    reset_epoch_ms_lo: AtomicU32,
-    reset_epoch_ms_hi: AtomicU32,
+    /// Milliseconds elapsed since boot at the last reset. Protected by
+    /// a Mutex because Xtensa lacks 64-bit atomics. Contention is
+    /// negligible — only accessed on RESET and GET_STATUS.
+    reset_epoch_ms: Mutex<u64>,
     boot_time: Instant,
 }
 
@@ -29,8 +29,7 @@ impl ModemCounters {
             tx_count: AtomicU32::new(0),
             rx_count: AtomicU32::new(0),
             tx_fail_count: AtomicU32::new(0),
-            reset_epoch_ms_lo: AtomicU32::new(0),
-            reset_epoch_ms_hi: AtomicU32::new(0),
+            reset_epoch_ms: Mutex::new(0),
             boot_time: Instant::now(),
         })
     }
@@ -42,8 +41,7 @@ impl ModemCounters {
             tx_count: AtomicU32::new(0),
             rx_count: AtomicU32::new(0),
             tx_fail_count: AtomicU32::new(0),
-            reset_epoch_ms_lo: AtomicU32::new(0),
-            reset_epoch_ms_hi: AtomicU32::new(0),
+            reset_epoch_ms: Mutex::new(0),
             boot_time,
         })
     }
@@ -75,9 +73,7 @@ impl ModemCounters {
     /// Returns seconds since last boot or RESET.
     pub fn uptime_s(&self) -> u32 {
         let total_ms = self.boot_time.elapsed().as_millis() as u64;
-        let epoch_lo = self.reset_epoch_ms_lo.load(Ordering::Relaxed) as u64;
-        let epoch_hi = self.reset_epoch_ms_hi.load(Ordering::Relaxed) as u64;
-        let epoch_ms = (epoch_hi << 32) | epoch_lo;
+        let epoch_ms = *self.reset_epoch_ms.lock().unwrap();
         (total_ms.saturating_sub(epoch_ms) / 1000) as u32
     }
 
@@ -87,10 +83,7 @@ impl ModemCounters {
         self.rx_count.store(0, Ordering::Relaxed);
         self.tx_fail_count.store(0, Ordering::Relaxed);
         let now_ms = self.boot_time.elapsed().as_millis() as u64;
-        self.reset_epoch_ms_lo
-            .store(now_ms as u32, Ordering::Relaxed);
-        self.reset_epoch_ms_hi
-            .store((now_ms >> 32) as u32, Ordering::Relaxed);
+        *self.reset_epoch_ms.lock().unwrap() = now_ms;
     }
 }
 

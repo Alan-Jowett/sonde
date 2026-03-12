@@ -26,7 +26,7 @@ struct RecvCallbackState {
 }
 
 /// Global callback state — set once during `EspNowDriver::new()`.
-static RECV_CB_STATE: Mutex<Option<RecvCallbackState>> = Mutex::new(None);
+static RECV_CB_STATE: std::sync::OnceLock<RecvCallbackState> = std::sync::OnceLock::new();
 
 /// Raw ESP-NOW receive callback that extracts RSSI from `rx_ctrl`.
 ///
@@ -59,20 +59,20 @@ unsafe extern "C" fn raw_recv_cb(
         unsafe { (*info.rx_ctrl).rssi as i8 }
     };
 
-    if let Ok(guard) = RECV_CB_STATE.lock() {
-        if let Some(state) = guard.as_ref() {
-            // Discard frames when USB is disconnected (MD-0301).
-            if !state.usb_connected.load(Ordering::Relaxed) {
-                return;
-            }
-            if let Ok(mut q) = state.rx_queue.lock() {
-                if q.len() < 64 {
-                    q.push(RecvFrame {
-                        peer_mac: *src_addr,
-                        rssi,
-                        frame_data: payload.to_vec(),
-                    });
-                }
+    if let Some(state) = RECV_CB_STATE.get() {
+        // Discard frames when USB is disconnected (MD-0301).
+        if !state.usb_connected.load(Ordering::Relaxed) {
+            return;
+        }
+        // Use try_lock to avoid blocking the ESP-NOW/WiFi task if the
+        // queue is being drained. Drop the frame if contended.
+        if let Ok(mut q) = state.rx_queue.try_lock() {
+            if q.len() < 64 {
+                q.push(RecvFrame {
+                    peer_mac: *src_addr,
+                    rssi,
+                    frame_data: payload.to_vec(),
+                });
             }
         }
     }
@@ -109,13 +109,10 @@ impl EspNowDriver {
 
         // Install the global recv callback state and register our raw
         // callback that extracts RSSI from rx_ctrl.
-        {
-            let mut guard = RECV_CB_STATE.lock().unwrap();
-            *guard = Some(RecvCallbackState {
-                rx_queue: Arc::clone(&rx_queue),
-                usb_connected,
-            });
-        }
+        let _ = RECV_CB_STATE.set(RecvCallbackState {
+            rx_queue: Arc::clone(&rx_queue),
+            usb_connected,
+        });
         unsafe {
             esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))
                 .expect("failed to register ESP-NOW recv callback");

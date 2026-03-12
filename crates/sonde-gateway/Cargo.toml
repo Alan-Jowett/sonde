@@ -19,4 +19,4 @@ prevail = { git = "https://github.com/elazarg/prevail-rust.git", rev = "bc5be2ea
 tempfile = "3"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.14"

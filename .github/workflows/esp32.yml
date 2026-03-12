@@ -36,6 +36,12 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2
+        with:
+          workspaces: ". -> target"
+          key: esp32-xtensa
+
       # ------------------------------------------------------------------ #
       # Xtensa Rust toolchain (required for xtensa-esp32-espidf target)
       # ------------------------------------------------------------------ #
@@ -50,6 +56,9 @@ jobs:
         # v0.16+ does not export RUSTUP_TOOLCHAIN from export-esp.sh).
         run: espup install --targets esp32
 
+      - name: Install ldproxy linker
+        run: cargo install ldproxy --locked
+
       # ------------------------------------------------------------------ #
       # QEMU for Xtensa (ESP32)
       # ------------------------------------------------------------------ #
@@ -63,12 +72,6 @@ jobs:
       # ------------------------------------------------------------------ #
       # Build
       # ------------------------------------------------------------------ #
-
-      - name: Cache Rust build artefacts
-        uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2
-        with:
-          workspaces: ". -> target"
-          key: esp32-xtensa
 
       - name: Build node firmware (ESP32, release)
         # Source export-esp.sh to add Xtensa GCC/LLVM to PATH and set

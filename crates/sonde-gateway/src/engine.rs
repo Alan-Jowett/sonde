@@ -581,4 +581,54 @@ impl Gateway {
         // Priority 5: NOP
         Some(CommandPayload::Nop)
     }
+
+    /// Check for nodes that have missed their expected wake interval.
+    ///
+    /// Emits a `node_timeout` EVENT to handlers for each timed-out node.
+    /// A node is considered timed-out when `2 × schedule_interval_s` has
+    /// elapsed since its `last_seen` timestamp. Call this periodically from
+    /// the gateway main loop.
+    pub async fn check_node_timeouts(&self) {
+        let router = match &self.handler_router {
+            Some(r) => r,
+            None => return,
+        };
+
+        let nodes = self.storage.list_nodes().await.unwrap_or_default();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+
+        for node in &nodes {
+            let interval = node.schedule_interval_s as u64;
+            if interval == 0 {
+                continue;
+            }
+
+            let last_seen = match node.last_seen {
+                Some(ts) => match ts.duration_since(UNIX_EPOCH) {
+                    Ok(d) => d.as_secs(),
+                    Err(_) => continue,
+                },
+                None => continue,
+            };
+
+            // Consider timed out if 2× the expected interval has passed
+            let deadline = last_seen + interval * 2;
+            if now.as_secs() > deadline {
+                let mut details = BTreeMap::new();
+                details.insert(
+                    "last_seen".to_string(),
+                    ciborium::Value::Integer(last_seen.try_into().unwrap_or(0.into())),
+                );
+                details.insert(
+                    "expected_interval_s".to_string(),
+                    ciborium::Value::Integer(interval.try_into().unwrap_or(0.into())),
+                );
+                router
+                    .route_event(&node.node_id, "node_timeout", details, now.as_secs())
+                    .await;
+            }
+        }
+    }
 }

@@ -346,6 +346,62 @@ impl Transport for UsbEspNowTransport {
     }
 }
 
+/// Spawn a periodic health monitor for the modem transport.
+///
+/// Polls `GET_STATUS` every `interval` and logs tx_fail deltas and reboots.
+/// Returns a `JoinHandle` that can be aborted to stop monitoring.
+pub fn spawn_health_monitor(
+    transport: Arc<UsbEspNowTransport>,
+    interval: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut prev_tx_fail: Option<u32> = None;
+        let mut prev_uptime: Option<u32> = None;
+
+        loop {
+            tokio::time::sleep(interval).await;
+
+            match transport.poll_status().await {
+                Ok(status) => {
+                    if let Some(prev) = prev_tx_fail {
+                        if status.tx_fail_count > prev {
+                            let delta = status.tx_fail_count - prev;
+                            warn!(
+                                delta,
+                                total = status.tx_fail_count,
+                                "modem send failures detected"
+                            );
+                        }
+                    }
+                    if let Some(prev) = prev_uptime {
+                        if status.uptime_s < prev {
+                            warn!(
+                                old_uptime = prev,
+                                new_uptime = status.uptime_s,
+                                "modem reboot detected (uptime decreased)"
+                            );
+                        }
+                    }
+                    prev_tx_fail = Some(status.tx_fail_count);
+                    prev_uptime = Some(status.uptime_s);
+
+                    debug!(
+                        channel = status.channel,
+                        uptime_s = status.uptime_s,
+                        tx = status.tx_count,
+                        rx = status.rx_count,
+                        tx_fail = status.tx_fail_count,
+                        "modem health poll"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "modem health poll failed");
+                }
+            }
+        }
+    })
+}
+
 /// Route a decoded modem message to the appropriate consumer.
 async fn dispatch_message(
     msg: ModemMessage,
@@ -395,8 +451,12 @@ async fn dispatch_message(
                 message = ?String::from_utf8_lossy(&e.message),
                 "modem error"
             );
-            // Unblock pending waiters so they fail immediately instead
-            // of waiting until timeout.
+            // GW-1103: Error is logged and waiters unblocked. Full RESET
+            // recovery requires rebuilding UsbEspNowTransport from the
+            // caller (gateway main loop) since the reader task cannot
+            // perform write operations. This is a design decision: the
+            // transport is a disposable resource, and the gateway should
+            // detect recv() failures and reconstruct it.
             if ready_tx.take().is_some() {
                 debug!("cancelling pending MODEM_READY waiter due to modem error");
             }

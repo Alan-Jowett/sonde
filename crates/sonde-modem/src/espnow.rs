@@ -5,7 +5,7 @@
 //! configuration, and channel scanning.
 
 use esp_idf_hal::modem::Modem;
-use esp_idf_svc::espnow::{EspNow, PeerInfo, SendStatus};
+use esp_idf_svc::espnow::{EspNow, PeerInfo, ReceiveInfo, SendStatus};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use sonde_protocol::modem::{RecvFrame, MAC_SIZE};
 
+use crate::bridge::Radio;
 use crate::peer_table::PeerTable;
 use crate::status::ModemCounters;
 
@@ -48,9 +49,8 @@ impl EspNowDriver {
 
         // Register the receive callback.
         espnow
-            .register_recv_cb(move |mac, data| {
-                let mut peer_mac = [0u8; MAC_SIZE];
-                peer_mac.copy_from_slice(mac);
+            .register_recv_cb(move |info: &ReceiveInfo, data: &[u8]| {
+                let peer_mac = *info.src_addr;
 
                 let frame = RecvFrame {
                     peer_mac,
@@ -79,7 +79,7 @@ impl EspNowDriver {
         let counters_for_send = Arc::clone(counters);
         espnow
             .register_send_cb(move |_mac, status| {
-                if status != SendStatus::SUCCESS {
+                if matches!(status, SendStatus::FAIL) {
                     counters_for_send.inc_tx_fail();
                 }
             })
@@ -97,14 +97,34 @@ impl EspNowDriver {
         }
     }
 
+    /// Remove all peers from both the ESP-NOW stack and the local table.
+    fn clear_all_peers(&mut self) {
+        for mac in self.peer_table.all_macs() {
+            let _ = self.espnow.del_peer(mac);
+        }
+        self.peer_table.clear();
+    }
+
+    /// Set the WiFi/ESP-NOW channel via the raw ESP-IDF API.
+    fn raw_set_channel(&self, channel: u8) -> Result<(), esp_idf_sys::EspError> {
+        unsafe {
+            esp_idf_sys::esp!(esp_idf_sys::esp_wifi_set_channel(
+                channel,
+                esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE
+            ))
+        }
+    }
+}
+
+impl Radio for EspNowDriver {
     /// Send an ESP-NOW frame to the specified peer MAC.
     /// Auto-registers the peer if not already in the peer table.
-    pub fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
         // Auto-register peer if needed.
         if let Some(evicted) = self.peer_table.ensure_peer(peer_mac) {
-            let _ = self.espnow.del_peer(&evicted);
+            let _ = self.espnow.del_peer(evicted);
         }
-        if !self.espnow.peer_exists(peer_mac).unwrap_or(false) {
+        if !self.espnow.peer_exists(*peer_mac).unwrap_or(false) {
             let peer_info = PeerInfo {
                 peer_addr: *peer_mac,
                 channel: self.current_channel,
@@ -116,16 +136,13 @@ impl EspNowDriver {
         }
 
         self.counters.inc_tx();
-        if let Err(e) = self.espnow.send(peer_mac, data) {
+        if let Err(e) = self.espnow.send(*peer_mac, data) {
             warn!("esp_now_send failed: {:?}", e);
-            // Note: tx_fail_count for MAC-layer delivery failures is
-            // tracked in the send callback, not here. This error means
-            // the frame could not even be queued (e.g., invalid peer).
         }
     }
 
     /// Drain received frames from the queue.
-    pub fn drain_rx(&self) -> Vec<RecvFrame> {
+    fn drain_rx(&self) -> Vec<RecvFrame> {
         if let Ok(mut q) = self.rx_queue.lock() {
             std::mem::take(&mut *q)
         } else {
@@ -135,19 +152,13 @@ impl EspNowDriver {
 
     /// Set the WiFi/ESP-NOW channel. Clears the peer table and removes
     /// all peers from the ESP-NOW stack.
-    ///
-    /// Returns `Err("invalid channel")` for out-of-range values, or
-    /// `Err("ESP-IDF set_channel failed")` if the hardware rejects it.
-    pub fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
+    fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
         if channel == 0 || channel > 14 {
             return Err("invalid channel");
         }
-        self.wifi
-            .wifi()
-            .set_channel(channel)
+        self.raw_set_channel(channel)
             .map_err(|_| "ESP-IDF set_channel failed")?;
 
-        // Remove all peers from the ESP-NOW stack and local table.
         self.clear_all_peers();
         self.current_channel = channel;
         info!("channel set to {}", channel);
@@ -155,13 +166,13 @@ impl EspNowDriver {
     }
 
     /// Get the current channel.
-    pub fn channel(&self) -> u8 {
+    fn channel(&self) -> u8 {
         self.current_channel
     }
 
     /// Perform a WiFi AP scan across all channels and return per-channel results.
     /// Restores ESP-NOW on `current_channel` after the scan completes.
-    pub fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
+    fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
         let scan_result = self.wifi.scan().unwrap_or_default();
         // Use i8::MIN as sentinel for "no APs seen on this channel".
         let mut channels = [(0u16, i8::MIN); 15];
@@ -177,7 +188,7 @@ impl EspNowDriver {
         }
 
         // Restore the WiFi channel after scanning (scanning disrupts ESP-NOW).
-        if let Err(e) = self.wifi.wifi().set_channel(self.current_channel) {
+        if let Err(e) = self.raw_set_channel(self.current_channel) {
             warn!(
                 "failed to restore channel {} after scan: {:?}",
                 self.current_channel, e
@@ -195,39 +206,30 @@ impl EspNowDriver {
     }
 
     /// Get the modem's own MAC address.
-    pub fn mac_address(&self) -> [u8; MAC_SIZE] {
-        self.wifi
-            .wifi()
-            .sta_netif()
-            .mac()
-            .unwrap_or([0u8; MAC_SIZE])
+    fn mac_address(&self) -> [u8; MAC_SIZE] {
+        let mut mac = [0u8; MAC_SIZE];
+        unsafe {
+            let _ = esp_idf_sys::esp!(esp_idf_sys::esp_wifi_get_mac(
+                esp_idf_sys::wifi_interface_t_WIFI_IF_STA,
+                mac.as_mut_ptr()
+            ));
+        }
+        mac
     }
 
     /// Reset ESP-NOW state: clear peers from the stack, reset WiFi channel
     /// to 1, and drain the receive queue. Called on RESET command.
-    pub fn reset_state(&mut self) {
-        // Remove all peers from the ESP-NOW stack.
+    fn reset_state(&mut self) {
         self.clear_all_peers();
 
-        // Reset WiFi channel back to 1.
-        if let Err(e) = self.wifi.wifi().set_channel(1) {
+        if let Err(e) = self.raw_set_channel(1) {
             warn!("failed to reset WiFi channel to 1: {:?}", e);
         }
         self.current_channel = 1;
 
-        // Clear the RX queue.
         if let Ok(mut q) = self.rx_queue.lock() {
             q.clear();
         }
         info!("ESP-NOW re-initialized on channel 1");
-    }
-
-    /// Remove all peers from both the ESP-NOW stack and the local table.
-    fn clear_all_peers(&mut self) {
-        // Remove each tracked peer from the ESP-NOW stack.
-        for mac in self.peer_table.all_macs() {
-            let _ = self.espnow.del_peer(&mac);
-        }
-        self.peer_table.clear();
     }
 }

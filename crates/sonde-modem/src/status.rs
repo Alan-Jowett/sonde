@@ -16,10 +16,11 @@ pub struct ModemCounters {
     tx_count: AtomicU32,
     rx_count: AtomicU32,
     tx_fail_count: AtomicU32,
-    /// Microsecond timestamp of the last reset (from `Instant`).
-    /// We store elapsed micros at reset time so `uptime_s` reflects
-    /// time since last RESET, not since boot.
-    reset_epoch_us: AtomicU64,
+    /// Milliseconds elapsed since boot at the last reset.
+    /// `uptime_s` reports `(now_ms - reset_epoch_ms) / 1000` so it
+    /// reflects time since last RESET, not since boot.
+    /// Stored as u64 to avoid overflow (~49.7 days with u32).
+    reset_epoch_ms: AtomicU64,
     boot_time: Instant,
 }
 
@@ -29,8 +30,20 @@ impl ModemCounters {
             tx_count: AtomicU32::new(0),
             rx_count: AtomicU32::new(0),
             tx_fail_count: AtomicU32::new(0),
-            reset_epoch_us: AtomicU64::new(0),
+            reset_epoch_ms: AtomicU64::new(0),
             boot_time: Instant::now(),
+        })
+    }
+
+    /// Create counters with a custom boot time (for testing).
+    #[cfg(test)]
+    fn new_with_boot_time(boot_time: Instant) -> Arc<Self> {
+        Arc::new(Self {
+            tx_count: AtomicU32::new(0),
+            rx_count: AtomicU32::new(0),
+            tx_fail_count: AtomicU32::new(0),
+            reset_epoch_ms: AtomicU64::new(0),
+            boot_time,
         })
     }
 
@@ -60,10 +73,9 @@ impl ModemCounters {
 
     /// Returns seconds since last boot or RESET.
     pub fn uptime_s(&self) -> u32 {
-        let epoch_us = self.reset_epoch_us.load(Ordering::Relaxed);
-        let total_us = self.boot_time.elapsed().as_micros() as u64;
-        let delta_us = total_us.saturating_sub(epoch_us);
-        (delta_us / 1_000_000) as u32
+        let total_ms = self.boot_time.elapsed().as_millis() as u64;
+        let epoch_ms = self.reset_epoch_ms.load(Ordering::Relaxed);
+        (total_ms.saturating_sub(epoch_ms) / 1000) as u32
     }
 
     /// Reset all counters to zero and restart uptime (called on RESET command).
@@ -71,7 +83,124 @@ impl ModemCounters {
         self.tx_count.store(0, Ordering::Relaxed);
         self.rx_count.store(0, Ordering::Relaxed);
         self.tx_fail_count.store(0, Ordering::Relaxed);
-        let now_us = self.boot_time.elapsed().as_micros() as u64;
-        self.reset_epoch_us.store(now_us, Ordering::Relaxed);
+        let now_ms = self.boot_time.elapsed().as_millis() as u64;
+        self.reset_epoch_ms.store(now_ms, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn initial_values_are_zero() {
+        let c = ModemCounters::new();
+        assert_eq!(c.tx_count(), 0);
+        assert_eq!(c.rx_count(), 0);
+        assert_eq!(c.tx_fail_count(), 0);
+    }
+
+    #[test]
+    fn inc_tx_increments() {
+        let c = ModemCounters::new();
+        c.inc_tx();
+        c.inc_tx();
+        c.inc_tx();
+        assert_eq!(c.tx_count(), 3);
+    }
+
+    #[test]
+    fn inc_rx_increments() {
+        let c = ModemCounters::new();
+        c.inc_rx();
+        c.inc_rx();
+        assert_eq!(c.rx_count(), 2);
+    }
+
+    #[test]
+    fn inc_tx_fail_increments() {
+        let c = ModemCounters::new();
+        c.inc_tx_fail();
+        assert_eq!(c.tx_fail_count(), 1);
+    }
+
+    #[test]
+    fn counters_are_independent() {
+        let c = ModemCounters::new();
+        c.inc_tx();
+        c.inc_tx();
+        c.inc_rx();
+        c.inc_tx_fail();
+        c.inc_tx_fail();
+        c.inc_tx_fail();
+        assert_eq!(c.tx_count(), 2);
+        assert_eq!(c.rx_count(), 1);
+        assert_eq!(c.tx_fail_count(), 3);
+    }
+
+    #[test]
+    fn reset_zeroes_all_counters() {
+        let c = ModemCounters::new();
+        c.inc_tx();
+        c.inc_rx();
+        c.inc_tx_fail();
+        c.reset();
+        assert_eq!(c.tx_count(), 0);
+        assert_eq!(c.rx_count(), 0);
+        assert_eq!(c.tx_fail_count(), 0);
+    }
+
+    #[test]
+    fn uptime_near_zero_at_boot() {
+        let c = ModemCounters::new();
+        assert_eq!(c.uptime_s(), 0);
+    }
+
+    #[test]
+    fn uptime_reflects_elapsed_time() {
+        // Backdate boot_time by 5 seconds to avoid wall-clock sleeping.
+        let boot = Instant::now() - Duration::from_secs(5);
+        let c = ModemCounters::new_with_boot_time(boot);
+        let uptime = c.uptime_s();
+        assert!(uptime >= 4 && uptime <= 6, "expected ~5s, got {}", uptime);
+    }
+
+    #[test]
+    fn uptime_resets_on_reset() {
+        // Backdate boot_time by 5 seconds so uptime starts > 0.
+        let boot = Instant::now() - Duration::from_secs(5);
+        let c = ModemCounters::new_with_boot_time(boot);
+        assert!(c.uptime_s() >= 4);
+        c.reset();
+        assert_eq!(c.uptime_s(), 0);
+    }
+
+    #[test]
+    fn counters_work_after_reset() {
+        let c = ModemCounters::new();
+        c.inc_tx();
+        c.inc_rx();
+        c.reset();
+        c.inc_tx();
+        c.inc_tx();
+        c.inc_tx_fail();
+        assert_eq!(c.tx_count(), 2);
+        assert_eq!(c.rx_count(), 0);
+        assert_eq!(c.tx_fail_count(), 1);
+    }
+
+    #[test]
+    fn arc_shared_across_threads() {
+        let c = ModemCounters::new();
+        let c2 = Arc::clone(&c);
+        let handle = thread::spawn(move || {
+            c2.inc_tx();
+            c2.inc_rx();
+        });
+        handle.join().unwrap();
+        assert_eq!(c.tx_count(), 1);
+        assert_eq!(c.rx_count(), 1);
     }
 }

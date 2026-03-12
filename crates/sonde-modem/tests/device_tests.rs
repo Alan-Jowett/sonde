@@ -10,18 +10,32 @@
 //!
 //! ```bash
 //! # Set the USB-CDC COM port (not the UART/log port):
-//! MODEM_PORT=COM5 cargo test -p sonde-modem --test device_tests
+//! MODEM_PORT=COM5 cargo test -p sonde-modem --features device-tests --test device_tests
 //! ```
 //!
 //! If `MODEM_PORT` is not set, all tests are skipped (not failed).
 //! This allows CI to run without hardware attached.
+//!
+//! Tests must run single-threaded (`--test-threads=1`) since they
+//! share the serial port. A process-wide mutex is used as a safety
+//! net in case `--test-threads` is omitted.
+
+#![cfg(feature = "device-tests")]
 
 use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, SendFrame,
     MODEM_ERR_CHANNEL_SET_FAILED,
 };
 use std::io::Write;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+/// Process-wide lock so tests are serialised even if run in parallel.
+static PORT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn port_lock() -> &'static Mutex<()> {
+    PORT_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// Open the modem serial port, or skip the test if MODEM_PORT is not set.
 fn open_modem() -> Option<Box<dyn serialport::SerialPort>> {
@@ -51,7 +65,7 @@ fn drain(port: &mut dyn serialport::SerialPort) {
     }
 }
 
-/// Send a modem message and return the raw bytes written.
+/// Encode and send a modem message over the serial port.
 fn send(port: &mut dyn serialport::SerialPort, msg: &ModemMessage) {
     let frame = encode_modem_frame(msg).expect("encode failed");
     port.write_all(&frame).expect("write failed");
@@ -132,6 +146,7 @@ fn recv_one(port: &mut dyn serialport::SerialPort, timeout: Duration) -> ModemMe
 /// T-0101: MODEM_READY after RESET.
 #[test]
 fn t0101_modem_ready_after_reset() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -156,6 +171,7 @@ fn t0101_modem_ready_after_reset() {
 /// T-0102: GET_STATUS returns valid status with zeroed counters after RESET.
 #[test]
 fn t0102_get_status_after_reset() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -177,6 +193,7 @@ fn t0102_get_status_after_reset() {
 /// T-0104: Unknown message type is silently discarded.
 #[test]
 fn t0104_unknown_type_discarded() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -203,6 +220,7 @@ fn t0104_unknown_type_discarded() {
 /// T-0205: SET_CHANNEL and ACK.
 #[test]
 fn t0205_set_channel() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -224,6 +242,7 @@ fn t0205_set_channel() {
 /// T-0206: SCAN_CHANNELS returns 14-channel scan result.
 #[test]
 fn t0206_scan_channels() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -254,6 +273,7 @@ fn t0206_scan_channels() {
 /// T-0300: RESET clears state (channel, counters).
 #[test]
 fn t0300_reset_clears_state() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -295,6 +315,7 @@ fn t0300_reset_clears_state() {
 /// T-0303: Repeated RESET → MODEM_READY stability.
 #[test]
 fn t0303_repeated_reset() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -308,6 +329,7 @@ fn t0303_repeated_reset() {
 /// T-0401: SET_CHANNEL with invalid channel returns ERROR.
 #[test]
 fn t0401_invalid_channel() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -345,6 +367,7 @@ fn t0401_invalid_channel() {
 /// T-0402: Framing error recovery via RESET.
 #[test]
 fn t0402_framing_error_recovery() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };
@@ -364,6 +387,7 @@ fn t0402_framing_error_recovery() {
 /// T-0302: Status counter accuracy (uptime > 0 after delay).
 #[test]
 fn t0302_status_uptime() {
+    let _lock = port_lock().lock().unwrap();
     let Some(mut port) = open_modem() else {
         return;
     };

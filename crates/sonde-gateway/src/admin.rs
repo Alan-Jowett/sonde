@@ -63,20 +63,20 @@ fn node_to_info(n: &NodeRecord) -> NodeInfo {
 }
 
 #[allow(clippy::result_large_err)]
-fn parse_profile(s: &str) -> Result<VerificationProfile, Status> {
-    match s.to_lowercase().as_str() {
-        "resident" => Ok(VerificationProfile::Resident),
-        "ephemeral" => Ok(VerificationProfile::Ephemeral),
+fn parse_profile(value: i32) -> Result<VerificationProfile, Status> {
+    match value {
+        1 => Ok(VerificationProfile::Resident),
+        2 => Ok(VerificationProfile::Ephemeral),
         _ => Err(Status::invalid_argument(format!(
-            "unknown `verification_profile`: {s:?}; expected \"resident\" or \"ephemeral\""
+            "unknown `verification_profile`: {value}; expected RESIDENT (1) or EPHEMERAL (2)"
         ))),
     }
 }
 
-fn profile_to_string(p: &VerificationProfile) -> String {
+fn profile_to_proto(p: &VerificationProfile) -> i32 {
     match p {
-        VerificationProfile::Resident => "resident".to_string(),
-        VerificationProfile::Ephemeral => "ephemeral".to_string(),
+        VerificationProfile::Resident => 1,
+        VerificationProfile::Ephemeral => 2,
     }
 }
 
@@ -134,6 +134,19 @@ impl GatewayAdmin for AdminService {
             )));
         }
         let key_hint = req.key_hint as u16;
+        // Reject if node already exists (GW-0801: RegisterNode adds a new node).
+        if self
+            .storage
+            .get_node(&req.node_id)
+            .await
+            .map_err(storage_err)?
+            .is_some()
+        {
+            return Err(Status::already_exists(format!(
+                "node `{}` is already registered",
+                req.node_id
+            )));
+        }
         let mut psk = [0u8; 32];
         psk.copy_from_slice(&req.psk);
         let record = NodeRecord::new(req.node_id.clone(), key_hint, psk);
@@ -170,7 +183,7 @@ impl GatewayAdmin for AdminService {
         request: Request<IngestProgramRequest>,
     ) -> Result<Response<IngestProgramResponse>, Status> {
         let req = request.into_inner();
-        let profile = parse_profile(&req.verification_profile)?;
+        let profile = parse_profile(req.verification_profile)?;
         let record = self
             .program_library
             .ingest(req.image_data, profile)
@@ -197,7 +210,7 @@ impl GatewayAdmin for AdminService {
             .map(|p| ProgramInfo {
                 hash: p.hash.clone(),
                 size: p.size,
-                verification_profile: profile_to_string(&p.verification_profile),
+                verification_profile: profile_to_proto(&p.verification_profile),
             })
             .collect();
         Ok(Response::new(ListProgramsResponse { programs }))
@@ -228,14 +241,41 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<RemoveProgramRequest>,
     ) -> Result<Response<Empty>, Status> {
-        let hash = &request.get_ref().program_hash;
+        let hash = request.into_inner().program_hash;
         self.storage
-            .get_program(hash)
+            .get_program(&hash)
             .await
             .map_err(storage_err)?
             .ok_or_else(|| Status::not_found("program not found"))?;
+
+        // Prevent deletion while any node is still assigned to this program.
+        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        if nodes
+            .iter()
+            .any(|node| node.assigned_program_hash.as_deref() == Some(hash.as_slice()))
+        {
+            return Err(Status::failed_precondition(
+                "cannot remove program: still assigned to one or more nodes",
+            ));
+        }
+
+        // Prevent deletion while pending RunEphemeral commands reference it.
+        {
+            let guard = self.pending_commands.read().await;
+            let has_ref = guard.values().any(|cmds| {
+                cmds.iter().any(|cmd| {
+                    matches!(cmd, PendingCommand::RunEphemeral { program_hash } if *program_hash == hash)
+                })
+            });
+            if has_ref {
+                return Err(Status::failed_precondition(
+                    "cannot remove program: referenced by pending RunEphemeral commands",
+                ));
+            }
+        }
+
         self.storage
-            .delete_program(hash)
+            .delete_program(&hash)
             .await
             .map_err(storage_err)?;
         Ok(Response::new(Empty {}))
@@ -297,11 +337,17 @@ impl GatewayAdmin for AdminService {
             .await
             .map_err(storage_err)?
             .ok_or_else(|| Status::not_found(format!("node `{}` not found", req.node_id)))?;
-        self.storage
+        let program = self
+            .storage
             .get_program(&req.program_hash)
             .await
             .map_err(storage_err)?
             .ok_or_else(|| Status::not_found("program not found"))?;
+        if program.verification_profile != VerificationProfile::Ephemeral {
+            return Err(Status::failed_precondition(
+                "program must have ephemeral verification profile for `QueueEphemeral`",
+            ));
+        }
         self.pending_commands
             .write()
             .await

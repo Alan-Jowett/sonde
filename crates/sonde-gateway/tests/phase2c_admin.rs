@@ -292,7 +292,7 @@ async fn t0802_ingest_and_list_programs() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor.clone(),
-            verification_profile: "resident".into(),
+            verification_profile: VerificationProfile::Resident.into(),
         }))
         .await
         .unwrap()
@@ -317,7 +317,10 @@ async fn t0802_ingest_and_list_programs() {
         .into_inner();
     assert_eq!(list.programs.len(), 1);
     assert_eq!(list.programs[0].hash, resp.program_hash);
-    assert_eq!(list.programs[0].verification_profile, "resident");
+    assert_eq!(
+        list.programs[0].verification_profile,
+        VerificationProfile::Resident as i32
+    );
 }
 
 /// T-0802b: IngestProgram with invalid profile.
@@ -329,7 +332,7 @@ async fn t0802b_ingest_invalid_profile() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: make_cbor_image(&[0x01]),
-            verification_profile: "invalid".into(),
+            verification_profile: 99,
         }))
         .await
         .unwrap_err();
@@ -345,7 +348,7 @@ async fn t0802c_ingest_empty_image() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: vec![],
-            verification_profile: "resident".into(),
+            verification_profile: VerificationProfile::Resident.into(),
         }))
         .await
         .unwrap_err();
@@ -374,7 +377,7 @@ async fn t0803_assign_program() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
-            verification_profile: "resident".into(),
+            verification_profile: VerificationProfile::Resident.into(),
         }))
         .await
         .unwrap()
@@ -454,7 +457,7 @@ async fn t0804_remove_program() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
-            verification_profile: "ephemeral".into(),
+            verification_profile: VerificationProfile::Ephemeral.into(),
         }))
         .await
         .unwrap()
@@ -604,7 +607,7 @@ async fn t0807_queue_ephemeral_via_wake() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
-            verification_profile: "ephemeral".into(),
+            verification_profile: VerificationProfile::Ephemeral.into(),
         }))
         .await
         .unwrap()
@@ -742,7 +745,7 @@ async fn t0809_assign_program_wake_delivers_update() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
-            verification_profile: "resident".into(),
+            verification_profile: VerificationProfile::Resident.into(),
         }))
         .await
         .unwrap()

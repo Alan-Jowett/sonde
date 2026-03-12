@@ -509,6 +509,8 @@ fn decode_command_as_nop(payload: &[u8]) -> NodeResult<(u64, u64, CommandPayload
 
     Ok((starting_seq, timestamp_ms, CommandPayload::Nop))
 }
+
+/// Execute the chunked program transfer protocol.
 ///
 /// Returns the reassembled program image bytes on success.
 #[allow(clippy::too_many_arguments)]

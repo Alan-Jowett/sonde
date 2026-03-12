@@ -14,9 +14,10 @@ rand = "0.8"
 ciborium = "0.2"
 tracing = "0.1"
 tonic = "0.14"
-prost = "0.13"
+tonic-prost = "0.14"
+prost = "0.14"
 prevail = { git = "https://github.com/elazarg/prevail-rust.git", rev = "bc5be2ea", default-features = false }
 tempfile = "3"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-prost-build = "0.14"

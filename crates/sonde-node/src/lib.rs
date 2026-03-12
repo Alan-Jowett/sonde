@@ -9,6 +9,7 @@ pub mod hal;
 pub mod key_store;
 pub mod map_storage;
 pub mod program_store;
+pub mod rbpf_adapter;
 pub mod sleep;
 pub mod traits;
 pub mod wake_cycle;

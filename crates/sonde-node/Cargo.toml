@@ -20,6 +20,7 @@ log = "0.4"
 esp-idf-hal = { version = "0.45", optional = true }
 esp-idf-svc = { version = "0.50", features = ["binstart"], optional = true }
 esp-idf-sys = { version = "0.36", features = ["binstart"], optional = true }
+rbpf = "0.4"
 
 [build-dependencies]
 embuild = { version = "0.33", optional = true }

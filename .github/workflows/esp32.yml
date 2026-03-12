@@ -95,6 +95,7 @@ jobs:
 
       - name: Create merged flash image
         run: |
+          . "$IDF_PATH/export.sh"
           TARGET_DIR="target/xtensa-esp32-espidf/release"
 
           # Locate bootloader and partition table produced by embuild.

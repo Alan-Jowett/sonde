@@ -3,16 +3,16 @@
 
 //! Thread-local BPF helper dispatch.
 //!
-//! BPF helpers are registered as bare `fn` pointers ([`HelperFn`]) with
-//! the interpreter, so they cannot capture state. This module bridges
-//! that gap by stashing mutable references into a thread-local
-//! [`DispatchContext`] that is installed at the start of BPF execution
-//! and cleared at the end.
+//! BPF helpers are registered as bare `fn` pointers
+//! ([`crate::bpf_runtime::HelperFn`]) with the interpreter, so they
+//! cannot capture state. This module bridges that gap by stashing
+//! mutable references into a thread-local [`DispatchContext`] that is
+//! installed at the start of BPF execution and cleared at the end.
 //!
 //! **Lifetime contract:** the context is valid only while
-//! [`run_wake_cycle`] is executing BPF. No helper may be invoked
-//! outside that window. The owning function holds all referenced
-//! objects on its stack, guaranteeing pointer validity.
+//! [`crate::wake_cycle::run_wake_cycle`] is executing BPF. No helper
+//! may be invoked outside that window. The owning function holds all
+//! referenced objects on its stack, guaranteeing pointer validity.
 //!
 //! See node-design.md §8.2 which explicitly endorses thread-local
 //! dispatch for wiring helpers to platform state.

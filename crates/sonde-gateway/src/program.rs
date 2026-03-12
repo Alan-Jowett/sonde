@@ -2,9 +2,18 @@
 // Copyright (c) 2026 sonde contributors
 
 use std::fmt;
+use std::io::Write;
 
 use crate::crypto::RustCryptoSha256;
-use sonde_protocol::Sha256Provider;
+use prevail::crab::ebpf_domain::DomainContext;
+use prevail::crab::var_registry::VariableRegistry;
+use prevail::elf_loader::ElfObject;
+use prevail::fwd_analyzer;
+use prevail::ir::program::Program as PrevailProgram;
+use prevail::ir::unmarshal;
+use prevail::linux::linux_platform::LinuxPlatform;
+use prevail::spec::config::EbpfVerifierOptions;
+use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
 /// Program verification profile.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +46,10 @@ pub enum ProgramError {
     ImageTooLarge { size: u32, limit: u32 },
     /// Program not found by hash.
     NotFound,
+    /// ELF parsing failed.
+    ElfParseError(String),
+    /// Prevail verification failed.
+    VerificationFailed(String),
     /// Generic error.
     Internal(String),
 }
@@ -49,6 +62,10 @@ impl fmt::Display for ProgramError {
                 write!(f, "image size {} exceeds limit {}", size, limit)
             }
             ProgramError::NotFound => write!(f, "program not found"),
+            ProgramError::ElfParseError(msg) => write!(f, "ELF parse error: {}", msg),
+            ProgramError::VerificationFailed(msg) => {
+                write!(f, "verification failed: {}", msg)
+            }
             ProgramError::Internal(msg) => write!(f, "program error: {}", msg),
         }
     }
@@ -104,6 +121,128 @@ impl ProgramLibrary {
         Ok(ProgramRecord {
             hash,
             image,
+            size,
+            verification_profile: profile,
+        })
+    }
+
+    /// Ingest a raw ELF binary with prevail verification (GW-0401).
+    ///
+    /// Steps:
+    ///   1. Write ELF bytes to a temp file for prevail.
+    ///   2. Parse the ELF with `ElfObject`.
+    ///   3. Extract programs and run prevail verification on the first program.
+    ///   4. Serialize bytecode and map definitions into a `ProgramImage`.
+    ///   5. Enforce size limits per profile (GW-0403).
+    ///   6. Compute the SHA-256 hash (GW-0402).
+    pub fn ingest_elf(
+        &self,
+        elf_bytes: &[u8],
+        profile: VerificationProfile,
+    ) -> Result<ProgramRecord, ProgramError> {
+        if elf_bytes.is_empty() {
+            return Err(ProgramError::InvalidImage);
+        }
+
+        // Write ELF bytes to a temp file for prevail's file-based parser.
+        let mut tmp = tempfile::NamedTempFile::new()
+            .map_err(|e| ProgramError::Internal(format!("failed to create temp file: {e}")))?;
+        tmp.write_all(elf_bytes)
+            .map_err(|e| ProgramError::Internal(format!("failed to write temp file: {e}")))?;
+        let tmp_path = tmp.path().to_string_lossy().to_string();
+
+        // Configure prevail verifier options.
+        let mut opts = EbpfVerifierOptions::default();
+        opts.cfg_opts.check_for_termination = true;
+
+        // Parse the ELF.
+        let mut elf = ElfObject::new(&tmp_path, opts)
+            .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
+
+        // Extract programs using the Linux platform.
+        let mut platform = LinuxPlatform::new();
+        let raw_programs = elf
+            .get_programs("", "", &mut platform)
+            .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
+
+        if raw_programs.is_empty() {
+            return Err(ProgramError::ElfParseError(
+                "no programs found in ELF".into(),
+            ));
+        }
+
+        // Verify each program with prevail.
+        for raw_prog in &raw_programs {
+            let mut notes: Vec<Vec<String>> = Vec::new();
+            let inst_seq =
+                unmarshal::unmarshal(&raw_prog.prog, &mut notes, &raw_prog.info, &platform, &opts)
+                    .map_err(|e| ProgramError::VerificationFailed(format!("unmarshal: {e}")))?;
+
+            let program =
+                PrevailProgram::from_sequence(&inst_seq, &raw_prog.info, &platform, &opts)
+                    .map_err(|e| {
+                        ProgramError::VerificationFailed(format!("invalid control flow: {e}"))
+                    })?;
+
+            let ctx = DomainContext {
+                program_info: &raw_prog.info,
+                options: &opts,
+                platform: &platform,
+            };
+            let mut registry = VariableRegistry::new();
+            let result = fwd_analyzer::analyze(&program, &ctx, &mut registry);
+
+            if result.failed {
+                return Err(ProgramError::VerificationFailed(format!(
+                    "program `{}` failed verification",
+                    raw_prog.function_name
+                )));
+            }
+        }
+
+        // Build the ProgramImage from the first program's bytecode and maps.
+        let first = &raw_programs[0];
+
+        let mut bytecode = Vec::with_capacity(first.prog.len() * 8);
+        for inst in &first.prog {
+            bytecode.push(inst.opcode);
+            bytecode.push(inst.dst_src);
+            bytecode.extend_from_slice(&inst.offset.to_le_bytes());
+            bytecode.extend_from_slice(&inst.imm.to_le_bytes());
+        }
+
+        let maps: Vec<MapDef> = first
+            .info
+            .map_descriptors
+            .iter()
+            .map(|md| MapDef {
+                map_type: md.map_type,
+                key_size: md.key_size,
+                value_size: md.value_size,
+                max_entries: md.max_entries,
+            })
+            .collect();
+
+        let image = ProgramImage { bytecode, maps };
+        let cbor = image
+            .encode_deterministic()
+            .map_err(|e| ProgramError::Internal(format!("CBOR encoding failed: {e}")))?;
+
+        // Enforce size limits per profile.
+        let size = cbor.len() as u32;
+        let limit = match profile {
+            VerificationProfile::Resident => MAX_RESIDENT_SIZE,
+            VerificationProfile::Ephemeral => MAX_EPHEMERAL_SIZE,
+        };
+        if size > limit {
+            return Err(ProgramError::ImageTooLarge { size, limit });
+        }
+
+        let hash = self.sha256.hash(&cbor).to_vec();
+
+        Ok(ProgramRecord {
+            hash,
+            image: cbor,
             size,
             verification_profile: profile,
         })

@@ -65,24 +65,25 @@ impl BpfInterpreter for RbpfInterpreter {
         self.allowed_ranges.clear();
         for &ptr in map_ptrs {
             if ptr != 0 {
-                // Allow a generous range from the pointer. The exact
-                // size isn't known here, but Prevail has already
-                // verified all accesses are in-bounds.
+                // Cap at 64 KB — Prevail has already verified all accesses
+                // are in-bounds. This is defence-in-depth only.
+                const MAX_MAP_REGION_SIZE: u64 = 64 * 1024;
                 self.allowed_ranges
-                    .push(ptr..ptr.saturating_add(1024 * 1024));
+                    .push(ptr..ptr.saturating_add(MAX_MAP_REGION_SIZE));
             }
         }
 
         Ok(())
     }
 
+    /// Execute the loaded program.
+    ///
+    /// **Note:** `_instruction_budget` is accepted but unused. rbpf does not
+    /// expose an instruction-counting / step-limit mechanism. We rely on
+    /// Prevail verification on the gateway to guarantee termination (bounded
+    /// loops, no infinite recursion). A future upstream rbpf patch could add
+    /// metering, at which point this parameter should be wired in.
     fn execute(&mut self, ctx_ptr: u64, _instruction_budget: u64) -> Result<u64, BpfError> {
-        // NOTE: rbpf does not expose an instruction-counting / step-limit
-        // mechanism. We rely on Prevail verification on the gateway to
-        // guarantee termination (bounded loops, no infinite recursion).
-        // A future upstream rbpf patch could add metering, at which point
-        // _instruction_budget should be wired in here.
-
         let bytecode = self
             .bytecode
             .as_ref()
@@ -103,14 +104,6 @@ impl BpfInterpreter for RbpfInterpreter {
                 .map_err(|e| BpfError::LoadError(format!("helper {}: {}", id, e)))?;
         }
 
-        // Allow access to the SondeContext memory region.
-        if ctx_ptr != 0 {
-            let ctx_end = ctx_ptr
-                .checked_add(SondeContext::SIZE as u64)
-                .ok_or_else(|| BpfError::LoadError("context pointer overflow".into()))?;
-            vm.register_allowed_memory(ctx_ptr..ctx_end);
-        }
-
         // Allow access to map memory regions.
         for range in &self.allowed_ranges {
             vm.register_allowed_memory(range.clone());
@@ -129,6 +122,14 @@ impl BpfInterpreter for RbpfInterpreter {
                 ctx_buf.copy_from_slice(src);
             }
         }
+
+        // Register allowed memory for the COPY (which rbpf will use as R1).
+        if ctx_ptr != 0 {
+            let ctx_buf_ptr = ctx_buf.as_ptr() as u64;
+            let ctx_buf_end = ctx_buf_ptr + SondeContext::SIZE as u64;
+            vm.register_allowed_memory(ctx_buf_ptr..ctx_buf_end);
+        }
+
         let ctx_slice: &mut [u8] = if ctx_ptr != 0 { &mut ctx_buf } else { &mut [] };
 
         vm.execute_program(ctx_slice).map_err(|e| {
@@ -163,11 +164,11 @@ mod tests {
 
     /// Build a BPF program that calls helper `id` and exits with R0.
     /// `mov r1, <arg>; call <id>; exit`
-    fn prog_call_helper(id: u32, arg: u64) -> Vec<u8> {
+    fn prog_call_helper(id: u32, arg: u32) -> Vec<u8> {
         let mut bytecode = Vec::new();
-        // BPF_MOV64_IMM(R1, arg as u32): pass arg in R1
+        // BPF_MOV64_IMM(R1, arg): pass arg in R1
         bytecode.extend_from_slice(&[0xb7, 0x01, 0x00, 0x00]);
-        bytecode.extend_from_slice(&(arg as u32).to_le_bytes());
+        bytecode.extend_from_slice(&arg.to_le_bytes());
         // BPF_CALL(id): opcode=0x85, imm=id
         bytecode.extend_from_slice(&[0x85, 0x00, 0x00, 0x00]);
         bytecode.extend_from_slice(&id.to_le_bytes());
@@ -202,7 +203,7 @@ mod tests {
 
         let mut interp = RbpfInterpreter::new();
         interp.register_helper(1, my_helper).unwrap();
-        let prog = prog_call_helper(1, 0);
+        let prog = prog_call_helper(1, 0u32);
         interp.load(&prog, &[]).unwrap();
         let result = interp.execute(0, 100_000).unwrap();
         assert_eq!(result, 99);
@@ -212,7 +213,7 @@ mod tests {
     fn test_unregistered_helper_fails() {
         let mut interp = RbpfInterpreter::new();
         // Call helper 42 without registering it
-        let prog = prog_call_helper(42, 0);
+        let prog = prog_call_helper(42, 0u32);
         interp.load(&prog, &[]).unwrap();
         let result = interp.execute(0, 100_000);
         assert!(result.is_err());
@@ -241,10 +242,14 @@ mod tests {
 
     #[test]
     fn test_with_context_ptr() {
-        // Program that ignores R1 (ctx pointer) and simply returns 0; this
-        // test ensures that passing a valid non-zero context pointer to
-        // `execute` succeeds and yields the expected return value.
-        let prog = prog_return(0);
+        // Program that loads the first 4 bytes of context (low 32 bits of
+        // timestamp at offset 0) into R0 and returns it.
+        // BPF_LDXW r0, [r1+0]: opcode=0x61, dst=0, src=1, off=0, imm=0
+        let mut prog = Vec::new();
+        prog.extend_from_slice(&[0x61, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // BPF_EXIT
+        prog.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
         let mut interp = RbpfInterpreter::new();
         interp.load(&prog, &[]).unwrap();
 
@@ -257,6 +262,6 @@ mod tests {
         };
         let ctx_ptr = &ctx as *const SondeContext as u64;
         let result = interp.execute(ctx_ptr, 100_000).unwrap();
-        assert_eq!(result, 0);
+        assert_eq!(result, ctx.timestamp as u32 as u64);
     }
 }

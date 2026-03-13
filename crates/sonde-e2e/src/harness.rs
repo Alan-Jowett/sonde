@@ -74,7 +74,15 @@ impl E2eTestEnv {
 // NodeProxy — drives one node's wake cycle through the gateway
 // ---------------------------------------------------------------------------
 
-/// Lightweight handle representing a remote node.
+/// Statistics captured during a single wake cycle.
+pub struct WakeCycleStats {
+    /// The outcome returned by `run_wake_cycle`.
+    pub outcome: WakeCycleOutcome,
+    /// Number of non-`None` responses the gateway produced.
+    pub response_count: usize,
+    /// Nonces from WAKE frames the node sent during this cycle.
+    pub wake_nonces: Vec<u64>,
+}
 ///
 /// Identity and schedule are stored exclusively in `self.storage`
 /// (`PlatformStorage`) — the wake cycle reads them from there.
@@ -101,9 +109,9 @@ impl NodeProxy {
     /// gateway inline. `block_in_place` requires a multi-thread tokio runtime.
     /// All E2E tests must use `#[tokio::test(flavor = "multi_thread")]`.
     ///
-    /// Returns `(outcome, response_count)` where `response_count` is the
-    /// number of non-`None` responses the gateway produced during the cycle.
-    pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> (WakeCycleOutcome, usize) {
+    /// Returns [`WakeCycleStats`] with the outcome, response count, and
+    /// captured WAKE nonces for test assertions.
+    pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
         let mut hal = MockHal;
         let clock = MockClock::new();
         let battery = MockBattery;
@@ -125,7 +133,11 @@ impl NodeProxy {
             &hmac,
             &sha,
         );
-        (outcome, transport.response_count())
+        WakeCycleStats {
+            outcome,
+            response_count: transport.response_count(),
+            wake_nonces: transport.wake_nonces().to_vec(),
+        }
     }
 }
 
@@ -141,6 +153,8 @@ struct BridgeTransport {
     peer: Vec<u8>,
     pending_response: Option<Vec<u8>>,
     response_count: Cell<usize>,
+    /// Nonces extracted from outbound WAKE frames (msg_type 0x01).
+    wake_nonces: Vec<u64>,
     rt: tokio::runtime::Handle,
 }
 
@@ -151,6 +165,7 @@ impl BridgeTransport {
             peer,
             pending_response: None,
             response_count: Cell::new(0),
+            wake_nonces: Vec::new(),
             rt: tokio::runtime::Handle::try_current()
                 .expect("BridgeTransport must be created inside a Tokio runtime"),
         }
@@ -160,10 +175,21 @@ impl BridgeTransport {
     fn response_count(&self) -> usize {
         self.response_count.get()
     }
+
+    /// Nonces from WAKE frames sent during this cycle.
+    fn wake_nonces(&self) -> &[u64] {
+        &self.wake_nonces
+    }
 }
 
 impl NodeTransport for BridgeTransport {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+        // Capture nonce from WAKE frames (msg_type 0x01 at byte 2).
+        if frame.len() >= sonde_protocol::HEADER_SIZE && frame[2] == sonde_protocol::MSG_WAKE {
+            let nonce = u64::from_be_bytes(frame[3..11].try_into().unwrap());
+            self.wake_nonces.push(nonce);
+        }
+
         let gateway = self.gateway.clone();
         let peer = self.peer.clone();
         let frame = frame.to_vec();

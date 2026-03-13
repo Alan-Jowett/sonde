@@ -78,12 +78,15 @@ A register with `region: None` is a **scalar**.  Scalars cannot be dereferenced.
 
 ### 2.3  Scalar vs. pointer invariant
 
-At any point during execution, every register is in exactly one of two states:
+At any point during execution, every register is in exactly one of three states:
 
 | State | `region` | Can be dereferenced? | Can be used in ALU? |
 |-------|----------|---------------------|---------------------|
 | **Scalar** | `None` | No | Yes (all ops) |
-| **Pointer** | `Some(Region { .. })` | Yes (within bounds) | Limited (see §4.3) |
+| **Pointer** | `Some(Region { tag: Stack \| Context \| MapValue })` | Yes (within bounds) | Limited (see §4.3) |
+| **Handle** | `Some(Region { tag: MapDescriptor })` | No (opaque) | MOV only (see §4.3) |
+
+`Pointer` and `Handle` both use `Some(Region { .. })`, but they differ in what operations are allowed.  A `Handle` is an opaque value that can only be copied (MOV) and passed to helpers — it cannot be dereferenced or participate in arithmetic.
 
 This mirrors the type system that a BPF static verifier enforces at load time.  The tagged interpreter enforces it dynamically as a second line of defense.
 
@@ -239,15 +242,15 @@ For src=1, the interpreter resolves the map index and loads the relocated map po
 
 ### 4.3  ALU operations and pointer arithmetic
 
-ALU operations propagate or clear tags according to these rules.  In this table, "pointer" means a dereferenceable pointer (`Stack`, `Context`, or `MapValue`).  `MapDescriptor` is treated separately — see note below.
+BPF ALU instructions have the form `dst = dst OP src` (or `dst = dst OP imm`).  The table below defines how the **dst** and **src** tags interact to determine the result tag.  In this table, "pointer" means a dereferenceable pointer (`Stack`, `Context`, or `MapValue`).  Immediates are always scalar.
 
-| Operation | Left operand | Right operand | Result |
-|-----------|-------------|---------------|--------|
-| ADD | pointer | scalar | pointer (same region) |
-| ADD | scalar | pointer | pointer (same region) |
+| Operation | `dst` tag | `src` tag | Result tag written to `dst` |
+|-----------|-----------|-----------|----------------------------|
+| ADD | pointer | scalar | pointer (same region as dst) |
+| ADD | scalar | pointer | pointer (same region as src) |
 | ADD | scalar | scalar | scalar |
 | ADD | pointer | pointer | **error** (InvalidPointerArithmetic) |
-| SUB | pointer | scalar | pointer (same region) |
+| SUB | pointer | scalar | pointer (same region as dst) |
 | SUB | pointer(A) | pointer(A) | scalar (difference within same region) |
 | SUB | pointer(A) | pointer(B) | **error** (cross-region subtraction) |
 | SUB | scalar | scalar | scalar |
@@ -256,10 +259,10 @@ ALU operations propagate or clear tags according to these rules.  In this table,
 | NEG | any | — | scalar |
 | AND, OR, XOR | scalar | scalar | scalar |
 | AND, OR, XOR | pointer | any | **error** |
-| MOV (reg) | — | source | inherits source tag |
+| MOV (reg) | — | any | inherits src tag |
 | MOV (imm) | — | — | scalar |
 
-**`MapDescriptor` special case:**  `MapDescriptor` is an opaque handle, not a dereferenceable address.  Any ALU operation on a `MapDescriptor` other than `MOV` (reg-to-reg copy) is an `InvalidPointerArithmetic` error.  This prevents `MapDescriptor + scalar` from producing a corrupted handle that could be passed to a helper.
+**`MapDescriptor` (Handle) special case:**  `MapDescriptor` is an opaque handle, not a dereferenceable address.  Any ALU operation on a `MapDescriptor` — in either the `dst` or `src` position — other than `MOV` (reg-to-reg copy) is an `InvalidPointerArithmetic` error.  This prevents `MapDescriptor + scalar` from producing a corrupted handle that could be passed to a helper.
 
 **Rationale:**  Only ADD and SUB have defined meaning for pointers.  All other arithmetic destroys provenance.  A BPF static verifier already enforces these rules at load time; the interpreter enforces them dynamically as defense-in-depth.
 

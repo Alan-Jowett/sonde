@@ -6,7 +6,16 @@ fn insn(opc: u8, dst: u8, src: u8, off: i16, imm: i32) -> [u8; 8] {
     let regs = (src << 4) | (dst & 0x0f);
     let off_bytes = off.to_le_bytes();
     let imm_bytes = imm.to_le_bytes();
-    [opc, regs, off_bytes[0], off_bytes[1], imm_bytes[0], imm_bytes[1], imm_bytes[2], imm_bytes[3]]
+    [
+        opc,
+        regs,
+        off_bytes[0],
+        off_bytes[1],
+        imm_bytes[0],
+        imm_bytes[1],
+        imm_bytes[2],
+        imm_bytes[3],
+    ]
 }
 
 fn prog_from(insns: &[[u8; 8]]) -> Vec<u8> {
@@ -132,7 +141,7 @@ fn test_bitwise_ops() {
     let prog = prog_from(&[
         insn(ebpf::MOV64_IMM, 0, 0, 0, 0xff),
         insn(ebpf::AND64_IMM, 0, 0, 0, 0x0f),
-        insn(ebpf::OR64_IMM,  0, 0, 0, 0x30),
+        insn(ebpf::OR64_IMM, 0, 0, 0, 0x30),
         insn(ebpf::XOR64_IMM, 0, 0, 0, 0x06),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
@@ -162,7 +171,10 @@ fn test_neg64() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), (-1i64) as u64);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[]).unwrap(),
+        (-1i64) as u64
+    );
 }
 
 #[test]
@@ -174,7 +186,10 @@ fn test_arsh64() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), (-4i64) as u64);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[]).unwrap(),
+        (-4i64) as u64
+    );
 }
 
 // ── ALU32 tests ─────────────────────────────────────────────────────
@@ -210,8 +225,8 @@ fn test_ja() {
     // r0 = 1; ja +1; r0 = 2; exit
     let prog = prog_from(&[
         insn(ebpf::MOV64_IMM, 0, 0, 0, 1),
-        insn(ebpf::JA, 0, 0, 1, 0),         // skip next insn
-        insn(ebpf::MOV64_IMM, 0, 0, 0, 2),  // skipped
+        insn(ebpf::JA, 0, 0, 1, 0),        // skip next insn
+        insn(ebpf::MOV64_IMM, 0, 0, 0, 2), // skipped
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
@@ -250,10 +265,10 @@ fn test_jeq_imm_not_taken() {
 fn test_jgt_unsigned() {
     // Test unsigned comparison: 0xffffffff_ffffffff > 1
     let prog = prog_from(&[
-        insn(ebpf::MOV64_IMM, 0, 0, 0, 1),   // r0 = 1 (success marker)
-        insn(ebpf::MOV64_IMM, 1, 0, 0, -1),   // r1 = 0xffffffffffffffff (unsigned max)
-        insn(ebpf::JGT_IMM, 1, 0, 1, 1),      // if r1 > 1 goto +1 (taken, since unsigned)
-        insn(ebpf::MOV64_IMM, 0, 0, 0, 0),    // r0 = 0 (failure)
+        insn(ebpf::MOV64_IMM, 0, 0, 0, 1),  // r0 = 1 (success marker)
+        insn(ebpf::MOV64_IMM, 1, 0, 0, -1), // r1 = 0xffffffffffffffff (unsigned max)
+        insn(ebpf::JGT_IMM, 1, 0, 1, 1),    // if r1 > 1 goto +1 (taken, since unsigned)
+        insn(ebpf::MOV64_IMM, 0, 0, 0, 0),  // r0 = 0 (failure)
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
@@ -266,7 +281,7 @@ fn test_jslt_signed() {
     let prog = prog_from(&[
         insn(ebpf::MOV64_IMM, 0, 0, 0, 1),
         insn(ebpf::MOV64_IMM, 1, 0, 0, -5),
-        insn(ebpf::JSLT_IMM, 1, 0, 1, 0),   // taken
+        insn(ebpf::JSLT_IMM, 1, 0, 1, 0), // taken
         insn(ebpf::MOV64_IMM, 0, 0, 0, 0),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
@@ -281,9 +296,9 @@ fn test_jeq32() {
     // r1 = 0x1_0000_002a; jeq32 r1, 42, +1; r0 = 0; exit
     // 32-bit: lower 32 bits == 42 -> taken
     let prog = prog_from(&[
-        insn(ebpf::MOV64_IMM, 0, 0, 0, 1),     // r0 = 1
-        insn(ebpf::MOV64_IMM, 1, 0, 0, 42),     // r1 = 42
-        insn(ebpf::JEQ_IMM32, 1, 0, 1, 42),    // taken
+        insn(ebpf::MOV64_IMM, 0, 0, 0, 1),  // r0 = 1
+        insn(ebpf::MOV64_IMM, 1, 0, 0, 42), // r1 = 42
+        insn(ebpf::JEQ_IMM32, 1, 0, 1, 42), // taken
         insn(ebpf::MOV64_IMM, 0, 0, 0, 0),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
@@ -353,7 +368,10 @@ fn test_ld_dw_imm() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), 0x1_0000_0002);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[]).unwrap(),
+        0x1_0000_0002
+    );
 }
 
 // ── Helper function test ────────────────────────────────────────────
@@ -378,10 +396,7 @@ fn test_helper_call() {
 
 #[test]
 fn test_unknown_helper() {
-    let prog = prog_from(&[
-        insn(ebpf::CALL, 0, 0, 0, 99),
-        insn(ebpf::EXIT, 0, 0, 0, 0),
-    ]);
+    let prog = prog_from(&[insn(ebpf::CALL, 0, 0, 0, 99), insn(ebpf::EXIT, 0, 0, 0, 0)]);
     let mut mem = [];
     assert!(matches!(
         execute_program(&prog, &mut mem, &[]),
@@ -414,14 +429,14 @@ fn test_local_call() {
     // Insn 7: exit (returns to insn 3)
 
     let prog = prog_from(&[
-        insn(ebpf::MOV64_IMM, 1, 0, 0, 20),     // 0
-        insn(ebpf::MOV64_IMM, 2, 0, 0, 22),     // 1
-        insn(ebpf::CALL, 0, 1, 0, 2),            // 2: local call, src=1, imm=2 -> pc goes to 3+2=5
-        insn(ebpf::EXIT, 0, 0, 0, 0),            // 3: main exit
-        insn(ebpf::MOV64_IMM, 0, 0, 0, 0),      // 4: filler (never reached)
-        insn(ebpf::MOV64_REG, 0, 1, 0, 0),      // 5: r0 = r1
-        insn(ebpf::ADD64_REG, 0, 2, 0, 0),      // 6: r0 += r2
-        insn(ebpf::EXIT, 0, 0, 0, 0),            // 7: local return
+        insn(ebpf::MOV64_IMM, 1, 0, 0, 20), // 0
+        insn(ebpf::MOV64_IMM, 2, 0, 0, 22), // 1
+        insn(ebpf::CALL, 0, 1, 0, 2),       // 2: local call, src=1, imm=2 -> pc goes to 3+2=5
+        insn(ebpf::EXIT, 0, 0, 0, 0),       // 3: main exit
+        insn(ebpf::MOV64_IMM, 0, 0, 0, 0),  // 4: filler (never reached)
+        insn(ebpf::MOV64_REG, 0, 1, 0, 0),  // 5: r0 = r1
+        insn(ebpf::ADD64_REG, 0, 2, 0, 0),  // 6: r0 += r2
+        insn(ebpf::EXIT, 0, 0, 0, 0),       // 7: local return
     ]);
     let mut mem = [];
     assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), 42);
@@ -451,12 +466,12 @@ fn test_loop_sum() {
     // r0 = 0 (accumulator); r1 = 10 (counter)
     // loop: r0 += r1; r1 -= 1; jne r1, 0, -3; exit
     let prog = prog_from(&[
-        insn(ebpf::MOV64_IMM, 0, 0, 0, 0),       // 0: r0 = 0
-        insn(ebpf::MOV64_IMM, 1, 0, 0, 10),      // 1: r1 = 10
-        insn(ebpf::ADD64_REG, 0, 1, 0, 0),       // 2: r0 += r1
-        insn(ebpf::SUB64_IMM, 1, 0, 0, 1),       // 3: r1 -= 1
-        insn(ebpf::JNE_IMM, 1, 0, -3, 0),        // 4: if r1 != 0 goto 2 (4+1-3=2)
-        insn(ebpf::EXIT, 0, 0, 0, 0),            // 5: exit
+        insn(ebpf::MOV64_IMM, 0, 0, 0, 0),  // 0: r0 = 0
+        insn(ebpf::MOV64_IMM, 1, 0, 0, 10), // 1: r1 = 10
+        insn(ebpf::ADD64_REG, 0, 1, 0, 0),  // 2: r0 += r1
+        insn(ebpf::SUB64_IMM, 1, 0, 0, 1),  // 3: r1 -= 1
+        insn(ebpf::JNE_IMM, 1, 0, -3, 0),   // 4: if r1 != 0 goto 2 (4+1-3=2)
+        insn(ebpf::EXIT, 0, 0, 0, 0),       // 5: exit
     ]);
     let mut mem = [];
     assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), 55);
@@ -500,7 +515,7 @@ fn test_sdiv64() {
     // r0 = -42; r0 sdiv -1; exit -> 42
     let prog = prog_from(&[
         insn(ebpf::MOV64_IMM, 0, 0, 0, -42),
-        insn(ebpf::DIV64_IMM, 0, 0, 1, -1),  // offset=1 for SDIV
+        insn(ebpf::DIV64_IMM, 0, 0, 1, -1), // offset=1 for SDIV
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
@@ -514,11 +529,14 @@ fn test_smod64() {
     // r0 = -13; r0 smod 3; exit -> -1 (truncated division)
     let prog = prog_from(&[
         insn(ebpf::MOV64_IMM, 0, 0, 0, -13),
-        insn(ebpf::MOD64_IMM, 0, 0, 1, 3),  // offset=1 for SMOD
+        insn(ebpf::MOD64_IMM, 0, 0, 1, 3), // offset=1 for SMOD
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), (-1i64) as u64);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[]).unwrap(),
+        (-1i64) as u64
+    );
 }
 
 // ── MOVSX tests ─────────────────────────────────────────────────────
@@ -528,11 +546,14 @@ fn test_movsx64_8() {
     // r1 = 0x80 (128, which is -128 as i8); movsx64 r0, r1 (off=8); exit
     let prog = prog_from(&[
         insn(ebpf::MOV64_IMM, 1, 0, 0, 0x80),
-        insn(ebpf::MOV64_REG, 0, 1, 8, 0),  // MOVSX, off=8 -> sign-extend 8-bit
+        insn(ebpf::MOV64_REG, 0, 1, 8, 0), // MOVSX, off=8 -> sign-extend 8-bit
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), (-128i64) as u64);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[]).unwrap(),
+        (-128i64) as u64
+    );
 }
 
 #[test]
@@ -540,12 +561,15 @@ fn test_movsx32_8() {
     // r1 = 0x80; movsx32 r0, r1 (off=8); exit
     let prog = prog_from(&[
         insn(ebpf::MOV64_IMM, 1, 0, 0, 0x80),
-        insn(ebpf::MOV32_REG, 0, 1, 8, 0),  // MOVSX32, off=8 -> sign-extend 8-bit to 32, zero upper
+        insn(ebpf::MOV32_REG, 0, 1, 8, 0), // MOVSX32, off=8 -> sign-extend 8-bit to 32, zero upper
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
     // -128 as i32 = 0xffffff80, zero-extended to u64
-    assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), 0xffffff80u64);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[]).unwrap(),
+        0xffffff80u64
+    );
 }
 
 // ── Memory access violation test ────────────────────────────────────

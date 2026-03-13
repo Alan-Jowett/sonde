@@ -704,6 +704,10 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
         }
 
         PAIRING_MSG_PAIR_REQUEST => {
+            // The codec validates body size and returns BodyTooShort/BodyTooLong
+            // on mismatch. Per pairing-protocol.md §4.1, the *node receiver*
+            // should silently discard invalid frames — that policy is enforced
+            // by the caller, not the codec.
             check_exact_body(msg_type, body, PAIR_REQUEST_BODY_SIZE)?;
             let key_hint = u16::from_be_bytes([body[0], body[1]]);
             let mut psk = [0u8; PSK_SIZE];

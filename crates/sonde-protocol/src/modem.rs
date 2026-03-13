@@ -77,6 +77,38 @@ pub const MODEM_ERR_WIFI_INIT_FAILED: u8 = 0x02;
 pub const MODEM_ERR_CHANNEL_SET_FAILED: u8 = 0x03;
 pub const MODEM_ERR_UNKNOWN: u8 = 0xFF;
 
+// -- USB Pairing Protocol (host → node) --
+
+/// Provision key_hint and PSK to a node.
+pub const PAIRING_MSG_PAIR_REQUEST: u8 = 0x10;
+
+/// Factory-reset pairing state on the node.
+pub const PAIRING_MSG_RESET_REQUEST: u8 = 0x11;
+
+/// Query the node's current pairing identity.
+pub const PAIRING_MSG_IDENTITY_REQUEST: u8 = 0x12;
+
+// -- USB Pairing Protocol (node → host) --
+
+/// Acknowledgement of a PAIR_REQUEST.
+pub const PAIRING_MSG_PAIR_ACK: u8 = 0x90;
+
+/// Acknowledgement of a RESET_REQUEST.
+pub const PAIRING_MSG_RESET_ACK: u8 = 0x91;
+
+/// Response to IDENTITY_REQUEST with current pairing state.
+pub const PAIRING_MSG_IDENTITY_RESPONSE: u8 = 0x92;
+
+/// Node entered pairing mode and is ready.
+pub const PAIRING_MSG_PAIRING_READY: u8 = 0x9F;
+
+// -- Pairing status codes --
+
+pub const PAIRING_STATUS_SUCCESS: u8 = 0x00;
+pub const PAIRING_STATUS_ALREADY_PAIRED: u8 = 0x01;
+pub const PAIRING_STATUS_WRITE_ERROR: u8 = 0x02;
+pub const PAIRING_STATUS_UNPAIRED: u8 = 0x01;
+
 // -- Body sizes for fixed-layout messages --
 
 /// MODEM_READY body: firmware_version (4B) + mac_address (6B).
@@ -99,6 +131,12 @@ pub const RECV_FRAME_MAX_BODY_SIZE: usize = MAC_SIZE + 1 + 250; // 257
 
 /// Maximum ESP-NOW frame payload size.
 pub const ESPNOW_MAX_DATA_SIZE: usize = 250;
+
+/// Size of a pre-shared key (PSK).
+pub const PSK_SIZE: usize = 32;
+
+/// PAIR_REQUEST body: key_hint (2B) + psk (32B).
+pub const PAIR_REQUEST_BODY_SIZE: usize = 2 + PSK_SIZE; // 34
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -191,6 +229,15 @@ pub enum ModemMessage {
     ScanResult(ScanResult),
     Error(ModemError),
 
+    // -- USB Pairing Protocol --
+    PairRequest(PairRequest),
+    ResetRequest,
+    IdentityRequest,
+    PairAck(PairAck),
+    ResetAck(ResetAck),
+    IdentityResponse(IdentityResponse),
+    PairingReady(PairingReady),
+
     /// A message with a recognized framing but unknown type code.
     /// Kept for forward compatibility — receivers should silently discard.
     Unknown {
@@ -250,6 +297,38 @@ pub struct ScanResult {
 pub struct ModemError {
     pub error_code: u8,
     pub message: Vec<u8>,
+}
+
+/// PAIR_REQUEST (Host → Node): provision key_hint and PSK.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairRequest {
+    pub key_hint: u16,
+    pub psk: [u8; PSK_SIZE],
+}
+
+/// PAIR_ACK (Node → Host): response to PAIR_REQUEST.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairAck {
+    pub status: u8,
+}
+
+/// RESET_ACK (Node → Host): response to RESET_REQUEST.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResetAck {
+    pub status: u8,
+}
+
+/// IDENTITY_RESPONSE (Node → Host): current pairing state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdentityResponse {
+    pub paired: bool,
+    pub key_hint: Option<u16>,
+}
+
+/// PAIRING_READY (Node → Host): node entered pairing mode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairingReady {
+    pub firmware_version: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +435,35 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             body.push(e.error_code);
             body.extend_from_slice(&e.message);
             Ok((MODEM_MSG_ERROR, body))
+        }
+        ModemMessage::PairRequest(pr) => {
+            let mut body = Vec::with_capacity(PAIR_REQUEST_BODY_SIZE);
+            body.extend_from_slice(&pr.key_hint.to_be_bytes());
+            body.extend_from_slice(&pr.psk);
+            Ok((PAIRING_MSG_PAIR_REQUEST, body))
+        }
+        ModemMessage::ResetRequest => Ok((PAIRING_MSG_RESET_REQUEST, Vec::new())),
+        ModemMessage::IdentityRequest => Ok((PAIRING_MSG_IDENTITY_REQUEST, Vec::new())),
+        ModemMessage::PairAck(pa) => Ok((PAIRING_MSG_PAIR_ACK, alloc::vec![pa.status])),
+        ModemMessage::ResetAck(ra) => Ok((PAIRING_MSG_RESET_ACK, alloc::vec![ra.status])),
+        ModemMessage::IdentityResponse(ir) => {
+            if ir.paired {
+                let kh = ir.key_hint.unwrap_or(0);
+                let mut body = Vec::with_capacity(3);
+                body.push(PAIRING_STATUS_SUCCESS);
+                body.extend_from_slice(&kh.to_be_bytes());
+                Ok((PAIRING_MSG_IDENTITY_RESPONSE, body))
+            } else {
+                Ok((
+                    PAIRING_MSG_IDENTITY_RESPONSE,
+                    alloc::vec![PAIRING_STATUS_UNPAIRED],
+                ))
+            }
+        }
+        ModemMessage::PairingReady(pr) => {
+            let mut body = Vec::with_capacity(4);
+            body.extend_from_slice(&pr.firmware_version.to_be_bytes());
+            Ok((PAIRING_MSG_PAIRING_READY, body))
         }
         ModemMessage::Unknown { msg_type, body } => Ok((*msg_type, body.clone())),
     }
@@ -579,6 +687,71 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             Ok(ModemMessage::Error(ModemError {
                 error_code: body[0],
                 message: body[1..].to_vec(),
+            }))
+        }
+
+        PAIRING_MSG_PAIR_REQUEST => {
+            check_exact_body(msg_type, body, PAIR_REQUEST_BODY_SIZE)?;
+            let key_hint = u16::from_be_bytes([body[0], body[1]]);
+            let mut psk = [0u8; PSK_SIZE];
+            psk.copy_from_slice(&body[2..2 + PSK_SIZE]);
+            Ok(ModemMessage::PairRequest(PairRequest { key_hint, psk }))
+        }
+
+        PAIRING_MSG_RESET_REQUEST => {
+            check_exact_body(msg_type, body, 0)?;
+            Ok(ModemMessage::ResetRequest)
+        }
+
+        PAIRING_MSG_IDENTITY_REQUEST => {
+            check_exact_body(msg_type, body, 0)?;
+            Ok(ModemMessage::IdentityRequest)
+        }
+
+        PAIRING_MSG_PAIR_ACK => {
+            check_exact_body(msg_type, body, 1)?;
+            Ok(ModemMessage::PairAck(PairAck { status: body[0] }))
+        }
+
+        PAIRING_MSG_RESET_ACK => {
+            check_exact_body(msg_type, body, 1)?;
+            Ok(ModemMessage::ResetAck(ResetAck { status: body[0] }))
+        }
+
+        PAIRING_MSG_IDENTITY_RESPONSE => {
+            if body.len() == 1 {
+                // Unpaired: status = 0x01
+                Ok(ModemMessage::IdentityResponse(IdentityResponse {
+                    paired: false,
+                    key_hint: None,
+                }))
+            } else if body.len() == 3 {
+                // Paired: status = 0x00, key_hint 2B BE
+                let key_hint = u16::from_be_bytes([body[1], body[2]]);
+                Ok(ModemMessage::IdentityResponse(IdentityResponse {
+                    paired: true,
+                    key_hint: Some(key_hint),
+                }))
+            } else if body.is_empty() {
+                Err(ModemCodecError::BodyTooShort {
+                    msg_type,
+                    expected_min: 1,
+                    actual: 0,
+                })
+            } else {
+                Err(ModemCodecError::BodyTooLong {
+                    msg_type,
+                    expected_max: 3,
+                    actual: body.len(),
+                })
+            }
+        }
+
+        PAIRING_MSG_PAIRING_READY => {
+            check_exact_body(msg_type, body, 4)?;
+            let firmware_version = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+            Ok(ModemMessage::PairingReady(PairingReady {
+                firmware_version,
             }))
         }
 
@@ -1106,5 +1279,166 @@ mod tests {
         let overflow = alloc::vec![0xAAu8; 20];
         decoder.push(&overflow);
         assert_eq!(decoder.buffered(), 20); // buffer was cleared then refilled
+    }
+
+    // -- USB Pairing Protocol round-trip tests --
+
+    #[test]
+    fn round_trip_pair_request() {
+        let mut psk = [0u8; PSK_SIZE];
+        for (i, b) in psk.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let msg = ModemMessage::PairRequest(PairRequest {
+            key_hint: 0x1234,
+            psk,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+        assert_eq!(consumed, frame.len());
+    }
+
+    #[test]
+    fn pair_request_specific_values() {
+        let psk = [0xAB; PSK_SIZE];
+        let msg = ModemMessage::PairRequest(PairRequest {
+            key_hint: 0xBEEF,
+            psk,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        // LEN = 1 (TYPE) + 34 (BODY) = 35
+        assert_eq!(frame[0], 0x00);
+        assert_eq!(frame[1], 35);
+        assert_eq!(frame[2], PAIRING_MSG_PAIR_REQUEST);
+        // key_hint BE
+        assert_eq!(frame[3], 0xBE);
+        assert_eq!(frame[4], 0xEF);
+        // first PSK byte
+        assert_eq!(frame[5], 0xAB);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_reset_request() {
+        let msg = ModemMessage::ResetRequest;
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_identity_request() {
+        let msg = ModemMessage::IdentityRequest;
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_pair_ack() {
+        let msg = ModemMessage::PairAck(PairAck {
+            status: PAIRING_STATUS_SUCCESS,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_pair_ack_already_paired() {
+        let msg = ModemMessage::PairAck(PairAck {
+            status: PAIRING_STATUS_ALREADY_PAIRED,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_reset_ack() {
+        let msg = ModemMessage::ResetAck(ResetAck {
+            status: PAIRING_STATUS_SUCCESS,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_identity_response_paired() {
+        let msg = ModemMessage::IdentityResponse(IdentityResponse {
+            paired: true,
+            key_hint: Some(0x00FF),
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_identity_response_unpaired() {
+        let msg = ModemMessage::IdentityResponse(IdentityResponse {
+            paired: false,
+            key_hint: None,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_pairing_ready() {
+        let msg = ModemMessage::PairingReady(PairingReady {
+            firmware_version: 0x0102_0304,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn streaming_pairing_messages() {
+        let mut decoder = FrameDecoder::new();
+
+        let f1 = encode_modem_frame(&ModemMessage::PairingReady(PairingReady {
+            firmware_version: 1,
+        }))
+        .unwrap();
+        let f2 = encode_modem_frame(&ModemMessage::PairRequest(PairRequest {
+            key_hint: 0x0042,
+            psk: [0xFF; PSK_SIZE],
+        }))
+        .unwrap();
+        let f3 = encode_modem_frame(&ModemMessage::PairAck(PairAck {
+            status: PAIRING_STATUS_SUCCESS,
+        }))
+        .unwrap();
+
+        decoder.push(&f1);
+        decoder.push(&f2);
+        decoder.push(&f3);
+
+        assert_eq!(
+            decoder.decode().unwrap().unwrap(),
+            ModemMessage::PairingReady(PairingReady {
+                firmware_version: 1,
+            })
+        );
+        assert_eq!(
+            decoder.decode().unwrap().unwrap(),
+            ModemMessage::PairRequest(PairRequest {
+                key_hint: 0x0042,
+                psk: [0xFF; PSK_SIZE],
+            })
+        );
+        assert_eq!(
+            decoder.decode().unwrap().unwrap(),
+            ModemMessage::PairAck(PairAck {
+                status: PAIRING_STATUS_SUCCESS,
+            })
+        );
+        assert_eq!(decoder.decode().unwrap(), None);
     }
 }

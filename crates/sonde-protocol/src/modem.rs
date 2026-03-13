@@ -105,11 +105,12 @@ pub const PAIRING_MSG_PAIRING_READY: u8 = 0x9F;
 // -- Pairing status codes --
 
 pub const PAIRING_STATUS_SUCCESS: u8 = 0x00;
-/// In `PAIR_ACK`: node is already paired. In `IDENTITY_RESPONSE`: node is unpaired.
-/// The value 0x01 is reused across message types with different semantics.
-pub const PAIRING_STATUS_ALREADY_PAIRED: u8 = 0x01;
+/// PAIR_ACK status: node is already paired (must factory reset first).
+pub const PAIR_ACK_ALREADY_PAIRED: u8 = 0x01;
+/// PAIR_ACK / RESET_ACK status: flash write or erase error.
 pub const PAIRING_STATUS_WRITE_ERROR: u8 = 0x02;
-pub const PAIRING_STATUS_UNPAIRED: u8 = 0x01;
+/// IDENTITY_RESPONSE status: node is unpaired.
+pub const IDENTITY_STATUS_UNPAIRED: u8 = 0x01;
 
 // -- Body sizes for fixed-layout messages --
 
@@ -459,7 +460,7 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             }
             IdentityResponse::Unpaired => Ok((
                 PAIRING_MSG_IDENTITY_RESPONSE,
-                alloc::vec![PAIRING_STATUS_UNPAIRED],
+                alloc::vec![IDENTITY_STATUS_UNPAIRED],
             )),
         },
         ModemMessage::PairingReady(pr) => {
@@ -738,7 +739,7 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
                         key_hint,
                     }))
                 }
-                PAIRING_STATUS_UNPAIRED => {
+                IDENTITY_STATUS_UNPAIRED => {
                     // Unpaired: status(1B) = 1 byte
                     check_exact_body(msg_type, body, 1)?;
                     Ok(ModemMessage::IdentityResponse(IdentityResponse::Unpaired))
@@ -1353,7 +1354,7 @@ mod tests {
     #[test]
     fn round_trip_pair_ack_already_paired() {
         let msg = ModemMessage::PairAck(PairAck {
-            status: PAIRING_STATUS_ALREADY_PAIRED,
+            status: PAIR_ACK_ALREADY_PAIRED,
         });
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, _) = decode_modem_frame(&frame).unwrap();

@@ -8,7 +8,7 @@
 //! buffered in a shared queue populated by an ESP-NOW receive callback.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use esp_idf_hal::modem::Modem;
@@ -16,7 +16,6 @@ use esp_idf_svc::espnow::{EspNow, PeerInfo};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
-use log::warn;
 
 use crate::error::{NodeError, NodeResult};
 
@@ -26,6 +25,7 @@ const BROADCAST_MAC: [u8; 6] = [0xFF; 6];
 /// Shared state for the raw ESP-NOW receive callback.
 struct RecvState {
     rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    condvar: Arc<Condvar>,
 }
 
 /// Global callback state — set once during [`EspNowTransport::new`].
@@ -52,6 +52,9 @@ unsafe extern "C" fn raw_recv_cb(
         if let Ok(mut q) = state.rx_queue.try_lock() {
             if q.len() < 64 {
                 q.push_back(payload.to_vec());
+                state.condvar.notify_one();
+            } else {
+                log::warn!("ESP-NOW recv queue full, dropping frame");
             }
         }
     }
@@ -65,6 +68,7 @@ pub struct EspNowTransport {
     _wifi: BlockingWifi<EspWifi<'static>>,
     espnow: EspNow<'static>,
     rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    rx_condvar: Arc<Condvar>,
 }
 
 impl EspNowTransport {
@@ -101,9 +105,11 @@ impl EspNowTransport {
 
         // Set up receive callback
         let rx_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let rx_condvar = Arc::new(Condvar::new());
         RECV_STATE
             .set(RecvState {
                 rx_queue: Arc::clone(&rx_queue),
+                condvar: Arc::clone(&rx_condvar),
             })
             .map_err(|_| NodeError::Transport("recv callback already registered".into()))?;
         unsafe {
@@ -115,6 +121,7 @@ impl EspNowTransport {
             _wifi: wifi,
             espnow,
             rx_queue,
+            rx_condvar,
         })
     }
 }
@@ -131,16 +138,24 @@ impl crate::traits::Transport for EspNowTransport {
 
     fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
         let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
+        let mut q = self
+            .rx_queue
+            .lock()
+            .map_err(|_| NodeError::Transport("rx_queue lock poisoned".into()))?;
         loop {
-            if let Ok(mut q) = self.rx_queue.lock() {
-                if let Some(frame) = q.pop_front() {
-                    return Ok(Some(frame));
-                }
+            if let Some(frame) = q.pop_front() {
+                return Ok(Some(frame));
             }
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 return Ok(None);
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            let remaining = deadline - now;
+            let (guard, _timeout_result) = self
+                .rx_condvar
+                .wait_timeout(q, remaining)
+                .map_err(|_| NodeError::Transport("rx_queue lock poisoned".into()))?;
+            q = guard;
         }
     }
 }

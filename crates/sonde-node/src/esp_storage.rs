@@ -68,9 +68,15 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn erase_key(&mut self) -> NodeResult<()> {
-        let _ = self.nvs.remove("psk");
-        let _ = self.nvs.remove("key_hint");
-        let _ = self.nvs.remove("magic");
+        self.nvs
+            .remove("psk")
+            .map_err(|e| NodeError::StorageError(format!("erase psk: {:?}", e)))?;
+        self.nvs
+            .remove("key_hint")
+            .map_err(|e| NodeError::StorageError(format!("erase key_hint: {:?}", e)))?;
+        self.nvs
+            .remove("magic")
+            .map_err(|e| NodeError::StorageError(format!("erase magic: {:?}", e)))?;
         Ok(())
     }
 
@@ -83,7 +89,13 @@ impl crate::traits::PlatformStorage for NvsStorage {
             .ok()
             .flatten()
             .unwrap_or(DEFAULT_INTERVAL_S);
-        let active = self.nvs.get_u32("active_p").ok().flatten().unwrap_or(0) as u8;
+        let active = self
+            .nvs
+            .get_u32("active_p")
+            .ok()
+            .flatten()
+            .unwrap_or(0)
+            .min(1) as u8;
         (interval, active)
     }
 
@@ -94,6 +106,12 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
+        if partition > 1 {
+            return Err(NodeError::StorageError(format!(
+                "invalid partition: {} (must be 0 or 1)",
+                partition
+            )));
+        }
         self.nvs
             .set_u32("active_p", partition as u32)
             .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
@@ -111,6 +129,9 @@ impl crate::traits::PlatformStorage for NvsStorage {
     // --- Program partitions ---
 
     fn read_program(&self, partition: u8) -> Option<Vec<u8>> {
+        if partition >= 2 {
+            return None;
+        }
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
         let mut buf = vec![0u8; 4096];
         match self.nvs.get_blob(key, &mut buf) {
@@ -120,6 +141,18 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
+        if partition > 1 {
+            return Err(NodeError::StorageError(format!(
+                "invalid partition: {} (must be 0 or 1)",
+                partition
+            )));
+        }
+        if image.len() > 4096 {
+            return Err(NodeError::StorageError(format!(
+                "program image too large: {} bytes (max 4096)",
+                image.len()
+            )));
+        }
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
         self.nvs
             .set_blob(key, image)
@@ -128,7 +161,9 @@ impl crate::traits::PlatformStorage for NvsStorage {
 
     fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
-        let _ = self.nvs.remove(key);
+        self.nvs
+            .remove(key)
+            .map_err(|e| NodeError::StorageError(format!("erase {}: {:?}", key, e)))?;
         Ok(())
     }
 
@@ -145,6 +180,10 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn set_early_wake_flag(&mut self) -> NodeResult<()> {
+        let current = self.nvs.get_u32("early_wake").ok().flatten().unwrap_or(0);
+        if current == 1 {
+            return Ok(());
+        }
         self.nvs
             .set_u32("early_wake", 1)
             .map_err(|e| NodeError::StorageError(format!("{:?}", e)))

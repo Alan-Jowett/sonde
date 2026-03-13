@@ -9,9 +9,11 @@ CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
-# Custom partition table with 2 MB app partition.
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Use the built-in "Single factory app (large), no OTA" partition table.
+# This provides ~1.5 MB for the app partition (vs 1 MB in the default).
+# A fully custom partitions.csv would require embuild integration to
+# copy the file into the ESP-IDF build directory.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
 # Serial console on UART0 at 115200 bps (QEMU forwards UART0 to stdio).
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y

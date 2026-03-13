@@ -88,6 +88,16 @@ fn check_mem(addr: u64, len: usize, pc: usize, mem: &[u8], stack: &[u8]) -> Resu
     Err(BpfError::MemoryAccessViolation { pc, addr, len })
 }
 
+/// Compute and validate a jump target. Returns `Err` if the target is out of bounds.
+#[inline]
+fn check_jump(pc: usize, offset: isize, num_insns: usize) -> Result<usize, BpfError> {
+    let target = pc as isize + offset;
+    if target < 0 || target as usize >= num_insns {
+        return Err(BpfError::OutOfBounds { pc: pc - 1 });
+    }
+    Ok(target as usize)
+}
+
 /// Execute a BPF program.
 ///
 /// # Arguments
@@ -523,231 +533,231 @@ pub fn execute_program(
 
             // ── JMP (64-bit operands) ───────────────────────────────
             ebpf::JA => {
-                pc = (pc as isize + insn.off as isize) as usize;
+                pc = check_jump(pc, insn.off as isize, num_insns)?;
             }
             ebpf::JEQ_IMM => {
                 if reg[dst] == (insn.imm as i64 as u64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JEQ_REG => {
                 if reg[dst] == reg[src] {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JGT_IMM => {
                 if reg[dst] > (insn.imm as i64 as u64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JGT_REG => {
                 if reg[dst] > reg[src] {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JGE_IMM => {
                 if reg[dst] >= (insn.imm as i64 as u64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JGE_REG => {
                 if reg[dst] >= reg[src] {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JLT_IMM => {
                 if reg[dst] < (insn.imm as i64 as u64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JLT_REG => {
                 if reg[dst] < reg[src] {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JLE_IMM => {
                 if reg[dst] <= (insn.imm as i64 as u64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JLE_REG => {
                 if reg[dst] <= reg[src] {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSET_IMM => {
                 if reg[dst] & (insn.imm as i64 as u64) != 0 {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSET_REG => {
                 if reg[dst] & reg[src] != 0 {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JNE_IMM => {
                 if reg[dst] != (insn.imm as i64 as u64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JNE_REG => {
                 if reg[dst] != reg[src] {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSGT_IMM => {
                 if (reg[dst] as i64) > (insn.imm as i64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSGT_REG => {
                 if (reg[dst] as i64) > (reg[src] as i64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSGE_IMM => {
                 if (reg[dst] as i64) >= (insn.imm as i64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSGE_REG => {
                 if (reg[dst] as i64) >= (reg[src] as i64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSLT_IMM => {
                 if (reg[dst] as i64) < (insn.imm as i64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSLT_REG => {
                 if (reg[dst] as i64) < (reg[src] as i64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSLE_IMM => {
                 if (reg[dst] as i64) <= (insn.imm as i64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSLE_REG => {
                 if (reg[dst] as i64) <= (reg[src] as i64) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
 
             // ── JMP32 (32-bit operands) ─────────────────────────────
             ebpf::JA32 => {
-                pc = (pc as isize + insn.imm as isize) as usize;
+                pc = check_jump(pc, insn.imm as isize, num_insns)?;
             }
             ebpf::JEQ_IMM32 => {
                 if (reg[dst] as u32) == (insn.imm as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JEQ_REG32 => {
                 if (reg[dst] as u32) == (reg[src] as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JGT_IMM32 => {
                 if (reg[dst] as u32) > (insn.imm as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JGT_REG32 => {
                 if (reg[dst] as u32) > (reg[src] as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JGE_IMM32 => {
                 if (reg[dst] as u32) >= (insn.imm as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JGE_REG32 => {
                 if (reg[dst] as u32) >= (reg[src] as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JLT_IMM32 => {
                 if (reg[dst] as u32) < (insn.imm as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JLT_REG32 => {
                 if (reg[dst] as u32) < (reg[src] as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JLE_IMM32 => {
                 if (reg[dst] as u32) <= (insn.imm as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JLE_REG32 => {
                 if (reg[dst] as u32) <= (reg[src] as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSET_IMM32 => {
                 if (reg[dst] as u32) & (insn.imm as u32) != 0 {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSET_REG32 => {
                 if (reg[dst] as u32) & (reg[src] as u32) != 0 {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JNE_IMM32 => {
                 if (reg[dst] as u32) != (insn.imm as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JNE_REG32 => {
                 if (reg[dst] as u32) != (reg[src] as u32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSGT_IMM32 => {
                 if (reg[dst] as i32) > (insn.imm) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSGT_REG32 => {
                 if (reg[dst] as i32) > (reg[src] as i32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSGE_IMM32 => {
                 if (reg[dst] as i32) >= (insn.imm) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSGE_REG32 => {
                 if (reg[dst] as i32) >= (reg[src] as i32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSLT_IMM32 => {
                 if (reg[dst] as i32) < (insn.imm) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSLT_REG32 => {
                 if (reg[dst] as i32) < (reg[src] as i32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSLE_IMM32 => {
                 if (reg[dst] as i32) <= (insn.imm) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
             ebpf::JSLE_REG32 => {
                 if (reg[dst] as i32) <= (reg[src] as i32) {
-                    pc = (pc as isize + insn.off as isize) as usize;
+                    pc = check_jump(pc, insn.off as isize, num_insns)?;
                 }
             }
 
@@ -777,7 +787,7 @@ pub fn execute_program(
                         call_frames[frame_idx].frame_size = frame_size;
                         reg[10] -= frame_size;
                         frame_idx += 1;
-                        pc = (pc as isize + insn.imm as isize) as usize;
+                        pc = check_jump(pc, insn.imm as isize, num_insns)?;
                     }
                     _ => {
                         return Err(BpfError::UnknownOpcode {

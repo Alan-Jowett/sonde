@@ -5,6 +5,7 @@
 
 use sonde_e2e::harness::{E2eTestEnv, NodeProxy};
 use sonde_gateway::engine::PendingCommand;
+use sonde_node::traits::PlatformStorage;
 use sonde_node::wake_cycle::WakeCycleOutcome;
 
 use sonde_gateway::storage::Storage;
@@ -28,6 +29,10 @@ async fn t_e2e_001_nop_wake_cycle() {
     let record = env.storage.get_node("test-node").await.unwrap().unwrap();
     assert_eq!(record.last_battery_mv, Some(3300));
     assert!(record.last_seen.is_some());
+    assert_eq!(
+        record.firmware_abi_version,
+        Some(sonde_node::FIRMWARE_ABI_VERSION)
+    );
 }
 
 /// T-E2E-003 — Wrong PSK rejected (silent discard).
@@ -46,6 +51,10 @@ async fn t_e2e_003_wrong_psk_rejected() {
 
     // Should exhaust retries and sleep
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Note: With BridgeTransport, we can't independently count gateway
+    // response frames. The WakeCycleOutcome::Sleep with retries exhausted
+    // confirms the gateway did not respond with a valid COMMAND.
 }
 
 /// T-E2E-020 — UPDATE_SCHEDULE command.
@@ -59,17 +68,24 @@ async fn t_e2e_020_update_schedule() {
     env.register_node("sched-node", 1, psk).await;
 
     // Queue schedule update
-    env.pending_commands
-        .write()
-        .await
-        .entry("sched-node".into())
-        .or_default()
-        .push(PendingCommand::UpdateSchedule { interval_s: 120 });
+    env.gateway
+        .queue_command(
+            "sched-node",
+            PendingCommand::UpdateSchedule { interval_s: 120 },
+        )
+        .await;
 
     let mut node = NodeProxy::new("sched-node", 1, psk);
     let outcome = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 120 });
+
+    // Node persisted the new interval
+    assert_eq!(node.storage.read_schedule().0, 120);
+
+    // Pending command consumed
+    let cmds = env.pending_commands.read().await;
+    assert!(cmds.get("sched-node").map_or(true, |v| v.is_empty()));
 }
 
 /// T-E2E-021 — REBOOT command.
@@ -81,12 +97,9 @@ async fn t_e2e_021_reboot() {
     let psk = [0xDD; 32];
     env.register_node("reboot-node", 1, psk).await;
 
-    env.pending_commands
-        .write()
-        .await
-        .entry("reboot-node".into())
-        .or_default()
-        .push(PendingCommand::Reboot);
+    env.gateway
+        .queue_command("reboot-node", PendingCommand::Reboot)
+        .await;
 
     let mut node = NodeProxy::new("reboot-node", 1, psk);
     let outcome = node.run_wake_cycle(&env).await;
@@ -107,4 +120,8 @@ async fn t_e2e_040_unknown_node() {
     let outcome = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Note: With BridgeTransport, we can't independently count gateway
+    // response frames. The WakeCycleOutcome::Sleep with retries exhausted
+    // confirms the gateway did not respond with a valid COMMAND.
 }

@@ -3,6 +3,10 @@
 
 //! Bridge harness that wires gateway and node together via in-memory frame
 //! queues for end-to-end integration testing.
+//!
+//! Phase 1: direct in-process bridge — the node calls
+//! `Gateway::process_frame` synchronously via `block_in_place`.
+//! Modem / ESP-NOW radio integration will be added in a later phase.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -92,7 +96,8 @@ impl NodeProxy {
     /// Run one full wake cycle, relaying every frame through the real gateway.
     ///
     /// Uses `block_in_place` so the synchronous node code can call the async
-    /// gateway without deadlocking the single-threaded test reactor.
+    /// gateway inline. `block_in_place` requires a multi-thread tokio runtime.
+    /// All E2E tests must use `#[tokio::test(flavor = "multi_thread")]`.
     pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleOutcome {
         let mut hal = MockHal;
         let mut rng = MockRng(0);
@@ -225,6 +230,11 @@ impl PlatformStorage for MockNodeStorage {
         self.key
     }
     fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
+        if self.key.is_some() {
+            return Err(sonde_node::error::NodeError::StorageError(
+                "already paired".into(),
+            ));
+        }
         self.key = Some((key_hint, *psk));
         Ok(())
     }
@@ -240,6 +250,11 @@ impl PlatformStorage for MockNodeStorage {
         Ok(())
     }
     fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
+        if partition > 1 {
+            return Err(sonde_node::error::NodeError::StorageError(
+                "partition must be 0 or 1".into(),
+            ));
+        }
         self.active_partition = partition;
         Ok(())
     }
@@ -340,6 +355,7 @@ impl Clock for MockClock {
     fn delay_ms(&self, _ms: u32) {}
 }
 
+#[allow(dead_code)]
 struct MockBpfInterpreter {
     loaded: bool,
     executed: bool,

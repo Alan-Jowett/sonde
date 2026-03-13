@@ -205,10 +205,8 @@ impl NodeTransport for BridgeTransport {
         let gateway = self.gateway.clone();
         let peer = self.peer.clone();
         let frame = frame.to_vec();
-        let response = tokio::task::block_in_place(|| {
-            self.rt
-                .block_on(gateway.process_frame(&frame, peer))
-        });
+        let response =
+            tokio::task::block_in_place(|| self.rt.block_on(gateway.process_frame(&frame, peer)));
         if response.is_some() {
             self.response_count += 1;
         }

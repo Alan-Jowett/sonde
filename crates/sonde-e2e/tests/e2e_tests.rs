@@ -69,11 +69,17 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
 
     let stats1 = node.run_wake_cycle(&env);
     assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
-    assert!(stats1.response_count > 0, "first cycle should receive gateway responses");
+    assert!(
+        stats1.response_count > 0,
+        "first cycle should receive gateway responses"
+    );
 
     let stats2 = node.run_wake_cycle(&env);
     assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
-    assert!(stats2.response_count > 0, "second cycle should receive gateway responses");
+    assert!(
+        stats2.response_count > 0,
+        "second cycle should receive gateway responses"
+    );
 
     // Verify nonce uniqueness across cycles.
     assert!(

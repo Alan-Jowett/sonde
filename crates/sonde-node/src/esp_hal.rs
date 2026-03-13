@@ -15,13 +15,11 @@
 use crate::hal;
 use log::warn;
 
-/// Default I2C0 SDA pin for ESP32 dev boards.
-/// Change these constants and rebuild for different boards.
-const I2C0_SDA: i32 = 4;
+/// I2C0 SDA pin (yellow wire).
+const I2C0_SDA: i32 = 0;
 
-/// Default I2C0 SCL pin for ESP32 dev boards.
-/// Change these constants and rebuild for different boards.
-const I2C0_SCL: i32 = 5;
+/// I2C0 SCL pin (blue wire).
+const I2C0_SCL: i32 = 1;
 const I2C0_FREQ_HZ: u32 = 100_000; // 100 kHz standard mode
 
 // Timeout for I2C operations in FreeRTOS ticks (1 tick ≈ 1 ms at default rate).

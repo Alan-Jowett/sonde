@@ -78,6 +78,9 @@ impl BpfInterpreter for SondeBpfInterpreter {
         // Build MapRegion descriptors from map_ptrs + map_defs.
         self.map_regions.clear();
         for (i, (&ptr, def)) in map_ptrs.iter().zip(map_defs.iter()).enumerate() {
+            if ptr == 0 {
+                return Err(BpfError::LoadError(format!("map {i}: null pointer")));
+            }
             let entry_size = (def.key_size as u64)
                 .checked_add(def.value_size as u64)
                 .ok_or_else(|| BpfError::LoadError(format!("map {i}: entry size overflow")))?;
@@ -149,6 +152,9 @@ impl BpfInterpreter for SondeBpfInterpreter {
                 SbErr::UnknownHelper { id, .. } => BpfError::HelperNotRegistered(id),
                 SbErr::OutOfBounds { .. } | SbErr::UnknownOpcode { .. } => {
                     BpfError::InvalidBytecode(format!("{e}"))
+                }
+                SbErr::InvalidMapIndex { .. } | SbErr::InvalidHelperArgument { .. } => {
+                    BpfError::LoadError(format!("{e}"))
                 }
                 _ => BpfError::RuntimeError(format!("{e}")),
             }

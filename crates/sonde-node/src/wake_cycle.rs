@@ -339,12 +339,15 @@ where
 
         let exec_result = match crate::bpf_dispatch::register_all(interpreter) {
             Ok(()) => {
-                // Ephemeral programs have empty map_defs. Pass matching
-                // empty slices so the adapter's length check passes.
-                // Resident programs use the full map metadata.
+                // Ephemeral programs don't declare their own maps but can
+                // access the resident program's maps (read-only).  Derive
+                // map metadata from the current MapStorage allocation.
+                let resident_defs: Vec<sonde_protocol::MapDef> = (0..map_storage.map_count())
+                    .filter_map(|i| map_storage.get(i).map(|m| m.def.clone()))
+                    .collect();
                 let (load_ptrs, load_defs): (&[u64], &[sonde_protocol::MapDef]) =
-                    if program.map_defs.is_empty() {
-                        (&[], &[])
+                    if program.map_defs.is_empty() && !resident_defs.is_empty() {
+                        (&map_ptrs, &resident_defs)
                     } else {
                         (&map_ptrs, &program.map_defs)
                     };

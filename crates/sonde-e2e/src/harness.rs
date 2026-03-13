@@ -74,12 +74,11 @@ impl E2eTestEnv {
 // ---------------------------------------------------------------------------
 
 /// Lightweight handle representing a remote node.
+///
+/// Identity and schedule are stored exclusively in `self.storage`
+/// (`PlatformStorage`) — the wake cycle reads them from there.
 pub struct NodeProxy {
-    pub node_id: String,
-    pub key_hint: u16,
-    pub psk: [u8; 32],
     pub mac: Vec<u8>,
-    pub schedule_interval_s: u32,
     pub storage: MockNodeStorage,
     pub map_storage: MapStorage,
     rng: MockRng,
@@ -87,12 +86,9 @@ pub struct NodeProxy {
 
 impl NodeProxy {
     pub fn new(node_id: &str, key_hint: u16, psk: [u8; 32]) -> Self {
+        let _ = node_id; // used only to initialise storage
         Self {
-            node_id: node_id.into(),
-            key_hint,
-            psk,
             mac: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
-            schedule_interval_s: 60,
             storage: MockNodeStorage::new_paired(key_hint, psk, 60),
             map_storage: MapStorage::new(4096),
             rng: MockRng(0),

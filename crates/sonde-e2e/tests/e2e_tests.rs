@@ -54,10 +54,11 @@ async fn t_e2e_002_hmac_round_trip() {
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 }
 
-/// T-E2E-002b — Consecutive wake cycles with unique nonces.
+/// T-E2E-002b — Consecutive wake cycles (state persistence).
 ///
-/// Runs two wake cycles on the same node. Verifies that the second cycle
-/// succeeds (nonces are unique, state persists correctly).
+/// Runs two wake cycles on the same `NodeProxy`. Verifies that both cycles
+/// complete successfully with persistent storage and monotonic RNG state,
+/// confirming the harness correctly preserves node state across cycles.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002b_consecutive_wake_cycles() {
     let env = E2eTestEnv::new().await;

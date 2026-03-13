@@ -19,7 +19,7 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const IDENTITY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Pair a node by sending `PAIR_REQUEST` with the given `key_hint` and PSK.
-pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<(), String> {
+pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE], json: bool) -> Result<(), String> {
     let mut port = serialport::new(port_name, 115_200)
         .timeout(READY_TIMEOUT)
         .open()
@@ -54,7 +54,14 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
         match ack {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::PairAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
-                println!("Pairing successful (key_hint=0x{:04x})", key_hint);
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"status": "success", "key_hint": format!("0x{:04x}", key_hint)})
+                    );
+                } else {
+                    println!("Pairing successful (key_hint=0x{:04x})", key_hint);
+                }
                 return Ok(());
             }
             ModemMessage::PairAck(a) => {
@@ -66,7 +73,7 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
 }
 
 /// Factory-reset a node by sending `RESET_REQUEST`.
-pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
+pub fn factory_reset_node(port_name: &str, json: bool) -> Result<(), String> {
     let mut port = serialport::new(port_name, 115_200)
         .timeout(READY_TIMEOUT)
         .open()
@@ -98,7 +105,11 @@ pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
         match ack {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::ResetAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
-                println!("Factory reset successful");
+                if json {
+                    println!("{}", serde_json::json!({"status": "success"}));
+                } else {
+                    println!("Factory reset successful");
+                }
                 return Ok(());
             }
             ModemMessage::ResetAck(a) => {
@@ -110,7 +121,7 @@ pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
 }
 
 /// Query a node's pairing identity by sending `IDENTITY_REQUEST`.
-pub fn query_identity(port_name: &str) -> Result<(), String> {
+pub fn query_identity(port_name: &str, json: bool) -> Result<(), String> {
     let mut port = serialport::new(port_name, 115_200)
         .timeout(READY_TIMEOUT)
         .open()
@@ -122,10 +133,21 @@ pub fn query_identity(port_name: &str) -> Result<(), String> {
     let identity = query_identity_inner(&mut port, &mut decoder)?;
     match identity {
         IdentityResponse::Paired { key_hint } => {
-            println!("Paired (key_hint=0x{:04x})", key_hint);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"status": "paired", "key_hint": format!("0x{:04x}", key_hint)})
+                );
+            } else {
+                println!("Paired (key_hint=0x{:04x})", key_hint);
+            }
         }
         IdentityResponse::Unpaired => {
-            println!("Unpaired");
+            if json {
+                println!("{}", serde_json::json!({"status": "unpaired"}));
+            } else {
+                println!("Unpaired");
+            }
         }
     }
     Ok(())

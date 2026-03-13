@@ -220,7 +220,8 @@ async fn main() {
 
     // USB commands operate locally — no gateway connection needed.
     if let Commands::Usb { action } = &cli.command {
-        let result = run_usb(action);
+        let json = matches!(cli.format, OutputFormat::Json);
+        let result = run_usb(action, json);
         if let Err(e) = result {
             eprintln!("Error: {e}");
             process::exit(1);
@@ -252,7 +253,7 @@ fn parse_key_hint(s: &str) -> Result<u16, String> {
     }
 }
 
-fn run_usb(action: &UsbAction) -> Result<(), String> {
+fn run_usb(action: &UsbAction, json: bool) -> Result<(), String> {
     match action {
         UsbAction::Pair {
             port,
@@ -269,10 +270,10 @@ fn run_usb(action: &UsbAction) -> Result<(), String> {
             }
             let mut psk_arr = [0u8; sonde_protocol::modem::PSK_SIZE];
             psk_arr.copy_from_slice(&psk_bytes);
-            usb::pair_node(port, kh, psk_arr)
+            usb::pair_node(port, kh, psk_arr, json)
         }
-        UsbAction::FactoryReset { port } => usb::factory_reset_node(port),
-        UsbAction::Identity { port } => usb::query_identity(port),
+        UsbAction::FactoryReset { port } => usb::factory_reset_node(port, json),
+        UsbAction::Identity { port } => usb::query_identity(port, json),
     }
 }
 

@@ -220,8 +220,8 @@ At program start, three registers carry pointer provenance:
 
 | Register | Value | Region |
 |----------|-------|--------|
-| R1 | `mem.as_ptr()` | `Some(Region { tag: Context, base: mem.as_ptr(), end: mem.as_ptr() + mem.len() })` |
-| R10 | `stack.as_ptr() + STACK_SIZE` | `Some(Region { tag: Stack, base: stack.as_ptr(), end: stack.as_ptr() + STACK_SIZE })` |
+| R1 | `mem.as_ptr() as u64` | `Some(Region { tag: Context, base: mem.as_ptr() as u64, end: mem.as_ptr() as u64 + mem.len() as u64 })` |
+| R10 | `stack.as_ptr() as u64 + STACK_SIZE as u64` | `Some(Region { tag: Stack, base: stack.as_ptr() as u64, end: stack.as_ptr() as u64 + STACK_SIZE as u64 })` |
 | R0, R2–R9 | 0 | `None` (scalar) |
 
 R2 is set to `mem.len()` as a **scalar** — it is a length, not a pointer.
@@ -237,7 +237,7 @@ For src=1, the interpreter resolves the map index and loads the relocated map po
 
 ### 4.3  ALU operations and pointer arithmetic
 
-ALU operations propagate or clear tags according to these rules:
+ALU operations propagate or clear tags according to these rules.  In this table, "pointer" means a dereferenceable pointer (`Stack`, `Context`, or `MapValue`).  `MapDescriptor` is treated separately — see note below.
 
 | Operation | Left operand | Right operand | Result |
 |-----------|-------------|---------------|--------|
@@ -256,6 +256,8 @@ ALU operations propagate or clear tags according to these rules:
 | AND, OR, XOR | pointer | any | **error** |
 | MOV (reg) | — | source | inherits source tag |
 | MOV (imm) | — | — | scalar |
+
+**`MapDescriptor` special case:**  `MapDescriptor` is an opaque handle, not a dereferenceable address.  Any ALU operation on a `MapDescriptor` other than `MOV` (reg-to-reg copy) is an `InvalidPointerArithmetic` error.  This prevents `MapDescriptor + scalar` from producing a corrupted handle that could be passed to a helper.
 
 **Rationale:**  Only ADD and SUB have defined meaning for pointers.  All other arithmetic destroys provenance.  A BPF static verifier already enforces these rules at load time; the interpreter enforces them dynamically as defense-in-depth.
 
@@ -560,6 +562,12 @@ struct MapRegion {
     value_size: u32,
 }
 ```
+
+The `maps` slice is indexed by `map_index` — the same index used in the LD_DW_IMM instruction's `imm` field and stored in the `MapDescriptor { map_index }` tag.  The mapping is:
+
+- LD_DW_IMM src=1, imm=*i* → `maps[i].relocated_ptr` is loaded into the register value, tagged as `MapDescriptor { map_index: i }`.
+- Helper return resolution (§5.2) → `maps[reg[map_arg].region.tag.map_index].value_size` gives the value size.
+- Out-of-bounds `map_index` (≥ `maps.len()`) is a fatal `MemoryAccessViolation` at LD_DW_IMM time.
 
 ### 10.2  Helper registration
 

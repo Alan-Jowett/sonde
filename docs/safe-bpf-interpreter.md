@@ -21,7 +21,7 @@ A typical Rust BPF interpreter stores registers as bare `u64` values and validat
 RFC 9669 requires registers to hold 64-bit values, but it does not prohibit the interpreter from storing additional metadata alongside each value.  By tagging every register with the **provenance**, **base**, and **bound** of the memory region it points to (if any), we can:
 
 - Validate every memory access against a specific, known region — not a linear scan of all regions.
-- Confine *all* pointer dereferences to a single `mem_load` / `mem_store` function pair — reducing the unsafe surface to one auditable choke point.
+- Confine *all* pointer dereferences to a small set of choke-point functions (`mem_load`, `mem_load_sign_extend`, `mem_store`, `mem_atomic32`, `mem_atomic64`) — reducing the unsafe surface to 5 auditable sites.
 - Make helper return types (e.g., the pointer from `map_lookup_elem`) carry machine-checked metadata that the interpreter enforces on subsequent use.
 
 ---
@@ -85,7 +85,7 @@ At any point during execution, every register is in exactly one of two states:
 | **Scalar** | `None` | No | Yes (all ops) |
 | **Pointer** | `Some(Region { .. })` | Yes (within bounds) | Limited (see §4.3) |
 
-This mirrors the type system that a BPF static verifier enforces at load time.  The tagged interpreter enforces it dynamically as a second line of defence.
+This mirrors the type system that a BPF static verifier enforces at load time.  The tagged interpreter enforces it dynamically as a second line of defense.
 
 ---
 
@@ -99,7 +99,9 @@ All pointer dereferences — loads, stores, and atomics — are routed through a
 /// Read `N` bytes from the region that `base_reg` points to, at
 /// the signed offset `off`.  Returns the value zero-extended to u64.
 ///
-/// This is the ONLY function that performs an unsafe memory read.
+/// This is one of two functions that perform unsafe memory reads
+/// (the other is `mem_load_sign_extend`).  See §3.4 for the full
+/// unsafe budget.
 fn mem_load<const N: usize>(
     base_reg: &TaggedReg,
     off: i16,
@@ -145,7 +147,9 @@ An identical `mem_load_sign_extend` variant handles LDSX instructions, casting t
 /// Write `N` bytes from `val` to the region that `base_reg` points to,
 /// at the signed offset `off`.
 ///
-/// This is the ONLY function that performs an unsafe memory write.
+/// This is the only function that performs a non-atomic unsafe memory
+/// write.  Atomic writes go through `mem_atomic32` / `mem_atomic64`
+/// (§3.3).  See §3.4 for the full unsafe budget.
 fn mem_store<const N: usize>(
     base_reg: &TaggedReg,
     off: i16,
@@ -185,9 +189,9 @@ fn mem_store<const N: usize>(
 }
 ```
 
-### 3.3  `mem_atomic`
+### 3.3  `mem_atomic32` / `mem_atomic64`
 
-Atomic read-modify-write operations (ADD, OR, AND, XOR, XCHG, CMPXCHG) are routed through a third choke-point function that performs the bounds check once, then does the read-modify-write in a single `unsafe` block.  The signature mirrors the current `execute_atomic32` / `execute_atomic64` but accepts a `&TaggedReg` for address validation.
+Atomic read-modify-write operations (ADD, OR, AND, XOR, XCHG, CMPXCHG) are routed through two width-specific choke-point functions — `mem_atomic32` for 32-bit and `mem_atomic64` for 64-bit operations.  Each performs the bounds check once, then does the read-modify-write in a single `unsafe` block.  The signatures mirror the current `execute_atomic32` / `execute_atomic64` but accept a `&TaggedReg` for address validation.
 
 > **Concurrency model:** BPF programs execute single-threaded — only one program runs at a time on a given interpreter instance.  The "atomic" operations implement the RFC 9669 instruction semantics (§5.3) but are emulated as non-atomic `read_unaligned` / `write_unaligned` sequences.  This is correct for single-threaded execution.  If a future interpreter needs to support concurrent BPF-to-BPF execution with shared map memory, these operations would need to use `core::sync::atomic` or equivalent hardware atomics.
 
@@ -253,7 +257,7 @@ ALU operations propagate or clear tags according to these rules:
 | MOV (reg) | — | source | inherits source tag |
 | MOV (imm) | — | — | scalar |
 
-**Rationale:**  Only ADD and SUB have defined meaning for pointers.  All other arithmetic destroys provenance.  A BPF static verifier already enforces these rules at load time; the interpreter enforces them dynamically as defence-in-depth.
+**Rationale:**  Only ADD and SUB have defined meaning for pointers.  All other arithmetic destroys provenance.  A BPF static verifier already enforces these rules at load time; the interpreter enforces them dynamically as defense-in-depth.
 
 When a pointer participates in a valid ADD or SUB, the result inherits the same `region` (same `tag`, `base`, and `end`).  The `value` changes but the valid bounds do not — so a subsequent dereference will still be checked against the original region.
 

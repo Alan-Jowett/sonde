@@ -9,6 +9,7 @@ pub mod modem;
 pub mod program;
 pub mod registry;
 pub mod session;
+pub mod sqlite_storage;
 pub mod storage;
 pub mod transport;
 
@@ -19,5 +20,6 @@ pub use handler::{HandlerConfig, HandlerMessage, HandlerRouter, ProgramMatcher};
 pub use program::{ProgramLibrary, ProgramRecord, VerificationProfile};
 pub use registry::NodeRecord;
 pub use session::{Session, SessionManager, SessionState};
+pub use sqlite_storage::SqliteStorage;
 pub use storage::{InMemoryStorage, Storage, StorageError};
 pub use transport::{MockTransport, PeerAddress, Transport, TransportError};

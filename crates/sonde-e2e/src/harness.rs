@@ -74,6 +74,7 @@ pub struct NodeProxy {
     pub psk: [u8; 32],
     pub mac: Vec<u8>,
     pub schedule_interval_s: u32,
+    pub storage: MockNodeStorage,
 }
 
 impl NodeProxy {
@@ -84,6 +85,7 @@ impl NodeProxy {
             psk,
             mac: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
             schedule_interval_s: 60,
+            storage: MockNodeStorage::new_paired(key_hint, psk, 60),
         }
     }
 
@@ -91,9 +93,7 @@ impl NodeProxy {
     ///
     /// Uses `block_in_place` so the synchronous node code can call the async
     /// gateway without deadlocking the single-threaded test reactor.
-    pub async fn run_wake_cycle(&self, env: &E2eTestEnv) -> WakeCycleOutcome {
-        let mut node_storage =
-            MockNodeStorage::new_paired(self.key_hint, self.psk, self.schedule_interval_s);
+    pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleOutcome {
         let mut hal = MockHal;
         let mut rng = MockRng(0);
         let clock = MockClock;
@@ -107,7 +107,7 @@ impl NodeProxy {
 
         run_wake_cycle(
             &mut transport,
-            &mut node_storage,
+            &mut self.storage,
             &mut hal,
             &mut rng,
             &clock,
@@ -124,6 +124,9 @@ impl NodeProxy {
 // BridgeTransport — relays node frames through the gateway
 // ---------------------------------------------------------------------------
 
+/// In-memory frame relay between a node and the gateway.
+///
+/// Note: `block_in_place` requires `#[tokio::test(flavor = "multi_thread")]`.
 struct BridgeTransport {
     gateway: Arc<Gateway>,
     peer: Vec<u8>,
@@ -176,7 +179,11 @@ impl HmacProvider for TestHmac {
     }
 
     fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-        self.compute(key, data) == *expected
+        use hmac::Mac;
+        let mut mac =
+            hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key length error");
+        mac.update(data);
+        mac.verify_slice(expected).is_ok()
     }
 }
 
@@ -193,7 +200,7 @@ impl Sha256Provider for TestSha256 {
 // Node-side mocks (derived from sonde-node wake_cycle.rs test mocks)
 // ---------------------------------------------------------------------------
 
-struct MockNodeStorage {
+pub struct MockNodeStorage {
     key: Option<(u16, [u8; 32])>,
     schedule_interval: u32,
     active_partition: u8,
@@ -202,7 +209,7 @@ struct MockNodeStorage {
 }
 
 impl MockNodeStorage {
-    fn new_paired(key_hint: u16, psk: [u8; 32], schedule_interval_s: u32) -> Self {
+    pub fn new_paired(key_hint: u16, psk: [u8; 32], schedule_interval_s: u32) -> Self {
         Self {
             key: Some((key_hint, psk)),
             schedule_interval: schedule_interval_s,
@@ -242,13 +249,25 @@ impl PlatformStorage for MockNodeStorage {
         Ok(())
     }
     fn read_program(&self, partition: u8) -> Option<Vec<u8>> {
-        self.programs[partition as usize].clone()
+        self.programs
+            .get(partition as usize)
+            .and_then(|p| p.clone())
     }
     fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
+        if (partition as usize) >= self.programs.len() {
+            return Err(sonde_node::error::NodeError::StorageError(
+                "invalid partition".into(),
+            ));
+        }
         self.programs[partition as usize] = Some(image.to_vec());
         Ok(())
     }
     fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
+        if (partition as usize) >= self.programs.len() {
+            return Err(sonde_node::error::NodeError::StorageError(
+                "invalid partition".into(),
+            ));
+        }
         self.programs[partition as usize] = None;
         Ok(())
     }

@@ -19,7 +19,7 @@ async fn t_e2e_001_nop_wake_cycle() {
     let psk = [0xAA; 32];
     env.register_node("test-node", 1, psk).await;
 
-    let node = NodeProxy::new("test-node", 1, psk);
+    let mut node = NodeProxy::new("test-node", 1, psk);
     let outcome = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
@@ -41,7 +41,7 @@ async fn t_e2e_003_wrong_psk_rejected() {
     env.register_node("test-node", 1, [0xAA; 32]).await;
 
     // Node has a different PSK
-    let node = NodeProxy::new("test-node", 1, [0xBB; 32]);
+    let mut node = NodeProxy::new("test-node", 1, [0xBB; 32]);
     let outcome = node.run_wake_cycle(&env).await;
 
     // Should exhaust retries and sleep
@@ -66,7 +66,7 @@ async fn t_e2e_020_update_schedule() {
         .or_default()
         .push(PendingCommand::UpdateSchedule { interval_s: 120 });
 
-    let node = NodeProxy::new("sched-node", 1, psk);
+    let mut node = NodeProxy::new("sched-node", 1, psk);
     let outcome = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 120 });
@@ -88,7 +88,7 @@ async fn t_e2e_021_reboot() {
         .or_default()
         .push(PendingCommand::Reboot);
 
-    let node = NodeProxy::new("reboot-node", 1, psk);
+    let mut node = NodeProxy::new("reboot-node", 1, psk);
     let outcome = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Reboot);
@@ -103,7 +103,7 @@ async fn t_e2e_040_unknown_node() {
     let env = E2eTestEnv::new().await;
     // Do NOT register node
 
-    let node = NodeProxy::new("unknown", 99, [0xFF; 32]);
+    let mut node = NodeProxy::new("unknown", 99, [0xFF; 32]);
     let outcome = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });

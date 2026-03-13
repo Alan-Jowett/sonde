@@ -31,14 +31,15 @@ pub fn handle_pairing_message<S: PlatformStorage>(
 ) -> (Option<Vec<u8>>, PairingAction) {
     match msg {
         ModemMessage::PairRequest(req) => {
-            let status = if storage.read_key().is_some() {
-                PAIR_ACK_ALREADY_PAIRED
-            } else {
-                let mut ks = KeyStore::new(storage);
-                match ks.pair(req.key_hint, &req.psk) {
-                    Ok(()) => PAIRING_STATUS_SUCCESS,
-                    Err(_) => PAIRING_STATUS_STORAGE_ERROR,
+            let mut ks = KeyStore::new(storage);
+            let status = match ks.pair(req.key_hint, &req.psk) {
+                Ok(()) => PAIRING_STATUS_SUCCESS,
+                Err(crate::error::NodeError::StorageError(ref msg))
+                    if msg.contains("already paired") =>
+                {
+                    PAIR_ACK_ALREADY_PAIRED
                 }
+                Err(_) => PAIRING_STATUS_STORAGE_ERROR,
             };
             let ack = ModemMessage::PairAck(PairAck { status });
             let frame = encode_modem_frame(&ack).expect("encode cannot fail");
@@ -85,11 +86,11 @@ pub fn pairing_ready_frame() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::NodeResult;
+    use crate::error::{NodeError, NodeResult};
     use crate::traits::PlatformStorage;
     use sonde_protocol::modem::{
-        FrameDecoder, IdentityResponse, PairRequest, PAIRING_STATUS_SUCCESS,
-        PAIR_ACK_ALREADY_PAIRED, PSK_SIZE,
+        FrameDecoder, IdentityResponse, PairRequest, ResetAck, PAIRING_STATUS_STORAGE_ERROR,
+        PAIRING_STATUS_SUCCESS, PAIR_ACK_ALREADY_PAIRED, PSK_SIZE,
     };
 
     /// In-memory storage for testing.
@@ -267,6 +268,83 @@ mod tests {
             msg,
             ModemMessage::PairingReady(PairingReady {
                 firmware_version: FIRMWARE_ABI_VERSION,
+            })
+        );
+    }
+
+    /// Storage mock that fails on write operations.
+    struct FailingStorage;
+
+    impl PlatformStorage for FailingStorage {
+        fn read_key(&self) -> Option<(u16, [u8; 32])> {
+            None
+        }
+        fn write_key(&mut self, _key_hint: u16, _psk: &[u8; 32]) -> NodeResult<()> {
+            Err(NodeError::StorageError("write failed".into()))
+        }
+        fn erase_key(&mut self) -> NodeResult<()> {
+            Err(NodeError::StorageError("erase failed".into()))
+        }
+        fn read_schedule(&self) -> (u32, u8) {
+            (60, 0)
+        }
+        fn write_schedule_interval(&mut self, _interval_s: u32) -> NodeResult<()> {
+            Err(NodeError::StorageError("write failed".into()))
+        }
+        fn write_active_partition(&mut self, _partition: u8) -> NodeResult<()> {
+            Err(NodeError::StorageError("write failed".into()))
+        }
+        fn reset_schedule(&mut self) -> NodeResult<()> {
+            Err(NodeError::StorageError("write failed".into()))
+        }
+        fn read_program(&self, _partition: u8) -> Option<Vec<u8>> {
+            None
+        }
+        fn write_program(&mut self, _partition: u8, _image: &[u8]) -> NodeResult<()> {
+            Err(NodeError::StorageError("write failed".into()))
+        }
+        fn erase_program(&mut self, _partition: u8) -> NodeResult<()> {
+            Err(NodeError::StorageError("erase failed".into()))
+        }
+        fn take_early_wake_flag(&mut self) -> bool {
+            false
+        }
+        fn set_early_wake_flag(&mut self) -> NodeResult<()> {
+            Err(NodeError::StorageError("write failed".into()))
+        }
+    }
+
+    #[test]
+    fn pair_storage_error_returns_storage_error_status() {
+        let mut storage = FailingStorage;
+        let mut maps = MapStorage::new(1024);
+        let msg = ModemMessage::PairRequest(PairRequest {
+            key_hint: 0x1234,
+            psk: [0xAA; PSK_SIZE],
+        });
+
+        let (frame, _action) = handle_pairing_message(&msg, &mut storage, &mut maps);
+        let resp = decode_response(frame.as_ref().unwrap());
+        assert_eq!(
+            resp,
+            ModemMessage::PairAck(PairAck {
+                status: PAIRING_STATUS_STORAGE_ERROR,
+            })
+        );
+    }
+
+    #[test]
+    fn factory_reset_storage_error_returns_storage_error_status() {
+        let mut storage = FailingStorage;
+        let mut maps = MapStorage::new(1024);
+        let msg = ModemMessage::ResetRequest;
+
+        let (frame, _action) = handle_pairing_message(&msg, &mut storage, &mut maps);
+        let resp = decode_response(frame.as_ref().unwrap());
+        assert_eq!(
+            resp,
+            ModemMessage::ResetAck(ResetAck {
+                status: PAIRING_STATUS_STORAGE_ERROR,
             })
         );
     }

@@ -191,10 +191,12 @@ fn read_message(
             }
             Err(e) => return Err(format!("decode: {}", e)),
         }
-        let n = port.read(&mut buf).map_err(|e| format!("read: {}", e))?;
-        if n == 0 {
-            return Err("USB disconnected".into());
-        }
+        let n = match port.read(&mut buf) {
+            Ok(0) => return Err("USB disconnected".into()),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) => return Err(format!("read: {}", e)),
+        };
         decoder.push(&buf[..n]);
     }
 }

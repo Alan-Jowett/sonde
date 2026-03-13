@@ -267,7 +267,7 @@ fn run_usb(action: &UsbAction) -> Result<(), String> {
                     psk_bytes.len()
                 ));
             }
-            let mut psk_arr = [0u8; 32];
+            let mut psk_arr = [0u8; sonde_protocol::modem::PSK_SIZE];
             psk_arr.copy_from_slice(&psk_bytes);
             usb::pair_node(port, kh, psk_arr)
         }

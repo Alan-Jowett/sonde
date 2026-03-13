@@ -11,7 +11,7 @@ use sonde_admin::pb;
 #[derive(Parser)]
 #[command(name = "sonde-admin", about = "Sonde gateway administration CLI")]
 struct Cli {
-    /// Gateway admin socket path (UDS on Linux, TCP addr on Windows).
+    /// Gateway admin socket path (UDS on Linux, named pipe on Windows).
     #[arg(
         long,
         default_value = default_socket(),
@@ -37,7 +37,7 @@ fn default_socket() -> &'static str {
     if cfg!(unix) {
         "/var/run/sonde/admin.sock"
     } else {
-        "localhost:50051"
+        r"\\.\pipe\sonde-admin"
     }
 }
 
@@ -100,8 +100,8 @@ enum NodeAction {
     Register {
         /// Node identifier.
         node_id: String,
-        /// Key hint (u16).
-        key_hint: u32,
+        /// Key hint (0–65535).
+        key_hint: u16,
         /// Pre-shared key (64 hex chars = 32 bytes).
         psk_hex: String,
     },
@@ -233,7 +233,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 psk_hex,
             } => {
                 let psk = hex::decode(psk_hex)?;
-                let id = client.register_node(node_id, *key_hint, psk).await?;
+                let id = client.register_node(node_id, *key_hint as u32, psk).await?;
                 if json {
                     print_json(&serde_json::json!({"node_id": id}))?;
                 } else {

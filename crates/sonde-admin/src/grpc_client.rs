@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-#[cfg(unix)]
-use tonic::transport::Uri;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, Endpoint, Uri};
 
 use crate::pb::gateway_admin_client::GatewayAdminClient;
 use crate::pb::*;
@@ -30,11 +28,30 @@ impl AdminClient {
         })
     }
 
-    /// Connect to the gateway admin API over TCP (Windows fallback / testing).
+    /// Connect to the gateway admin API over a Windows named pipe.
     #[cfg(windows)]
-    pub async fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let channel = Endpoint::from_shared(format!("http://{addr}"))?
-            .connect()
+    pub async fn connect(pipe_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        use hyper_util::rt::TokioIo;
+        use std::time::Duration;
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let pipe_name = pipe_name.to_owned();
+        let channel = Endpoint::from_static("http://[::]:50051")
+            .connect_with_connector(tower::service_fn(move |_: Uri| {
+                let name = pipe_name.clone();
+                async move {
+                    // Retry if the pipe is busy (another client is connecting).
+                    let client = loop {
+                        match ClientOptions::new().open(&name) {
+                            Ok(client) => break client,
+                            Err(e) if e.raw_os_error() == Some(231) => {} // ERROR_PIPE_BUSY
+                            Err(e) => return Err(e),
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    };
+                    Ok::<_, std::io::Error>(TokioIo::new(client))
+                }
+            }))
             .await?;
         Ok(Self {
             inner: GatewayAdminClient::new(channel),

@@ -241,7 +241,7 @@ At program start, three registers carry pointer provenance:
 | `src` field | Semantics | Result tag |
 |-------------|-----------|------------|
 | 0 | Load 64-bit immediate | Scalar |
-| 1 | Map descriptor relocation | `MapDescriptor { map_index: imm }` |
+| 1 | Map descriptor relocation | `MapDescriptor { map_index: imm as u32 }` (after rejecting negative `imm`) |
 
 For src=1, the interpreter resolves the map index and loads the relocated map pointer.  The `imm` field is a signed `i32` in the instruction encoding (see `ebpf.rs`); negative values are invalid and must be rejected with `InvalidMapIndex` before any cast or indexing.  After validation, the non-negative `imm` is used as the index into the `maps` slice.  The result is tagged `MapDescriptor` — it is an opaque handle, valid only as an argument to `map_lookup_elem` or `map_update_elem`.  It is **not dereferenceable**.
 
@@ -365,14 +365,14 @@ After a helper call, the interpreter examines the descriptor's `ret` field:
 |----------------|----------|-------------------|
 | `Scalar` | any | `None` (scalar) |
 | `MapValueOrNull` | 0 | `None` (scalar — NULL means not found) |
-| `MapValueOrNull` | non-zero | `MapValue { value_size }` with `base = R0`, `end = R0.checked_add(value_size)` (overflow → fatal error) — **only after validation** (see below) |
+| `MapValueOrNull` | non-zero | `MapValue { value_size }` with `base = R0`, `end = R0.checked_add(value_size as u64)` (overflow → fatal error) — **only after validation** (see below) |
 
 For `MapValueOrNull`, the interpreter resolves the map's `value_size` from the map definitions provided at load time.  The argument register identified by `map_arg` **must** carry a `MapDescriptor { map_index }` tag (set by LD_DW_IMM relocation, §4.2).  If `reg[map_arg]` does not have a `MapDescriptor` tag, the call is rejected with `InvalidHelperArgument` — this indicates a program bug (e.g., passing a scalar or wrong pointer type to `map_lookup_elem`).
 
 **Helper return validation:**  Helper functions are part of the host environment and could be buggy.  To prevent a faulty helper from returning an arbitrary pointer that the interpreter then trusts, the returned pointer must be validated against the known map address range before tagging:
 
 1. Look up the `MapRegion` for the map identified by `map_index`.
-2. Compute `end = R0.checked_add(value_size)`.  If this overflows, return a fatal `MemoryAccessViolation` error.
+2. Compute `end = R0.checked_add(value_size as u64)`.  If this overflows, return a fatal `MemoryAccessViolation` error.
 3. Verify that `R0 >= map_region.data_start` and `end <= map_region.data_end`.
 4. If the pointer falls outside the map's allocated storage, return a fatal `MemoryAccessViolation` error — do not tag it.
 
@@ -614,7 +614,7 @@ The `data_start` / `data_end` fields define the bounds of the map's allocated me
 
 The `maps` slice is indexed by `map_index` — the same index used in the LD_DW_IMM instruction's `imm` field and stored in the `MapDescriptor { map_index }` tag.  The mapping is:
 
-- LD_DW_IMM src=1, imm=*i* → `maps[i].relocated_ptr` is loaded into the register value, tagged as `MapDescriptor { map_index: i }`.
+- LD_DW_IMM src=1, imm=*i* (where *i* ≥ 0) → `maps[i as usize].relocated_ptr` is loaded into the register value, tagged as `MapDescriptor { map_index: i as u32 }`.
 - Helper return resolution (§5.2) → `maps[reg[map_arg].region.tag.map_index].value_size` gives the value size.
 - Out-of-bounds `map_index` (≥ `maps.len()`) is a fatal `InvalidMapIndex` error at LD_DW_IMM time.
 

@@ -71,6 +71,11 @@ impl AdminClient {
         })
     }
 
+    #[cfg(not(any(unix, windows)))]
+    compile_error!(
+        "sonde-admin requires Unix (UDS) or Windows (named pipes) — this platform is not supported"
+    );
+
     // -- Node management --
 
     pub async fn list_nodes(&mut self) -> Result<Vec<NodeInfo>, tonic::Status> {

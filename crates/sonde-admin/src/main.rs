@@ -176,6 +176,7 @@ enum ModemAction {
     /// Set the modem's radio channel.
     SetChannel {
         /// Channel number (1–14).
+        #[arg(value_parser = clap::value_parser!(u32).range(1..=14))]
         channel: u32,
     },
     /// Scan all WiFi channels for AP activity.
@@ -233,6 +234,13 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 psk_hex,
             } => {
                 let psk = hex::decode(psk_hex)?;
+                if psk.len() != 32 {
+                    return Err(format!(
+                        "PSK must be exactly 32 bytes (64 hex chars), got {} bytes",
+                        psk.len()
+                    )
+                    .into());
+                }
                 let id = client.register_node(node_id, *key_hint as u32, psk).await?;
                 if json {
                     print_json(&serde_json::json!({"node_id": id}))?;

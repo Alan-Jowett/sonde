@@ -87,7 +87,11 @@ pub struct WakeCycleStats {
     pub response_count: usize,
     /// Nonces from WAKE frames the node sent during this cycle.
     pub wake_nonces: Vec<u64>,
+    /// `(msg_type, nonce)` for every frame the node sent.
+    pub sent_frames: Vec<(u8, u64)>,
 }
+
+/// Lightweight handle representing a remote node.
 ///
 /// Identity and schedule are stored exclusively in `self.storage`
 /// (`PlatformStorage`) — the wake cycle reads them from there.
@@ -142,6 +146,7 @@ impl NodeProxy {
             outcome,
             response_count: transport.response_count(),
             wake_nonces: transport.wake_nonces().to_vec(),
+            sent_frames: transport.sent_frames().to_vec(),
         }
     }
 }
@@ -160,6 +165,8 @@ struct BridgeTransport {
     response_count: usize,
     /// Nonces extracted from outbound WAKE frames.
     wake_nonces: Vec<u64>,
+    /// `(msg_type, nonce)` for every outbound frame.
+    sent_frames: Vec<(u8, u64)>,
     rt: tokio::runtime::Handle,
 }
 
@@ -171,6 +178,7 @@ impl BridgeTransport {
             pending_response: None,
             response_count: 0,
             wake_nonces: Vec::new(),
+            sent_frames: Vec::new(),
             rt: tokio::runtime::Handle::try_current()
                 .expect("BridgeTransport must be created inside a Tokio runtime"),
         }
@@ -185,21 +193,28 @@ impl BridgeTransport {
     fn wake_nonces(&self) -> &[u64] {
         &self.wake_nonces
     }
+
+    /// `(msg_type, nonce)` for every outbound frame.
+    fn sent_frames(&self) -> &[(u8, u64)] {
+        &self.sent_frames
+    }
 }
 
 impl NodeTransport for BridgeTransport {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
-        // Capture nonce from outbound WAKE frames.
-        if frame.len() >= sonde_protocol::HEADER_SIZE
-            && frame[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_WAKE
-        {
+        // Capture header metadata from every outbound frame.
+        if frame.len() >= sonde_protocol::HEADER_SIZE {
+            let msg_type = frame[sonde_protocol::OFFSET_MSG_TYPE];
             let nonce_end = sonde_protocol::OFFSET_NONCE + 8;
             let nonce = u64::from_be_bytes(
                 frame[sonde_protocol::OFFSET_NONCE..nonce_end]
                     .try_into()
                     .unwrap(),
             );
-            self.wake_nonces.push(nonce);
+            self.sent_frames.push((msg_type, nonce));
+            if msg_type == sonde_protocol::MSG_WAKE {
+                self.wake_nonces.push(nonce);
+            }
         }
 
         let gateway = self.gateway.clone();
@@ -248,7 +263,7 @@ impl HmacProvider for TestHmac {
     }
 }
 
-struct TestSha256;
+pub struct TestSha256;
 
 impl Sha256Provider for TestSha256 {
     fn hash(&self, data: &[u8]) -> [u8; 32] {

@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa).
+
+name: ESP32-S3 Modem Firmware CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  esp32s3-modem-build:
+    name: Build ESP32-S3 modem firmware
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    container:
+      # Pinned ESP-IDF release image — provides IDF_PATH, Python 3, and all
+      # ESP-IDF host tools including esptool.py and idf_tools.py.
+      # Tag: espressif/idf:v5.3.2
+      image: espressif/idf@sha256:d85ffe6db6162f16589c4c2221de1d5c40c9d9aa2331099e2fe6f5e33d1b8f09
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # ------------------------------------------------------------------ #
+      # Rust toolchain
+      # ------------------------------------------------------------------ #
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          workspaces: ". -> target"
+          key: esp32s3-xtensa-${{ hashFiles('crates/sonde-modem/sdkconfig.defaults') }}
+
+      # ------------------------------------------------------------------ #
+      # Xtensa Rust toolchain (required for xtensa-esp32s3-espidf target)
+      # ------------------------------------------------------------------ #
+
+      - name: Install espup
+        run: cargo install espup --locked
+
+      - name: Install Xtensa Rust toolchain for ESP32-S3
+        # espup installs the `esp` Xtensa Rust toolchain and writes ~/export-esp.sh,
+        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for Xtensa GCC/LLVM.
+        # The `esp` toolchain must be selected explicitly via `cargo +esp` (espup
+        # v0.16+ does not export RUSTUP_TOOLCHAIN from export-esp.sh).
+        run: espup install --targets esp32s3
+
+      - name: Install ldproxy linker
+        run: cargo install ldproxy --locked
+
+      # ------------------------------------------------------------------ #
+      # Build
+      # ------------------------------------------------------------------ #
+
+      - name: Build modem firmware (ESP32-S3, firmware profile)
+        # Source export-esp.sh to add Xtensa GCC/LLVM to PATH and set
+        # LIBCLANG_PATH/CLANG_PATH for bindgen.  Use `+esp` to select the
+        # Xtensa Rust toolchain installed by espup (not the default stable).
+        # -Zbuild-std is required because the esp toolchain does not ship
+        # pre-compiled std for the xtensa-esp32s3-espidf target.
+        run: |
+          . "$HOME/export-esp.sh"
+          cargo +esp build \
+            -p sonde-modem \
+            --bin modem \
+            --features esp \
+            --profile firmware \
+            --target xtensa-esp32s3-espidf \
+            -Zbuild-std=std,panic_abort

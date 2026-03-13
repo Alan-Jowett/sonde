@@ -52,7 +52,7 @@ pub trait Hal {
 
     /// Read a raw value from an ADC channel.
     /// Returns the ADC reading on success, negative on error.
-    fn adc_read(&self, channel: u32) -> i32;
+    fn adc_read(&mut self, channel: u32) -> i32;
 }
 
 /// Read the current battery voltage in millivolts.

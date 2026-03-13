@@ -12,3 +12,12 @@ default-members = [
     "crates/sonde-gateway",
     "crates/sonde-admin",
 ]
+
+# Firmware-specific release profile. Build with: cargo build --profile firmware
+# Only affects firmware builds; regular `cargo build --release` uses defaults.
+[profile.firmware]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "symbols"

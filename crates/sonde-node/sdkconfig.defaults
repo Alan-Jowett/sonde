@@ -9,6 +9,10 @@ CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
+# Use the built-in "Single factory app (large), no OTA" partition table.
+# This provides ~1.5 MB for the app partition (vs 1 MB in the default).
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
 # Serial console on UART0 at 115200 bps (QEMU forwards UART0 to stdio).
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_NUM=0
@@ -16,3 +20,13 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 
 # Log level: INFO captures the boot-marker lines the smoke test asserts on.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Size optimizations — reduce firmware binary size.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+
+# Disable unused WiFi features to reduce binary size.
+# The node only needs STA mode for ESP-NOW.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+CONFIG_ESP_WIFI_NAN_ENABLE=n

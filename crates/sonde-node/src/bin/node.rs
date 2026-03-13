@@ -49,7 +49,7 @@ fn main() {
     let sha = SoftwareSha256;
     let mut rng = EspRng;
     let clock = EspClock;
-    let mut hal = EspHal;
+    let mut hal = EspHal::new();
     let battery = EspBatteryReader;
     let mut sleep_ctrl = EspSleepController;
 

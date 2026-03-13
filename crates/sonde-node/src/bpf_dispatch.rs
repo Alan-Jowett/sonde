@@ -647,7 +647,7 @@ mod tests {
                 -1
             }
         }
-        fn adc_read(&self, channel: u32) -> i32 {
+        fn adc_read(&mut self, channel: u32) -> i32 {
             self.adc_values.get(channel as usize).copied().unwrap_or(-1)
         }
     }

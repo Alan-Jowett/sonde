@@ -20,10 +20,7 @@
 //!     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
 //! ];
 //! let mut mem = [];
-//! // SAFETY: no maps — map safety invariants trivially satisfied.
-//! let result = unsafe {
-//!     interpreter::execute_program(prog, &mut mem, &[], &[], false)
-//! }.unwrap();
+//! let result = interpreter::execute_program_no_maps(prog, &mut mem, &[], false).unwrap();
 //! assert_eq!(result, 42);
 //! ```
 

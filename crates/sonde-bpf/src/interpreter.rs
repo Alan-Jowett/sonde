@@ -543,6 +543,21 @@ fn mem_atomic64(
     Ok(())
 }
 
+/// Execute a BPF program without map access.
+///
+/// This is a safe wrapper around [`execute_program`] for programs that do
+/// not use BPF maps.  Since `maps` is empty, the safety invariants on
+/// [`MapRegion`] are trivially satisfied.
+pub fn execute_program_no_maps(
+    prog: &[u8],
+    ctx: &mut [u8],
+    helpers: &[HelperDescriptor],
+    read_only_ctx: bool,
+) -> Result<u64, BpfError> {
+    // SAFETY: maps is empty — no raw pointer invariants to uphold.
+    unsafe { execute_program(prog, ctx, helpers, &[], read_only_ctx) }
+}
+
 /// Execute a BPF program.
 ///
 /// # Arguments
@@ -860,7 +875,7 @@ pub unsafe fn execute_program(
                 ) {
                     let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     if let Some(region) = reg[src].region {
-                        if addr.is_multiple_of(8) {
+                        if (addr.wrapping_sub(stack_base)).is_multiple_of(8) {
                             spill_tracker.record_spill(stack_base, addr, region);
                         } else {
                             // Unaligned pointer store — invalidate overlapping slots

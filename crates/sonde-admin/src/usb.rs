@@ -28,6 +28,15 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
     let mut decoder = FrameDecoder::new();
     wait_for_ready(&mut port, &mut decoder)?;
 
+    // Check identity first — abort if already paired
+    let identity = query_identity_inner(&mut port, &mut decoder)?;
+    if let IdentityResponse::Paired { key_hint: kh } = identity {
+        return Err(format!(
+            "node is already paired (key_hint=0x{:04x}). Factory reset first.",
+            kh
+        ));
+    }
+
     let req = ModemMessage::PairRequest(PairRequest { key_hint, psk });
     let frame = encode_modem_frame(&req).map_err(|e| format!("encode: {}", e))?;
     port.write_all(&frame)
@@ -61,6 +70,12 @@ pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
 
     let mut decoder = FrameDecoder::new();
     wait_for_ready(&mut port, &mut decoder)?;
+
+    // Check identity first — abort if already unpaired
+    let identity = query_identity_inner(&mut port, &mut decoder)?;
+    if matches!(identity, IdentityResponse::Unpaired) {
+        return Err("node is already unpaired — nothing to reset".into());
+    }
 
     let req = ModemMessage::ResetRequest;
     let frame = encode_modem_frame(&req).map_err(|e| format!("encode: {}", e))?;
@@ -96,6 +111,23 @@ pub fn query_identity(port_name: &str) -> Result<(), String> {
     let mut decoder = FrameDecoder::new();
     wait_for_ready(&mut port, &mut decoder)?;
 
+    let identity = query_identity_inner(&mut port, &mut decoder)?;
+    match identity {
+        IdentityResponse::Paired { key_hint } => {
+            println!("Paired (key_hint=0x{:04x})", key_hint);
+        }
+        IdentityResponse::Unpaired => {
+            println!("Unpaired");
+        }
+    }
+    Ok(())
+}
+
+/// Send `IDENTITY_REQUEST` and return the parsed response.
+fn query_identity_inner(
+    port: &mut Box<dyn serialport::SerialPort>,
+    decoder: &mut FrameDecoder,
+) -> Result<IdentityResponse, String> {
     let req = ModemMessage::IdentityRequest;
     let frame = encode_modem_frame(&req).map_err(|e| format!("encode: {}", e))?;
     port.write_all(&frame)
@@ -105,17 +137,10 @@ pub fn query_identity(port_name: &str) -> Result<(), String> {
     port.set_timeout(IDENTITY_TIMEOUT)
         .map_err(|e| format!("timeout: {}", e))?;
     loop {
-        let resp = read_message(&mut port, &mut decoder)?;
+        let resp = read_message(port, decoder)?;
         match resp {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
-            ModemMessage::IdentityResponse(IdentityResponse::Paired { key_hint }) => {
-                println!("Paired (key_hint=0x{:04x})", key_hint);
-                return Ok(());
-            }
-            ModemMessage::IdentityResponse(IdentityResponse::Unpaired) => {
-                println!("Unpaired");
-                return Ok(());
-            }
+            ModemMessage::IdentityResponse(ir) => return Ok(ir),
             other => return Err(format!("unexpected response: {:?}", other)),
         }
     }
@@ -144,7 +169,10 @@ fn read_message(
         match decoder.decode() {
             Ok(Some(msg)) => return Ok(msg),
             Ok(None) => {}
-            Err(ModemCodecError::EmptyFrame | ModemCodecError::FrameTooLarge(_)) => continue,
+            Err(ModemCodecError::EmptyFrame) => continue,
+            Err(ModemCodecError::FrameTooLarge(_)) => {
+                return Err("framing error: frame too large. Close and re-open port.".into());
+            }
             Err(e) => return Err(format!("decode: {}", e)),
         }
         let n = port.read(&mut buf).map_err(|e| format!("read: {}", e))?;

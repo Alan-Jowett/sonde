@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 use sonde_bpf::ebpf;
 use sonde_bpf::interpreter::{execute_program, BpfError};
 
@@ -335,14 +338,19 @@ fn test_load_store_word() {
 
 #[test]
 fn test_load_store_dw() {
-    // r2 = 0xdeadbeef_cafebabe via LD_DW_IMM; store to mem; load back; exit
+    // stdw [r1+0], 0xdeadbeef_cafebabe; ldxdw r0, [r1+0]; exit
     let prog = prog_from(&[
-        insn(ebpf::ST_W_IMM, 1, 0, 0, 42),
-        insn(ebpf::LD_W_REG, 0, 1, 0, 0),
+        insn(ebpf::LD_DW_IMM, 2, 0, 0, 0xcafebabeu32 as i32),
+        insn(0x00, 0, 0, 0, 0xdeadbeefu32 as i32),
+        insn(ebpf::ST_DW_REG, 1, 2, 0, 0),
+        insn(ebpf::LD_DW_REG, 0, 1, 0, 0),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [0u8; 16];
-    assert_eq!(execute_program(&prog, &mut mem, &[]).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[]).unwrap(),
+        0xdeadbeef_cafebabe
+    );
 }
 
 #[test]

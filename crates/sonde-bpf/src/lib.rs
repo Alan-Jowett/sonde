@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 //! `sonde_bpf` — A simple, zero-allocation BPF interpreter (RFC 9669).
 //!
 //! This crate provides a BPF bytecode interpreter that:

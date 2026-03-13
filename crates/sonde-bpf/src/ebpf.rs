@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 //! Opcode constants and instruction decoding for BPF (RFC 9669).
 //!
 //! This module defines the complete BPF instruction set encoding.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
 //! BPF interpreter — zero heap allocation during execution.
 //!
 //! Implements the BPF instruction set per RFC 9669, covering:
@@ -106,9 +109,14 @@ pub fn execute_program(
     helpers: &[(u32, Helper)],
 ) -> Result<u64, BpfError> {
     let num_insns = prog.len() / INSN_SIZE;
+    if prog.len() % INSN_SIZE != 0 {
+        return Err(BpfError::OutOfBounds { pc: num_insns });
+    }
 
-    // BPF stack — lives on the Rust stack.
-    let stack = [0u8; STACK_SIZE];
+    // BPF stack — lives on the Rust stack. Mutated via raw pointers in
+    // store and atomic instructions.
+    #[allow(unused_mut)]
+    let mut stack = [0u8; STACK_SIZE];
 
     // Call frames for BPF-to-BPF calls.
     let mut call_frames: [CallFrame; MAX_CALL_DEPTH] = [CallFrame::zeroed(); MAX_CALL_DEPTH];

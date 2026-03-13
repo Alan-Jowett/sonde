@@ -34,7 +34,9 @@ impl AdminClient {
     /// Connect to the gateway admin API over TCP (Windows fallback / testing).
     #[cfg(windows)]
     pub async fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let channel = Endpoint::from_shared(format!("http://{addr}"))?.connect().await?;
+        let channel = Endpoint::from_shared(format!("http://{addr}"))?
+            .connect()
+            .await?;
         Ok(Self {
             inner: GatewayAdminClient::new(channel),
         })
@@ -120,10 +122,7 @@ impl AdminClient {
         Ok(())
     }
 
-    pub async fn remove_program(
-        &mut self,
-        program_hash: Vec<u8>,
-    ) -> Result<(), tonic::Status> {
+    pub async fn remove_program(&mut self, program_hash: Vec<u8>) -> Result<(), tonic::Status> {
         self.inner
             .remove_program(RemoveProgramRequest { program_hash })
             .await?;
@@ -171,10 +170,7 @@ impl AdminClient {
 
     // -- Status --
 
-    pub async fn get_node_status(
-        &mut self,
-        node_id: &str,
-    ) -> Result<NodeStatus, tonic::Status> {
+    pub async fn get_node_status(&mut self, node_id: &str) -> Result<NodeStatus, tonic::Status> {
         let resp = self
             .inner
             .get_node_status(GetNodeStatusRequest {
@@ -192,9 +188,7 @@ impl AdminClient {
     }
 
     pub async fn import_state(&mut self, data: Vec<u8>) -> Result<(), tonic::Status> {
-        self.inner
-            .import_state(ImportStateRequest { data })
-            .await?;
+        self.inner.import_state(ImportStateRequest { data }).await?;
         Ok(())
     }
 
@@ -212,9 +206,7 @@ impl AdminClient {
         Ok(())
     }
 
-    pub async fn scan_modem_channels(
-        &mut self,
-    ) -> Result<Vec<ChannelSurveyEntry>, tonic::Status> {
+    pub async fn scan_modem_channels(&mut self) -> Result<Vec<ChannelSurveyEntry>, tonic::Status> {
         let resp = self.inner.scan_modem_channels(Empty {}).await?;
         Ok(resp.into_inner().entries)
     }

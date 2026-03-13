@@ -349,7 +349,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
             let hash = hex::decode(program_hash)?;
             client.queue_ephemeral(node_id, hash).await?;
             if json {
-                print_json(&serde_json::json!({"queued": "ephemeral", "node_id": node_id, "program_hash": program_hash}))?;
+                print_json(
+                    &serde_json::json!({"queued": "ephemeral", "node_id": node_id, "program_hash": program_hash}),
+                )?;
             } else {
                 println!("Queued ephemeral program {program_hash} for node {node_id}");
             }
@@ -378,7 +380,14 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 if let Some(ms) = status.last_seen_ms {
                     println!("Last seen: {ms} ms (epoch)");
                 }
-                println!("Session:  {}", if status.has_active_session { "active" } else { "none" });
+                println!(
+                    "Session:  {}",
+                    if status.has_active_session {
+                        "active"
+                    } else {
+                        "none"
+                    }
+                );
             }
         }
 
@@ -448,7 +457,10 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 } else {
                     println!("{:<10} {:<10} Best RSSI", "Channel", "APs");
                     for e in &entries {
-                        println!("{:<10} {:<10} {} dBm", e.channel, e.ap_count, e.strongest_rssi);
+                        println!(
+                            "{:<10} {:<10} {} dBm",
+                            e.channel, e.ap_count, e.strongest_rssi
+                        );
                     }
                 }
             }

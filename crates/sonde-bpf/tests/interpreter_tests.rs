@@ -35,7 +35,10 @@ fn test_mov64_imm_exit() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -47,7 +50,10 @@ fn test_add64_imm() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -60,7 +66,10 @@ fn test_add64_reg() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -72,7 +81,10 @@ fn test_sub64() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -84,7 +96,10 @@ fn test_mul64() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -96,7 +111,10 @@ fn test_div64() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -108,7 +126,10 @@ fn test_div64_by_zero() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 0);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -120,7 +141,10 @@ fn test_mod64() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 2);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        2
+    );
 }
 
 #[test]
@@ -132,7 +156,10 @@ fn test_mod64_by_zero() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -149,7 +176,10 @@ fn test_bitwise_ops() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 0x39);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        0x39
+    );
 }
 
 #[test]
@@ -162,7 +192,10 @@ fn test_shifts64() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 8);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        8
+    );
 }
 
 #[test]
@@ -207,7 +240,10 @@ fn test_add32() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -219,7 +255,10 @@ fn test_mov32_zeroes_upper() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 // ── Jump tests ──────────────────────────────────────────────────────
@@ -234,7 +273,10 @@ fn test_ja() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 1);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -248,7 +290,10 @@ fn test_jeq_imm_taken() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -262,7 +307,10 @@ fn test_jeq_imm_not_taken() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 0);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -276,7 +324,10 @@ fn test_jgt_unsigned() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 1);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -290,7 +341,10 @@ fn test_jslt_signed() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 1);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        1
+    );
 }
 
 // ── JMP32 tests ─────────────────────────────────────────────────────
@@ -308,7 +362,10 @@ fn test_jeq32() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 1);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        1
+    );
 }
 
 // ── Memory tests ────────────────────────────────────────────────────
@@ -322,7 +379,10 @@ fn test_load_store_byte() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 0xAB);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        0xAB
+    );
 }
 
 #[test]
@@ -334,7 +394,10 @@ fn test_load_store_word() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 0x12345678);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        0x12345678
+    );
 }
 
 #[test]
@@ -364,7 +427,10 @@ fn test_store_reg() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 0xBEEF);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        0xBEEF
+    );
 }
 
 #[test]
@@ -399,8 +465,15 @@ fn test_helper_call() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    let helpers = &[HelperDescriptor { id: 1, func: helper_add, ret: HelperReturn::Scalar }];
-    assert_eq!(execute_program(&prog, &mut mem, helpers, &[], false).unwrap(), 42);
+    let helpers = &[HelperDescriptor {
+        id: 1,
+        func: helper_add,
+        ret: HelperReturn::Scalar,
+    }];
+    assert_eq!(
+        execute_program(&prog, &mut mem, helpers, &[], false).unwrap(),
+        42
+    );
 }
 
 #[test]
@@ -437,7 +510,10 @@ fn test_local_call() {
         insn(ebpf::EXIT, 0, 0, 0, 0),       // 7: local return
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 // ── Byte swap test ──────────────────────────────────────────────────
@@ -472,7 +548,10 @@ fn test_loop_sum() {
         insn(ebpf::EXIT, 0, 0, 0, 0),       // 5: exit
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 55);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        55
+    );
 }
 
 // ── Sign-extension load test ────────────────────────────────────────
@@ -503,7 +582,10 @@ fn test_atomic_add_w() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 // ── SDIV test ───────────────────────────────────────────────────────
@@ -517,7 +599,10 @@ fn test_sdiv64() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    assert_eq!(execute_program(&prog, &mut mem, &[], &[], false).unwrap(), 42);
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        42
+    );
 }
 
 // ── SMOD test ───────────────────────────────────────────────────────

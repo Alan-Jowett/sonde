@@ -89,8 +89,12 @@ pub enum RegionTag {
     Context,
     /// Writable input memory (same as Context but allows stores).
     Memory,
-    MapValue { value_size: u32 },
-    MapDescriptor { map_index: u32 },
+    MapValue {
+        value_size: u32,
+    },
+    MapDescriptor {
+        map_index: u32,
+    },
 }
 
 /// A validated memory region that a pointer register is allowed to access.
@@ -110,10 +114,16 @@ struct TaggedReg {
 
 impl TaggedReg {
     const fn scalar(value: u64) -> Self {
-        Self { value, region: None }
+        Self {
+            value,
+            region: None,
+        }
     }
     const fn zeroed() -> Self {
-        Self { value: 0, region: None }
+        Self {
+            value: 0,
+            region: None,
+        }
     }
 }
 
@@ -280,11 +290,7 @@ fn check_jump(pc: usize, offset: isize, num_insns: usize) -> Result<usize, BpfEr
 // ── Choke-point memory access functions ─────────────────────────────
 
 #[inline]
-fn mem_load<const N: usize>(
-    base_reg: &TaggedReg,
-    off: i16,
-    pc: usize,
-) -> Result<u64, BpfError> {
+fn mem_load<const N: usize>(base_reg: &TaggedReg, off: i16, pc: usize) -> Result<u64, BpfError> {
     let region = base_reg
         .region
         .ok_or(BpfError::NonDereferenceableAccess { pc })?;
@@ -975,8 +981,7 @@ pub fn execute_program(
                 );
             }
             ebpf::NEG32 => {
-                reg[dst] =
-                    TaggedReg::scalar((reg[dst].value as i32).wrapping_neg() as u32 as u64);
+                reg[dst] = TaggedReg::scalar((reg[dst].value as i32).wrapping_neg() as u32 as u64);
             }
             ebpf::MOD32_IMM => {
                 let imm = insn.imm as u32;
@@ -1174,8 +1179,7 @@ pub fn execute_program(
                 };
             }
             ebpf::MUL64_IMM => {
-                reg[dst] =
-                    TaggedReg::scalar(reg[dst].value.wrapping_mul(insn.imm as i64 as u64));
+                reg[dst] = TaggedReg::scalar(reg[dst].value.wrapping_mul(insn.imm as i64 as u64));
             }
             ebpf::MUL64_REG => {
                 reg[dst] = TaggedReg::scalar(reg[dst].value.wrapping_mul(reg[src].value));
@@ -1234,22 +1238,18 @@ pub fn execute_program(
                 reg[dst].value &= reg[src].value;
             }
             ebpf::LSH64_IMM => {
-                reg[dst] =
-                    TaggedReg::scalar(reg[dst].value.wrapping_shl((insn.imm as u32) & 0x3f));
+                reg[dst] = TaggedReg::scalar(reg[dst].value.wrapping_shl((insn.imm as u32) & 0x3f));
             }
             ebpf::LSH64_REG => {
-                reg[dst] = TaggedReg::scalar(
-                    reg[dst].value.wrapping_shl((reg[src].value as u32) & 0x3f),
-                );
+                reg[dst] =
+                    TaggedReg::scalar(reg[dst].value.wrapping_shl((reg[src].value as u32) & 0x3f));
             }
             ebpf::RSH64_IMM => {
-                reg[dst] =
-                    TaggedReg::scalar(reg[dst].value.wrapping_shr((insn.imm as u32) & 0x3f));
+                reg[dst] = TaggedReg::scalar(reg[dst].value.wrapping_shr((insn.imm as u32) & 0x3f));
             }
             ebpf::RSH64_REG => {
-                reg[dst] = TaggedReg::scalar(
-                    reg[dst].value.wrapping_shr((reg[src].value as u32) & 0x3f),
-                );
+                reg[dst] =
+                    TaggedReg::scalar(reg[dst].value.wrapping_shr((reg[src].value as u32) & 0x3f));
             }
             ebpf::NEG64 => {
                 reg[dst] = TaggedReg::scalar((reg[dst].value as i64).wrapping_neg() as u64);
@@ -1588,8 +1588,7 @@ pub fn execute_program(
                                     } else {
                                         let map_index = match reg[map_arg as usize].region {
                                             Some(Region {
-                                                tag:
-                                                    RegionTag::MapDescriptor { map_index },
+                                                tag: RegionTag::MapDescriptor { map_index },
                                                 ..
                                             }) => map_index,
                                             _ => {

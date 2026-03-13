@@ -44,6 +44,15 @@ pub struct SqliteStorage {
 
 impl SqliteStorage {
     /// Open (or create) a SQLite database at the given path.
+    /// Open (or create) a SQLite database at the given path.
+    ///
+    /// # Security
+    ///
+    /// The database stores PSKs in plaintext (GW-0601a encryption is
+    /// deferred). On Unix, callers should ensure the database file and
+    /// its WAL/SHM sidecars have restrictive permissions (e.g., 0600).
+    /// This can be done by setting `umask(0o077)` before calling
+    /// `open()`, or by adjusting permissions after creation.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let conn =
             Connection::open(path).map_err(|e| StorageError::Internal(format!("open: {e}")))?;
@@ -86,19 +95,18 @@ fn map_err(e: rusqlite::Error) -> StorageError {
 
 /// Convert a `SystemTime` to seconds since the Unix epoch.
 ///
-/// Pre-epoch times are stored as negative values. For sub-second
-/// precision before the epoch, we round toward negative infinity
-/// so the value round-trips correctly.
+/// Pre-epoch times are stored as negative values. Sub-second
+/// precision is lost (rounded toward negative infinity for
+/// pre-epoch times, truncated for post-epoch times).
 fn system_time_to_epoch_s(t: &SystemTime) -> i64 {
     match t.duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_secs() as i64,
+        Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
         Err(e) => {
             let dur = e.duration();
-            // Ceil the negative direction: if there are sub-second nanos,
-            // we need an extra second to represent the time before epoch.
             let secs = dur.as_secs();
-            let extra = if dur.subsec_nanos() > 0 { 1 } else { 0 };
-            -((secs + extra) as i64)
+            let extra: u64 = if dur.subsec_nanos() > 0 { 1 } else { 0 };
+            let total = secs.saturating_add(extra);
+            i64::try_from(total).map(|v| -v).unwrap_or(i64::MIN + 1)
         }
     }
 }
@@ -108,7 +116,9 @@ fn epoch_s_to_system_time(secs: i64) -> SystemTime {
     if secs >= 0 {
         UNIX_EPOCH + Duration::from_secs(secs as u64)
     } else {
-        UNIX_EPOCH - Duration::from_secs((-secs) as u64)
+        // Handle i64::MIN safely: -(i64::MIN) overflows, so clamp.
+        let abs = (secs as i128).unsigned_abs() as u64;
+        UNIX_EPOCH - Duration::from_secs(abs)
     }
 }
 

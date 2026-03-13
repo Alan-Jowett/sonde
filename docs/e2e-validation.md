@@ -119,10 +119,10 @@ struct ChannelTransport {
 The `ChannelRadio` implements `sonde_modem::bridge::Radio` (all required methods):
 - `send(&mut self, peer_mac, data)` → pushes to `to_node` sender.
 - `drain_rx(&self)` → locks `from_node` mutex, drains all pending frames as `Vec<RecvFrame>`.
-- `set_channel(&mut self, ch)` → stores channel (no-op in tests).
-- `channel(&self)` → returns stored channel.
-- `scan_channels(&mut self)` → returns empty `Vec<ScanEntry>`.
-- `mac_address(&self)` → returns a fixed test MAC (e.g., `[0x00; 6]`).
+- `set_channel(&mut self, ch) → Result<(), &'static str>` → stores channel, returns `Ok(())`.
+- `channel(&self) → u8` → returns stored channel.
+- `scan_channels(&mut self) → Vec<(u8, u8, i8)>` → returns empty vec (no APs in simulation).
+- `mac_address(&self) → [u8; 6]` → returns a fixed test MAC (e.g., `[0x00; 6]`).
 - `reset_state(&mut self)` → no-op.
 
 The `ChannelTransport` implements `sonde_node::traits::Transport` (synchronous):

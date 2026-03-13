@@ -35,11 +35,53 @@ async fn t_e2e_001_nop_wake_cycle() {
     );
 }
 
+/// T-E2E-002 — HMAC authentication round-trip.
+///
+/// Validates that the gateway (RustCryptoHmac) and node (TestHmac) produce
+/// compatible HMAC-SHA256 tags. A successful NOP cycle proves both sides
+/// authenticate each other's frames.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_002_hmac_round_trip() {
+    let env = E2eTestEnv::new().await;
+    let psk = [0x42; 32];
+    env.register_node("hmac-node", 0x1234, psk).await;
+
+    let mut node = NodeProxy::new("hmac-node", 0x1234, psk);
+    let outcome = node.run_wake_cycle(&env).await;
+
+    // Success means: node's WAKE was authenticated by gateway,
+    // and gateway's COMMAND was authenticated by node.
+    assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+}
+
+/// T-E2E-002b — Consecutive wake cycles with unique nonces.
+///
+/// Runs two wake cycles on the same node. Verifies that the second cycle
+/// succeeds (nonces are unique, state persists correctly).
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_002b_consecutive_wake_cycles() {
+    let env = E2eTestEnv::new().await;
+    let psk = [0x55; 32];
+    env.register_node("multi-node", 1, psk).await;
+
+    let mut node = NodeProxy::new("multi-node", 1, psk);
+
+    let outcome1 = node.run_wake_cycle(&env).await;
+    assert_eq!(outcome1, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    let outcome2 = node.run_wake_cycle(&env).await;
+    assert_eq!(outcome2, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Both cycles should update last_seen
+    let record = env.storage.get_node("multi-node").await.unwrap().unwrap();
+    assert!(record.last_seen.is_some());
+}
+
 /// T-E2E-003 — Wrong PSK rejected (silent discard).
 ///
 /// When the node's PSK does not match the gateway's record the gateway
 /// silently discards the WAKE frame. The node exhausts its retries and
-/// Node exhausts retries and sleeps for its configured schedule interval.
+/// sleeps for its configured schedule interval.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_003_wrong_psk_rejected() {
     let env = E2eTestEnv::new().await;

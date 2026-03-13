@@ -82,6 +82,7 @@ pub struct NodeProxy {
     pub schedule_interval_s: u32,
     pub storage: MockNodeStorage,
     pub map_storage: MapStorage,
+    rng: MockRng,
 }
 
 impl NodeProxy {
@@ -94,6 +95,7 @@ impl NodeProxy {
             schedule_interval_s: 60,
             storage: MockNodeStorage::new_paired(key_hint, psk, 60),
             map_storage: MapStorage::new(4096),
+            rng: MockRng(0),
         }
     }
 
@@ -104,7 +106,6 @@ impl NodeProxy {
     /// All E2E tests must use `#[tokio::test(flavor = "multi_thread")]`.
     pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleOutcome {
         let mut hal = MockHal;
-        let mut rng = MockRng(0);
         let clock = MockClock::new();
         let battery = MockBattery;
         let mut interpreter = MockBpfInterpreter::new();
@@ -117,7 +118,7 @@ impl NodeProxy {
             &mut transport,
             &mut self.storage,
             &mut hal,
-            &mut rng,
+            &mut self.rng,
             &clock,
             &battery,
             &mut interpreter,

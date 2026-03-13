@@ -56,7 +56,7 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
             ModemMessage::PairAck(a) => {
                 return Err(format!("pairing failed: status 0x{:02x}", a.status))
             }
-            other => return Err(format!("unexpected response: {:?}", other)),
+            other => continue, // forward compat: skip unknown types
         }
     }
 }
@@ -96,7 +96,7 @@ pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
             ModemMessage::ResetAck(a) => {
                 return Err(format!("reset failed: status 0x{:02x}", a.status))
             }
-            other => return Err(format!("unexpected response: {:?}", other)),
+            other => continue, // forward compat: skip unknown types
         }
     }
 }
@@ -141,7 +141,7 @@ fn query_identity_inner(
         match resp {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::IdentityResponse(ir) => return Ok(ir),
-            other => return Err(format!("unexpected response: {:?}", other)),
+            other => continue, // forward compat: skip unknown types
         }
     }
 }

@@ -297,7 +297,7 @@ fn mem_load<const N: usize>(base_reg: &TaggedReg, off: i16, pc: usize) -> Result
     if matches!(region.tag, RegionTag::MapDescriptor { .. }) {
         return Err(BpfError::NonDereferenceableAccess { pc });
     }
-    let addr = (base_reg.value as i64).wrapping_add(off as i64) as u64;
+    let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end = addr
         .checked_add(N as u64)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: N })?;
@@ -328,7 +328,7 @@ fn mem_load_sign_extend<const N: usize>(
     if matches!(region.tag, RegionTag::MapDescriptor { .. }) {
         return Err(BpfError::NonDereferenceableAccess { pc });
     }
-    let addr = (base_reg.value as i64).wrapping_add(off as i64) as u64;
+    let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end = addr
         .checked_add(N as u64)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: N })?;
@@ -362,7 +362,7 @@ fn mem_store<const N: usize>(
     if matches!(region.tag, RegionTag::Context) {
         return Err(BpfError::ReadOnlyWrite { pc });
     }
-    let addr = (base_reg.value as i64).wrapping_add(off as i64) as u64;
+    let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end = addr
         .checked_add(N as u64)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: N })?;
@@ -400,7 +400,7 @@ fn mem_atomic32(
     if matches!(region.tag, RegionTag::Context) {
         return Err(BpfError::ReadOnlyWrite { pc });
     }
-    let addr = (base_reg.value as i64).wrapping_add(off as i64) as u64;
+    let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end = addr
         .checked_add(4)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: 4 })?;
@@ -481,7 +481,7 @@ fn mem_atomic64(
     if matches!(region.tag, RegionTag::Context) {
         return Err(BpfError::ReadOnlyWrite { pc });
     }
-    let addr = (base_reg.value as i64).wrapping_add(off as i64) as u64;
+    let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end = addr
         .checked_add(8)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: 8 })?;
@@ -712,7 +712,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[src].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[src].value.wrapping_add_signed(insn.off as i64);
                     if let Some(spilled) = spill_tracker.check_restore(stack_base, addr) {
                         reg[dst] = TaggedReg {
                             value: val,
@@ -750,7 +750,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 1);
                 }
             }
@@ -763,7 +763,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 2);
                 }
             }
@@ -776,7 +776,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 4);
                 }
             }
@@ -789,7 +789,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 8);
                 }
             }
@@ -804,7 +804,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 1);
                 }
             }
@@ -817,7 +817,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 2);
                 }
             }
@@ -830,7 +830,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 4);
                 }
             }
@@ -843,7 +843,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = reg[dst].value.wrapping_add_signed(insn.off as i64);
                     if let Some(region) = reg[src].region {
                         if addr.is_multiple_of(8) {
                             spill_tracker.record_spill(stack_base, addr, region);
@@ -865,7 +865,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (base.value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = base.value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 4);
                 }
             }
@@ -879,7 +879,7 @@ pub fn execute_program(
                         ..
                     })
                 ) {
-                    let addr = (base.value as i64).wrapping_add(insn.off as i64) as u64;
+                    let addr = base.value.wrapping_add_signed(insn.off as i64);
                     spill_tracker.invalidate(stack_base, addr, 8);
                 }
             }
@@ -1583,6 +1583,12 @@ pub fn execute_program(
                                     reg[0] = TaggedReg::scalar(result);
                                 }
                                 HelperReturn::MapValueOrNull { map_arg } => {
+                                    if map_arg > 5 {
+                                        return Err(BpfError::InvalidHelperArgument {
+                                            pc: pc - 1,
+                                            arg: map_arg,
+                                        });
+                                    }
                                     if result == 0 {
                                         reg[0] = TaggedReg::scalar(0);
                                     } else {

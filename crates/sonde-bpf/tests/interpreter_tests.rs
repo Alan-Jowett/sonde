@@ -670,3 +670,34 @@ fn test_mem_oob() {
         Err(BpfError::MemoryAccessViolation { .. })
     ));
 }
+
+// ── Read-only context tests ────────────────────────────────────────
+
+#[test]
+fn test_read_only_ctx_rejects_store() {
+    // stb [r1+0], 0x42; exit
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 1, 0, 0, 0x42),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [0u8; 16];
+    assert!(matches!(
+        execute_program(&prog, &mut mem, &[], &[], true),
+        Err(BpfError::ReadOnlyWrite { .. })
+    ));
+}
+
+#[test]
+fn test_writable_ctx_allows_store() {
+    // stb [r1+0], 0x42; ldxb r0, [r1+0]; exit
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 1, 0, 0, 0x42),
+        insn(ebpf::LD_B_REG, 0, 1, 0, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [0u8; 16];
+    assert_eq!(
+        execute_program(&prog, &mut mem, &[], &[], false).unwrap(),
+        0x42
+    );
+}

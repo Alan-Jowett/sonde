@@ -308,7 +308,7 @@ Jump instructions compare `reg[dst].value` against `reg[src].value` (or an immed
 1. Pass `reg[1..=5].value` to the helper function (raw u64 arguments).
 2. Receive the raw u64 return value.
 3. Tag R0 according to the helper's return-type descriptor (see §5).
-4. Clobber R1–R5 to scalar (caller-saved registers lose provenance after a call).
+4. Clobber R1–R5 to scalar — clear their region tags (set to `None`).  The raw u64 values are left as-is (the helper may have read them, but the caller must not rely on them).  This matches the BPF calling convention where R1–R5 are caller-saved and undefined after a call.
 
 **BPF-to-BPF call (src=1):**
 
@@ -465,7 +465,7 @@ The frame pointer R10 always carries the `Stack` tag.  Its `base` and `end` span
 
 ## 8  Error Model
 
-The tagged interpreter introduces three new error variants:
+The tagged interpreter introduces four new error variants:
 
 ```rust
 pub enum BpfError {
@@ -482,6 +482,10 @@ pub enum BpfError {
     /// Pointer arithmetic that violates provenance rules
     /// (e.g., pointer + pointer, bitwise op on pointer).
     InvalidPointerArithmetic { pc: usize },
+
+    /// LD_DW_IMM src=1 referenced a map index that is out of range
+    /// of the provided `maps` slice.
+    InvalidMapIndex { pc: usize, index: u32 },
 }
 ```
 
@@ -545,14 +549,16 @@ pub fn execute_program(
     helpers: &[(u32, Helper)],
 ) -> Result<u64, BpfError>;
 
-// Tagged — adds map definitions for region metadata
+// Tagged — context is read-only; map definitions added
 pub fn execute_program(
     prog: &[u8],
-    mem: &mut [u8],
+    ctx: &[u8],
     helpers: &[HelperDescriptor],
     maps: &[MapRegion],
 ) -> Result<u64, BpfError>;
 ```
+
+The `mem` parameter is renamed to `ctx` and changed from `&mut [u8]` to `&[u8]`.  The tagged interpreter enforces Context as read-only (§3.2), so the API should reflect this.  If a future use case requires a mutable input region, a separate parameter (e.g., `scratch: &mut [u8]`) can be added with its own `RegionTag` variant.
 
 Where `MapRegion` provides the metadata needed to tag LD_DW_IMM relocations and `map_lookup_elem` returns:
 
@@ -569,7 +575,7 @@ The `maps` slice is indexed by `map_index` — the same index used in the LD_DW_
 
 - LD_DW_IMM src=1, imm=*i* → `maps[i].relocated_ptr` is loaded into the register value, tagged as `MapDescriptor { map_index: i }`.
 - Helper return resolution (§5.2) → `maps[reg[map_arg].region.tag.map_index].value_size` gives the value size.
-- Out-of-bounds `map_index` (≥ `maps.len()`) is a fatal `MemoryAccessViolation` at LD_DW_IMM time.
+- Out-of-bounds `map_index` (≥ `maps.len()`) is a fatal `InvalidMapIndex` error at LD_DW_IMM time.
 
 ### 10.2  Helper registration
 

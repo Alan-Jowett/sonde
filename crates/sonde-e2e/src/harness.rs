@@ -552,9 +552,9 @@ impl BpfInterpreter for MockBpfInterpreter {
 // MockPairingSerial — simulated USB-CDC serial for pairing tests
 // ---------------------------------------------------------------------------
 
-use std::collections::VecDeque;
 use sonde_node::error::NodeError;
 use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage};
+use std::collections::VecDeque;
 
 /// Simulated serial port for testing [`sonde_node::pairing::run_pairing_mode`].
 ///

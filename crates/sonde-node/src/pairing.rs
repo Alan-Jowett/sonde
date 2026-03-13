@@ -133,16 +133,15 @@ pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
         loop {
             match decoder.decode() {
                 Ok(Some(msg)) => {
-                    let (response, _action) =
-                        handle_pairing_message(&msg, storage, map_storage);
+                    let (response, _action) = handle_pairing_message(&msg, storage, map_storage);
                     if let Some(frame) = response {
                         if serial.write(&frame).is_err() {
                             return;
                         }
                     }
                 }
-                Ok(None) => break,       // Need more data.
-                Err(_) => continue,       // Bad frame — skip, try next.
+                Ok(None) => break,  // Need more data.
+                Err(_) => continue, // Bad frame — skip, try next.
             }
         }
     }

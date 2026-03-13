@@ -106,9 +106,7 @@ impl PairingSerial for EspUsbSerialJtag {
                 )
             };
             if n < 0 {
-                return Err(NodeError::Transport(
-                    "USB Serial/JTAG write error".into(),
-                ));
+                return Err(NodeError::Transport("USB Serial/JTAG write error".into()));
             }
             if n == 0 {
                 // Timeout -- no host reading. Not fatal; caller decides.

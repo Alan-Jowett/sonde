@@ -870,7 +870,10 @@ async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
         responses
     );
     assert!(
-        matches!(responses[0], ModemMessage::PairingReady(PairingReady { .. })),
+        matches!(
+            responses[0],
+            ModemMessage::PairingReady(PairingReady { .. })
+        ),
         "first message must be PAIRING_READY"
     );
     assert_eq!(
@@ -887,9 +890,7 @@ async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
     );
     assert_eq!(
         responses[3],
-        ModemMessage::IdentityResponse(IdentityResponse::Paired {
-            key_hint: KEY_HINT,
-        }),
+        ModemMessage::IdentityResponse(IdentityResponse::Paired { key_hint: KEY_HINT }),
         "identity after pairing must be Paired"
     );
     assert_eq!(

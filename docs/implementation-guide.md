@@ -300,6 +300,8 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 **Requirements:** GW-0806  
 **Dependencies:** `tonic` (gRPC client), `clap` (CLI parsing), `serialport` (USB serial).
 
+The admin CLI connects to the gateway via a local socket: Unix domain socket on Linux/macOS (default: `/var/run/sonde/admin.sock`) or named pipe on Windows (default: `\\.\pipe\sonde-admin`). No TCP port is used.
+
 **Module order:**
 
 | Step | Module | What to build | Test with |
@@ -399,7 +401,7 @@ This avoids duplicating test infrastructure between the gateway and protocol cra
 
 ### 5.2  Proto file management
 
-The `proto/admin.proto` file defines the gRPC admin API. Both `sonde-gateway` (server) and `sonde-admin` (client) use `tonic-build` to generate Rust code from it. The proto file is the single source of truth for the admin API wire format.
+The `proto/admin.proto` file defines the gRPC admin API. Both `sonde-gateway` (server) and `sonde-admin` (client) use `tonic-prost-build` to generate Rust code from it. The proto file is the single source of truth for the admin API wire format.
 
 ### 5.3  Test program compilation
 

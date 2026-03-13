@@ -575,7 +575,7 @@ service GatewayAdmin {
 }
 ```
 
-The gRPC server runs on a configurable local address (default: `localhost:50051`). It is implemented with the `tonic` crate.
+The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS (default: `/var/run/sonde/admin.sock`) or a **named pipe** on Windows (default: `\\.\pipe\sonde-admin`). No TCP port is exposed. It is implemented with the `tonic` crate.
 
 ### 13.2  Key operations
 
@@ -614,6 +614,10 @@ sonde-admin state export <file>
 sonde-admin state import <file>
 
 sonde-admin status <node-id>
+
+sonde-admin modem status
+sonde-admin modem set-channel <channel>
+sonde-admin modem scan
 ```
 
 All commands support `--format json` for machine-readable output.
@@ -640,7 +644,7 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 |---|---|---|
 | `transport` | Transport backend and connection parameters | Required |
 | `storage` | Storage backend and connection parameters | Required |
-| `admin_listen` | gRPC admin API listen address | `localhost:50051` |
+| `admin_socket` | gRPC admin API socket path | `/var/run/sonde/admin.sock` (Linux), `\\.\pipe\sonde-admin` (Windows) |
 | `handlers` | Handler routing table (program_hash → command) | `[]` |
 | `session_timeout_s` | Session inactivity timeout | `30` |
 | `node_timeout_multiplier` | Multiple of node's schedule interval before `node_timeout` event | `3` |

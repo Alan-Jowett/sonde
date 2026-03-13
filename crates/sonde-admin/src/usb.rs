@@ -7,7 +7,7 @@
 //! serial port connected to a sonde node in pairing mode.
 
 use std::io::{Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, IdentityResponse, ModemCodecError, ModemMessage, PairRequest,
@@ -45,7 +45,11 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
 
     port.set_timeout(ACK_TIMEOUT)
         .map_err(|e| format!("timeout: {}", e))?;
+    let deadline = Instant::now() + ACK_TIMEOUT;
     loop {
+        if Instant::now() >= deadline {
+            return Err("timeout waiting for pair ack".into());
+        }
         let ack = read_message(&mut port, &mut decoder)?;
         match ack {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
@@ -56,7 +60,7 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
             ModemMessage::PairAck(a) => {
                 return Err(format!("pairing failed: status 0x{:02x}", a.status))
             }
-            other => continue, // forward compat: skip unknown types
+            _ => continue, // forward compat: skip unknown types
         }
     }
 }
@@ -85,7 +89,11 @@ pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
 
     port.set_timeout(ACK_TIMEOUT)
         .map_err(|e| format!("timeout: {}", e))?;
+    let deadline = Instant::now() + ACK_TIMEOUT;
     loop {
+        if Instant::now() >= deadline {
+            return Err("timeout waiting for reset ack".into());
+        }
         let ack = read_message(&mut port, &mut decoder)?;
         match ack {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
@@ -96,7 +104,7 @@ pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
             ModemMessage::ResetAck(a) => {
                 return Err(format!("reset failed: status 0x{:02x}", a.status))
             }
-            other => continue, // forward compat: skip unknown types
+            _ => continue, // forward compat: skip unknown types
         }
     }
 }
@@ -136,12 +144,16 @@ fn query_identity_inner(
 
     port.set_timeout(IDENTITY_TIMEOUT)
         .map_err(|e| format!("timeout: {}", e))?;
+    let deadline = Instant::now() + IDENTITY_TIMEOUT;
     loop {
+        if Instant::now() >= deadline {
+            return Err("timeout waiting for identity response".into());
+        }
         let resp = read_message(port, decoder)?;
         match resp {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::IdentityResponse(ir) => return Ok(ir),
-            other => continue, // forward compat: skip unknown types
+            _ => continue, // forward compat: skip unknown types
         }
     }
 }
@@ -150,7 +162,11 @@ fn wait_for_ready(
     port: &mut Box<dyn serialport::SerialPort>,
     decoder: &mut FrameDecoder,
 ) -> Result<(), String> {
+    let deadline = Instant::now() + READY_TIMEOUT;
     loop {
+        if Instant::now() >= deadline {
+            return Err("timeout waiting for pairing ready".into());
+        }
         let msg = read_message(port, decoder)?;
         if matches!(msg, ModemMessage::PairingReady(_)) {
             return Ok(());

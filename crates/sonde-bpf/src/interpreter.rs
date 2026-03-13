@@ -858,29 +858,25 @@ fn execute_atomic32(
     unsafe {
         let old = ptr.read_unaligned();
         match base_op {
-            0x00 => {
-                // ADD
+            ebpf::BPF_ATOMIC_ADD => {
                 ptr.write_unaligned(old.wrapping_add(reg[src] as u32));
                 if fetch {
                     reg[src] = old as u64;
                 }
             }
-            0x40 => {
-                // OR
+            ebpf::BPF_ATOMIC_OR => {
                 ptr.write_unaligned(old | reg[src] as u32);
                 if fetch {
                     reg[src] = old as u64;
                 }
             }
-            0x50 => {
-                // AND
+            ebpf::BPF_ATOMIC_AND => {
                 ptr.write_unaligned(old & reg[src] as u32);
                 if fetch {
                     reg[src] = old as u64;
                 }
             }
-            0xa0 => {
-                // XOR
+            ebpf::BPF_ATOMIC_XOR => {
                 ptr.write_unaligned(old ^ reg[src] as u32);
                 if fetch {
                     reg[src] = old as u64;
@@ -925,29 +921,25 @@ fn execute_atomic64(
     unsafe {
         let old = ptr.read_unaligned();
         match base_op {
-            0x00 => {
-                // ADD
+            ebpf::BPF_ATOMIC_ADD => {
                 ptr.write_unaligned(old.wrapping_add(reg[src]));
                 if fetch {
                     reg[src] = old;
                 }
             }
-            0x40 => {
-                // OR
+            ebpf::BPF_ATOMIC_OR => {
                 ptr.write_unaligned(old | reg[src]);
                 if fetch {
                     reg[src] = old;
                 }
             }
-            0x50 => {
-                // AND
+            ebpf::BPF_ATOMIC_AND => {
                 ptr.write_unaligned(old & reg[src]);
                 if fetch {
                     reg[src] = old;
                 }
             }
-            0xa0 => {
-                // XOR
+            ebpf::BPF_ATOMIC_XOR => {
                 ptr.write_unaligned(old ^ reg[src]);
                 if fetch {
                     reg[src] = old;

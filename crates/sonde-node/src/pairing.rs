@@ -42,8 +42,8 @@ pub fn handle_pairing_message<S: PlatformStorage>(
                 Err(_) => PAIRING_STATUS_STORAGE_ERROR,
             };
             let ack = ModemMessage::PairAck(PairAck { status });
-            let frame = encode_modem_frame(&ack).expect("encode cannot fail");
-            (Some(frame), PairingAction::Continue)
+            let frame = encode_modem_frame(&ack).ok();
+            (frame, PairingAction::Continue)
         }
         ModemMessage::ResetRequest => {
             let mut ks = KeyStore::new(storage);
@@ -52,8 +52,8 @@ pub fn handle_pairing_message<S: PlatformStorage>(
                 Err(_) => PAIRING_STATUS_STORAGE_ERROR,
             };
             let ack = ModemMessage::ResetAck(ResetAck { status });
-            let frame = encode_modem_frame(&ack).expect("encode cannot fail");
-            (Some(frame), PairingAction::Continue)
+            let frame = encode_modem_frame(&ack).ok();
+            (frame, PairingAction::Continue)
         }
         ModemMessage::IdentityRequest => {
             let identity = storage.read_key();
@@ -65,8 +65,8 @@ pub fn handle_pairing_message<S: PlatformStorage>(
                     sonde_protocol::modem::IdentityResponse::Unpaired,
                 ),
             };
-            let frame = encode_modem_frame(&resp).expect("encode cannot fail");
-            (Some(frame), PairingAction::Continue)
+            let frame = encode_modem_frame(&resp).ok();
+            (frame, PairingAction::Continue)
         }
         _ => {
             // Unknown message — silently discard (forward compatibility).

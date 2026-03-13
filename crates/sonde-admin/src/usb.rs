@@ -194,7 +194,14 @@ fn read_message(
         let n = match port.read(&mut buf) {
             Ok(0) => return Err("USB disconnected".into()),
             Ok(n) => n,
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue
+            }
             Err(e) => return Err(format!("read: {}", e)),
         };
         decoder.push(&buf[..n]);

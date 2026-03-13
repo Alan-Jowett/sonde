@@ -50,7 +50,7 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
         if Instant::now() >= deadline {
             return Err("timeout waiting for pair ack".into());
         }
-        let ack = read_message(&mut port, &mut decoder)?;
+        let ack = read_message(&mut port, &mut decoder, deadline)?;
         match ack {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::PairAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
@@ -94,7 +94,7 @@ pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
         if Instant::now() >= deadline {
             return Err("timeout waiting for reset ack".into());
         }
-        let ack = read_message(&mut port, &mut decoder)?;
+        let ack = read_message(&mut port, &mut decoder, deadline)?;
         match ack {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::ResetAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
@@ -149,7 +149,7 @@ fn query_identity_inner(
         if Instant::now() >= deadline {
             return Err("timeout waiting for identity response".into());
         }
-        let resp = read_message(port, decoder)?;
+        let resp = read_message(port, decoder, deadline)?;
         match resp {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::IdentityResponse(ir) => return Ok(ir),
@@ -167,7 +167,7 @@ fn wait_for_ready(
         if Instant::now() >= deadline {
             return Err("timeout waiting for pairing ready".into());
         }
-        let msg = read_message(port, decoder)?;
+        let msg = read_message(port, decoder, deadline)?;
         if matches!(msg, ModemMessage::PairingReady(_)) {
             return Ok(());
         }
@@ -178,9 +178,13 @@ fn wait_for_ready(
 fn read_message(
     port: &mut Box<dyn serialport::SerialPort>,
     decoder: &mut FrameDecoder,
+    deadline: Instant,
 ) -> Result<ModemMessage, String> {
     let mut buf = [0u8; 256];
     loop {
+        if Instant::now() >= deadline {
+            return Err("timeout waiting for response".into());
+        }
         // Check for already-buffered frames first
         match decoder.decode() {
             Ok(Some(msg)) => return Ok(msg),

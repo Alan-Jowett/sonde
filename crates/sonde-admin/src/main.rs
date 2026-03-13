@@ -549,7 +549,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
         },
 
         // USB commands are handled before the gRPC client is connected.
-        Commands::Usb { .. } => unreachable!(),
+        Commands::Usb { .. } => {
+            unreachable!("USB commands handled earlier and return before this match")
+        }
     }
 
     Ok(())

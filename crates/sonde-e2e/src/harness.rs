@@ -8,6 +8,7 @@
 //! `Gateway::process_frame` synchronously via `block_in_place`.
 //! Modem / ESP-NOW radio integration will be added in a later phase.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,8 +86,7 @@ pub struct NodeProxy {
 }
 
 impl NodeProxy {
-    pub fn new(node_id: &str, key_hint: u16, psk: [u8; 32]) -> Self {
-        let _ = node_id; // used only to initialise storage
+    pub fn new(key_hint: u16, psk: [u8; 32]) -> Self {
         Self {
             mac: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
             storage: MockNodeStorage::new_paired(key_hint, psk, 60),
@@ -100,7 +100,10 @@ impl NodeProxy {
     /// Uses `block_in_place` so the synchronous node code can call the async
     /// gateway inline. `block_in_place` requires a multi-thread tokio runtime.
     /// All E2E tests must use `#[tokio::test(flavor = "multi_thread")]`.
-    pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleOutcome {
+    ///
+    /// Returns `(outcome, response_count)` where `response_count` is the
+    /// number of non-`None` responses the gateway produced during the cycle.
+    pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> (WakeCycleOutcome, usize) {
         let mut hal = MockHal;
         let clock = MockClock::new();
         let battery = MockBattery;
@@ -110,7 +113,7 @@ impl NodeProxy {
 
         let mut transport = BridgeTransport::new(env.gateway.clone(), self.mac.clone());
 
-        run_wake_cycle(
+        let outcome = run_wake_cycle(
             &mut transport,
             &mut self.storage,
             &mut hal,
@@ -121,7 +124,8 @@ impl NodeProxy {
             &mut self.map_storage,
             &hmac,
             &sha,
-        )
+        );
+        (outcome, transport.response_count())
     }
 }
 
@@ -136,6 +140,7 @@ struct BridgeTransport {
     gateway: Arc<Gateway>,
     peer: Vec<u8>,
     pending_response: Option<Vec<u8>>,
+    response_count: Cell<usize>,
     rt: tokio::runtime::Handle,
 }
 
@@ -145,9 +150,15 @@ impl BridgeTransport {
             gateway,
             peer,
             pending_response: None,
+            response_count: Cell::new(0),
             rt: tokio::runtime::Handle::try_current()
-                .expect("BridgeTransport must be created inside a multi-thread tokio runtime"),
+                .expect("BridgeTransport must be created inside a Tokio runtime"),
         }
+    }
+
+    /// Number of non-`None` responses the gateway returned during this cycle.
+    fn response_count(&self) -> usize {
+        self.response_count.get()
     }
 }
 
@@ -160,6 +171,9 @@ impl NodeTransport for BridgeTransport {
             self.rt
                 .block_on(async { gateway.process_frame(&frame, peer).await })
         });
+        if response.is_some() {
+            self.response_count.set(self.response_count.get() + 1);
+        }
         self.pending_response = response;
         Ok(())
     }

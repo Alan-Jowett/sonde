@@ -20,8 +20,8 @@ async fn t_e2e_001_nop_wake_cycle() {
     let psk = [0xAA; 32];
     env.register_node("test-node", 1, psk).await;
 
-    let mut node = NodeProxy::new("test-node", 1, psk);
-    let outcome = node.run_wake_cycle(&env).await;
+    let mut node = NodeProxy::new(1, psk);
+    let (outcome, _) = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 
@@ -46,8 +46,8 @@ async fn t_e2e_002_hmac_round_trip() {
     let psk = [0x42; 32];
     env.register_node("hmac-node", 0x1234, psk).await;
 
-    let mut node = NodeProxy::new("hmac-node", 0x1234, psk);
-    let outcome = node.run_wake_cycle(&env).await;
+    let mut node = NodeProxy::new(0x1234, psk);
+    let (outcome, _) = node.run_wake_cycle(&env).await;
 
     // Success means: node's WAKE was authenticated by gateway,
     // and gateway's COMMAND was authenticated by node.
@@ -59,19 +59,23 @@ async fn t_e2e_002_hmac_round_trip() {
 /// Runs two wake cycles on the same `NodeProxy`. Verifies that both cycles
 /// complete successfully with persistent storage and monotonic RNG state,
 /// confirming the harness correctly preserves node state across cycles.
+/// Nonce uniqueness is guaranteed by the monotonic `MockRng` and verified
+/// implicitly — the gateway would reject a replayed nonce.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002b_consecutive_wake_cycles() {
     let env = E2eTestEnv::new().await;
     let psk = [0x55; 32];
     env.register_node("multi-node", 1, psk).await;
 
-    let mut node = NodeProxy::new("multi-node", 1, psk);
+    let mut node = NodeProxy::new(1, psk);
 
-    let outcome1 = node.run_wake_cycle(&env).await;
+    let (outcome1, resp1) = node.run_wake_cycle(&env).await;
     assert_eq!(outcome1, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(resp1 > 0, "first cycle should receive gateway responses");
 
-    let outcome2 = node.run_wake_cycle(&env).await;
+    let (outcome2, resp2) = node.run_wake_cycle(&env).await;
     assert_eq!(outcome2, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(resp2 > 0, "second cycle should receive gateway responses");
 
     // Both cycles should update last_seen
     let record = env.storage.get_node("multi-node").await.unwrap().unwrap();
@@ -89,11 +93,17 @@ async fn t_e2e_003_wrong_psk_rejected() {
     env.register_node("test-node", 1, [0xAA; 32]).await;
 
     // Node has a different PSK
-    let mut node = NodeProxy::new("test-node", 1, [0xBB; 32]);
-    let outcome = node.run_wake_cycle(&env).await;
+    let mut node = NodeProxy::new(1, [0xBB; 32]);
+    let (outcome, response_count) = node.run_wake_cycle(&env).await;
 
     // Should exhaust retries and sleep
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Gateway must produce zero response frames (silent discard).
+    assert_eq!(
+        response_count, 0,
+        "gateway should send zero responses on HMAC failure"
+    );
 
     // Verify the gateway did NOT update telemetry for this node
     // (the WAKE was silently discarded due to HMAC failure).
@@ -126,8 +136,8 @@ async fn t_e2e_020_update_schedule() {
         )
         .await;
 
-    let mut node = NodeProxy::new("sched-node", 1, psk);
-    let outcome = node.run_wake_cycle(&env).await;
+    let mut node = NodeProxy::new(1, psk);
+    let (outcome, _) = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 120 });
 
@@ -152,8 +162,8 @@ async fn t_e2e_021_reboot() {
         .queue_command("reboot-node", PendingCommand::Reboot)
         .await;
 
-    let mut node = NodeProxy::new("reboot-node", 1, psk);
-    let outcome = node.run_wake_cycle(&env).await;
+    let mut node = NodeProxy::new(1, psk);
+    let (outcome, _) = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Reboot);
 }
@@ -167,10 +177,16 @@ async fn t_e2e_040_unknown_node() {
     let env = E2eTestEnv::new().await;
     // Do NOT register node
 
-    let mut node = NodeProxy::new("unknown", 99, [0xFF; 32]);
-    let outcome = node.run_wake_cycle(&env).await;
+    let mut node = NodeProxy::new(99, [0xFF; 32]);
+    let (outcome, response_count) = node.run_wake_cycle(&env).await;
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Gateway must produce zero response frames for an unknown node (silent discard).
+    assert_eq!(
+        response_count, 0,
+        "gateway should send zero responses for unknown key_hint"
+    );
 
     // Verify the gateway did not create any node record for the unknown key_hint.
     let record = env.storage.get_node("unknown").await.unwrap();

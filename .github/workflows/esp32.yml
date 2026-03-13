@@ -40,7 +40,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           workspaces: ". -> target"
-          key: esp32-xtensa
+          key: esp32-xtensa-${{ hashFiles('crates/sonde-node/sdkconfig.defaults') }}
 
       # ------------------------------------------------------------------ #
       # Xtensa Rust toolchain (required for xtensa-esp32-espidf target)

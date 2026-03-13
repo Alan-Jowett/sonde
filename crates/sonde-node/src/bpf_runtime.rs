@@ -61,7 +61,12 @@ pub trait BpfInterpreter {
     ///
     /// `map_defs` carries the corresponding [`sonde_protocol::MapDef`]
     /// entries so the backend can compute region sizes for bounds checking.
-    fn load(&mut self, bytecode: &[u8], map_ptrs: &[u64], map_defs: &[sonde_protocol::MapDef]) -> Result<(), BpfError>;
+    fn load(
+        &mut self,
+        bytecode: &[u8],
+        map_ptrs: &[u64],
+        map_defs: &[sonde_protocol::MapDef],
+    ) -> Result<(), BpfError>;
 
     /// Execute the loaded program.
     ///

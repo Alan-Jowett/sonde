@@ -19,8 +19,8 @@ pub mod key_store;
 pub mod map_storage;
 pub mod pairing;
 pub mod program_store;
-pub mod sonde_bpf_adapter;
 pub mod sleep;
+pub mod sonde_bpf_adapter;
 pub mod traits;
 pub mod wake_cycle;
 

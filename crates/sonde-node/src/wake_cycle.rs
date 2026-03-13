@@ -1136,7 +1136,12 @@ mod tests {
         ) -> Result<(), BpfError> {
             Ok(())
         }
-        fn load(&mut self, _bytecode: &[u8], _map_ptrs: &[u64], _map_defs: &[sonde_protocol::MapDef]) -> Result<(), BpfError> {
+        fn load(
+            &mut self,
+            _bytecode: &[u8],
+            _map_ptrs: &[u64],
+            _map_defs: &[sonde_protocol::MapDef],
+        ) -> Result<(), BpfError> {
             self.loaded = true;
             Ok(())
         }

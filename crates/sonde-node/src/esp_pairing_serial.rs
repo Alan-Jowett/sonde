@@ -19,18 +19,18 @@ use log::info;
 const TX_BUF_SIZE: u32 = 256;
 const RX_BUF_SIZE: u32 = 256;
 
-/// Convert milliseconds to FreeRTOS ticks using the ESP-IDF tick rate.
+/// Convert milliseconds to FreeRTOS ticks.
+///
+/// ESP-IDF v5.x defaults to `configTICK_RATE_HZ = 1000` (1 ms/tick).
+/// We use this default directly since `portTICK_PERIOD_MS` is a C macro
+/// that may not be exported by all `esp-idf-sys` bindgen configurations.
 /// Rounds up to ensure non-zero ms always yields at least 1 tick.
-fn ms_to_ticks(ms: u32) -> esp_idf_sys::TickType_t {
+fn ms_to_ticks(ms: u32) -> u32 {
+    const TICK_PERIOD_MS: u32 = 1; // 1000 Hz tick rate
     if ms == 0 {
         return 0;
     }
-    let period = unsafe { esp_idf_sys::portTICK_PERIOD_MS };
-    if period == 0 {
-        return ms; // Fallback: assume 1ms/tick
-    }
-    // Round up: (ms + period - 1) / period, minimum 1 tick.
-    let ticks = (ms + period - 1) / period;
+    let ticks = (ms + TICK_PERIOD_MS - 1) / TICK_PERIOD_MS;
     ticks.max(1)
 }
 

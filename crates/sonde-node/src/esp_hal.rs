@@ -269,6 +269,10 @@ impl hal::Hal for EspHal {
     }
 
     fn adc_read(&mut self, channel: u32) -> i32 {
+        // ESP32 ADC1 has channels 0-7.
+        if channel > 7 {
+            return -1;
+        }
         unsafe {
             if !self.adc_width_configured {
                 let err =

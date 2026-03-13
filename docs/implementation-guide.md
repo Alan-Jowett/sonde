@@ -191,7 +191,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 
 **Design doc:** [gateway-design.md](gateway-design.md)  
 **Validation:** [gateway-validation.md](gateway-validation.md)  
-**Dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail`, `hmac`, `sha2`, `ciborium`.
+**Key dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail`, `rusqlite`, `hmac`, `sha2`, `ciborium`, `clap`, `tokio-serial`, `tracing`. See `crates/sonde-gateway/Cargo.toml` for the full list.
 
 **Status:** Complete. 106 tests pass across 5 integration test files (phase2a through phase2d). Uses `sqlite_storage.rs` for persistence (added beyond original plan). Binary entry point is `src/bin/gateway.rs`.
 
@@ -287,7 +287,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 **Design doc:** [node-design.md](node-design.md)  
 **Validation:** [node-validation.md](node-validation.md)  
-**Dependencies:** `sonde-protocol`, `esp-idf-hal`, `esp-idf-svc`, BPF interpreter (`rbpf`).
+**Key dependencies:** `sonde-protocol`, `rbpf`, `ciborium`, `hmac`, `sha2`, `log`. ESP-IDF dependencies (`esp-idf-hal`, `esp-idf-svc`) are behind the `esp` feature. See `crates/sonde-node/Cargo.toml` for the full list.
 
 **Status:** Complete. 101 tests pass covering all validation test cases (T-N100 through T-N802). All 19 modules implemented including ESP-specific platform adapters. Modules added beyond original plan: `bpf_dispatch.rs` (helper dispatch), `pairing.rs` (USB pairing handler), `rbpf_adapter.rs` (BpfInterpreter impl for rbpf), `traits.rs` (platform abstractions), `error.rs` (error types), and four ESP-specific modules (`esp_hal.rs`, `esp_sleep.rs`, `esp_storage.rs`, `esp_transport.rs`).
 
@@ -327,7 +327,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 **Status:** Complete. All 4 modules implemented (`grpc_client.rs`, `usb.rs`, `main.rs`, `lib.rs`). USB pairing supports `--format json` output. No automated tests (USB pairing requires hardware; gRPC client requires a running gateway).
 
-The admin CLI connects to the gateway via a local socket: Unix domain socket on Linux/macOS (default: `/var/run/sonde/admin.sock`) or named pipe on Windows (default: `\\.\pipe\sonde-admin`). No TCP port is used.
+The admin CLI connects to the gateway via TCP (default: `127.0.0.1:50051`). The gateway's `--admin-addr` flag controls the listen address.
 
 **Module order:**
 

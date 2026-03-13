@@ -20,9 +20,8 @@ const TX_BUF_SIZE: u32 = 256;
 const RX_BUF_SIZE: u32 = 256;
 
 /// Convert milliseconds to FreeRTOS ticks using the ESP-IDF tick rate.
+/// Rounds up to ensure non-zero ms always yields at least 1 tick.
 fn ms_to_ticks(ms: u32) -> esp_idf_sys::TickType_t {
-    // portTICK_PERIOD_MS is defined by ESP-IDF based on
-    // configTICK_RATE_HZ. This handles non-1kHz tick rates correctly.
     if ms == 0 {
         return 0;
     }
@@ -30,7 +29,9 @@ fn ms_to_ticks(ms: u32) -> esp_idf_sys::TickType_t {
     if period == 0 {
         return ms; // Fallback: assume 1ms/tick
     }
-    ms / period
+    // Round up: (ms + period - 1) / period, minimum 1 tick.
+    let ticks = (ms + period - 1) / period;
+    ticks.max(1)
 }
 
 /// USB Serial/JTAG driver for ESP32-C3 pairing mode.

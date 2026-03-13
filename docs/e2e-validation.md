@@ -117,8 +117,8 @@ struct ChannelTransport {
 ```
 
 The `ChannelRadio` implements `sonde-modem::bridge::Radio`:
-- `send(&mut self, peer_mac, data)` → pushes to `to_nodes` sender.
-- `drain_rx(&self)` → locks `from_nodes` mutex, drains all pending frames as `Vec<RecvFrame>`.
+- `send(&mut self, peer_mac, data)` → pushes to `to_node` sender.
+- `drain_rx(&self)` → locks `from_node` mutex, drains all pending frames as `Vec<RecvFrame>`.
 
 The `ChannelTransport` implements `sonde-node::traits::Transport` (synchronous):
 - `send(&mut self, frame)` → pushes to `tx` sender.

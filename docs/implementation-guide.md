@@ -40,7 +40,8 @@ sonde/
 │   ├── sonde-gateway/            # gateway service (Phase 2)
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       ├── main.rs           # entry point, config loading, startup
+│   │       ├── bin/gateway.rs    # entry point, startup/shutdown
+│   │       ├── engine.rs         # core protocol loop, frame processing
 │   │       ├── transport.rs      # Transport trait + ESP-NOW adapter
 │   │       ├── modem.rs          # UsbEspNowTransport (USB modem adapter)
 │   │       ├── session.rs        # Session, SessionManager
@@ -48,9 +49,9 @@ sonde/
 │   │       ├── program.rs        # ProgramRecord, program library, ingestion
 │   │       ├── handler.rs        # HandlerRouter, HandlerProcess, DATA/REPLY/EVENT/LOG
 │   │       ├── storage.rs        # Storage trait
+│   │       ├── sqlite_storage.rs # SQLite-backed Storage implementation
 │   │       ├── admin.rs          # gRPC admin API (tonic)
-│   │       ├── crypto.rs         # RustCryptoHmac, RustCryptoSha256
-│   │       └── config.rs         # configuration structs, TOML loading
+│   │       └── crypto.rs         # RustCryptoHmac, RustCryptoSha256
 │   │
 │   ├── sonde-node/               # node firmware (Phase 3)
 │   │   ├── Cargo.toml
@@ -97,6 +98,7 @@ sonde/
 │   └── sonde-admin/              # CLI admin tool (Phase 4)
 │       ├── Cargo.toml
 │       └── src/
+│           ├── lib.rs            # module declarations
 │           ├── main.rs           # CLI argument parsing (clap)
 │           ├── grpc_client.rs    # gRPC client for gateway admin API
 │           └── usb.rs            # USB serial pairing/reset
@@ -143,7 +145,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
        │
        ├──── sonde-admin    (std, tonic, clap, serialport)
        │
-       └──── sonde-bpf      (no_std, zero-alloc BPF interpreter)
+       └──── sonde-bpf      (no_std-compatible, zero-alloc BPF interpreter)
 ```
 
 `sonde-protocol` is the only shared dependency. The other crates do not depend on each other. `sonde-bpf` is a standalone interpreter crate that can be integrated into `sonde-node` as an alternative to `rbpf`.
@@ -257,8 +259,8 @@ Configuration loading, startup/shutdown sequence, and operational tests.
 
 | Step | Module | What to build | Test with |
 |---|---|---|---|
-| 2.12a | `config.rs` | Configuration structs, TOML loading | Unit tests |
-| 2.12b | `main.rs` | Startup/shutdown sequence | T-1000 to T-1004 |
+| 2.12a | `config.rs` | Configuration structs, TOML loading (now handled in `bin/gateway.rs`) | Unit tests |
+| 2.12b | `bin/gateway.rs` | Startup/shutdown sequence | T-1000 to T-1004 |
 
 **Exit criteria (2C):** `cargo test -p sonde-gateway` passes all gateway validation tests. The gateway is a complete, runnable service. ✅
 
@@ -296,7 +298,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 | Step | Module | What to build | Test with |
 |---|---|---|---|
-| 3.1 | `crypto.rs` | ESP-IDF hardware HMAC/SHA `HmacProvider` impl | Unit tests |
+| 3.1 | `crypto.rs` | Software HMAC/SHA256 (ESP hardware impl behind `esp` feature) | Unit tests |
 | 3.2 | `transport.rs` | ESP-NOW send/receive | T-N100, T-N102 |
 | 3.3 | `key_store.rs` | PSK flash partition read/write, magic check | T-N400, T-N401, T-N402, T-N403, T-N404 |
 | 3.4 | `sleep.rs` | Deep sleep entry, wake reason, interval management | T-N208, T-N209 |
@@ -361,7 +363,7 @@ The admin CLI connects to the gateway via a local socket: Unix domain socket on 
 | 5.4 | `peer_table.rs` | Auto peer registration, LRU eviction | T-0202, T-0203 |
 | 5.5 | `bridge.rs` (commands) | SET_CHANNEL, GET_STATUS, SCAN_CHANNELS dispatch | T-0205, T-0206 |
 | 5.6 | `status.rs` | Counters, uptime tracking, STATUS response | T-0302 |
-| 5.7 | `main.rs` | Main loop, RESET handling, MODEM_READY, watchdog | T-0300, T-0301, T-0303 |
+| 5.7 | `bin/modem.rs` | Main loop, RESET handling, MODEM_READY, watchdog | T-0300, T-0301, T-0303 |
 | 5.8 | Error handling | Invalid frames, bad channel, short body | T-0400, T-0401, T-0402 |
 | 5.9 | Integration | Frame ordering, content transparency | T-0204, T-0500 |
 
@@ -375,9 +377,9 @@ The admin CLI connects to the gateway via a local socket: Unix domain socket on 
 
 ### Phase 6: `sonde-bpf` crate — ⏳ IN PROGRESS
 
-**Goal:** A zero-allocation, `no_std`-compatible BPF interpreter based on RFC 9669 that can replace `rbpf` as the node's execution backend.
+**Goal:** A zero-allocation, `no_std`-compatible BPF interpreter based on RFC 9669 that can replace `rbpf` as the node's execution backend. The crate defaults to `std` but supports `no_std` when the default `std` feature is disabled.
 
-**Dependencies:** None (standalone, zero external dependencies).
+**Dependencies:** None (standalone, zero external dependencies). Build with `--no-default-features` for `no_std`.
 
 **Status:** Core interpreter is complete with 38 tests and a `bpf_conformance` plugin binary. **Not yet integrated into `sonde-node`** — the node still uses `rbpf` via `rbpf_adapter.rs`.
 

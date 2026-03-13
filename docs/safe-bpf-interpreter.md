@@ -229,11 +229,10 @@ At program start, three registers carry pointer provenance:
 
 | Register | Value | Region |
 |----------|-------|--------|
-| R1 | `mem.as_ptr() as u64` | `Some(Region { tag: Context, base: mem.as_ptr() as u64, end: (mem.as_ptr() as u64).checked_add(mem.len() as u64).unwrap() })` |
+| R1 | `ctx.as_ptr() as u64` | `Some(Region { tag: Context, base: ctx.as_ptr() as u64, end: (ctx.as_ptr() as u64).checked_add(ctx.len() as u64).unwrap() })` |
+| R2 | `ctx.len() as u64` | `None` (scalar — length, not a pointer) |
 | R10 | `stack.as_ptr() as u64 + STACK_SIZE as u64` | `Some(Region { tag: Stack, base: stack.as_ptr() as u64, end: (stack.as_ptr() as u64).checked_add(STACK_SIZE as u64).unwrap() })` |
-| R0, R2–R9 | 0 | `None` (scalar) |
-
-R2 is set to `mem.len()` as a **scalar** — it is a length, not a pointer.
+| R0, R3–R9 | 0 | `None` (scalar) |
 
 > **Overflow safety:** All region `end` values must be computed with `checked_add`.  An overflow indicates a logic error in the caller (impossible memory layout) and should panic or return an error before execution begins.
 
@@ -318,6 +317,8 @@ Jump instructions compare `reg[dst].value` against `reg[src].value` (or an immed
 2. Receive the raw u64 return value.
 3. Tag R0 according to the helper's return-type descriptor (see §5).
 4. Clobber R1–R5 to scalar — clear their region tags (set to `None`).  The raw u64 values are left as-is (the helper may have read them, but the caller must not rely on them).  This matches the BPF calling convention where R1–R5 are caller-saved and undefined after a call.
+
+> **Note — behavioral change:** The current interpreter does not clear R1–R5 after helper calls; it leaves both values and tags untouched (only R0 is written).  The tagged design introduces tag-clearing as a safety measure to prevent stale pointer provenance from leaking across call boundaries.  This is stricter than the current implementation but consistent with the BPF calling convention.  Existing tests that rely on R1–R5 values surviving a helper call may need adjustment.
 
 **BPF-to-BPF call (src=1):**
 

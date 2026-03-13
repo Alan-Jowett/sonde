@@ -107,8 +107,9 @@ pub const PAIRING_MSG_PAIRING_READY: u8 = 0x9F;
 pub const PAIRING_STATUS_SUCCESS: u8 = 0x00;
 /// PAIR_ACK status: node is already paired (must factory reset first).
 pub const PAIR_ACK_ALREADY_PAIRED: u8 = 0x01;
-/// PAIR_ACK / RESET_ACK status: flash write or erase error.
-pub const PAIRING_STATUS_WRITE_ERROR: u8 = 0x02;
+/// PAIR_ACK / RESET_ACK status 0x02: flash storage error (write failure
+/// in PAIR_ACK, erase failure in RESET_ACK).
+pub const PAIRING_STATUS_STORAGE_ERROR: u8 = 0x02;
 /// IDENTITY_RESPONSE status: node is unpaired.
 pub const IDENTITY_STATUS_UNPAIRED: u8 = 0x01;
 
@@ -303,10 +304,19 @@ pub struct ModemError {
 }
 
 /// PAIR_REQUEST (Host → Node): provision key_hint and PSK.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PairRequest {
     pub key_hint: u16,
     pub psk: [u8; PSK_SIZE],
+}
+
+impl core::fmt::Debug for PairRequest {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PairRequest")
+            .field("key_hint", &self.key_hint)
+            .field("psk", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// PAIR_ACK (Node → Host): response to PAIR_REQUEST.

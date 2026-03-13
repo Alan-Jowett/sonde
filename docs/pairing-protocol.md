@@ -46,7 +46,7 @@ The protocol reuses the same length-prefixed binary framing as the [modem protoc
 
 No CRC — USB-CDC provides transport-layer integrity.
 
-The `FrameDecoder` and `encode_modem_frame` from `sonde-protocol` are reused directly. Pairing messages use the `ModemMessage::Unknown { msg_type, body }` variant for encoding and decoding — the frame codec handles any type value transparently.
+The `FrameDecoder` and `encode_modem_frame` from `sonde-protocol` are reused directly. Pairing messages have first-class variants in the `ModemMessage` enum (e.g., `PairRequest`, `PairAck`, `IdentityResponse`) with typed encode/decode support.
 
 ### 2.2  Receiver behavior
 

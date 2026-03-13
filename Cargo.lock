@@ -2225,6 +2225,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonde-bpf"
+version = "0.1.0"
+
+[[package]]
 name = "sonde-gateway"
 version = "0.1.0"
 dependencies = [

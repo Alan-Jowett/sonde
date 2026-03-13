@@ -16,11 +16,11 @@ use crate::hal;
 use log::warn;
 
 /// Default I2C0 SDA pin for ESP32 dev boards.
-/// Override in sdkconfig or a board-specific configuration module.
+/// Change these constants and rebuild for different boards.
 const I2C0_SDA: i32 = 4;
 
 /// Default I2C0 SCL pin for ESP32 dev boards.
-/// Override in sdkconfig or a board-specific configuration module.
+/// Change these constants and rebuild for different boards.
 const I2C0_SCL: i32 = 5;
 const I2C0_FREQ_HZ: u32 = 100_000; // 100 kHz standard mode
 
@@ -54,6 +54,10 @@ impl crate::traits::Clock for EspClock {
 pub struct EspHal {
     i2c0_initialized: bool,
     adc_width_configured: bool,
+    /// Bitmask of GPIO pins already configured as output.
+    gpio_output_configured: u64,
+    /// Bitmask of ADC channels already configured with attenuation.
+    adc_channels_configured: u32,
 }
 
 impl EspHal {
@@ -61,6 +65,8 @@ impl EspHal {
         let mut hal = Self {
             i2c0_initialized: false,
             adc_width_configured: false,
+            gpio_output_configured: 0,
+            adc_channels_configured: 0,
         };
         hal.init_i2c0();
         hal
@@ -243,12 +249,16 @@ impl hal::Hal for EspHal {
             return -1;
         }
         unsafe {
-            let err = esp_idf_sys::gpio_set_direction(
-                pin as i32,
-                esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT,
-            );
-            if err != esp_idf_sys::ESP_OK as i32 {
-                return -1;
+            // Only configure direction on first write to this pin.
+            if self.gpio_output_configured & (1u64 << pin) == 0 {
+                let err = esp_idf_sys::gpio_set_direction(
+                    pin as i32,
+                    esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT,
+                );
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    return -1;
+                }
+                self.gpio_output_configured |= 1u64 << pin;
             }
             let err = esp_idf_sys::gpio_set_level(pin as i32, value);
             if err != esp_idf_sys::ESP_OK as i32 {
@@ -268,13 +278,16 @@ impl hal::Hal for EspHal {
                 }
                 self.adc_width_configured = true;
             }
-            // Configure channel attenuation (11 dB for full 0–3.3 V range).
-            let err = esp_idf_sys::adc1_config_channel_atten(
-                channel,
-                esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11,
-            );
-            if err != esp_idf_sys::ESP_OK as i32 {
-                return -1;
+            // Configure channel attenuation once per channel.
+            if self.adc_channels_configured & (1u32 << channel) == 0 {
+                let err = esp_idf_sys::adc1_config_channel_atten(
+                    channel,
+                    esp_idf_sys::adc_atten_t_ADC_ATTEN_DB_11,
+                );
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    return -1;
+                }
+                self.adc_channels_configured |= 1u32 << channel;
             }
             esp_idf_sys::adc1_get_raw(channel)
         }

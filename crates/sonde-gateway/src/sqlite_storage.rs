@@ -47,8 +47,10 @@ impl SqliteStorage {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let conn =
             Connection::open(path).map_err(|e| StorageError::Internal(format!("open: {e}")))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| StorageError::Internal(format!("pragma: {e}")))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        )
+        .map_err(|e| StorageError::Internal(format!("pragma: {e}")))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| StorageError::Internal(format!("schema: {e}")))?;
         Ok(Self {
@@ -60,9 +62,34 @@ impl SqliteStorage {
     pub fn in_memory() -> Result<Self, StorageError> {
         Self::open(":memory:")
     }
+
+    /// Run a synchronous closure on the connection via `spawn_blocking`.
+    async fn with_conn<F, T>(&self, f: F) -> Result<T, StorageError>
+    where
+        F: FnOnce(&Connection) -> Result<T, StorageError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            f(&conn)
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
+    }
+}
+
+/// Convert a `rusqlite::Error` into a `StorageError`.
+fn map_err(e: rusqlite::Error) -> StorageError {
+    StorageError::Internal(e.to_string())
 }
 
 /// Convert a `SystemTime` to seconds since the Unix epoch.
+///
+/// Pre-epoch times are stored as negative values. Note: sub-second
+/// precision is lost (truncated, not rounded).
 fn system_time_to_epoch_s(t: &SystemTime) -> i64 {
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_secs() as i64,
@@ -136,38 +163,27 @@ impl Storage for SqliteStorage {
     // ── Node registry ──────────────────────────────────────────
 
     async fn list_nodes(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        let conn = Arc::clone(&self.conn);
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, schedule_interval_s, firmware_abi_version, \
                      last_battery_mv, last_seen_epoch_s FROM nodes",
                 )
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
-            let rows = stmt
-                .query_map([], row_to_node)
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                .map_err(map_err)?;
+            let rows = stmt.query_map([], row_to_node).map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
-                nodes.push(row.map_err(|e| StorageError::Internal(e.to_string()))?);
+                nodes.push(row.map_err(map_err)?);
             }
             Ok(nodes)
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn get_node(&self, node_id: &str) -> Result<Option<NodeRecord>, StorageError> {
-        let conn = Arc::clone(&self.conn);
         let node_id = node_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \
@@ -176,45 +192,35 @@ impl Storage for SqliteStorage {
                 row_to_node,
             )
             .optional()
-            .map_err(|e| StorageError::Internal(e.to_string()))
+            .map_err(map_err)
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn get_nodes_by_key_hint(&self, key_hint: u16) -> Result<Vec<NodeRecord>, StorageError> {
-        let conn = Arc::clone(&self.conn);
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, schedule_interval_s, firmware_abi_version, \
                      last_battery_mv, last_seen_epoch_s FROM nodes WHERE key_hint = ?1",
                 )
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                .map_err(map_err)?;
             let rows = stmt
                 .query_map(params![key_hint as u32], row_to_node)
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
-                nodes.push(row.map_err(|e| StorageError::Internal(e.to_string()))?);
+                nodes.push(row.map_err(map_err)?);
             }
             Ok(nodes)
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        let conn = Arc::clone(&self.conn);
         let record = record.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(move |conn| {
             let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
             conn.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
@@ -242,37 +248,27 @@ impl Storage for SqliteStorage {
                     last_seen_epoch,
                 ],
             )
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+            .map_err(map_err)?;
             Ok(())
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn delete_node(&self, node_id: &str) -> Result<(), StorageError> {
-        let conn = Arc::clone(&self.conn);
         let node_id = node_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(move |conn| {
             conn.execute("DELETE FROM nodes WHERE node_id = ?1", params![node_id])
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                .map_err(map_err)?;
             Ok(())
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     // ── Program library ────────────────────────────────────────
 
     async fn get_program(&self, hash: &[u8]) -> Result<Option<ProgramRecord>, StorageError> {
-        let conn = Arc::clone(&self.conn);
         let hash = hash.to_vec();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT hash, image, size, verification_profile FROM programs WHERE hash = ?1",
                 params![hash],
@@ -282,7 +278,7 @@ impl Storage for SqliteStorage {
                 },
             )
             .optional()
-            .map_err(|e| StorageError::Internal(e.to_string()))?
+            .map_err(map_err)?
             .map(
                 |(hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String)| {
                     Ok(ProgramRecord {
@@ -296,16 +292,11 @@ impl Storage for SqliteStorage {
             .transpose()
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError> {
-        let conn = Arc::clone(&self.conn);
         let record = record.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(move |conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO programs (hash, image, size, verification_profile) \
                  VALUES (?1, ?2, ?3, ?4)",
@@ -316,47 +307,37 @@ impl Storage for SqliteStorage {
                     profile_to_str(&record.verification_profile),
                 ],
             )
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+            .map_err(map_err)?;
             Ok(())
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn delete_program(&self, hash: &[u8]) -> Result<(), StorageError> {
-        let conn = Arc::clone(&self.conn);
         let hash = hash.to_vec();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(move |conn| {
             conn.execute("DELETE FROM programs WHERE hash = ?1", params![hash])
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                .map_err(map_err)?;
             Ok(())
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
-        let conn = Arc::clone(&self.conn);
-        tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+        self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare("SELECT hash, image, size, verification_profile FROM programs")
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                .map_err(map_err)?;
             let rows = stmt
                 .query_map([], |row| {
                     let profile_str: String = row.get(3)?;
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
                 })
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                .map_err(map_err)?;
             let mut programs = Vec::new();
             for row in rows {
                 let (hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String) =
-                    row.map_err(|e| StorageError::Internal(e.to_string()))?;
+                    row.map_err(map_err)?;
                 programs.push(ProgramRecord {
                     hash,
                     image,
@@ -367,7 +348,6 @@ impl Storage for SqliteStorage {
             Ok(programs)
         })
         .await
-        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 }
 

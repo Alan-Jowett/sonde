@@ -50,6 +50,22 @@ pub trait SleepController {
     fn reboot(&mut self) -> !;
 }
 
+/// Serial transport used during USB pairing mode.
+///
+/// Abstracts the USB-CDC serial port so that `run_pairing_mode` can be
+/// tested with a mock implementation.
+pub trait PairingSerial {
+    /// Read bytes into `buf`. Returns the number of bytes read.
+    ///
+    /// Blocks for up to `timeout_ms` milliseconds. Returns `Ok(0)` on
+    /// timeout with no data. Returns `Err` on disconnect or I/O error
+    /// (the pairing loop treats any error as a disconnect signal).
+    fn read(&mut self, buf: &mut [u8], timeout_ms: u32) -> NodeResult<usize>;
+
+    /// Write `data` to the serial port.
+    fn write(&mut self, data: &[u8]) -> NodeResult<()>;
+}
+
 /// Persistent storage for key partition, schedule, and program partitions.
 pub trait PlatformStorage {
     // --- Key partition ---

@@ -1,3 +1,6 @@
+[env]
+CARGO_WORKSPACE_DIR = { value = "", relative = true }
+ESP_IDF_SDKCONFIG_DEFAULTS = { value = "../crates/sonde-node/sdkconfig.defaults", relative = true }
 
 [target.xtensa-esp32-espidf]
 linker = "ldproxy"
@@ -7,4 +10,3 @@ linker = "ldproxy"
 
 [target.riscv32imc-esp-espidf]
 linker = "ldproxy"
-

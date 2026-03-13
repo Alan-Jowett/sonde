@@ -219,7 +219,11 @@ fn read_message(
             Ok(None) => {}
             Err(ModemCodecError::EmptyFrame) => continue,
             Err(ModemCodecError::FrameTooLarge(_)) => {
-                return Err("framing error: frame too large. Close and re-open port.".into());
+                // ROM bootloader or console log garbage can produce
+                // spurious large-frame errors. Reset the decoder and
+                // keep trying — the next valid frame will sync up.
+                *decoder = FrameDecoder::new();
+                continue;
             }
             Err(e) => return Err(format!("decode: {}", e)),
         }

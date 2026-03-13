@@ -7,13 +7,13 @@
 //! to [`KeyStore`] operations. Reuses `sonde-protocol`'s modem codec framing.
 
 use sonde_protocol::modem::{
-    encode_modem_frame, ModemMessage, PairAck, PairingReady, ResetAck,
+    encode_modem_frame, FrameDecoder, ModemMessage, PairAck, PairingReady, ResetAck,
     PAIRING_STATUS_STORAGE_ERROR, PAIRING_STATUS_SUCCESS, PAIR_ACK_ALREADY_PAIRED,
 };
 
 use crate::key_store::KeyStore;
 use crate::map_storage::MapStorage;
-use crate::traits::PlatformStorage;
+use crate::traits::{PairingSerial, PlatformStorage};
 use crate::FIRMWARE_VERSION;
 
 /// Result of handling one pairing message.
@@ -80,6 +80,72 @@ pub fn pairing_ready_frame() -> Option<Vec<u8>> {
         firmware_version: FIRMWARE_VERSION,
     });
     encode_modem_frame(&msg).ok()
+}
+
+/// Run the USB pairing mode loop.
+///
+/// Sends `PAIRING_READY`, then listens on the serial port for pairing
+/// commands (`PairRequest`, `ResetRequest`, `IdentityRequest`) and
+/// dispatches each to [`handle_pairing_message`].
+///
+/// Returns when the serial port disconnects (read returns `Err`).
+/// Per the pairing protocol spec, the caller should reboot after this
+/// function returns — if paired, the node will enter normal operation;
+/// if still unpaired, it will re-enter pairing mode.
+pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
+    serial: &mut P,
+    storage: &mut S,
+    map_storage: &mut MapStorage,
+) {
+    // Send PAIRING_READY on connection. Ignore write errors here —
+    // the USB host may not have opened the port yet.
+    if let Some(frame) = pairing_ready_frame() {
+        let _ = serial.write(&frame);
+    }
+
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+    let mut idle_ticks: u32 = 0;
+
+    loop {
+        // Read bytes from serial (1 s timeout per attempt).
+        let n = match serial.read(&mut buf, 1000) {
+            Ok(0) => {
+                // Timeout with no data — re-send PAIRING_READY
+                // periodically so a host that connects later discovers us.
+                idle_ticks += 1;
+                if idle_ticks % 2 == 0 {
+                    if let Some(frame) = pairing_ready_frame() {
+                        let _ = serial.write(&frame);
+                    }
+                }
+                continue;
+            }
+            Ok(n) => n,
+            Err(_) => return, // Disconnect — exit pairing mode.
+        };
+
+        idle_ticks = 0;
+
+        decoder.push(&buf[..n]);
+
+        // Drain all complete frames from the decoder.
+        loop {
+            match decoder.decode() {
+                Ok(Some(msg)) => {
+                    let (response, _action) =
+                        handle_pairing_message(&msg, storage, map_storage);
+                    if let Some(frame) = response {
+                        if serial.write(&frame).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => break,       // Need more data.
+                Err(_) => continue,       // Bad frame — skip, try next.
+            }
+        }
+    }
 }
 
 #[cfg(test)]

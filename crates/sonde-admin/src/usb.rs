@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use sonde_protocol::modem::{
-    encode_modem_frame, FrameDecoder, IdentityResponse, ModemMessage, PairRequest,
+    encode_modem_frame, FrameDecoder, IdentityResponse, ModemCodecError, ModemMessage, PairRequest,
     PAIRING_STATUS_SUCCESS, PSK_SIZE,
 };
 
@@ -32,17 +32,23 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
     let frame = encode_modem_frame(&req).map_err(|e| format!("encode: {}", e))?;
     port.write_all(&frame)
         .map_err(|e| format!("write: {}", e))?;
+    port.flush().map_err(|e| format!("flush: {}", e))?;
 
     port.set_timeout(ACK_TIMEOUT)
         .map_err(|e| format!("timeout: {}", e))?;
-    let ack = read_message(&mut port, &mut decoder)?;
-    match ack {
-        ModemMessage::PairAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
-            println!("Pairing successful (key_hint=0x{:04x})", key_hint);
-            Ok(())
+    loop {
+        let ack = read_message(&mut port, &mut decoder)?;
+        match ack {
+            ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
+            ModemMessage::PairAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
+                println!("Pairing successful (key_hint=0x{:04x})", key_hint);
+                return Ok(());
+            }
+            ModemMessage::PairAck(a) => {
+                return Err(format!("pairing failed: status 0x{:02x}", a.status))
+            }
+            other => return Err(format!("unexpected response: {:?}", other)),
         }
-        ModemMessage::PairAck(a) => Err(format!("pairing failed: status 0x{:02x}", a.status)),
-        other => Err(format!("unexpected response: {:?}", other)),
     }
 }
 
@@ -60,17 +66,23 @@ pub fn factory_reset_node(port_name: &str) -> Result<(), String> {
     let frame = encode_modem_frame(&req).map_err(|e| format!("encode: {}", e))?;
     port.write_all(&frame)
         .map_err(|e| format!("write: {}", e))?;
+    port.flush().map_err(|e| format!("flush: {}", e))?;
 
     port.set_timeout(ACK_TIMEOUT)
         .map_err(|e| format!("timeout: {}", e))?;
-    let ack = read_message(&mut port, &mut decoder)?;
-    match ack {
-        ModemMessage::ResetAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
-            println!("Factory reset successful");
-            Ok(())
+    loop {
+        let ack = read_message(&mut port, &mut decoder)?;
+        match ack {
+            ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
+            ModemMessage::ResetAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
+                println!("Factory reset successful");
+                return Ok(());
+            }
+            ModemMessage::ResetAck(a) => {
+                return Err(format!("reset failed: status 0x{:02x}", a.status))
+            }
+            other => return Err(format!("unexpected response: {:?}", other)),
         }
-        ModemMessage::ResetAck(a) => Err(format!("reset failed: status 0x{:02x}", a.status)),
-        other => Err(format!("unexpected response: {:?}", other)),
     }
 }
 
@@ -88,20 +100,24 @@ pub fn query_identity(port_name: &str) -> Result<(), String> {
     let frame = encode_modem_frame(&req).map_err(|e| format!("encode: {}", e))?;
     port.write_all(&frame)
         .map_err(|e| format!("write: {}", e))?;
+    port.flush().map_err(|e| format!("flush: {}", e))?;
 
     port.set_timeout(IDENTITY_TIMEOUT)
         .map_err(|e| format!("timeout: {}", e))?;
-    let resp = read_message(&mut port, &mut decoder)?;
-    match resp {
-        ModemMessage::IdentityResponse(IdentityResponse::Paired { key_hint }) => {
-            println!("Paired (key_hint=0x{:04x})", key_hint);
-            Ok(())
+    loop {
+        let resp = read_message(&mut port, &mut decoder)?;
+        match resp {
+            ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
+            ModemMessage::IdentityResponse(IdentityResponse::Paired { key_hint }) => {
+                println!("Paired (key_hint=0x{:04x})", key_hint);
+                return Ok(());
+            }
+            ModemMessage::IdentityResponse(IdentityResponse::Unpaired) => {
+                println!("Unpaired");
+                return Ok(());
+            }
+            other => return Err(format!("unexpected response: {:?}", other)),
         }
-        ModemMessage::IdentityResponse(IdentityResponse::Unpaired) => {
-            println!("Unpaired");
-            Ok(())
-        }
-        other => Err(format!("unexpected response: {:?}", other)),
     }
 }
 
@@ -109,10 +125,12 @@ fn wait_for_ready(
     port: &mut Box<dyn serialport::SerialPort>,
     decoder: &mut FrameDecoder,
 ) -> Result<(), String> {
-    let msg = read_message(port, decoder)?;
-    match msg {
-        ModemMessage::PairingReady(_) => Ok(()),
-        other => Err(format!("expected PAIRING_READY, got {:?}", other)),
+    loop {
+        let msg = read_message(port, decoder)?;
+        if matches!(msg, ModemMessage::PairingReady(_)) {
+            return Ok(());
+        }
+        // Discard non-PAIRING_READY frames (forward compat)
     }
 }
 
@@ -122,12 +140,17 @@ fn read_message(
 ) -> Result<ModemMessage, String> {
     let mut buf = [0u8; 256];
     loop {
-        let n = port.read(&mut buf).map_err(|e| format!("read: {}", e))?;
-        decoder.push(&buf[..n]);
+        // Check for already-buffered frames first
         match decoder.decode() {
             Ok(Some(msg)) => return Ok(msg),
-            Ok(None) => continue,
+            Ok(None) => {}
+            Err(ModemCodecError::EmptyFrame | ModemCodecError::FrameTooLarge(_)) => continue,
             Err(e) => return Err(format!("decode: {}", e)),
         }
+        let n = port.read(&mut buf).map_err(|e| format!("read: {}", e))?;
+        if n == 0 {
+            return Err("USB disconnected".into());
+        }
+        decoder.push(&buf[..n]);
     }
 }

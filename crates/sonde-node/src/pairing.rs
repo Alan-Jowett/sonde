@@ -31,21 +31,18 @@ pub fn handle_pairing_message<S: PlatformStorage>(
 ) -> (Option<Vec<u8>>, PairingAction) {
     match msg {
         ModemMessage::PairRequest(req) => {
-            let mut ks = KeyStore::new(storage);
-            let status = match ks.pair(req.key_hint, &req.psk) {
-                Ok(()) => PAIRING_STATUS_SUCCESS,
-                Err(e) => {
-                    let msg = format!("{}", e);
-                    if msg.contains("already paired") {
-                        PAIR_ACK_ALREADY_PAIRED
-                    } else {
-                        PAIRING_STATUS_STORAGE_ERROR
-                    }
+            let status = if storage.read_key().is_some() {
+                PAIR_ACK_ALREADY_PAIRED
+            } else {
+                let mut ks = KeyStore::new(storage);
+                match ks.pair(req.key_hint, &req.psk) {
+                    Ok(()) => PAIRING_STATUS_SUCCESS,
+                    Err(_) => PAIRING_STATUS_STORAGE_ERROR,
                 }
             };
             let ack = ModemMessage::PairAck(PairAck { status });
-            let frame = encode_modem_frame(&ack).ok();
-            (frame, PairingAction::Continue)
+            let frame = encode_modem_frame(&ack).expect("encode cannot fail");
+            (Some(frame), PairingAction::Continue)
         }
         ModemMessage::ResetRequest => {
             let mut ks = KeyStore::new(storage);
@@ -54,8 +51,8 @@ pub fn handle_pairing_message<S: PlatformStorage>(
                 Err(_) => PAIRING_STATUS_STORAGE_ERROR,
             };
             let ack = ModemMessage::ResetAck(ResetAck { status });
-            let frame = encode_modem_frame(&ack).ok();
-            (frame, PairingAction::Continue)
+            let frame = encode_modem_frame(&ack).expect("encode cannot fail");
+            (Some(frame), PairingAction::Continue)
         }
         ModemMessage::IdentityRequest => {
             let identity = storage.read_key();
@@ -67,8 +64,8 @@ pub fn handle_pairing_message<S: PlatformStorage>(
                     sonde_protocol::modem::IdentityResponse::Unpaired,
                 ),
             };
-            let frame = encode_modem_frame(&resp).ok();
-            (frame, PairingAction::Continue)
+            let frame = encode_modem_frame(&resp).expect("encode cannot fail");
+            (Some(frame), PairingAction::Continue)
         }
         _ => {
             // Unknown message — silently discard (forward compatibility).

@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use sonde_gateway::engine::{Gateway, PendingCommand};
+use sonde_gateway::handler::{HandlerConfig, HandlerRouter, ProgramMatcher};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
@@ -34,11 +35,18 @@ use sonde_protocol::{HmacProvider, Sha256Provider};
 // E2eTestEnv — gateway-side test environment
 // ---------------------------------------------------------------------------
 
+/// Shared pending-command queue for test assertions.
+pub type PendingCommandMap = Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>;
+
 /// Top-level test environment holding the gateway and its backing storage.
+///
+/// `pending_commands` is `Some` when created via [`new`] (shared with the
+/// gateway), and `None` when created via [`new_with_handler`] (the gateway
+/// owns its own internal command queue).
 pub struct E2eTestEnv {
     pub gateway: Arc<Gateway>,
     pub storage: Arc<SqliteStorage>,
-    pub pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+    pub pending_commands: Option<PendingCommandMap>,
 }
 
 impl Default for E2eTestEnv {
@@ -54,8 +62,7 @@ impl E2eTestEnv {
             SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
         );
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
-        let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let pending_commands: PendingCommandMap = Arc::new(RwLock::new(HashMap::new()));
         let gateway = Arc::new(Gateway::new_with_pending(
             storage.clone(),
             pending_commands.clone(),
@@ -64,7 +71,7 @@ impl E2eTestEnv {
         Self {
             gateway,
             storage,
-            pending_commands,
+            pending_commands: Some(pending_commands),
         }
     }
 
@@ -72,6 +79,31 @@ impl E2eTestEnv {
     pub async fn register_node(&self, node_id: &str, key_hint: u16, psk: [u8; 32]) {
         let node = NodeRecord::new(node_id.into(), key_hint, psk);
         self.storage.upsert_node(&node).await.unwrap();
+    }
+
+    /// Create an environment with a handler router for APP_DATA tests.
+    ///
+    /// `handler_cmd` is the path to the handler binary and its arguments.
+    pub fn new_with_handler(handler_cmd: &str, handler_args: &[&str]) -> Self {
+        let storage = Arc::new(
+            SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
+        );
+        let config = HandlerConfig {
+            matchers: vec![ProgramMatcher::Any],
+            command: handler_cmd.to_string(),
+            args: handler_args.iter().map(|s| s.to_string()).collect(),
+        };
+        let router = Arc::new(HandlerRouter::new(vec![config]));
+        let gateway = Arc::new(Gateway::new_with_handler(
+            storage.clone(),
+            Duration::from_secs(30),
+            router,
+        ));
+        Self {
+            gateway,
+            storage,
+            pending_commands: None,
+        }
     }
 }
 
@@ -87,7 +119,11 @@ pub struct WakeCycleStats {
     pub response_count: usize,
     /// Nonces from WAKE frames the node sent during this cycle.
     pub wake_nonces: Vec<u64>,
+    /// `(msg_type, nonce)` for every frame the node sent.
+    pub sent_frames: Vec<(u8, u64)>,
 }
+
+/// Lightweight handle representing a remote node.
 ///
 /// Identity and schedule are stored exclusively in `self.storage`
 /// (`PlatformStorage`) — the wake cycle reads them from there.
@@ -117,10 +153,22 @@ impl NodeProxy {
     /// Returns [`WakeCycleStats`] with the outcome, response count, and
     /// captured WAKE nonces for test assertions.
     pub fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
+        let mut interpreter = MockBpfInterpreter::new();
+        self.run_wake_cycle_with(env, &mut interpreter)
+    }
+
+    /// Like [`run_wake_cycle`] but accepts a caller-supplied BPF interpreter.
+    ///
+    /// Use this with [`sonde_node::rbpf_adapter::RbpfInterpreter`] when the
+    /// test requires real BPF program execution (e.g. APP_DATA helpers).
+    pub fn run_wake_cycle_with(
+        &mut self,
+        env: &E2eTestEnv,
+        interpreter: &mut impl BpfInterpreter,
+    ) -> WakeCycleStats {
         let mut hal = MockHal;
         let clock = MockClock::new();
         let battery = MockBattery;
-        let mut interpreter = MockBpfInterpreter::new();
         let hmac = TestHmac;
         let sha = TestSha256;
 
@@ -133,7 +181,7 @@ impl NodeProxy {
             &mut self.rng,
             &clock,
             &battery,
-            &mut interpreter,
+            interpreter,
             &mut self.map_storage,
             &hmac,
             &sha,
@@ -142,6 +190,7 @@ impl NodeProxy {
             outcome,
             response_count: transport.response_count(),
             wake_nonces: transport.wake_nonces().to_vec(),
+            sent_frames: transport.sent_frames().to_vec(),
         }
     }
 }
@@ -160,6 +209,8 @@ struct BridgeTransport {
     response_count: usize,
     /// Nonces extracted from outbound WAKE frames.
     wake_nonces: Vec<u64>,
+    /// `(msg_type, nonce)` for every outbound frame.
+    sent_frames: Vec<(u8, u64)>,
     rt: tokio::runtime::Handle,
 }
 
@@ -171,6 +222,7 @@ impl BridgeTransport {
             pending_response: None,
             response_count: 0,
             wake_nonces: Vec::new(),
+            sent_frames: Vec::new(),
             rt: tokio::runtime::Handle::try_current()
                 .expect("BridgeTransport must be created inside a Tokio runtime"),
         }
@@ -185,21 +237,28 @@ impl BridgeTransport {
     fn wake_nonces(&self) -> &[u64] {
         &self.wake_nonces
     }
+
+    /// `(msg_type, nonce)` for every outbound frame.
+    fn sent_frames(&self) -> &[(u8, u64)] {
+        &self.sent_frames
+    }
 }
 
 impl NodeTransport for BridgeTransport {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
-        // Capture nonce from outbound WAKE frames.
-        if frame.len() >= sonde_protocol::HEADER_SIZE
-            && frame[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_WAKE
-        {
+        // Capture header metadata from every outbound frame.
+        if frame.len() >= sonde_protocol::HEADER_SIZE {
+            let msg_type = frame[sonde_protocol::OFFSET_MSG_TYPE];
             let nonce_end = sonde_protocol::OFFSET_NONCE + 8;
             let nonce = u64::from_be_bytes(
                 frame[sonde_protocol::OFFSET_NONCE..nonce_end]
                     .try_into()
                     .unwrap(),
             );
-            self.wake_nonces.push(nonce);
+            self.sent_frames.push((msg_type, nonce));
+            if msg_type == sonde_protocol::MSG_WAKE {
+                self.wake_nonces.push(nonce);
+            }
         }
 
         let gateway = self.gateway.clone();
@@ -248,7 +307,7 @@ impl HmacProvider for TestHmac {
     }
 }
 
-struct TestSha256;
+pub struct TestSha256;
 
 impl Sha256Provider for TestSha256 {
     fn hash(&self, data: &[u8]) -> [u8; 32] {

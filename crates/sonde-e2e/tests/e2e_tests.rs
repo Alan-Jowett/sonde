@@ -39,7 +39,7 @@ async fn t_e2e_001_nop_wake_cycle() {
 ///
 /// When the node's PSK does not match the gateway's record the gateway
 /// silently discards the WAKE frame. The node exhausts its retries and
-/// falls back to the default sleep interval.
+/// Node exhausts retries and sleeps for its configured schedule interval.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_003_wrong_psk_rejected() {
     let env = E2eTestEnv::new().await;

@@ -44,7 +44,9 @@ pub struct E2eTestEnv {
 impl E2eTestEnv {
     /// Create a fresh in-memory test environment.
     pub async fn new() -> Self {
-        let storage = Arc::new(SqliteStorage::in_memory().unwrap());
+        let storage = Arc::new(
+            SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
+        );
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
         let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
             Arc::new(RwLock::new(HashMap::new()));
@@ -79,6 +81,7 @@ pub struct NodeProxy {
     pub mac: Vec<u8>,
     pub schedule_interval_s: u32,
     pub storage: MockNodeStorage,
+    pub map_storage: MapStorage,
 }
 
 impl NodeProxy {
@@ -90,6 +93,7 @@ impl NodeProxy {
             mac: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
             schedule_interval_s: 60,
             storage: MockNodeStorage::new_paired(key_hint, psk, 60),
+            map_storage: MapStorage::new(4096),
         }
     }
 
@@ -101,10 +105,9 @@ impl NodeProxy {
     pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleOutcome {
         let mut hal = MockHal;
         let mut rng = MockRng(0);
-        let clock = MockClock;
+        let clock = MockClock::new();
         let battery = MockBattery;
         let mut interpreter = MockBpfInterpreter::new();
-        let mut map_storage = MapStorage::new(4096);
         let hmac = TestHmac;
         let sha = TestSha256;
 
@@ -118,7 +121,7 @@ impl NodeProxy {
             &clock,
             &battery,
             &mut interpreter,
-            &mut map_storage,
+            &mut self.map_storage,
             &hmac,
             &sha,
         )
@@ -163,6 +166,11 @@ impl NodeTransport for BridgeTransport {
         Ok(())
     }
 
+    /// Returns the response captured by the preceding `send()` call.
+    /// Timeout is not simulated because `send()` synchronously processes
+    /// the frame through the gateway and captures any response. This is
+    /// correct for the request-response pattern used by the wake cycle
+    /// (send WAKE → recv COMMAND, send GET_CHUNK → recv CHUNK).
     fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
         Ok(self.pending_response.take())
     }
@@ -346,13 +354,27 @@ impl Rng for MockRng {
     }
 }
 
-struct MockClock;
+struct MockClock {
+    elapsed: std::sync::atomic::AtomicU64,
+}
+
+impl MockClock {
+    pub fn new() -> Self {
+        Self {
+            elapsed: std::sync::atomic::AtomicU64::new(100),
+        }
+    }
+}
 
 impl Clock for MockClock {
     fn elapsed_ms(&self) -> u64 {
-        100
+        self.elapsed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
-    fn delay_ms(&self, _ms: u32) {}
+    fn delay_ms(&self, ms: u32) {
+        self.elapsed
+            .fetch_add(ms as u64, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 #[allow(dead_code)]

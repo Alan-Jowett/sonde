@@ -12,7 +12,7 @@
 
 A typical Rust BPF interpreter stores registers as bare `u64` values and validates memory accesses by scanning a list of allowed regions (`mem` and `stack`) before each pointer dereference.  This works, but has two weaknesses:
 
-1. **`unsafe` is scattered.**  Every load, store, and atomic instruction contains its own `unsafe` block — many scattered sites across `interpreter.rs`.  Each site must independently get the bounds-check-then-dereference sequence right.  A mistake in any one site is a soundness hole.
+1. **`unsafe` is scattered.**  Every load, store, and atomic instruction contains its own `unsafe` block — over a dozen scattered sites across `interpreter.rs`.  Each site must independently get the bounds-check-then-dereference sequence right.  A mistake in any one site is a soundness hole.
 
 2. **Region identity is lost.**  The `check_mem` function knows that an address falls *somewhere* in a valid region, but not *which* region.  A pointer into the context could be used to write into map memory if the arithmetic happens to land in range.  Cross-region confusion is not caught.
 
@@ -243,7 +243,7 @@ At program start, three registers carry pointer provenance:
 | 0 | Load 64-bit immediate | Scalar |
 | 1 | Map descriptor relocation | `MapDescriptor { map_index: imm }` |
 
-For src=1, the interpreter resolves the map index and loads the relocated map pointer.  The result is tagged `MapDescriptor` — it is an opaque handle, valid only as an argument to `map_lookup_elem` or `map_update_elem`.  It is **not dereferenceable**.
+For src=1, the interpreter resolves the map index and loads the relocated map pointer.  The `imm` field is a signed `i32` in the instruction encoding (see `ebpf.rs`); negative values are invalid and must be rejected with `InvalidMapIndex` before any cast or indexing.  After validation, the non-negative `imm` is used as the index into the `maps` slice.  The result is tagged `MapDescriptor` — it is an opaque handle, valid only as an argument to `map_lookup_elem` or `map_update_elem`.  It is **not dereferenceable**.
 
 ### 4.3  ALU operations and pointer arithmetic
 
@@ -367,7 +367,7 @@ After a helper call, the interpreter examines the descriptor's `ret` field:
 | `MapValueOrNull` | 0 | `None` (scalar — NULL means not found) |
 | `MapValueOrNull` | non-zero | `MapValue { value_size }` with `base = R0`, `end = R0.checked_add(value_size)` (overflow → fatal error) — **only after validation** (see below) |
 
-For `MapValueOrNull`, the interpreter resolves the map's `value_size` from the map definitions provided at load time.  The argument register identified by `map_arg` **must** carry a `MapDescriptor { map_index }` tag (set by LD_DW_IMM relocation, §4.2).  If `reg[map_arg]` does not have a `MapDescriptor` tag, the call is rejected with `NonDereferenceableAccess` — this indicates a program bug (e.g., passing a scalar or wrong pointer type to `map_lookup_elem`).
+For `MapValueOrNull`, the interpreter resolves the map's `value_size` from the map definitions provided at load time.  The argument register identified by `map_arg` **must** carry a `MapDescriptor { map_index }` tag (set by LD_DW_IMM relocation, §4.2).  If `reg[map_arg]` does not have a `MapDescriptor` tag, the call is rejected with `InvalidHelperArgument` — this indicates a program bug (e.g., passing a scalar or wrong pointer type to `map_lookup_elem`).
 
 **Helper return validation:**  Helper functions are part of the host environment and could be buggy.  To prevent a faulty helper from returning an arbitrary pointer that the interpreter then trusts, the returned pointer must be validated against the known map address range before tagging:
 
@@ -417,7 +417,12 @@ struct SpillTracker {
 }
 
 struct SpillEntry {
-    /// Byte offset into the stack (8-byte aligned).
+    /// Absolute byte offset from the base of the full stack allocation
+    /// (`stack.as_ptr()`), NOT relative to the current frame's R10.
+    /// This ensures spills from different call frames never collide
+    /// even though R10 is adjusted by `STACK_SIZE_PER_FRAME` on
+    /// BPF-to-BPF calls.  The bitmap index for a given access is
+    /// computed as `(addr - stack_base) / 8`.
     stack_offset: u16,
     /// The provenance that was spilled.
     region: Region,
@@ -484,17 +489,20 @@ The frame pointer R10 always carries the `Stack` tag.  Its `base` and `end` span
 
 ## 8  Error Model
 
-The tagged interpreter introduces four new error variants:
+The tagged interpreter introduces five new error variants:
 
 ```rust
 pub enum BpfError {
     // ... existing variants ...
 
-    /// A register was used in a context that requires a specific tag it
-    /// does not have — e.g., dereferencing a scalar or MapDescriptor,
-    /// or passing a non-MapDescriptor register as the map argument to
-    /// a helper that expects one.
+    /// A register was dereferenced but does not carry a dereferenceable
+    /// tag (e.g., it is a scalar or a `MapDescriptor` handle).
     NonDereferenceableAccess { pc: usize },
+
+    /// A helper argument register does not carry the expected tag —
+    /// e.g., the `map_arg` register is not a `MapDescriptor` when
+    /// calling `map_lookup_elem`.
+    InvalidHelperArgument { pc: usize, arg: u8 },
 
     /// Attempted to write to a read-only region (e.g., Context).
     ReadOnlyWrite { pc: usize },
@@ -504,8 +512,8 @@ pub enum BpfError {
     InvalidPointerArithmetic { pc: usize },
 
     /// LD_DW_IMM src=1 referenced a map index that is out of range
-    /// of the provided `maps` slice.
-    InvalidMapIndex { pc: usize, index: u32 },
+    /// of the provided `maps` slice, or the `imm` field is negative.
+    InvalidMapIndex { pc: usize, index: i32 },
 }
 ```
 

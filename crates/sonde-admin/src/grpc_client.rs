@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+#[cfg(unix)]
+use tonic::transport::Uri;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::pb::gateway_admin_client::GatewayAdminClient;
@@ -15,15 +17,12 @@ impl AdminClient {
     /// Connect to the gateway admin API over a Unix domain socket.
     #[cfg(unix)]
     pub async fn connect(socket_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        use tokio::net::UnixStream;
-        use tonic::transport::channel::ClientTlsConfig;
-
         let socket_path = socket_path.to_owned();
         // URI is ignored for UDS but tonic requires a valid one.
         let channel = Endpoint::from_static("http://[::]:50051")
             .connect_with_connector(tower::service_fn(move |_: Uri| {
                 let path = socket_path.clone();
-                async move { UnixStream::connect(path).await }
+                async move { tokio::net::UnixStream::connect(path).await }
             }))
             .await?;
         Ok(Self {

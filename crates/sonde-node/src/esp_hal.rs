@@ -260,7 +260,8 @@ impl hal::Hal for EspHal {
                 }
                 self.gpio_output_configured |= 1u64 << pin;
             }
-            let err = esp_idf_sys::gpio_set_level(pin as i32, value);
+            let level = if value != 0 { 1 } else { 0 };
+            let err = esp_idf_sys::gpio_set_level(pin as i32, level);
             if err != esp_idf_sys::ESP_OK as i32 {
                 return -1;
             }

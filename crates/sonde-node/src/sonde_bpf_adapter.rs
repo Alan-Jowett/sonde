@@ -88,7 +88,9 @@ impl BpfInterpreter for SondeBpfInterpreter {
                 relocated_ptr: ptr,
                 value_size: def.value_size,
                 data_start: ptr,
-                data_end: ptr.saturating_add(total_bytes),
+                data_end: ptr.checked_add(total_bytes).ok_or_else(|| {
+                    BpfError::LoadError(format!("map {i}: pointer + size overflow"))
+                })?,
             });
         }
 
@@ -112,17 +114,24 @@ impl BpfInterpreter for SondeBpfInterpreter {
         // Copy context into a local buffer (read-only for the interpreter).
         let mut ctx_buf = [0u8; SondeContext::SIZE];
         if ctx_ptr != 0 {
-            // SAFETY: ctx_ptr points to a SondeContext on the caller's
-            // stack, which is alive for this call's duration.
+            // SAFETY: The caller (run_wake_cycle) passes a pointer to a
+            // stack-allocated SondeContext that is alive for this call.
+            // SondeContext is repr(C) and 8-byte aligned. The pointer is
+            // obtained via `&ctx as *const SondeContext as u64` — alignment
+            // and validity are guaranteed by the Rust reference.
             unsafe {
                 let src = core::slice::from_raw_parts(ctx_ptr as *const u8, SondeContext::SIZE);
                 ctx_buf.copy_from_slice(src);
             }
         }
 
-        // SAFETY: map_regions were constructed from valid MapStorage
-        // allocations that remain live for this execution. The
-        // data_start..data_end ranges cover the actual backing memory.
+        // SAFETY: The caller (run_wake_cycle) must ensure:
+        // 1. MapStorage is not dropped or reallocated between load() and
+        //    execute() — guaranteed by the borrow structure of run_wake_cycle.
+        // 2. data_start..data_end ranges (from map_ptrs + map_defs) cover
+        //    actual live MapStorage allocations for this call's duration.
+        // 3. No concurrent mutation of map backing memory outside of BPF
+        //    helper calls (single-threaded BPF execution).
         let result = unsafe {
             sonde_bpf::interpreter::execute_program(
                 bytecode,
@@ -141,7 +150,7 @@ impl BpfInterpreter for SondeBpfInterpreter {
                 SbErr::OutOfBounds { .. } | SbErr::UnknownOpcode { .. } => {
                     BpfError::InvalidBytecode(format!("{e}"))
                 }
-                _ => BpfError::InvalidBytecode(format!("{e}")),
+                _ => BpfError::RuntimeError(format!("{e}")),
             }
         })
     }
@@ -263,5 +272,52 @@ mod tests {
         let ctx_ptr = &ctx as *const _ as u64;
         let result = interp.execute(ctx_ptr, 100_000).unwrap();
         assert_eq!(result, ctx.timestamp as u32 as u64);
+    }
+
+    #[test]
+    fn test_mismatched_map_counts_rejected() {
+        let mut interp = SondeBpfInterpreter::new();
+        let prog = prog_return(0);
+        let def = sonde_protocol::MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 8,
+            max_entries: 1,
+        };
+        // 2 pointers but only 1 def
+        let result = interp.load(&prog, &[0x1000, 0x2000], &[def]);
+        assert!(matches!(result, Err(BpfError::LoadError(_))));
+    }
+
+    #[test]
+    fn test_map_size_overflow_rejected() {
+        let mut interp = SondeBpfInterpreter::new();
+        let prog = prog_return(0);
+        let def = sonde_protocol::MapDef {
+            map_type: 1,
+            key_size: u32::MAX,
+            value_size: u32::MAX,
+            max_entries: u32::MAX,
+        };
+        let result = interp.load(&prog, &[0x1000], &[def]);
+        assert!(matches!(result, Err(BpfError::LoadError(_))));
+    }
+
+    #[test]
+    fn test_helper_reregistration_updates() {
+        fn helper_a(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+            1
+        }
+        fn helper_b(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+            2
+        }
+        let mut interp = SondeBpfInterpreter::new();
+        interp.register_helper(1, helper_a).unwrap();
+        interp.register_helper(1, helper_b).unwrap();
+        // Should still have only one helper entry
+        let prog = prog_call_helper(1, 0);
+        interp.load(&prog, &[], &[]).unwrap();
+        let result = interp.execute(0, 100_000).unwrap();
+        assert_eq!(result, 2); // helper_b's return value
     }
 }

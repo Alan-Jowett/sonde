@@ -18,6 +18,9 @@ pub enum BpfError {
     HelperNotRegistered(u32),
     /// Error during program loading.
     LoadError(String),
+    /// Runtime error during BPF execution (memory violation, pointer
+    /// arithmetic error, etc.).
+    RuntimeError(String),
 }
 
 impl core::fmt::Display for BpfError {
@@ -28,6 +31,7 @@ impl core::fmt::Display for BpfError {
             BpfError::InvalidBytecode(msg) => write!(f, "invalid bytecode: {}", msg),
             BpfError::HelperNotRegistered(id) => write!(f, "helper {} not registered", id),
             BpfError::LoadError(msg) => write!(f, "load error: {}", msg),
+            BpfError::RuntimeError(msg) => write!(f, "runtime error: {}", msg),
         }
     }
 }
@@ -70,7 +74,8 @@ pub trait BpfInterpreter {
     /// Execute the loaded program.
     ///
     /// `ctx_ptr` is a pointer to the `SondeContext` struct, passed as R1.
-    /// `instruction_budget` limits execution; returns the program's return
-    /// value (R0) or an error if budget/call-depth is exceeded.
+    /// `instruction_budget` is a hint for limiting execution.  Not all
+    /// backends enforce this — see implementation docs.  Returns the
+    /// program's return value (R0) or an error.
     fn execute(&mut self, ctx_ptr: u64, instruction_budget: u64) -> Result<u64, BpfError>;
 }

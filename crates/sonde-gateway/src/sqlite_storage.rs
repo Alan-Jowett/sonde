@@ -71,9 +71,7 @@ impl SqliteStorage {
     {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
-            let conn = conn
-                .lock()
-                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
             f(&conn)
         })
         .await
@@ -88,12 +86,20 @@ fn map_err(e: rusqlite::Error) -> StorageError {
 
 /// Convert a `SystemTime` to seconds since the Unix epoch.
 ///
-/// Pre-epoch times are stored as negative values. Note: sub-second
-/// precision is lost (truncated, not rounded).
+/// Pre-epoch times are stored as negative values. For sub-second
+/// precision before the epoch, we round toward negative infinity
+/// so the value round-trips correctly.
 fn system_time_to_epoch_s(t: &SystemTime) -> i64 {
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_secs() as i64,
-        Err(e) => -(e.duration().as_secs() as i64),
+        Err(e) => {
+            let dur = e.duration();
+            // Ceil the negative direction: if there are sub-second nanos,
+            // we need an extra second to represent the time before epoch.
+            let secs = dur.as_secs();
+            let extra = if dur.subsec_nanos() > 0 { 1 } else { 0 };
+            -((secs + extra) as i64)
+        }
     }
 }
 
@@ -298,8 +304,11 @@ impl Storage for SqliteStorage {
         let record = record.clone();
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT OR REPLACE INTO programs (hash, image, size, verification_profile) \
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO programs (hash, image, size, verification_profile) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(hash) DO UPDATE SET \
+                 image=excluded.image, size=excluded.size, \
+                 verification_profile=excluded.verification_profile",
                 params![
                     record.hash,
                     record.image,

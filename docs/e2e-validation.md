@@ -61,7 +61,7 @@ All components run **in a single process** within one tokio runtime. No external
 ### 2.2  Modem bridge
 
 - **Bridge:** Real `Bridge` from `sonde-modem::bridge`, connecting a `PipeSerial` adapter to a `ChannelRadio`.
-- **Serial adapter:** `PipeSerial` — a test-only `SerialPort` trait implementation backed by `std::sync::mpsc` channels (or a ring buffer). One side feeds the gateway's `UsbEspNowTransport` (via `tokio::io::duplex`), the other side feeds the bridge. Since `Bridge` uses the sync `SerialPort` trait (`read(&mut self) → (usize, bool)`, `write(&mut self) → bool`) while `UsbEspNowTransport` uses `AsyncRead + AsyncWrite`, an adapter bridges the two worlds:
+- **Serial adapter:** `PipeSerial` — a test-only `SerialPort` trait implementation backed by `std::sync::mpsc` channels (or a ring buffer). One side feeds the gateway's `UsbEspNowTransport` (via `tokio::io::duplex`), the other side feeds the bridge. Since `Bridge` uses the sync `SerialPort` trait (`read(&mut self, buf: &mut [u8]) → (usize, bool)`, `write(&mut self, data: &[u8]) → bool`) while `UsbEspNowTransport` uses `AsyncRead + AsyncWrite`, an adapter bridges the two worlds:
   - The `tokio::io::duplex` server half is driven by a background tokio task that reads bytes and pushes them into a ring buffer; the `PipeSerial::read()` drains from that buffer.
   - `PipeSerial::write()` pushes bytes into another ring buffer that the tokio task reads and writes to the duplex stream.
 - **Radio:** `ChannelRadio` — routes ESP-NOW frames to/from node mocks via `std::sync::mpsc` channels.
@@ -87,6 +87,10 @@ These are the glue components that simulate ESP-NOW radio:
 /// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_rx` takes
 /// `&self` and `Radio::send` takes `&mut self` — both synchronous.
 /// The receiver is wrapped in `Mutex` to satisfy `drain_rx(&self)`.
+///
+/// `drain_rx()` returns `Vec<RecvFrame>` which includes `rssi: i8`.
+/// The ChannelRadio uses a fixed RSSI value (e.g., -40) for all
+/// simulated frames since RSSI is not relevant to protocol correctness.
 struct ChannelRadio {
     /// Frames sent by the gateway (via modem bridge) appear here for nodes.
     to_nodes: std::sync::mpsc::Sender<(Vec<u8>, [u8; 6])>,
@@ -124,8 +128,8 @@ Each test follows this sequence:
 1. **Create channels:** `std::sync::mpsc` pairs for radio simulation (gateway↔nodes).
 2. **Create duplex:** `tokio::io::duplex(4096)` for the serial link between gateway and bridge.
 3. **Create PipeSerial adapter:** Bridges the sync `SerialPort` trait (used by `Bridge`) to the async duplex stream (used by `UsbEspNowTransport`). A background tokio task shuttles bytes between the duplex server half and the adapter's internal ring buffers.
-4. **Start modem bridge:** Spawn a **std::thread** running `Bridge::new(PipeSerial, ChannelRadio).poll()` in a loop (the bridge is synchronous).
-5. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → ACK) against the bridge.
+4. **Start modem bridge:** Spawn a **std::thread** running `Bridge::new(PipeSerial, ChannelRadio, Arc::new(ModemCounters::new())).poll()` in a loop (the bridge is synchronous).
+5. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK) against the bridge.
 6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)`.
 7. **Register test nodes:** Insert `NodeRecord` into storage with known PSKs.
 8. **Run test scenario:** Drive node wake cycles (via `spawn_blocking` since `run_wake_cycle` is sync) and assert on gateway behavior.

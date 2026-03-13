@@ -1,50 +1,51 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Adapter wrapping the [`rbpf`] crate as a [`BpfInterpreter`] backend.
+//! Adapter wrapping the [`sonde_bpf`] crate as a [`BpfInterpreter`] backend.
 //!
-//! This is the default interpreter for host-side testing and the
-//! reference implementation for embedded targets. BPF-to-BPF calls
-//! are not yet supported by upstream `rbpf`; programs requiring them
-//! will fail verification on the gateway (Prevail) and never reach
-//! the node.
+//! This is the default interpreter for host-side testing and the reference
+//! implementation for embedded targets. It uses the zero-allocation
+//! `sonde_bpf::interpreter::execute_program_ex` function, which keeps all
+//! interpreter state (registers, call stack, BPF stack) on the Rust stack.
 
 use crate::bpf_helpers::SondeContext;
 use crate::bpf_runtime::{BpfError, BpfInterpreter, HelperFn};
 
-/// rbpf-backed BPF interpreter.
+/// sonde-bpf-backed BPF interpreter.
 ///
-/// Wraps [`rbpf::EbpfVmRaw`] and adapts it to the [`BpfInterpreter`]
-/// trait used by the wake cycle engine.
-pub struct RbpfInterpreter {
+/// Wraps [`sonde_bpf::interpreter::execute_program_ex`] and adapts it to the
+/// [`BpfInterpreter`] trait used by the wake cycle engine.
+pub struct SondeBpfInterpreter {
     /// Registered helpers, keyed by BPF call number.
-    helpers: std::collections::HashMap<u32, HelperFn>,
+    helpers: Vec<(u32, HelperFn)>,
     /// Raw bytecode loaded via [`load`].
     bytecode: Option<Vec<u8>>,
-    /// Memory ranges the VM is allowed to access (map backing stores).
-    allowed_ranges: Vec<std::ops::Range<u64>>,
+    /// Memory regions (start address, length) the VM is allowed to access,
+    /// in addition to the BPF stack and the context region. Populated with
+    /// map backing store addresses from [`load`].
+    extra_regions: Vec<(u64, usize)>,
 }
 
-impl RbpfInterpreter {
+impl SondeBpfInterpreter {
     /// Create a new interpreter with no program loaded.
     pub fn new() -> Self {
         Self {
-            helpers: std::collections::HashMap::new(),
+            helpers: Vec::new(),
             bytecode: None,
-            allowed_ranges: Vec::new(),
+            extra_regions: Vec::new(),
         }
     }
 }
 
-impl Default for RbpfInterpreter {
+impl Default for SondeBpfInterpreter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BpfInterpreter for RbpfInterpreter {
+impl BpfInterpreter for SondeBpfInterpreter {
     fn register_helper(&mut self, id: u32, func: HelperFn) -> Result<(), BpfError> {
-        self.helpers.insert(id, func);
+        self.helpers.push((id, func));
         Ok(())
     }
 
@@ -60,9 +61,10 @@ impl BpfInterpreter for RbpfInterpreter {
 
         self.bytecode = Some(bytecode.to_vec());
 
-        // Register map backing memory as allowed ranges so the VM
-        // permits load/store into map values.
-        self.allowed_ranges.clear();
+        // Register map backing memory as additional allowed regions so the VM
+        // permits load/store into map values (e.g. after map_lookup_elem
+        // returns a pointer that the BPF program then dereferences).
+        self.extra_regions.clear();
         for &ptr in map_ptrs {
             if ptr != 0 {
                 // Defence-in-depth: allow access around each map pointer.
@@ -71,55 +73,31 @@ impl BpfInterpreter for RbpfInterpreter {
                 // verified all accesses are in-bounds; this just prevents
                 // the VM from wandering far off if a verifier bug exists.
                 // Actual map sizes are typically < 4 KB (RTC SRAM budget).
-                const MAX_MAP_REGION_SIZE: u64 = 64 * 1024;
-                self.allowed_ranges
-                    .push(ptr..ptr.saturating_add(MAX_MAP_REGION_SIZE));
+                const MAX_MAP_REGION_SIZE: usize = 64 * 1024;
+                self.extra_regions.push((ptr, MAX_MAP_REGION_SIZE));
             }
         }
 
         Ok(())
     }
 
-    /// Execute the loaded program.
-    ///
-    /// # Instruction budget limitation
-    ///
-    /// **`instruction_budget` is currently NOT enforced.** rbpf does not
-    /// expose instruction-counting or step-limit hooks. Termination is
-    /// guaranteed by Prevail verification on the gateway (bounded loops,
-    /// no infinite recursion). A future upstream rbpf patch should add
-    /// metering; until then, very large verified programs may run longer
-    /// than the budget intends.
-    fn execute(&mut self, ctx_ptr: u64, _instruction_budget: u64) -> Result<u64, BpfError> {
+    fn execute(&mut self, ctx_ptr: u64, instruction_budget: u64) -> Result<u64, BpfError> {
+        let _ = instruction_budget;
+        // sonde-bpf does not yet enforce an instruction counter. Termination
+        // is guaranteed by the Prevail static verifier on the gateway, which
+        // rejects programs with unbounded loops before they reach the node.
+        // Programs that have not been Prevail-verified MUST NOT be loaded.
+
         let bytecode = self
             .bytecode
             .as_ref()
             .ok_or_else(|| BpfError::LoadError("no program loaded".into()))?;
 
-        let mut vm = rbpf::EbpfVmRaw::new(Some(bytecode))
-            .map_err(|e| BpfError::LoadError(format!("{:?}", e)))?;
-
-        // Disable the default verifier — Prevail on the gateway has
-        // already verified the program. rbpf's built-in verifier is
-        // too restrictive (rejects valid programs with map accesses).
-        vm.set_verifier(|_| Ok(()))
-            .map_err(|e| BpfError::LoadError(format!("{:?}", e)))?;
-
-        // Register helpers.
-        for (&id, &func) in &self.helpers {
-            vm.register_helper(id, func)
-                .map_err(|e| BpfError::LoadError(format!("helper {}: {:?}", id, e)))?;
-        }
-
-        // Allow access to map memory regions.
-        for range in &self.allowed_ranges {
-            vm.register_allowed_memory(range.clone());
-        }
-
-        // Copy the context into a temporary mutable buffer so that
-        // rbpf's execute_program (which requires &mut [u8]) cannot
-        // corrupt the caller's real SondeContext. The BPF spec defines
-        // the context as read-only (bpf-environment.md §4).
+        // Copy the context into a temporary mutable buffer so that the
+        // interpreter's `mem` region (r1/r2) covers the context bytes.
+        // The BPF spec defines the context as read-only (bpf-environment.md
+        // §4); copying prevents the program from mutating the caller's
+        // real SondeContext even if a verifier bug slips through.
         let mut ctx_buf = [0u8; SondeContext::SIZE];
         if ctx_ptr != 0 {
             // SAFETY: ctx_ptr points to a SondeContext on the caller's
@@ -130,40 +108,38 @@ impl BpfInterpreter for RbpfInterpreter {
             }
         }
 
-        // Register allowed memory for the COPY (which rbpf will use as R1).
-        if ctx_ptr != 0 {
-            let ctx_buf_ptr = ctx_buf.as_ptr() as u64;
-            let ctx_buf_end = ctx_buf_ptr + SondeContext::SIZE as u64;
-            vm.register_allowed_memory(ctx_buf_ptr..ctx_buf_end);
-        }
+        // Build the helpers slice expected by sonde_bpf (same fn-pointer
+        // type; just reinterpret the HelperFn slice).
+        let helpers: &[(u32, sonde_bpf::ebpf::Helper)] =
+            // SAFETY: HelperFn and sonde_bpf::ebpf::Helper are both
+            // `fn(u64,u64,u64,u64,u64)->u64`; they are the same ABI.
+            unsafe {
+                core::slice::from_raw_parts(
+                    self.helpers.as_ptr() as *const (u32, sonde_bpf::ebpf::Helper),
+                    self.helpers.len(),
+                )
+            };
 
-        // rbpf::EbpfVmRaw::execute_program sets R1 to the slice's data
-        // pointer. In production, ctx_ptr is always non-zero (run_wake_cycle
-        // passes a stack-allocated SondeContext). When ctx_ptr == 0 (only in
-        // unit tests), we still pass the zeroed ctx_buf; R1 will be non-zero
-        // but the program should not dereference it since no context was
-        // requested. Constructing a null-pointer slice would be UB in Rust.
-        let ctx_slice: &mut [u8] = &mut ctx_buf;
-
-        vm.execute_program(ctx_slice).map_err(|e| {
-            // rbpf uses a flat Error type with a string message (no
-            // structured variants). Match on known substrings to map
-            // to the appropriate BpfError variant.
-            let msg = format!("{:?}", e);
-            if msg.contains("call depth") || msg.contains("stack overflow") {
-                BpfError::CallDepthExceeded
-            } else if msg.contains("unknown helper") || msg.contains("helper function") {
-                // Extract helper ID from message if possible.
-                let id = msg
-                    .split(|c: char| !c.is_ascii_digit())
-                    .filter_map(|s| s.parse::<u32>().ok())
-                    .next()
-                    .unwrap_or(0);
-                BpfError::HelperNotRegistered(id)
-            } else {
-                BpfError::InvalidBytecode(msg)
-            }
-        })
+        sonde_bpf::interpreter::execute_program_ex(bytecode, &mut ctx_buf, helpers, &self.extra_regions)
+            .map_err(|e| match e {
+                sonde_bpf::interpreter::BpfError::CallDepthExceeded { .. } => {
+                    BpfError::CallDepthExceeded
+                }
+                sonde_bpf::interpreter::BpfError::UnknownHelper { id, .. } => {
+                    BpfError::HelperNotRegistered(id)
+                }
+                sonde_bpf::interpreter::BpfError::OutOfBounds { pc } => {
+                    BpfError::InvalidBytecode(format!("PC out of bounds at insn #{pc}"))
+                }
+                sonde_bpf::interpreter::BpfError::UnknownOpcode { pc, opc } => {
+                    BpfError::InvalidBytecode(format!("unknown opcode {opc:#04x} at insn #{pc}"))
+                }
+                sonde_bpf::interpreter::BpfError::MemoryAccessViolation { pc, addr, len } => {
+                    BpfError::InvalidBytecode(format!(
+                        "memory access violation at insn #{pc}: addr={addr:#x} len={len}"
+                    ))
+                }
+            })
     }
 }
 
@@ -200,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_execute_return_42() {
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         let prog = prog_return(42);
         interp.load(&prog, &[]).unwrap();
         let result = interp.execute(0, 100_000).unwrap();
@@ -225,7 +201,7 @@ mod tests {
         // BPF_EXIT
         bytecode.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         interp.load(&bytecode, &[]).unwrap();
         let result = interp.execute(0, 100_000).unwrap();
         assert_eq!(result, 3);
@@ -233,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_execute_return_0() {
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         let prog = prog_return(0);
         interp.load(&prog, &[]).unwrap();
         let result = interp.execute(0, 100_000).unwrap();
@@ -246,7 +222,7 @@ mod tests {
             99
         }
 
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         interp.register_helper(1, my_helper).unwrap();
         let prog = prog_call_helper(1, 0u32);
         interp.load(&prog, &[]).unwrap();
@@ -256,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_unregistered_helper_fails() {
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         // Call helper 42 without registering it
         let prog = prog_call_helper(42, 0u32);
         interp.load(&prog, &[]).unwrap();
@@ -266,21 +242,21 @@ mod tests {
 
     #[test]
     fn test_empty_bytecode_rejected() {
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         let result = interp.load(&[], &[]);
         assert!(matches!(result, Err(BpfError::InvalidBytecode(_))));
     }
 
     #[test]
     fn test_misaligned_bytecode_rejected() {
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         let result = interp.load(&[0x95, 0x00, 0x00], &[]);
         assert!(matches!(result, Err(BpfError::InvalidBytecode(_))));
     }
 
     #[test]
     fn test_no_program_loaded() {
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         let result = interp.execute(0, 100_000);
         assert!(matches!(result, Err(BpfError::LoadError(_))));
     }
@@ -295,7 +271,7 @@ mod tests {
         // BPF_EXIT
         prog.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-        let mut interp = RbpfInterpreter::new();
+        let mut interp = SondeBpfInterpreter::new();
         interp.load(&prog, &[]).unwrap();
 
         let ctx = SondeContext {

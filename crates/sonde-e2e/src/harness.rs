@@ -8,7 +8,6 @@
 //! `Gateway::process_frame` synchronously via `block_in_place`.
 //! Modem / ESP-NOW radio integration will be added in a later phase.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -158,8 +157,8 @@ struct BridgeTransport {
     gateway: Arc<Gateway>,
     peer: Vec<u8>,
     pending_response: Option<Vec<u8>>,
-    response_count: Cell<usize>,
-    /// Nonces extracted from outbound WAKE frames (msg_type 0x01).
+    response_count: usize,
+    /// Nonces extracted from outbound WAKE frames.
     wake_nonces: Vec<u64>,
     rt: tokio::runtime::Handle,
 }
@@ -170,7 +169,7 @@ impl BridgeTransport {
             gateway,
             peer,
             pending_response: None,
-            response_count: Cell::new(0),
+            response_count: 0,
             wake_nonces: Vec::new(),
             rt: tokio::runtime::Handle::try_current()
                 .expect("BridgeTransport must be created inside a Tokio runtime"),
@@ -179,7 +178,7 @@ impl BridgeTransport {
 
     /// Number of non-`None` responses the gateway returned during this cycle.
     fn response_count(&self) -> usize {
-        self.response_count.get()
+        self.response_count
     }
 
     /// Nonces from WAKE frames sent during this cycle.
@@ -190,9 +189,16 @@ impl BridgeTransport {
 
 impl NodeTransport for BridgeTransport {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
-        // Capture nonce from WAKE frames (msg_type 0x01 at byte 2).
-        if frame.len() >= sonde_protocol::HEADER_SIZE && frame[2] == sonde_protocol::MSG_WAKE {
-            let nonce = u64::from_be_bytes(frame[3..11].try_into().unwrap());
+        // Capture nonce from outbound WAKE frames.
+        if frame.len() >= sonde_protocol::HEADER_SIZE
+            && frame[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_WAKE
+        {
+            let nonce_end = sonde_protocol::OFFSET_NONCE + 8;
+            let nonce = u64::from_be_bytes(
+                frame[sonde_protocol::OFFSET_NONCE..nonce_end]
+                    .try_into()
+                    .unwrap(),
+            );
             self.wake_nonces.push(nonce);
         }
 
@@ -204,7 +210,7 @@ impl NodeTransport for BridgeTransport {
                 .block_on(gateway.process_frame(&frame, peer))
         });
         if response.is_some() {
-            self.response_count.set(self.response_count.get() + 1);
+            self.response_count += 1;
         }
         self.pending_response = response;
         Ok(())
@@ -316,9 +322,7 @@ impl PlatformStorage for MockNodeStorage {
         Ok(())
     }
     fn read_program(&self, partition: u8) -> Option<Vec<u8>> {
-        self.programs
-            .get(partition as usize)
-            .and_then(|p| p.clone())
+        self.programs.get(partition as usize).cloned().flatten()
     }
     fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
         if (partition as usize) >= self.programs.len() {

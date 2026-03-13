@@ -25,7 +25,11 @@ impl crate::traits::Clock for EspClock {
     }
 
     fn delay_us(&self, us: u32) {
-        std::thread::sleep(std::time::Duration::from_micros(us as u64));
+        // Use the ROM busy-wait for true microsecond precision.
+        // std::thread::sleep rounds to FreeRTOS ticks (~1ms).
+        unsafe {
+            esp_idf_sys::ets_delay_us(us);
+        }
     }
 }
 

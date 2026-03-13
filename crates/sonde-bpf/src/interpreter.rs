@@ -94,8 +94,8 @@ fn check_mem(addr: u64, len: usize, pc: usize, mem: &[u8], stack: &[u8]) -> Resu
 /// * `prog` — the BPF bytecode (must be a multiple of 8 bytes).
 /// * `mem`  — memory region accessible to the program (r1 points here, length in r2).
 /// * `helpers` — table of helper functions keyed by helper id.
-///              The table is a slice of `(id, fn)` pairs; a linear scan is fine for
-///              the small number of helpers typically registered.
+///   The table is a slice of `(id, fn)` pairs; a linear scan is fine for
+///   the small number of helpers typically registered.
 ///
 /// # Returns
 /// The value of `r0` when the program exits.
@@ -109,7 +109,7 @@ pub fn execute_program(
     helpers: &[(u32, Helper)],
 ) -> Result<u64, BpfError> {
     let num_insns = prog.len() / INSN_SIZE;
-    if prog.len() % INSN_SIZE != 0 {
+    if !prog.len().is_multiple_of(INSN_SIZE) {
         return Err(BpfError::OutOfBounds { pc: num_insns });
     }
 
@@ -326,14 +326,14 @@ pub fn execute_program(
                     if imm != 0 {
                         reg[dst] = (reg[dst] as u32 % imm) as u64;
                     } else {
-                        reg[dst] = reg[dst] & 0xffff_ffff;
+                        reg[dst] &= 0xffff_ffff;
                     }
                 } else {
                     let s = insn.imm; // i32
                     if s != 0 {
                         reg[dst] = ((reg[dst] as i32).wrapping_rem(s) as u32) as u64;
                     } else {
-                        reg[dst] = reg[dst] & 0xffff_ffff;
+                        reg[dst] &= 0xffff_ffff;
                     }
                 }
             }
@@ -343,14 +343,14 @@ pub fn execute_program(
                     if s != 0 {
                         reg[dst] = (reg[dst] as u32 % s) as u64;
                     } else {
-                        reg[dst] = reg[dst] & 0xffff_ffff;
+                        reg[dst] &= 0xffff_ffff;
                     }
                 } else {
                     let s = reg[src] as i32;
                     if s != 0 {
                         reg[dst] = ((reg[dst] as i32).wrapping_rem(s) as u32) as u64;
                     } else {
-                        reg[dst] = reg[dst] & 0xffff_ffff;
+                        reg[dst] &= 0xffff_ffff;
                     }
                 }
             }
@@ -499,11 +499,7 @@ pub fn execute_program(
             ebpf::XOR64_IMM => reg[dst] ^= insn.imm as i64 as u64,
             ebpf::XOR64_REG => reg[dst] ^= reg[src],
             ebpf::MOV64_IMM => {
-                if insn.off == 0 {
-                    reg[dst] = insn.imm as i64 as u64;
-                } else {
-                    reg[dst] = insn.imm as i64 as u64;
-                }
+                reg[dst] = insn.imm as i64 as u64;
             }
             ebpf::MOV64_REG => {
                 if insn.off == 0 {

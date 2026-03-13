@@ -41,7 +41,7 @@ jobs:
     name: BPF conformance (RFC 9669)
     runs-on: ubuntu-latest
     env:
-      CONFORMANCE_IMAGE: "ghcr.io/alan-jowett/bpf_conformance@sha256:7fa803afca004b7bb9dac1d049b7d4674b368abdf60e32603566ac614cf19ed2"
+      CONFORMANCE_IMAGE: "ghcr.io/alan-jowett/bpf_conformance@sha256:547765717557e0f222de71fbf26f4bd9621c0149911aa03296024b469dd4598b"
       # mem-len: test assumes r2 contains memory length (non-standard register setup)
       KNOWN_FAILURES: "mem-len"
     steps:

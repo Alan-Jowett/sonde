@@ -55,7 +55,7 @@ All components run **in a single process** within one tokio runtime. No external
 - **Engine:** Real `Gateway::new_with_pending()` from `sonde-gateway::engine`.
 - **Storage:** `SqliteStorage::in_memory()` for test isolation (no files).
 - **Transport:** `UsbEspNowTransport::new(duplex_client, channel)` — the gateway's modem adapter connected to the in-memory duplex stream.
-- **Admin:** Direct function calls on `Gateway` and `Storage` (not gRPC). Tests that need gRPC use a loopback tonic client.
+- **Admin:** Direct function calls on `Gateway` and `Storage` (no gRPC in E2E tests). Admin operations are exercised by calling storage/engine methods directly, avoiding the need for network sockets.
 - **Handler:** In-process mock handler that reads DATA messages and writes DATA_REPLY (using the existing handler framing from `sonde-gateway::handler`).
 
 ### 2.2  Modem bridge
@@ -91,11 +91,16 @@ These are the glue components that simulate ESP-NOW radio:
 /// `drain_rx()` returns `Vec<RecvFrame>` which includes `rssi: i8`.
 /// The ChannelRadio uses a fixed RSSI value (e.g., -40) for all
 /// simulated frames since RSSI is not relevant to protocol correctness.
+///
+/// Note: `std::sync::mpsc` is multi-producer / single-consumer.
+/// Each test uses a single node. Multi-node tests would need a
+/// per-node sender map or a broadcast channel; this is left as a
+/// future extension.
 struct ChannelRadio {
-    /// Frames sent by the gateway (via modem bridge) appear here for nodes.
-    to_nodes: std::sync::mpsc::Sender<(Vec<u8>, [u8; 6])>,
-    /// Frames sent by nodes appear here for the gateway.
-    from_nodes: std::sync::Mutex<std::sync::mpsc::Receiver<(Vec<u8>, [u8; 6])>>,
+    /// Frames sent by the gateway (via modem bridge) arrive at the node.
+    to_node: std::sync::mpsc::Sender<(Vec<u8>, [u8; 6])>,
+    /// Frames sent by the node arrive here for the gateway.
+    from_node: std::sync::Mutex<std::sync::mpsc::Receiver<(Vec<u8>, [u8; 6])>>,
 }
 
 /// Node-side transport backed by the same channels.
@@ -128,11 +133,12 @@ Each test follows this sequence:
 1. **Create channels:** `std::sync::mpsc` pairs for radio simulation (gateway↔nodes).
 2. **Create duplex:** `tokio::io::duplex(4096)` for the serial link between gateway and bridge.
 3. **Create PipeSerial adapter:** Bridges the sync `SerialPort` trait (used by `Bridge`) to the async duplex stream (used by `UsbEspNowTransport`). A background tokio task shuttles bytes between the duplex server half and the adapter's internal ring buffers.
-4. **Start modem bridge:** Spawn a **std::thread** running a bridge poll loop. Construct `let mut bridge = Bridge::new(pipe_serial, channel_radio, ModemCounters::new())` (note: `ModemCounters::new()` already returns `Arc`), then loop calling `bridge.poll()` (the bridge is synchronous).
+4. **Start modem bridge:** Spawn a **std::thread** running a bridge poll loop. Construct `let mut bridge = Bridge::new(pipe_serial, channel_radio, ModemCounters::new())` (note: `ModemCounters::new()` already returns `Arc`). The loop checks an `AtomicBool` stop flag each iteration and sleeps briefly (e.g., 1ms) when `poll()` returns with no work done, to avoid busy-spinning. The thread is joined at test teardown.
 5. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK) against the bridge.
 6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)`.
 7. **Register test nodes:** Insert `NodeRecord` into storage with known PSKs.
 8. **Run test scenario:** Drive node wake cycles (via `spawn_blocking` since `run_wake_cycle` is sync) and assert on gateway behavior.
+9. **Teardown:** Set the stop flag, join the bridge thread, drop the transport.
 
 ### 3.1  Test node helper
 

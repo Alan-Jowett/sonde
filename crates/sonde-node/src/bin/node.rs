@@ -29,7 +29,7 @@ fn main() {
     use sonde_node::esp_storage::NvsStorage;
     use sonde_node::esp_transport::EspNowTransport;
     use sonde_node::map_storage::MapStorage;
-    use sonde_node::rbpf_adapter::RbpfInterpreter;
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
     use sonde_node::traits::SleepController;
     use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
 
@@ -59,7 +59,7 @@ fn main() {
     let mut transport = EspNowTransport::new(peripherals.modem, sysloop, nvs_partition)
         .expect("failed to initialize ESP-NOW transport");
 
-    let mut interpreter = RbpfInterpreter::new();
+    let mut interpreter = SondeBpfInterpreter::new();
 
     // Map storage: 4 KB budget (fits in ESP32-C3 RTC SRAM)
     let mut map_storage = MapStorage::new(4096);

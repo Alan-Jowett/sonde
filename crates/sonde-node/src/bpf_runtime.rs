@@ -36,7 +36,7 @@ impl std::error::Error for BpfError {}
 
 /// BPF interpreter abstraction.
 ///
-/// Both rbpf and uBPF can implement this trait. The choice of interpreter
+/// Both sonde-bpf and uBPF can implement this trait. The choice of interpreter
 /// backend does not affect the rest of the firmware design.
 pub trait BpfInterpreter {
     /// Register a helper function by call number.
@@ -58,7 +58,10 @@ pub trait BpfInterpreter {
     ///
     /// `map_ptrs` maps `map_index → runtime pointer` for use by the
     /// interpreter during execution (e.g. to back map helper calls).
-    fn load(&mut self, bytecode: &[u8], map_ptrs: &[u64]) -> Result<(), BpfError>;
+    ///
+    /// `map_defs` carries the corresponding [`sonde_protocol::MapDef`]
+    /// entries so the backend can compute region sizes for bounds checking.
+    fn load(&mut self, bytecode: &[u8], map_ptrs: &[u64], map_defs: &[sonde_protocol::MapDef]) -> Result<(), BpfError>;
 
     /// Execute the loaded program.
     ///

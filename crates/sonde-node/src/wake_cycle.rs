@@ -344,7 +344,7 @@ where
         let _guard = crate::bpf_dispatch::DispatchGuard;
 
         let exec_result = match crate::bpf_dispatch::register_all(interpreter) {
-            Ok(()) => match interpreter.load(&program.bytecode, &map_ptrs) {
+            Ok(()) => match interpreter.load(&program.bytecode, &map_ptrs, &program.map_defs) {
                 Ok(()) => {
                     let ctx_ptr = &ctx as *const SondeContext as u64;
                     interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
@@ -1136,7 +1136,7 @@ mod tests {
         ) -> Result<(), BpfError> {
             Ok(())
         }
-        fn load(&mut self, _bytecode: &[u8], _map_ptrs: &[u64]) -> Result<(), BpfError> {
+        fn load(&mut self, _bytecode: &[u8], _map_ptrs: &[u64], _map_defs: &[sonde_protocol::MapDef]) -> Result<(), BpfError> {
             self.loaded = true;
             Ok(())
         }

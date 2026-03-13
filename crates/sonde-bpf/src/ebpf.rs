@@ -14,8 +14,11 @@ pub const INSN_SIZE: usize = 8;
 /// Maximum call depth for BPF-to-BPF calls.
 pub const MAX_CALL_DEPTH: usize = 8;
 
-/// Default BPF stack size in bytes.
-pub const STACK_SIZE: usize = 512;
+/// BPF stack size per call frame in bytes.
+pub const STACK_SIZE_PER_FRAME: usize = 512;
+
+/// Total BPF stack size in bytes (one frame per call depth level).
+pub const STACK_SIZE: usize = STACK_SIZE_PER_FRAME * MAX_CALL_DEPTH;
 
 // ── Instruction classes (3 LSBs of opcode) ──────────────────────────
 pub const BPF_LD:    u8 = 0x00;

@@ -12,7 +12,7 @@
 //! - 64-bit immediate load (LD_DW_IMM)
 //! - Atomic operations (ADD, OR, AND, XOR, XCHG, CMPXCHG, +FETCH)
 
-use crate::ebpf::{self, Helper, INSN_SIZE, MAX_CALL_DEPTH, STACK_SIZE};
+use crate::ebpf::{self, Helper, INSN_SIZE, MAX_CALL_DEPTH, STACK_SIZE, STACK_SIZE_PER_FRAME};
 
 /// Errors returned by the interpreter.
 #[derive(Debug)]
@@ -772,8 +772,8 @@ pub fn execute_program(
                             .saved_regs
                             .copy_from_slice(&reg[6..10]);
                         call_frames[frame_idx].return_pc = pc;
-                        // Each frame gets a fixed-size chunk of the stack.
-                        let frame_size = (STACK_SIZE / MAX_CALL_DEPTH) as u64;
+                        // Each frame gets STACK_SIZE_PER_FRAME bytes.
+                        let frame_size = STACK_SIZE_PER_FRAME as u64;
                         call_frames[frame_idx].frame_size = frame_size;
                         reg[10] -= frame_size;
                         frame_idx += 1;

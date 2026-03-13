@@ -199,9 +199,10 @@ fn test_arsh64() {
 
 #[test]
 fn test_add32() {
-    // r0 = 0x1_0000_000a; r0 += 32 (32-bit); exit -> upper bits zeroed, 0xa + 32 = 42
+    // Load r0 with upper bits set; add32 zeroes upper bits
     let prog = prog_from(&[
-        insn(ebpf::MOV64_IMM, 0, 0, 0, 10),
+        insn(ebpf::LD_DW_IMM, 0, 0, 0, 10),
+        insn(0x00, 0, 0, 0, 1), // r0 = 0x1_0000_000a
         insn(ebpf::ADD32_IMM, 0, 0, 0, 32),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
@@ -296,12 +297,13 @@ fn test_jslt_signed() {
 
 #[test]
 fn test_jeq32() {
-    // r1 = 0x1_0000_002a; jeq32 r1, 42, +1; r0 = 0; exit
-    // 32-bit: lower 32 bits == 42 -> taken
+    // r1 = 0x1_0000_002a (upper bits set); jeq32 r1, 42, +1
+    // 32-bit comparison: lower 32 bits == 42 -> taken
     let prog = prog_from(&[
         insn(ebpf::MOV64_IMM, 0, 0, 0, 1),  // r0 = 1
-        insn(ebpf::MOV64_IMM, 1, 0, 0, 42), // r1 = 42
-        insn(ebpf::JEQ_IMM32, 1, 0, 1, 42), // taken
+        insn(ebpf::LD_DW_IMM, 1, 0, 0, 42), // r1 = 0x1_0000_002a
+        insn(0x00, 0, 0, 0, 1),             // (upper 32 bits = 1)
+        insn(ebpf::JEQ_IMM32, 1, 0, 1, 42), // taken (lower 32 = 42)
         insn(ebpf::MOV64_IMM, 0, 0, 0, 0),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);

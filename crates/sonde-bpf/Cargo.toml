@@ -8,3 +8,7 @@ license = "MIT"
 [features]
 default = ["std"]
 std = []
+
+[[bin]]
+name = "sonde_bpf_plugin"
+required-features = ["std"]

@@ -418,23 +418,12 @@ fn test_unknown_helper() {
 
 #[test]
 fn test_local_call() {
-    // Main:
-    //   r1 = 20; r2 = 22
-    //   call +2 (local func at pc=5, insn index 5)
-    //   exit
-    // Local func (at insn 4, which is pc after call=4, +2 = 6... let me think more carefully):
-    //   r0 = r1 + r2; exit
-    //
-    // The call instruction is at insn index 2. After fetch, pc = 3.
-    // call imm=2 with src=1 means: pc = 3 + 2 = 5
-    // So insn 5 is the start of the local function.
-    //
     // Insn 0: mov r1, 20
     // Insn 1: mov r2, 22
-    // Insn 2: call +2 (local, src=1) -> jumps to insn 5
-    // Insn 3: exit (main return)
-    // Insn 4: (filler) never reached
-    // Insn 5: r0 = r1
+    // Insn 2: call +2 (local, src=1) — after fetch pc=3, target = 3+2 = insn 5
+    // Insn 3: exit (main return point)
+    // Insn 4: filler (never reached)
+    // Insn 5: r0 = r1  (local function entry)
     // Insn 6: r0 += r2
     // Insn 7: exit (returns to insn 3)
 

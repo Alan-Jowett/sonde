@@ -14,7 +14,7 @@ use sonde_protocol::modem::{
 use crate::key_store::KeyStore;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
-use crate::FIRMWARE_ABI_VERSION;
+use crate::FIRMWARE_VERSION;
 
 /// Result of handling one pairing message.
 pub enum PairingAction {
@@ -80,7 +80,7 @@ pub fn handle_pairing_message<S: PlatformStorage>(
 /// fixed-size message, but avoids panicking the firmware).
 pub fn pairing_ready_frame() -> Option<Vec<u8>> {
     let msg = ModemMessage::PairingReady(PairingReady {
-        firmware_version: FIRMWARE_ABI_VERSION,
+        firmware_version: FIRMWARE_VERSION,
     });
     encode_modem_frame(&msg).ok()
 }
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(
             msg,
             ModemMessage::PairingReady(PairingReady {
-                firmware_version: FIRMWARE_ABI_VERSION,
+                firmware_version: crate::FIRMWARE_VERSION,
             })
         );
     }

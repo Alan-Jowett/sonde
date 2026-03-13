@@ -222,7 +222,8 @@ fn read_message(
         // block past the overall deadline.
         let remaining = deadline.duration_since(now);
         let read_timeout = remaining.min(Duration::from_millis(200));
-        let _ = port.set_timeout(read_timeout);
+        port.set_timeout(read_timeout)
+            .map_err(|e| format!("set_timeout: {}", e))?;
         let n = match port.read(&mut buf) {
             Ok(0) => return Err("USB disconnected".into()),
             Ok(n) => n,

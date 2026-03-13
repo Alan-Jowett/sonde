@@ -125,8 +125,8 @@ resolver = "2"
 members = [
     "crates/sonde-protocol",
     "crates/sonde-gateway",
-    "crates/sonde-node",
     "crates/sonde-modem",
+    "crates/sonde-node",
     "crates/sonde-admin",
     "crates/sonde-bpf",
 ]
@@ -137,7 +137,7 @@ members = [
 ```
 sonde-protocol  (no_std + alloc, no platform deps)
        │
-       ├──── sonde-gateway  (std, tokio, tonic, prevail-rust, RustCrypto, tokio-serial)
+       ├──── sonde-gateway  (std, tokio, tonic, prevail, RustCrypto, tokio-serial)
        │
        ├──── sonde-node     (std via ESP-IDF, esp-idf-hal, esp-idf-svc, rbpf)
        │
@@ -191,7 +191,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 
 **Design doc:** [gateway-design.md](gateway-design.md)  
 **Validation:** [gateway-validation.md](gateway-validation.md)  
-**Dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail-rust`, `hmac`, `sha2`, `ciborium`.
+**Dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail`, `hmac`, `sha2`, `ciborium`.
 
 **Status:** Complete. 106 tests pass across 5 integration test files (phase2a through phase2d). Uses `sqlite_storage.rs` for persistence (added beyond original plan). Binary entry point is `src/bin/gateway.rs`.
 

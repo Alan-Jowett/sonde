@@ -75,14 +75,16 @@ impl CallFrame {
 fn check_mem(addr: u64, len: usize, pc: usize, mem: &[u8], stack: &[u8]) -> Result<(), BpfError> {
     if let Some(end) = addr.checked_add(len as u64) {
         let mem_start = mem.as_ptr() as u64;
-        let mem_end = mem_start + mem.len() as u64;
-        if addr >= mem_start && end <= mem_end {
-            return Ok(());
+        if let Some(mem_end) = mem_start.checked_add(mem.len() as u64) {
+            if addr >= mem_start && end <= mem_end {
+                return Ok(());
+            }
         }
         let stack_start = stack.as_ptr() as u64;
-        let stack_end = stack_start + stack.len() as u64;
-        if addr >= stack_start && end <= stack_end {
-            return Ok(());
+        if let Some(stack_end) = stack_start.checked_add(stack.len() as u64) {
+            if addr >= stack_start && end <= stack_end {
+                return Ok(());
+            }
         }
     }
     Err(BpfError::MemoryAccessViolation { pc, addr, len })
@@ -377,8 +379,10 @@ pub fn execute_program(
                 if insn.off == 0 {
                     reg[dst] = insn.imm as u32 as u64;
                 } else {
-                    // MOVSX with imm is not defined for ALU32
-                    reg[dst] = insn.imm as u32 as u64;
+                    return Err(BpfError::UnknownOpcode {
+                        pc: pc - 1,
+                        opc: insn.opc,
+                    });
                 }
             }
             ebpf::MOV32_REG => {
@@ -389,7 +393,12 @@ pub fn execute_program(
                     reg[dst] = match insn.off {
                         8 => (reg[src] as i8 as i32 as u32) as u64,
                         16 => (reg[src] as i16 as i32 as u32) as u64,
-                        _ => reg[src] as u32 as u64,
+                        _ => {
+                            return Err(BpfError::UnknownOpcode {
+                                pc: pc - 1,
+                                opc: insn.opc,
+                            });
+                        }
                     };
                 }
             }
@@ -527,7 +536,12 @@ pub fn execute_program(
                         8 => reg[src] as i8 as i64 as u64,
                         16 => reg[src] as i16 as i64 as u64,
                         32 => reg[src] as i32 as i64 as u64,
-                        _ => reg[src],
+                        _ => {
+                            return Err(BpfError::UnknownOpcode {
+                                pc: pc - 1,
+                                opc: insn.opc,
+                            });
+                        }
                     };
                 }
             }

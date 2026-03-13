@@ -15,11 +15,11 @@
 use crate::hal;
 use log::warn;
 
-/// Default I2C0 SDA pin for ESP32-C3 dev boards.
+/// Default I2C0 SDA pin for ESP32 dev boards.
 /// Override in sdkconfig or a board-specific configuration module.
 const I2C0_SDA: i32 = 4;
 
-/// Default I2C0 SCL pin for ESP32-C3 dev boards.
+/// Default I2C0 SCL pin for ESP32 dev boards.
 /// Override in sdkconfig or a board-specific configuration module.
 const I2C0_SCL: i32 = 5;
 const I2C0_FREQ_HZ: u32 = 100_000; // 100 kHz standard mode
@@ -232,14 +232,14 @@ impl hal::Hal for EspHal {
     }
 
     fn gpio_read(&self, pin: u32) -> i32 {
-        if pin > 21 {
+        if pin > 39 {
             return -1;
         }
         unsafe { esp_idf_sys::gpio_get_level(pin as i32) }
     }
 
     fn gpio_write(&mut self, pin: u32, value: u32) -> i32 {
-        if pin > 21 {
+        if pin > 39 {
             return -1;
         }
         unsafe {

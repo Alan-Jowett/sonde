@@ -202,7 +202,7 @@ fn mem_store<const N: usize>(
 
 Atomic read-modify-write operations (ADD, OR, AND, XOR, XCHG, CMPXCHG) are routed through two width-specific choke-point functions — `mem_atomic32` for 32-bit and `mem_atomic64` for 64-bit operations.  Each performs the bounds check once, then does the read-modify-write in a single `unsafe` block.  The signatures mirror the current `execute_atomic32` / `execute_atomic64` but accept a `&TaggedReg` for address validation.
 
-> **Concurrency model:** BPF programs execute single-threaded — only one program runs at a time on a given interpreter instance.  The "atomic" operations implement the RFC 9669 instruction semantics (§5.3) but are emulated as non-atomic `read_unaligned` / `write_unaligned` sequences.  This is correct for single-threaded execution.  If a future interpreter needs to support concurrent BPF-to-BPF execution with shared map memory, these operations would need to use `core::sync::atomic` or equivalent hardware atomics.
+> **Concurrency model:** BPF programs execute single-threaded — only one program runs at a time on a given interpreter instance.  The "atomic" operations implement the RFC 9669 instruction semantics (RFC 9669 §5.3) but are emulated as non-atomic `read_unaligned` / `write_unaligned` sequences.  This is correct for single-threaded execution.  If a future interpreter needs to support concurrent BPF-to-BPF execution with shared map memory, these operations would need to use `core::sync::atomic` or equivalent hardware atomics.
 
 The same pre-checks apply as for `mem_store`: scalars and `MapDescriptor` are rejected via `NonDereferenceableAccess`, and `Context` (read-only) is rejected via `ReadOnlyWrite`.
 
@@ -490,9 +490,10 @@ The tagged interpreter introduces four new error variants:
 pub enum BpfError {
     // ... existing variants ...
 
-    /// Attempted to dereference a register that cannot be used as a
-    /// pointer — either a scalar (no provenance) or a MapDescriptor
-    /// (opaque handle, not a memory address).
+    /// A register was used in a context that requires a specific tag it
+    /// does not have — e.g., dereferencing a scalar or MapDescriptor,
+    /// or passing a non-MapDescriptor register as the map argument to
+    /// a helper that expects one.
     NonDereferenceableAccess { pc: usize },
 
     /// Attempted to write to a read-only region (e.g., Context).

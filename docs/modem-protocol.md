@@ -387,7 +387,9 @@ The `firmware_version` field in `MODEM_READY` allows the gateway to detect the m
 
 | Range | Purpose |
 |-------|---------|
-| 0x01 – 0x0F | Core commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS) |
-| 0x10 – 0x7F | Reserved for future gateway → modem commands |
-| 0x81 – 0x8F | Core events/responses |
-| 0x90 – 0xFF | Reserved for future modem → gateway messages |
+| 0x01 – 0x0F | Core modem commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS) |
+| 0x10 – 0x1F | [USB pairing protocol](pairing-protocol.md) host → node commands |
+| 0x20 – 0x7F | Reserved for future gateway → modem commands |
+| 0x81 – 0x8F | Core modem events/responses |
+| 0x90 – 0x9F | [USB pairing protocol](pairing-protocol.md) node → host responses |
+| 0xA0 – 0xFF | Reserved for future modem → gateway messages |

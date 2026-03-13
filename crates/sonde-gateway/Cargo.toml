@@ -20,6 +20,13 @@ prost = "0.14"
 prevail = { git = "https://github.com/elazarg/prevail-rust.git", rev = "bc5be2ea", default-features = false }
 tempfile = "3"
 rusqlite = { version = "0.34", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio-serial = "5.4"
+
+[[bin]]
+name = "sonde-gateway"
+path = "src/bin/gateway.rs"
 
 [build-dependencies]
 tonic-prost-build = "0.14"

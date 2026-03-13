@@ -65,6 +65,24 @@ fn make_program_from_bytecode(
     (record, hash)
 }
 
+/// Read a single modem message from an async stream using `FrameDecoder`.
+///
+/// Handles partial reads and frame coalescing correctly.
+async fn read_modem_msg(
+    reader: &mut (impl tokio::io::AsyncReadExt + Unpin),
+    decoder: &mut sonde_protocol::modem::FrameDecoder,
+    buf: &mut [u8],
+) -> sonde_protocol::modem::ModemMessage {
+    loop {
+        if let Ok(Some(msg)) = decoder.decode() {
+            return msg;
+        }
+        let n = reader.read(buf).await.expect("read from modem stream");
+        assert!(n > 0, "unexpected EOF on modem stream");
+        decoder.push(&buf[..n]);
+    }
+}
+
 /// T-E2E-001 — NOP wake cycle.
 ///
 /// A paired node with no pending commands completes a normal WAKE/COMMAND
@@ -393,24 +411,14 @@ async fn t_e2e_022_run_ephemeral() {
     let psk = [0x22; 32];
     env.register_node("ephemeral-node", 1, psk).await;
 
-    // Create an ephemeral program (no maps required).
-    let image = ProgramImage {
-        bytecode: vec![
+    // Create an ephemeral program (same NOP bytecode, ephemeral profile).
+    let (record, hash) = make_program_from_bytecode(
+        &[
             0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
             0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
         ],
-        maps: vec![],
-    };
-    let cbor = image.encode_deterministic().unwrap();
-    let sha = TestSha256;
-    let hash = sha.hash(&cbor).to_vec();
-    let size = cbor.len() as u32;
-    let record = ProgramRecord {
-        hash: hash.clone(),
-        image: cbor,
-        size,
-        verification_profile: VerificationProfile::Ephemeral,
-    };
+        VerificationProfile::Ephemeral,
+    );
     env.storage.store_program(&record).await.unwrap();
 
     // Queue the ephemeral run command.
@@ -519,8 +527,8 @@ async fn t_e2e_041_sequence_numbers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_050_modem_startup_handshake() {
     use sonde_gateway::modem::UsbEspNowTransport;
-    use sonde_protocol::modem::{decode_modem_frame, encode_modem_frame, ModemMessage, ModemReady};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, ModemReady};
+    use tokio::io::AsyncWriteExt;
 
     let (client, mut server) = tokio::io::duplex(1024);
 
@@ -529,11 +537,11 @@ async fn t_e2e_050_modem_startup_handshake() {
 
     // Simulate modem on the server side in a background task.
     let modem_task = tokio::spawn(async move {
-        let mut buf = [0u8; 64];
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 256];
 
         // 1. Read RESET frame.
-        let n = server.read(&mut buf).await.unwrap();
-        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
         assert!(
             matches!(msg, ModemMessage::Reset),
             "first message should be RESET"
@@ -548,8 +556,7 @@ async fn t_e2e_050_modem_startup_handshake() {
         server.write_all(&ready).await.unwrap();
 
         // 3. Read SET_CHANNEL.
-        let n = server.read(&mut buf).await.unwrap();
-        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
         let ch = match msg {
             ModemMessage::SetChannel(c) => c,
             other => panic!("expected SET_CHANNEL, got {:?}", other),
@@ -581,9 +588,9 @@ async fn t_e2e_051_modem_frame_round_trip() {
     use sonde_gateway::modem::UsbEspNowTransport;
     use sonde_gateway::transport::Transport;
     use sonde_protocol::modem::{
-        decode_modem_frame, encode_modem_frame, ModemMessage, ModemReady, RecvFrame,
+        encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, RecvFrame,
     };
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     let (client, mut server) = tokio::io::duplex(4096);
 
@@ -593,11 +600,11 @@ async fn t_e2e_051_modem_frame_round_trip() {
 
     // Simulate modem: startup handshake + frame echo.
     let modem_task = tokio::spawn(async move {
+        let mut decoder = FrameDecoder::new();
         let mut buf = [0u8; 1024];
 
         // Startup handshake.
-        let n = server.read(&mut buf).await.unwrap();
-        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
         assert!(matches!(msg, ModemMessage::Reset));
 
         let ready = encode_modem_frame(&ModemMessage::ModemReady(ModemReady {
@@ -607,8 +614,7 @@ async fn t_e2e_051_modem_frame_round_trip() {
         .unwrap();
         server.write_all(&ready).await.unwrap();
 
-        let n = server.read(&mut buf).await.unwrap();
-        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
         let ch = match msg {
             ModemMessage::SetChannel(c) => c,
             other => panic!("expected SET_CHANNEL, got {:?}", other),
@@ -617,8 +623,7 @@ async fn t_e2e_051_modem_frame_round_trip() {
         server.write_all(&ack).await.unwrap();
 
         // Read SEND_FRAME from gateway transport.
-        let n = server.read(&mut buf).await.unwrap();
-        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
         let frame_data = match msg {
             ModemMessage::SendFrame(sf) => {
                 assert_eq!(sf.peer_mac, peer_mac, "peer MAC should match");

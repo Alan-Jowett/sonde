@@ -105,6 +105,8 @@ pub const PAIRING_MSG_PAIRING_READY: u8 = 0x9F;
 // -- Pairing status codes --
 
 pub const PAIRING_STATUS_SUCCESS: u8 = 0x00;
+/// In `PAIR_ACK`: node is already paired. In `IDENTITY_RESPONSE`: node is unpaired.
+/// The value 0x01 is reused across message types with different semantics.
 pub const PAIRING_STATUS_ALREADY_PAIRED: u8 = 0x01;
 pub const PAIRING_STATUS_WRITE_ERROR: u8 = 0x02;
 pub const PAIRING_STATUS_UNPAIRED: u8 = 0x01;
@@ -319,10 +321,12 @@ pub struct ResetAck {
 }
 
 /// IDENTITY_RESPONSE (Node → Host): current pairing state.
+/// Uses an enum to make invalid states unrepresentable — a paired
+/// response always carries a key_hint.
 #[derive(Debug, Clone, PartialEq)]
-pub struct IdentityResponse {
-    pub paired: bool,
-    pub key_hint: Option<u16>,
+pub enum IdentityResponse {
+    Paired { key_hint: u16 },
+    Unpaired,
 }
 
 /// PAIRING_READY (Node → Host): node entered pairing mode.
@@ -446,20 +450,18 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
         ModemMessage::IdentityRequest => Ok((PAIRING_MSG_IDENTITY_REQUEST, Vec::new())),
         ModemMessage::PairAck(pa) => Ok((PAIRING_MSG_PAIR_ACK, alloc::vec![pa.status])),
         ModemMessage::ResetAck(ra) => Ok((PAIRING_MSG_RESET_ACK, alloc::vec![ra.status])),
-        ModemMessage::IdentityResponse(ir) => {
-            if ir.paired {
-                let kh = ir.key_hint.unwrap_or(0);
+        ModemMessage::IdentityResponse(ir) => match ir {
+            IdentityResponse::Paired { key_hint } => {
                 let mut body = Vec::with_capacity(3);
                 body.push(PAIRING_STATUS_SUCCESS);
-                body.extend_from_slice(&kh.to_be_bytes());
+                body.extend_from_slice(&key_hint.to_be_bytes());
                 Ok((PAIRING_MSG_IDENTITY_RESPONSE, body))
-            } else {
-                Ok((
-                    PAIRING_MSG_IDENTITY_RESPONSE,
-                    alloc::vec![PAIRING_STATUS_UNPAIRED],
-                ))
             }
-        }
+            IdentityResponse::Unpaired => Ok((
+                PAIRING_MSG_IDENTITY_RESPONSE,
+                alloc::vec![PAIRING_STATUS_UNPAIRED],
+            )),
+        },
         ModemMessage::PairingReady(pr) => {
             let mut body = Vec::with_capacity(4);
             body.extend_from_slice(&pr.firmware_version.to_be_bytes());
@@ -719,31 +721,33 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
         }
 
         PAIRING_MSG_IDENTITY_RESPONSE => {
-            if body.len() == 1 {
-                // Unpaired: status = 0x01
-                Ok(ModemMessage::IdentityResponse(IdentityResponse {
-                    paired: false,
-                    key_hint: None,
-                }))
-            } else if body.len() == 3 {
-                // Paired: status = 0x00, key_hint 2B BE
-                let key_hint = u16::from_be_bytes([body[1], body[2]]);
-                Ok(ModemMessage::IdentityResponse(IdentityResponse {
-                    paired: true,
-                    key_hint: Some(key_hint),
-                }))
-            } else if body.is_empty() {
-                Err(ModemCodecError::BodyTooShort {
+            if body.is_empty() {
+                return Err(ModemCodecError::BodyTooShort {
                     msg_type,
                     expected_min: 1,
                     actual: 0,
-                })
-            } else {
-                Err(ModemCodecError::BodyTooLong {
+                });
+            }
+            let status = body[0];
+            match status {
+                PAIRING_STATUS_SUCCESS => {
+                    // Paired: status(1B) + key_hint(2B BE) = 3 bytes
+                    check_exact_body(msg_type, body, 3)?;
+                    let key_hint = u16::from_be_bytes([body[1], body[2]]);
+                    Ok(ModemMessage::IdentityResponse(IdentityResponse::Paired {
+                        key_hint,
+                    }))
+                }
+                PAIRING_STATUS_UNPAIRED => {
+                    // Unpaired: status(1B) = 1 byte
+                    check_exact_body(msg_type, body, 1)?;
+                    Ok(ModemMessage::IdentityResponse(IdentityResponse::Unpaired))
+                }
+                // Unknown status — treat as Unknown for forward compatibility
+                _ => Ok(ModemMessage::Unknown {
                     msg_type,
-                    expected_max: 3,
-                    actual: body.len(),
-                })
+                    body: body.to_vec(),
+                }),
             }
         }
 
@@ -1368,10 +1372,7 @@ mod tests {
 
     #[test]
     fn round_trip_identity_response_paired() {
-        let msg = ModemMessage::IdentityResponse(IdentityResponse {
-            paired: true,
-            key_hint: Some(0x00FF),
-        });
+        let msg = ModemMessage::IdentityResponse(IdentityResponse::Paired { key_hint: 0x00FF });
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, _) = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
@@ -1379,10 +1380,7 @@ mod tests {
 
     #[test]
     fn round_trip_identity_response_unpaired() {
-        let msg = ModemMessage::IdentityResponse(IdentityResponse {
-            paired: false,
-            key_hint: None,
-        });
+        let msg = ModemMessage::IdentityResponse(IdentityResponse::Unpaired);
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, _) = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);

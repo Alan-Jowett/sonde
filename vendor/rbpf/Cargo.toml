@@ -1,0 +1,77 @@
+# Patched local copy of rbpf 0.4.1 with `combine`/assembler made optional.
+# Original: https://github.com/qmonnet/rbpf (Apache-2.0 OR MIT)
+# Changes: `combine` is now an optional dependency gated behind the `assembler`
+# feature. The `asm_parser` and `assembler` modules are likewise conditional.
+# This removes the `combine` parser-combinator crate from firmware builds that
+# only need the interpreter (EbpfVmRaw::new + execute_program), cutting
+# significant binary size.
+
+[package]
+edition = "2024"
+name = "rbpf"
+version = "0.4.1"
+authors = ["Quentin Monnet <qmo@qmon.net>"]
+description = "Virtual machine and JIT compiler for eBPF programs"
+readme = "README.md"
+keywords = ["BPF", "eBPF", "interpreter", "JIT", "filtering"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/qmonnet/rbpf"
+
+[features]
+# Enable the BPF assembler (text → bytecode). Pulls in `combine`.
+assembler = ["dep:combine"]
+cranelift = [
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-jit",
+    "dep:cranelift-native",
+    "dep:cranelift-module",
+]
+default = ["std"]
+std = ["combine?/std"]
+
+[lib]
+name = "rbpf"
+path = "src/lib.rs"
+
+[dependencies.byteorder]
+version = "1.5"
+default-features = false
+
+[dependencies.combine]
+version = "4.6"
+default-features = false
+optional = true
+
+[dependencies.cranelift-codegen]
+version = "0.127"
+optional = true
+
+[dependencies.cranelift-frontend]
+version = "0.127"
+optional = true
+
+[dependencies.cranelift-jit]
+version = "0.127"
+optional = true
+
+[dependencies.cranelift-module]
+version = "0.127"
+optional = true
+
+[dependencies.cranelift-native]
+version = "0.127"
+optional = true
+
+[dependencies.hashbrown]
+version = "0.16"
+features = ["default-hasher"]
+default-features = false
+
+[dependencies.libc]
+version = "0.2"
+optional = true
+
+[dependencies.log]
+version = "0.4"
+default-features = false

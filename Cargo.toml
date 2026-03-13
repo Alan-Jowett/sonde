@@ -12,3 +12,10 @@ default-members = [
     "crates/sonde-gateway",
     "crates/sonde-admin",
 ]
+
+# Patch rbpf to make the `assembler` module (and its `combine` dependency)
+# optional behind an `assembler` feature flag. The node firmware only uses
+# the interpreter path (EbpfVmRaw), so this removes the parser-combinator
+# crate from the firmware dependency tree.
+[patch.crates-io]
+rbpf = { path = "vendor/rbpf" }

@@ -106,7 +106,7 @@ impl EspNowTransport {
             .map_err(|e| NodeError::Transport(format!("add peer: {:?}", e)))?;
 
         // Set up receive callback
-        let rx_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let rx_queue = Arc::new(Mutex::new(VecDeque::with_capacity(16)));
         let rx_condvar = Arc::new(Condvar::new());
         RECV_STATE
             .set(RecvState {

@@ -182,7 +182,9 @@ impl crate::traits::PlatformStorage for NvsStorage {
     fn take_early_wake_flag(&mut self) -> bool {
         let flag = self.nvs.get_u32("early_wake").ok().flatten().unwrap_or(0);
         if flag != 0 {
-            let _ = self.nvs.set_u32("early_wake", 0);
+            if let Err(e) = self.nvs.set_u32("early_wake", 0) {
+                log::warn!("failed to clear early_wake flag: {:?}", e);
+            }
             true
         } else {
             false

@@ -189,6 +189,8 @@ fn mem_store<const N: usize>(
 
 Atomic read-modify-write operations (ADD, OR, AND, XOR, XCHG, CMPXCHG) are routed through a third choke-point function that performs the bounds check once, then does the read-modify-write in a single `unsafe` block.  The signature mirrors the current `execute_atomic32` / `execute_atomic64` but accepts a `&TaggedReg` for address validation.
 
+> **Concurrency model:** BPF programs execute single-threaded — only one program runs at a time on a given interpreter instance.  The "atomic" operations implement the RFC 9669 instruction semantics (§5.3) but are emulated as non-atomic `read_unaligned` / `write_unaligned` sequences.  This is correct for single-threaded execution.  If a future interpreter needs to support concurrent BPF-to-BPF execution with shared map memory, these operations would need to use `core::sync::atomic` or equivalent hardware atomics.
+
 The same pre-checks apply as for `mem_store`: scalars and `MapDescriptor` are rejected via `NonDereferenceableAccess`, and `Context` (read-only) is rejected via `ReadOnlyWrite`.
 
 ### 3.4  Unsafe budget
@@ -399,7 +401,7 @@ struct SpillEntry {
 const MAX_SPILL_SLOTS: usize = 32;
 ```
 
-**Total overhead:** 64 (bitmap) + (32 × 32 = 1,024 entries with alignment) + 1 (count) ≈ **1,089 bytes** — well within the interpreter's stack budget.
+**Total overhead:** 64 B (bitmap) + (32 entries × 32 B each = 1,024 B) + 1 B (count) ≈ **1,089 bytes** — well within the interpreter's stack budget.
 
 ### 6.3  Operations
 
@@ -446,7 +448,7 @@ struct CallFrame {
 }
 ```
 
-On BPF-to-BPF CALL: save `reg[6..10]` values *and* regions.  
+On BPF-to-BPF CALL: save R6–R9 values *and* regions.  
 On EXIT: restore both.
 
 The frame pointer R10 always carries the `Stack` tag.  Its `base` and `end` span the entire stack allocation and do not change across call frames — only the `value` (which moves by `STACK_SIZE_PER_FRAME` per frame) changes.

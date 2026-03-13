@@ -3,7 +3,7 @@
 
 //! USB pairing handler for the node firmware.
 //!
-//! Listens for pairing commands over a serial transport and dispatches
+//! Handles pairing commands received over a serial transport. Dispatches
 //! to [`KeyStore`] operations. Reuses `sonde-protocol`'s modem codec framing.
 
 use sonde_protocol::modem::{

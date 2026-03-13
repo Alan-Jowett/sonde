@@ -261,7 +261,7 @@ fn run_usb(action: &UsbAction) -> Result<(), String> {
         } => {
             let kh = parse_key_hint(key_hint)?;
             let psk_bytes = hex::decode(psk).map_err(|e| format!("invalid PSK hex: {e}"))?;
-            if psk_bytes.len() != 32 {
+            if psk_bytes.len() != sonde_protocol::modem::PSK_SIZE {
                 return Err(format!(
                     "PSK must be exactly 32 bytes (64 hex chars), got {} bytes",
                     psk_bytes.len()

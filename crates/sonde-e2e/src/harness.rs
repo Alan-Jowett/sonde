@@ -159,7 +159,7 @@ impl NodeProxy {
 
     /// Like [`run_wake_cycle`] but accepts a caller-supplied BPF interpreter.
     ///
-    /// Use this with [`sonde_node::rbpf_adapter::RbpfInterpreter`] when the
+    /// Use this with [`sonde_node::sonde_bpf_adapter::SondeBpfInterpreter`] when the
     /// test requires real BPF program execution (e.g. APP_DATA helpers).
     pub fn run_wake_cycle_with(
         &mut self,
@@ -505,7 +505,12 @@ impl BpfInterpreter for MockBpfInterpreter {
     fn register_helper(&mut self, _id: u32, _func: HelperFn) -> Result<(), BpfError> {
         Ok(())
     }
-    fn load(&mut self, _bytecode: &[u8], _map_ptrs: &[u64]) -> Result<(), BpfError> {
+    fn load(
+        &mut self,
+        _bytecode: &[u8],
+        _map_ptrs: &[u64],
+        _map_defs: &[sonde_protocol::MapDef],
+    ) -> Result<(), BpfError> {
         self.loaded = true;
         Ok(())
     }

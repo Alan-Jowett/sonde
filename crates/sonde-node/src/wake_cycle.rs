@@ -18,7 +18,7 @@ use crate::error::{NodeError, NodeResult};
 use crate::hal::{BatteryReader, Hal};
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
-use crate::program_store::{resolve_map_references, LoadedProgram, ProgramStore};
+use crate::program_store::{LoadedProgram, ProgramStore};
 use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
 use crate::FIRMWARE_ABI_VERSION;
@@ -259,7 +259,7 @@ where
         loaded_program = program_store.load_active(sha);
     }
 
-    if let Some(mut program) = loaded_program {
+    if let Some(program) = loaded_program {
         let program_class = if program.is_ephemeral {
             ProgramClass::Ephemeral
         } else {
@@ -294,13 +294,9 @@ where
             }
         }
 
-        // Resolve LDDW map references.
+        // Clone map pointers — the borrow on map_storage must be released
+        // before bpf_dispatch::install() takes a mutable raw pointer to it.
         let map_ptrs = map_storage.map_pointers().to_vec();
-        if resolve_map_references(&mut program.bytecode, &map_ptrs).is_err() {
-            return WakeCycleOutcome::Sleep {
-                seconds: sleep_mgr.effective_sleep_s(),
-            };
-        }
 
         // Build execution context
         let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
@@ -344,16 +340,32 @@ where
         let _guard = crate::bpf_dispatch::DispatchGuard;
 
         let exec_result = match crate::bpf_dispatch::register_all(interpreter) {
-            Ok(()) => match interpreter.load(&program.bytecode, &map_ptrs) {
-                Ok(()) => {
-                    let ctx_ptr = &ctx as *const SondeContext as u64;
-                    interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
+            Ok(()) => {
+                // Ephemeral programs don't declare their own maps but can
+                // access the resident program's maps (read-only).  Derive
+                // map metadata from the current MapStorage allocation only
+                // when needed to avoid per-cycle allocation for resident programs.
+                let load_defs_owned;
+                let (load_ptrs, load_defs): (&[u64], &[sonde_protocol::MapDef]) =
+                    if program.map_defs.is_empty() && map_storage.map_count() > 0 {
+                        load_defs_owned = (0..map_storage.map_count())
+                            .filter_map(|i| map_storage.get(i).map(|m| m.def.clone()))
+                            .collect::<Vec<_>>();
+                        (&map_ptrs, &load_defs_owned)
+                    } else {
+                        (&map_ptrs, &program.map_defs)
+                    };
+                match interpreter.load(&program.bytecode, load_ptrs, load_defs) {
+                    Ok(()) => {
+                        let ctx_ptr = &ctx as *const SondeContext as u64;
+                        interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
+                    }
+                    Err(err) => {
+                        log::error!("BPF program load failed: {}", err);
+                        Err(err)
+                    }
                 }
-                Err(err) => {
-                    log::error!("BPF program load failed: {}", err);
-                    Err(err)
-                }
-            },
+            }
             Err(err) => {
                 log::error!("BPF helper registration failed: {}", err);
                 Err(err)
@@ -1136,7 +1148,12 @@ mod tests {
         ) -> Result<(), BpfError> {
             Ok(())
         }
-        fn load(&mut self, _bytecode: &[u8], _map_ptrs: &[u64]) -> Result<(), BpfError> {
+        fn load(
+            &mut self,
+            _bytecode: &[u8],
+            _map_ptrs: &[u64],
+            _map_defs: &[sonde_protocol::MapDef],
+        ) -> Result<(), BpfError> {
             self.loaded = true;
             Ok(())
         }

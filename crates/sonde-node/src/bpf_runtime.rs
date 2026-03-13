@@ -18,6 +18,9 @@ pub enum BpfError {
     HelperNotRegistered(u32),
     /// Error during program loading.
     LoadError(String),
+    /// Runtime error during BPF execution (memory violation, pointer
+    /// arithmetic error, etc.).
+    RuntimeError(String),
 }
 
 impl core::fmt::Display for BpfError {
@@ -28,6 +31,7 @@ impl core::fmt::Display for BpfError {
             BpfError::InvalidBytecode(msg) => write!(f, "invalid bytecode: {}", msg),
             BpfError::HelperNotRegistered(id) => write!(f, "helper {} not registered", id),
             BpfError::LoadError(msg) => write!(f, "load error: {}", msg),
+            BpfError::RuntimeError(msg) => write!(f, "runtime error: {}", msg),
         }
     }
 }
@@ -36,7 +40,7 @@ impl std::error::Error for BpfError {}
 
 /// BPF interpreter abstraction.
 ///
-/// Both rbpf and uBPF can implement this trait. The choice of interpreter
+/// Both sonde-bpf and uBPF can implement this trait. The choice of interpreter
 /// backend does not affect the rest of the firmware design.
 pub trait BpfInterpreter {
     /// Register a helper function by call number.
@@ -49,21 +53,29 @@ pub trait BpfInterpreter {
     ///   16=bpf_trace_printk
     fn register_helper(&mut self, id: u32, func: HelperFn) -> Result<(), BpfError>;
 
-    /// Load pre-relocated BPF bytecode.
+    /// Load BPF bytecode with map metadata.
     ///
-    /// The caller (e.g. `run_wake_cycle` via `resolve_map_references`) is
-    /// responsible for resolving all LDDW `src=1` map references before
-    /// calling this method. Implementations MUST NOT attempt LDDW `src=1`
-    /// relocation themselves.
+    /// The bytecode may contain unrelocated LDDW `src=1` map reference
+    /// instructions. The implementation is responsible for handling these
+    /// (either by pre-relocating or by supporting them at runtime).
     ///
-    /// `map_ptrs` maps `map_index → runtime pointer` for use by the
-    /// interpreter during execution (e.g. to back map helper calls).
-    fn load(&mut self, bytecode: &[u8], map_ptrs: &[u64]) -> Result<(), BpfError>;
+    /// `map_ptrs` maps `map_index → runtime pointer` for the backing
+    /// storage of each map.
+    ///
+    /// `map_defs` carries the corresponding [`sonde_protocol::MapDef`]
+    /// entries so the backend can compute region sizes for bounds checking.
+    fn load(
+        &mut self,
+        bytecode: &[u8],
+        map_ptrs: &[u64],
+        map_defs: &[sonde_protocol::MapDef],
+    ) -> Result<(), BpfError>;
 
     /// Execute the loaded program.
     ///
     /// `ctx_ptr` is a pointer to the `SondeContext` struct, passed as R1.
-    /// `instruction_budget` limits execution; returns the program's return
-    /// value (R0) or an error if budget/call-depth is exceeded.
+    /// `instruction_budget` is a hint for limiting execution.  Not all
+    /// backends enforce this — see implementation docs.  Returns the
+    /// program's return value (R0) or an error.
     fn execute(&mut self, ctx_ptr: u64, instruction_budget: u64) -> Result<u64, BpfError>;
 }

@@ -680,11 +680,11 @@ async fn t_e2e_051_modem_frame_round_trip() {
 /// an APP_DATA frame. The gateway accepts the frame (no handler configured,
 /// so it is silently discarded). The node does not wait for a reply.
 ///
-/// Uses the real `RbpfInterpreter` to execute BPF bytecode that calls
+/// Uses the real `SondeBpfInterpreter` to execute BPF bytecode that calls
 /// the `send()` helper, triggering the full APP_DATA dispatch path.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_031_app_data_fire_and_forget() {
-    use sonde_node::rbpf_adapter::RbpfInterpreter;
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
     let env = E2eTestEnv::new();
     let psk = [0x31; 32];
@@ -701,7 +701,7 @@ async fn t_e2e_031_app_data_fire_and_forget() {
 
     // Use the real BPF interpreter.
     let mut node = NodeProxy::new(1, psk);
-    let mut interpreter = RbpfInterpreter::new();
+    let mut interpreter = SondeBpfInterpreter::new();
     let stats = node.run_wake_cycle_with(&env, &mut interpreter);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
@@ -724,11 +724,11 @@ async fn t_e2e_031_app_data_fire_and_forget() {
 /// a reply from a handler subprocess. The stub handler echoes back
 /// `[0xCC, 0xDD]` for any incoming data.
 ///
-/// Uses the real `RbpfInterpreter` and a real `HandlerRouter` wired to
+/// Uses the real `SondeBpfInterpreter` and a real `HandlerRouter` wired to
 /// the `stub_handler` binary built alongside this crate.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_030_app_data_round_trip() {
-    use sonde_node::rbpf_adapter::RbpfInterpreter;
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
     // Locate the stub_handler binary (built alongside the test).
     let stub = env!("CARGO_BIN_EXE_stub_handler");
@@ -779,7 +779,7 @@ async fn t_e2e_030_app_data_round_trip() {
         .write_program(0, &program.image)
         .expect("write program to node storage");
 
-    let mut interpreter = RbpfInterpreter::new();
+    let mut interpreter = SondeBpfInterpreter::new();
     let stats = node.run_wake_cycle_with(&env, &mut interpreter);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });

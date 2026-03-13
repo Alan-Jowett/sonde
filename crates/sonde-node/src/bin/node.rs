@@ -28,8 +28,20 @@ fn main() {
     info!("firmware ABI version: {}", sonde_node::FIRMWARE_ABI_VERSION);
     info!("sonde-node ready");
 
-    // Idle loop — the wake cycle engine will be invoked here once
-    // the platform trait implementations are complete.
+    // Platform crypto (available on all targets).
+    let _hmac = sonde_node::crypto::SoftwareHmac;
+    let _sha256 = sonde_node::crypto::SoftwareSha256;
+
+    // Platform trait implementations (ESP-only):
+    //   let rng = sonde_node::crypto::EspRng;
+    //   let transport = sonde_node::esp_transport::EspNowTransport::new()?;
+    //   let storage = sonde_node::esp_storage::NvsStorage::new()?;
+    //   let sleep_ctrl = sonde_node::esp_sleep::EspSleepController;
+    //
+    // Wire these into WakeCycleEngine once the stubs are implemented.
+
+    // Idle loop — replaced by wake-cycle engine once platform
+    // implementations are complete.
     loop {
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }

@@ -17,6 +17,7 @@ pub mod esp_transport;
 pub mod hal;
 pub mod key_store;
 pub mod map_storage;
+pub mod pairing;
 pub mod program_store;
 pub mod rbpf_adapter;
 pub mod sleep;

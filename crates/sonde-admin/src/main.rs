@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
+use sonde_admin::usb;
 
 #[derive(Parser)]
 #[command(name = "sonde-admin", about = "Sonde gateway administration CLI")]
@@ -84,6 +85,11 @@ enum Commands {
     Modem {
         #[command(subcommand)]
         action: ModemAction,
+    },
+    /// USB pairing operations (direct node connection).
+    Usb {
+        #[command(subcommand)]
+        action: UsbAction,
     },
 }
 
@@ -183,9 +189,44 @@ enum ModemAction {
     Scan,
 }
 
+#[derive(Subcommand)]
+enum UsbAction {
+    /// Pair a node via USB.
+    Pair {
+        /// Serial port (e.g., COM5, /dev/ttyACM0).
+        port: String,
+        /// Key hint (decimal or 0x hex).
+        #[arg(long)]
+        key_hint: String,
+        /// 32-byte PSK as hex string (64 hex characters).
+        #[arg(long)]
+        psk: String,
+    },
+    /// Factory reset a node via USB.
+    FactoryReset {
+        /// Serial port.
+        port: String,
+    },
+    /// Query node identity via USB.
+    Identity {
+        /// Serial port.
+        port: String,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // USB commands operate locally — no gateway connection needed.
+    if let Commands::Usb { action } = &cli.command {
+        let result = run_usb(action);
+        if let Err(e) = result {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
+        return;
+    }
 
     let mut client = match AdminClient::connect(&cli.socket).await {
         Ok(c) => c,
@@ -199,6 +240,39 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("Error: {e}");
         process::exit(1);
+    }
+}
+
+fn parse_key_hint(s: &str) -> Result<u16, String> {
+    if let Some(hex_str) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u16::from_str_radix(hex_str, 16).map_err(|e| format!("invalid key_hint hex: {e}"))
+    } else {
+        s.parse::<u16>()
+            .map_err(|e| format!("invalid key_hint: {e}"))
+    }
+}
+
+fn run_usb(action: &UsbAction) -> Result<(), String> {
+    match action {
+        UsbAction::Pair {
+            port,
+            key_hint,
+            psk,
+        } => {
+            let kh = parse_key_hint(key_hint)?;
+            let psk_bytes = hex::decode(psk).map_err(|e| format!("invalid PSK hex: {e}"))?;
+            if psk_bytes.len() != 32 {
+                return Err(format!(
+                    "PSK must be exactly 32 bytes (64 hex chars), got {} bytes",
+                    psk_bytes.len()
+                ));
+            }
+            let mut psk_arr = [0u8; 32];
+            psk_arr.copy_from_slice(&psk_bytes);
+            usb::pair_node(port, kh, psk_arr)
+        }
+        UsbAction::FactoryReset { port } => usb::factory_reset_node(port),
+        UsbAction::Identity { port } => usb::query_identity(port),
     }
 }
 
@@ -473,6 +547,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
         },
+
+        // USB commands are handled before the gRPC client is connected.
+        Commands::Usb { .. } => unreachable!(),
     }
 
     Ok(())

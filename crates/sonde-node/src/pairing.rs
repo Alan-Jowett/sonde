@@ -76,11 +76,14 @@ pub fn handle_pairing_message<S: PlatformStorage>(
 }
 
 /// Build a `PAIRING_READY` frame.
-pub fn pairing_ready_frame() -> Vec<u8> {
+///
+/// Returns `None` if encoding fails (should not happen for this
+/// fixed-size message, but avoids panicking the firmware).
+pub fn pairing_ready_frame() -> Option<Vec<u8>> {
     let msg = ModemMessage::PairingReady(PairingReady {
         firmware_version: FIRMWARE_ABI_VERSION,
     });
-    encode_modem_frame(&msg).expect("PairingReady encode cannot fail")
+    encode_modem_frame(&msg).ok()
 }
 
 #[cfg(test)]
@@ -262,7 +265,7 @@ mod tests {
 
     #[test]
     fn pairing_ready_frame_round_trips() {
-        let frame = pairing_ready_frame();
+        let frame = pairing_ready_frame().expect("encoding should succeed in tests");
         let msg = decode_response(&frame);
         assert_eq!(
             msg,

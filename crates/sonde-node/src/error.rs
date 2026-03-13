@@ -59,7 +59,12 @@ impl fmt::Display for NodeError {
             NodeError::MalformedPayload(msg) => write!(f, "malformed payload: {}", msg),
             NodeError::Transport(msg) => write!(f, "transport error: {}", msg),
             NodeError::Unpaired => write!(f, "node is unpaired (no PSK)"),
-            NodeError::AlreadyPaired => write!(f, "node is already paired"),
+            NodeError::AlreadyPaired => {
+                write!(
+                    f,
+                    "node is already paired; factory reset required before re-pairing"
+                )
+            }
             NodeError::ProgramHashMismatch => write!(f, "program hash mismatch"),
             NodeError::ProgramDecodeFailed(msg) => write!(f, "program decode failed: {}", msg),
             NodeError::MapBudgetExceeded {

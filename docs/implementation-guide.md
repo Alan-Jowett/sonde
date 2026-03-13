@@ -160,7 +160,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 **Validation:** [protocol-crate-validation.md](protocol-crate-validation.md) (41 tests)  
 **Runtime dependencies:** `ciborium` only. **Dev-dependencies (for tests):** `hmac`, `sha2`.
 
-**Status:** Complete. 43 tests pass (41 validation + 2 modem codec tests).
+**Status:** Complete. All tests pass (`cargo test -p sonde-protocol`): 41 validation tests plus 43 modem codec tests.
 
 **Module order:**
 
@@ -179,7 +179,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 
 **Test HMAC/SHA providers:** Implement a software `HmacProvider` and `Sha256Provider` using `hmac`, `sha2` crates in `#[cfg(test)]` for running the protocol crate's own tests.
 
-**Exit criteria:** `cargo test -p sonde-protocol` passes all 43 tests. ✅
+**Exit criteria:** `cargo test -p sonde-protocol` — all tests pass. ✅
 
 ---
 
@@ -349,7 +349,7 @@ The admin CLI connects to the gateway via a local socket: Unix domain socket on 
 **Requirements:** [modem-requirements.md](modem-requirements.md) (17 requirements, MD-0100 to MD-0303)
 **Dependencies:** `sonde-protocol` (modem codec), `esp-idf-hal`, `esp-idf-svc`.
 
-**Status:** Complete. All 6 modules implemented. 36+ tests pass (18 bridge, 6 peer table, 10 status, plus 10 integration tests). Binary entry point is `src/bin/modem.rs`.
+**Status:** Complete. All 6 modules implemented. 36 tests pass in the default `cargo test -p sonde-modem` run (19 bridge, 6 peer table, 11 status). Additional hardware integration tests in `tests/device_tests.rs` are behind `#[cfg(feature = "device-tests")]` and are not included in the default CI run. Binary entry point is `src/bin/modem.rs`.
 
 **Module order:**
 
@@ -425,17 +425,15 @@ The admin CLI connects to the gateway via a local socket: Unix domain socket on 
 # Build everything
 cargo build --workspace
 
-# Test protocol crate (Phase 1 — runs anywhere, 43 tests)
-cargo test -p sonde-protocol
+# Test everything (what CI runs)
+cargo test --workspace
 
-# Test gateway (Phase 2 — runs anywhere, uses mocks, 106 tests)
-cargo test -p sonde-gateway
-
-# Test node firmware (Phase 3 — host-based, 101 tests)
-cargo test -p sonde-node
-
-# Test BPF interpreter (Phase 6 — runs anywhere, 38 tests)
-cargo test -p sonde-bpf
+# Test individual crates
+cargo test -p sonde-protocol    # 84 tests
+cargo test -p sonde-gateway     # 106 tests
+cargo test -p sonde-node        # 101 tests
+cargo test -p sonde-bpf         # 38 tests
+cargo test -p sonde-modem       # 36 tests
 
 # Build node firmware for ESP32-C3
 cargo build -p sonde-node --target riscv32imc-esp-espidf
@@ -452,18 +450,20 @@ cargo build -p sonde-admin
 
 ### 4.1  CI pipeline
 
-The CI pipeline runs:
+The CI pipeline (`.github/workflows/ci.yml`) runs three jobs:
 
+**Job 1: Check, lint, and test**
 1. `cargo fmt --check --all` — formatting.
-2. `cargo clippy --workspace` — lint.
-3. `cargo test -p sonde-protocol` — protocol crate tests (43 tests).
-4. `cargo test -p sonde-gateway` — gateway tests (106 tests).
-5. `cargo test -p sonde-node` — node tests, host-based (101 tests).
-6. `cargo test -p sonde-bpf` — BPF interpreter tests (38 tests).
-7. `cargo test -p sonde-modem` — modem tests, host-based (36 tests).
-8. `cargo build -p sonde-admin` — admin CLI compiles.
+2. `cargo clippy --workspace -- -D warnings` — lint (warnings are errors).
+3. `cargo build --workspace` — build all crates.
+4. `cargo test --workspace` — run all tests across all crates.
 
-Node and modem firmware cross-compilation and hardware-in-the-loop tests run in a separate CI stage.
+**Job 2: BPF conformance (RFC 9669)**
+1. Build the `sonde_bpf_plugin` binary.
+2. Run the `bpf_conformance` test suite via Docker against the plugin.
+
+**Job 3: Fuzz test (protocol crate)**
+1. Fuzz `decode_frame`, `node_message`, `gateway_message`, and `program_image` targets (30s each).
 
 ---
 

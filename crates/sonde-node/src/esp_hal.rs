@@ -24,13 +24,10 @@ impl crate::traits::Clock for EspClock {
         std::thread::sleep(std::time::Duration::from_millis(ms as u64));
     }
 
-    fn delay_us(&self, us: u32) {
-        // Use the ROM busy-wait for true microsecond precision.
-        // std::thread::sleep rounds to FreeRTOS ticks (~1ms).
-        unsafe {
-            esp_idf_sys::ets_delay_us(us);
-        }
-    }
+    // delay_us: use the default trait implementation (rounds up to ms).
+    // ESP-IDF's ets_delay_us is not reliably exported by esp-idf-sys
+    // across all target versions. The default is sufficient for BPF
+    // helper use cases where sub-ms precision is best-effort.
 }
 
 /// Stub HAL — returns errors for all bus operations.

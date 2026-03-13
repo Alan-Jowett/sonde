@@ -52,15 +52,15 @@ All components run **in a single process** within one tokio runtime. No external
 
 ### 2.1  Gateway side
 
-- **Engine:** Real `Gateway` from `sonde-gateway::engine`. Tests that don't need APP_DATA handling use `Gateway::new_with_pending()`. Tests that exercise APP_DATA routing (T-E2E-030, T-E2E-031) use `Gateway::new_with_handler()` with an in-process mock handler, and queue commands via `Gateway::queue_command()`.
+- **Engine:** Real `Gateway` from `sonde_gateway::engine`. Tests that don't need APP_DATA handling use `Gateway::new_with_pending()`. Tests that exercise APP_DATA routing (T-E2E-030, T-E2E-031) use `Gateway::new_with_handler()` with a `HandlerRouter` configured to spawn a small stub executable (see below).
 - **Storage:** `SqliteStorage::in_memory()` for test isolation (no files).
 - **Transport:** `UsbEspNowTransport::new(duplex_client, channel)` — the gateway's modem adapter connected to the in-memory duplex stream.
 - **Admin:** Direct function calls on `Gateway` and `Storage` (no gRPC in E2E tests). Admin operations are exercised by calling storage/engine methods directly, avoiding the need for network sockets.
-- **Handler:** In-process mock handler (for T-E2E-030/031 only) that reads DATA messages and writes DATA_REPLY using the existing handler framing from `sonde-gateway::handler`.
+- **Handler:** The current `HandlerRouter` spawns external processes. For E2E tests, the handler is a minimal stub binary (built as a `[[bin]]` target in the E2E crate or as a test fixture) that reads DATA messages from stdin, writes DATA_REPLY to stdout, using the length-prefixed CBOR framing from `sonde_gateway::handler`. This keeps the test self-contained while exercising the real handler spawning and I/O path.
 
 ### 2.2  Modem bridge
 
-- **Bridge:** Real `Bridge` from `sonde-modem::bridge`, connecting a `PipeSerial` adapter to a `ChannelRadio`.
+- **Bridge:** Real `Bridge` from `sonde_modem::bridge`, connecting a `PipeSerial` adapter to a `ChannelRadio`.
 - **Serial adapter:** `PipeSerial` — a test-only `SerialPort` trait implementation backed by `std::sync::mpsc` channels (or a ring buffer). One side feeds the gateway's `UsbEspNowTransport` (via `tokio::io::duplex`), the other side feeds the bridge. Since `Bridge` uses the sync `SerialPort` trait (`read(&mut self, buf: &mut [u8]) → (usize, bool)`, `write(&mut self, data: &[u8]) → bool`) while `UsbEspNowTransport` uses `AsyncRead + AsyncWrite`, an adapter bridges the two worlds:
   - The `tokio::io::duplex` server half is driven by a background tokio task that reads bytes and pushes them into a ring buffer; the `PipeSerial::read()` drains from that buffer.
   - `PipeSerial::write()` pushes bytes into another ring buffer that the tokio task reads and writes to the duplex stream.
@@ -69,9 +69,9 @@ All components run **in a single process** within one tokio runtime. No external
 
 ### 2.3  Node mock
 
-- **Engine:** Real `run_wake_cycle()` from `sonde-node::wake_cycle`.
+- **Engine:** Real `run_wake_cycle()` from `sonde_node::wake_cycle`.
 - **Transport:** `ChannelTransport` — a test-only `Transport` implementation backed by the same `mpsc` channels as the `ChannelRadio`, simulating ESP-NOW send/recv.
-- **Platform mocks:** The E2E crate provides its own mock implementations of the node platform traits (matching the signatures in `sonde-node::traits`). These are simple re-implementations since the `#[cfg(test)]` mocks in `sonde-node` are not exported:
+- **Platform mocks:** The E2E crate provides its own mock implementations of the node platform traits (matching the signatures in `sonde_node::traits`). These are simple re-implementations since the `#[cfg(test)]` mocks in `sonde-node` are not exported:
   - `MockHal` — returns configurable I2C/SPI/GPIO/ADC data.
   - `MockStorage` (PlatformStorage) — in-memory key/program/schedule storage.
   - `MockBpfInterpreter` — records load/execute calls.
@@ -106,7 +106,7 @@ struct ChannelRadio {
 /// Node-side transport backed by the same channels.
 ///
 /// Uses `std::sync::mpsc` with `recv_timeout()` to implement the
-/// synchronous `sonde-node::traits::Transport::recv(timeout_ms)` contract.
+/// synchronous `sonde_node::traits::Transport::recv(timeout_ms)` contract.
 struct ChannelTransport {
     /// Frames from the gateway (via ChannelRadio).
     rx: std::sync::mpsc::Receiver<(Vec<u8>, [u8; 6])>,
@@ -116,11 +116,11 @@ struct ChannelTransport {
 }
 ```
 
-The `ChannelRadio` implements `sonde-modem::bridge::Radio`:
+The `ChannelRadio` implements `sonde_modem::bridge::Radio`:
 - `send(&mut self, peer_mac, data)` → pushes to `to_node` sender.
 - `drain_rx(&self)` → locks `from_node` mutex, drains all pending frames as `Vec<RecvFrame>`.
 
-The `ChannelTransport` implements `sonde-node::traits::Transport` (synchronous):
+The `ChannelTransport` implements `sonde_node::traits::Transport` (synchronous):
 - `send(&mut self, frame)` → pushes to `tx` sender.
 - `recv(&mut self, timeout_ms)` → calls `rx.recv_timeout(Duration::from_millis(timeout_ms))`, returns `Ok(Some(data))` or `Ok(None)` on timeout.
 

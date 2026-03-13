@@ -190,7 +190,7 @@ Host                                Node
   │                                   │
   │            ◄── PAIRING_READY ──   │
   │                                   │
-  │── IDENTITY_REQUEST ──────────►    │  (get key_hint for gateway deregistration)
+  │── IDENTITY_REQUEST ──────────►    │  (confirm paired state)
   │            ◄── IDENTITY_RESPONSE  │
   │                                   │
   │── RESET_REQUEST ─────────────►    │  (erase all persistent state)
@@ -224,7 +224,7 @@ Host                                Node
 | Condition | Receiver behavior |
 |-----------|-------------------|
 | `len` = 0 | Silently discard. |
-| `len` > 512 | Framing error. Drain buffer, wait for `PAIRING_READY`. |
+| `len` > 512 | Framing error. Host: close and re-open port, wait for `PAIRING_READY`. Node: decoder buffer already cleared, continue reading. |
 | Unknown `type` | Silently discard (forward compatibility). |
 | `PAIR_REQUEST` body ≠ 34 bytes | Node silently discards. |
 

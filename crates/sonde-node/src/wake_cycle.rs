@@ -63,27 +63,22 @@ pub enum WakeCycleOutcome {
 /// so that map contents survive between wake cycles. This function only
 /// re-allocates maps when a new program is installed.
 #[allow(clippy::too_many_arguments)]
-pub fn run_wake_cycle<T, S, H, R, C, B, I, M>(
+pub fn run_wake_cycle<T, S, I>(
     transport: &mut T,
     storage: &mut S,
-    hal: &mut H,
-    rng: &mut R,
-    clock: &C,
-    battery: &B,
+    hal: &mut (dyn Hal + 'static),
+    rng: &mut dyn Rng,
+    clock: &(dyn Clock + 'static),
+    battery: &dyn BatteryReader,
     interpreter: &mut I,
     map_storage: &mut MapStorage,
-    hmac: &M,
-    sha: &impl Sha256Provider,
+    hmac: &(dyn HmacProvider + 'static),
+    sha: &dyn Sha256Provider,
 ) -> WakeCycleOutcome
 where
     T: Transport + 'static,
     S: PlatformStorage,
-    H: Hal + 'static,
-    R: Rng,
-    C: Clock + 'static,
-    B: BatteryReader + 'static,
     I: BpfInterpreter,
-    M: HmacProvider + 'static,
 {
     // 1. Load identity
     let identity = match storage.read_key() {
@@ -322,12 +317,12 @@ where
         // and will not be moved until `_guard` is dropped below.
         unsafe {
             crate::bpf_dispatch::install(
-                hal as *mut H as *mut dyn crate::hal::Hal,
+                hal as *mut dyn crate::hal::Hal,
                 transport as *mut T as *mut dyn crate::traits::Transport,
                 map_storage as *mut MapStorage,
                 &mut sleep_mgr as *mut SleepManager,
-                clock as *const C as *const dyn crate::traits::Clock,
-                hmac as *const M as *const dyn HmacProvider,
+                clock as *const dyn crate::traits::Clock,
+                hmac as *const dyn HmacProvider,
                 &identity as *const NodeIdentity,
                 &mut current_seq as *mut u64,
                 program_class,
@@ -406,14 +401,14 @@ fn determine_wake_reason<S: PlatformStorage>(storage: &mut S) -> WakeReason {
 /// Execute the WAKE/COMMAND exchange with retry logic.
 ///
 /// Returns `(starting_seq, timestamp_ms, CommandPayload)` on success.
-fn wake_command_exchange<T: Transport, C: Clock>(
+fn wake_command_exchange<T: Transport>(
     transport: &mut T,
     identity: &NodeIdentity,
     wake_nonce: u64,
     program_hash: &[u8],
     battery_mv: u32,
-    clock: &C,
-    hmac: &impl HmacProvider,
+    clock: &dyn Clock,
+    hmac: &dyn HmacProvider,
 ) -> NodeResult<(u64, u64, CommandPayload)> {
     let wake_msg = NodeMessage::Wake {
         firmware_abi_version: FIRMWARE_ABI_VERSION,
@@ -468,7 +463,7 @@ fn verify_and_decode_command(
     raw: &[u8],
     identity: &NodeIdentity,
     expected_nonce: u64,
-    hmac: &impl HmacProvider,
+    hmac: &dyn HmacProvider,
 ) -> NodeResult<(u64, u64, CommandPayload)> {
     let decoded = decode_frame(raw).map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
@@ -561,7 +556,7 @@ fn decode_command_as_nop(payload: &[u8]) -> NodeResult<(u64, u64, CommandPayload
 ///
 /// Returns the reassembled program image bytes on success.
 #[allow(clippy::too_many_arguments)]
-fn chunked_transfer<T: Transport, C: Clock>(
+fn chunked_transfer<T: Transport>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
@@ -569,8 +564,8 @@ fn chunked_transfer<T: Transport, C: Clock>(
     chunk_size: u32,
     chunk_count: u32,
     max_image_size: usize,
-    clock: &C,
-    hmac: &impl HmacProvider,
+    clock: &dyn Clock,
+    hmac: &dyn HmacProvider,
 ) -> NodeResult<Vec<u8>> {
     let program_size_usize = program_size as usize;
     let chunk_size_usize = chunk_size as usize;
@@ -635,13 +630,13 @@ fn chunked_transfer<T: Transport, C: Clock>(
 /// Each retry attempt uses a fresh sequence number, since the gateway
 /// may have received (and advanced past) the prior attempt's seq even
 /// though the response was lost.
-fn get_chunk_with_retry<T: Transport, C: Clock>(
+fn get_chunk_with_retry<T: Transport>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
     chunk_index: u32,
-    clock: &C,
-    hmac: &impl HmacProvider,
+    clock: &dyn Clock,
+    hmac: &dyn HmacProvider,
 ) -> NodeResult<Vec<u8>> {
     let get_chunk_msg = NodeMessage::GetChunk { chunk_index };
     let payload_cbor = get_chunk_msg
@@ -693,7 +688,7 @@ fn verify_and_decode_chunk(
     identity: &NodeIdentity,
     expected_seq: u64,
     expected_index: u32,
-    hmac: &impl HmacProvider,
+    hmac: &dyn HmacProvider,
 ) -> NodeResult<Vec<u8>> {
     let decoded = decode_frame(raw).map_err(|e| NodeError::MalformedPayload(format!("{}", e)))?;
 
@@ -737,7 +732,7 @@ fn send_program_ack<T: Transport>(
     identity: &NodeIdentity,
     current_seq: &mut u64,
     program_hash: &[u8],
-    hmac: &impl HmacProvider,
+    hmac: &dyn HmacProvider,
 ) -> NodeResult<()> {
     let seq = *current_seq;
 

@@ -12,7 +12,7 @@
 
 A typical Rust BPF interpreter stores registers as bare `u64` values and validates memory accesses by scanning a list of allowed regions (`mem` and `stack`) before each pointer dereference.  This works, but has two weaknesses:
 
-1. **`unsafe` is scattered.**  Every load, store, and atomic instruction contains its own `unsafe` block — roughly 20 sites across `interpreter.rs`.  Each site must independently get the bounds-check-then-dereference sequence right.  A mistake in any one site is a soundness hole.
+1. **`unsafe` is scattered.**  Every load, store, and atomic instruction contains its own `unsafe` block — many scattered sites across `interpreter.rs`.  Each site must independently get the bounds-check-then-dereference sequence right.  A mistake in any one site is a soundness hole.
 
 2. **Region identity is lost.**  The `check_mem` function knows that an address falls *somewhere* in a valid region, but not *which* region.  A pointer into the context could be used to write into map memory if the arithmetic happens to land in range.  Cross-region confusion is not caught.
 
@@ -220,11 +220,13 @@ At program start, three registers carry pointer provenance:
 
 | Register | Value | Region |
 |----------|-------|--------|
-| R1 | `mem.as_ptr() as u64` | `Some(Region { tag: Context, base: mem.as_ptr() as u64, end: mem.as_ptr() as u64 + mem.len() as u64 })` |
-| R10 | `stack.as_ptr() as u64 + STACK_SIZE as u64` | `Some(Region { tag: Stack, base: stack.as_ptr() as u64, end: stack.as_ptr() as u64 + STACK_SIZE as u64 })` |
+| R1 | `mem.as_ptr() as u64` | `Some(Region { tag: Context, base: mem.as_ptr() as u64, end: (mem.as_ptr() as u64).checked_add(mem.len() as u64).unwrap() })` |
+| R10 | `stack.as_ptr() as u64 + STACK_SIZE as u64` | `Some(Region { tag: Stack, base: stack.as_ptr() as u64, end: (stack.as_ptr() as u64).checked_add(STACK_SIZE as u64).unwrap() })` |
 | R0, R2–R9 | 0 | `None` (scalar) |
 
 R2 is set to `mem.len()` as a **scalar** — it is a length, not a pointer.
+
+> **Overflow safety:** All region `end` values must be computed with `checked_add`.  An overflow indicates a logic error in the caller (impossible memory layout) and should panic or return an error before execution begins.
 
 ### 4.2  LD_DW_IMM (64-bit immediate load)
 
@@ -353,9 +355,9 @@ After a helper call, the interpreter examines the descriptor's `ret` field:
 |----------------|----------|-------------------|
 | `Scalar` | any | `None` (scalar) |
 | `MapValueOrNull` | 0 | `None` (scalar — NULL means not found) |
-| `MapValueOrNull` | non-zero | `MapValue { value_size }` with `base = R0`, `end = R0 + value_size` |
+| `MapValueOrNull` | non-zero | `MapValue { value_size }` with `base = R0`, `end = R0.checked_add(value_size)` (overflow → fatal error) |
 
-For `MapValueOrNull`, the interpreter resolves the map's `value_size` from the map definitions provided at load time.  Since the argument register should carry a `MapDescriptor { map_index }` tag (set by LD_DW_IMM relocation, §4.2), the interpreter can use the `map_index` directly to look up the map definition — no linear scan of relocated pointers is needed.
+For `MapValueOrNull`, the interpreter resolves the map's `value_size` from the map definitions provided at load time.  The region `end` must be computed with `checked_add` — an overflow indicates a corrupted helper return and is a fatal error.  Since the argument register should carry a `MapDescriptor { map_index }` tag (set by LD_DW_IMM relocation, §4.2), the interpreter can use the `map_index` directly to look up the map definition — no linear scan of relocated pointers is needed.
 
 ### 5.3  Example helper classifications
 
@@ -485,7 +487,7 @@ pub enum BpfError {
 
 The existing `MemoryAccessViolation` is retained for out-of-bounds accesses within a valid region.
 
-**Error handling policy:**  All errors are fatal — the program is terminated immediately.  This is consistent with standard BPF interpreter behaviour.
+**Error handling policy:**  All errors are fatal — the program is terminated immediately.  This is consistent with standard BPF interpreter behavior.
 
 ---
 
@@ -579,7 +581,7 @@ If the interpreter is abstracted behind a trait, the `load()` method will additi
 
 ### 10.4  Existing tests
 
-All existing interpreter tests continue to pass.  Tests that exercise pointer arithmetic, map access, and stack spills gain additional coverage from the tag enforcement — bugs that previously required careful `check_mem` auditing are now caught structurally.
+The implementation should keep all existing interpreter tests passing.  Tests that exercise pointer arithmetic, map access, and stack spills will gain additional coverage from the tag enforcement.  Some tests may need updates to supply the new `maps` parameter or to expect new error variants (e.g., `NonDereferenceableAccess` instead of `MemoryAccessViolation` for scalar dereferences).
 
 ---
 

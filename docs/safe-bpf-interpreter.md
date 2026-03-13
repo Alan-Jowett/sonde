@@ -125,10 +125,16 @@ fn mem_load<const N: usize>(
         return Err(BpfError::MemoryAccessViolation { pc, addr, len: N });
     }
 
-    // SAFETY: bounds validated above against a trusted region descriptor
-    // that was set by interpreter-controlled code (init, helper return,
-    // or ALU propagation).  The underlying memory is guaranteed live for
-    // the duration of execute_program().
+    // SAFETY: bounds validated above against a trusted region descriptor.
+    // Region descriptors originate from:
+    //   - Initialization: base/end derived from caller-provided slices
+    //     (ctx, stack) that are guaranteed live for this call.
+    //   - ALU propagation: inherits a previously validated region.
+    //   - Helper returns (MapValue): the returned pointer is validated
+    //     against the known map address range before tagging (§5.2),
+    //     so it cannot point outside allocated map storage.
+    // In all cases, the underlying memory is guaranteed live for the
+    // duration of execute_program().
     let val = unsafe {
         match N {
             1 => *(addr as *const u8) as u64,
@@ -358,9 +364,17 @@ After a helper call, the interpreter examines the descriptor's `ret` field:
 |----------------|----------|-------------------|
 | `Scalar` | any | `None` (scalar) |
 | `MapValueOrNull` | 0 | `None` (scalar — NULL means not found) |
-| `MapValueOrNull` | non-zero | `MapValue { value_size }` with `base = R0`, `end = R0.checked_add(value_size)` (overflow → fatal error) |
+| `MapValueOrNull` | non-zero | `MapValue { value_size }` with `base = R0`, `end = R0.checked_add(value_size)` (overflow → fatal error) — **only after validation** (see below) |
 
-For `MapValueOrNull`, the interpreter resolves the map's `value_size` from the map definitions provided at load time.  The region `end` must be computed with `checked_add` — an overflow indicates a corrupted helper return and is a fatal error.  Since the argument register should carry a `MapDescriptor { map_index }` tag (set by LD_DW_IMM relocation, §4.2), the interpreter can use the `map_index` directly to look up the map definition — no linear scan of relocated pointers is needed.
+For `MapValueOrNull`, the interpreter resolves the map's `value_size` from the map definitions provided at load time.  Since the argument register should carry a `MapDescriptor { map_index }` tag (set by LD_DW_IMM relocation, §4.2), the interpreter can use the `map_index` directly to look up the map definition.
+
+**Helper return validation:**  Helper functions are part of the host environment and could be buggy.  To prevent a faulty helper from returning an arbitrary pointer that the interpreter then trusts, the returned pointer must be validated against the known map address range before tagging:
+
+1. Look up the `MapRegion` for the map identified by `map_index`.
+2. Verify that `R0 >= map_region.data_start` and `R0 + value_size <= map_region.data_end`.
+3. If the pointer falls outside the map's allocated storage, return a fatal error (`MemoryAccessViolation`) — do not tag it.
+
+This requires `MapRegion` to carry the map's backing storage bounds (see §10.1).  With this check, the safety argument for `mem_load` / `mem_store` is closed: region descriptors are either derived from caller-provided slices (init), inherited from a previously validated region (ALU), or validated against known allocations (helper returns).
 
 ### 5.3  Example helper classifications
 
@@ -571,8 +585,14 @@ struct MapRegion {
     relocated_ptr: u64,
     /// Size of each value in this map.
     value_size: u32,
+    /// Inclusive start of the map's backing storage.
+    data_start: u64,
+    /// Exclusive end of the map's backing storage.
+    data_end: u64,
 }
 ```
+
+The `data_start` / `data_end` fields define the bounds of the map's allocated memory.  They are used to validate helper return pointers (§5.2) before tagging — a returned pointer that falls outside `[data_start, data_end)` is rejected as a fatal error.  This closes the trust boundary: helpers do not need to be in the trusted computing base for memory safety.
 
 The `maps` slice is indexed by `map_index` — the same index used in the LD_DW_IMM instruction's `imm` field and stored in the `MapDescriptor { map_index }` tag.  The mapping is:
 

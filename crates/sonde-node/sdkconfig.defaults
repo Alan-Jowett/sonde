@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# Default SDK configuration for the sonde-node ESP32 firmware.
+# Default SDK configuration for the sonde-node ESP32-C3 firmware.
 # Optimised for QEMU smoke testing while remaining compatible with real hardware.
 
 # Flash configuration — must match the QEMU MTD drive (DIO mode, 40 MHz, 4 MB).
@@ -14,9 +14,11 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
 # Serial console on UART0 at 115200 bps (QEMU forwards UART0 to stdio).
+# Explicitly disable USB Serial/JTAG console so UART0 is used in QEMU.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=n
 
 # Log level: INFO captures the boot-marker lines the smoke test asserts on.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
@@ -29,4 +31,3 @@ CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 # The node only needs STA mode for ESP-NOW.
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
-CONFIG_ESP_WIFI_NAN_ENABLE=n

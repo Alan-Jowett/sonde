@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# ESP32 firmware CI: build the sonde-node firmware under ESP-IDF and run a
-# QEMU smoke test that asserts the expected boot-marker strings appear on UART.
+# ESP32 firmware CI: build sonde-node for ESP32-C3 (RISC-V) and sonde-modem
+# for ESP32-S3 (Xtensa).  The sonde-node job also runs a QEMU smoke test that
+# asserts the expected boot-marker strings appear on UART.
 
 name: ESP32 Firmware CI
 
@@ -13,9 +14,11 @@ on:
     branches: [main]
 
 jobs:
-  esp32-build-and-smoke:
-    name: Build ESP32 firmware and QEMU smoke test
+  esp32c3-node-build-and-smoke:
+    name: Build ESP32-C3 node firmware and QEMU smoke test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     container:
       # Pinned ESP-IDF release image — provides IDF_PATH, Python 3, and all
@@ -40,45 +43,45 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           workspaces: ". -> target"
-          key: esp32-xtensa-${{ hashFiles('crates/sonde-node/sdkconfig.defaults') }}
+          key: esp32c3-riscv-${{ hashFiles('crates/sonde-node/sdkconfig.defaults') }}
 
       # ------------------------------------------------------------------ #
-      # Xtensa Rust toolchain (required for xtensa-esp32-espidf target)
+      # ESP Rust toolchain (required for riscv32imc-esp-espidf target)
       # ------------------------------------------------------------------ #
 
       - name: Install espup
         run: cargo install espup --locked
 
-      - name: Install Xtensa Rust toolchain for ESP32
-        # espup installs the `esp` Xtensa Rust toolchain and writes ~/export-esp.sh,
-        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for Xtensa GCC/LLVM.
+      - name: Install ESP Rust toolchain for ESP32-C3
+        # espup installs the `esp` Rust toolchain and writes ~/export-esp.sh,
+        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for the ESP GCC/LLVM.
         # The `esp` toolchain must be selected explicitly via `cargo +esp` (espup
         # v0.16+ does not export RUSTUP_TOOLCHAIN from export-esp.sh).
-        run: espup install --targets esp32
+        run: espup install --targets esp32c3
 
       - name: Install ldproxy linker
         run: cargo install ldproxy --locked
 
       # ------------------------------------------------------------------ #
-      # QEMU for Xtensa (ESP32)
+      # QEMU for RISC-V (ESP32-C3)
       # ------------------------------------------------------------------ #
 
-      - name: Install QEMU for Xtensa via idf_tools.py
-        # qemu-xtensa is bundled in the espressif/idf image but install is
-        # idempotent; this ensures the tool is present regardless of image version.
+      - name: Install QEMU for RISC-V via idf_tools.py
+        # qemu-riscv32 provides experimental ESP32-C3 machine support; install
+        # is idempotent so it is safe to run even if already present.
         run: |
-          "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
+          "$IDF_PATH/tools/idf_tools.py" install qemu-riscv32
 
       # ------------------------------------------------------------------ #
       # Build
       # ------------------------------------------------------------------ #
 
-      - name: Build node firmware (ESP32, firmware profile)
-        # Source export-esp.sh to add Xtensa GCC/LLVM to PATH and set
+      - name: Build node firmware (ESP32-C3, firmware profile)
+        # Source export-esp.sh to add ESP GCC/LLVM to PATH and set
         # LIBCLANG_PATH/CLANG_PATH for bindgen.  Use `+esp` to select the
-        # Xtensa Rust toolchain installed by espup (not the default stable).
+        # Rust toolchain installed by espup (not the default stable).
         # -Zbuild-std is required because the esp toolchain does not ship
-        # pre-compiled std for the xtensa-esp32-espidf target.
+        # pre-compiled std for the riscv32imc-esp-espidf target.
         run: |
           . "$HOME/export-esp.sh"
           cargo +esp build \
@@ -86,7 +89,7 @@ jobs:
             --bin node \
             --features esp \
             --profile firmware \
-            --target xtensa-esp32-espidf \
+            --target riscv32imc-esp-espidf \
             -Zbuild-std=std,panic_abort
 
       # ------------------------------------------------------------------ #
@@ -96,7 +99,7 @@ jobs:
       - name: Create merged flash image
         run: |
           . "$IDF_PATH/export.sh"
-          TARGET_DIR="target/xtensa-esp32-espidf/firmware"
+          TARGET_DIR="target/riscv32imc-esp-espidf/firmware"
 
           # Locate bootloader and partition table produced by embuild.
           # Use newest match to avoid stale cached artefacts.
@@ -120,7 +123,7 @@ jobs:
           echo "Partition table:  $PARTITION_TABLE"
 
           # Convert ELF → flat binary.
-          esptool.py --chip esp32 elf2image \
+          esptool.py --chip esp32c3 elf2image \
             --flash_mode  dio \
             --flash_freq  40m \
             --flash_size  4MB \
@@ -129,10 +132,11 @@ jobs:
 
           # Merge bootloader + partition table + app into a single 4MB image.
           # --fill-flash-size pads to exactly 4MB, which QEMU requires.
-          esptool.py --chip esp32 merge_bin \
+          # On ESP32-C3 the bootloader loads at flash offset 0x0 (not 0x1000).
+          esptool.py --chip esp32c3 merge_bin \
             --output flash_image.bin \
             --fill-flash-size 4MB \
-            0x1000  "$BOOTLOADER" \
+            0x0     "$BOOTLOADER" \
             0x8000  "$PARTITION_TABLE" \
             0x10000 "$TARGET_DIR/node.bin"
 
@@ -143,7 +147,7 @@ jobs:
       # ------------------------------------------------------------------ #
 
       - name: Run QEMU smoke test
-        # Source IDF export.sh so qemu-system-xtensa is on PATH.
+        # Source IDF export.sh so qemu-system-riscv32 is on PATH.
         run: |
           . "$IDF_PATH/export.sh"
           QEMU_OUTPUT="/tmp/qemu_uart.txt"
@@ -155,9 +159,9 @@ jobs:
           # Disable errexit so the non-zero timeout exit (124) doesn't
           # abort the step before we can inspect it.
           set +e
-          timeout 60 qemu-system-xtensa \
+          timeout 60 qemu-system-riscv32 \
             -nographic \
-            -machine esp32 \
+            -machine esp32c3 \
             -drive file=flash_image.bin,if=mtd,format=raw \
             -no-reboot \
             > "$QEMU_OUTPUT" 2>&1
@@ -194,3 +198,71 @@ jobs:
           fi
 
           echo "Smoke test passed."
+
+  esp32s3-modem-build:
+    name: Build ESP32-S3 modem firmware
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    container:
+      # Pinned ESP-IDF release image — provides IDF_PATH, Python 3, and all
+      # ESP-IDF host tools including esptool.py and idf_tools.py.
+      # Tag: espressif/idf:v5.3.2
+      image: espressif/idf@sha256:d85ffe6db6162f16589c4c2221de1d5c40c9d9aa2331099e2fe6f5e33d1b8f09
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # ------------------------------------------------------------------ #
+      # Rust toolchain
+      # ------------------------------------------------------------------ #
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          workspaces: ". -> target"
+          key: esp32s3-xtensa-${{ hashFiles('crates/sonde-modem/sdkconfig.defaults') }}
+
+      # ------------------------------------------------------------------ #
+      # Xtensa Rust toolchain (required for xtensa-esp32s3-espidf target)
+      # ------------------------------------------------------------------ #
+
+      - name: Install espup
+        run: cargo install espup --locked
+
+      - name: Install Xtensa Rust toolchain for ESP32-S3
+        # espup installs the `esp` Xtensa Rust toolchain and writes ~/export-esp.sh,
+        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for Xtensa GCC/LLVM.
+        # The `esp` toolchain must be selected explicitly via `cargo +esp` (espup
+        # v0.16+ does not export RUSTUP_TOOLCHAIN from export-esp.sh).
+        run: espup install --targets esp32s3
+
+      - name: Install ldproxy linker
+        run: cargo install ldproxy --locked
+
+      # ------------------------------------------------------------------ #
+      # Build
+      # ------------------------------------------------------------------ #
+
+      - name: Build modem firmware (ESP32-S3, firmware profile)
+        # Source export-esp.sh to add Xtensa GCC/LLVM to PATH and set
+        # LIBCLANG_PATH/CLANG_PATH for bindgen.  Use `+esp` to select the
+        # Xtensa Rust toolchain installed by espup (not the default stable).
+        # -Zbuild-std is required because the esp toolchain does not ship
+        # pre-compiled std for the xtensa-esp32s3-espidf target.
+        run: |
+          . "$HOME/export-esp.sh"
+          cargo +esp build \
+            -p sonde-modem \
+            --bin modem \
+            --features esp \
+            --profile firmware \
+            --target xtensa-esp32s3-espidf \
+            -Zbuild-std=std,panic_abort

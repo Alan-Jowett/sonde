@@ -476,3 +476,154 @@ async fn t_e2e_041_sequence_numbers() {
         "PROGRAM_ACK seq should follow the last GET_CHUNK seq"
     );
 }
+
+// ===========================================================================
+// Modem transport tests
+// ===========================================================================
+
+/// T-E2E-050 — Modem startup handshake.
+///
+/// Validates the RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK
+/// startup sequence between `UsbEspNowTransport` and a simulated modem.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_050_modem_startup_handshake() {
+    use sonde_gateway::modem::UsbEspNowTransport;
+    use sonde_protocol::modem::{decode_modem_frame, encode_modem_frame, ModemMessage, ModemReady};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (client, mut server) = tokio::io::duplex(1024);
+
+    let test_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    let channel: u8 = 6;
+
+    // Simulate modem on the server side in a background task.
+    let modem_task = tokio::spawn(async move {
+        let mut buf = [0u8; 64];
+
+        // 1. Read RESET frame.
+        let n = server.read(&mut buf).await.unwrap();
+        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        assert!(
+            matches!(msg, ModemMessage::Reset),
+            "first message should be RESET"
+        );
+
+        // 2. Send MODEM_READY.
+        let ready = encode_modem_frame(&ModemMessage::ModemReady(ModemReady {
+            firmware_version: [0x01, 0x00, 0x00, 0x00],
+            mac_address: test_mac,
+        }))
+        .unwrap();
+        server.write_all(&ready).await.unwrap();
+
+        // 3. Read SET_CHANNEL.
+        let n = server.read(&mut buf).await.unwrap();
+        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        let ch = match msg {
+            ModemMessage::SetChannel(c) => c,
+            other => panic!("expected SET_CHANNEL, got {:?}", other),
+        };
+
+        // 4. Send SET_CHANNEL_ACK.
+        let ack = encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap();
+        server.write_all(&ack).await.unwrap();
+    });
+
+    // Create transport — this performs the full handshake.
+    let transport = UsbEspNowTransport::new(client, channel).await;
+    assert!(
+        transport.is_ok(),
+        "modem startup handshake should succeed: {:?}",
+        transport.err()
+    );
+
+    modem_task.await.unwrap();
+}
+
+/// T-E2E-051 — Frame round-trip through modem bridge.
+///
+/// Sends a frame from the gateway transport to a simulated modem and
+/// verifies the modem receives it correctly. Then the modem sends a
+/// frame back and the gateway transport receives it.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_051_modem_frame_round_trip() {
+    use sonde_gateway::modem::UsbEspNowTransport;
+    use sonde_gateway::transport::Transport;
+    use sonde_protocol::modem::{
+        decode_modem_frame, encode_modem_frame, ModemMessage, ModemReady, RecvFrame,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (client, mut server) = tokio::io::duplex(4096);
+
+    let modem_mac = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+    let peer_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    let channel: u8 = 1;
+
+    // Simulate modem: startup handshake + frame echo.
+    let modem_task = tokio::spawn(async move {
+        let mut buf = [0u8; 1024];
+
+        // Startup handshake.
+        let n = server.read(&mut buf).await.unwrap();
+        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        assert!(matches!(msg, ModemMessage::Reset));
+
+        let ready = encode_modem_frame(&ModemMessage::ModemReady(ModemReady {
+            firmware_version: [0x01, 0x00, 0x00, 0x00],
+            mac_address: modem_mac,
+        }))
+        .unwrap();
+        server.write_all(&ready).await.unwrap();
+
+        let n = server.read(&mut buf).await.unwrap();
+        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        let ch = match msg {
+            ModemMessage::SetChannel(c) => c,
+            other => panic!("expected SET_CHANNEL, got {:?}", other),
+        };
+        let ack = encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap();
+        server.write_all(&ack).await.unwrap();
+
+        // Read SEND_FRAME from gateway transport.
+        let n = server.read(&mut buf).await.unwrap();
+        let (msg, _) = decode_modem_frame(&buf[..n]).unwrap();
+        let frame_data = match msg {
+            ModemMessage::SendFrame(sf) => {
+                assert_eq!(sf.peer_mac, peer_mac, "peer MAC should match");
+                sf.frame_data
+            }
+            other => panic!("expected SEND_FRAME, got {:?}", other),
+        };
+        assert_eq!(
+            frame_data,
+            vec![0x01, 0x02, 0x03],
+            "frame data should match"
+        );
+
+        // Send RECV_FRAME back (simulating a response from the peer).
+        let recv = encode_modem_frame(&ModemMessage::RecvFrame(RecvFrame {
+            peer_mac,
+            rssi: -50,
+            frame_data: vec![0x04, 0x05, 0x06],
+        }))
+        .unwrap();
+        server.write_all(&recv).await.unwrap();
+    });
+
+    // Create transport.
+    let transport = UsbEspNowTransport::new(client, channel).await.unwrap();
+
+    // Send a frame through the transport.
+    transport
+        .send(&[0x01, 0x02, 0x03], &peer_mac.to_vec())
+        .await
+        .unwrap();
+
+    // Receive the response frame.
+    let (recv_data, recv_peer) = transport.recv().await.unwrap();
+    assert_eq!(recv_data, vec![0x04, 0x05, 0x06]);
+    assert_eq!(recv_peer, peer_mac.to_vec());
+
+    modem_task.await.unwrap();
+}

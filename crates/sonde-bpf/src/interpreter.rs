@@ -263,12 +263,12 @@ pub fn execute_program(
             ebpf::ST_W_ATOMIC => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 check_mem(addr, 4, pc - 1, mem, &stack)?;
-                execute_atomic32(addr, &mut reg, src, insn.imm as u32);
+                execute_atomic32(addr, &mut reg, src, insn.imm as u32, pc - 1)?;
             }
             ebpf::ST_DW_ATOMIC => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
                 check_mem(addr, 8, pc - 1, mem, &stack)?;
-                execute_atomic64(addr, &mut reg, src, insn.imm as u32);
+                execute_atomic64(addr, &mut reg, src, insn.imm as u32, pc - 1)?;
             }
 
             // ── ALU32 ───────────────────────────────────────────────
@@ -823,7 +823,13 @@ pub fn execute_program(
 
 /// Execute a 32-bit atomic operation at `addr`.
 #[inline]
-fn execute_atomic32(addr: u64, reg: &mut [u64; 11], src: usize, op: u32) {
+fn execute_atomic32(
+    addr: u64,
+    reg: &mut [u64; 11],
+    src: usize,
+    op: u32,
+    pc: usize,
+) -> Result<(), BpfError> {
     let ptr = addr as *mut u32;
     let fetch = (op & ebpf::BPF_ATOMIC_FETCH) != 0;
     let base_op = op & !ebpf::BPF_ATOMIC_FETCH;
@@ -871,14 +877,26 @@ fn execute_atomic32(addr: u64, reg: &mut [u64; 11], src: usize, op: u32) {
                 }
                 reg[0] = old as u64;
             }
-            _ => {}
+            _ => {
+                return Err(BpfError::UnknownOpcode {
+                    pc,
+                    opc: ebpf::ST_W_ATOMIC,
+                });
+            }
         }
     }
+    Ok(())
 }
 
 /// Execute a 64-bit atomic operation at `addr`.
 #[inline]
-fn execute_atomic64(addr: u64, reg: &mut [u64; 11], src: usize, op: u32) {
+fn execute_atomic64(
+    addr: u64,
+    reg: &mut [u64; 11],
+    src: usize,
+    op: u32,
+    pc: usize,
+) -> Result<(), BpfError> {
     let ptr = addr as *mut u64;
     let fetch = (op & ebpf::BPF_ATOMIC_FETCH) != 0;
     let base_op = op & !ebpf::BPF_ATOMIC_FETCH;
@@ -926,7 +944,13 @@ fn execute_atomic64(addr: u64, reg: &mut [u64; 11], src: usize, op: u32) {
                 }
                 reg[0] = old;
             }
-            _ => {}
+            _ => {
+                return Err(BpfError::UnknownOpcode {
+                    pc,
+                    opc: ebpf::ST_DW_ATOMIC,
+                });
+            }
         }
     }
+    Ok(())
 }

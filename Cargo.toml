@@ -12,3 +12,10 @@ default-members = [
     "crates/sonde-gateway",
     "crates/sonde-admin",
 ]
+
+# Aggressive size optimization for firmware builds.
+[profile.release]
+opt-level = "s"       # Optimize for size
+lto = true            # Link-time optimization
+codegen-units = 1     # Single codegen unit for better LTO
+strip = "symbols"     # Strip debug symbols from binary

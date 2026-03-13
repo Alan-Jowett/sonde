@@ -41,11 +41,19 @@ impl AdminClient {
                 let name = pipe_name.clone();
                 async move {
                     // Retry if the pipe is busy (another client is connecting).
+                    // Give up after 5 seconds.
+                    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
                     let client = loop {
                         match ClientOptions::new().open(&name) {
                             Ok(client) => break client,
                             Err(e) if e.raw_os_error() == Some(231) => {} // ERROR_PIPE_BUSY
                             Err(e) => return Err(e),
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "named pipe busy — timed out after 5s",
+                            ));
                         }
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     };

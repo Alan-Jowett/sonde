@@ -65,26 +65,44 @@ impl BpfInterpreter for SondeBpfInterpreter {
             ));
         }
 
+        if map_ptrs.len() != map_defs.len() {
+            return Err(BpfError::LoadError(format!(
+                "map_ptrs length ({}) does not match map_defs length ({})",
+                map_ptrs.len(),
+                map_defs.len()
+            )));
+        }
+
         self.bytecode = Some(bytecode.to_vec());
 
         // Build MapRegion descriptors from map_ptrs + map_defs.
         self.map_regions.clear();
-        for (i, &ptr) in map_ptrs.iter().enumerate() {
-            if let Some(def) = map_defs.get(i) {
-                let entry_size = (def.key_size + def.value_size) as u64;
-                let total_bytes = entry_size * def.max_entries as u64;
-                self.map_regions.push(MapRegion {
-                    relocated_ptr: ptr,
-                    value_size: def.value_size,
-                    data_start: ptr,
-                    data_end: ptr.saturating_add(total_bytes),
-                });
-            }
+        for (i, (&ptr, def)) in map_ptrs.iter().zip(map_defs.iter()).enumerate() {
+            let entry_size = (def.key_size as u64)
+                .checked_add(def.value_size as u64)
+                .ok_or_else(|| BpfError::LoadError(format!("map {i}: entry size overflow")))?;
+            let total_bytes = entry_size
+                .checked_mul(def.max_entries as u64)
+                .ok_or_else(|| BpfError::LoadError(format!("map {i}: total size overflow")))?;
+            self.map_regions.push(MapRegion {
+                relocated_ptr: ptr,
+                value_size: def.value_size,
+                data_start: ptr,
+                data_end: ptr.saturating_add(total_bytes),
+            });
         }
 
         Ok(())
     }
 
+    /// Execute the loaded program.
+    ///
+    /// # Instruction budget limitation
+    ///
+    /// **`instruction_budget` is currently NOT enforced.** sonde-bpf does
+    /// not yet support instruction metering. Termination is guaranteed by
+    /// Prevail verification on the gateway (bounded loops, no infinite
+    /// recursion). A future sonde-bpf release should add metering support.
     fn execute(&mut self, ctx_ptr: u64, _instruction_budget: u64) -> Result<u64, BpfError> {
         let bytecode = self
             .bytecode

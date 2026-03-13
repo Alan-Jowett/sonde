@@ -18,7 +18,7 @@ use crate::error::{NodeError, NodeResult};
 use crate::hal::{BatteryReader, Hal};
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
-use crate::program_store::{resolve_map_references, LoadedProgram, ProgramStore};
+use crate::program_store::{LoadedProgram, ProgramStore};
 use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
 use crate::FIRMWARE_ABI_VERSION;
@@ -259,7 +259,7 @@ where
         loaded_program = program_store.load_active(sha);
     }
 
-    if let Some(mut program) = loaded_program {
+    if let Some(program) = loaded_program {
         let program_class = if program.is_ephemeral {
             ProgramClass::Ephemeral
         } else {
@@ -294,13 +294,7 @@ where
             }
         }
 
-        // Resolve LDDW map references.
         let map_ptrs = map_storage.map_pointers().to_vec();
-        if resolve_map_references(&mut program.bytecode, &map_ptrs).is_err() {
-            return WakeCycleOutcome::Sleep {
-                seconds: sleep_mgr.effective_sleep_s(),
-            };
-        }
 
         // Build execution context
         let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);

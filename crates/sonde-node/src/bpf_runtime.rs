@@ -49,15 +49,14 @@ pub trait BpfInterpreter {
     ///   16=bpf_trace_printk
     fn register_helper(&mut self, id: u32, func: HelperFn) -> Result<(), BpfError>;
 
-    /// Load pre-relocated BPF bytecode.
+    /// Load BPF bytecode with map metadata.
     ///
-    /// The caller (e.g. `run_wake_cycle` via `resolve_map_references`) is
-    /// responsible for resolving all LDDW `src=1` map references before
-    /// calling this method. Implementations MUST NOT attempt LDDW `src=1`
-    /// relocation themselves.
+    /// The bytecode may contain unrelocated LDDW `src=1` map reference
+    /// instructions. The implementation is responsible for handling these
+    /// (either by pre-relocating or by supporting them at runtime).
     ///
-    /// `map_ptrs` maps `map_index → runtime pointer` for use by the
-    /// interpreter during execution (e.g. to back map helper calls).
+    /// `map_ptrs` maps `map_index → runtime pointer` for the backing
+    /// storage of each map.
     ///
     /// `map_defs` carries the corresponding [`sonde_protocol::MapDef`]
     /// entries so the backend can compute region sizes for bounds checking.

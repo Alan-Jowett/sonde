@@ -6,9 +6,9 @@ use crate::traits::PlatformStorage;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
 /// Contains raw BPF bytecode as stored in the program image. Map reference
-/// relocation (LDDW `src=1` map indices) is **not** performed automatically;
-/// callers must invoke `resolve_map_references()` to patch `bytecode`
-/// before passing it to a `BpfInterpreter` (e.g. `BpfInterpreter::load`).
+/// relocation (LDDW `src=1` map indices) is **not** performed by `ProgramStore`;
+/// each `BpfInterpreter` backend is responsible for handling unrelocated
+/// references (either by pre-relocating in `load()` or at runtime).
 #[derive(Debug, Clone)]
 pub struct LoadedProgram {
     /// Raw BPF bytecode with LDDW `src=1` map references not yet relocated.

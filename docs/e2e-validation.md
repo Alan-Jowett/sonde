@@ -25,7 +25,7 @@ These tests validate that:
 
 ## 2  Architecture
 
-All components run **in a single process** within one tokio runtime. No external processes, serial ports, PTYs, or network sockets are required. This makes the tests deterministic and portable (runs on Linux, macOS, and Windows CI).
+All core components (gateway engine, modem bridge, node mock) run **in a single process** within one tokio runtime. No serial ports, PTYs, or network sockets are required. The one exception is APP_DATA handler tests (T-E2E-030/031), which spawn a small stub executable via `HandlerRouter` to exercise the real handler stdio path. This stub is built as a `[[bin]]` target in the E2E crate and is self-contained. All tests are deterministic and portable (Linux, macOS, Windows CI).
 
 ```
 ┌──────────────┐        duplex()        ┌──────────────────┐
@@ -56,7 +56,7 @@ All components run **in a single process** within one tokio runtime. No external
 - **Storage:** `SqliteStorage::in_memory()` for test isolation (no files).
 - **Transport:** `UsbEspNowTransport::new(duplex_client, channel)` — the gateway's modem adapter connected to the in-memory duplex stream.
 - **Admin:** Direct function calls on `Gateway` and `Storage` (no gRPC in E2E tests). Admin operations are exercised by calling storage/engine methods directly, avoiding the need for network sockets.
-- **Handler:** The current `HandlerRouter` spawns external processes. For E2E tests, the handler is a minimal stub binary (built as a `[[bin]]` target in the E2E crate or as a test fixture) that reads DATA messages from stdin, writes DATA_REPLY to stdout, using the length-prefixed CBOR framing from `sonde_gateway::handler`. This keeps the test self-contained while exercising the real handler spawning and I/O path.
+- **Handler:** For APP_DATA tests (T-E2E-030/031) only: `HandlerRouter` spawns a stub executable built as a `[[bin]]` target in the E2E crate. The stub reads DATA from stdin and writes DATA_REPLY to stdout using length-prefixed CBOR framing. This exercises the real handler spawn + stdio I/O path. Protocol-only tests do not use a handler.
 
 ### 2.2  Modem bridge
 

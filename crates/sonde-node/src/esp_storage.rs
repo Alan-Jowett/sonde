@@ -151,7 +151,11 @@ impl crate::traits::PlatformStorage for NvsStorage {
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
         let mut buf = vec![0u8; 4096];
         match self.nvs.get_blob(key, &mut buf) {
-            Ok(Some(slice)) => Some(slice.to_vec()),
+            Ok(Some(slice)) => {
+                let len = slice.len();
+                buf.truncate(len);
+                Some(buf)
+            }
             _ => None,
         }
     }

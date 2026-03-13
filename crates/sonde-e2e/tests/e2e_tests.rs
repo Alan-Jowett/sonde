@@ -14,11 +14,42 @@ use sonde_gateway::storage::Storage;
 
 /// Create a minimal valid BPF program image (mov r0, 0; exit) with no maps.
 fn make_test_program() -> (ProgramRecord, Vec<u8>) {
-    let image = ProgramImage {
-        bytecode: vec![
+    make_program_from_bytecode(
+        &[
             0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
             0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
         ],
+        VerificationProfile::Resident,
+    )
+}
+
+/// Create a BPF program that calls `send()` (helper 8) with a 2-byte
+/// blob `[0xAA, 0xBB]` on the stack — fire-and-forget APP_DATA.
+fn make_send_program() -> (ProgramRecord, Vec<u8>) {
+    let bytecode = [
+        // sth [r10-8], 0xBBAA   — store 2 bytes on stack
+        // BPF_STX_MEM_H: opcode=0x6b, dst=r10(fp), src=0, off=-8, imm=0xBBAA
+        // Actually, BPF_ST_MEM_H: opcode=0x6a, dst=r10(fp), off=-8, imm=0xBBAA
+        0x6a, 0x0a, 0xf8, 0xff, 0xAA, 0xBB, 0x00, 0x00, // mov r1, r10  — r1 = fp
+        0xbf, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // add r1, -8   — r1 = fp - 8 (pointer to data)
+        0x07, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff,
+        // mov r2, 2    — r2 = blob length
+        0xb7, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+        // call 8       — helper_send(r1=ptr, r2=len)
+        0x85, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // mov r0, 0
+        0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    make_program_from_bytecode(&bytecode, VerificationProfile::Resident)
+}
+
+fn make_program_from_bytecode(
+    bytecode: &[u8],
+    profile: VerificationProfile,
+) -> (ProgramRecord, Vec<u8>) {
+    let image = ProgramImage {
+        bytecode: bytecode.to_vec(),
         maps: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
@@ -29,7 +60,7 @@ fn make_test_program() -> (ProgramRecord, Vec<u8>) {
         hash: hash.clone(),
         image: cbor,
         size,
-        verification_profile: VerificationProfile::Resident,
+        verification_profile: profile,
     };
     (record, hash)
 }
@@ -626,4 +657,138 @@ async fn t_e2e_051_modem_frame_round_trip() {
     assert_eq!(recv_peer, peer_mac.to_vec());
 
     modem_task.await.unwrap();
+}
+
+// ===========================================================================
+// APP_DATA tests
+// ===========================================================================
+
+/// T-E2E-031 — APP_DATA fire-and-forget.
+///
+/// A BPF program running on the node calls `send()` (helper 8) to transmit
+/// an APP_DATA frame. The gateway accepts the frame (no handler configured,
+/// so it is silently discarded). The node does not wait for a reply.
+///
+/// Uses the real `RbpfInterpreter` to execute BPF bytecode that calls
+/// the `send()` helper, triggering the full APP_DATA dispatch path.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_031_app_data_fire_and_forget() {
+    use sonde_node::rbpf_adapter::RbpfInterpreter;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x31; 32];
+    env.register_node("appdata-node", 1, psk).await;
+
+    // Create a BPF program that calls helper 8 (send).
+    let (program, hash) = make_send_program();
+    env.storage.store_program(&program).await.unwrap();
+
+    // Assign the program to the node.
+    let mut node_rec = env.storage.get_node("appdata-node").await.unwrap().unwrap();
+    node_rec.assigned_program_hash = Some(hash);
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    // Use the real BPF interpreter.
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = RbpfInterpreter::new();
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // The node should have sent an APP_DATA frame (msg_type 0x04).
+    let app_data_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_APP_DATA)
+        .count();
+    assert_eq!(
+        app_data_count, 1,
+        "node should send exactly one APP_DATA frame"
+    );
+}
+
+/// T-E2E-030 — APP_DATA round-trip with handler.
+///
+/// A BPF program calls `send_recv()` (helper 9) to send data and receive
+/// a reply from a handler subprocess. The stub handler echoes back
+/// `[0xCC, 0xDD]` for any incoming data.
+///
+/// Uses the real `RbpfInterpreter` and a real `HandlerRouter` wired to
+/// the `stub_handler` binary built alongside this crate.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_030_app_data_round_trip() {
+    use sonde_node::rbpf_adapter::RbpfInterpreter;
+
+    // Locate the stub_handler binary (built alongside the test).
+    let stub = env!("CARGO_BIN_EXE_stub_handler");
+
+    let env = E2eTestEnv::new_with_handler(stub, &[]);
+    let psk = [0x30; 32];
+    env.register_node("roundtrip-node", 1, psk).await;
+
+    // Create a BPF program that calls helper 9 (send_recv).
+    //
+    // The program stores 2 bytes [0xAA, 0xBB] on the stack, calls
+    // send_recv with a 64-byte reply buffer, and exits with the
+    // helper return value (reply length or negative error).
+    let bytecode = [
+        // sth [r10-16], 0xBBAA — store send data
+        0x6a, 0x0a, 0xf0, 0xff, 0xAA, 0xBB, 0x00, 0x00,
+        // mov r1, r10; add r1, -16 — r1 = send ptr
+        0xbf, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x01, 0x00, 0x00, 0xf0, 0xff, 0xff,
+        0xff, // mov r2, 2 — send len
+        0xb7, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+        // mov r3, r10; add r3, -256 — r3 = reply buf
+        0xbf, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x03, 0x00, 0x00, 0x00, 0xff, 0xff,
+        0xff, // -256
+        // mov r4, 64 — reply capacity
+        0xb7, 0x04, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, // mov r5, 5000 — timeout ms
+        0xb7, 0x05, 0x00, 0x00, 0x88, 0x13, 0x00, 0x00, // call 9 — helper_send_recv
+        0x85, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, // exit (r0 = reply_len or error)
+        0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let (program, hash) = make_program_from_bytecode(&bytecode, VerificationProfile::Resident);
+    env.storage.store_program(&program).await.unwrap();
+
+    // Assign the program and set it as current so the gateway knows the
+    // running program hash (needed for handler routing).
+    let mut node_rec = env
+        .storage
+        .get_node("roundtrip-node")
+        .await
+        .unwrap()
+        .unwrap();
+    node_rec.assigned_program_hash = Some(hash.clone());
+    node_rec.current_program_hash = Some(hash);
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    // Pre-load the program in node storage so the WAKE hash matches.
+    let mut node = NodeProxy::new(1, psk);
+    node.storage
+        .write_program(0, &program.image)
+        .expect("write program to node storage");
+
+    let mut interpreter = RbpfInterpreter::new();
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // The node should have sent an APP_DATA frame.
+    let app_data_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_APP_DATA)
+        .count();
+    assert_eq!(
+        app_data_count, 1,
+        "node should send exactly one APP_DATA frame"
+    );
+
+    // The gateway should have responded with APP_DATA_REPLY (response_count
+    // increments for each non-None gateway response, which includes the
+    // COMMAND and the APP_DATA_REPLY).
+    assert!(
+        stats.response_count >= 2,
+        "gateway should produce at least 2 responses (COMMAND + APP_DATA_REPLY)"
+    );
 }

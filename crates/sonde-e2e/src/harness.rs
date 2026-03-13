@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use sonde_gateway::engine::{Gateway, PendingCommand};
+use sonde_gateway::handler::{HandlerConfig, HandlerRouter, ProgramMatcher};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
@@ -73,6 +74,31 @@ impl E2eTestEnv {
         let node = NodeRecord::new(node_id.into(), key_hint, psk);
         self.storage.upsert_node(&node).await.unwrap();
     }
+
+    /// Create an environment with a handler router for APP_DATA tests.
+    ///
+    /// `handler_cmd` is the path to the handler binary and its arguments.
+    pub fn new_with_handler(handler_cmd: &str, handler_args: &[&str]) -> Self {
+        let storage = Arc::new(
+            SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
+        );
+        let config = HandlerConfig {
+            matchers: vec![ProgramMatcher::Any],
+            command: handler_cmd.to_string(),
+            args: handler_args.iter().map(|s| s.to_string()).collect(),
+        };
+        let router = Arc::new(HandlerRouter::new(vec![config]));
+        let gateway = Arc::new(Gateway::new_with_handler(
+            storage.clone(),
+            Duration::from_secs(30),
+            router,
+        ));
+        Self {
+            gateway,
+            storage,
+            pending_commands: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -121,10 +147,22 @@ impl NodeProxy {
     /// Returns [`WakeCycleStats`] with the outcome, response count, and
     /// captured WAKE nonces for test assertions.
     pub fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
+        let mut interpreter = MockBpfInterpreter::new();
+        self.run_wake_cycle_with(env, &mut interpreter)
+    }
+
+    /// Like [`run_wake_cycle`] but accepts a caller-supplied BPF interpreter.
+    ///
+    /// Use this with [`sonde_node::rbpf_adapter::RbpfInterpreter`] when the
+    /// test requires real BPF program execution (e.g. APP_DATA helpers).
+    pub fn run_wake_cycle_with(
+        &mut self,
+        env: &E2eTestEnv,
+        interpreter: &mut impl BpfInterpreter,
+    ) -> WakeCycleStats {
         let mut hal = MockHal;
         let clock = MockClock::new();
         let battery = MockBattery;
-        let mut interpreter = MockBpfInterpreter::new();
         let hmac = TestHmac;
         let sha = TestSha256;
 
@@ -137,7 +175,7 @@ impl NodeProxy {
             &mut self.rng,
             &clock,
             &battery,
-            &mut interpreter,
+            interpreter,
             &mut self.map_storage,
             &hmac,
             &sha,

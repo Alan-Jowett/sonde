@@ -71,8 +71,18 @@ impl CallFrame {
 }
 
 /// Check that `[addr, addr+len)` falls within one of the allowed memory regions.
+///
+/// Checks the primary `mem` slice, the BPF `stack`, and any `extra_regions`
+/// (e.g. map backing stores whose pointers are returned by helper functions).
 #[inline]
-fn check_mem(addr: u64, len: usize, pc: usize, mem: &[u8], stack: &[u8]) -> Result<(), BpfError> {
+fn check_mem(
+    addr: u64,
+    len: usize,
+    pc: usize,
+    mem: &[u8],
+    stack: &[u8],
+    extra_regions: &[(*const u8, usize)],
+) -> Result<(), BpfError> {
     if let Some(end) = addr.checked_add(len as u64) {
         let mem_start = mem.as_ptr() as u64;
         if let Some(mem_end) = mem_start.checked_add(mem.len() as u64) {
@@ -84,6 +94,14 @@ fn check_mem(addr: u64, len: usize, pc: usize, mem: &[u8], stack: &[u8]) -> Resu
         if let Some(stack_end) = stack_start.checked_add(stack.len() as u64) {
             if addr >= stack_start && end <= stack_end {
                 return Ok(());
+            }
+        }
+        for &(region_ptr, region_len) in extra_regions {
+            let region_start = region_ptr as u64;
+            if let Some(region_end) = region_start.checked_add(region_len as u64) {
+                if addr >= region_start && end <= region_end {
+                    return Ok(());
+                }
             }
         }
     }
@@ -119,6 +137,39 @@ pub fn execute_program(
     prog: &[u8],
     mem: &mut [u8],
     helpers: &[(u32, Helper)],
+) -> Result<u64, BpfError> {
+    execute_program_inner(prog, mem, helpers, &[])
+}
+
+/// Execute a BPF program with additional allowed memory regions.
+///
+/// Identical to [`execute_program`] but also permits memory accesses into
+/// `extra_regions`. Each entry is a `(*const u8, usize)` pair representing
+/// the base pointer and byte length of an allowed region (e.g. map backing
+/// stores whose pointers are returned by helper functions such as
+/// `map_lookup_elem`). The caller is responsible for ensuring the pointed-to
+/// memory remains valid for the duration of the call.
+///
+/// # Safety
+/// Each `(*const u8, usize)` in `extra_regions` must point to a valid,
+/// live memory region of the given length. The interpreter uses them only
+/// for bounds-checking inside `check_mem`; actual reads and writes are
+/// performed via the same raw-pointer arithmetic used throughout the
+/// interpreter loop in `execute_program_inner`.
+pub fn execute_program_with_extra_mem(
+    prog: &[u8],
+    mem: &mut [u8],
+    helpers: &[(u32, Helper)],
+    extra_regions: &[(*const u8, usize)],
+) -> Result<u64, BpfError> {
+    execute_program_inner(prog, mem, helpers, extra_regions)
+}
+
+fn execute_program_inner(
+    prog: &[u8],
+    mem: &mut [u8],
+    helpers: &[(u32, Helper)],
+    extra_regions: &[(*const u8, usize)],
 ) -> Result<u64, BpfError> {
     let num_insns = prog.len() / INSN_SIZE;
     if !prog.len().is_multiple_of(INSN_SIZE) {
@@ -172,67 +223,67 @@ pub fn execute_program(
             // ── LDX MEM ─────────────────────────────────────────────
             ebpf::LD_B_REG => {
                 let addr = (reg[src] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 1, pc - 1, mem, &stack)?;
+                check_mem(addr, 1, pc - 1, mem, &stack, extra_regions)?;
                 reg[dst] = unsafe { *(addr as *const u8) } as u64;
             }
             ebpf::LD_H_REG => {
                 let addr = (reg[src] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 2, pc - 1, mem, &stack)?;
+                check_mem(addr, 2, pc - 1, mem, &stack, extra_regions)?;
                 reg[dst] = unsafe { (addr as *const u16).read_unaligned() } as u64;
             }
             ebpf::LD_W_REG => {
                 let addr = (reg[src] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 4, pc - 1, mem, &stack)?;
+                check_mem(addr, 4, pc - 1, mem, &stack, extra_regions)?;
                 reg[dst] = unsafe { (addr as *const u32).read_unaligned() } as u64;
             }
             ebpf::LD_DW_REG => {
                 let addr = (reg[src] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 8, pc - 1, mem, &stack)?;
+                check_mem(addr, 8, pc - 1, mem, &stack, extra_regions)?;
                 reg[dst] = unsafe { (addr as *const u64).read_unaligned() };
             }
 
             // ── LDXSX (sign-extension loads, RFC 9669 §5.2) ────────
             ebpf::LDSX_B_REG => {
                 let addr = (reg[src] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 1, pc - 1, mem, &stack)?;
+                check_mem(addr, 1, pc - 1, mem, &stack, extra_regions)?;
                 reg[dst] = unsafe { *(addr as *const i8) } as i64 as u64;
             }
             ebpf::LDSX_H_REG => {
                 let addr = (reg[src] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 2, pc - 1, mem, &stack)?;
+                check_mem(addr, 2, pc - 1, mem, &stack, extra_regions)?;
                 reg[dst] = unsafe { (addr as *const i16).read_unaligned() } as i64 as u64;
             }
             ebpf::LDSX_W_REG => {
                 let addr = (reg[src] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 4, pc - 1, mem, &stack)?;
+                check_mem(addr, 4, pc - 1, mem, &stack, extra_regions)?;
                 reg[dst] = unsafe { (addr as *const i32).read_unaligned() } as i64 as u64;
             }
 
             // ── ST IMM (store immediate to memory) ──────────────────
             ebpf::ST_B_IMM => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 1, pc - 1, mem, &stack)?;
+                check_mem(addr, 1, pc - 1, mem, &stack, extra_regions)?;
                 unsafe {
                     *(addr as *mut u8) = insn.imm as u8;
                 }
             }
             ebpf::ST_H_IMM => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 2, pc - 1, mem, &stack)?;
+                check_mem(addr, 2, pc - 1, mem, &stack, extra_regions)?;
                 unsafe {
                     (addr as *mut u16).write_unaligned(insn.imm as u16);
                 }
             }
             ebpf::ST_W_IMM => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 4, pc - 1, mem, &stack)?;
+                check_mem(addr, 4, pc - 1, mem, &stack, extra_regions)?;
                 unsafe {
                     (addr as *mut u32).write_unaligned(insn.imm as u32);
                 }
             }
             ebpf::ST_DW_IMM => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 8, pc - 1, mem, &stack)?;
+                check_mem(addr, 8, pc - 1, mem, &stack, extra_regions)?;
                 unsafe {
                     (addr as *mut u64).write_unaligned(insn.imm as i64 as u64);
                 }
@@ -241,28 +292,28 @@ pub fn execute_program(
             // ── STX REG (store register to memory) ──────────────────
             ebpf::ST_B_REG => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 1, pc - 1, mem, &stack)?;
+                check_mem(addr, 1, pc - 1, mem, &stack, extra_regions)?;
                 unsafe {
                     *(addr as *mut u8) = reg[src] as u8;
                 }
             }
             ebpf::ST_H_REG => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 2, pc - 1, mem, &stack)?;
+                check_mem(addr, 2, pc - 1, mem, &stack, extra_regions)?;
                 unsafe {
                     (addr as *mut u16).write_unaligned(reg[src] as u16);
                 }
             }
             ebpf::ST_W_REG => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 4, pc - 1, mem, &stack)?;
+                check_mem(addr, 4, pc - 1, mem, &stack, extra_regions)?;
                 unsafe {
                     (addr as *mut u32).write_unaligned(reg[src] as u32);
                 }
             }
             ebpf::ST_DW_REG => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 8, pc - 1, mem, &stack)?;
+                check_mem(addr, 8, pc - 1, mem, &stack, extra_regions)?;
                 unsafe {
                     (addr as *mut u64).write_unaligned(reg[src]);
                 }
@@ -271,12 +322,12 @@ pub fn execute_program(
             // ── Atomic operations (RFC 9669 §5.3) ───────────────────
             ebpf::ST_W_ATOMIC => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 4, pc - 1, mem, &stack)?;
+                check_mem(addr, 4, pc - 1, mem, &stack, extra_regions)?;
                 execute_atomic32(addr, &mut reg, src, insn.imm as u32, pc - 1)?;
             }
             ebpf::ST_DW_ATOMIC => {
                 let addr = (reg[dst] as i64).wrapping_add(insn.off as i64) as u64;
-                check_mem(addr, 8, pc - 1, mem, &stack)?;
+                check_mem(addr, 8, pc - 1, mem, &stack, extra_regions)?;
                 execute_atomic64(addr, &mut reg, src, insn.imm as u32, pc - 1)?;
             }
 

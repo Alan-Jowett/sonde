@@ -567,6 +567,12 @@ pub struct MockPairingSerial {
     disconnect_when_empty: bool,
 }
 
+impl Default for MockPairingSerial {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockPairingSerial {
     pub fn new() -> Self {
         Self {

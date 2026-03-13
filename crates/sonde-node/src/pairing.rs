@@ -118,7 +118,7 @@ pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
                 // Timeout with no data — re-send PAIRING_READY
                 // periodically so a host that connects later discovers us.
                 idle_ticks += 1;
-                if idle_ticks % 2 == 0 {
+                if idle_ticks.is_multiple_of(2) {
                     if let Some(ref frame) = ready_frame {
                         let _ = serial.write(frame);
                     }

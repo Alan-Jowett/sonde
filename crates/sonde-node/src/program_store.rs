@@ -34,7 +34,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
     /// Load the currently active resident program from flash.
     /// Returns `None` if no program is installed or the active partition
     /// index is invalid.
-    pub fn load_active(&self, sha: &(impl Sha256Provider + ?Sized)) -> Option<LoadedProgram> {
+    pub fn load_active(&self, sha: &dyn Sha256Provider) -> Option<LoadedProgram> {
         let (_interval, active_partition) = self.storage.read_schedule();
         if active_partition > 1 {
             return None;
@@ -52,7 +52,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
 
     /// Get the hash of the currently active resident program, or an empty
     /// vec if no program is installed or the active partition index is invalid.
-    pub fn active_program_hash(&self, sha: &(impl Sha256Provider + ?Sized)) -> Vec<u8> {
+    pub fn active_program_hash(&self, sha: &dyn Sha256Provider) -> Vec<u8> {
         let (_interval, active_partition) = self.storage.read_schedule();
         if active_partition > 1 {
             return Vec::new();

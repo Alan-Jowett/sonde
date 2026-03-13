@@ -6,7 +6,8 @@
 //! This crate provides a BPF bytecode interpreter that:
 //! - Allocates **no heap memory** during program execution
 //! - Supports the full RFC 9669 instruction set (ALU32/64, JMP/JMP32, memory, atomics)
-//! - Allows registration of helper functions via a simple `(id, fn)` table
+//! - Uses **tagged registers** to track pointer provenance and enforce memory safety
+//! - Registers helpers via [`interpreter::HelperDescriptor`] with return-type metadata
 //! - Is `#![no_std]`-compatible (disable the default `std` feature)
 //!
 //! # Example
@@ -19,7 +20,7 @@
 //!     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
 //! ];
 //! let mut mem = [];
-//! let result = interpreter::execute_program(prog, &mut mem, &[]).unwrap();
+//! let result = interpreter::execute_program_no_maps(prog, &mut mem, &[], false).unwrap();
 //! assert_eq!(result, 42);
 //! ```
 

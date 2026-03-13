@@ -149,6 +149,13 @@ pub fn execute_program(
         let dst = insn.dst as usize;
         let src = insn.src as usize;
 
+        if dst > 10 || src > 10 {
+            return Err(BpfError::UnknownOpcode {
+                pc: pc - 1,
+                opc: insn.opc,
+            });
+        }
+
         match insn.opc {
             // ── LD_DW_IMM (128-bit wide instruction) ────────────────
             ebpf::LD_DW_IMM => {

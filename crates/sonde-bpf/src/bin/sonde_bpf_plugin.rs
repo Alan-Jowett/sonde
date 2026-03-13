@@ -33,9 +33,15 @@ fn run() -> Result<(), String> {
     program_hex.retain(|c| !c.is_whitespace());
     let bytecode = hex_decode(&program_hex).map_err(|e| format!("bad program hex: {e}"))?;
 
-    let helpers: &[(u32, sonde_bpf::ebpf::Helper)] = &[(5, unwind)];
+    let helpers: &[sonde_bpf::interpreter::HelperDescriptor] = &[
+        sonde_bpf::interpreter::HelperDescriptor {
+            id: 5,
+            func: unwind,
+            ret: sonde_bpf::interpreter::HelperReturn::Scalar,
+        },
+    ];
 
-    let result = sonde_bpf::interpreter::execute_program(&bytecode, &mut memory, helpers)
+    let result = sonde_bpf::interpreter::execute_program(&bytecode, &mut memory, helpers, &[], false)
         .map_err(|e| format!("{e}"))?;
 
     println!("{result:x}");

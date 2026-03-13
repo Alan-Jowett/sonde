@@ -19,7 +19,7 @@
 //!     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
 //! ];
 //! let mut mem = [];
-//! let result = interpreter::execute_program(prog, &mut mem, &[]).unwrap();
+//! let result = interpreter::execute_program(prog, &mut mem, &[], &[], false).unwrap();
 //! assert_eq!(result, 42);
 //! ```
 

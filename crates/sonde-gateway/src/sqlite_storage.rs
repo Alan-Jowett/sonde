@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -35,8 +35,11 @@ CREATE TABLE IF NOT EXISTS programs (
 ";
 
 /// SQLite-backed persistent storage for the gateway.
+///
+/// Uses `Arc<Mutex<Connection>>` so storage operations can be offloaded
+/// to `spawn_blocking` to avoid holding a sync lock on async threads.
 pub struct SqliteStorage {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl SqliteStorage {
@@ -49,7 +52,7 @@ impl SqliteStorage {
         conn.execute_batch(SCHEMA)
             .map_err(|e| StorageError::Internal(format!("schema: {e}")))?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         })
     }
 
@@ -108,7 +111,16 @@ fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRecord> {
     let last_seen_epoch: Option<i64> = row.get(8)?;
     Ok(NodeRecord {
         node_id: row.get(0)?,
-        key_hint: row.get::<_, u32>(1)? as u16,
+        key_hint: {
+            let kh: u32 = row.get(1)?;
+            u16::try_from(kh).map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Integer,
+                    format!("key_hint {kh} out of u16 range").into(),
+                )
+            })?
+        },
         psk,
         assigned_program_hash: row.get(3)?,
         current_program_hash: row.get(4)?,
@@ -124,196 +136,238 @@ impl Storage for SqliteStorage {
     // ── Node registry ──────────────────────────────────────────
 
     async fn list_nodes(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT node_id, key_hint, psk, assigned_program_hash, \
-                 current_program_hash, schedule_interval_s, firmware_abi_version, \
-                 last_battery_mv, last_seen_epoch_s FROM nodes",
-            )
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let rows = stmt
-            .query_map([], row_to_node)
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let mut nodes = Vec::new();
-        for row in rows {
-            nodes.push(row.map_err(|e| StorageError::Internal(e.to_string()))?);
-        }
-        Ok(nodes)
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT node_id, key_hint, psk, assigned_program_hash, \
+                     current_program_hash, schedule_interval_s, firmware_abi_version, \
+                     last_battery_mv, last_seen_epoch_s FROM nodes",
+                )
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let rows = stmt
+                .query_map([], row_to_node)
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let mut nodes = Vec::new();
+            for row in rows {
+                nodes.push(row.map_err(|e| StorageError::Internal(e.to_string()))?);
+            }
+            Ok(nodes)
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn get_node(&self, node_id: &str) -> Result<Option<NodeRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        conn.query_row(
-            "SELECT node_id, key_hint, psk, assigned_program_hash, \
-             current_program_hash, schedule_interval_s, firmware_abi_version, \
-             last_battery_mv, last_seen_epoch_s FROM nodes WHERE node_id = ?1",
-            params![node_id],
-            row_to_node,
-        )
-        .optional()
-        .map_err(|e| StorageError::Internal(e.to_string()))
+        let conn = Arc::clone(&self.conn);
+        let node_id = node_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            conn.query_row(
+                "SELECT node_id, key_hint, psk, assigned_program_hash, \
+                 current_program_hash, schedule_interval_s, firmware_abi_version, \
+                 last_battery_mv, last_seen_epoch_s FROM nodes WHERE node_id = ?1",
+                params![node_id],
+                row_to_node,
+            )
+            .optional()
+            .map_err(|e| StorageError::Internal(e.to_string()))
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn get_nodes_by_key_hint(&self, key_hint: u16) -> Result<Vec<NodeRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT node_id, key_hint, psk, assigned_program_hash, \
-                 current_program_hash, schedule_interval_s, firmware_abi_version, \
-                 last_battery_mv, last_seen_epoch_s FROM nodes WHERE key_hint = ?1",
-            )
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![key_hint as u32], row_to_node)
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let mut nodes = Vec::new();
-        for row in rows {
-            nodes.push(row.map_err(|e| StorageError::Internal(e.to_string()))?);
-        }
-        Ok(nodes)
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT node_id, key_hint, psk, assigned_program_hash, \
+                     current_program_hash, schedule_interval_s, firmware_abi_version, \
+                     last_battery_mv, last_seen_epoch_s FROM nodes WHERE key_hint = ?1",
+                )
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![key_hint as u32], row_to_node)
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let mut nodes = Vec::new();
+            for row in rows {
+                nodes.push(row.map_err(|e| StorageError::Internal(e.to_string()))?);
+            }
+            Ok(nodes)
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
+        let conn = Arc::clone(&self.conn);
+        let record = record.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
+            conn.execute(
+                "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
+                 current_program_hash, schedule_interval_s, firmware_abi_version, \
+                 last_battery_mv, last_seen_epoch_s) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 ON CONFLICT(node_id) DO UPDATE SET \
+                 key_hint = excluded.key_hint, \
+                 psk = excluded.psk, \
+                 assigned_program_hash = excluded.assigned_program_hash, \
+                 current_program_hash = excluded.current_program_hash, \
+                 schedule_interval_s = excluded.schedule_interval_s, \
+                 firmware_abi_version = excluded.firmware_abi_version, \
+                 last_battery_mv = excluded.last_battery_mv, \
+                 last_seen_epoch_s = excluded.last_seen_epoch_s",
+                params![
+                    record.node_id,
+                    record.key_hint as u32,
+                    record.psk.as_slice(),
+                    record.assigned_program_hash,
+                    record.current_program_hash,
+                    record.schedule_interval_s,
+                    record.firmware_abi_version,
+                    record.last_battery_mv,
+                    last_seen_epoch,
+                ],
+            )
             .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
-        conn.execute(
-            "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
-             current_program_hash, schedule_interval_s, firmware_abi_version, \
-             last_battery_mv, last_seen_epoch_s) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
-             ON CONFLICT(node_id) DO UPDATE SET \
-             key_hint = excluded.key_hint, \
-             psk = excluded.psk, \
-             assigned_program_hash = excluded.assigned_program_hash, \
-             current_program_hash = excluded.current_program_hash, \
-             schedule_interval_s = excluded.schedule_interval_s, \
-             firmware_abi_version = excluded.firmware_abi_version, \
-             last_battery_mv = excluded.last_battery_mv, \
-             last_seen_epoch_s = excluded.last_seen_epoch_s",
-            params![
-                record.node_id,
-                record.key_hint as u32,
-                record.psk.as_slice(),
-                record.assigned_program_hash,
-                record.current_program_hash,
-                record.schedule_interval_s,
-                record.firmware_abi_version,
-                record.last_battery_mv,
-                last_seen_epoch,
-            ],
-        )
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     async fn delete_node(&self, node_id: &str) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        conn.execute("DELETE FROM nodes WHERE node_id = ?1", params![node_id])
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        Ok(())
+        let conn = Arc::clone(&self.conn);
+        let node_id = node_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            conn.execute("DELETE FROM nodes WHERE node_id = ?1", params![node_id])
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 
     // ── Program library ────────────────────────────────────────
 
     async fn get_program(&self, hash: &[u8]) -> Result<Option<ProgramRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
+        let conn = Arc::clone(&self.conn);
+        let hash = hash.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            conn.query_row(
+                "SELECT hash, image, size, verification_profile FROM programs WHERE hash = ?1",
+                params![hash],
+                |row| {
+                    let profile_str: String = row.get(3)?;
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
+                },
+            )
+            .optional()
+            .map_err(|e| StorageError::Internal(e.to_string()))?
+            .map(
+                |(hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String)| {
+                    Ok(ProgramRecord {
+                        hash,
+                        image,
+                        size,
+                        verification_profile: parse_profile(&profile_str)?,
+                    })
+                },
+            )
+            .transpose()
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let record = record.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            conn.execute(
+                "INSERT OR REPLACE INTO programs (hash, image, size, verification_profile) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    record.hash,
+                    record.image,
+                    record.size,
+                    profile_to_str(&record.verification_profile),
+                ],
+            )
             .map_err(|e| StorageError::Internal(e.to_string()))?;
-        conn.query_row(
-            "SELECT hash, image, size, verification_profile FROM programs WHERE hash = ?1",
-            params![hash],
-            |row| {
-                let profile_str: String = row.get(3)?;
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
-            },
-        )
-        .optional()
-        .map_err(|e| StorageError::Internal(e.to_string()))?
-        .map(
-            |(hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String)| {
-                Ok(ProgramRecord {
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn delete_program(&self, hash: &[u8]) -> Result<(), StorageError> {
+        let conn = Arc::clone(&self.conn);
+        let hash = hash.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            conn.execute("DELETE FROM programs WHERE hash = ?1", params![hash])
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
+    }
+
+    async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let mut stmt = conn
+                .prepare("SELECT hash, image, size, verification_profile FROM programs")
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let profile_str: String = row.get(3)?;
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
+                })
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let mut programs = Vec::new();
+            for row in rows {
+                let (hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String) =
+                    row.map_err(|e| StorageError::Internal(e.to_string()))?;
+                programs.push(ProgramRecord {
                     hash,
                     image,
                     size,
                     verification_profile: parse_profile(&profile_str)?,
-                })
-            },
-        )
-        .transpose()
-    }
-
-    async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        conn.execute(
-            "INSERT OR REPLACE INTO programs (hash, image, size, verification_profile) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                record.hash,
-                record.image,
-                record.size,
-                profile_to_str(&record.verification_profile),
-            ],
-        )
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn delete_program(&self, hash: &[u8]) -> Result<(), StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        conn.execute("DELETE FROM programs WHERE hash = ?1", params![hash])
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let mut stmt = conn
-            .prepare("SELECT hash, image, size, verification_profile FROM programs")
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |row| {
-                let profile_str: String = row.get(3)?;
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
-            })
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
-        let mut programs = Vec::new();
-        for row in rows {
-            let (hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String) =
-                row.map_err(|e| StorageError::Internal(e.to_string()))?;
-            programs.push(ProgramRecord {
-                hash,
-                image,
-                size,
-                verification_profile: parse_profile(&profile_str)?,
-            });
-        }
-        Ok(programs)
+                });
+            }
+            Ok(programs)
+        })
+        .await
+        .map_err(|e| StorageError::Internal(format!("spawn_blocking: {e}")))?
     }
 }
 

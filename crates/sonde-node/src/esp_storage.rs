@@ -30,22 +30,17 @@ pub struct NvsStorage {
 impl NvsStorage {
     /// Open (or create) the `"sonde"` NVS namespace.
     ///
-    /// Clears the `early_wake` flag on construction. Because NVS
-    /// survives power loss (unlike RTC SRAM), a stale flag from a
-    /// prior cycle could persist across an unexpected reboot. Clearing
-    /// on boot ensures the flag only takes effect for the wake cycle
-    /// that set it.
+    /// NOTE: The `early_wake` flag is stored in NVS as a temporary
+    /// simplification. It should be migrated to `#[link_section = ".rtc.data"]`
+    /// RTC slow memory so it naturally resets on power loss and avoids
+    /// flash wear. See the TODO in `set_early_wake_flag`.
     ///
-    /// TODO: Move `early_wake` to an `#[link_section = ".rtc.data"]`
-    /// static so it naturally resets on power loss and avoids NVS
-    /// flash wear. This NVS approach is a temporary simplification.
+    /// The flag is NOT cleared here — `determine_wake_reason()` in
+    /// `run_wake_cycle` reads it via `take_early_wake_flag()` which
+    /// atomically reads and clears.
     pub fn new(partition: EspNvsPartition<NvsDefault>) -> Result<Self, NodeError> {
-        let mut nvs = EspNvs::new(partition, NVS_NAMESPACE, true)
+        let nvs = EspNvs::new(partition, NVS_NAMESPACE, true)
             .map_err(|e| NodeError::StorageError(format!("NVS open: {:?}", e)))?;
-        // Clear stale early-wake flag from prior cycle / unexpected reboot.
-        if let Err(e) = nvs.set_u32("early_wake", 0) {
-            log::warn!("failed to clear early_wake on boot: {:?}", e);
-        }
         Ok(Self { nvs })
     }
 }

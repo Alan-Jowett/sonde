@@ -38,8 +38,7 @@ pub fn handle_pairing_message<S: PlatformStorage>(
                 Err(_) => PAIRING_STATUS_STORAGE_ERROR,
             };
             let ack = ModemMessage::PairAck(PairAck { status });
-            let frame =
-                encode_modem_frame(&ack).expect("fixed-size PairAck encoding cannot fail");
+            let frame = encode_modem_frame(&ack).expect("fixed-size PairAck encoding cannot fail");
             (Some(frame), PairingAction::Continue)
         }
         ModemMessage::ResetRequest => {
@@ -49,8 +48,7 @@ pub fn handle_pairing_message<S: PlatformStorage>(
                 Err(_) => PAIRING_STATUS_STORAGE_ERROR,
             };
             let ack = ModemMessage::ResetAck(ResetAck { status });
-            let frame =
-                encode_modem_frame(&ack).expect("fixed-size ResetAck encoding cannot fail");
+            let frame = encode_modem_frame(&ack).expect("fixed-size ResetAck encoding cannot fail");
             (Some(frame), PairingAction::Continue)
         }
         ModemMessage::IdentityRequest => {

@@ -19,7 +19,12 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const IDENTITY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Pair a node by sending `PAIR_REQUEST` with the given `key_hint` and PSK.
-pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE], json: bool) -> Result<(), String> {
+pub fn pair_node(
+    port_name: &str,
+    key_hint: u16,
+    psk: [u8; PSK_SIZE],
+    json: bool,
+) -> Result<(), String> {
     let mut port = serialport::new(port_name, 115_200)
         .timeout(READY_TIMEOUT)
         .open()

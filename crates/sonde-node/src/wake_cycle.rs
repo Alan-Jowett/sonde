@@ -338,16 +338,27 @@ where
         let _guard = crate::bpf_dispatch::DispatchGuard;
 
         let exec_result = match crate::bpf_dispatch::register_all(interpreter) {
-            Ok(()) => match interpreter.load(&program.bytecode, &map_ptrs, &program.map_defs) {
-                Ok(()) => {
-                    let ctx_ptr = &ctx as *const SondeContext as u64;
-                    interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
+            Ok(()) => {
+                // Ephemeral programs have empty map_defs. Pass matching
+                // empty slices so the adapter's length check passes.
+                // Resident programs use the full map metadata.
+                let (load_ptrs, load_defs): (&[u64], &[sonde_protocol::MapDef]) =
+                    if program.map_defs.is_empty() {
+                        (&[], &[])
+                    } else {
+                        (&map_ptrs, &program.map_defs)
+                    };
+                match interpreter.load(&program.bytecode, load_ptrs, load_defs) {
+                    Ok(()) => {
+                        let ctx_ptr = &ctx as *const SondeContext as u64;
+                        interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
+                    }
+                    Err(err) => {
+                        log::error!("BPF program load failed: {}", err);
+                        Err(err)
+                    }
                 }
-                Err(err) => {
-                    log::error!("BPF program load failed: {}", err);
-                    Err(err)
-                }
-            },
+            }
             Err(err) => {
                 log::error!("BPF helper registration failed: {}", err);
                 Err(err)

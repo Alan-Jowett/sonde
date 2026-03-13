@@ -8,7 +8,7 @@
 //! `Gateway::process_frame` synchronously via `block_in_place`.
 //! Modem / ESP-NOW radio integration will be added in a later phase.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,12 +23,13 @@ use sonde_gateway::storage::Storage;
 
 use sonde_node::bpf_helpers::SondeContext;
 use sonde_node::bpf_runtime::{BpfError, BpfInterpreter, HelperFn};
-use sonde_node::error::NodeResult;
+use sonde_node::error::{NodeError, NodeResult};
 use sonde_node::hal::{BatteryReader, Hal};
 use sonde_node::map_storage::MapStorage;
 use sonde_node::traits::{Clock, PairingSerial, PlatformStorage, Rng, Transport as NodeTransport};
 use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
 
+use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage};
 use sonde_protocol::{HmacProvider, Sha256Provider};
 
 // ---------------------------------------------------------------------------
@@ -551,10 +552,6 @@ impl BpfInterpreter for MockBpfInterpreter {
 // ---------------------------------------------------------------------------
 // MockPairingSerial — simulated USB-CDC serial for pairing tests
 // ---------------------------------------------------------------------------
-
-use sonde_node::error::NodeError;
-use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage};
-use std::collections::VecDeque;
 
 /// Simulated serial port for testing [`sonde_node::pairing::run_pairing_mode`].
 ///

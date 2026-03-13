@@ -110,8 +110,9 @@ impl PairingSerial for EspUsbSerialJtag {
                 return Err(NodeError::Transport("USB Serial/JTAG write error".into()));
             }
             if n == 0 {
-                // Timeout -- no host reading. Not fatal; caller decides.
-                return Ok(());
+                // Timeout — host not reading. Return error so caller
+                // knows the frame was not fully delivered.
+                return Err(NodeError::Transport("USB Serial/JTAG write timeout".into()));
             }
             remaining = &remaining[n as usize..];
         }

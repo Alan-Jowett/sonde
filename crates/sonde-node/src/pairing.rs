@@ -97,10 +97,14 @@ pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
     storage: &mut S,
     map_storage: &mut MapStorage,
 ) {
+    // Pre-compute the PAIRING_READY frame once to avoid repeated
+    // heap allocations during the idle re-send loop.
+    let ready_frame = pairing_ready_frame();
+
     // Send PAIRING_READY on connection. Ignore write errors here —
     // the USB host may not have opened the port yet.
-    if let Some(frame) = pairing_ready_frame() {
-        let _ = serial.write(&frame);
+    if let Some(ref frame) = ready_frame {
+        let _ = serial.write(frame);
     }
 
     let mut decoder = FrameDecoder::new();
@@ -115,8 +119,8 @@ pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
                 // periodically so a host that connects later discovers us.
                 idle_ticks += 1;
                 if idle_ticks % 2 == 0 {
-                    if let Some(frame) = pairing_ready_frame() {
-                        let _ = serial.write(&frame);
+                    if let Some(ref frame) = ready_frame {
+                        let _ = serial.write(frame);
                     }
                 }
                 continue;

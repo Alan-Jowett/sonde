@@ -162,7 +162,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 **Validation:** [protocol-crate-validation.md](protocol-crate-validation.md) (41 tests)  
 **Runtime dependencies:** `ciborium` only. **Dev-dependencies (for tests):** `hmac`, `sha2`.
 
-**Status:** Complete. All tests pass (`cargo test -p sonde-protocol`): 41 validation tests plus 43 modem codec tests.
+**Status:** Complete. All tests pass (`cargo test -p sonde-protocol`).
 
 **Module order:**
 
@@ -193,7 +193,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 **Validation:** [gateway-validation.md](gateway-validation.md)  
 **Key dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail`, `rusqlite`, `hmac`, `sha2`, `ciborium`, `clap`, `tokio-serial`, `tracing`. See `crates/sonde-gateway/Cargo.toml` for the full list.
 
-**Status:** Complete. 106 tests pass across 5 integration test files (phase2a through phase2d). Uses `sqlite_storage.rs` for persistence (added beyond original plan). Binary entry point is `src/bin/gateway.rs`.
+**Status:** Complete. All tests pass (`cargo test -p sonde-gateway`) across integration test files (phase2a through phase2d) and unit tests within source modules. Uses `sqlite_storage.rs` for persistence (added beyond original plan). Binary entry point is `src/bin/gateway.rs`.
 
 Phase 2 is split into three sub-phases, each producing a testable artifact:
 
@@ -327,7 +327,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 **Status:** Complete. All 4 modules implemented (`grpc_client.rs`, `usb.rs`, `main.rs`, `lib.rs`). USB pairing supports `--format json` output. No automated tests (USB pairing requires hardware; gRPC client requires a running gateway).
 
-The admin CLI connects to the gateway via a Unix domain socket on Linux/macOS (default: `/var/run/sonde/admin.sock`) or a Windows named pipe (default: `\\.\pipe\sonde-admin`). No TCP port is used.
+The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/run/sonde/admin.sock`) or a Windows named pipe (default: `\\.\pipe\sonde-admin`). **Note:** The gateway binary currently starts its gRPC server on a TCP `SocketAddr` (`--admin-addr`); a UDS/pipe listener on the gateway side is needed to match the admin CLI's transport.
 
 **Module order:**
 
@@ -429,12 +429,12 @@ cargo build --workspace
 # Test everything (what CI runs)
 cargo test --workspace
 
-# Test individual crates
-cargo test -p sonde-protocol    # 84 tests
-cargo test -p sonde-gateway     # 106 tests
-cargo test -p sonde-node        # 101 tests
-cargo test -p sonde-bpf         # 38 tests
-cargo test -p sonde-modem       # 36 tests
+# Test individual crates (counts may change as tests are added)
+cargo test -p sonde-protocol
+cargo test -p sonde-gateway
+cargo test -p sonde-node
+cargo test -p sonde-bpf
+cargo test -p sonde-modem
 
 # Build node firmware for ESP32-C3
 cargo build -p sonde-node --target riscv32imc-esp-espidf

@@ -79,12 +79,15 @@ jobs:
       # ------------------------------------------------------------------ #
 
       - name: Build node firmware (ESP32-C3, firmware profile)
-        # Source export-esp.sh to add ESP GCC/LLVM to PATH and set
-        # LIBCLANG_PATH/CLANG_PATH for bindgen.  Use `+esp` to select the
-        # Rust toolchain installed by espup (not the default stable).
-        # -Zbuild-std is required because the esp toolchain does not ship
-        # pre-compiled std for the riscv32imc-esp-espidf target.
+        # Source IDF export.sh first to put IDF host tools on PATH — this is
+        # what makes `riscv32-esp-elf-gcc` (the RISC-V linker) visible to
+        # Cargo/rustc.  Then source export-esp.sh from espup to overlay the
+        # Espressif LLVM/Clang and set LIBCLANG_PATH/CLANG_PATH for bindgen.
+        # Use `+esp` to select the Rust toolchain installed by espup (not
+        # the default stable).  -Zbuild-std is required because the esp
+        # toolchain does not ship pre-compiled std for riscv32imc-esp-espidf.
         run: |
+          . "$IDF_PATH/export.sh"
           . "$HOME/export-esp.sh"
           cargo +esp build \
             -p sonde-node \

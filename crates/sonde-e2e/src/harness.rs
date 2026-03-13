@@ -35,11 +35,18 @@ use sonde_protocol::{HmacProvider, Sha256Provider};
 // E2eTestEnv — gateway-side test environment
 // ---------------------------------------------------------------------------
 
+/// Shared pending-command queue for test assertions.
+pub type PendingCommandMap = Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>;
+
 /// Top-level test environment holding the gateway and its backing storage.
+///
+/// `pending_commands` is `Some` when created via [`new`] (shared with the
+/// gateway), and `None` when created via [`new_with_handler`] (the gateway
+/// owns its own internal command queue).
 pub struct E2eTestEnv {
     pub gateway: Arc<Gateway>,
     pub storage: Arc<SqliteStorage>,
-    pub pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+    pub pending_commands: Option<PendingCommandMap>,
 }
 
 impl Default for E2eTestEnv {
@@ -55,8 +62,7 @@ impl E2eTestEnv {
             SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
         );
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
-        let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let pending_commands: PendingCommandMap = Arc::new(RwLock::new(HashMap::new()));
         let gateway = Arc::new(Gateway::new_with_pending(
             storage.clone(),
             pending_commands.clone(),
@@ -65,7 +71,7 @@ impl E2eTestEnv {
         Self {
             gateway,
             storage,
-            pending_commands,
+            pending_commands: Some(pending_commands),
         }
     }
 
@@ -96,7 +102,7 @@ impl E2eTestEnv {
         Self {
             gateway,
             storage,
-            pending_commands: Arc::new(RwLock::new(HashMap::new())),
+            pending_commands: None,
         }
     }
 }

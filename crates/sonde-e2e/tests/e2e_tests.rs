@@ -27,17 +27,17 @@ fn make_test_program() -> (ProgramRecord, Vec<u8>) {
 /// blob `[0xAA, 0xBB]` on the stack — fire-and-forget APP_DATA.
 fn make_send_program() -> (ProgramRecord, Vec<u8>) {
     let bytecode = [
-        // sth [r10-8], 0xBBAA   — store 2 bytes on stack
-        // BPF_STX_MEM_H: opcode=0x6b, dst=r10(fp), src=0, off=-8, imm=0xBBAA
-        // Actually, BPF_ST_MEM_H: opcode=0x6a, dst=r10(fp), off=-8, imm=0xBBAA
-        0x6a, 0x0a, 0xf8, 0xff, 0xAA, 0xBB, 0x00, 0x00, // mov r1, r10  — r1 = fp
+        // sth [r10-8], 0xBBAA  — store 2-byte immediate on stack
+        0x6a, 0x0a, 0xf8, 0xff, 0xAA, 0xBB, 0x00, 0x00,
+        // mov r1, r10          — r1 = frame pointer
         0xbf, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        // add r1, -8   — r1 = fp - 8 (pointer to data)
+        // add r1, -8           — r1 = fp - 8 (pointer to data)
         0x07, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff,
-        // mov r2, 2    — r2 = blob length
+        // mov r2, 2            — r2 = blob length
         0xb7, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
-        // call 8       — helper_send(r1=ptr, r2=len)
-        0x85, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // mov r0, 0
+        // call 8               — helper_send(r1=ptr, r2=len)
+        0x85, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+        // mov r0, 0            — return 0
         0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
         0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
@@ -67,15 +67,20 @@ fn make_program_from_bytecode(
 
 /// Read a single modem message from an async stream using `FrameDecoder`.
 ///
-/// Handles partial reads and frame coalescing correctly.
+/// Handles partial reads, frame coalescing, and empty-frame errors.
 async fn read_modem_msg(
     reader: &mut (impl tokio::io::AsyncReadExt + Unpin),
     decoder: &mut sonde_protocol::modem::FrameDecoder,
     buf: &mut [u8],
 ) -> sonde_protocol::modem::ModemMessage {
+    use sonde_protocol::modem::ModemCodecError;
+
     loop {
-        if let Ok(Some(msg)) = decoder.decode() {
-            return msg;
+        match decoder.decode() {
+            Ok(Some(msg)) => return msg,
+            Ok(None) => {}
+            Err(ModemCodecError::EmptyFrame) => continue,
+            Err(e) => panic!("modem decode error: {e}"),
         }
         let n = reader.read(buf).await.expect("read from modem stream");
         assert!(n > 0, "unexpected EOF on modem stream");
@@ -232,7 +237,8 @@ async fn t_e2e_020_update_schedule() {
     assert_eq!(node.storage.read_schedule().0, 120);
 
     // Pending command consumed
-    let cmds = env.pending_commands.read().await;
+    let pending = env.pending_commands.as_ref().unwrap();
+    let cmds = pending.read().await;
     assert!(cmds.get("sched-node").is_none_or(|v| v.is_empty()));
 }
 

@@ -73,10 +73,9 @@ impl BpfInterpreter for SondeBpfInterpreter {
             )));
         }
 
-        self.bytecode = Some(bytecode.to_vec());
-
         // Build MapRegion descriptors from map_ptrs + map_defs.
-        self.map_regions.clear();
+        // Use a temporary vec so self.map_regions is only updated on success.
+        let mut new_regions = Vec::with_capacity(map_ptrs.len());
         for (i, (&ptr, def)) in map_ptrs.iter().zip(map_defs.iter()).enumerate() {
             if ptr == 0 {
                 return Err(BpfError::LoadError(format!("map {i}: null pointer")));
@@ -87,7 +86,7 @@ impl BpfInterpreter for SondeBpfInterpreter {
             let total_bytes = entry_size
                 .checked_mul(def.max_entries as u64)
                 .ok_or_else(|| BpfError::LoadError(format!("map {i}: total size overflow")))?;
-            self.map_regions.push(MapRegion {
+            new_regions.push(MapRegion {
                 relocated_ptr: ptr,
                 value_size: def.value_size,
                 data_start: ptr,
@@ -96,6 +95,10 @@ impl BpfInterpreter for SondeBpfInterpreter {
                 })?,
             });
         }
+
+        // Commit only after all validation passes.
+        self.bytecode = Some(bytecode.to_vec());
+        self.map_regions = new_regions;
 
         Ok(())
     }

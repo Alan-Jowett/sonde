@@ -341,13 +341,15 @@ where
             Ok(()) => {
                 // Ephemeral programs don't declare their own maps but can
                 // access the resident program's maps (read-only).  Derive
-                // map metadata from the current MapStorage allocation.
-                let resident_defs: Vec<sonde_protocol::MapDef> = (0..map_storage.map_count())
-                    .filter_map(|i| map_storage.get(i).map(|m| m.def.clone()))
-                    .collect();
+                // map metadata from the current MapStorage allocation only
+                // when needed to avoid per-cycle allocation for resident programs.
+                let load_defs_owned;
                 let (load_ptrs, load_defs): (&[u64], &[sonde_protocol::MapDef]) =
-                    if program.map_defs.is_empty() && !resident_defs.is_empty() {
-                        (&map_ptrs, &resident_defs)
+                    if program.map_defs.is_empty() && map_storage.map_count() > 0 {
+                        load_defs_owned = (0..map_storage.map_count())
+                            .filter_map(|i| map_storage.get(i).map(|m| m.def.clone()))
+                            .collect::<Vec<_>>();
+                        (&map_ptrs, &load_defs_owned)
                     } else {
                         (&map_ptrs, &program.map_defs)
                     };

@@ -215,7 +215,7 @@ The same pre-checks apply as for `mem_store`: scalars and `MapDescriptor` are re
 | `mem_store` | 1 | Write N bytes to validated region |
 | `mem_atomic32` | 1 | 32-bit atomic RMW |
 | `mem_atomic64` | 1 | 64-bit atomic RMW |
-| **Total** | **5** | vs. **~20** in the current interpreter |
+| **Total** | **5** | vs. many scattered sites in a typical interpreter |
 
 Every `unsafe` block is preceded by the same three-step validation: (1) confirm pointer provenance, (2) reject non-dereferenceable tags, (3) bounds-check `[addr, addr+N)` against `[region.base, region.end)`.  This pattern is auditable in one place.
 
@@ -254,16 +254,16 @@ BPF ALU instructions have the form `dst = dst OP src` (or `dst = dst OP imm`).  
 | ADD | pointer | scalar | pointer (same region as dst) |
 | ADD | scalar | pointer | pointer (same region as src) |
 | ADD | scalar | scalar | scalar |
-| ADD | pointer | pointer | **error** (InvalidPointerArithmetic) |
+| ADD | pointer | pointer | **error** (`InvalidPointerArithmetic`) |
 | SUB | pointer | scalar | pointer (same region as dst) |
 | SUB | pointer(A) | pointer(A) | scalar (difference within same region) |
-| SUB | pointer(A) | pointer(B) | **error** (cross-region subtraction) |
+| SUB | pointer(A) | pointer(B) | **error** (`InvalidPointerArithmetic`) |
 | SUB | scalar | scalar | scalar |
-| SUB | scalar | pointer | **error** |
+| SUB | scalar | pointer | **error** (`InvalidPointerArithmetic`) |
 | MUL, DIV, MOD, LSH, RSH, ARSH | any | any | scalar |
 | NEG | any | — | scalar |
 | AND, OR, XOR | scalar | scalar | scalar |
-| AND, OR, XOR | pointer | any | **error** |
+| AND, OR, XOR | pointer | any | **error** (`InvalidPointerArithmetic`) |
 | MOV (reg) | — | any | inherits src tag |
 | MOV (imm) | — | — | scalar |
 

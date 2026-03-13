@@ -845,7 +845,7 @@ pub fn execute_program(
                 ) {
                     let addr = (reg[dst].value as i64).wrapping_add(insn.off as i64) as u64;
                     if let Some(region) = reg[src].region {
-                        if addr % 8 == 0 {
+                        if addr.is_multiple_of(8) {
                             spill_tracker.record_spill(stack_base, addr, region);
                         }
                     } else {
@@ -1629,8 +1629,8 @@ pub fn execute_program(
                             }
 
                             // Clobber R1-R5 tags (values left as-is).
-                            for r in 1..=5 {
-                                reg[r].region = None;
+                            for r in &mut reg[1..=5] {
+                                r.region = None;
                             }
                         } else {
                             return Err(BpfError::UnknownHelper { pc: pc - 1, id });

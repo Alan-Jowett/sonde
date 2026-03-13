@@ -2225,6 +2225,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonde-e2e"
+version = "0.1.0"
+dependencies = [
+ "hmac",
+ "sha2",
+ "sonde-gateway",
+ "sonde-node",
+ "sonde-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "sonde-gateway"
 version = "0.1.0"
 dependencies = [

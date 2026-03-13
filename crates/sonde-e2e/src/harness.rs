@@ -1,0 +1,360 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
+//! Bridge harness that wires gateway and node together via in-memory frame
+//! queues for end-to-end integration testing.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::RwLock;
+
+use sonde_gateway::engine::{Gateway, PendingCommand};
+use sonde_gateway::registry::NodeRecord;
+use sonde_gateway::session::SessionManager;
+use sonde_gateway::sqlite_storage::SqliteStorage;
+use sonde_gateway::storage::Storage;
+
+use sonde_node::bpf_helpers::SondeContext;
+use sonde_node::bpf_runtime::{BpfError, BpfInterpreter, HelperFn};
+use sonde_node::error::NodeResult;
+use sonde_node::hal::{BatteryReader, Hal};
+use sonde_node::map_storage::MapStorage;
+use sonde_node::traits::{Clock, PlatformStorage, Rng, Transport as NodeTransport};
+use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
+
+use sonde_protocol::{HmacProvider, Sha256Provider};
+
+// ---------------------------------------------------------------------------
+// E2eTestEnv — gateway-side test environment
+// ---------------------------------------------------------------------------
+
+/// Top-level test environment holding the gateway and its backing storage.
+pub struct E2eTestEnv {
+    pub gateway: Arc<Gateway>,
+    pub storage: Arc<SqliteStorage>,
+    pub pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
+}
+
+impl E2eTestEnv {
+    /// Create a fresh in-memory test environment.
+    pub async fn new() -> Self {
+        let storage = Arc::new(SqliteStorage::in_memory().unwrap());
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+        let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let gateway = Arc::new(Gateway::new_with_pending(
+            storage.clone(),
+            pending_commands.clone(),
+            session_manager,
+        ));
+        Self {
+            gateway,
+            storage,
+            pending_commands,
+        }
+    }
+
+    /// Register a node in the gateway's storage.
+    pub async fn register_node(&self, node_id: &str, key_hint: u16, psk: [u8; 32]) {
+        let node = NodeRecord::new(node_id.into(), key_hint, psk);
+        self.storage.upsert_node(&node).await.unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NodeProxy — drives one node's wake cycle through the gateway
+// ---------------------------------------------------------------------------
+
+/// Lightweight handle representing a remote node.
+pub struct NodeProxy {
+    pub node_id: String,
+    pub key_hint: u16,
+    pub psk: [u8; 32],
+    pub mac: Vec<u8>,
+    pub schedule_interval_s: u32,
+}
+
+impl NodeProxy {
+    pub fn new(node_id: &str, key_hint: u16, psk: [u8; 32]) -> Self {
+        Self {
+            node_id: node_id.into(),
+            key_hint,
+            psk,
+            mac: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+            schedule_interval_s: 60,
+        }
+    }
+
+    /// Run one full wake cycle, relaying every frame through the real gateway.
+    ///
+    /// Uses `block_in_place` so the synchronous node code can call the async
+    /// gateway without deadlocking the single-threaded test reactor.
+    pub async fn run_wake_cycle(&self, env: &E2eTestEnv) -> WakeCycleOutcome {
+        let mut node_storage =
+            MockNodeStorage::new_paired(self.key_hint, self.psk, self.schedule_interval_s);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let battery = MockBattery;
+        let mut interpreter = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(4096);
+        let hmac = TestHmac;
+        let sha = TestSha256;
+
+        let mut transport = BridgeTransport::new(env.gateway.clone(), self.mac.clone());
+
+        run_wake_cycle(
+            &mut transport,
+            &mut node_storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &battery,
+            &mut interpreter,
+            &mut map_storage,
+            &hmac,
+            &sha,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BridgeTransport — relays node frames through the gateway
+// ---------------------------------------------------------------------------
+
+struct BridgeTransport {
+    gateway: Arc<Gateway>,
+    peer: Vec<u8>,
+    pending_response: Option<Vec<u8>>,
+    rt: tokio::runtime::Handle,
+}
+
+impl BridgeTransport {
+    fn new(gateway: Arc<Gateway>, peer: Vec<u8>) -> Self {
+        Self {
+            gateway,
+            peer,
+            pending_response: None,
+            rt: tokio::runtime::Handle::current(),
+        }
+    }
+}
+
+impl NodeTransport for BridgeTransport {
+    fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+        let gateway = self.gateway.clone();
+        let peer = self.peer.clone();
+        let frame = frame.to_vec();
+        let response = tokio::task::block_in_place(|| {
+            self.rt
+                .block_on(async { gateway.process_frame(&frame, peer).await })
+        });
+        self.pending_response = response;
+        Ok(())
+    }
+
+    fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+        Ok(self.pending_response.take())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Crypto providers (real HMAC-SHA256 / SHA-256)
+// ---------------------------------------------------------------------------
+
+struct TestHmac;
+
+impl HmacProvider for TestHmac {
+    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
+        use hmac::Mac;
+        let mut mac =
+            hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key length error");
+        mac.update(data);
+        mac.finalize().into_bytes().into()
+    }
+
+    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
+        self.compute(key, data) == *expected
+    }
+}
+
+struct TestSha256;
+
+impl Sha256Provider for TestSha256 {
+    fn hash(&self, data: &[u8]) -> [u8; 32] {
+        use sha2::Digest;
+        sha2::Sha256::digest(data).into()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Node-side mocks (derived from sonde-node wake_cycle.rs test mocks)
+// ---------------------------------------------------------------------------
+
+struct MockNodeStorage {
+    key: Option<(u16, [u8; 32])>,
+    schedule_interval: u32,
+    active_partition: u8,
+    programs: [Option<Vec<u8>>; 2],
+    early_wake_flag: bool,
+}
+
+impl MockNodeStorage {
+    fn new_paired(key_hint: u16, psk: [u8; 32], schedule_interval_s: u32) -> Self {
+        Self {
+            key: Some((key_hint, psk)),
+            schedule_interval: schedule_interval_s,
+            active_partition: 0,
+            programs: [None, None],
+            early_wake_flag: false,
+        }
+    }
+}
+
+impl PlatformStorage for MockNodeStorage {
+    fn read_key(&self) -> Option<(u16, [u8; 32])> {
+        self.key
+    }
+    fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
+        self.key = Some((key_hint, *psk));
+        Ok(())
+    }
+    fn erase_key(&mut self) -> NodeResult<()> {
+        self.key = None;
+        Ok(())
+    }
+    fn read_schedule(&self) -> (u32, u8) {
+        (self.schedule_interval, self.active_partition)
+    }
+    fn write_schedule_interval(&mut self, interval_s: u32) -> NodeResult<()> {
+        self.schedule_interval = interval_s;
+        Ok(())
+    }
+    fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
+        self.active_partition = partition;
+        Ok(())
+    }
+    fn reset_schedule(&mut self) -> NodeResult<()> {
+        self.schedule_interval = 60;
+        self.active_partition = 0;
+        Ok(())
+    }
+    fn read_program(&self, partition: u8) -> Option<Vec<u8>> {
+        self.programs[partition as usize].clone()
+    }
+    fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
+        self.programs[partition as usize] = Some(image.to_vec());
+        Ok(())
+    }
+    fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
+        self.programs[partition as usize] = None;
+        Ok(())
+    }
+    fn take_early_wake_flag(&mut self) -> bool {
+        let v = self.early_wake_flag;
+        self.early_wake_flag = false;
+        v
+    }
+    fn set_early_wake_flag(&mut self) -> NodeResult<()> {
+        self.early_wake_flag = true;
+        Ok(())
+    }
+}
+
+struct MockHal;
+
+impl Hal for MockHal {
+    fn i2c_read(&mut self, _h: u32, _buf: &mut [u8]) -> i32 {
+        0
+    }
+    fn i2c_write(&mut self, _h: u32, _data: &[u8]) -> i32 {
+        0
+    }
+    fn i2c_write_read(&mut self, _h: u32, _w: &[u8], _r: &mut [u8]) -> i32 {
+        0
+    }
+    fn spi_transfer(
+        &mut self,
+        _h: u32,
+        _tx: Option<&[u8]>,
+        _rx: Option<&mut [u8]>,
+        _l: usize,
+    ) -> i32 {
+        0
+    }
+    fn gpio_read(&self, _pin: u32) -> i32 {
+        0
+    }
+    fn gpio_write(&mut self, _pin: u32, _val: u32) -> i32 {
+        0
+    }
+    fn adc_read(&mut self, _ch: u32) -> i32 {
+        0
+    }
+}
+
+struct MockBattery;
+
+impl BatteryReader for MockBattery {
+    fn battery_mv(&self) -> u32 {
+        3300
+    }
+}
+
+struct MockRng(u64);
+
+impl Rng for MockRng {
+    fn random_u64(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+}
+
+struct MockClock;
+
+impl Clock for MockClock {
+    fn elapsed_ms(&self) -> u64 {
+        100
+    }
+    fn delay_ms(&self, _ms: u32) {}
+}
+
+struct MockBpfInterpreter {
+    loaded: bool,
+    executed: bool,
+    execute_result: Result<u64, BpfError>,
+    captured_ctx: Option<SondeContext>,
+}
+
+impl MockBpfInterpreter {
+    fn new() -> Self {
+        Self {
+            loaded: false,
+            executed: false,
+            execute_result: Ok(0),
+            captured_ctx: None,
+        }
+    }
+}
+
+impl BpfInterpreter for MockBpfInterpreter {
+    fn register_helper(&mut self, _id: u32, _func: HelperFn) -> Result<(), BpfError> {
+        Ok(())
+    }
+    fn load(&mut self, _bytecode: &[u8], _map_ptrs: &[u64]) -> Result<(), BpfError> {
+        self.loaded = true;
+        Ok(())
+    }
+    fn execute(&mut self, ctx_ptr: u64, _budget: u64) -> Result<u64, BpfError> {
+        self.executed = true;
+        if ctx_ptr != 0 {
+            // Safety: ctx_ptr points to a SondeContext on the caller's
+            // stack, which is alive for the duration of this call.
+            let ctx = unsafe { &*(ctx_ptr as *const SondeContext) };
+            self.captured_ctx = Some(*ctx);
+        }
+        self.execute_result.clone()
+    }
+}

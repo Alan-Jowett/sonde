@@ -1,0 +1,17 @@
+[package]
+name = "sonde-e2e"
+version = "0.1.0"
+edition = "2021"
+description = "End-to-end integration tests for the sonde platform"
+
+[dependencies]
+sonde-protocol = { path = "../sonde-protocol" }
+sonde-gateway = { path = "../sonde-gateway" }
+sonde-node = { path = "../sonde-node" }
+tokio = { version = "1", features = ["full", "test-util"] }
+hmac = "0.12"
+sha2 = "0.10"
+
+[lib]
+name = "sonde_e2e"
+path = "src/lib.rs"

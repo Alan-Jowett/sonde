@@ -294,6 +294,8 @@ where
             }
         }
 
+        // Clone map pointers — the borrow on map_storage must be released
+        // before bpf_dispatch::install() takes a mutable raw pointer to it.
         let map_ptrs = map_storage.map_pointers().to_vec();
 
         // Build execution context

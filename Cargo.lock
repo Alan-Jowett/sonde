@@ -2217,6 +2217,8 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+ "serialport",
+ "sonde-protocol",
  "tokio",
  "tonic",
  "tonic-prost",

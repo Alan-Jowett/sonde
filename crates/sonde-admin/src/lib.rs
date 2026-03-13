@@ -6,3 +6,4 @@ pub mod pb {
 }
 
 pub mod grpc_client;
+pub mod usb;

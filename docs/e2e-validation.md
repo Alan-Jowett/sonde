@@ -128,7 +128,7 @@ Each test follows this sequence:
 1. **Create channels:** `std::sync::mpsc` pairs for radio simulation (gateway↔nodes).
 2. **Create duplex:** `tokio::io::duplex(4096)` for the serial link between gateway and bridge.
 3. **Create PipeSerial adapter:** Bridges the sync `SerialPort` trait (used by `Bridge`) to the async duplex stream (used by `UsbEspNowTransport`). A background tokio task shuttles bytes between the duplex server half and the adapter's internal ring buffers.
-4. **Start modem bridge:** Spawn a **std::thread** running `Bridge::new(PipeSerial, ChannelRadio, Arc::new(ModemCounters::new())).poll()` in a loop (the bridge is synchronous).
+4. **Start modem bridge:** Spawn a **std::thread** running a bridge poll loop. Construct `let mut bridge = Bridge::new(pipe_serial, channel_radio, ModemCounters::new())` (note: `ModemCounters::new()` already returns `Arc`), then loop calling `bridge.poll()` (the bridge is synchronous).
 5. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK) against the bridge.
 6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)`.
 7. **Register test nodes:** Insert `NodeRecord` into storage with known PSKs.

@@ -6,6 +6,7 @@ members = [
     "crates/sonde-modem",
     "crates/sonde-node",
     "crates/sonde-admin",
+    "crates/sonde-bpf",
     "crates/sonde-e2e",
 ]
 default-members = [

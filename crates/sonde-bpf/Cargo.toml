@@ -1,0 +1,14 @@
+[package]
+name = "sonde-bpf"
+version = "0.1.0"
+edition = "2021"
+description = "A simple, zero-allocation BPF interpreter based on RFC 9669"
+license = "MIT"
+
+[features]
+default = ["std"]
+std = []
+
+[[bin]]
+name = "sonde_bpf_plugin"
+required-features = ["std"]

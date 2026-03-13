@@ -37,6 +37,31 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  bpf-conformance:
+    name: BPF conformance (RFC 9669)
+    runs-on: ubuntu-latest
+    env:
+      CONFORMANCE_IMAGE: "ghcr.io/alan-jowett/bpf_conformance@sha256:547765717557e0f222de71fbf26f4bd9621c0149911aa03296024b469dd4598b"
+      # mem-len: test assumes r2 contains memory length (non-standard register setup)
+      KNOWN_FAILURES: "mem-len"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+
+      - name: Build plugin
+        run: cargo build --release -p sonde-bpf --bin sonde_bpf_plugin
+
+      - name: Run BPF conformance tests
+        run: |
+          docker run -v ${{ github.workspace }}:/sonde --rm \
+            "${{ env.CONFORMANCE_IMAGE }}" \
+            bin/bpf_conformance_runner --test_file_directory tests \
+            --plugin_path /sonde/target/release/sonde_bpf_plugin \
+            --exclude_regex "${{ env.KNOWN_FAILURES }}"
+
   fuzz:
     name: Fuzz test (protocol crate)
     runs-on: ubuntu-latest

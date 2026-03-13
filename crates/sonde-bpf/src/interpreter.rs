@@ -557,10 +557,25 @@ fn mem_atomic64(
 /// # Returns
 /// The value of `r0` when the program exits.
 ///
+/// # Safety
+/// Each [`MapRegion`] in `maps` must satisfy:
+/// - `relocated_ptr` is the address of a valid, live allocation.
+/// - `data_start..data_end` covers the full backing storage of the map
+///   and remains valid for the duration of this call.
+/// - The map storage must not alias `ctx` or the interpreter's internal
+///   BPF stack.
+///
+/// Violating these invariants may cause undefined behavior, because the
+/// interpreter dereferences addresses within the declared map bounds via
+/// raw pointers.
+///
+/// If `maps` is empty (no map access), these requirements are trivially
+/// satisfied and the call is safe.
+///
 /// # Zero-allocation guarantee
 /// All interpreter state (registers, call stack, BPF stack) lives on the
 /// Rust call stack. No `Vec`, `Box`, or heap allocation occurs.
-pub fn execute_program(
+pub unsafe fn execute_program(
     prog: &[u8],
     ctx: &mut [u8],
     helpers: &[HelperDescriptor],
@@ -847,6 +862,10 @@ pub fn execute_program(
                     if let Some(region) = reg[src].region {
                         if addr.is_multiple_of(8) {
                             spill_tracker.record_spill(stack_base, addr, region);
+                        } else {
+                            // Unaligned pointer store — invalidate overlapping slots
+                            // to prevent stale spill records.
+                            spill_tracker.invalidate(stack_base, addr, 8);
                         }
                     } else {
                         spill_tracker.invalidate(stack_base, addr, 8);
@@ -1583,7 +1602,7 @@ pub fn execute_program(
                                     reg[0] = TaggedReg::scalar(result);
                                 }
                                 HelperReturn::MapValueOrNull { map_arg } => {
-                                    if map_arg > 5 {
+                                    if !(1..=5).contains(&map_arg) {
                                         return Err(BpfError::InvalidHelperArgument {
                                             pc: pc - 1,
                                             arg: map_arg,

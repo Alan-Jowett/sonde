@@ -40,9 +40,11 @@ fn run() -> Result<(), String> {
             ret: sonde_bpf::interpreter::HelperReturn::Scalar,
         }];
 
-    let result =
+    // SAFETY: maps is empty — no map regions to validate.
+    let result = unsafe {
         sonde_bpf::interpreter::execute_program(&bytecode, &mut memory, helpers, &[], false)
-            .map_err(|e| format!("{e}"))?;
+    }
+    .map_err(|e| format!("{e}"))?;
 
     println!("{result:x}");
     Ok(())

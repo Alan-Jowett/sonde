@@ -281,7 +281,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 ---
 
-### Phase 3: `sonde-node` crate — ✅ DONE
+### Phase 3: `sonde-node` crate — ⚠️ MOSTLY DONE
 
 **Goal:** Working node firmware for ESP32-C3/S3.
 
@@ -327,7 +327,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 **Status:** Complete. All 4 modules implemented (`grpc_client.rs`, `usb.rs`, `main.rs`, `lib.rs`). USB pairing supports `--format json` output. No automated tests (USB pairing requires hardware; gRPC client requires a running gateway).
 
-The admin CLI connects to the gateway via TCP (default: `127.0.0.1:50051`). The gateway's `--admin-addr` flag controls the listen address.
+The admin CLI connects to the gateway via a Unix domain socket on Linux/macOS (default: `/var/run/sonde/admin.sock`) or a Windows named pipe (default: `\\.\pipe\sonde-admin`). No TCP port is used.
 
 **Module order:**
 
@@ -388,7 +388,7 @@ The admin CLI connects to the gateway via TCP (default: `127.0.0.1:50051`). The 
 | 6.2 | `bpf_conformance` plugin (`sonde_bpf_plugin`) | ✅ Done |
 | 6.3 | Add instruction budget enforcement to `execute_program()` | ❌ Not started |
 | 6.4 | Implement `BpfInterpreter` trait adapter in `sonde-node` | ❌ Not started |
-| 6.5 | Run `bpf_conformance` test suite against the plugin | ❌ Not started |
+| 6.5 | Run `bpf_conformance` test suite against the plugin | ✅ Done (CI job runs it with one known exclusion: `mem-len`) |
 
 **Known gap:** Neither `rbpf` nor `sonde-bpf` currently enforce the instruction budget required by ND-0605. Step 6.3 addresses this.
 

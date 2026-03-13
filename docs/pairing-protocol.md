@@ -52,7 +52,7 @@ The `FrameDecoder` and `encode_modem_frame` from `sonde-protocol` are reused dir
 
 Both sides use `sonde_protocol::modem::FrameDecoder`. The decoder reports `EmptyFrame` for `LEN` = 0 and `FrameTooLarge` for `LEN` > 512. These are non-fatal — the decoder clears its buffer and is ready for the next frame. Receivers should:
 
-- `EmptyFrame` → log and continue reading.
+- `EmptyFrame` → silently discard, continue reading.
 - `FrameTooLarge` → log the error. Host: close and re-open port, wait for `PAIRING_READY`. Node: continue reading (decoder buffer already cleared).
 - Unknown `TYPE` → silently discard (forward compatibility).
 
@@ -101,7 +101,7 @@ Provisions a PSK on the node. The host generates the key_hint and PSK; the node 
 | 0 | 2 | key_hint | Big-endian u16 |
 | 2 | 32 | psk | 256-bit pre-shared key |
 
-**Total body: 34 bytes.** The node MUST reject the request if the body is not exactly 34 bytes.
+**Total body: 34 bytes.** The node silently discards the request if the body is not exactly 34 bytes.
 
 ### 4.2  PAIR_ACK (Node → Host)
 
@@ -175,9 +175,12 @@ Host                                Node
   │            ◄── IDENTITY_RESPONSE  │
   │                                   │
   │── PAIR_REQUEST(key_hint, psk) ►   │  (provision key)
-  │            ◄── PAIR_ACK(0x00) ──  │  (success)
+  │            ◄── PAIR_ACK(0x00) ──  │  (success — node remains in pairing mode)
   │                                   │
-  │  (node reboots into normal mode)  │
+  │── [close serial port] ──────────►│  (host done)
+  │                                   │
+  │  (node detects USB disconnect,    │
+  │   reboots into normal mode)       │
 ```
 
 ### 5.3  Factory reset
@@ -191,9 +194,12 @@ Host                                Node
   │            ◄── IDENTITY_RESPONSE  │
   │                                   │
   │── RESET_REQUEST ─────────────►    │  (erase all persistent state)
-  │            ◄── RESET_ACK(0x00) ── │  (success)
+  │            ◄── RESET_ACK(0x00) ── │  (success — node remains in pairing mode)
   │                                   │
-  │  (node reboots into pairing mode) │
+  │── [close serial port] ──────────►│  (host done)
+  │                                   │
+  │  (node detects USB disconnect,    │
+  │   reboots into pairing mode)      │
 ```
 
 ### 5.4  Error recovery
@@ -333,8 +339,8 @@ In pairing mode the node:
 - Listens on USB-CDC for pairing commands.
 - Sends `PAIRING_READY` on connection.
 - Processes `PAIR_REQUEST`, `RESET_REQUEST`, and `IDENTITY_REQUEST`.
-- After successful pairing, reboots into normal operation.
-- After successful factory reset, reboots into pairing mode (unpaired).
+- Remains in pairing mode after a successful `PAIR_ACK` or `RESET_ACK` (does NOT reboot immediately).
+- Reboots when USB-CDC disconnect is detected. If paired, reboots into normal operation. If unpaired, reboots into pairing mode.
 
 ---
 

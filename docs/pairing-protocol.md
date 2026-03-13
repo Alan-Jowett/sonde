@@ -18,7 +18,7 @@ This document specifies the serial protocol used between the `sonde-admin` CLI t
 ### 1.1  Design principles
 
 1. **Physical security** — USB access implies authorization. No authentication on the pairing channel.
-2. **Atomic operations** — pairing and reset are all-or-nothing. Partial writes do not leave the node in a broken state.
+2. **Atomic pairing** — key provisioning writes key_hint + PSK + magic bytes atomically. If interrupted, the key partition remains in its previous state. Factory reset erases partitions sequentially; a partial reset leaves the node unpaired (safe — re-pair to recover).
 3. **Shared framing** — reuses the modem protocol's length-prefixed binary format and the `sonde-protocol` codec.
 4. **Forward compatibility** — unknown message types are silently discarded.
 5. **Simple state machine** — the node is either paired or unpaired. No multi-step negotiation.
@@ -46,12 +46,12 @@ The protocol reuses the same length-prefixed binary framing as the [modem protoc
 
 No CRC — USB-CDC provides transport-layer integrity.
 
-The `FrameDecoder` and `encode_modem_frame` from `sonde-protocol` are reused directly.
+The `FrameDecoder` and `encode_modem_frame` from `sonde-protocol` are reused directly. Pairing messages use the `ModemMessage::Unknown { msg_type, body }` variant for encoding and decoding — the frame codec handles any type value transparently.
 
 ### 2.2  Receiver behavior
 
 - `LEN` = 0 → silently discard.
-- `LEN` > 512 → framing error; discard buffered data and wait for `PAIRING_READY` to resynchronize.
+- `LEN` > 512 → framing error. Host: drain buffer, close and re-open port, wait for `PAIRING_READY`. Node: reset the `FrameDecoder` buffer and continue reading.
 - Unknown `TYPE` → silently discard (forward compatibility).
 
 ### 2.3  Synchronization recovery
@@ -262,8 +262,8 @@ The `firmware_version` field in `PAIRING_READY` allows the host to detect the no
 
 | Range | Purpose |
 |-------|---------|
-| 0x10 – 0x13 | Pairing commands (PAIR_REQUEST, RESET_REQUEST, IDENTITY_REQUEST) |
-| 0x14 – 0x1F | Reserved for future host → node pairing commands |
+| 0x10 – 0x12 | Pairing commands (PAIR_REQUEST, RESET_REQUEST, IDENTITY_REQUEST) |
+| 0x13 – 0x1F | Reserved for future host → node pairing commands |
 | 0x90 – 0x92 | Pairing responses (PAIR_ACK, RESET_ACK, IDENTITY_RESPONSE) |
 | 0x93 – 0x9E | Reserved for future node → host pairing messages |
 | 0x9F | PAIRING_READY |

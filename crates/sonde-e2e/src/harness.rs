@@ -149,7 +149,8 @@ impl BridgeTransport {
             gateway,
             peer,
             pending_response: None,
-            rt: tokio::runtime::Handle::current(),
+            rt: tokio::runtime::Handle::try_current()
+                .expect("BridgeTransport must be created inside a multi-thread tokio runtime"),
         }
     }
 }

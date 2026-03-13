@@ -94,9 +94,17 @@ async fn t_e2e_003_wrong_psk_rejected() {
     // Should exhaust retries and sleep
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 
-    // Note: With BridgeTransport, we can't independently count gateway
-    // response frames. The WakeCycleOutcome::Sleep with retries exhausted
-    // confirms the gateway did not respond with a valid COMMAND.
+    // Verify the gateway did NOT update telemetry for this node
+    // (the WAKE was silently discarded due to HMAC failure).
+    let record = env.storage.get_node("test-node").await.unwrap().unwrap();
+    assert!(
+        record.last_seen.is_none(),
+        "last_seen should be None — gateway should not have processed the WAKE"
+    );
+    assert_eq!(
+        record.last_battery_mv, None,
+        "battery should not be updated on auth failure"
+    );
 }
 
 /// T-E2E-020 — UPDATE_SCHEDULE command.
@@ -163,7 +171,10 @@ async fn t_e2e_040_unknown_node() {
 
     assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 
-    // Note: With BridgeTransport, we can't independently count gateway
-    // response frames. The WakeCycleOutcome::Sleep with retries exhausted
-    // confirms the gateway did not respond with a valid COMMAND.
+    // Verify the gateway did not create any node record for the unknown key_hint.
+    let record = env.storage.get_node("unknown").await.unwrap();
+    assert!(
+        record.is_none(),
+        "no node record should exist for an unknown node"
+    );
 }

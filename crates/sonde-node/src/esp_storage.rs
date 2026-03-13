@@ -29,9 +29,17 @@ pub struct NvsStorage {
 
 impl NvsStorage {
     /// Open (or create) the `"sonde"` NVS namespace.
+    ///
+    /// Clears the `early_wake` flag on construction. Because NVS
+    /// survives power loss (unlike RTC SRAM), a stale flag from a
+    /// prior cycle could persist across an unexpected reboot. Clearing
+    /// on boot ensures the flag only takes effect for the wake cycle
+    /// that set it.
     pub fn new(partition: EspNvsPartition<NvsDefault>) -> Result<Self, NodeError> {
-        let nvs = EspNvs::new(partition, NVS_NAMESPACE, true)
+        let mut nvs = EspNvs::new(partition, NVS_NAMESPACE, true)
             .map_err(|e| NodeError::StorageError(format!("NVS open: {:?}", e)))?;
+        // Clear stale early-wake flag from prior cycle / unexpected reboot.
+        let _ = nvs.set_u32("early_wake", 0);
         Ok(Self { nvs })
     }
 }
@@ -51,7 +59,10 @@ impl crate::traits::PlatformStorage for NvsStorage {
         }
         let key_hint = key_hint as u16;
         let mut buf = [0u8; 32];
-        self.nvs.get_blob("psk", &mut buf).ok().flatten()?;
+        let slice = self.nvs.get_blob("psk", &mut buf).ok().flatten()?;
+        if slice.len() != 32 {
+            return None;
+        }
         Some((key_hint, buf))
     }
 

@@ -45,7 +45,11 @@ impl crate::traits::PlatformStorage for NvsStorage {
             return None;
         }
 
-        let key_hint = self.nvs.get_u32("key_hint").ok().flatten()? as u16;
+        let key_hint = self.nvs.get_u32("key_hint").ok().flatten()?;
+        if key_hint > u16::MAX as u32 {
+            return None;
+        }
+        let key_hint = key_hint as u16;
         let mut buf = [0u8; 32];
         self.nvs.get_blob("psk", &mut buf).ok().flatten()?;
         Some((key_hint, buf))
@@ -160,6 +164,12 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
+        if partition > 1 {
+            return Err(NodeError::StorageError(format!(
+                "invalid partition: {} (must be 0 or 1)",
+                partition
+            )));
+        }
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
         self.nvs
             .remove(key)
@@ -179,6 +189,11 @@ impl crate::traits::PlatformStorage for NvsStorage {
         }
     }
 
+    // NOTE: Early-wake flag is stored in NVS, not RTC SRAM. NVS is simpler
+    // and survives power loss, but incurs flash wear on every cycle. RTC SRAM
+    // would eliminate wear since it is a raw memory region, but requires
+    // linker-section tricks and is lost on power-off. This is a known
+    // tradeoff; NVS is acceptable for the current wake-interval range.
     fn set_early_wake_flag(&mut self) -> NodeResult<()> {
         let current = self.nvs.get_u32("early_wake").ok().flatten().unwrap_or(0);
         if current == 1 {

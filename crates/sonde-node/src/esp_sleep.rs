@@ -17,12 +17,12 @@ impl crate::traits::SleepController for EspSleepController {
         unsafe {
             let err = esp_idf_sys::esp_sleep_enable_timer_wakeup(micros);
             if err != esp_idf_sys::ESP_OK as i32 {
-                log::error!("esp_sleep_enable_timer_wakeup failed: {}, rebooting", err);
+                log::error!("esp_sleep_enable_timer_wakeup failed: {}", err);
                 esp_idf_sys::esp_restart();
+                loop {} // esp_restart should not return
             }
             esp_idf_sys::esp_deep_sleep_start();
         }
-        unreachable!()
     }
 
     fn reboot(&mut self) -> ! {

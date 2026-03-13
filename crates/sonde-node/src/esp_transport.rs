@@ -17,6 +17,8 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 
+use sonde_protocol::modem::ESPNOW_MAX_DATA_SIZE;
+
 use crate::error::{NodeError, NodeResult};
 
 /// Broadcast MAC used for all node → gateway transmissions.
@@ -44,7 +46,7 @@ unsafe extern "C" fn raw_recv_cb(
         return;
     }
     let len = data_len as usize;
-    if len > 250 {
+    if len > ESPNOW_MAX_DATA_SIZE {
         return;
     }
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
@@ -128,7 +130,7 @@ impl EspNowTransport {
 
 impl crate::traits::Transport for EspNowTransport {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
-        if frame.len() > 250 {
+        if frame.len() > ESPNOW_MAX_DATA_SIZE {
             return Err(NodeError::Transport("frame too large".into()));
         }
         self.espnow

@@ -52,11 +52,11 @@ All components run **in a single process** within one tokio runtime. No external
 
 ### 2.1  Gateway side
 
-- **Engine:** Real `Gateway::new_with_pending()` from `sonde-gateway::engine`.
+- **Engine:** Real `Gateway` from `sonde-gateway::engine`. Tests that don't need APP_DATA handling use `Gateway::new_with_pending()`. Tests that exercise APP_DATA routing (T-E2E-030, T-E2E-031) use `Gateway::new_with_handler()` with an in-process mock handler, and queue commands via `Gateway::queue_command()`.
 - **Storage:** `SqliteStorage::in_memory()` for test isolation (no files).
 - **Transport:** `UsbEspNowTransport::new(duplex_client, channel)` — the gateway's modem adapter connected to the in-memory duplex stream.
 - **Admin:** Direct function calls on `Gateway` and `Storage` (no gRPC in E2E tests). Admin operations are exercised by calling storage/engine methods directly, avoiding the need for network sockets.
-- **Handler:** In-process mock handler that reads DATA messages and writes DATA_REPLY (using the existing handler framing from `sonde-gateway::handler`).
+- **Handler:** In-process mock handler (for T-E2E-030/031 only) that reads DATA messages and writes DATA_REPLY using the existing handler framing from `sonde-gateway::handler`.
 
 ### 2.2  Modem bridge
 
@@ -135,7 +135,7 @@ Each test follows this sequence:
 3. **Create PipeSerial adapter:** Bridges the sync `SerialPort` trait (used by `Bridge`) to the async duplex stream (used by `UsbEspNowTransport`). A background tokio task shuttles bytes between the duplex server half and the adapter's internal ring buffers.
 4. **Start modem bridge:** Spawn a **std::thread** running a bridge poll loop. Construct `let mut bridge = Bridge::new(pipe_serial, channel_radio, ModemCounters::new())` (note: `ModemCounters::new()` already returns `Arc`). The loop checks an `AtomicBool` stop flag each iteration and sleeps unconditionally for 1ms after each `poll()` call (since `Bridge::poll()` returns `()` and does not report whether work was done). The thread is joined at test teardown.
 5. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK) against the bridge.
-6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)`.
+6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)` for protocol tests, or `Gateway::new_with_handler(storage, session_timeout, handler_router)` for APP_DATA tests (T-E2E-030/031). Commands are queued via `Gateway::queue_command()` when using the handler variant.
 7. **Register test nodes:** Insert `NodeRecord` into storage with known PSKs.
 8. **Run test scenario:** Drive node wake cycles (via `spawn_blocking` since `run_wake_cycle` is sync) and assert on gateway behavior.
 9. **Teardown:** Set the stop flag, join the bridge thread, drop the transport.

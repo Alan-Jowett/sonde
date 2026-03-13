@@ -338,7 +338,7 @@ pub fn execute_program(
             ebpf::RSH32_REG => {
                 reg[dst] = (reg[dst] as u32).wrapping_shr(reg[src] as u32 & 0x1f) as u64
             }
-            ebpf::NEG32 => reg[dst] = (-(reg[dst] as i32)) as u32 as u64,
+            ebpf::NEG32 => reg[dst] = (reg[dst] as i32).wrapping_neg() as u32 as u64,
             ebpf::MOD32_IMM => {
                 let imm = insn.imm as u32;
                 if insn.off == 0 {
@@ -496,7 +496,7 @@ pub fn execute_program(
             ebpf::LSH64_REG => reg[dst] = reg[dst].wrapping_shl((reg[src] as u32) & 0x3f),
             ebpf::RSH64_IMM => reg[dst] = reg[dst].wrapping_shr((insn.imm as u32) & 0x3f),
             ebpf::RSH64_REG => reg[dst] = reg[dst].wrapping_shr((reg[src] as u32) & 0x3f),
-            ebpf::NEG64 => reg[dst] = (-(reg[dst] as i64)) as u64,
+            ebpf::NEG64 => reg[dst] = (reg[dst] as i64).wrapping_neg() as u64,
             ebpf::MOD64_IMM => {
                 if insn.off == 0 {
                     let imm = insn.imm as i64 as u64;

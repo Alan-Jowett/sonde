@@ -473,8 +473,8 @@ The current `CallFrame` saves the u64 values of R6–R9.  In the tagged model, i
 
 ```rust
 struct CallFrame {
-    saved_values: [u64; 4],         // r6–r9 values
-    saved_regions: [Option<Region>; 4], // r6–r9 tags
+    saved_regs: [u64; 4],              // r6–r9 values (matches current field name)
+    saved_regions: [Option<Region>; 4], // r6–r9 tags (new)
     return_pc: usize,
     frame_size: u64,
 }
@@ -530,7 +530,7 @@ The existing `MemoryAccessViolation` is retained for out-of-bounds accesses with
 Size estimates below are approximate and based on typical Rust layout for `x86_64` targets.  Actual sizes may vary by compiler version, target architecture, and optimization level — use `core::mem::size_of` to verify on a specific platform.
 
 `TaggedReg`: `value`(8) + `Option<Region>`(~32) ≈ **40 bytes**.  
-`CallFrame` (tagged): `saved_values`(32) + `saved_regions`(4 × ~32 = ~128) + `return_pc`(8) + `frame_size`(8) ≈ **176 bytes**.
+`CallFrame` (tagged): `saved_regs`(32) + `saved_regions`(4 × ~32 = ~128) + `return_pc`(8) + `frame_size`(8) ≈ **176 bytes**.
 
 | Component | Current | Tagged |
 |-----------|---------|--------|

@@ -18,7 +18,7 @@ These tests validate that:
 - The protocol wire format is compatible between gateway and node.
 - The chunked transfer protocol completes successfully across the full stack.
 - Authentication (HMAC, nonce, sequence numbers) works end-to-end.
-- Admin commands flow from gRPC through the gateway to the node.
+- Admin commands (schedule, reboot, ephemeral) flow from the engine to the node.
 - Application data is routed from a node through the gateway to a handler and back.
 
 ---
@@ -71,7 +71,7 @@ All components run **in a single process** within one tokio runtime. No external
 
 - **Engine:** Real `run_wake_cycle()` from `sonde-node::wake_cycle`.
 - **Transport:** `ChannelTransport` — a test-only `Transport` implementation backed by the same `mpsc` channels as the `ChannelRadio`, simulating ESP-NOW send/recv.
-- **Platform mocks:** Existing mocks from the sonde-node test suite:
+- **Platform mocks:** The E2E crate provides its own mock implementations of the node platform traits (matching the signatures in `sonde-node::traits`). These are simple re-implementations since the `#[cfg(test)]` mocks in `sonde-node` are not exported:
   - `MockHal` — returns configurable I2C/SPI/GPIO/ADC data.
   - `MockStorage` (PlatformStorage) — in-memory key/program/schedule storage.
   - `MockBpfInterpreter` — records load/execute calls.
@@ -133,7 +133,7 @@ Each test follows this sequence:
 1. **Create channels:** `std::sync::mpsc` pairs for radio simulation (gateway↔nodes).
 2. **Create duplex:** `tokio::io::duplex(4096)` for the serial link between gateway and bridge.
 3. **Create PipeSerial adapter:** Bridges the sync `SerialPort` trait (used by `Bridge`) to the async duplex stream (used by `UsbEspNowTransport`). A background tokio task shuttles bytes between the duplex server half and the adapter's internal ring buffers.
-4. **Start modem bridge:** Spawn a **std::thread** running a bridge poll loop. Construct `let mut bridge = Bridge::new(pipe_serial, channel_radio, ModemCounters::new())` (note: `ModemCounters::new()` already returns `Arc`). The loop checks an `AtomicBool` stop flag each iteration and sleeps briefly (e.g., 1ms) when `poll()` returns with no work done, to avoid busy-spinning. The thread is joined at test teardown.
+4. **Start modem bridge:** Spawn a **std::thread** running a bridge poll loop. Construct `let mut bridge = Bridge::new(pipe_serial, channel_radio, ModemCounters::new())` (note: `ModemCounters::new()` already returns `Arc`). The loop checks an `AtomicBool` stop flag each iteration and sleeps unconditionally for 1ms after each `poll()` call (since `Bridge::poll()` returns `()` and does not report whether work was done). The thread is joined at test teardown.
 5. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK) against the bridge.
 6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)`.
 7. **Register test nodes:** Insert `NodeRecord` into storage with known PSKs.
@@ -220,7 +220,7 @@ impl E2eNode {
 1. Node sends WAKE authenticated with wrong PSK.
 2. Gateway receives frame, HMAC verification fails.
 3. Gateway does not respond.
-4. Node retries 3 times, then sleeps.
+4. Node sends WAKE 4 times total (1 initial + 3 retries), then sleeps.
 
 **Assertions:**
 - `run_wake_cycle()` returns `Sleep { seconds: 60 }` (retries exhausted).

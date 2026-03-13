@@ -289,7 +289,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 **Validation:** [node-validation.md](node-validation.md)  
 **Key dependencies:** `sonde-protocol`, `rbpf`, `ciborium`, `hmac`, `sha2`, `log`. ESP-IDF dependencies (`esp-idf-hal`, `esp-idf-svc`) are behind the `esp` feature. See `crates/sonde-node/Cargo.toml` for the full list.
 
-**Status:** Complete. 101 tests pass covering all validation test cases (T-N100 through T-N802). All 19 modules implemented including ESP-specific platform adapters. Modules added beyond original plan: `bpf_dispatch.rs` (helper dispatch), `pairing.rs` (USB pairing handler), `rbpf_adapter.rs` (BpfInterpreter impl for rbpf), `traits.rs` (platform abstractions), `error.rs` (error types), and four ESP-specific modules (`esp_hal.rs`, `esp_sleep.rs`, `esp_storage.rs`, `esp_transport.rs`).
+**Status:** Mostly complete. 101 tests pass covering all validation test cases (T-N100 through T-N802). All 19 modules implemented including ESP-specific platform adapters. Modules added beyond original plan: `bpf_dispatch.rs` (helper dispatch), `pairing.rs` (USB pairing handler), `rbpf_adapter.rs` (BpfInterpreter impl for rbpf), `traits.rs` (platform abstractions), `error.rs` (error types), and four ESP-specific modules (`esp_hal.rs`, `esp_sleep.rs`, `esp_storage.rs`, `esp_transport.rs`).
 
 **Known gap:** The `rbpf` backend does not enforce `instruction_budget` (documented in `rbpf_adapter.rs`). The `sonde-bpf` crate was added to address this — see Phase 6.
 

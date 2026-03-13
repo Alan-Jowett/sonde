@@ -44,7 +44,6 @@ pub struct SqliteStorage {
 
 impl SqliteStorage {
     /// Open (or create) a SQLite database at the given path.
-    /// Open (or create) a SQLite database at the given path.
     ///
     /// # Security
     ///
@@ -80,7 +79,9 @@ impl SqliteStorage {
     {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            let conn = conn
+                .lock()
+                .map_err(|_| StorageError::Internal("storage mutex poisoned".into()))?;
             f(&conn)
         })
         .await
@@ -112,13 +113,18 @@ fn system_time_to_epoch_s(t: &SystemTime) -> i64 {
 }
 
 /// Convert seconds since the Unix epoch to a `SystemTime`.
+///
+/// Returns `UNIX_EPOCH` if the value cannot be represented.
 fn epoch_s_to_system_time(secs: i64) -> SystemTime {
     if secs >= 0 {
-        UNIX_EPOCH + Duration::from_secs(secs as u64)
+        UNIX_EPOCH
+            .checked_add(Duration::from_secs(secs as u64))
+            .unwrap_or(UNIX_EPOCH)
     } else {
-        // Handle i64::MIN safely: -(i64::MIN) overflows, so clamp.
         let abs = (secs as i128).unsigned_abs() as u64;
-        UNIX_EPOCH - Duration::from_secs(abs)
+        UNIX_EPOCH
+            .checked_sub(Duration::from_secs(abs))
+            .unwrap_or(UNIX_EPOCH)
     }
 }
 

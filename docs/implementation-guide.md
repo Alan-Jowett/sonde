@@ -42,7 +42,7 @@ sonde/
 │   │   └── src/
 │   │       ├── bin/gateway.rs    # entry point, startup/shutdown
 │   │       ├── engine.rs         # core protocol loop, frame processing
-│   │       ├── transport.rs      # Transport trait + ESP-NOW adapter
+│   │       ├── transport.rs      # Transport trait + MockTransport
 │   │       ├── modem.rs          # UsbEspNowTransport (USB modem adapter)
 │   │       ├── session.rs        # Session, SessionManager
 │   │       ├── registry.rs       # NodeRecord, node registry logic
@@ -191,7 +191,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 
 **Design doc:** [gateway-design.md](gateway-design.md)  
 **Validation:** [gateway-validation.md](gateway-validation.md)  
-**Dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail-rust`, `hmac`, `sha2`, `ciborium`, `toml`.
+**Dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail-rust`, `hmac`, `sha2`, `ciborium`.
 
 **Status:** Complete. 106 tests pass across 5 integration test files (phase2a through phase2d). Uses `sqlite_storage.rs` for persistence (added beyond original plan). Binary entry point is `src/bin/gateway.rs`.
 
@@ -259,8 +259,7 @@ Configuration loading, startup/shutdown sequence, and operational tests.
 
 | Step | Module | What to build | Test with |
 |---|---|---|---|
-| 2.12a | `config.rs` | Configuration structs, TOML loading (now handled in `bin/gateway.rs`) | Unit tests |
-| 2.12b | `bin/gateway.rs` | Startup/shutdown sequence | T-1000 to T-1004 |
+| 2.12a | `bin/gateway.rs` | Configuration parsing (via clap args) and startup/shutdown sequence | T-1000 to T-1004 |
 
 **Exit criteria (2C):** `cargo test -p sonde-gateway` passes all gateway validation tests. The gateway is a complete, runnable service. ✅
 
@@ -299,7 +298,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 | Step | Module | What to build | Test with |
 |---|---|---|---|
 | 3.1 | `crypto.rs` | Software HMAC/SHA256 (ESP hardware impl behind `esp` feature) | Unit tests |
-| 3.2 | `transport.rs` | ESP-NOW send/receive | T-N100, T-N102 |
+| 3.2 | `traits.rs` / `esp_transport.rs` | `Transport` trait + ESP-NOW send/receive (feature: esp) | T-N100, T-N102 |
 | 3.3 | `key_store.rs` | PSK flash partition read/write, magic check | T-N400, T-N401, T-N402, T-N403, T-N404 |
 | 3.4 | `sleep.rs` | Deep sleep entry, wake reason, interval management | T-N208, T-N209 |
 | 3.5 | `wake_cycle.rs` | WAKE → COMMAND state machine (without BPF) | T-N200 to T-N207, T-N300 to T-N306 |

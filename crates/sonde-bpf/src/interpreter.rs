@@ -208,6 +208,11 @@ impl SpillTracker {
                 region,
             };
             self.count += 1;
+        } else {
+            // Table full — clear the bitmap bit so check_restore won't
+            // see a hit without a corresponding entry.  The reloaded
+            // value becomes scalar (safe fallback).
+            self.bitmap[byte_idx] &= !(1 << bit_idx);
         }
     }
 

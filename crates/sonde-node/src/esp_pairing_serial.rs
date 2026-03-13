@@ -7,10 +7,9 @@
 //! binary modem frames over the USB Serial/JTAG peripheral (GPIO18 D-,
 //! GPIO19 D+).
 //!
-//! When the secondary console is active (CONFIG_ESP_CONSOLE_SECONDARY_
-//! USB_SERIAL_JTAG=y), the driver is already installed by ESP-IDF.
-//! We detect this and reuse the existing driver instead of installing
-//! a second one.
+//! If the driver is already installed (e.g. by the ESP-IDF secondary
+//! console), we detect `ESP_ERR_INVALID_STATE` and reuse the existing
+//! driver. Other install errors are propagated.
 
 use crate::error::{NodeError, NodeResult};
 use crate::traits::PairingSerial;
@@ -20,9 +19,19 @@ use log::info;
 const TX_BUF_SIZE: u32 = 256;
 const RX_BUF_SIZE: u32 = 256;
 
-/// Milliseconds per FreeRTOS tick. ESP-IDF defaults to
-/// `configTICK_RATE_HZ = 1000`, so 1 tick = 1 ms.
-const MS_PER_TICK: u32 = 1;
+/// Convert milliseconds to FreeRTOS ticks using the ESP-IDF tick rate.
+fn ms_to_ticks(ms: u32) -> esp_idf_sys::TickType_t {
+    // portTICK_PERIOD_MS is defined by ESP-IDF based on
+    // configTICK_RATE_HZ. This handles non-1kHz tick rates correctly.
+    if ms == 0 {
+        return 0;
+    }
+    let period = unsafe { esp_idf_sys::portTICK_PERIOD_MS };
+    if period == 0 {
+        return ms; // Fallback: assume 1ms/tick
+    }
+    ms / period
+}
 
 /// USB Serial/JTAG driver for ESP32-C3 pairing mode.
 pub struct EspUsbSerialJtag {
@@ -33,24 +42,29 @@ pub struct EspUsbSerialJtag {
 impl EspUsbSerialJtag {
     /// Initialize the USB Serial/JTAG for pairing mode.
     ///
-    /// If the driver is already installed (e.g. by the secondary console),
-    /// we reuse it. Otherwise we install our own.
+    /// If the driver is already installed (`ESP_ERR_INVALID_STATE`), we
+    /// reuse it. Other install errors are propagated as `Err`.
     pub fn new() -> NodeResult<Self> {
         let mut config = esp_idf_sys::usb_serial_jtag_driver_config_t {
             tx_buffer_size: TX_BUF_SIZE,
             rx_buffer_size: RX_BUF_SIZE,
         };
         let ret = unsafe { esp_idf_sys::usb_serial_jtag_driver_install(&mut config) };
-        let owns_driver = ret == esp_idf_sys::ESP_OK as i32;
-        if owns_driver {
+        let owns_driver = if ret == esp_idf_sys::ESP_OK as i32 {
             info!("USB Serial/JTAG driver installed for pairing mode");
-        } else {
+            true
+        } else if ret == esp_idf_sys::ESP_ERR_INVALID_STATE {
             info!("USB Serial/JTAG driver already active, reusing");
-        }
+            false
+        } else {
+            return Err(NodeError::Transport(format!(
+                "usb_serial_jtag_driver_install failed: {ret}"
+            )));
+        };
 
         // Brief delay to let any buffered boot text drain from the USB
         // FIFO before we start sending binary frames.
-        unsafe { esp_idf_sys::vTaskDelay(200) };
+        unsafe { esp_idf_sys::vTaskDelay(ms_to_ticks(200)) };
 
         Ok(Self { owns_driver })
     }
@@ -68,12 +82,11 @@ impl Drop for EspUsbSerialJtag {
 
 impl PairingSerial for EspUsbSerialJtag {
     fn read(&mut self, buf: &mut [u8], timeout_ms: u32) -> NodeResult<usize> {
-        let ticks: esp_idf_sys::TickType_t = timeout_ms / MS_PER_TICK;
         let n = unsafe {
             esp_idf_sys::usb_serial_jtag_read_bytes(
                 buf.as_mut_ptr().cast(),
                 buf.len() as u32,
-                ticks,
+                ms_to_ticks(timeout_ms),
             )
         };
         if n < 0 {
@@ -85,12 +98,11 @@ impl PairingSerial for EspUsbSerialJtag {
     fn write(&mut self, data: &[u8]) -> NodeResult<()> {
         let mut remaining = data;
         while !remaining.is_empty() {
-            let ticks: esp_idf_sys::TickType_t = 1000 / MS_PER_TICK;
             let n = unsafe {
                 esp_idf_sys::usb_serial_jtag_write_bytes(
                     remaining.as_ptr().cast(),
                     remaining.len(),
-                    ticks,
+                    ms_to_ticks(1000),
                 )
             };
             if n < 0 {

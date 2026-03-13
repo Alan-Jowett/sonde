@@ -73,7 +73,7 @@ jobs:
       # Build
       # ------------------------------------------------------------------ #
 
-      - name: Build node firmware (ESP32, release)
+      - name: Build node firmware (ESP32, firmware profile)
         # Source export-esp.sh to add Xtensa GCC/LLVM to PATH and set
         # LIBCLANG_PATH/CLANG_PATH for bindgen.  Use `+esp` to select the
         # Xtensa Rust toolchain installed by espup (not the default stable).
@@ -85,7 +85,7 @@ jobs:
             -p sonde-node \
             --bin node \
             --features esp \
-            --release \
+            --profile firmware \
             --target xtensa-esp32-espidf \
             -Zbuild-std=std,panic_abort
 
@@ -96,7 +96,7 @@ jobs:
       - name: Create merged flash image
         run: |
           . "$IDF_PATH/export.sh"
-          TARGET_DIR="target/xtensa-esp32-espidf/release"
+          TARGET_DIR="target/xtensa-esp32-espidf/firmware"
 
           # Locate bootloader and partition table produced by embuild.
           # Use newest match to avoid stale cached artefacts.

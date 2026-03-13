@@ -1076,7 +1076,7 @@ mod tests {
         fn gpio_write(&mut self, _pin: u32, _val: u32) -> i32 {
             0
         }
-        fn adc_read(&self, _ch: u32) -> i32 {
+        fn adc_read(&mut self, _ch: u32) -> i32 {
             0
         }
     }

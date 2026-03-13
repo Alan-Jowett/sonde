@@ -15,8 +15,12 @@
 use crate::hal;
 use log::warn;
 
-// Default I2C pin assignments for ESP32-C3 dev boards.
+/// Default I2C0 SDA pin for ESP32-C3 dev boards.
+/// Override in sdkconfig or a board-specific configuration module.
 const I2C0_SDA: i32 = 4;
+
+/// Default I2C0 SCL pin for ESP32-C3 dev boards.
+/// Override in sdkconfig or a board-specific configuration module.
 const I2C0_SCL: i32 = 5;
 const I2C0_FREQ_HZ: u32 = 100_000; // 100 kHz standard mode
 
@@ -49,12 +53,14 @@ impl crate::traits::Clock for EspClock {
 /// ESP-IDF calls with no pre-initialization.
 pub struct EspHal {
     i2c0_initialized: bool,
+    adc_width_configured: bool,
 }
 
 impl EspHal {
     pub fn new() -> Self {
         let mut hal = Self {
             i2c0_initialized: false,
+            adc_width_configured: false,
         };
         hal.init_i2c0();
         hal
@@ -226,10 +232,16 @@ impl hal::Hal for EspHal {
     }
 
     fn gpio_read(&self, pin: u32) -> i32 {
+        if pin > 21 {
+            return -1;
+        }
         unsafe { esp_idf_sys::gpio_get_level(pin as i32) }
     }
 
     fn gpio_write(&mut self, pin: u32, value: u32) -> i32 {
+        if pin > 21 {
+            return -1;
+        }
         unsafe {
             let err = esp_idf_sys::gpio_set_direction(
                 pin as i32,
@@ -246,13 +258,15 @@ impl hal::Hal for EspHal {
         }
     }
 
-    fn adc_read(&self, channel: u32) -> i32 {
+    fn adc_read(&mut self, channel: u32) -> i32 {
         unsafe {
-            // Configure ADC1 width to 12-bit (idempotent).
-            let err =
-                esp_idf_sys::adc1_config_width(esp_idf_sys::adc_bits_width_t_ADC_WIDTH_BIT_12);
-            if err != esp_idf_sys::ESP_OK as i32 {
-                return -1;
+            if !self.adc_width_configured {
+                let err =
+                    esp_idf_sys::adc1_config_width(esp_idf_sys::adc_bits_width_t_ADC_WIDTH_BIT_12);
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    return -1;
+                }
+                self.adc_width_configured = true;
             }
             // Configure channel attenuation (11 dB for full 0–3.3 V range).
             let err = esp_idf_sys::adc1_config_channel_atten(

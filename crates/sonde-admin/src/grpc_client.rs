@@ -15,12 +15,17 @@ impl AdminClient {
     /// Connect to the gateway admin API over a Unix domain socket.
     #[cfg(unix)]
     pub async fn connect(socket_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        use hyper_util::rt::TokioIo;
+
         let socket_path = socket_path.to_owned();
         // URI is ignored for UDS but tonic requires a valid one.
         let channel = Endpoint::from_static("http://[::]:50051")
             .connect_with_connector(tower::service_fn(move |_: Uri| {
                 let path = socket_path.clone();
-                async move { tokio::net::UnixStream::connect(path).await }
+                async move {
+                    let stream = tokio::net::UnixStream::connect(path).await?;
+                    Ok::<_, std::io::Error>(TokioIo::new(stream))
+                }
             }))
             .await?;
         Ok(Self {

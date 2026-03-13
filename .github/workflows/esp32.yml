@@ -52,11 +52,14 @@ jobs:
         run: cargo install espup --locked
 
       - name: Install ESP Rust toolchain for ESP32-C3
-        # espup installs the `esp` Rust toolchain and writes ~/export-esp.sh,
-        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for the ESP GCC/LLVM.
-        # The `esp` toolchain must be selected explicitly via `cargo +esp` (espup
-        # v0.16+ does not export RUSTUP_TOOLCHAIN from export-esp.sh).
-        run: espup install --targets esp32c3
+        # espup install (without --targets) installs the full `esp` Rust
+        # toolchain (the Espressif fork of nightly) and writes ~/export-esp.sh,
+        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for ESP GCC/LLVM.
+        # --targets esp32c3 would only add RISC-V targets to the *stable*
+        # toolchain without creating the `esp` toolchain, causing
+        # `cargo +esp build` to fail with "toolchain 'esp' is not installed".
+        # The full `esp` toolchain supports all ESP targets including RISC-V.
+        run: espup install
 
       - name: Install ldproxy linker
         run: cargo install ldproxy --locked

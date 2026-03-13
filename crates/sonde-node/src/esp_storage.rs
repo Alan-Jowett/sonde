@@ -35,11 +35,17 @@ impl NvsStorage {
     /// prior cycle could persist across an unexpected reboot. Clearing
     /// on boot ensures the flag only takes effect for the wake cycle
     /// that set it.
+    ///
+    /// TODO: Move `early_wake` to an `#[link_section = ".rtc.data"]`
+    /// static so it naturally resets on power loss and avoids NVS
+    /// flash wear. This NVS approach is a temporary simplification.
     pub fn new(partition: EspNvsPartition<NvsDefault>) -> Result<Self, NodeError> {
         let mut nvs = EspNvs::new(partition, NVS_NAMESPACE, true)
             .map_err(|e| NodeError::StorageError(format!("NVS open: {:?}", e)))?;
         // Clear stale early-wake flag from prior cycle / unexpected reboot.
-        let _ = nvs.set_u32("early_wake", 0);
+        if let Err(e) = nvs.set_u32("early_wake", 0) {
+            log::warn!("failed to clear early_wake on boot: {:?}", e);
+        }
         Ok(Self { nvs })
     }
 }

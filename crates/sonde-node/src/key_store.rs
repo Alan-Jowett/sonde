@@ -34,9 +34,7 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
     /// Fails if the node is already paired (factory reset required first).
     pub fn pair(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
         if self.storage.read_key().is_some() {
-            return Err(NodeError::StorageError(
-                "already paired; factory reset required".into(),
-            ));
+            return Err(NodeError::AlreadyPaired);
         }
         self.storage.write_key(key_hint, psk)
     }

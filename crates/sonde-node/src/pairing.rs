@@ -34,11 +34,7 @@ pub fn handle_pairing_message<S: PlatformStorage>(
             let mut ks = KeyStore::new(storage);
             let status = match ks.pair(req.key_hint, &req.psk) {
                 Ok(()) => PAIRING_STATUS_SUCCESS,
-                Err(crate::error::NodeError::StorageError(ref msg))
-                    if msg.contains("already paired") =>
-                {
-                    PAIR_ACK_ALREADY_PAIRED
-                }
+                Err(crate::error::NodeError::AlreadyPaired) => PAIR_ACK_ALREADY_PAIRED,
                 Err(_) => PAIRING_STATUS_STORAGE_ERROR,
             };
             let ack = ModemMessage::PairAck(PairAck { status });

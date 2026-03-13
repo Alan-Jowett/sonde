@@ -182,7 +182,8 @@ fn read_message(
 ) -> Result<ModemMessage, String> {
     let mut buf = [0u8; 256];
     loop {
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
             return Err("timeout waiting for response".into());
         }
         // Check for already-buffered frames first
@@ -195,6 +196,11 @@ fn read_message(
             }
             Err(e) => return Err(format!("decode: {}", e)),
         }
+        // Set port timeout to remaining deadline so read() doesn't
+        // block past the overall deadline.
+        let remaining = deadline.duration_since(now);
+        let read_timeout = remaining.min(Duration::from_millis(200));
+        let _ = port.set_timeout(read_timeout);
         let n = match port.read(&mut buf) {
             Ok(0) => return Err("USB disconnected".into()),
             Ok(n) => n,

@@ -267,7 +267,7 @@ BPF ALU instructions have the form `dst = dst OP src` (or `dst = dst OP imm`).  
 | MOV (reg) | — | any | inherits src tag |
 | MOV (imm) | — | — | scalar |
 
-**`MapDescriptor` (Handle) special case:**  `MapDescriptor` is an opaque handle, not a dereferenceable address.  Any ALU operation on a `MapDescriptor` — in either the `dst` or `src` position — other than `MOV` (reg-to-reg copy) is an `InvalidPointerArithmetic` error.  This prevents `MapDescriptor + scalar` from producing a corrupted handle that could be passed to a helper.
+**`MapDescriptor` (Handle) precedence rule:**  `MapDescriptor` is an opaque handle, not a dereferenceable address.  **Before consulting the table above**, check whether either `dst` or `src` carries a `MapDescriptor` tag.  If so, the only permitted operation is `MOV` (reg-to-reg copy) — all other ALU operations return `InvalidPointerArithmetic`.  The "any" entries in the table (e.g., `MUL any any → scalar`) apply only to scalars and dereferenceable pointers, not to handles.
 
 **Rationale:**  Only ADD and SUB have defined meaning for pointers.  All other arithmetic destroys provenance.  A BPF static verifier already enforces these rules at load time; the interpreter enforces them dynamically as defense-in-depth.
 
@@ -318,7 +318,7 @@ Jump instructions compare `reg[dst].value` against `reg[src].value` (or an immed
 3. Tag R0 according to the helper's return-type descriptor (see §5).
 4. Clobber R1–R5 to scalar — clear their region tags (set to `None`).  The raw u64 values are left as-is (the helper may have read them, but the caller must not rely on them).  This matches the BPF calling convention where R1–R5 are caller-saved and undefined after a call.
 
-> **Note — behavioral change:** The current interpreter does not clear R1–R5 after helper calls; it leaves both values and tags untouched (only R0 is written).  The tagged design introduces tag-clearing as a safety measure to prevent stale pointer provenance from leaking across call boundaries.  This is stricter than the current implementation but consistent with the BPF calling convention.  Existing tests that rely on R1–R5 values surviving a helper call may need adjustment.
+> **Note — behavioral change:** The current interpreter uses bare `[u64; 11]` registers (no tags) and leaves R1–R5 values unchanged after helper calls (only R0 is written).  The tagged design introduces tag-clearing on R1–R5 as a safety measure to prevent stale pointer provenance from leaking across call boundaries.  This is stricter than the current implementation but consistent with the BPF calling convention.  Existing tests that rely on R1–R5 values surviving a helper call may need adjustment.
 
 **BPF-to-BPF call (src=1):**
 
@@ -518,10 +518,10 @@ The existing `MemoryAccessViolation` is retained for out-of-bounds accesses with
 
 ### 9.1  Memory overhead
 
-Size estimates account for Rust struct alignment (u64 fields require 8-byte alignment).
+Size estimates below are approximate and based on typical Rust layout for `x86_64` targets.  Actual sizes may vary by compiler version, target architecture, and optimization level — use `core::mem::size_of` to verify on a specific platform.
 
-`TaggedReg`: `value`(8) + `Option<Region>`(1 discriminant + 7 padding + 24 Region = 32) = **40 bytes**.  
-`CallFrame` (tagged): `saved_values`(32) + `saved_regions`(4 × 32 = 128) + `return_pc`(8) + `frame_size`(8) = **176 bytes**.
+`TaggedReg`: `value`(8) + `Option<Region>`(~32) ≈ **40 bytes**.  
+`CallFrame` (tagged): `saved_values`(32) + `saved_regions`(4 × ~32 = ~128) + `return_pc`(8) + `frame_size`(8) ≈ **176 bytes**.
 
 | Component | Current | Tagged |
 |-----------|---------|--------|
@@ -556,7 +556,7 @@ The tagged interpreter maintains the zero-allocation property.  All state — `T
 
 ## 10  Migration Path
 
-The redesign is internal to the interpreter crate.  The public API changes are minimal:
+The redesign changes the `execute_program` public API.  This is an intentional breaking change — the new signature encodes the safety invariants that the tagged interpreter requires.
 
 ### 10.1  `execute_program` signature
 
@@ -578,6 +578,13 @@ pub fn execute_program(
 ```
 
 The `mem` parameter is renamed to `ctx` and changed from `&mut [u8]` to `&[u8]`.  The tagged interpreter enforces Context as read-only (§3.2), so the API should reflect this.  If a future use case requires a mutable input region, a separate parameter (e.g., `scratch: &mut [u8]`) can be added with its own `RegionTag` variant.
+
+**Migration steps for existing callers:**
+
+1. Change `mem: &mut [u8]` → `ctx: &[u8]` at call sites.
+2. Replace `&[(u32, Helper)]` with `&[HelperDescriptor]`, adding `ret: HelperReturn::Scalar` for most helpers and `ret: HelperReturn::MapValueOrNull { map_arg: 1 }` for `map_lookup_elem`.
+3. Provide a `maps: &[MapRegion]` slice with relocated pointer, value size, and backing storage bounds for each map.
+4. Update tests that rely on R1–R5 surviving helper calls (§4.6 behavioral change).
 
 Where `MapRegion` provides the metadata needed to tag LD_DW_IMM relocations and `map_lookup_elem` returns:
 

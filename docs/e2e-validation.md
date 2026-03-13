@@ -35,9 +35,9 @@ All components run **in a single process** within one tokio runtime. No external
 │              │                        │                  │
 └──────┬───────┘                        └────────┬─────────┘
        │                                         │
-       │  Storage: SqliteStorage(:memory:)        │  Radio: ChannelRadio
-       │  Admin: direct fn calls                  │  (mpsc-backed)
-       │  Handler: in-process mock                │
+       │  Storage: SqliteStorage(:memory:)       │  Radio: ChannelRadio
+       │  Admin: direct fn calls                 │  (mpsc-backed)
+       │  Handler: in-process mock               │
        │                                         ▼
        │                                ┌──────────────────┐
        │                                │                  │
@@ -60,9 +60,12 @@ All components run **in a single process** within one tokio runtime. No external
 
 ### 2.2  Modem bridge
 
-- **Bridge:** Real `Bridge` from `sonde-modem::bridge`, connecting the serial side (duplex server) to a mock radio.
-- **Radio:** `ChannelRadio` — a test-only `Radio` trait implementation that routes ESP-NOW frames to/from node mocks via `mpsc` channels.
-- **Lifecycle:** A background tokio task runs `bridge.poll()` in a loop, forwarding frames between the gateway's serial link and the mock radio.
+- **Bridge:** Real `Bridge` from `sonde-modem::bridge`, connecting a `PipeSerial` adapter to a `ChannelRadio`.
+- **Serial adapter:** `PipeSerial` — a test-only `SerialPort` trait implementation backed by `std::sync::mpsc` channels (or a ring buffer). One side feeds the gateway's `UsbEspNowTransport` (via `tokio::io::duplex`), the other side feeds the bridge. Since `Bridge` uses the sync `SerialPort` trait (`read(&mut self) → (usize, bool)`, `write(&mut self) → bool`) while `UsbEspNowTransport` uses `AsyncRead + AsyncWrite`, an adapter bridges the two worlds:
+  - The `tokio::io::duplex` server half is driven by a background tokio task that reads bytes and pushes them into a ring buffer; the `PipeSerial::read()` drains from that buffer.
+  - `PipeSerial::write()` pushes bytes into another ring buffer that the tokio task reads and writes to the duplex stream.
+- **Radio:** `ChannelRadio` — routes ESP-NOW frames to/from node mocks via `std::sync::mpsc` channels.
+- **Lifecycle:** A dedicated thread (not tokio task) runs `bridge.poll()` in a loop, since `Bridge::poll()` is synchronous.
 
 ### 2.3  Node mock
 
@@ -80,24 +83,37 @@ These are the glue components that simulate ESP-NOW radio:
 
 ```rust
 /// Simulates ESP-NOW broadcast between a modem and one or more nodes.
+///
+/// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_rx` takes
+/// `&self` and `Radio::send` takes `&mut self` — both synchronous.
+/// The receiver is wrapped in `Mutex` to satisfy `drain_rx(&self)`.
 struct ChannelRadio {
     /// Frames sent by the gateway (via modem bridge) appear here for nodes.
-    to_nodes: mpsc::Sender<(Vec<u8>, [u8; 6])>,
+    to_nodes: std::sync::mpsc::Sender<(Vec<u8>, [u8; 6])>,
     /// Frames sent by nodes appear here for the gateway.
-    from_nodes: mpsc::Receiver<(Vec<u8>, [u8; 6])>,
+    from_nodes: std::sync::Mutex<std::sync::mpsc::Receiver<(Vec<u8>, [u8; 6])>>,
 }
 
 /// Node-side transport backed by the same channels.
+///
+/// Uses `std::sync::mpsc` with `recv_timeout()` to implement the
+/// synchronous `sonde-node::traits::Transport::recv(timeout_ms)` contract.
 struct ChannelTransport {
     /// Frames from the gateway (via ChannelRadio).
-    rx: mpsc::Receiver<(Vec<u8>, [u8; 6])>,
+    rx: std::sync::mpsc::Receiver<(Vec<u8>, [u8; 6])>,
     /// Frames to the gateway (via ChannelRadio).
-    tx: mpsc::Sender<(Vec<u8>, [u8; 6])>,
+    tx: std::sync::mpsc::Sender<(Vec<u8>, [u8; 6])>,
     node_mac: [u8; 6],
 }
 ```
 
-The `ChannelRadio` implements the `sonde-modem::bridge::Radio` trait. The `ChannelTransport` implements the `sonde-node::traits::Transport` trait (synchronous, so it uses `try_recv` with timeout simulation).
+The `ChannelRadio` implements `sonde-modem::bridge::Radio`:
+- `send(&mut self, peer_mac, data)` → pushes to `to_nodes` sender.
+- `drain_rx(&self)` → locks `from_nodes` mutex, drains all pending frames as `Vec<RecvFrame>`.
+
+The `ChannelTransport` implements `sonde-node::traits::Transport` (synchronous):
+- `send(&mut self, frame)` → pushes to `tx` sender.
+- `recv(&mut self, timeout_ms)` → calls `rx.recv_timeout(Duration::from_millis(timeout_ms))`, returns `Ok(Some(data))` or `Ok(None)` on timeout.
 
 ---
 
@@ -105,13 +121,14 @@ The `ChannelRadio` implements the `sonde-modem::bridge::Radio` trait. The `Chann
 
 Each test follows this sequence:
 
-1. **Create channels:** `mpsc` pairs for radio simulation.
-2. **Create duplex:** `tokio::io::duplex(4096)` for the serial link.
-3. **Start modem bridge:** Spawn a task running `Bridge::new(duplex_server, ChannelRadio)` poll loop.
-4. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → ACK) against the bridge.
-5. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)`.
-6. **Register test nodes:** Insert `NodeRecord` into storage with known PSKs.
-7. **Run test scenario:** Drive node wake cycles and assert on gateway behavior.
+1. **Create channels:** `std::sync::mpsc` pairs for radio simulation (gateway↔nodes).
+2. **Create duplex:** `tokio::io::duplex(4096)` for the serial link between gateway and bridge.
+3. **Create PipeSerial adapter:** Bridges the sync `SerialPort` trait (used by `Bridge`) to the async duplex stream (used by `UsbEspNowTransport`). A background tokio task shuttles bytes between the duplex server half and the adapter's internal ring buffers.
+4. **Start modem bridge:** Spawn a **std::thread** running `Bridge::new(PipeSerial, ChannelRadio).poll()` in a loop (the bridge is synchronous).
+5. **Start gateway transport:** `UsbEspNowTransport::new(duplex_client, channel)` — this runs the startup handshake (RESET → MODEM_READY → SET_CHANNEL → ACK) against the bridge.
+6. **Create gateway engine:** `Gateway::new_with_pending(storage, pending_commands, session_manager)`.
+7. **Register test nodes:** Insert `NodeRecord` into storage with known PSKs.
+8. **Run test scenario:** Drive node wake cycles (via `spawn_blocking` since `run_wake_cycle` is sync) and assert on gateway behavior.
 
 ### 3.1  Test node helper
 
@@ -469,7 +486,11 @@ crates/sonde-e2e/
 
 ### 6.2  Async ↔ sync bridge
 
-`sonde-node::wake_cycle::run_wake_cycle()` is synchronous, but the E2E harness runs in a tokio async runtime. The node mock should run `run_wake_cycle()` inside `tokio::task::spawn_blocking()`, with the `ChannelTransport` using blocking channel operations internally.
+There are two async/sync boundaries:
+
+1. **Bridge (sync) ↔ UsbEspNowTransport (async):** The bridge's `SerialPort` trait is synchronous, but `UsbEspNowTransport` expects `AsyncRead + AsyncWrite`. The `PipeSerial` adapter bridges this gap using internal ring buffers and a background tokio task that shuttles bytes between the duplex stream and the ring buffers.
+
+2. **Node wake cycle (sync) ↔ test harness (async):** `run_wake_cycle()` is synchronous. The `ChannelTransport` uses `std::sync::mpsc::recv_timeout()` for blocking receive. Node wake cycles should run inside `tokio::task::spawn_blocking()` to avoid blocking the tokio runtime.
 
 ### 6.3  Timing
 

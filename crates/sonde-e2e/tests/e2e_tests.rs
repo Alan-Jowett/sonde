@@ -16,12 +16,12 @@ use sonde_gateway::storage::Storage;
 /// exchange and returns to sleep at its configured interval.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_001_nop_wake_cycle() {
-    let env = E2eTestEnv::new().await;
+    let env = E2eTestEnv::new();
     let psk = [0xAA; 32];
     env.register_node("test-node", 1, psk).await;
 
     let mut node = NodeProxy::new(1, psk);
-    let stats = node.run_wake_cycle(&env).await;
+    let stats = node.run_wake_cycle(&env);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 
@@ -42,12 +42,12 @@ async fn t_e2e_001_nop_wake_cycle() {
 /// authenticate each other's frames.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002_hmac_round_trip() {
-    let env = E2eTestEnv::new().await;
+    let env = E2eTestEnv::new();
     let psk = [0x42; 32];
     env.register_node("hmac-node", 0x1234, psk).await;
 
     let mut node = NodeProxy::new(0x1234, psk);
-    let stats = node.run_wake_cycle(&env).await;
+    let stats = node.run_wake_cycle(&env);
 
     // Success means: node's WAKE was authenticated by gateway,
     // and gateway's COMMAND was authenticated by node.
@@ -61,17 +61,17 @@ async fn t_e2e_002_hmac_round_trip() {
 /// Explicitly asserts that the WAKE nonces differ across the two cycles.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002b_consecutive_wake_cycles() {
-    let env = E2eTestEnv::new().await;
+    let env = E2eTestEnv::new();
     let psk = [0x55; 32];
     env.register_node("multi-node", 1, psk).await;
 
     let mut node = NodeProxy::new(1, psk);
 
-    let stats1 = node.run_wake_cycle(&env).await;
+    let stats1 = node.run_wake_cycle(&env);
     assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats1.response_count > 0, "first cycle should receive gateway responses");
 
-    let stats2 = node.run_wake_cycle(&env).await;
+    let stats2 = node.run_wake_cycle(&env);
     assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats2.response_count > 0, "second cycle should receive gateway responses");
 
@@ -97,12 +97,12 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
 /// sleeps for its configured schedule interval.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_003_wrong_psk_rejected() {
-    let env = E2eTestEnv::new().await;
+    let env = E2eTestEnv::new();
     env.register_node("test-node", 1, [0xAA; 32]).await;
 
     // Node has a different PSK
     let mut node = NodeProxy::new(1, [0xBB; 32]);
-    let stats = node.run_wake_cycle(&env).await;
+    let stats = node.run_wake_cycle(&env);
 
     // Should exhaust retries and sleep
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
@@ -132,7 +132,7 @@ async fn t_e2e_003_wrong_psk_rejected() {
 /// node adopts the new interval.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_020_update_schedule() {
-    let env = E2eTestEnv::new().await;
+    let env = E2eTestEnv::new();
     let psk = [0xCC; 32];
     env.register_node("sched-node", 1, psk).await;
 
@@ -145,7 +145,7 @@ async fn t_e2e_020_update_schedule() {
         .await;
 
     let mut node = NodeProxy::new(1, psk);
-    let stats = node.run_wake_cycle(&env).await;
+    let stats = node.run_wake_cycle(&env);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 120 });
 
@@ -154,7 +154,7 @@ async fn t_e2e_020_update_schedule() {
 
     // Pending command consumed
     let cmds = env.pending_commands.read().await;
-    assert!(cmds.get("sched-node").map_or(true, |v| v.is_empty()));
+    assert!(cmds.get("sched-node").is_none_or(|v| v.is_empty()));
 }
 
 /// T-E2E-021 — REBOOT command.
@@ -162,7 +162,7 @@ async fn t_e2e_020_update_schedule() {
 /// The gateway queues a Reboot command. The wake cycle returns `Reboot`.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_021_reboot() {
-    let env = E2eTestEnv::new().await;
+    let env = E2eTestEnv::new();
     let psk = [0xDD; 32];
     env.register_node("reboot-node", 1, psk).await;
 
@@ -171,7 +171,7 @@ async fn t_e2e_021_reboot() {
         .await;
 
     let mut node = NodeProxy::new(1, psk);
-    let stats = node.run_wake_cycle(&env).await;
+    let stats = node.run_wake_cycle(&env);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Reboot);
 }
@@ -182,11 +182,11 @@ async fn t_e2e_021_reboot() {
 /// response. The node exhausts retries and sleeps at the default interval.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_040_unknown_node() {
-    let env = E2eTestEnv::new().await;
+    let env = E2eTestEnv::new();
     // Do NOT register node
 
     let mut node = NodeProxy::new(99, [0xFF; 32]);
-    let stats = node.run_wake_cycle(&env).await;
+    let stats = node.run_wake_cycle(&env);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 

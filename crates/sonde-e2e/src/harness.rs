@@ -42,9 +42,15 @@ pub struct E2eTestEnv {
     pub pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
 }
 
+impl Default for E2eTestEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl E2eTestEnv {
     /// Create a fresh in-memory test environment.
-    pub async fn new() -> Self {
+    pub fn new() -> Self {
         let storage = Arc::new(
             SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
         );
@@ -111,7 +117,7 @@ impl NodeProxy {
     ///
     /// Returns [`WakeCycleStats`] with the outcome, response count, and
     /// captured WAKE nonces for test assertions.
-    pub async fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
+    pub fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
         let mut hal = MockHal;
         let clock = MockClock::new();
         let battery = MockBattery;
@@ -195,7 +201,7 @@ impl NodeTransport for BridgeTransport {
         let frame = frame.to_vec();
         let response = tokio::task::block_in_place(|| {
             self.rt
-                .block_on(async { gateway.process_frame(&frame, peer).await })
+                .block_on(gateway.process_frame(&frame, peer))
         });
         if response.is_some() {
             self.response_count.set(self.response_count.get() + 1);

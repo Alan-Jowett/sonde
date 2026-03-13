@@ -1941,8 +1941,7 @@ checksum = "0c8d0fd677905edcbeedbf2edb6494d676f0e98d54d5cf9bda0b061cb8fb8aba"
 [[package]]
 name = "rbpf"
 version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c7fd1b4fdf96615efe17cfd01307737988fd17ece498e36f34d30e98726027d"
+source = "git+https://github.com/Alan-Jowett/rbpf#2b335775baf8ef15f7a73953025ce3e2d052c462"
 dependencies = [
  "byteorder",
  "combine",

@@ -22,7 +22,7 @@ sha2 = "0.10"
 esp-idf-hal = { version = "0.45", optional = true }
 esp-idf-svc = { version = "0.51", features = ["binstart"], optional = true }
 esp-idf-sys = { version = "0.36", features = ["binstart"], optional = true }
-rbpf = { version = "0.4", default-features = false }
+rbpf = { git = "https://github.com/Alan-Jowett/rbpf", default-features = false }
 
 [build-dependencies]
 embuild = { version = "0.33", optional = true }

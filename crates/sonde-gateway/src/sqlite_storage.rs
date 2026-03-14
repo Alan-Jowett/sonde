@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use async_trait::async_trait;
-use rand::RngExt;
+use zeroize::Zeroizing;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::program::{ProgramRecord, VerificationProfile};
@@ -26,15 +26,16 @@ const ENCRYPTED_PSK_LEN: usize = 12 + 32 + 16;
 ///
 /// Returns a blob of the form `nonce (12 B) || ciphertext+tag (48 B)`.
 fn encrypt_psk(
-    master_key: [u8; 32],
+    master_key: &[u8; 32],
     node_id: &str,
     psk: &[u8; 32],
 ) -> Result<Vec<u8>, StorageError> {
-    let key = Key::<Aes256Gcm>::from_slice(&master_key);
+    let key = Key::<Aes256Gcm>::from_slice(master_key);
     let cipher = Aes256Gcm::new(key);
 
     let mut nonce_bytes = [0u8; 12];
-    rand::rng().fill(&mut nonce_bytes);
+    getrandom::fill(&mut nonce_bytes)
+        .map_err(|e| StorageError::Internal(format!("nonce generation: {e}")))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let payload = Payload {
@@ -54,23 +55,15 @@ fn encrypt_psk(
 
 /// Decrypt an encrypted PSK blob produced by [`encrypt_psk`].
 ///
-/// As a backwards-compatibility safety net, a 32-byte blob is treated as a
-/// legacy plaintext PSK (written before GW-0601a). In practice the
-/// [`migrate_legacy_psks`] step in [`SqliteStorage::open`] re-encrypts all
-/// such blobs before any node is read, so this branch should never be hit on
-/// a properly opened database.
-///
 /// Returns `StorageError::Internal` if the blob length is wrong or the
 /// GCM authentication tag check fails (which indicates data corruption or
 /// an incorrect master key).
-fn decrypt_psk(master_key: [u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8; 32], StorageError> {
-    // Legacy plaintext PSK written by a pre-GW-0601a gateway. `migrate_legacy_psks`
-    // re-encrypts all such blobs on `open()`, so this branch is a safety net only.
-    if blob.len() == 32 {
-        let psk: [u8; 32] = blob.try_into().expect("length already checked to be 32");
-        return Ok(psk);
-    }
-
+///
+/// Note: legacy 32-byte plaintext PSK blobs are handled exclusively by
+/// [`migrate_legacy_psks`] during [`SqliteStorage::open`]. This function
+/// does not accept plaintext blobs — after migration, all stored PSKs
+/// must be [`ENCRYPTED_PSK_LEN`] bytes.
+fn decrypt_psk(master_key: &[u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8; 32], StorageError> {
     if blob.len() != ENCRYPTED_PSK_LEN {
         return Err(StorageError::Internal(format!(
             "encrypted psk blob has wrong length: expected {ENCRYPTED_PSK_LEN}, got {}",
@@ -78,7 +71,7 @@ fn decrypt_psk(master_key: [u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8; 
         )));
     }
 
-    let key = Key::<Aes256Gcm>::from_slice(&master_key);
+    let key = Key::<Aes256Gcm>::from_slice(master_key);
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(&blob[..12]);
 
@@ -103,7 +96,7 @@ fn decrypt_psk(master_key: [u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8; 
 /// PSK and transparently re-encrypted with the current master key.  After this
 /// function returns all PSK blobs in the database are [`ENCRYPTED_PSK_LEN`]
 /// bytes long and decryption can unconditionally use the AES-256-GCM path.
-fn migrate_legacy_psks(conn: &Connection, master_key: [u8; 32]) -> Result<(), StorageError> {
+fn migrate_legacy_psks(conn: &Connection, master_key: &[u8; 32]) -> Result<(), StorageError> {
     let mut stmt = conn
         .prepare("SELECT node_id, psk FROM nodes WHERE LENGTH(psk) = 32")
         .map_err(map_err)?;
@@ -113,18 +106,27 @@ fn migrate_legacy_psks(conn: &Connection, master_key: [u8; 32]) -> Result<(), St
         .collect::<Result<_, _>>()
         .map_err(map_err)?;
 
+    if legacy.is_empty() {
+        return Ok(());
+    }
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| StorageError::Internal(format!("begin migration tx: {e}")))?;
     for (node_id, psk_blob) in legacy {
         // SQL WHERE clause guarantees LENGTH(psk) = 32.
         let psk: [u8; 32] = psk_blob
             .try_into()
             .expect("SQL filter guarantees exactly 32 bytes");
         let encrypted = encrypt_psk(master_key, &node_id, &psk)?;
-        conn.execute(
+        tx.execute(
             "UPDATE nodes SET psk = ?1 WHERE node_id = ?2",
             params![encrypted, node_id],
         )
         .map_err(map_err)?;
     }
+    tx.commit()
+        .map_err(|e| StorageError::Internal(format!("commit migration tx: {e}")))?;
     Ok(())
 }
 
@@ -160,7 +162,7 @@ CREATE TABLE IF NOT EXISTS programs (
 /// (GW-0601a). The master key is never written to the database.
 pub struct SqliteStorage {
     conn: Arc<Mutex<Connection>>,
-    master_key: [u8; 32],
+    master_key: Zeroizing<[u8; 32]>,
 }
 
 impl SqliteStorage {
@@ -289,7 +291,7 @@ fn profile_to_str(p: &VerificationProfile) -> &'static str {
 ///
 /// The `node_id` column (index 0) is used as AAD for the AES-GCM decryption
 /// so that swapping PSK blobs between rows is detected as an authentication failure.
-fn row_to_node(row: &rusqlite::Row<'_>, master_key: [u8; 32]) -> rusqlite::Result<NodeRecord> {
+fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Result<NodeRecord> {
     let node_id: String = row.get(0)?;
     let psk_blob: Vec<u8> = row.get(2)?;
     let psk = decrypt_psk(master_key, &node_id, &psk_blob).map_err(|e| {
@@ -327,7 +329,7 @@ impl Storage for SqliteStorage {
     // ── Node registry ──────────────────────────────────────────
 
     async fn list_nodes(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        let mk = self.master_key;
+        let mk = self.master_key.clone();
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -337,7 +339,7 @@ impl Storage for SqliteStorage {
                 )
                 .map_err(map_err)?;
             let rows = stmt
-                .query_map([], |row| row_to_node(row, mk))
+                .query_map([], |row| row_to_node(row, &mk))
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
@@ -350,14 +352,14 @@ impl Storage for SqliteStorage {
 
     async fn get_node(&self, node_id: &str) -> Result<Option<NodeRecord>, StorageError> {
         let node_id = node_id.to_string();
-        let mk = self.master_key;
+        let mk = self.master_key.clone();
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \
                  last_battery_mv, last_seen_epoch_s FROM nodes WHERE node_id = ?1",
                 params![node_id],
-                |row| row_to_node(row, mk),
+                |row| row_to_node(row, &mk),
             )
             .optional()
             .map_err(map_err)
@@ -366,7 +368,7 @@ impl Storage for SqliteStorage {
     }
 
     async fn get_nodes_by_key_hint(&self, key_hint: u16) -> Result<Vec<NodeRecord>, StorageError> {
-        let mk = self.master_key;
+        let mk = self.master_key.clone();
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -376,7 +378,7 @@ impl Storage for SqliteStorage {
                 )
                 .map_err(map_err)?;
             let rows = stmt
-                .query_map(params![key_hint as u32], |row| row_to_node(row, mk))
+                .query_map(params![key_hint as u32], |row| row_to_node(row, &mk))
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
@@ -389,10 +391,10 @@ impl Storage for SqliteStorage {
 
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
         let record = record.clone();
-        let mk = self.master_key;
+        let mk = self.master_key.clone();
         self.with_conn(move |conn| {
             let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
-            let encrypted_psk = encrypt_psk(mk, &record.node_id, &record.psk)?;
+            let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
             conn.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \

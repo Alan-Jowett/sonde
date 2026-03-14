@@ -129,11 +129,20 @@ impl MapStorage {
         Self::required_bytes_checked(map_defs).unwrap_or(usize::MAX)
     }
 
-    /// Validate map definitions: checks type, key_size, and arithmetic.
+    /// Validate map definitions: checks count, type, key_size, and arithmetic.
     ///
     /// Call this before committing program installs to ensure the maps
-    /// are compatible with this platform.
+    /// are compatible with this platform. Rejects programs that define
+    /// more than [`MAX_MAPS`](crate::bpf_dispatch::MAX_MAPS) maps since
+    /// the dispatch-time pointer index cannot hold more entries.
     pub fn validate_map_defs(map_defs: &[MapDef]) -> NodeResult<()> {
+        if map_defs.len() > crate::bpf_dispatch::MAX_MAPS {
+            return Err(NodeError::ProgramDecodeFailed(format!(
+                "program defines {} maps, but at most {} are supported",
+                map_defs.len(),
+                crate::bpf_dispatch::MAX_MAPS,
+            )));
+        }
         for def in map_defs {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
                 return Err(NodeError::ProgramDecodeFailed(format!(
@@ -350,5 +359,32 @@ mod tests {
             array_map_def(32, 4), // 4 * (4+32) = 144
         ];
         assert_eq!(MapStorage::required_bytes(&defs), 336);
+    }
+
+    #[test]
+    fn test_validate_too_many_maps() {
+        let defs: Vec<MapDef> = (0..crate::bpf_dispatch::MAX_MAPS + 1)
+            .map(|_| array_map_def(4, 1))
+            .collect();
+        let result = MapStorage::validate_map_defs(&defs);
+        match result {
+            Err(NodeError::ProgramDecodeFailed(msg)) => {
+                let expected_count = format!("{} maps", crate::bpf_dispatch::MAX_MAPS + 1);
+                assert!(
+                    msg.contains(&expected_count),
+                    "error message should mention the map count: {msg}"
+                );
+            }
+            Err(other) => panic!("expected ProgramDecodeFailed, got: {other}"),
+            Ok(()) => panic!("expected error for too many maps"),
+        }
+    }
+
+    #[test]
+    fn test_validate_exactly_max_maps() {
+        let defs: Vec<MapDef> = (0..crate::bpf_dispatch::MAX_MAPS)
+            .map(|_| array_map_def(4, 1))
+            .collect();
+        assert!(MapStorage::validate_map_defs(&defs).is_ok());
     }
 }

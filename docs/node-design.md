@@ -477,7 +477,7 @@ All inbound protocol errors result in **silent discard** — the node does not s
 | Region | Total | Used by firmware | Available |
 |---|---|---|---|
 | RAM | 400 KB | ~100 KB (stack, ESP-IDF, wifi) | ~300 KB |
-| RTC slow SRAM | 8 KB | ~2 KB (firmware state, flags) | ~6 KB for maps |
+| RTC slow SRAM | 8 KB | ~4 KB (firmware state, flags, layout record) | ~4 KB for maps |
 | Flash (program) | 8 KB (2 × 4 KB) | — | 4 KB per program image |
 | BPF stack | 4 KB | — | 512 B × 8 frames |
 | Ephemeral program | — | — | Allocated from heap (≤ 2 KB) |

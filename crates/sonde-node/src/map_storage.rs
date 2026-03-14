@@ -13,9 +13,10 @@ const ARRAY_MAP_KEY_SIZE: u32 = 4;
 /// Total bytes reserved for BPF map data.
 ///
 /// On ESP32 this maps directly to the size of `MAP_BACKING` in RTC slow SRAM.
-/// The ESP32-C3 has 8 KB of RTC slow SRAM; ~2 KB is used by firmware state
-/// and flags, leaving ~6 KB for map data (node-design.md §13).
-pub const MAP_BUDGET: usize = 6 * 1024;
+/// The ESP32-C3 has 8 KB of RTC slow SRAM; ~4 KB is used by firmware state,
+/// flags, and the `RtcMapLayout` record, leaving ~4 KB for map data
+/// (bpf-environment.md §10, node-design.md §13).
+pub const MAP_BUDGET: usize = 4 * 1024;
 
 /// Maximum number of BPF maps a single program may define.
 ///
@@ -91,11 +92,14 @@ type MapData = RtcSlice;
 ///
 /// # Safety
 ///
-/// All instances are created exclusively by `make_map_data` (called from
-/// `allocate()`), which guarantees that each `RtcSlice` covers a unique,
-/// non-overlapping range of `MAP_BACKING`. The `allocate()` method is the
-/// only code path that constructs `RtcSlice` values — safe code outside
-/// this module cannot create arbitrary slices into `MAP_BACKING`.
+/// All instances are created by `make_map_data` (called from `allocate()`)
+/// or by `from_rtc()` during deep-sleep recovery. Both paths guarantee
+/// that each `RtcSlice` covers a unique, non-overlapping range of
+/// `MAP_BACKING`. Safe code outside this module cannot create arbitrary
+/// slices into `MAP_BACKING`.
+///
+/// The singleton invariant — exactly one live `MapStorage` on ESP builds —
+/// ensures that only one set of `RtcSlice` values exists at a time.
 /// The wake-cycle engine is single-threaded, so no concurrent access
 /// can occur.
 #[cfg(feature = "esp")]
@@ -154,21 +158,10 @@ impl core::fmt::Debug for RtcSlice {
     }
 }
 
-// `*mut u8` is `!Send` by default in Rust (all raw pointers opt out of
-// auto-Send — see `impl<T: ?Sized> !Send for *mut T` in core).
-// `RtcSlice` wraps a pointer into the static `MAP_BACKING` buffer.
-//
-// On ESP32 the wake-cycle engine is single-threaded, so `Send` is not
-// strictly required by the current call graph. We provide it defensively
-// so that `MapStorage` (which contains `Vec<MapInstance>`) can be stored
-// in contexts that require `Send` (e.g. if a future test harness or
-// diagnostic task moves it across threads).
-//
-// Safety: only one thread accesses `MAP_BACKING` at a time. If ISR or
-// multi-thread access is ever introduced, this impl must be replaced
-// with proper synchronisation.
-#[cfg(feature = "esp")]
-unsafe impl Send for RtcSlice {}
+// `RtcSlice` is intentionally `!Send`. The wake-cycle engine is
+// single-threaded and no `Send` bound exists in the call graph.
+// Keeping `RtcSlice` non-Send prevents accidental cross-thread
+// movement of raw pointers into the global `MAP_BACKING` buffer.
 
 // ---------------------------------------------------------------------------
 // Map data construction helper
@@ -511,22 +504,27 @@ impl MapStorage {
     /// `validate_map_defs()` rejects programs with more than `MAX_MAPS`
     /// maps, so truncation cannot occur in practice.
     ///
-    /// Uses an invalidate-write-commit pattern so that a reset mid-write
-    /// never leaves `from_rtc()` with a valid-looking but inconsistent
-    /// record:
+    /// Uses an invalidate-write-commit pattern with compiler fences so
+    /// that a reset mid-write never leaves `from_rtc()` with a
+    /// valid-looking but inconsistent record:
     ///   1. Set `map_count = 0` (invalidate — from_rtc returns None)
-    ///   2. Write all defs
-    ///   3. Set `map_count = count` (commit)
+    ///   2. Compiler fence (prevent reordering defs writes before invalidate)
+    ///   3. Write all defs
+    ///   4. Compiler fence (prevent commit write before defs)
+    ///   5. Set `map_count = count` (commit)
     #[cfg(feature = "esp")]
     fn write_rtc_layout(map_defs: &[MapDef]) {
+        use core::sync::atomic::{compiler_fence, Ordering};
         unsafe {
             let count = map_defs.len().min(MAX_MAPS);
             // Invalidate: ensures from_rtc() returns None if we reset
             // between here and the final commit below.
             MAP_LAYOUT.map_count = 0;
+            compiler_fence(Ordering::SeqCst);
             for (i, def) in map_defs.iter().enumerate().take(count) {
                 MAP_LAYOUT.defs[i] = *def;
             }
+            compiler_fence(Ordering::SeqCst);
             // Commit: set map_count last.
             MAP_LAYOUT.map_count = count as u32;
         }

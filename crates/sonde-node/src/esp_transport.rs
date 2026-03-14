@@ -70,7 +70,8 @@ impl Default for RxRing {
 }
 
 impl RxRing {
-    /// Copy `payload` into the next ring slot. Returns `false` if full.
+    /// Copy `payload` into the next ring slot. Returns `false` if the ring
+    /// is full or the payload exceeds `ESPNOW_MAX_DATA_SIZE`.
     ///
     /// No heap allocation; safe to call from the WiFi task context.
     fn push(&mut self, payload: &[u8]) -> bool {

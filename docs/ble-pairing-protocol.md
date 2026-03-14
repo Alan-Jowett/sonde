@@ -116,7 +116,7 @@ Two GATT services are defined — one on the gateway (or its BLE-connected modem
 
 ### 3.4  MTU and fragmentation
 
-Both services require an ATT MTU ≥ 247 bytes (negotiated via MTU exchange).  Messages larger than (MTU − 3) bytes use **Write Long** (ATT Prepare Write + Execute Write) for writes, and are reassembled from multiple indications on the receiving side using the length-prefixed envelope (§4).
+Both services require an ATT MTU ≥ 247 bytes (negotiated via MTU exchange).  Messages larger than (MTU − 3) bytes use **Write Long** (ATT Prepare Write + Execute Write) for writes.  For indications (gateway/node → phone), the sender fragments the complete envelope into chunks of at most (MTU − 3) bytes and sends each chunk as a separate indication.  The receiver reassembles by buffering incoming indication payloads in order until the accumulated length matches the `LEN` field from the envelope header (§4).  Messages MUST NOT be interleaved — the sender MUST complete all indications for one message before starting the next.  Each indication MUST be acknowledged (ATT Handle Value Confirmation) by the receiver before the sender transmits the next chunk.
 
 If MTU negotiation yields < 247, the phone should disconnect and report an error.
 
@@ -600,7 +600,7 @@ On reset, the node checks conditions in this order:
 ### 8.2  BLE pairing mode
 
 1. Start BLE stack, register Node Provisioning Service (§3.3).
-2. Begin advertising with service UUID `0000FE50-0000-1000-8000-00805F9B34FB` (Node Provisioning Service, §3.2).  Advertising name: `"sonde-XXXX"` where `XXXX` is the last 4 hex digits of the MAC address.
+2. Begin advertising with service UUID `0000FE50-0000-1000-8000-00805F9B34FB` (Node Provisioning Service, §3.1/§3.3).  Advertising name: `"sonde-XXXX"` where `XXXX` is the last 4 hex digits of the MAC address.
 3. On BLE connection: negotiate MTU ≥ 247, accept LESC Just Works pairing.
 4. On `NODE_PROVISION` write:
    a. Parse fields per §6.6.

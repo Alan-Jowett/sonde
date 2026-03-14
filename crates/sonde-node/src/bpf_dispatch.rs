@@ -71,20 +71,22 @@ impl MapPtrIndex {
         }
     }
 
-    fn insert(&mut self, ptr: u64, idx: usize) {
-        // Check for duplicate — each map pointer must be unique.
-        debug_assert!(
-            self.entries[..self.len].iter().all(|(p, _)| *p != ptr),
-            "duplicate map pointer 0x{:x} in MapPtrIndex",
-            ptr
-        );
-        assert!(
-            self.len < MAX_MAPS,
-            "BPF map count exceeds MAX_MAPS ({})",
-            MAX_MAPS
-        );
+    /// Insert a map pointer → index mapping. Returns `false` if the
+    /// index is full or if the pointer is a duplicate (which would cause
+    /// `get()` to resolve the wrong map).
+    fn insert(&mut self, ptr: u64, idx: usize) -> bool {
+        if self.len >= MAX_MAPS {
+            return false;
+        }
+        // Reject duplicates in all builds — not just debug. Duplicate
+        // pointers can arise from zero-sized maps (empty Vec returns a
+        // dangling non-null pointer that may collide).
+        if self.entries[..self.len].iter().any(|(p, _)| *p == ptr) {
+            return false;
+        }
         self.entries[self.len] = (ptr, idx);
         self.len += 1;
+        true
     }
 
     fn get(&self, ptr: u64) -> Option<usize> {
@@ -175,7 +177,13 @@ pub unsafe fn install(
             let ms = unsafe { &*map_storage };
             let mut index = MapPtrIndex::new();
             for (i, &p) in ms.map_pointers().iter().enumerate() {
-                index.insert(p, i);
+                if !index.insert(p, i) {
+                    log::warn!(
+                        "map pointer index overflow or duplicate at map {i} — \
+                         map helpers may resolve incorrectly"
+                    );
+                    break;
+                }
             }
             index
         };

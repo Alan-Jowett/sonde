@@ -145,8 +145,11 @@ impl core::fmt::Debug for RtcSlice {
     }
 }
 
-// SAFETY: The wake-cycle engine is single-threaded; no other thread or
-// interrupt handler accesses MAP_BACKING.
+// Raw pointers are not `Send` by default. `RtcSlice` wraps a `*mut u8`
+// into `MAP_BACKING` (RTC SRAM). The single-threaded wake-cycle engine
+// guarantees no concurrent access; `Send` is required because
+// `MapStorage` (which contains `MapInstance` with `RtcSlice` data) may
+// be stored in types that require `Send`.
 #[cfg(feature = "esp")]
 unsafe impl Send for RtcSlice {}
 
@@ -307,7 +310,7 @@ impl MapStorage {
             let map_size = entry_size.checked_mul(def.max_entries as usize)?;
             total_bytes = total_bytes.checked_add(map_size)?;
         }
-        if total_bytes > budget_bytes {
+        if total_bytes > budget_bytes || total_bytes > MAP_BUDGET {
             return None;
         }
 
@@ -371,6 +374,13 @@ impl MapStorage {
     /// Call this before committing program installs to ensure the maps
     /// are compatible with this platform.
     pub fn validate_map_defs(map_defs: &[MapDef]) -> NodeResult<()> {
+        if map_defs.len() > MAX_MAPS {
+            return Err(NodeError::ProgramDecodeFailed(format!(
+                "too many maps: {} exceeds maximum of {}",
+                map_defs.len(),
+                MAX_MAPS
+            )));
+        }
         for def in map_defs {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
                 return Err(NodeError::ProgramDecodeFailed(format!(
@@ -450,23 +460,22 @@ impl MapStorage {
     /// Write the current map definitions to the RTC layout record.
     ///
     /// Called by `allocate()` after successfully setting up maps.
-    /// Silently truncates to `MAX_MAPS` entries if `map_defs.len() > MAX_MAPS`
-    /// (in practice this can't happen — the budget check in `allocate()`
-    /// rejects any map set that would exceed `MAP_BUDGET`, which in turn
-    /// limits total entries well below `MAX_MAPS`).
+    /// `validate_map_defs()` rejects programs with more than `MAX_MAPS`
+    /// maps, so truncation cannot occur in practice.
     ///
-    /// Only entries `[0..map_count)` are meaningful after this call; entries
-    /// at higher indices retain their previous values but `from_rtc()` reads
-    /// exactly `map_count` entries and ignores the rest.
+    /// Writes `defs` before `map_count` so that `map_count` acts as a
+    /// commit marker: if the device resets mid-write, `from_rtc()` sees
+    /// either the old count (safe) or the new count with fully written
+    /// defs (correct).
     #[cfg(feature = "esp")]
     fn write_rtc_layout(map_defs: &[MapDef]) {
-        // SAFETY: Single-threaded wake-cycle engine; no concurrent access.
         unsafe {
             let count = map_defs.len().min(MAX_MAPS);
-            MAP_LAYOUT.map_count = count as u32;
             for (i, def) in map_defs.iter().enumerate().take(count) {
                 MAP_LAYOUT.defs[i] = *def;
             }
+            // Commit: set map_count last.
+            MAP_LAYOUT.map_count = count as u32;
         }
     }
 

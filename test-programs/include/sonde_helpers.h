@@ -111,6 +111,16 @@ struct sonde_context {
  *
  * Helper call numbers MUST match helper_ids in
  * crates/sonde-node/src/bpf_helpers.rs.
+ *
+ * NOTE on gateway verification: the gateway currently verifies ELF files
+ * using Prevail's LinuxPlatform (crates/sonde-gateway/src/program.rs).
+ * Linux BPF assigns different semantics to helper IDs 1–16 than sonde does
+ * (e.g. Linux helper 1 = map_lookup_elem; Sonde helper 1 = i2c_read).
+ * Until the gateway switches to a Sonde-specific Prevail platform, programs
+ * that call these helpers will be verified under Linux helper semantics,
+ * which may produce incorrect verification results.  These programs are
+ * provided primarily as compilation examples and for use once a Sonde
+ * Prevail platform is in place (GW-0400/GW-0401).
  * ---------------------------------------------------------------------- */
 
 /**

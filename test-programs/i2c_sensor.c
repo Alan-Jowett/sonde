@@ -89,6 +89,10 @@ static __noinline int bme280_trigger_and_read(__u8 *raw)
                           raw, BME280_RAW_DATA_LEN);
 }
 
+/* Error message strings for bpf_trace_printk. */
+static const char err_no_device[] = "bme280: device not found\n";
+static const char err_read_fail[] = "bme280: measurement failed\n";
+
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {
@@ -97,14 +101,18 @@ int program(struct sonde_context *ctx)
     /* Step 1: verify device identity. */
     __u8 chip_id = 0;
     int rc = bme280_read_reg(BME280_REG_CHIP_ID, &chip_id);
-    if (rc < 0 || chip_id != BME280_CHIP_ID)
-        return -1;
+    if (rc < 0 || chip_id != BME280_CHIP_ID) {
+        bpf_trace_printk(err_no_device, sizeof(err_no_device));
+        return 0;
+    }
 
     /* Step 2: trigger measurement and read raw data. */
     __u8 raw[BME280_RAW_DATA_LEN];
     rc = bme280_trigger_and_read(raw);
-    if (rc < 0)
-        return rc;
+    if (rc < 0) {
+        bpf_trace_printk(err_read_fail, sizeof(err_read_fail));
+        return 0;
+    }
 
     /* Step 3: transmit raw bytes to the gateway for decoding. */
     send(raw, sizeof(raw));

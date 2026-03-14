@@ -90,10 +90,6 @@ impl RxRing {
     /// avoiding a full 250-byte memcpy. Returns `None` if the ring is empty.
     fn pop_into(&mut self, buf: &mut [u8; ESPNOW_MAX_DATA_SIZE]) -> Option<usize> {
         if self.count == 0 {
-            if self.drop_count > 0 {
-                log::warn!("ESP-NOW recv ring: {} full drop(s)", self.drop_count);
-                self.drop_count = 0;
-            }
             return None;
         }
         let slot = &self.slots[self.tail];
@@ -256,25 +252,38 @@ impl crate::traits::Transport for EspNowTransport {
         let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
         // Pre-allocate buffer outside the lock for pop_into to copy into.
         let mut buf = [0u8; ESPNOW_MAX_DATA_SIZE];
-        let mut ring = self
-            .rx_ring
-            .lock()
-            .map_err(|_| NodeError::Transport("rx_ring lock poisoned".into()))?;
-        // Drain any contention_drops accumulated by the callback into the
-        // ring's deferred log on each entry so the warning is emitted.
+        // Read+clear contention drops before locking — the counter is
+        // atomic so no lock is needed, and logging outside the critical
+        // section avoids extending try_lock contention in raw_recv_cb.
         if let Some(state) = RECV_STATE.get() {
             let cd = state.contention_drops.swap(0, Ordering::Relaxed);
             if cd > 0 {
                 log::warn!("ESP-NOW recv ring: {} contention drop(s)", cd);
             }
         }
+        let mut ring = self
+            .rx_ring
+            .lock()
+            .map_err(|_| NodeError::Transport("rx_ring lock poisoned".into()))?;
+        // Snapshot and clear full-drop count under the lock so we can
+        // log after releasing it. This ensures drops are reported even
+        // under sustained traffic (pop_into no longer logs internally).
+        let full_drops = ring.drop_count;
+        ring.drop_count = 0;
         loop {
             if let Some(len) = ring.pop_into(&mut buf) {
                 drop(ring);
+                if full_drops > 0 {
+                    log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
+                }
                 return Ok(Some(buf[..len].to_vec()));
             }
             let now = Instant::now();
             if now >= deadline {
+                drop(ring);
+                if full_drops > 0 {
+                    log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
+                }
                 return Ok(None);
             }
             let remaining = deadline - now;

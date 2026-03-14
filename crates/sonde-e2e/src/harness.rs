@@ -396,17 +396,16 @@ impl Radio for ChannelRadio {
         }
     }
 
-    fn drain_rx(&self) -> Vec<RecvFrame> {
+    fn drain_one(&self) -> Option<RecvFrame> {
         let rx = self.from_node.lock().unwrap();
-        let mut frames = Vec::new();
-        while let Ok(data) = rx.try_recv() {
-            frames.push(RecvFrame {
+        match rx.try_recv() {
+            Ok(data) => Some(RecvFrame {
                 peer_mac: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
                 rssi: -40,
                 frame_data: data,
-            });
+            }),
+            Err(_) => None,
         }
-        frames
     }
 
     fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {

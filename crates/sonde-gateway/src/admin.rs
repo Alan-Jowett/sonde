@@ -87,11 +87,12 @@ fn storage_err(e: crate::storage::StorageError) -> Status {
     }
 }
 
-/// Map `BundleError` to gRPC status: encode failures → INTERNAL, everything
-/// else (bad input) → INVALID_ARGUMENT.
+/// Map `BundleError` to gRPC status: encode/RNG failures → INTERNAL (server
+/// error), everything else (bad input) → INVALID_ARGUMENT.
 fn bundle_err(e: crate::state_bundle::BundleError) -> Status {
     match e {
         crate::state_bundle::BundleError::Encode(_) => Status::internal(e.to_string()),
+        crate::state_bundle::BundleError::Rng => Status::internal(e.to_string()),
         _ => Status::invalid_argument(e.to_string()),
     }
 }

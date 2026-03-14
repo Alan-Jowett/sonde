@@ -422,10 +422,6 @@ impl Storage for SqliteStorage {
                 conn.execute("DELETE FROM programs", []).map_err(map_err)?;
 
                 for record in &programs {
-                    let profile_str = match record.verification_profile {
-                        VerificationProfile::Resident => "resident",
-                        VerificationProfile::Ephemeral => "ephemeral",
-                    };
                     conn.execute(
                         "INSERT INTO programs (hash, image, size, verification_profile, abi_version) \
                          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -433,7 +429,7 @@ impl Storage for SqliteStorage {
                             &record.hash,
                             &record.image,
                             record.size,
-                            profile_str,
+                            profile_to_str(&record.verification_profile),
                             record.abi_version,
                         ],
                     )
@@ -441,11 +437,8 @@ impl Storage for SqliteStorage {
                 }
 
                 for record in &nodes {
-                    let last_seen_epoch: Option<i64> = record.last_seen.map(|t| {
-                        t.duration_since(UNIX_EPOCH)
-                            .map(|d| d.as_secs() as i64)
-                            .unwrap_or(0)
-                    });
+                    let last_seen_epoch: Option<i64> =
+                        record.last_seen.as_ref().map(system_time_to_epoch_s);
                     conn.execute(
                         "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                          current_program_hash, schedule_interval_s, firmware_abi_version, \

@@ -837,7 +837,7 @@ async fn t0810_export_state_returns_encrypted_bundle() {
     h.admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
-            verification_profile: 1, // Resident
+            verification_profile: VerificationProfile::Resident.into(),
             abi_version: None,
         }))
         .await
@@ -853,7 +853,11 @@ async fn t0810_export_state_returns_encrypted_bundle() {
 
     let data = resp.into_inner().data;
     // The bundle must be non-empty and start with the expected magic bytes.
-    assert!(!data.is_empty());
+    assert!(
+        data.len() >= 8,
+        "bundle too short ({} bytes) to contain magic header",
+        data.len()
+    );
     assert_eq!(&data[..8], b"SNDESTAT");
 }
 
@@ -889,8 +893,7 @@ async fn t0810_import_state_restores_nodes_and_programs() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
-            verification_profile: 1,
-            abi_version: None,
+            verification_profile: VerificationProfile::Resident.into(),            abi_version: None,
         }))
         .await
         .unwrap();

@@ -58,8 +58,10 @@ pub enum BundleError {
     Encode(String),
     /// CBOR decoding or structural error.
     Decode(String),
-    /// AES-GCM encryption or decryption failure (wrong passphrase or tampered data).
+    /// AES-GCM decryption failure (wrong passphrase or tampered data).
     Crypto,
+    /// CSPRNG failure — the OS could not provide random bytes.
+    Rng,
     /// Bundle does not begin with the expected magic bytes.
     InvalidMagic,
     /// Bundle format version is not supported by this implementation.
@@ -76,6 +78,9 @@ impl fmt::Display for BundleError {
             BundleError::Decode(e) => write!(f, "CBOR decode error: {e}"),
             BundleError::Crypto => {
                 write!(f, "decryption failed — wrong passphrase or tampered bundle")
+            }
+            BundleError::Rng => {
+                write!(f, "CSPRNG failure — could not obtain random bytes from OS")
             }
             BundleError::InvalidMagic => {
                 write!(f, "not a valid state bundle (bad magic bytes)")
@@ -114,8 +119,8 @@ pub fn encrypt_state(
     // key/nonce reuse.
     let mut salt = [0u8; SALT_LEN];
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    getrandom::fill(&mut salt).map_err(|_| BundleError::Crypto)?;
-    getrandom::fill(&mut nonce_bytes).map_err(|_| BundleError::Crypto)?;
+    getrandom::fill(&mut salt).map_err(|_| BundleError::Rng)?;
+    getrandom::fill(&mut nonce_bytes).map_err(|_| BundleError::Rng)?;
 
     let key = Zeroizing::new(derive_key(passphrase, &salt));
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));

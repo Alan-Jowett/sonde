@@ -367,7 +367,7 @@ impl NodeTransport for BridgeTransport {
 
 /// Simulates ESP-NOW radio between a modem bridge and a single node.
 ///
-/// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_rx` takes
+/// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_one` takes
 /// `&self` and `Radio::send` takes `&mut self` — both synchronous.
 struct ChannelRadio {
     /// Frames sent by the bridge (gateway → node) arrive at the node.
@@ -380,6 +380,8 @@ struct ChannelRadio {
     channel: u8,
     /// Fixed MAC address for the simulated modem.
     mac: [u8; MAC_SIZE],
+    /// MAC address of the simulated node, used as `peer_mac` in received frames.
+    node_mac: [u8; MAC_SIZE],
 }
 
 impl Radio for ChannelRadio {
@@ -400,7 +402,7 @@ impl Radio for ChannelRadio {
         let rx = self.from_node.lock().unwrap();
         match rx.try_recv() {
             Ok(data) => Some(RecvFrame {
-                peer_mac: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+                peer_mac: self.node_mac,
                 rssi: -40,
                 frame_data: data,
             }),
@@ -712,6 +714,7 @@ impl ModemTestEnv {
             from_node: Mutex::new(node_to_bridge_rx),
             channel: 1,
             mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            node_mac: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
         };
 
         let channel_transport = ChannelTransport {

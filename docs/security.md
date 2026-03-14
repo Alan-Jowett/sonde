@@ -86,7 +86,7 @@ A mobile phone app acts as a delegated pairing agent:
 4. The node stores the PSK and relays the encrypted pairing request to the gateway over ESP-NOW.
 5. The gateway decrypts the request, verifies the phone's HMAC, extracts the node PSK, verifies the ESP-NOW frame HMAC, and registers the node.
 
-The node PSK is transmitted in plaintext over the BLE link (protected by BLE LESC transport encryption).  `NODE_PROVISION` sends both the `node_psk` and the `encrypted_payload` over BLE, so a BLE MITM attacker who defeats Just Works pairing captures all the material needed to craft a valid `PEER_REQUEST`.  The primary mitigations are the limited registration window (default 120 s) and the one-time-use nature of the encrypted payload.  For high-assurance deployments, use BLE Passkey Entry or Numeric Comparison pairing to prevent MITM.  Just Works is acceptable for low-threat environments where physical proximity provides adequate assurance.
+The node PSK is transmitted in plaintext over the BLE link (protected by BLE LESC transport encryption).  `NODE_PROVISION` sends both the `node_psk` and the `encrypted_payload` over BLE, so a BLE MITM attacker who defeats Just Works pairing captures all the material needed to craft a valid `PEER_REQUEST`.  The primary mitigations are the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations) and the PairingRequest timestamp tolerance (±86400 s).  The 120 s registration window applies to Phase 1 phone registration (`REGISTER_PHONE`), not to Phase 2 node registration.  For high-assurance deployments, use BLE Passkey Entry or Numeric Comparison pairing to prevent MITM.  Just Works is acceptable for low-threat environments where physical proximity provides adequate assurance.
 
 See [ble-pairing-protocol.md](ble-pairing-protocol.md) for the full BLE wire protocol.
 
@@ -122,7 +122,7 @@ A factory reset returns a node to its initial unpaired state. The reset erases:
 
 After a factory reset, the node is inert: it cannot authenticate with any gateway and will not execute application logic. To return it to service, the operator must re-pair it via USB (§2.4.1) or BLE (§2.4.2), which provisions a new key and registers the node in the gateway's key database.
 
-On BLE-equipped nodes, holding the pairing button during boot also triggers a factory reset before accepting a new provision (see [ble-pairing-protocol.md §8.2.1](ble-pairing-protocol.md)).
+On BLE-equipped nodes, holding the pairing button during boot also triggers a factory reset before accepting a new provision (see [ble-pairing-protocol.md §8.2.1](ble-pairing-protocol.md#821--factory-reset-via-ble)).
 
 Factory reset is the standard remediation path for key compromise, decommissioning, and transferring a node to a different deployment.
 
@@ -132,7 +132,7 @@ The BLE pairing protocol ([ble-pairing-protocol.md](ble-pairing-protocol.md)) in
 
 #### 2.7.1  Phone PSK lifecycle
 
-1. **Issuance.** The gateway generates a unique 256-bit phone PSK and transmits it to the phone over BLE during phone-to-gateway pairing.  The BLE channel is encrypted with an ephemeral ECDH key derived from the gateway's Ed25519 keypair (see [ble-pairing-protocol.md §5.5](ble-pairing-protocol.md)).
+1. **Issuance.** The gateway generates a unique 256-bit phone PSK and transmits it to the phone over BLE during phone-to-gateway pairing.  The BLE channel is encrypted with an ephemeral ECDH key derived from the gateway's Ed25519 keypair (see [ble-pairing-protocol.md §5.5](ble-pairing-protocol.md#55--phone_registered-0x82)).
 2. **Storage.** The gateway stores the phone PSK alongside a human-readable label, issuance timestamp, and active/revoked status.  The phone stores the phone PSK in the app's secure storage.
 3. **Usage.** The phone uses its PSK to HMAC-authenticate every pairing request it creates.  The gateway verifies the HMAC before accepting the registration.
 4. **Revocation.** The gateway operator can revoke a phone PSK at any time.  Revoked PSKs are retained in the database (for audit) but all future pairing requests signed with them are rejected.
@@ -151,7 +151,7 @@ The BLE pairing protocol ([ble-pairing-protocol.md](ble-pairing-protocol.md)) in
 
 The gateway holds an Ed25519 keypair used for two purposes:
 
-1. **Challenge-response signing** — during phone-to-gateway pairing (Phase 1), the gateway signs the phone's challenge nonce to prove identity (see [ble-pairing-protocol.md §5.3](ble-pairing-protocol.md)).
+1. **Challenge-response signing** — during phone-to-gateway pairing (Phase 1), the gateway signs the phone's challenge nonce to prove identity (see [ble-pairing-protocol.md §5.3](ble-pairing-protocol.md#53--gw_info_response-0x81)).
 2. **Key agreement** — the Ed25519 key is converted to X25519 for ECDH-based encryption of pairing request payloads, so that only the gateway can decrypt them.
 
 Properties:

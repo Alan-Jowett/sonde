@@ -514,11 +514,11 @@ The node transmits `PEER_REQUEST` on each boot cycle until it receives `PEER_ACK
 }
 ```
 
-The only status value sent is `0` (registered).  All error conditions result in silent discard — no `PEER_ACK` is sent.  This is consistent with the radio protocol's silent-discard security model ([protocol.md](protocol.md) § error handling).
+The only status value sent is `0` (registered).  All error conditions result in silent discard — no `PEER_ACK` is sent.  This is consistent with the radio protocol's silent-discard security model ([protocol.md §8](protocol.md#8--error-handling)).
 
 The `registration_proof` field is `HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)` — an HMAC binding the acknowledgement to the exact encrypted payload.  Both the node and the gateway can compute this value (both have the node PSK and the encrypted_payload bytes).
 
-A BLE eavesdropper observing `NODE_PROVISION` captures both `node_psk` and `encrypted_payload`.  The registration window and one-time-use of the encrypted payload are the primary mitigations.  For high-assurance deployments, use BLE Passkey or Numeric Comparison pairing to prevent MITM.
+A BLE eavesdropper observing `NODE_PROVISION` captures both `node_psk` and `encrypted_payload`.  The one-time-use nature of the encrypted payload (`node_id` uniqueness check, step 10 in §7.3) and the timestamp tolerance (±86400 s, step 9) are the primary mitigations.  For high-assurance deployments, use BLE Passkey or Numeric Comparison pairing to prevent MITM.
 
 **Node verification of PEER_ACK:**
 
@@ -533,7 +533,7 @@ A BLE eavesdropper observing `NODE_PROVISION` captures both `node_psk` and `encr
 
 ### 7.3  Gateway processing of PEER_REQUEST
 
-The gateway performs these steps **in order**.  Failure at any step causes **silent discard** — no `PEER_ACK` is sent.  This is consistent with the radio protocol's error handling ([protocol.md](protocol.md)):
+The gateway performs these steps **in order**.  Failure at any step causes **silent discard** — no `PEER_ACK` is sent.  This is consistent with the radio protocol's error handling ([protocol.md §8](protocol.md#8--error-handling)):
 
 1. **Parse header.** Extract key_hint, verify msg_type = 0x05.  If not → discard.
 2. **Unknown key_hint.** The node is not yet registered — the gateway cannot verify the HMAC yet.  Proceed tentatively.
@@ -618,7 +618,7 @@ For explicit factory reset without re-pairing, use the USB `RESET_REQUEST` comma
 2. Load `encrypted_payload` from NVS.
 3. Build and transmit `PEER_REQUEST` frame (§7.1).
 4. Listen for `PEER_ACK` for 10 seconds.
-5. On `PEER_ACK(0)` with valid HMAC, seq echo, and registration_proof:
+5. On `PEER_ACK(0)` with valid HMAC, nonce echo, and registration_proof:
    - Set registration-complete flag in NVS.
    - Retain `encrypted_payload` in NVS (erased after first successful WAKE — see §8.3.1).
    - Proceed to normal WAKE cycle.
@@ -659,7 +659,7 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 | Unauthorized phone registration | Registration window must be opened by operator action; gateway rejects `REGISTER_PHONE` when closed (§5.4.1). |
 | Rogue phone registers a node | Phone HMAC verification (step 6 in §7.3).  Attacker needs a valid phone PSK. |
 | Compromised phone PSK | Gateway operator revokes the phone PSK.  Previously registered nodes remain valid. |
-| BLE passive eavesdrop captures node PSK | `NODE_PROVISION` sends both `node_psk` and `encrypted_payload` over BLE.  A BLE eavesdropper captures all pairing material.  Mitigated by the limited registration window and one-time-use of the encrypted payload. |
+| BLE passive eavesdrop captures node PSK | `NODE_PROVISION` sends both `node_psk` and `encrypted_payload` over BLE.  A BLE eavesdropper captures all pairing material.  Mitigated by one-time-use of the encrypted payload (`node_id` uniqueness, step 10 in §7.3) and timestamp tolerance (±86400 s, step 9). |
 | BLE active MITM captures node PSK | Same as passive eavesdrop.  For high-assurance deployments, use BLE Passkey Entry or Numeric Comparison pairing to prevent MITM.  Just Works is acceptable for low-threat environments. |
 | Forged PEER_ACK | `registration_proof` = HMAC over encrypted payload (§7.2) raises the bar.  Deferred payload erasure (§8.3.1) ensures the node self-heals if a forged ACK is accepted — it reverts to PEER_REQUEST if the subsequent WAKE fails. |
 | Replay of PEER_REQUEST | Timestamp check (±24h) + node_id uniqueness (step 9–10 in §7.3). |
@@ -668,7 +668,7 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 
 ### 9.2  BLE link security
 
-BLE LESC Just Works provides AES-CCM encrypted transport.  This is the **only** protection for the node PSK in transit (phone → node).  An active MITM can defeat Just Works and capture both the `node_psk` and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The registration window (default 120 s) and one-time-use of the encrypted payload are the primary mitigations.
+BLE LESC Just Works provides AES-CCM encrypted transport.  This is the **only** protection for the node PSK in transit (phone → node).  An active MITM can defeat Just Works and capture both the `node_psk` and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The primary mitigations are the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations, step 10 in §7.3) and the PairingRequest timestamp tolerance (±86400 s, step 9 in §7.3).  The 120 s registration window applies only to Phase 1 phone registration (`REGISTER_PHONE` §5.4.1), not to Phase 2 node registration.
 
 For higher-security deployments, BLE Passkey Entry or Numeric Comparison could be used instead of Just Works (the protocol is agnostic to the BLE pairing method).
 
@@ -727,7 +727,7 @@ HMAC:              32 bytes
 Available for encrypted_payload:  203 bytes (exact)
 ```
 
-The constant `MAX_ENCRYPTED_PAYLOAD` is set to **202 bytes** (conservative, reserving 1 byte for possible future CBOR keys).  The `protocol.md` payload budget of 207 bytes (250 − 11 − 32) is 3 bytes larger because it does not include CBOR framing overhead.
+The constant `MAX_ENCRYPTED_PAYLOAD` is set to **202 bytes** (conservative, reserving 1 byte for possible future CBOR keys).  The `protocol.md` payload budget of 207 bytes (250 − 11 − 32) is 4 bytes larger because it does not include CBOR framing overhead.
 
 The encrypted payload contains:
 

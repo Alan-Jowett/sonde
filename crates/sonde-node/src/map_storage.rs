@@ -395,10 +395,11 @@ impl MapStorage {
         Self::required_bytes_checked(map_defs).unwrap_or(usize::MAX)
     }
 
-    /// Validate map definitions: checks type, key_size, and arithmetic.
+    /// Validate map definitions: checks type, key_size, entry counts, and arithmetic.
     ///
     /// Call this before committing program installs to ensure the maps
-    /// are compatible with this platform.
+    /// are compatible with this platform. Rejects zero-entry and zero-value-size
+    /// maps because they produce duplicate `data_ptr()` values.
     pub fn validate_map_defs(map_defs: &[MapDef]) -> NodeResult<()> {
         if map_defs.len() > MAX_MAPS {
             return Err(NodeError::ProgramDecodeFailed(format!(
@@ -419,6 +420,18 @@ impl MapStorage {
                     "array map key_size must be 4 (u32), got {}",
                     def.key_size
                 )));
+            }
+            if def.max_entries == 0 {
+                return Err(NodeError::ProgramDecodeFailed(
+                    "map max_entries must be > 0: zero-entry maps produce \
+                     duplicate data_ptr() values and break map indexing"
+                        .into(),
+                ));
+            }
+            if def.value_size == 0 {
+                return Err(NodeError::ProgramDecodeFailed(
+                    "map value_size must be > 0: zero-byte values are not supported".into(),
+                ));
             }
         }
         // Also verify arithmetic doesn't overflow
@@ -703,6 +716,37 @@ mod tests {
     #[test]
     fn test_max_maps_constant() {
         assert!(MAX_MAPS >= 1, "MAX_MAPS must allow at least one map");
+    }
+
+    #[test]
+    fn test_reject_zero_max_entries() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![array_map_def(4, 0)];
+        let result = ms.allocate(&defs);
+        assert!(result.is_err());
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("max_entries"),
+            "error should mention max_entries: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_reject_zero_value_size() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 0,
+            max_entries: 4,
+        }];
+        let result = ms.allocate(&defs);
+        assert!(result.is_err());
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("value_size"),
+            "error should mention value_size: {msg}"
+        );
     }
 
     /// Verify that when the same program runs again (layout_matches == true)

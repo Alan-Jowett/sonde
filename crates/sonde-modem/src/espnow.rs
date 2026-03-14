@@ -88,19 +88,24 @@ impl RxRing {
         true
     }
 
-    /// Pop the oldest slot by value. Returns `None` if the ring is empty.
-    ///
-    /// The caller converts the raw slot to a `RecvFrame` (with `to_vec()`)
-    /// after releasing the mutex, keeping the critical section
-    /// allocation-free.
-    fn pop(&mut self) -> Option<RecvSlot> {
+    /// Copy the oldest frame's metadata and payload into the provided
+    /// buffers, returning `(peer_mac, rssi, len)`. Only `data[..len]`
+    /// bytes are copied, keeping the critical section short.
+    /// Returns `None` if the ring is empty.
+    fn pop_into(
+        &mut self,
+        buf: &mut [u8; ESPNOW_MAX_DATA_SIZE],
+    ) -> Option<([u8; MAC_SIZE], i8, usize)> {
         if self.count == 0 {
             return None;
         }
-        let slot = self.slots[self.tail];
+        let slot = &self.slots[self.tail];
+        let len = slot.len;
+        buf[..len].copy_from_slice(&slot.data[..len]);
+        let meta = (slot.peer_mac, slot.rssi, len);
         self.tail = (self.tail + 1) % RX_RING_CAP;
         self.count -= 1;
-        Some(slot)
+        Some(meta)
     }
 
     /// Discard all buffered frames.
@@ -168,12 +173,18 @@ unsafe extern "C" fn raw_recv_cb(
         }
         // Use try_lock to avoid blocking the ESP-NOW/WiFi task if the
         // ring is being drained. Drop the frame if contended.
-        if let Ok(mut ring) = state.rx_ring.try_lock() {
-            if !ring.push(src_addr, rssi, payload) {
-                ring.drop_count += 1;
+        // Recover from a poisoned mutex so the callback doesn't
+        // permanently drop all frames after a consumer panic.
+        let mut guard = match state.rx_ring.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                state.contention_drops.fetch_add(1, Ordering::Relaxed);
+                return;
             }
-        } else {
-            state.contention_drops.fetch_add(1, Ordering::Relaxed);
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        };
+        if !guard.push(src_addr, rssi, payload) {
+            guard.drop_count += 1;
         }
     }
 }
@@ -313,23 +324,31 @@ impl Radio for EspNowDriver {
                 warn!("ESP-NOW recv ring: {} contention drop(s)", cd);
             }
         }
-        // Pop one raw slot under the lock (no heap allocation — RecvSlot
-        // is Copy). Build the RecvFrame outside the lock so to_vec()
-        // allocation does not extend try_lock contention.
-        let (slot, full_drops) = {
-            let mut ring = self.rx_ring.lock().ok()?;
+        // Pop one frame's metadata + payload under the lock. Only
+        // data[..len] bytes are copied, keeping the critical section
+        // short. Recover from a poisoned mutex so RX doesn't go
+        // permanently silent after a panic.
+        let mut buf = [0u8; ESPNOW_MAX_DATA_SIZE];
+        let (meta, full_drops) = {
+            let mut ring = match self.rx_ring.lock() {
+                Ok(g) => g,
+                Err(poisoned) => {
+                    warn!("rx_ring mutex poisoned, recovering");
+                    poisoned.into_inner()
+                }
+            };
             let full_drops = ring.drop_count;
             ring.drop_count = 0;
-            (ring.pop(), full_drops)
+            (ring.pop_into(&mut buf), full_drops)
         };
         // Log full-drops outside the lock.
         if full_drops > 0 {
             warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
         }
-        slot.map(|s| RecvFrame {
-            peer_mac: s.peer_mac,
-            rssi: s.rssi,
-            frame_data: s.data[..s.len].to_vec(),
+        meta.map(|(peer_mac, rssi, len)| RecvFrame {
+            peer_mac,
+            rssi,
+            frame_data: buf[..len].to_vec(),
         })
     }
 

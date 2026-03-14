@@ -47,7 +47,7 @@ pub trait Radio {
     /// Send a frame to the given peer MAC.
     fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]);
     /// Drain one received frame from the queue, or `None` if empty.
-    fn drain_one(&mut self) -> Option<RecvFrame>;
+    fn drain_one(&self) -> Option<RecvFrame>;
     /// Set the radio channel. Returns a descriptive error on failure.
     fn set_channel(&mut self, channel: u8) -> Result<(), &'static str>;
     /// Get the current channel.
@@ -321,7 +321,7 @@ mod tests {
         fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
             self.sent.push((data.to_vec(), *peer_mac));
         }
-        fn drain_one(&mut self) -> Option<RecvFrame> {
+        fn drain_one(&self) -> Option<RecvFrame> {
             self.rx_queue.borrow_mut().pop_front()
         }
         fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {

@@ -99,7 +99,7 @@ pub struct EspNowDriver {
     rx_queue: Arc<Mutex<VecDeque<RecvFrame>>>,
     current_channel: u8,
     /// Set to true after the first poisoned-mutex warning to avoid log spam.
-    poison_warned: bool,
+    poison_warned: AtomicBool,
 }
 
 impl EspNowDriver {
@@ -156,7 +156,7 @@ impl EspNowDriver {
             counters: Arc::clone(counters),
             rx_queue,
             current_channel: 1,
-            poison_warned: false,
+            poison_warned: AtomicBool::new(false),
         }
     }
 
@@ -205,13 +205,12 @@ impl Radio for EspNowDriver {
     }
 
     /// Drain one received frame from the queue.
-    fn drain_one(&mut self) -> Option<RecvFrame> {
+    fn drain_one(&self) -> Option<RecvFrame> {
         match self.rx_queue.lock() {
             Ok(mut q) => q.pop_front(),
             Err(poisoned) => {
-                if !self.poison_warned {
+                if !self.poison_warned.swap(true, Ordering::Relaxed) {
                     warn!("rx_queue mutex poisoned, recovering");
-                    self.poison_warned = true;
                 }
                 poisoned.into_inner().pop_front()
             }

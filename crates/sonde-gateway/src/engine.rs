@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rand::RngExt;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use sonde_protocol::{
     decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
@@ -185,7 +186,9 @@ impl Gateway {
             .await;
 
         // 3. Determine command (check pending commands, then program_hash match, then NOP)
-        let command_payload = self.select_command(node, &program_hash).await?;
+        let command_payload = self
+            .select_command(node, &program_hash, firmware_abi_version)
+            .await?;
 
         // If the command involves a chunked transfer, update session state
         match &command_payload {
@@ -465,6 +468,7 @@ impl Gateway {
         &self,
         node: &NodeRecord,
         node_program_hash: &[u8],
+        firmware_abi_version: u32,
     ) -> Option<CommandPayload> {
         // Priority 1: Pending ephemeral program
         // Peek with a read lock first; only remove after successful program load.
@@ -517,20 +521,36 @@ impl Gateway {
         if let Some(assigned_hash) = &node.assigned_program_hash {
             if assigned_hash.as_slice() != node_program_hash {
                 if let Ok(Some(program)) = self.storage.get_program(assigned_hash).await {
-                    let chunk_size = DEFAULT_CHUNK_SIZE;
-                    if let Some(chunk_count) = self
-                        .program_library
-                        .chunk_count(program.image.len(), chunk_size as usize)
-                    {
-                        return Some(CommandPayload::UpdateProgram {
-                            program_hash: program.hash,
-                            program_size: program.size,
-                            chunk_size,
-                            chunk_count,
-                        });
+                    // GW-0703: ABI compatibility check — skip if the program's ABI version
+                    // is set and does not match the node's reported firmware ABI version.
+                    let abi_ok = match program.abi_version {
+                        Some(prog_abi) if prog_abi != firmware_abi_version => {
+                            warn!(
+                                node_id = %node.node_id,
+                                program_abi = prog_abi,
+                                node_abi = firmware_abi_version,
+                                "ABI mismatch: skipping UPDATE_PROGRAM"
+                            );
+                            false
+                        }
+                        _ => true,
+                    };
+                    if abi_ok {
+                        let chunk_size = DEFAULT_CHUNK_SIZE;
+                        if let Some(chunk_count) = self
+                            .program_library
+                            .chunk_count(program.image.len(), chunk_size as usize)
+                        {
+                            return Some(CommandPayload::UpdateProgram {
+                                program_hash: program.hash,
+                                program_size: program.size,
+                                chunk_size,
+                                chunk_count,
+                            });
+                        }
                     }
                 }
-                // Program not found or chunk_count failed — fall through
+                // Program not found, ABI mismatch, or chunk_count failed — fall through
             }
         }
 

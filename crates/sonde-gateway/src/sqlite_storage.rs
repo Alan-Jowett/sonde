@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS programs (
     hash BLOB PRIMARY KEY,
     image BLOB NOT NULL,
     size INTEGER NOT NULL,
-    verification_profile TEXT NOT NULL
+    verification_profile TEXT NOT NULL,
+    abi_version INTEGER
 );
 ";
 
@@ -292,22 +293,23 @@ impl Storage for SqliteStorage {
         let hash = hash.to_vec();
         self.with_conn(move |conn| {
             conn.query_row(
-                "SELECT hash, image, size, verification_profile FROM programs WHERE hash = ?1",
+                "SELECT hash, image, size, verification_profile, abi_version FROM programs WHERE hash = ?1",
                 params![hash],
                 |row| {
                     let profile_str: String = row.get(3)?;
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str, row.get(4)?))
                 },
             )
             .optional()
             .map_err(map_err)?
             .map(
-                |(hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String)| {
+                |(hash, image, size, profile_str, abi_version): (Vec<u8>, Vec<u8>, u32, String, Option<u32>)| {
                     Ok(ProgramRecord {
                         hash,
                         image,
                         size,
                         verification_profile: parse_profile(&profile_str)?,
+                        abi_version,
                     })
                 },
             )
@@ -320,16 +322,18 @@ impl Storage for SqliteStorage {
         let record = record.clone();
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO programs (hash, image, size, verification_profile) \
-                 VALUES (?1, ?2, ?3, ?4) \
+                "INSERT INTO programs (hash, image, size, verification_profile, abi_version) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
                  ON CONFLICT(hash) DO UPDATE SET \
                  image=excluded.image, size=excluded.size, \
-                 verification_profile=excluded.verification_profile",
+                 verification_profile=excluded.verification_profile, \
+                 abi_version=excluded.abi_version",
                 params![
                     record.hash,
                     record.image,
                     record.size,
                     profile_to_str(&record.verification_profile),
+                    record.abi_version,
                 ],
             )
             .map_err(map_err)?;
@@ -351,23 +355,37 @@ impl Storage for SqliteStorage {
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
         self.with_conn(|conn| {
             let mut stmt = conn
-                .prepare("SELECT hash, image, size, verification_profile FROM programs")
+                .prepare(
+                    "SELECT hash, image, size, verification_profile, abi_version FROM programs",
+                )
                 .map_err(map_err)?;
             let rows = stmt
                 .query_map([], |row| {
                     let profile_str: String = row.get(3)?;
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        profile_str,
+                        row.get(4)?,
+                    ))
                 })
                 .map_err(map_err)?;
             let mut programs = Vec::new();
             for row in rows {
-                let (hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String) =
-                    row.map_err(map_err)?;
+                let (hash, image, size, profile_str, abi_version): (
+                    Vec<u8>,
+                    Vec<u8>,
+                    u32,
+                    String,
+                    Option<u32>,
+                ) = row.map_err(map_err)?;
                 programs.push(ProgramRecord {
                     hash,
                     image,
                     size,
                     verification_profile: parse_profile(&profile_str)?,
+                    abi_version,
                 });
             }
             Ok(programs)
@@ -402,6 +420,7 @@ mod tests {
             image: image.clone(),
             size: image.len() as u32,
             verification_profile: VerificationProfile::Resident,
+            abi_version: None,
         }
     }
 

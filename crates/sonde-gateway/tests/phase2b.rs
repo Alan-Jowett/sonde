@@ -138,6 +138,27 @@ async fn store_test_program_with_profile(
     hash
 }
 
+/// Create a program image with a specific ABI version, ingest, store, and return its hash.
+async fn store_test_program_with_abi(
+    storage: &InMemoryStorage,
+    bytecode: &[u8],
+    abi_version: u32,
+) -> Vec<u8> {
+    let lib = ProgramLibrary::new();
+    let image = sonde_protocol::ProgramImage {
+        bytecode: bytecode.to_vec(),
+        maps: vec![],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+    let mut record = lib
+        .ingest_unverified(cbor, VerificationProfile::Resident)
+        .unwrap();
+    record.abi_version = Some(abi_version);
+    let hash = record.hash.clone();
+    storage.store_program(&record).await.unwrap();
+    hash
+}
+
 /// Decode a gateway response frame and return the GatewayMessage.
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
     let decoded = decode_frame(raw).unwrap();
@@ -146,15 +167,16 @@ fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) 
     (decoded.header, msg)
 }
 
-/// Send a WAKE and return the (starting_seq, timestamp_ms, CommandPayload)
-/// from the COMMAND response.
-async fn do_wake(
+/// Send a WAKE with a specific firmware ABI version and return
+/// the (starting_seq, timestamp_ms, CommandPayload) from the COMMAND response.
+async fn do_wake_with_abi(
     gw: &Gateway,
     node: &TestNode,
     nonce: u64,
+    firmware_abi_version: u32,
     program_hash: &[u8],
 ) -> (u64, u64, CommandPayload) {
-    let frame = node.build_wake(nonce, 1, program_hash, 3300);
+    let frame = node.build_wake(nonce, firmware_abi_version, program_hash, 3300);
     let resp = gw
         .process_frame(&frame, node.peer_address())
         .await
@@ -168,6 +190,17 @@ async fn do_wake(
         } => (starting_seq, timestamp_ms, payload),
         other => panic!("expected Command, got {:?}", other),
     }
+}
+
+/// Send a WAKE and return the (starting_seq, timestamp_ms, CommandPayload)
+/// from the COMMAND response.
+async fn do_wake(
+    gw: &Gateway,
+    node: &TestNode,
+    nonce: u64,
+    program_hash: &[u8],
+) -> (u64, u64, CommandPayload) {
+    do_wake_with_abi(gw, node, nonce, 1, program_hash).await
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -897,4 +930,52 @@ async fn t0609_unknown_node_silent_discard() {
 
     // Verify no state changed (no sessions created)
     assert_eq!(gw.session_manager().active_count().await, 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-07xx: Firmware ABI Version Tests
+// ═══════════════════════════════════════════════════════════════════════
+
+/// T-0704: ABI incompatibility — gateway must NOT issue UPDATE_PROGRAM when the
+/// program's ABI version does not match the node's firmware ABI version.
+///
+/// Procedure:
+///  1. Assign a program compiled for ABI 3 to a node.
+///  2. Send WAKE with firmware_abi_version = 2 (node reports ABI 2).
+///  3. Assert: gateway does NOT issue UPDATE_PROGRAM.
+///  4. Assert: warning was emitted (verified structurally by the warn! call in engine.rs).
+#[tokio::test]
+async fn t0704_abi_incompatibility_skips_update_program() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    // Store a program that targets ABI version 3.
+    let prog_hash = store_test_program_with_abi(&storage, b"abi3-program", 3).await;
+
+    let node = TestNode::new("node-704", 0x0704, [0x74; 32]);
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(prog_hash.clone());
+    storage.upsert_node(&record).await.unwrap();
+
+    // Node reports firmware ABI version 2 — incompatible with the assigned program (ABI 3).
+    let (_, _, payload) = do_wake_with_abi(&gw, &node, 1, 2, &[0u8; 32]).await;
+    assert_ne!(
+        payload.command_type(),
+        sonde_protocol::CMD_UPDATE_PROGRAM,
+        "gateway must NOT issue UPDATE_PROGRAM for an ABI-incompatible program"
+    );
+
+    // Compatible ABI: store a program for ABI 2 and assign it.
+    let prog_hash_abi2 = store_test_program_with_abi(&storage, b"abi2-program", 2).await;
+    let mut record2 = storage.get_node("node-704").await.unwrap().unwrap();
+    record2.assigned_program_hash = Some(prog_hash_abi2.clone());
+    storage.upsert_node(&record2).await.unwrap();
+
+    // Same node reports ABI 2 — now the program is compatible.
+    let (_, _, payload2) = do_wake_with_abi(&gw, &node, 2, 2, &[0u8; 32]).await;
+    assert_eq!(
+        payload2.command_type(),
+        sonde_protocol::CMD_UPDATE_PROGRAM,
+        "gateway MUST issue UPDATE_PROGRAM when ABI versions match"
+    );
 }

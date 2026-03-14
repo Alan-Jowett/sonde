@@ -35,6 +35,8 @@ pub struct ProgramRecord {
     pub size: u32,
     /// Verification profile used at ingestion time.
     pub verification_profile: VerificationProfile,
+    /// ABI version this program was compiled for (`None` = any ABI).
+    pub abi_version: Option<u32>,
 }
 
 /// Errors from program library operations.
@@ -119,6 +121,7 @@ impl ProgramLibrary {
             image,
             size,
             verification_profile: profile,
+            abi_version: None,
         })
     }
 

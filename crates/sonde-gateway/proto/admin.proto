@@ -47,6 +47,7 @@ message ProgramInfo {
     bytes hash = 1;
     uint32 size = 2;
     VerificationProfile verification_profile = 3;
+    optional uint32 abi_version = 4;
 }
 
 enum VerificationProfile {
@@ -57,7 +58,7 @@ enum VerificationProfile {
 
 // `image_data` accepts a CBOR-encoded program image (not a raw ELF binary).
 // ELF→CBOR extraction/verification will be added in a future phase.
-message IngestProgramRequest { bytes image_data = 1; VerificationProfile verification_profile = 2; }
+message IngestProgramRequest { bytes image_data = 1; VerificationProfile verification_profile = 2; optional uint32 abi_version = 3; }
 message IngestProgramResponse { bytes program_hash = 1; uint32 program_size = 2; }
 message ListProgramsResponse { repeated ProgramInfo programs = 1; }
 message AssignProgramRequest { string node_id = 1; bytes program_hash = 2; }

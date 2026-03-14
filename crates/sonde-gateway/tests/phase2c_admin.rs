@@ -293,6 +293,7 @@ async fn t0802_ingest_and_list_programs() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor.clone(),
             verification_profile: VerificationProfile::Resident.into(),
+            abi_version: None,
         }))
         .await
         .unwrap()
@@ -333,6 +334,7 @@ async fn t0802b_ingest_invalid_profile() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: make_cbor_image(&[0x01]),
             verification_profile: 99,
+            abi_version: None,
         }))
         .await
         .unwrap_err();
@@ -349,6 +351,7 @@ async fn t0802c_ingest_empty_image() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: vec![],
             verification_profile: VerificationProfile::Resident.into(),
+            abi_version: None,
         }))
         .await
         .unwrap_err();
@@ -378,6 +381,7 @@ async fn t0803_assign_program() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
             verification_profile: VerificationProfile::Resident.into(),
+            abi_version: None,
         }))
         .await
         .unwrap()
@@ -458,6 +462,7 @@ async fn t0804_remove_program() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
             verification_profile: VerificationProfile::Ephemeral.into(),
+            abi_version: None,
         }))
         .await
         .unwrap()
@@ -608,6 +613,7 @@ async fn t0807_queue_ephemeral_via_wake() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
             verification_profile: VerificationProfile::Ephemeral.into(),
+            abi_version: None,
         }))
         .await
         .unwrap()
@@ -746,6 +752,7 @@ async fn t0809_assign_program_wake_delivers_update() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
             verification_profile: VerificationProfile::Resident.into(),
+            abi_version: None,
         }))
         .await
         .unwrap()

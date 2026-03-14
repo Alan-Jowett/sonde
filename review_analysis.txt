@@ -1,0 +1,87 @@
+=== BLE PAIRING PROTOCOL REVIEW FINDINGS ===
+
+## Issue 1: Missing section §5.5
+**File:** docs/ble-pairing-protocol.md
+**Severity:** Medium
+**Problem:** Section numbering jumps from §5.4 (with subsection §5.4.1) to §5.6, skipping §5.5 entirely.
+
+Sequence is:
+- §5.1 Sequence
+- §5.2 REQUEST_GW_INFO
+- §5.3 GW_INFO_RESPONSE
+- §5.4 REGISTER_PHONE
+  - §5.4.1 Registration window
+- §5.6 PHONE_REGISTERED  ← SKIP
+- §5.7 Error handling
+- §5.8 Phone persistence
+
+**Evidence:** Grep of all section headers shows no §5.5 defined.
+**Impact:** This will confuse readers and may break future cross-references if §5.5 is added later.
+**Suggested fix:** Renumber §5.6 through §5.8 as §5.5 through §5.7, or add a missing §5.5 section if content was omitted.
+
+## Issue 2: Ambiguous byte range notation in key_hint derivation
+**File:** docs/ble-pairing-protocol.md:71,82
+**Severity:** Medium
+**Problem:** The notation `SHA256(psk)[30..32]` for key_hint derivation is ambiguous and inconsistent with typical array indexing conventions.
+
+From §2.2 and §2.3:
+  phone_key_hint = SHA256(phone_psk)[30..32]
+  node_key_hint = SHA256(node_psk)[30..32]
+
+The notation [30..32] could be interpreted as:
+1. Python-style range [30:32] = bytes at indices 30 and 31 (correct interpretation)
+2. Inclusive range [30,31,32] = 3 bytes (incorrect)
+3. Mathematical notation [30..32] = ambiguous
+
+§11 clarifies this means "Lower 16 bits" (last 2 bytes), but implementers might misread [30..32] as 3 bytes.
+
+**Evidence:** SHA-256 produces 32 bytes (indices 0-31). The last 2 bytes are at indices 30 and 31. The notation should unambiguously specify 2 bytes, not leave room for interpretation as indices 30, 31, and 32.
+
+**Impact:** Could cause implementers to extract wrong bytes or extract 3 bytes instead of 2.
+
+**Suggested fix:** Use explicit notation:
+  - "SHA256(psk)[30:32]" (Python slice notation)
+  - "The last 2 bytes of SHA256(psk)"
+  - "SHA256(psk) bytes 30-31 (zero-indexed)"
+
+## Issue 3: Missing documentation status cleanup
+**File:** docs/ble-pairing-protocol.md:5
+**Severity:** Low
+**Problem:** Document header says "Document status: Draft" but PR description states "Requirements, design, and validation docs will follow in later PRs."
+
+This suggests the protocol spec is complete enough for implementation, but "Draft" status might make implementers hesitant.
+
+**Evidence:** Line 5: "> **Document status:** Draft"
+**Impact:** Unclear whether the protocol is stable enough to implement.
+**Suggested fix:** Clarify document status (e.g., "Status: Protocol specification complete, implementation requirements TBD")
+
+## Issue 4: Cross-document consistency - security.md references to §5.4
+**File:** docs/security.md (from diff)
+**Severity:** Low
+**Problem:** security.md references "ble-pairing-protocol.md §5.4" but doesn't specify which aspect of §5.4 (the main section or subsection §5.4.1).
+
+From security.md diff:
+  "BLE LESC provides transport encryption, but the protocol does not rely on it for security guarantees (see [ble-pairing-protocol.md §5.4](ble-pairing-protocol.md))."
+
+§5.4 covers REGISTER_PHONE message format, but the security discussion about BLE LESC not being relied upon is more relevant to §9.2 "BLE link security" or the overall threat model in §9.1.
+
+**Evidence:** The security.md reference points to §5.4 (REGISTER_PHONE), but BLE LESC security discussion is in §9.2.
+**Impact:** Reader following the link will land on message format, not security analysis.
+**Suggested fix:** Update reference to point to §9.2 "BLE link security" instead of §5.4.
+
+## Issue 5: PEER_ACK registration_proof timing attack surface
+**File:** docs/ble-pairing-protocol.md:498,503
+**Severity:** Low (security consideration, not a bug)
+**Problem:** The registration_proof verification (step 3-4 in §8.3) compares SHA-256 hashes using standard equality, which could be vulnerable to timing attacks if the comparison is not constant-time.
+
+From §8.3:
+  "3. Compute expected `registration_proof` = `SHA256(node_psk ‖ encrypted_payload)` using the stored encrypted payload from NVS.
+   4. If `registration_proof` does not match → discard (potential forgery)."
+
+**Evidence:** No mention of constant-time comparison for registration_proof.
+**Impact:** A sophisticated attacker with precise timing measurement could potentially extract information about the expected registration_proof through timing side-channels. However, this is a low-severity issue because:
+  - The attacker would need to control the radio channel to send forged PEER_ACK messages
+  - The registration_proof is already protected by frame HMAC verification
+  - The attack surface is limited to a brief window during initial node registration
+
+**Suggested fix:** Add a note in §8.3 or §9 that registration_proof comparison SHOULD use constant-time comparison to prevent timing side-channels, or document why this is acceptable risk for this protocol.

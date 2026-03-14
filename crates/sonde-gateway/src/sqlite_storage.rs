@@ -5,12 +5,83 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
 use async_trait::async_trait;
+use rand::RngExt;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::program::{ProgramRecord, VerificationProfile};
 use crate::registry::NodeRecord;
 use crate::storage::{Storage, StorageError};
+
+/// Encrypted PSK blob length: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag = 60 bytes.
+const ENCRYPTED_PSK_LEN: usize = 12 + 32 + 16;
+
+/// Encrypt a 32-byte PSK using AES-256-GCM with a random nonce.
+///
+/// The `node_id` is used as Additional Authenticated Data (AAD) to cryptographically
+/// bind the encrypted PSK to its owning node. This prevents an attacker from copying
+/// a ciphertext blob between node rows to cause PSK confusion.
+///
+/// Returns a blob of the form `nonce (12 B) || ciphertext+tag (48 B)`.
+fn encrypt_psk(
+    master_key: [u8; 32],
+    node_id: &str,
+    psk: &[u8; 32],
+) -> Result<Vec<u8>, StorageError> {
+    let key = Key::<Aes256Gcm>::from_slice(&master_key);
+    let cipher = Aes256Gcm::new(key);
+
+    let mut nonce_bytes = [0u8; 12];
+    rand::rng().fill(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let payload = Payload {
+        msg: psk.as_slice(),
+        aad: node_id.as_bytes(),
+    };
+
+    let ciphertext = cipher
+        .encrypt(nonce, payload)
+        .map_err(|e| StorageError::Internal(format!("psk encrypt: {e}")))?;
+
+    let mut out = Vec::with_capacity(ENCRYPTED_PSK_LEN);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Decrypt an encrypted PSK blob produced by [`encrypt_psk`].
+///
+/// Returns `StorageError::Internal` if the blob length is wrong or the
+/// GCM authentication tag check fails (which indicates data corruption or
+/// an incorrect master key).
+fn decrypt_psk(master_key: [u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8; 32], StorageError> {
+    if blob.len() != ENCRYPTED_PSK_LEN {
+        return Err(StorageError::Internal(format!(
+            "encrypted psk blob has wrong length: expected {ENCRYPTED_PSK_LEN}, got {}",
+            blob.len()
+        )));
+    }
+
+    let key = Key::<Aes256Gcm>::from_slice(&master_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&blob[..12]);
+
+    let payload = Payload {
+        msg: &blob[12..],
+        aad: node_id.as_bytes(),
+    };
+
+    let plaintext = cipher.decrypt(nonce, payload).map_err(|_| {
+        StorageError::Internal("psk decryption failed — wrong master key or data corruption".into())
+    })?;
+
+    plaintext
+        .try_into()
+        .map_err(|_| StorageError::Internal("decrypted psk is not 32 bytes".into()))
+}
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
@@ -39,21 +110,26 @@ CREATE TABLE IF NOT EXISTS programs (
 ///
 /// Uses `Arc<Mutex<Connection>>` so storage operations can be offloaded
 /// to `spawn_blocking` to avoid holding a sync lock on async threads.
+///
+/// PSKs are encrypted at rest using AES-256-GCM with the provided master key
+/// (GW-0601a). The master key is never written to the database.
 pub struct SqliteStorage {
     conn: Arc<Mutex<Connection>>,
+    master_key: [u8; 32],
 }
 
 impl SqliteStorage {
     /// Open (or create) a SQLite database at the given path.
     ///
-    /// # Security
+    /// `master_key` is a 32-byte AES-256 key used to encrypt PSK material at
+    /// rest. All PSKs are transparently encrypted on write and decrypted on
+    /// read; the key is never persisted. See [`decrypt_psk`] / [`encrypt_psk`].
     ///
-    /// The database stores PSKs in plaintext (GW-0601a encryption is
-    /// deferred). On Unix, callers should ensure the database file and
-    /// its WAL/SHM sidecars have restrictive permissions (e.g., 0600).
-    /// This can be done by setting `umask(0o077)` before calling
-    /// `open()`, or by adjusting permissions after creation.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+    /// On Unix, callers should ensure the database file and its WAL/SHM
+    /// sidecars have restrictive permissions (e.g., 0600) as an additional
+    /// layer of protection. This can be done by setting `umask(0o077)` before
+    /// calling `open()`, or by adjusting permissions after creation.
+    pub fn open(path: impl AsRef<Path>, master_key: [u8; 32]) -> Result<Self, StorageError> {
         let conn =
             Connection::open(path).map_err(|e| StorageError::Internal(format!("open: {e}")))?;
         conn.execute_batch(
@@ -78,12 +154,13 @@ impl SqliteStorage {
         }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            master_key,
         })
     }
 
     /// Create an in-memory SQLite database (for testing).
-    pub fn in_memory() -> Result<Self, StorageError> {
-        Self::open(":memory:")
+    pub fn in_memory(master_key: [u8; 32]) -> Result<Self, StorageError> {
+        Self::open(":memory:", master_key)
     }
 
     /// Run a synchronous closure on the connection via `spawn_blocking`.
@@ -162,19 +239,24 @@ fn profile_to_str(p: &VerificationProfile) -> &'static str {
     }
 }
 
-/// Read a `NodeRecord` from the current row of a rusqlite statement.
-fn row_to_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRecord> {
-    let psk_vec: Vec<u8> = row.get(2)?;
-    let psk: [u8; 32] = psk_vec.try_into().map_err(|_| {
+/// Read a `NodeRecord` from the current row of a rusqlite statement,
+/// decrypting the stored PSK blob using `master_key`.
+///
+/// The `node_id` column (index 0) is used as AAD for the AES-GCM decryption
+/// so that swapping PSK blobs between rows is detected as an authentication failure.
+fn row_to_node(row: &rusqlite::Row<'_>, master_key: [u8; 32]) -> rusqlite::Result<NodeRecord> {
+    let node_id: String = row.get(0)?;
+    let psk_blob: Vec<u8> = row.get(2)?;
+    let psk = decrypt_psk(master_key, &node_id, &psk_blob).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(
             2,
             rusqlite::types::Type::Blob,
-            "psk is not 32 bytes".into(),
+            format!("psk decryption failed for node '{node_id}': {e}").into(),
         )
     })?;
     let last_seen_epoch: Option<i64> = row.get(8)?;
     Ok(NodeRecord {
-        node_id: row.get(0)?,
+        node_id,
         key_hint: {
             let kh: u32 = row.get(1)?;
             u16::try_from(kh).map_err(|_| {
@@ -200,7 +282,8 @@ impl Storage for SqliteStorage {
     // ── Node registry ──────────────────────────────────────────
 
     async fn list_nodes(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        self.with_conn(|conn| {
+        let mk = self.master_key;
+        self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
@@ -208,7 +291,9 @@ impl Storage for SqliteStorage {
                      last_battery_mv, last_seen_epoch_s FROM nodes",
                 )
                 .map_err(map_err)?;
-            let rows = stmt.query_map([], row_to_node).map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| row_to_node(row, mk))
+                .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
                 nodes.push(row.map_err(map_err)?);
@@ -220,13 +305,14 @@ impl Storage for SqliteStorage {
 
     async fn get_node(&self, node_id: &str) -> Result<Option<NodeRecord>, StorageError> {
         let node_id = node_id.to_string();
+        let mk = self.master_key;
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \
                  last_battery_mv, last_seen_epoch_s FROM nodes WHERE node_id = ?1",
                 params![node_id],
-                row_to_node,
+                |row| row_to_node(row, mk),
             )
             .optional()
             .map_err(map_err)
@@ -235,6 +321,7 @@ impl Storage for SqliteStorage {
     }
 
     async fn get_nodes_by_key_hint(&self, key_hint: u16) -> Result<Vec<NodeRecord>, StorageError> {
+        let mk = self.master_key;
         self.with_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -244,7 +331,7 @@ impl Storage for SqliteStorage {
                 )
                 .map_err(map_err)?;
             let rows = stmt
-                .query_map(params![key_hint as u32], row_to_node)
+                .query_map(params![key_hint as u32], |row| row_to_node(row, mk))
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
@@ -257,8 +344,10 @@ impl Storage for SqliteStorage {
 
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError> {
         let record = record.clone();
+        let mk = self.master_key;
         self.with_conn(move |conn| {
             let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
+            let encrypted_psk = encrypt_psk(mk, &record.node_id, &record.psk)?;
             conn.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \
@@ -276,7 +365,7 @@ impl Storage for SqliteStorage {
                 params![
                     record.node_id,
                     record.key_hint as u32,
-                    record.psk.as_slice(),
+                    encrypted_psk,
                     record.assigned_program_hash,
                     record.current_program_hash,
                     record.schedule_interval_s,
@@ -412,6 +501,9 @@ impl Storage for SqliteStorage {
 mod tests {
     use super::*;
 
+    /// A fixed test master key — must not be used outside of tests.
+    const TEST_MASTER_KEY: [u8; 32] = [0x42u8; 32];
+
     fn make_node(id: &str, key_hint: u16) -> NodeRecord {
         NodeRecord {
             node_id: id.to_string(),
@@ -440,7 +532,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_node_crud() {
-        let store = SqliteStorage::in_memory().unwrap();
+        let store = SqliteStorage::in_memory(TEST_MASTER_KEY).unwrap();
 
         // Initially empty.
         assert!(store.list_nodes().await.unwrap().is_empty());
@@ -475,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_program_crud() {
-        let store = SqliteStorage::in_memory().unwrap();
+        let store = SqliteStorage::in_memory(TEST_MASTER_KEY).unwrap();
 
         // Initially empty.
         assert!(store.list_programs().await.unwrap().is_empty());
@@ -501,7 +593,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nodes_by_key_hint() {
-        let store = SqliteStorage::in_memory().unwrap();
+        let store = SqliteStorage::in_memory(TEST_MASTER_KEY).unwrap();
 
         store.upsert_node(&make_node("a", 10)).await.unwrap();
         store.upsert_node(&make_node("b", 10)).await.unwrap();
@@ -528,14 +620,14 @@ mod tests {
 
         // First open: write data.
         {
-            let store = SqliteStorage::open(&db_path).unwrap();
+            let store = SqliteStorage::open(&db_path, TEST_MASTER_KEY).unwrap();
             store.upsert_node(&make_node("p1", 5)).await.unwrap();
             store.store_program(&make_program(0xAA)).await.unwrap();
         }
 
         // Second open: data survives.
         {
-            let store = SqliteStorage::open(&db_path).unwrap();
+            let store = SqliteStorage::open(&db_path, TEST_MASTER_KEY).unwrap();
             assert!(store.get_node("p1").await.unwrap().is_some());
             assert!(store.get_program(&vec![0xAA; 32]).await.unwrap().is_some());
         }
@@ -543,7 +635,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_upsert_overwrites() {
-        let store = SqliteStorage::in_memory().unwrap();
+        let store = SqliteStorage::in_memory(TEST_MASTER_KEY).unwrap();
 
         let mut node = make_node("u1", 1);
         node.schedule_interval_s = 30;

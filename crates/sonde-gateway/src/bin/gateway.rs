@@ -73,16 +73,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(db = %cli.db, port = %cli.port, channel = cli.channel, "starting sonde-gateway");
 
-    // 1. Open persistent storage
-    let storage = Arc::new(SqliteStorage::open(&cli.db)?);
+    // 1. Load master key for at-rest PSK encryption (GW-0601a)
+    let master_key = load_master_key(&cli)?;
+    info!("master key loaded");
+
+    // 2. Open persistent storage
+    let storage = Arc::new(SqliteStorage::open(&cli.db, master_key)?);
     info!("storage opened: {}", cli.db);
 
-    // 2. Session manager
+    // 3. Session manager
     let session_manager = Arc::new(SessionManager::new(Duration::from_secs(
         cli.session_timeout,
     )));
 
-    // 3. Shared pending-command queue (admin → engine)
+    // 4. Shared pending-command queue (admin → engine)
     let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
@@ -111,13 +115,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
     };
 
-    // 5. Open serial port and create modem transport
+    // 6. Open serial port and create modem transport
     let serial_port =
         tokio_serial::SerialStream::open(&tokio_serial::new(&cli.port, cli.baud_rate))?;
     let transport = Arc::new(UsbEspNowTransport::new(serial_port, cli.channel).await?);
     info!(channel = cli.channel, "modem transport ready");
 
-    // 6. Start gRPC admin server
+    // 7. Start gRPC admin server
     let admin_service = AdminService::new(storage.clone(), pending_commands, session_manager);
     let admin_socket = cli.admin_socket.clone();
 
@@ -127,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 7. Main frame-processing loop
+    // 8. Main frame-processing loop
     info!("entering frame processing loop");
     let transport_ref = transport.clone();
 
@@ -151,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 8. Wait for shutdown
+    // 9. Wait for shutdown
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("received ctrl-c, shutting down");

@@ -19,6 +19,7 @@ tonic-prost = "0.14"
 prost = "0.14"
 prevail = { git = "https://github.com/elazarg/prevail-rust.git", rev = "bc5be2ea", default-features = false }
 tempfile = "3"
+aes-gcm = "0.10"
 rusqlite = { version = "0.34", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

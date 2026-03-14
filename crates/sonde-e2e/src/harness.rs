@@ -372,6 +372,8 @@ impl NodeTransport for BridgeTransport {
 struct ChannelRadio {
     /// Frames sent by the bridge (gateway → node) arrive at the node.
     to_node: std::sync::mpsc::SyncSender<Vec<u8>>,
+    /// Shared receiver for bridge→node frames, used by reset to drain stale frames.
+    to_node_rx: Arc<Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>,
     /// Frames sent by the node arrive here for the bridge.
     from_node: Mutex<std::sync::mpsc::Receiver<Vec<u8>>>,
     /// Current radio channel.
@@ -429,8 +431,17 @@ impl Radio for ChannelRadio {
 
     fn reset_state(&mut self) {
         self.channel = 1;
-        let rx = self.from_node.lock().unwrap();
-        while rx.try_recv().is_ok() {}
+        // Drain node→bridge frames.
+        {
+            let rx = self.from_node.lock().unwrap();
+            while rx.try_recv().is_ok() {}
+        }
+        // Drain bridge→node frames so stale data from a previous cycle
+        // is not delivered after RESET.
+        {
+            let rx = self.to_node_rx.lock().unwrap();
+            while rx.try_recv().is_ok() {}
+        }
     }
 }
 
@@ -443,7 +454,7 @@ impl Radio for ChannelRadio {
 /// Uses `std::sync::mpsc::recv_timeout()` to implement the synchronous
 /// `sonde_node::traits::Transport::recv(timeout_ms)` contract.
 pub struct ChannelTransport {
-    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    rx: Arc<Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>,
     tx: std::sync::mpsc::SyncSender<Vec<u8>>,
     /// Nonces extracted from outbound WAKE frames.
     wake_nonces: Vec<u64>,
@@ -486,17 +497,21 @@ impl NodeTransport for ChannelTransport {
             }
         }
 
-        self.tx
-            .send(frame.to_vec())
-            .map_err(|e| NodeError::Transport(format!("channel send: {e}")))?;
-        Ok(())
+        use std::sync::mpsc::TrySendError;
+        match self.tx.try_send(frame.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(NodeError::Transport(
+                "node→bridge channel full (cap 64); bridge is not draining".into(),
+            )),
+            Err(TrySendError::Disconnected(..)) => {
+                Err(NodeError::Transport("channel disconnected".into()))
+            }
+        }
     }
 
     fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
-        match self
-            .rx
-            .recv_timeout(Duration::from_millis(timeout_ms as u64))
-        {
+        let rx = self.rx.lock().unwrap();
+        match rx.recv_timeout(Duration::from_millis(timeout_ms as u64)) {
             Ok(data) => Ok(Some(data)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -665,15 +680,20 @@ impl ModemTestEnv {
         let (bridge_to_node_tx, bridge_to_node_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
         let (node_to_bridge_tx, node_to_bridge_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
 
+        // Share the bridge→node receiver so both ChannelRadio::reset_state
+        // and ChannelTransport::recv can access it.
+        let to_node_rx = Arc::new(Mutex::new(bridge_to_node_rx));
+
         let channel_radio = ChannelRadio {
             to_node: bridge_to_node_tx,
+            to_node_rx: Arc::clone(&to_node_rx),
             from_node: Mutex::new(node_to_bridge_rx),
             channel: 1,
             mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
         };
 
         let channel_transport = ChannelTransport {
-            rx: bridge_to_node_rx,
+            rx: to_node_rx,
             tx: node_to_bridge_tx,
             wake_nonces: Vec::new(),
             sent_frames: Vec::new(),
@@ -746,10 +766,11 @@ impl ModemTestEnv {
 impl Drop for ModemTestEnv {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // The pipe shuttle task checks `stop` every 50 ms and exits
-        // cleanly.  Taking the handle detaches it; the task finishes
-        // on its own without needing abort.
-        self.pipe_task.take();
+        // Abort the pipe shuttle task so panics/assertions inside it are
+        // surfaced immediately rather than silently swallowed by detach.
+        if let Some(handle) = self.pipe_task.take() {
+            handle.abort();
+        }
         if let Some(handle) = self.bridge_thread.take() {
             if std::thread::panicking() {
                 let _ = handle.join();
@@ -777,11 +798,12 @@ async fn run_gateway_pump(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match tokio::time::timeout(Duration::from_millis(50), transport.recv()).await {
+        match tokio::time::timeout(Duration::from_millis(50), GatewayTransport::recv(&*transport))
+            .await
+        {
             Ok(Ok((frame, peer))) => {
                 if let Some(response) = gateway.process_frame(&frame, peer.clone()).await {
-                    transport
-                        .send(&response, &peer)
+                    GatewayTransport::send(&*transport, &response, &peer)
                         .await
                         .expect("gateway pump: transport send failed");
                 }

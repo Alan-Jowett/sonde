@@ -614,12 +614,19 @@ impl std::fmt::Display for HandlerConfigError {
 impl std::error::Error for HandlerConfigError {}
 
 /// Parse a hex string into bytes, returning an error on invalid input.
+/// Returns an error if the string contains non-ASCII characters.
 fn parse_hex(s: &str) -> Result<Vec<u8>, HandlerConfigError> {
+    if !s.is_ascii() {
+        return Err(HandlerConfigError(format!(
+            "hex string contains non-ASCII characters: {s}"
+        )));
+    }
     if !s.len().is_multiple_of(2) {
         return Err(HandlerConfigError(format!(
             "hex string has odd length: {s}"
         )));
     }
+    // s is ASCII, so every character is exactly 1 byte; byte-offset slicing is safe.
     (0..s.len())
         .step_by(2)
         .map(|i| {
@@ -630,12 +637,20 @@ fn parse_hex(s: &str) -> Result<Vec<u8>, HandlerConfigError> {
 }
 
 /// Parse a single program_hash string into a `ProgramMatcher`.
-/// `"*"` becomes `ProgramMatcher::Any`; anything else is treated as hex bytes.
+/// `"*"` becomes `ProgramMatcher::Any`; anything else must be a 64-character
+/// hex string encoding a 32-byte SHA-256 digest.
 fn parse_program_matcher(s: &str) -> Result<ProgramMatcher, HandlerConfigError> {
     if s == "*" {
         Ok(ProgramMatcher::Any)
     } else {
-        parse_hex(s).map(ProgramMatcher::Hash)
+        let bytes = parse_hex(s)?;
+        if bytes.len() != 32 {
+            return Err(HandlerConfigError(format!(
+                "program_hash must be 64 hex characters (32 bytes), got {} bytes from: {s}",
+                bytes.len()
+            )));
+        }
+        Ok(ProgramMatcher::Hash(bytes))
     }
 }
 
@@ -960,13 +975,21 @@ mod tests {
 
     // --- load_handler_configs tests ---
 
+    // 64-character hex strings representing valid 32-byte SHA-256 hashes.
+    const HASH_A: &str = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+    const HASH_B: &str = "ccdd1122ccdd1122ccdd1122ccdd1122ccdd1122ccdd1122ccdd1122ccdd1122";
+    const HASH_C: &str = "7a8b9c0d1e2f7a8b9c0d1e2f7a8b9c0d1e2f7a8b9c0d1e2f7a8b9c0d1e2f7a8b";
+    const HASH_D: &str = "0d1e2f7a8b9c0d1e2f7a8b9c0d1e2f7a8b9c0d1e2f7a8b9c0d1e2f7a8b9c0d1e";
+
     #[test]
     fn test_load_handler_configs_single_hash() {
-        let yaml = r#"
+        let yaml = format!(
+            r#"
 handlers:
-  - program_hash: "aabb"
+  - program_hash: "{HASH_A}"
     command: "/usr/bin/handler"
-"#;
+"#
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
@@ -977,7 +1000,11 @@ handlers:
         assert!(configs[0].args.is_empty());
         assert_eq!(configs[0].matchers.len(), 1);
         match &configs[0].matchers[0] {
-            ProgramMatcher::Hash(h) => assert_eq!(h, &[0xaa, 0xbb]),
+            ProgramMatcher::Hash(h) => {
+                assert_eq!(h.len(), 32);
+                assert_eq!(h[0], 0xa1);
+                assert_eq!(h[1], 0xb2);
+            }
             _ => panic!("expected Hash matcher"),
         }
     }
@@ -1000,11 +1027,13 @@ handlers:
 
     #[test]
     fn test_load_handler_configs_multiple_hashes() {
-        let yaml = r#"
+        let yaml = format!(
+            r#"
 handlers:
-  - program_hash: ["aabb", "ccdd"]
+  - program_hash: ["{HASH_A}", "{HASH_B}"]
     command: "/usr/bin/multi"
-"#;
+"#
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
@@ -1013,23 +1042,31 @@ handlers:
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].matchers.len(), 2);
         match &configs[0].matchers[0] {
-            ProgramMatcher::Hash(h) => assert_eq!(h, &[0xaa, 0xbb]),
+            ProgramMatcher::Hash(h) => {
+                assert_eq!(h.len(), 32);
+                assert_eq!(h[0], 0xa1);
+            }
             _ => panic!("expected Hash matcher"),
         }
         match &configs[0].matchers[1] {
-            ProgramMatcher::Hash(h) => assert_eq!(h, &[0xcc, 0xdd]),
+            ProgramMatcher::Hash(h) => {
+                assert_eq!(h.len(), 32);
+                assert_eq!(h[0], 0xcc);
+            }
             _ => panic!("expected Hash matcher"),
         }
     }
 
     #[test]
     fn test_load_handler_configs_with_args() {
-        let yaml = r#"
+        let yaml = format!(
+            r#"
 handlers:
-  - program_hash: "aabb"
+  - program_hash: "{HASH_A}"
     command: "/usr/bin/handler"
     args: ["--verbose", "--output=/tmp/out"]
-"#;
+"#
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
@@ -1040,17 +1077,19 @@ handlers:
 
     #[test]
     fn test_load_handler_configs_multiple_handlers() {
-        let yaml = r#"
+        let yaml = format!(
+            r#"
 handlers:
-  - program_hash: "a1b2c3"
+  - program_hash: "{HASH_A}"
     command: "/usr/local/bin/soil-moisture-app"
-  - program_hash: "d4e5f6"
+  - program_hash: "{HASH_B}"
     command: "/usr/local/bin/temperature-alert-app"
-  - program_hash: ["7a8b9c", "0d1e2f"]
+  - program_hash: ["{HASH_C}", "{HASH_D}"]
     command: "/usr/local/bin/multi-sensor-app"
   - program_hash: "*"
     command: "/usr/local/bin/default-handler"
-"#;
+"#
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
@@ -1069,7 +1108,7 @@ handlers:
     fn test_load_handler_configs_invalid_hex() {
         let yaml = r#"
 handlers:
-  - program_hash: "zzzz"
+  - program_hash: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
     command: "/usr/bin/handler"
 "#;
         let dir = tempfile::tempdir().unwrap();
@@ -1079,6 +1118,44 @@ handlers:
         let result = load_handler_configs(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().0.contains("invalid hex"));
+    }
+
+    #[test]
+    fn test_load_handler_configs_wrong_length_hash() {
+        let yaml = r#"
+handlers:
+  - program_hash: "aabb"
+    command: "/usr/bin/handler"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handlers.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let result = load_handler_configs(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.0.contains("32 bytes"),
+            "expected 32-byte error, got: {}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn test_load_handler_configs_non_ascii_hash() {
+        let yaml = "handlers:\n  - program_hash: \"é1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\"\n    command: \"/usr/bin/handler\"\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handlers.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let result = load_handler_configs(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.0.contains("non-ASCII"),
+            "expected non-ASCII error, got: {}",
+            err.0
+        );
     }
 
     #[test]

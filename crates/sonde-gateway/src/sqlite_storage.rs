@@ -649,6 +649,7 @@ impl Storage for SqliteStorage {
     ) -> Result<(), StorageError> {
         let nodes = nodes.to_vec();
         let programs = programs.to_vec();
+        let mk = self.master_key.clone();
         self.with_conn(move |conn| {
             conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
 
@@ -674,6 +675,8 @@ impl Storage for SqliteStorage {
                 for record in &nodes {
                     let last_seen_epoch: Option<i64> =
                         record.last_seen.as_ref().map(system_time_to_epoch_s);
+                    let encrypted_psk =
+                        encrypt_psk(&mk, &record.node_id, &record.psk)?;
                     conn.execute(
                         "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                          current_program_hash, schedule_interval_s, firmware_abi_version, \
@@ -682,7 +685,7 @@ impl Storage for SqliteStorage {
                         params![
                             &record.node_id,
                             record.key_hint,
-                            record.psk.as_slice(),
+                            &encrypted_psk,
                             record.assigned_program_hash.as_deref(),
                             record.current_program_hash.as_deref(),
                             record.schedule_interval_s,

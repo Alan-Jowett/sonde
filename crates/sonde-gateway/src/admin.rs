@@ -7,6 +7,7 @@ use std::time::UNIX_EPOCH;
 
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
+use zeroize::Zeroizing;
 
 use crate::engine::PendingCommand;
 use crate::program::{ProgramLibrary, VerificationProfile};
@@ -416,7 +417,7 @@ impl GatewayAdmin for AdminService {
         let req = request.into_inner();
         let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
         let programs = self.storage.list_programs().await.map_err(storage_err)?;
-        let passphrase = req.passphrase;
+        let passphrase = Zeroizing::new(req.passphrase);
         // Offload CPU-bound PBKDF2 + AES-GCM encryption to a blocking thread
         // so the Tokio runtime is not stalled.
         let data = tokio::task::spawn_blocking(move || {
@@ -446,6 +447,10 @@ impl GatewayAdmin for AdminService {
         // created between the active_count check and replace_state.
         let _import_guard = self.session_manager.acquire_import_lock().await;
 
+        // Reap expired sessions before checking count so stale sessions
+        // don't block imports indefinitely.
+        self.session_manager.reap_expired().await;
+
         // Reject import while sessions are active to avoid mixed in-memory
         // and on-disk state.
         let active = self.session_manager.active_count().await;
@@ -458,7 +463,7 @@ impl GatewayAdmin for AdminService {
 
         let req = request.into_inner();
         let data = req.data;
-        let passphrase = req.passphrase;
+        let passphrase = Zeroizing::new(req.passphrase);
         // Offload CPU-bound PBKDF2 + AES-GCM decryption to a blocking thread.
         let (nodes, programs) = tokio::task::spawn_blocking(move || {
             crate::state_bundle::decrypt_state(&data, &passphrase)

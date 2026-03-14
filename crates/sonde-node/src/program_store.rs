@@ -50,19 +50,6 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         })
     }
 
-    /// Get the hash of the currently active resident program, or an empty
-    /// vec if no program is installed or the active partition index is invalid.
-    pub fn active_program_hash(&self, sha: &dyn Sha256Provider) -> Vec<u8> {
-        let (_interval, active_partition) = self.storage.read_schedule();
-        if active_partition > 1 {
-            return Vec::new();
-        }
-        match self.storage.read_program(active_partition) {
-            Some(image_bytes) => sha.hash(&image_bytes).to_vec(),
-            None => Vec::new(),
-        }
-    }
-
     /// Install a new resident program via chunked transfer.
     ///
     /// 1. Verify the SHA-256 hash against `expected_hash`.

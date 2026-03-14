@@ -93,11 +93,15 @@ where
     let (base_interval_s, _active_partition) = storage.read_schedule();
     let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
 
-    // 4. Get current program hash
-    let program_hash = {
+    // 4. Load active resident program once — hash used in WAKE, image reused
+    // for BPF execution to avoid a second NVS read later in the cycle.
+    let resident_program = {
         let program_store = ProgramStore::new(storage);
-        program_store.active_program_hash(sha)
+        program_store.load_active(sha)
     };
+    let program_hash = resident_program
+        .as_ref()
+        .map_or_else(Vec::new, |p| p.hash.clone());
 
     // 5. Generate WAKE nonce
     let wake_nonce = rng.random_u64();
@@ -248,10 +252,10 @@ where
     // Used to force map re-initialization even when layout matches.
     let resident_installed_this_cycle = loaded_program.as_ref().is_some_and(|p| !p.is_ephemeral);
 
-    // Load program if not already loaded from transfer
+    // Use the resident program loaded at step 4 if no new program was
+    // transferred this cycle (avoids a second NVS read).
     if loaded_program.is_none() {
-        let program_store = ProgramStore::new(storage);
-        loaded_program = program_store.load_active(sha);
+        loaded_program = resident_program;
     }
 
     if let Some(program) = loaded_program {

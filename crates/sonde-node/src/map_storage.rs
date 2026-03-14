@@ -134,28 +134,30 @@ impl MapStorage {
     /// Call this before committing program installs to ensure the maps
     /// are compatible with this platform.
     pub fn validate_map_defs(map_defs: &[MapDef]) -> NodeResult<()> {
-        for def in map_defs {
+        for (i, def) in map_defs.iter().enumerate() {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
                 return Err(NodeError::ProgramDecodeFailed(format!(
-                    "unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
-                    def.map_type
+                    "map[{}]: unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
+                    i, def.map_type
                 )));
             }
             if def.key_size != ARRAY_MAP_KEY_SIZE {
                 return Err(NodeError::ProgramDecodeFailed(format!(
-                    "array map key_size must be 4 (u32), got {}",
-                    def.key_size
+                    "map[{}]: key_size must be 4 (u32), got {}",
+                    i, def.key_size
                 )));
             }
             if def.max_entries == 0 {
-                return Err(NodeError::ProgramDecodeFailed(
-                    "map max_entries must be > 0".into(),
-                ));
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "map[{}]: max_entries must be > 0",
+                    i
+                )));
             }
             if def.value_size == 0 {
-                return Err(NodeError::ProgramDecodeFailed(
-                    "map value_size must be > 0".into(),
-                ));
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "map[{}]: value_size must be > 0",
+                    i
+                )));
             }
         }
         // Also verify arithmetic doesn't overflow

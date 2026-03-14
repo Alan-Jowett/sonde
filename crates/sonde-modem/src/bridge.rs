@@ -754,8 +754,8 @@ mod tests {
     fn usb_reconnect_clears_decoder_state() {
         let mut bridge = make_bridge();
 
-        // Inject stale non-delimiter bytes to leave junk in the decoder
-        // buffer.  These do not form a complete COBS frame.
+        // Inject stale bytes to leave a partial length-prefixed frame in the
+        // decoder buffer.  These do not form a complete frame.
         bridge.usb.inject(&[0x01, 0x02, 0x03, 0xFF, 0xFE]);
         bridge.poll();
         bridge.usb.take_tx(); // discard any error output

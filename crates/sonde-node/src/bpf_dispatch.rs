@@ -853,6 +853,58 @@ mod tests {
     }
 
     #[test]
+    fn test_helper_i2c_write_read_rejects_zero_length() {
+        // Zero-length write_len or read_len must return -1.
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let write_buf = [0x42u8; 2];
+        let mut read_buf = [0u8; 2];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                let handle = crate::hal::i2c_handle(0, 0x48) as u64;
+
+                // Zero write_len → -1
+                let result = helper_i2c_write_read(
+                    handle,
+                    write_buf.as_ptr() as u64,
+                    0, // write_len = 0
+                    read_buf.as_mut_ptr() as u64,
+                    read_buf.len() as u64,
+                );
+                assert_eq!(result as i64, -1, "zero write_len should be rejected");
+
+                // Zero read_len → -1
+                let result = helper_i2c_write_read(
+                    handle,
+                    write_buf.as_ptr() as u64,
+                    write_buf.len() as u64,
+                    read_buf.as_mut_ptr() as u64,
+                    0, // read_len = 0
+                );
+                assert_eq!(result as i64, -1, "zero read_len should be rejected");
+            },
+        );
+    }
+
+    #[test]
     fn test_helper_spi_transfer() {
         // T-N602: SPI echo — rx matches tx.
         let mut hal = TestHal::new();

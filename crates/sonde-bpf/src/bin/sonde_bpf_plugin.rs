@@ -40,9 +40,14 @@ fn run() -> Result<(), String> {
             ret: sonde_bpf::interpreter::HelperReturn::Scalar,
         }];
 
-    let result =
-        sonde_bpf::interpreter::execute_program_no_maps(&bytecode, &mut memory, helpers, false)
-            .map_err(|e| format!("{e}"))?;
+    let result = sonde_bpf::interpreter::execute_program_no_maps(
+        &bytecode,
+        &mut memory,
+        helpers,
+        false,
+        u64::MAX,
+    )
+    .map_err(|e| format!("{e}"))?;
 
     println!("{result:x}");
     Ok(())

@@ -36,7 +36,7 @@ fn test_mov64_imm_exit() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -51,7 +51,7 @@ fn test_add64_imm() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -67,7 +67,7 @@ fn test_add64_reg() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -82,7 +82,7 @@ fn test_sub64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -97,7 +97,7 @@ fn test_mul64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -112,7 +112,7 @@ fn test_div64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -127,7 +127,7 @@ fn test_div64_by_zero() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0
     );
 }
@@ -142,7 +142,7 @@ fn test_mod64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         2
     );
 }
@@ -157,7 +157,7 @@ fn test_mod64_by_zero() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -177,7 +177,7 @@ fn test_bitwise_ops() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0x39
     );
 }
@@ -193,7 +193,7 @@ fn test_shifts64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         8
     );
 }
@@ -208,7 +208,7 @@ fn test_neg64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         (-1i64) as u64
     );
 }
@@ -223,7 +223,7 @@ fn test_arsh64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         (-4i64) as u64
     );
 }
@@ -241,7 +241,7 @@ fn test_add32() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -256,7 +256,7 @@ fn test_mov32_zeroes_upper() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -274,7 +274,7 @@ fn test_ja() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         1
     );
 }
@@ -291,7 +291,7 @@ fn test_jeq_imm_taken() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -308,7 +308,7 @@ fn test_jeq_imm_not_taken() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0
     );
 }
@@ -325,7 +325,7 @@ fn test_jgt_unsigned() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         1
     );
 }
@@ -342,7 +342,7 @@ fn test_jslt_signed() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         1
     );
 }
@@ -363,7 +363,7 @@ fn test_jeq32() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         1
     );
 }
@@ -380,7 +380,7 @@ fn test_load_store_byte() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0xAB
     );
 }
@@ -395,7 +395,7 @@ fn test_load_store_word() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0x12345678
     );
 }
@@ -412,7 +412,7 @@ fn test_load_store_dw() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0xdeadbeef_cafebabe
     );
 }
@@ -428,7 +428,7 @@ fn test_store_reg() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0xBEEF
     );
 }
@@ -444,7 +444,7 @@ fn test_ld_dw_imm() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0x1_0000_0002
     );
 }
@@ -471,7 +471,7 @@ fn test_helper_call() {
         ret: HelperReturn::Scalar,
     }];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, helpers, false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, helpers, false, u64::MAX).unwrap(),
         42
     );
 }
@@ -481,7 +481,7 @@ fn test_unknown_helper() {
     let prog = prog_from(&[insn(ebpf::CALL, 0, 0, 0, 99), insn(ebpf::EXIT, 0, 0, 0, 0)]);
     let mut mem = [];
     assert!(matches!(
-        execute_program_no_maps(&prog, &mut mem, &[], false),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX),
         Err(BpfError::UnknownHelper { id: 99, .. })
     ));
 }
@@ -511,7 +511,7 @@ fn test_local_call() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -527,7 +527,7 @@ fn test_be16() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    let result = execute_program_no_maps(&prog, &mut mem, &[], false).unwrap();
+    let result = execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap();
     // On a little-endian host, to_be swaps: 0x0102 -> 0x0201
     assert_eq!(result, 0x0102u16.to_be() as u64);
 }
@@ -549,7 +549,7 @@ fn test_loop_sum() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         55
     );
 }
@@ -565,7 +565,7 @@ fn test_ldsx_byte() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [];
-    let result = execute_program_no_maps(&prog, &mut mem, &[], false).unwrap();
+    let result = execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap();
     assert_eq!(result as i64, -5);
 }
 
@@ -583,7 +583,7 @@ fn test_atomic_add_w() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -600,7 +600,7 @@ fn test_sdiv64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         42
     );
 }
@@ -617,7 +617,7 @@ fn test_smod64() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         (-1i64) as u64
     );
 }
@@ -634,7 +634,7 @@ fn test_movsx64_8() {
     ]);
     let mut mem = [];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         (-128i64) as u64
     );
 }
@@ -650,7 +650,7 @@ fn test_movsx32_8() {
     let mut mem = [];
     // -128 as i32 = 0xffffff80, zero-extended to u64
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0xffffff80u64
     );
 }
@@ -666,7 +666,7 @@ fn test_mem_oob() {
     ]);
     let mut mem = [0u8; 16];
     assert!(matches!(
-        execute_program_no_maps(&prog, &mut mem, &[], false),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX),
         Err(BpfError::MemoryAccessViolation { .. })
     ));
 }
@@ -682,7 +682,7 @@ fn test_read_only_ctx_rejects_store() {
     ]);
     let mut mem = [0u8; 16];
     assert!(matches!(
-        execute_program_no_maps(&prog, &mut mem, &[], true),
+        execute_program_no_maps(&prog, &mut mem, &[], true, u64::MAX),
         Err(BpfError::ReadOnlyWrite { .. })
     ));
 }
@@ -697,7 +697,35 @@ fn test_writable_ctx_allows_store() {
     ]);
     let mut mem = [0u8; 16];
     assert_eq!(
-        execute_program_no_maps(&prog, &mut mem, &[], false).unwrap(),
+        execute_program_no_maps(&prog, &mut mem, &[], false, u64::MAX).unwrap(),
         0x42
+    );
+}
+
+#[test]
+fn test_instruction_budget_exceeded() {
+    // r0 = 0; exit — 2 instructions, budget of 1 should trigger the limit.
+    let prog = prog_from(&[
+        insn(ebpf::MOV64_IMM, 0, 0, 0, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert!(matches!(
+        execute_program_no_maps(&prog, &mut mem, &[], false, 1),
+        Err(BpfError::InstructionBudgetExceeded { .. })
+    ));
+}
+
+#[test]
+fn test_instruction_budget_exact() {
+    // r0 = 42; exit — 2 instructions, budget of 2 should succeed.
+    let prog = prog_from(&[
+        insn(ebpf::MOV64_IMM, 0, 0, 0, 42),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert_eq!(
+        execute_program_no_maps(&prog, &mut mem, &[], false, 2).unwrap(),
+        42
     );
 }

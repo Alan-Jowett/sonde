@@ -103,15 +103,8 @@ impl BpfInterpreter for SondeBpfInterpreter {
         Ok(())
     }
 
-    /// Execute the loaded program.
-    ///
-    /// # Instruction budget limitation
-    ///
-    /// **`instruction_budget` is currently NOT enforced.** sonde-bpf does
-    /// not yet support instruction metering. Termination is guaranteed by
-    /// Prevail verification on the gateway (bounded loops, no infinite
-    /// recursion). A future sonde-bpf release should add metering support.
-    fn execute(&mut self, ctx_ptr: u64, _instruction_budget: u64) -> Result<u64, BpfError> {
+    /// Execute the loaded program with instruction budget enforcement.
+    fn execute(&mut self, ctx_ptr: u64, instruction_budget: u64) -> Result<u64, BpfError> {
         let bytecode = self
             .bytecode
             .as_ref()
@@ -145,12 +138,14 @@ impl BpfInterpreter for SondeBpfInterpreter {
                 &self.helpers,
                 &self.map_regions,
                 true, // read_only_ctx
+                instruction_budget,
             )
         };
 
         result.map_err(|e| {
             use sonde_bpf::interpreter::BpfError as SbErr;
             match e {
+                SbErr::InstructionBudgetExceeded { .. } => BpfError::InstructionBudgetExceeded,
                 SbErr::CallDepthExceeded { .. } => BpfError::CallDepthExceeded,
                 SbErr::UnknownHelper { id, .. } => BpfError::HelperNotRegistered(id),
                 SbErr::OutOfBounds { .. } | SbErr::UnknownOpcode { .. } => {
@@ -328,5 +323,16 @@ mod tests {
         interp.load(&prog, &[], &[]).unwrap();
         let result = interp.execute(0, 100_000).unwrap();
         assert_eq!(result, 2); // helper_b's return value
+    }
+
+    #[test]
+    fn test_instruction_budget_exceeded() {
+        // prog_return(42) has 2 instructions; a budget of 1 allows only the
+        // first instruction before the budget is exhausted on the second.
+        let mut interp = SondeBpfInterpreter::new();
+        let prog = prog_return(42);
+        interp.load(&prog, &[], &[]).unwrap();
+        let result = interp.execute(0, 1);
+        assert!(matches!(result, Err(BpfError::InstructionBudgetExceeded)));
     }
 }

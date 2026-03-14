@@ -42,6 +42,8 @@ pub enum BpfError {
     InvalidPointerArithmetic { pc: usize },
     /// Invalid map index in a LD_DW_IMM relocation.
     InvalidMapIndex { pc: usize, index: i32 },
+    /// The program exceeded the instruction budget.
+    InstructionBudgetExceeded { pc: usize },
 }
 
 impl core::fmt::Display for BpfError {
@@ -71,6 +73,9 @@ impl core::fmt::Display for BpfError {
             }
             Self::InvalidMapIndex { pc, index } => {
                 write!(f, "invalid map index {index} at insn #{pc}")
+            }
+            Self::InstructionBudgetExceeded { pc } => {
+                write!(f, "instruction budget exceeded at insn #{pc}")
             }
         }
     }
@@ -558,9 +563,10 @@ pub fn execute_program_no_maps(
     ctx: &mut [u8],
     helpers: &[HelperDescriptor],
     read_only_ctx: bool,
+    instruction_budget: u64,
 ) -> Result<u64, BpfError> {
     // SAFETY: maps is empty — no raw pointer invariants to uphold.
-    unsafe { execute_program(prog, ctx, helpers, &[], read_only_ctx) }
+    unsafe { execute_program(prog, ctx, helpers, &[], read_only_ctx, instruction_budget) }
 }
 
 /// Execute a BPF program.
@@ -601,6 +607,7 @@ pub unsafe fn execute_program(
     helpers: &[HelperDescriptor],
     maps: &[MapRegion],
     read_only_ctx: bool,
+    instruction_budget: u64,
 ) -> Result<u64, BpfError> {
     let num_insns = prog.len() / INSN_SIZE;
     if !prog.len().is_multiple_of(INSN_SIZE) {
@@ -663,8 +670,13 @@ pub unsafe fn execute_program(
     };
 
     let mut pc: usize = 0;
+    let mut insn_count: u64 = 0;
 
     while pc < num_insns {
+        insn_count += 1;
+        if insn_count > instruction_budget {
+            return Err(BpfError::InstructionBudgetExceeded { pc });
+        }
         let insn = ebpf::get_insn(prog, pc);
         pc += 1;
 

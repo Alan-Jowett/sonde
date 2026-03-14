@@ -605,11 +605,7 @@ async fn t_e2e_052_bridged_consecutive_cycles() {
     // the first nonce could miss a collision in later attempts.
     for n1 in &stats1.wake_nonces {
         for n2 in &stats2.wake_nonces {
-            assert_ne!(
-                n1, n2,
-                "nonce collision between cycles: 0x{:016x}",
-                n1
-            );
+            assert_ne!(n1, n2, "nonce collision between cycles: 0x{:016x}", n1);
         }
     }
 }

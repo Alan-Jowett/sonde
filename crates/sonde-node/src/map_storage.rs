@@ -151,14 +151,18 @@ impl core::fmt::Debug for RtcSlice {
     }
 }
 
-// `*mut u8` is `!Send` by default. `RtcSlice` needs `Send` because
-// `MapInstance` (which contains `RtcSlice`) is stored in a `Vec` inside
-// `MapStorage`, and `MapStorage` is passed as `&mut` to `run_wake_cycle`
-// which is generic over `Send`-bounded trait objects (e.g. `dyn Hal`).
-// Safety: the wake-cycle engine is single-threaded on ESP32; no other
-// thread or ISR accesses `MAP_BACKING`. If multi-threading is ever
-// introduced, this impl must be removed and replaced with proper
-// synchronisation.
+// `*mut u8` is `!Send` by default. `RtcSlice` wraps a pointer into
+// the static `MAP_BACKING` buffer.
+//
+// On ESP32 the wake-cycle engine is single-threaded, so `Send` is not
+// strictly required by the current call graph. We provide it defensively
+// so that `MapStorage` (which contains `Vec<MapInstance>`) can be stored
+// in contexts that require `Send` (e.g. if a future test harness or
+// diagnostic task moves it across threads).
+//
+// Safety: only one thread accesses `MAP_BACKING` at a time. If ISR or
+// multi-thread access is ever introduced, this impl must be replaced
+// with proper synchronisation.
 #[cfg(feature = "esp")]
 unsafe impl Send for RtcSlice {}
 

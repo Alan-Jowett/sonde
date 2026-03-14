@@ -10,6 +10,7 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 use log::{info, warn};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -21,7 +22,7 @@ use crate::status::ModemCounters;
 
 /// Shared state for the raw ESP-NOW receive callback.
 struct RecvCallbackState {
-    rx_queue: Arc<Mutex<Vec<RecvFrame>>>,
+    rx_queue: Arc<Mutex<VecDeque<RecvFrame>>>,
     usb_connected: Arc<AtomicBool>,
 }
 
@@ -72,14 +73,19 @@ unsafe extern "C" fn raw_recv_cb(
         }
         // Use try_lock to avoid blocking the ESP-NOW/WiFi task if the
         // queue is being drained. Drop the frame if contended.
-        if let Ok(mut q) = state.rx_queue.try_lock() {
-            if q.len() < 64 {
-                q.push(RecvFrame {
-                    peer_mac: *src_addr,
-                    rssi,
-                    frame_data: payload.to_vec(),
-                });
-            }
+        // Also handle poisoned mutex — recover the guard so frames
+        // aren't silently dropped forever after a panic in the consumer.
+        let mut guard = match state.rx_queue.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::WouldBlock) => return,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        };
+        if guard.len() < 64 {
+            guard.push_back(RecvFrame {
+                peer_mac: *src_addr,
+                rssi,
+                frame_data: payload.to_vec(),
+            });
         }
     }
 }
@@ -90,8 +96,10 @@ pub struct EspNowDriver {
     espnow: EspNow<'static>,
     peer_table: PeerTable,
     counters: Arc<ModemCounters>,
-    rx_queue: Arc<Mutex<Vec<RecvFrame>>>,
+    rx_queue: Arc<Mutex<VecDeque<RecvFrame>>>,
     current_channel: u8,
+    /// Set to true after the first poisoned-mutex warning to avoid log spam.
+    poison_warned: AtomicBool,
 }
 
 impl EspNowDriver {
@@ -101,54 +109,67 @@ impl EspNowDriver {
         nvs: EspDefaultNvsPartition,
         counters: &Arc<ModemCounters>,
         usb_connected: Arc<AtomicBool>,
-    ) -> Self {
-        // Initialize WiFi in station mode (required for ESP-NOW).
-        let esp_wifi =
-            EspWifi::new(modem, sysloop.clone(), Some(nvs)).expect("failed to create WiFi");
-        let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop).expect("failed to wrap WiFi");
+    ) -> Result<Self, esp_idf_sys::EspError> {
+        // Guard: fail fast before touching any ESP-IDF state if the driver
+        // was already constructed (OnceLock is already populated).
+        if RECV_CB_STATE.get().is_some() {
+            return Err(esp_idf_sys::EspError::from_non_zero(
+                core::num::NonZeroI32::new(esp_idf_sys::ESP_ERR_INVALID_STATE).unwrap(),
+            ));
+        }
 
-        wifi.start().expect("failed to start WiFi");
+        // Initialize WiFi in station mode (required for ESP-NOW).
+        let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))?;
+        let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)?;
+
+        wifi.start()?;
         info!("WiFi started in station mode");
 
-        let espnow = EspNow::take().expect("failed to take ESP-NOW");
-        let rx_queue = Arc::new(Mutex::new(Vec::new()));
+        let espnow = EspNow::take()?;
+        let rx_queue = Arc::new(Mutex::new(VecDeque::with_capacity(64)));
 
-        // Install the global recv callback state and register our raw
-        // callback that extracts RSSI from rx_ctrl.
-        assert!(
-            RECV_CB_STATE
-                .set(RecvCallbackState {
-                    rx_queue: Arc::clone(&rx_queue),
-                    usb_connected,
-                })
-                .is_ok(),
-            "RECV_CB_STATE already initialized; EspNowDriver::new must only be called once"
-        );
+        // Register callbacks before setting RECV_CB_STATE so that a
+        // failure in any registration does not leave the OnceLock
+        // permanently populated (it cannot be cleared once set).
         unsafe {
-            esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))
-                .expect("failed to register ESP-NOW recv callback");
+            esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))?;
         }
 
         // Register the send callback to track delivery failures (MD-0202).
         let counters_for_send = Arc::clone(counters);
-        espnow
-            .register_send_cb(move |_mac, status| {
-                if matches!(status, SendStatus::FAIL) {
-                    counters_for_send.inc_tx_fail();
-                }
+        espnow.register_send_cb(move |_mac, status| {
+            if matches!(status, SendStatus::FAIL) {
+                counters_for_send.inc_tx_fail();
+            }
+        })?;
+
+        // All fallible init is done — install recv callback state last.
+        // The early guard above ensures this is the first call, so set()
+        // should always succeed. The recv callback harmlessly drops any
+        // frames that arrived before this point.
+        if RECV_CB_STATE
+            .set(RecvCallbackState {
+                rx_queue: Arc::clone(&rx_queue),
+                usb_connected,
             })
-            .expect("failed to register ESP-NOW send callback");
+            .is_err()
+        {
+            return Err(esp_idf_sys::EspError::from_non_zero(
+                core::num::NonZeroI32::new(esp_idf_sys::ESP_ERR_INVALID_STATE).unwrap(),
+            ));
+        }
 
         info!("ESP-NOW initialized on channel 1");
 
-        Self {
+        Ok(Self {
             wifi,
             espnow,
             peer_table: PeerTable::new(),
             counters: Arc::clone(counters),
             rx_queue,
             current_channel: 1,
-        }
+            poison_warned: AtomicBool::new(false),
+        })
     }
 
     /// Remove all peers from both the ESP-NOW stack and the local table.
@@ -195,12 +216,16 @@ impl Radio for EspNowDriver {
         }
     }
 
-    /// Drain received frames from the queue.
-    fn drain_rx(&self) -> Vec<RecvFrame> {
-        if let Ok(mut q) = self.rx_queue.lock() {
-            std::mem::take(&mut *q)
-        } else {
-            Vec::new()
+    /// Drain one received frame from the queue.
+    fn drain_one(&self) -> Option<RecvFrame> {
+        match self.rx_queue.lock() {
+            Ok(mut q) => q.pop_front(),
+            Err(poisoned) => {
+                if !self.poison_warned.swap(true, Ordering::Relaxed) {
+                    warn!("rx_queue mutex poisoned, recovering");
+                }
+                poisoned.into_inner().pop_front()
+            }
         }
     }
 

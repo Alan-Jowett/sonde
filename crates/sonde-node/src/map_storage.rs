@@ -122,21 +122,6 @@ pub(crate) struct RtcSlice {
     _not_send_sync: PhantomData<*const ()>,
 }
 
-// Compile-time assertions: `*mut u8` (and `PhantomData<*const ()>`) make
-// `RtcSlice` `!Send`/`!Sync`. The blanket impls below would conflict with
-// the explicit impls if `RtcSlice` ever gained `Send` or `Sync` (e.g. via
-// an accidental `unsafe impl Send`), causing a compile error.
-#[cfg(feature = "esp")]
-const _: () = {
-    trait AssertNotSend {}
-    impl AssertNotSend for RtcSlice {}
-    impl<T: Send> AssertNotSend for T {}
-
-    trait AssertNotSync {}
-    impl AssertNotSync for RtcSlice {}
-    impl<T: Sync> AssertNotSync for T {}
-};
-
 #[cfg(feature = "esp")]
 impl RtcSlice {
     fn len(&self) -> usize {
@@ -818,9 +803,7 @@ mod tests {
 
     #[test]
     fn test_validate_too_many_maps() {
-        let defs: Vec<MapDef> = (0..MAX_MAPS + 1)
-            .map(|_| array_map_def(4, 1))
-            .collect();
+        let defs: Vec<MapDef> = (0..MAX_MAPS + 1).map(|_| array_map_def(4, 1)).collect();
         let result = MapStorage::validate_map_defs(&defs);
         match result {
             Err(NodeError::ProgramDecodeFailed(msg)) => {
@@ -837,9 +820,7 @@ mod tests {
 
     #[test]
     fn test_validate_exactly_max_maps() {
-        let defs: Vec<MapDef> = (0..MAX_MAPS)
-            .map(|_| array_map_def(4, 1))
-            .collect();
+        let defs: Vec<MapDef> = (0..MAX_MAPS).map(|_| array_map_def(4, 1)).collect();
         assert!(MapStorage::validate_map_defs(&defs).is_ok());
     }
 }

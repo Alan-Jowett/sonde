@@ -365,7 +365,7 @@ impl NodeTransport for BridgeTransport {
 // ChannelRadio — mpsc-backed Radio trait for modem bridge tests
 // ---------------------------------------------------------------------------
 
-/// Simulates ESP-NOW broadcast between a modem bridge and one or more nodes.
+/// Simulates ESP-NOW radio between a modem bridge and a single node.
 ///
 /// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_rx` takes
 /// `&self` and `Radio::send` takes `&mut self` — both synchronous.
@@ -490,7 +490,9 @@ impl NodeTransport for ChannelTransport {
         {
             Ok(data) => Ok(Some(data)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(NodeError::Transport("channel disconnected".into()))
+            }
         }
     }
 }
@@ -502,25 +504,25 @@ impl NodeTransport for ChannelTransport {
 /// Adapter that implements the synchronous `SerialPort` trait backed by
 /// shared ring buffers. A background tokio task shuttles bytes between
 /// the duplex stream and these buffers.
+///
+/// The `reconnected` flag from `read()` is always `false` — the bridge
+/// receives its initial `MODEM_READY` trigger from the gateway's RESET
+/// command rather than a simulated USB reconnect event.
 struct PipeSerial {
     rx_buf: Arc<Mutex<VecDeque<u8>>>,
     tx_buf: Arc<Mutex<VecDeque<u8>>>,
     tx_notify: Arc<tokio::sync::Notify>,
     connected: bool,
-    first_read: bool,
 }
 
 impl SerialPort for PipeSerial {
     fn read(&mut self, buf: &mut [u8]) -> (usize, bool) {
-        let reconnected = self.first_read;
-        self.first_read = false;
-
         let mut rx = self.rx_buf.lock().unwrap();
         let n = buf.len().min(rx.len());
         for b in buf.iter_mut().take(n) {
             *b = rx.pop_front().unwrap();
         }
-        (n, reconnected)
+        (n, false)
     }
 
     fn write(&mut self, data: &[u8]) -> bool {
@@ -552,7 +554,6 @@ fn create_pipe_serial(
         tx_buf: Arc::clone(&tx_buf),
         tx_notify: Arc::clone(&tx_notify),
         connected: true,
-        first_read: false,
     };
 
     let handle = {
@@ -581,18 +582,6 @@ fn create_pipe_serial(
                         }
                     }
                     _ = tx_notify.notified() => {
-                        let data: Vec<u8> = {
-                            let mut tx = tx_buf.lock().unwrap();
-                            tx.drain(..).collect()
-                        };
-                        if !data.is_empty() {
-                            if writer.write_all(&data).await.is_err() {
-                                break;
-                            }
-                            let _ = writer.flush().await;
-                        }
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(1)) => {
                         let data: Vec<u8> = {
                             let mut tx = tx_buf.lock().unwrap();
                             tx.drain(..).collect()

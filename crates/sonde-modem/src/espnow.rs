@@ -73,14 +73,19 @@ unsafe extern "C" fn raw_recv_cb(
         }
         // Use try_lock to avoid blocking the ESP-NOW/WiFi task if the
         // queue is being drained. Drop the frame if contended.
-        if let Ok(mut q) = state.rx_queue.try_lock() {
-            if q.len() < 64 {
-                q.push_back(RecvFrame {
-                    peer_mac: *src_addr,
-                    rssi,
-                    frame_data: payload.to_vec(),
-                });
-            }
+        // Also handle poisoned mutex — recover the guard so frames
+        // aren't silently dropped forever after a panic in the consumer.
+        let mut guard = match state.rx_queue.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::WouldBlock) => return,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        };
+        if guard.len() < 64 {
+            guard.push_back(RecvFrame {
+                peer_mac: *src_addr,
+                rssi,
+                frame_data: payload.to_vec(),
+            });
         }
     }
 }
@@ -93,6 +98,8 @@ pub struct EspNowDriver {
     counters: Arc<ModemCounters>,
     rx_queue: Arc<Mutex<VecDeque<RecvFrame>>>,
     current_channel: u8,
+    /// Set to true after the first poisoned-mutex warning to avoid log spam.
+    poison_warned: bool,
 }
 
 impl EspNowDriver {
@@ -149,6 +156,7 @@ impl EspNowDriver {
             counters: Arc::clone(counters),
             rx_queue,
             current_channel: 1,
+            poison_warned: false,
         }
     }
 
@@ -197,11 +205,14 @@ impl Radio for EspNowDriver {
     }
 
     /// Drain one received frame from the queue.
-    fn drain_one(&self) -> Option<RecvFrame> {
+    fn drain_one(&mut self) -> Option<RecvFrame> {
         match self.rx_queue.lock() {
             Ok(mut q) => q.pop_front(),
             Err(poisoned) => {
-                warn!("rx_queue mutex poisoned, recovering");
+                if !self.poison_warned {
+                    warn!("rx_queue mutex poisoned, recovering");
+                    self.poison_warned = true;
+                }
                 poisoned.into_inner().pop_front()
             }
         }

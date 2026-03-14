@@ -203,10 +203,8 @@ static int (*gpio_write)(__u32 pin, __u32 value) = (void *)6;
  * Returns:  raw ADC reading on success, negative on error (invalid channel,
  *           hardware fault)
  *
- * The firmware ABI takes only `channel` (in R1) and returns the reading
- * directly in R0 (see bpf_dispatch.rs::helper_adc_read).  This is the
- * authoritative declaration; docs/bpf-environment.md §7.4 should be
- * updated to match this single-argument form.
+ * This is the authoritative ABI: single argument, reading returned in R0.
+ * See bpf_dispatch.rs::helper_adc_read for the implementation.
  */
 static int (*adc_read)(__u32 channel) = (void *)7;
 

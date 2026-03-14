@@ -15,7 +15,9 @@
 # ingestion path (GW-0400) performs this conversion; the sonde-admin
 # CLI currently accepts only CBOR-encoded images (not raw ELF).
 #
-# See docs/implementation-guide.md §5.3 for the full workflow.
+# Workflow: compile → ingest ELF via gateway (GW-0400 converts to CBOR
+# internally) → gateway verifies and stores.  See the gateway design
+# doc for the ingestion API details.
 
 CLANG  ?= clang
 CFLAGS := -target bpf -O2 -Wall -Wextra -I.

@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS programs (
     hash BLOB PRIMARY KEY,
     image BLOB NOT NULL,
     size INTEGER NOT NULL,
-    verification_profile TEXT NOT NULL
+    verification_profile TEXT NOT NULL,
+    abi_version INTEGER
 );
 ";
 
@@ -61,6 +62,20 @@ impl SqliteStorage {
         .map_err(|e| StorageError::Internal(format!("pragma: {e}")))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| StorageError::Internal(format!("schema: {e}")))?;
+        // Migration: add abi_version column to programs table if it does not exist
+        // (for databases created before this field was introduced).
+        let has_abi = conn
+            .prepare("PRAGMA table_info(programs)")
+            .and_then(|mut stmt| {
+                let names: rusqlite::Result<Vec<String>> =
+                    stmt.query_map([], |row| row.get::<_, String>(1))?.collect();
+                names.map(|ns| ns.iter().any(|n| n == "abi_version"))
+            })
+            .map_err(|e| StorageError::Internal(format!("migration check: {e}")))?;
+        if !has_abi {
+            conn.execute_batch("ALTER TABLE programs ADD COLUMN abi_version INTEGER")
+                .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -292,22 +307,23 @@ impl Storage for SqliteStorage {
         let hash = hash.to_vec();
         self.with_conn(move |conn| {
             conn.query_row(
-                "SELECT hash, image, size, verification_profile FROM programs WHERE hash = ?1",
+                "SELECT hash, image, size, verification_profile, abi_version FROM programs WHERE hash = ?1",
                 params![hash],
                 |row| {
                     let profile_str: String = row.get(3)?;
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str, row.get(4)?))
                 },
             )
             .optional()
             .map_err(map_err)?
             .map(
-                |(hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String)| {
+                |(hash, image, size, profile_str, abi_version): (Vec<u8>, Vec<u8>, u32, String, Option<u32>)| {
                     Ok(ProgramRecord {
                         hash,
                         image,
                         size,
                         verification_profile: parse_profile(&profile_str)?,
+                        abi_version,
                     })
                 },
             )
@@ -320,16 +336,18 @@ impl Storage for SqliteStorage {
         let record = record.clone();
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO programs (hash, image, size, verification_profile) \
-                 VALUES (?1, ?2, ?3, ?4) \
+                "INSERT INTO programs (hash, image, size, verification_profile, abi_version) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
                  ON CONFLICT(hash) DO UPDATE SET \
                  image=excluded.image, size=excluded.size, \
-                 verification_profile=excluded.verification_profile",
+                 verification_profile=excluded.verification_profile, \
+                 abi_version=excluded.abi_version",
                 params![
                     record.hash,
                     record.image,
                     record.size,
                     profile_to_str(&record.verification_profile),
+                    record.abi_version,
                 ],
             )
             .map_err(map_err)?;
@@ -351,23 +369,37 @@ impl Storage for SqliteStorage {
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
         self.with_conn(|conn| {
             let mut stmt = conn
-                .prepare("SELECT hash, image, size, verification_profile FROM programs")
+                .prepare(
+                    "SELECT hash, image, size, verification_profile, abi_version FROM programs",
+                )
                 .map_err(map_err)?;
             let rows = stmt
                 .query_map([], |row| {
                     let profile_str: String = row.get(3)?;
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str))
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        profile_str,
+                        row.get(4)?,
+                    ))
                 })
                 .map_err(map_err)?;
             let mut programs = Vec::new();
             for row in rows {
-                let (hash, image, size, profile_str): (Vec<u8>, Vec<u8>, u32, String) =
-                    row.map_err(map_err)?;
+                let (hash, image, size, profile_str, abi_version): (
+                    Vec<u8>,
+                    Vec<u8>,
+                    u32,
+                    String,
+                    Option<u32>,
+                ) = row.map_err(map_err)?;
                 programs.push(ProgramRecord {
                     hash,
                     image,
                     size,
                     verification_profile: parse_profile(&profile_str)?,
+                    abi_version,
                 });
             }
             Ok(programs)
@@ -402,6 +434,7 @@ mod tests {
             image: image.clone(),
             size: image.len() as u32,
             verification_profile: VerificationProfile::Resident,
+            abi_version: None,
         }
     }
 
@@ -529,5 +562,57 @@ mod tests {
         assert_eq!(fetched.schedule_interval_s, 120);
         assert_eq!(fetched.key_hint, 2);
         assert_eq!(fetched.last_battery_mv, Some(3300));
+    }
+
+    /// Verify that opening an existing database that predates the `abi_version`
+    /// column applies the migration and continues to work correctly.
+    #[tokio::test]
+    async fn test_abi_version_migration() {
+        use rusqlite::Connection;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("old.db");
+
+        // Create a "legacy" database without the abi_version column.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS programs (
+                    hash BLOB PRIMARY KEY,
+                    image BLOB NOT NULL,
+                    size INTEGER NOT NULL,
+                    verification_profile TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO programs (hash, image, size, verification_profile) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![vec![0x01u8; 32], vec![0x02u8; 4], 4i64, "Resident"],
+            )
+            .unwrap();
+        }
+
+        // Open with SqliteStorage — migration should add abi_version column.
+        let store = SqliteStorage::open(&db_path).unwrap();
+
+        // The migrated row has abi_version = NULL (i.e., None).
+        let prog = store
+            .get_program(&vec![0x01u8; 32])
+            .await
+            .unwrap()
+            .expect("program must survive migration");
+        assert_eq!(
+            prog.abi_version, None,
+            "migrated rows must have abi_version = None"
+        );
+
+        // Writing and reading a new program with abi_version works.
+        let mut new_prog = make_program(0x42);
+        new_prog.abi_version = Some(2);
+        store.store_program(&new_prog).await.unwrap();
+        let fetched = store.get_program(&new_prog.hash).await.unwrap().unwrap();
+        assert_eq!(fetched.abi_version, Some(2));
     }
 }

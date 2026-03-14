@@ -32,3 +32,6 @@ path = "src/bin/gateway.rs"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+tracing-test = { version = "0.2.6", features = ["no-env-filter"] }

@@ -61,6 +61,7 @@ fn make_program_from_bytecode(
         image: cbor,
         size,
         verification_profile: profile,
+        abi_version: None,
     };
     (record, hash)
 }

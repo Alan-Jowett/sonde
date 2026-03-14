@@ -210,8 +210,8 @@ static int (*gpio_write)(__u32 pin, __u32 value) = (void *)6;
  * Returns:  raw ADC reading on success, negative on error (invalid channel,
  *           hardware fault)
  *
- * This is the authoritative ABI: single argument, reading returned in R0.
- * See bpf_dispatch.rs::helper_adc_read for the implementation.
+ * Single argument; reading returned in R0.  See
+ * bpf_dispatch.rs::helper_adc_read and docs/bpf-environment.md §7.4.
  */
 static int (*adc_read)(__u32 channel) = (void *)7;
 

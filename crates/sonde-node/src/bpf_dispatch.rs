@@ -176,16 +176,25 @@ pub unsafe fn install(
             // SAFETY: caller guarantees map_storage is valid until clear().
             let ms = unsafe { &*map_storage };
             let mut index = MapPtrIndex::new();
+            let mut ok = true;
             for (i, &p) in ms.map_pointers().iter().enumerate() {
                 if !index.insert(p, i) {
-                    log::warn!(
+                    log::error!(
                         "map pointer index overflow or duplicate at map {i} — \
-                         map helpers may resolve incorrectly"
+                         all map helpers will return errors this cycle"
                     );
+                    ok = false;
                     break;
                 }
             }
-            index
+            // If any insert failed, use an empty index so all map
+            // operations fail consistently rather than having a partial
+            // index where some maps work and others silently don't.
+            if !ok {
+                MapPtrIndex::new()
+            } else {
+                index
+            }
         };
         *borrow = Some(DispatchContext {
             hal,
@@ -1399,5 +1408,45 @@ mod tests {
                 assert_eq!(result as i64, -1);
             },
         );
+    }
+
+    // -- MapPtrIndex unit tests ---------------------------------------------
+
+    #[test]
+    fn test_map_ptr_index_basic_insert_and_get() {
+        let mut idx = MapPtrIndex::new();
+        assert!(idx.insert(0x1000, 0));
+        assert!(idx.insert(0x2000, 1));
+        assert_eq!(idx.get(0x1000), Some(0));
+        assert_eq!(idx.get(0x2000), Some(1));
+        assert_eq!(idx.get(0x3000), None);
+    }
+
+    #[test]
+    fn test_map_ptr_index_overflow_returns_false() {
+        let mut idx = MapPtrIndex::new();
+        for i in 0..MAX_MAPS {
+            assert!(idx.insert(0x1000 + i as u64, i), "insert {i} should succeed");
+        }
+        // MAX_MAPS+1 should fail
+        assert!(!idx.insert(0xFFFF, MAX_MAPS));
+    }
+
+    #[test]
+    fn test_map_ptr_index_duplicate_returns_false() {
+        let mut idx = MapPtrIndex::new();
+        assert!(idx.insert(0x1000, 0));
+        assert!(!idx.insert(0x1000, 1), "duplicate pointer should be rejected");
+        // Original mapping should be unchanged
+        assert_eq!(idx.get(0x1000), Some(0));
+    }
+
+    #[test]
+    fn test_map_ptr_index_get_returns_first_match() {
+        let mut idx = MapPtrIndex::new();
+        assert!(idx.insert(0x1000, 0));
+        assert!(idx.insert(0x2000, 1));
+        assert!(idx.insert(0x3000, 2));
+        assert_eq!(idx.get(0x2000), Some(1));
     }
 }

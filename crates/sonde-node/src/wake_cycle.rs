@@ -417,7 +417,7 @@ fn wake_command_exchange<T: Transport>(
     };
     let payload_cbor = wake_msg
         .encode()
-        .map_err(|_| NodeError::MalformedPayload("WAKE message encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("WAKE message encode failed".into()))?;
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -426,7 +426,7 @@ fn wake_command_exchange<T: Transport>(
     };
 
     let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
-        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed".into()))?;
 
     // Try sending WAKE up to (1 + WAKE_MAX_RETRIES) times
     for attempt in 0..=WAKE_MAX_RETRIES {
@@ -466,7 +466,7 @@ fn verify_and_decode_command(
     hmac: &dyn HmacProvider,
 ) -> NodeResult<(u64, u64, CommandPayload)> {
     let decoded =
-        decode_frame(raw).map_err(|_| NodeError::MalformedPayload("frame decode failed"))?;
+        decode_frame(raw).map_err(|_| NodeError::MalformedPayload("frame decode failed".into()))?;
 
     // Verify HMAC
     if !verify_frame(&decoded, &identity.psk, hmac) {
@@ -497,7 +497,11 @@ fn verify_and_decode_command(
             // for the two required fields.
             return decode_command_as_nop(&decoded.payload);
         }
-        Err(_) => return Err(NodeError::MalformedPayload("COMMAND payload decode failed")),
+        Err(_) => {
+            return Err(NodeError::MalformedPayload(
+                "COMMAND payload decode failed".into(),
+            ))
+        }
     };
 
     match gateway_msg {
@@ -520,11 +524,11 @@ fn decode_command_as_nop(payload: &[u8]) -> NodeResult<(u64, u64, CommandPayload
     // Parse the CBOR map to extract keys 13 (starting_seq) and 14 (timestamp_ms).
     // We use ciborium directly since GatewayMessage::decode rejected the command_type.
     let value: ciborium::Value = ciborium::from_reader(payload)
-        .map_err(|_| NodeError::MalformedPayload("CBOR decode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("CBOR decode failed".into()))?;
 
     let fields = match &value {
         ciborium::Value::Map(pairs) => pairs,
-        _ => return Err(NodeError::MalformedPayload("expected CBOR map")),
+        _ => return Err(NodeError::MalformedPayload("expected CBOR map".into())),
     };
 
     let mut starting_seq: Option<u64> = None;
@@ -544,10 +548,10 @@ fn decode_command_as_nop(payload: &[u8]) -> NodeResult<(u64, u64, CommandPayload
     }
 
     let starting_seq = starting_seq.ok_or(NodeError::MalformedPayload(
-        "missing starting_seq in unknown command",
+        "missing starting_seq in unknown command".into(),
     ))?;
     let timestamp_ms = timestamp_ms.ok_or(NodeError::MalformedPayload(
-        "missing timestamp_ms in unknown command",
+        "missing timestamp_ms in unknown command".into(),
     ))?;
 
     Ok((starting_seq, timestamp_ms, CommandPayload::Nop))
@@ -574,20 +578,24 @@ fn chunked_transfer<T: Transport>(
     // Reject transfers that exceed the maximum program image size
     if program_size_usize > max_image_size {
         return Err(NodeError::MalformedPayload(
-            "program_size exceeds maximum image size",
+            format!("program_size ({program_size}) exceeds maximum image size ({max_image_size})")
+                .into(),
         ));
     }
 
     // Validate chunk_size is non-zero
     if chunk_size == 0 {
-        return Err(NodeError::MalformedPayload("chunk_size is zero"));
+        return Err(NodeError::MalformedPayload("chunk_size is zero".into()));
     }
 
     // Validate chunk_count matches expected value from program_size/chunk_size
     let expected_chunk_count = sonde_protocol::chunk_count(program_size_usize, chunk_size_usize);
     if expected_chunk_count != Some(chunk_count) {
         return Err(NodeError::MalformedPayload(
-            "chunk_count does not match expected value",
+            format!(
+                "chunk_count ({chunk_count}) does not match expected value ({expected_chunk_count:?})"
+            )
+            .into(),
         ));
     }
 
@@ -600,14 +608,14 @@ fn chunked_transfer<T: Transport>(
         // Enforce per-chunk size limit
         if chunk_data.len() > chunk_size_usize {
             return Err(NodeError::MalformedPayload(
-                "received chunk larger than declared chunk_size",
+                "received chunk larger than declared chunk_size".into(),
             ));
         }
 
         // Enforce overall program size limit
         if image_data.len() + chunk_data.len() > program_size_usize {
             return Err(NodeError::MalformedPayload(
-                "received data exceeds declared program_size",
+                "received data exceeds declared program_size".into(),
             ));
         }
 
@@ -617,7 +625,7 @@ fn chunked_transfer<T: Transport>(
     // Final validation: assembled size must match declared program_size
     if image_data.len() != program_size_usize {
         return Err(NodeError::MalformedPayload(
-            "assembled program size does not match declared program_size",
+            "assembled program size does not match declared program_size".into(),
         ));
     }
 
@@ -640,7 +648,7 @@ fn get_chunk_with_retry<T: Transport>(
     let get_chunk_msg = NodeMessage::GetChunk { chunk_index };
     let payload_cbor = get_chunk_msg
         .encode()
-        .map_err(|_| NodeError::MalformedPayload("GET_CHUNK message encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("GET_CHUNK message encode failed".into()))?;
 
     for attempt in 0..=WAKE_MAX_RETRIES {
         if attempt > 0 {
@@ -656,7 +664,7 @@ fn get_chunk_with_retry<T: Transport>(
         };
 
         let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
-            .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+            .map_err(|_| NodeError::MalformedPayload("frame encode failed".into()))?;
 
         transport.send(&frame)?;
         *current_seq += 1;
@@ -690,7 +698,7 @@ fn verify_and_decode_chunk(
     hmac: &dyn HmacProvider,
 ) -> NodeResult<Vec<u8>> {
     let decoded =
-        decode_frame(raw).map_err(|_| NodeError::MalformedPayload("frame decode failed"))?;
+        decode_frame(raw).map_err(|_| NodeError::MalformedPayload("frame decode failed".into()))?;
 
     if !verify_frame(&decoded, &identity.psk, hmac) {
         return Err(NodeError::AuthFailure);
@@ -705,7 +713,7 @@ fn verify_and_decode_chunk(
     }
 
     let gateway_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload)
-        .map_err(|_| NodeError::MalformedPayload("CHUNK payload decode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("CHUNK payload decode failed".into()))?;
 
     match gateway_msg {
         GatewayMessage::Chunk {
@@ -741,7 +749,7 @@ fn send_program_ack<T: Transport>(
     };
     let payload_cbor = ack_msg
         .encode()
-        .map_err(|_| NodeError::MalformedPayload("PROGRAM_ACK message encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("PROGRAM_ACK message encode failed".into()))?;
 
     let header = FrameHeader {
         key_hint: identity.key_hint,
@@ -750,7 +758,7 @@ fn send_program_ack<T: Transport>(
     };
 
     let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
-        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed".into()))?;
 
     transport.send(&frame)?;
     *current_seq += 1;
@@ -777,7 +785,7 @@ pub fn send_app_data<T: Transport + ?Sized, H: HmacProvider + ?Sized>(
     // only makes it larger), so reject before allocating.
     if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
         return Err(NodeError::MalformedPayload(
-            "APP_DATA blob exceeds frame payload budget",
+            "APP_DATA blob exceeds frame payload budget".into(),
         ));
     }
 
@@ -788,12 +796,12 @@ pub fn send_app_data<T: Transport + ?Sized, H: HmacProvider + ?Sized>(
     };
     let payload_cbor = msg
         .encode()
-        .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed".into()))?;
 
     // Reject after encoding so the CBOR overhead is accounted for.
     if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
         return Err(NodeError::MalformedPayload(
-            "APP_DATA payload exceeds frame payload budget",
+            "APP_DATA payload exceeds frame payload budget".into(),
         ));
     }
 
@@ -804,7 +812,7 @@ pub fn send_app_data<T: Transport + ?Sized, H: HmacProvider + ?Sized>(
     };
 
     let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
-        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed".into()))?;
 
     transport.send(&frame)?;
     *current_seq += 1;
@@ -832,7 +840,7 @@ pub fn send_recv_app_data<T: Transport + ?Sized, C: Clock + ?Sized, H: HmacProvi
     // allocating.
     if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
         return Err(NodeError::MalformedPayload(
-            "APP_DATA blob exceeds frame payload budget",
+            "APP_DATA blob exceeds frame payload budget".into(),
         ));
     }
 
@@ -843,12 +851,12 @@ pub fn send_recv_app_data<T: Transport + ?Sized, C: Clock + ?Sized, H: HmacProvi
     };
     let payload_cbor = msg
         .encode()
-        .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed".into()))?;
 
     // Reject after encoding so the CBOR overhead is accounted for.
     if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
         return Err(NodeError::MalformedPayload(
-            "APP_DATA payload exceeds frame payload budget",
+            "APP_DATA payload exceeds frame payload budget".into(),
         ));
     }
 
@@ -859,7 +867,7 @@ pub fn send_recv_app_data<T: Transport + ?Sized, C: Clock + ?Sized, H: HmacProvi
     };
 
     let frame = encode_frame(&header, &payload_cbor, &identity.psk, hmac)
-        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed".into()))?;
 
     transport.send(&frame)?;
     // Advance seq after successful send — the gateway saw this seq even

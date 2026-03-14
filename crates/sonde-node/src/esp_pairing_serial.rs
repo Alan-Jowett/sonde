@@ -62,7 +62,7 @@ impl EspUsbSerialJtag {
             false
         } else {
             return Err(NodeError::Transport(
-                "usb_serial_jtag_driver_install failed",
+                "usb_serial_jtag_driver_install failed".into(),
             ));
         };
 
@@ -94,7 +94,7 @@ impl PairingSerial for EspUsbSerialJtag {
             )
         };
         if n < 0 {
-            return Err(NodeError::Transport("USB Serial/JTAG read error"));
+            return Err(NodeError::Transport("USB Serial/JTAG read error".into()));
         }
         Ok(n as usize)
     }
@@ -113,13 +113,13 @@ impl PairingSerial for EspUsbSerialJtag {
                 )
             };
             if n < 0 {
-                return Err(NodeError::Transport("USB Serial/JTAG write error"));
+                return Err(NodeError::Transport("USB Serial/JTAG write error".into()));
             }
             if n == 0 {
                 retries += 1;
                 if retries >= MAX_RETRIES {
                     return Err(NodeError::Transport(
-                        "USB Serial/JTAG write timeout after retries",
+                        "USB Serial/JTAG write timeout after retries".into(),
                     ));
                 }
                 continue;

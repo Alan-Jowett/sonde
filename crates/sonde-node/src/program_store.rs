@@ -91,7 +91,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
 
         // Decode the CBOR program image
         let image = ProgramImage::decode(image_bytes)
-            .map_err(|_| NodeError::ProgramDecodeFailed("program image decode failed"))?;
+            .map_err(|_| NodeError::ProgramDecodeFailed("program image decode failed".into()))?;
 
         // Validate map definitions (type, key_size, overflow) and budget
         // before committing the A/B swap so a bad program never becomes active.
@@ -107,7 +107,9 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         // Write to the inactive partition
         let (_interval, active_partition) = self.storage.read_schedule();
         if active_partition > 1 {
-            return Err(NodeError::StorageError("invalid active partition index"));
+            return Err(NodeError::StorageError(
+                "invalid active partition index".into(),
+            ));
         }
         let inactive_partition = 1 - active_partition;
         self.storage
@@ -116,10 +118,12 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         // Re-read the written program and verify its hash to detect
         // flash write corruption or partial writes before committing
         // the A/B swap.
-        let written_bytes = self
-            .storage
-            .read_program(inactive_partition)
-            .ok_or(NodeError::StorageError("failed to re-read written program"))?;
+        let written_bytes =
+            self.storage
+                .read_program(inactive_partition)
+                .ok_or(NodeError::StorageError(
+                    "failed to re-read written program".into(),
+                ))?;
         let written_hash = sha.hash(&written_bytes);
         if written_hash.as_slice() != expected_hash {
             return Err(NodeError::ProgramHashMismatch);
@@ -154,7 +158,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         }
 
         let image = ProgramImage::decode(image_bytes)
-            .map_err(|_| NodeError::ProgramDecodeFailed("program image decode failed"))?;
+            .map_err(|_| NodeError::ProgramDecodeFailed("program image decode failed".into()))?;
 
         // Validate map definitions before returning Ok, so the caller
         // won't send PROGRAM_ACK for an unrunnable program.
@@ -164,7 +168,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         // maps would destroy the resident program's sleep-persistent state.
         if !image.maps.is_empty() {
             return Err(NodeError::ProgramDecodeFailed(
-                "ephemeral programs must not declare maps",
+                "ephemeral programs must not declare maps".into(),
             ));
         }
 
@@ -188,7 +192,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
 pub fn resolve_map_references(bytecode: &mut [u8], map_pointers: &[u64]) -> NodeResult<()> {
     if !bytecode.len().is_multiple_of(8) {
         return Err(NodeError::ProgramDecodeFailed(
-            "bytecode length not a multiple of 8",
+            "bytecode length not a multiple of 8".into(),
         ));
     }
 
@@ -208,7 +212,7 @@ pub fn resolve_map_references(bytecode: &mut [u8], map_pointers: &[u64]) -> Node
 
             if map_index >= map_pointers.len() {
                 return Err(NodeError::ProgramDecodeFailed(
-                    "LDDW references out-of-bounds map index",
+                    "LDDW references out-of-bounds map index".into(),
                 ));
             }
 
@@ -237,7 +241,7 @@ pub fn resolve_map_references(bytecode: &mut [u8], map_pointers: &[u64]) -> Node
     // malformed.
     if i < bytecode.len() && bytecode[i] == 0x18 {
         return Err(NodeError::ProgramDecodeFailed(
-            "incomplete trailing LDDW instruction (missing second slot)",
+            "incomplete trailing LDDW instruction (missing second slot)".into(),
         ));
     }
 

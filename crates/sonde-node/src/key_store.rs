@@ -91,7 +91,7 @@ mod tests {
 
         fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
             if self.key.is_some() {
-                return Err(NodeError::StorageError("already paired"));
+                return Err(NodeError::StorageError("already paired".into()));
             }
             self.key = Some((key_hint, *psk));
             Ok(())

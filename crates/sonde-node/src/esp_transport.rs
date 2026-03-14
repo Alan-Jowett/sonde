@@ -130,15 +130,21 @@ unsafe extern "C" fn raw_recv_cb(
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
     if let Some(state) = RECV_STATE.get() {
         let enqueued = {
-            if let Ok(mut ring) = state.rx_ring.try_lock() {
-                if ring.push(payload) {
-                    true
-                } else {
-                    ring.drop_count += 1;
-                    false
+            // Match try_lock errors explicitly: recover on Poisoned so
+            // RX doesn't go permanently silent, only count WouldBlock
+            // as contention.
+            let mut guard = match state.rx_ring.try_lock() {
+                Ok(g) => g,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    state.contention_drops.fetch_add(1, Ordering::Relaxed);
+                    return;
                 }
+                Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            };
+            if guard.push(payload) {
+                true
             } else {
-                state.contention_drops.fetch_add(1, Ordering::Relaxed);
+                guard.drop_count += 1;
                 false
             }
         };
@@ -265,13 +271,12 @@ impl crate::traits::Transport for EspNowTransport {
             .rx_ring
             .lock()
             .map_err(|_| NodeError::Transport("rx_ring lock poisoned".into()))?;
-        // Snapshot and clear full-drop count under the lock so we can
-        // log after releasing it. This ensures drops are reported even
-        // under sustained traffic (pop_into no longer logs internally).
-        let full_drops = ring.drop_count;
-        ring.drop_count = 0;
         loop {
             if let Some(len) = ring.pop_into(&mut buf) {
+                // Re-read drop_count right before returning so drops
+                // that occurred during wait_timeout are captured.
+                let full_drops = ring.drop_count;
+                ring.drop_count = 0;
                 drop(ring);
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);
@@ -280,6 +285,8 @@ impl crate::traits::Transport for EspNowTransport {
             }
             let now = Instant::now();
             if now >= deadline {
+                let full_drops = ring.drop_count;
+                ring.drop_count = 0;
                 drop(ring);
                 if full_drops > 0 {
                     log::warn!("ESP-NOW recv ring: {} full drop(s)", full_drops);

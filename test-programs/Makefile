@@ -10,10 +10,10 @@
 #   make <name>.o -- compile a single program (e.g. make nop.o)
 #   make clean    -- remove all compiled objects
 #
-# After compiling, ingest the ELF files via the gateway pipeline to produce
-# CBOR program images for use in tests:
-#
-#   sonde-admin program ingest nop.o --profile resident
+# After compiling, the resulting ELF object files must be converted to
+# CBOR program images before they can be ingested.  The gateway's ELF
+# ingestion path (GW-0400) performs this conversion; the sonde-admin
+# CLI currently accepts only CBOR-encoded images (not raw ELF).
 #
 # See docs/implementation-guide.md §5.3 for the full workflow.
 

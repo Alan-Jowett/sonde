@@ -33,10 +33,10 @@ int program(struct sonde_context *ctx)
     int rc = send_recv(req, sizeof(req), reply, sizeof(reply), TIMEOUT_MS);
     if (rc < 0) {
         /*
-         * send_recv() returns -1 for all failure cases (timeout, transport
-         * error).  Report a single-byte generic error marker to the gateway
-         * rather than encoding the return value, since the ABI does not
-         * currently distinguish failure reasons.
+         * send_recv() returns a negative value on any failure (timeout,
+         * transport error).  Report a single-byte generic error marker to
+         * the gateway rather than encoding the return value, since the ABI
+         * does not currently distinguish failure reasons.
          */
         __u8 err[1] = { 0xFFu };
         send(err, sizeof(err));

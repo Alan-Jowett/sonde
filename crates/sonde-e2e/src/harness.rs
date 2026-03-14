@@ -369,9 +369,7 @@ impl PlatformStorage for MockNodeStorage {
     }
     fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
         if self.key.is_some() {
-            return Err(sonde_node::error::NodeError::StorageError(
-                "already paired".into(),
-            ));
+            return Err(sonde_node::error::NodeError::StorageError("already paired"));
         }
         self.key = Some((key_hint, *psk));
         Ok(())
@@ -390,7 +388,7 @@ impl PlatformStorage for MockNodeStorage {
     fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
         if partition > 1 {
             return Err(sonde_node::error::NodeError::StorageError(
-                "partition must be 0 or 1".into(),
+                "partition must be 0 or 1",
             ));
         }
         self.active_partition = partition;
@@ -407,7 +405,7 @@ impl PlatformStorage for MockNodeStorage {
     fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
         if (partition as usize) >= self.programs.len() {
             return Err(sonde_node::error::NodeError::StorageError(
-                "invalid partition".into(),
+                "invalid partition",
             ));
         }
         self.programs[partition as usize] = Some(image.to_vec());
@@ -416,7 +414,7 @@ impl PlatformStorage for MockNodeStorage {
     fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
         if (partition as usize) >= self.programs.len() {
             return Err(sonde_node::error::NodeError::StorageError(
-                "invalid partition".into(),
+                "invalid partition",
             ));
         }
         self.programs[partition as usize] = None;
@@ -608,7 +606,7 @@ impl PairingSerial for MockPairingSerial {
     fn read(&mut self, buf: &mut [u8], _timeout_ms: u32) -> NodeResult<usize> {
         if self.rx_buf.is_empty() {
             if self.disconnect_when_empty {
-                return Err(NodeError::Transport("mock USB disconnect".into()));
+                return Err(NodeError::Transport("mock USB disconnect"));
             }
             return Ok(0);
         }

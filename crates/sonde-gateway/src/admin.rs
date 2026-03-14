@@ -416,8 +416,15 @@ impl GatewayAdmin for AdminService {
         let req = request.into_inner();
         let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
         let programs = self.storage.list_programs().await.map_err(storage_err)?;
-        let data = crate::state_bundle::encrypt_state(&nodes, &programs, &req.passphrase)
-            .map_err(bundle_err)?;
+        let passphrase = req.passphrase;
+        // Offload CPU-bound PBKDF2 + AES-GCM encryption to a blocking thread
+        // so the Tokio runtime is not stalled.
+        let data = tokio::task::spawn_blocking(move || {
+            crate::state_bundle::encrypt_state(&nodes, &programs, &passphrase)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("encrypt task panicked: {e}")))?
+        .map_err(bundle_err)?;
         Ok(Response::new(ExportStateResponse { data }))
     }
 
@@ -446,10 +453,19 @@ impl GatewayAdmin for AdminService {
         }
 
         let req = request.into_inner();
-        let (nodes, programs) =
-            crate::state_bundle::decrypt_state(&req.data, &req.passphrase).map_err(bundle_err)?;
+        let data = req.data;
+        let passphrase = req.passphrase;
+        // Offload CPU-bound PBKDF2 + AES-GCM decryption to a blocking thread.
+        let (nodes, programs) = tokio::task::spawn_blocking(move || {
+            crate::state_bundle::decrypt_state(&data, &passphrase)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("decrypt task panicked: {e}")))?
+        .map_err(bundle_err)?;
 
-        // Atomically replace all nodes and programs with the bundle contents.
+        // Replace all nodes and programs with the bundle contents.
+        // SqliteStorage performs this in a single transaction; other backends
+        // use the default non-atomic delete-then-insert fallback.
         self.storage
             .replace_state(&nodes, &programs)
             .await

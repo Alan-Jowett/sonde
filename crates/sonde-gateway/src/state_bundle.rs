@@ -198,7 +198,7 @@ fn encode_cbor(nodes: &[NodeRecord], programs: &[ProgramRecord]) -> Result<Vec<u
     let node_values: Vec<Value> = nodes.iter().map(node_to_cbor).collect();
     let program_values: Vec<Value> = programs.iter().map(program_to_cbor).collect();
 
-    let root = Value::Map(vec![
+    let mut root = Value::Map(vec![
         (
             Value::Integer(1u8.into()),
             Value::Integer(FORMAT_VERSION.into()),
@@ -208,7 +208,11 @@ fn encode_cbor(nodes: &[NodeRecord], programs: &[ProgramRecord]) -> Result<Vec<u
     ]);
 
     let mut buf = Vec::new();
-    ciborium::ser::into_writer(&root, &mut buf).map_err(|e| BundleError::Encode(e.to_string()))?;
+    let result =
+        ciborium::ser::into_writer(&root, &mut buf).map_err(|e| BundleError::Encode(e.to_string()));
+    // Zeroize PSK / image byte buffers inside the Value tree before drop.
+    zeroize_cbor_bytes(&mut root);
+    result?;
     Ok(buf)
 }
 
@@ -287,6 +291,30 @@ fn opt_i64_val(v: Option<i64>) -> ciborium::value::Value {
     match v {
         Some(n) => ciborium::value::Value::Integer(n.into()),
         None => ciborium::value::Value::Null,
+    }
+}
+
+// ── CBOR zeroization ──────────────────────────────────────────────────────────
+
+/// Recursively zeroize all `Bytes` buffers in a ciborium `Value` tree so that
+/// key material (PSKs, program images) is not left in freed heap memory.
+fn zeroize_cbor_bytes(v: &mut ciborium::value::Value) {
+    use ciborium::value::Value;
+    use zeroize::Zeroize;
+    match v {
+        Value::Bytes(b) => b.zeroize(),
+        Value::Array(arr) => {
+            for item in arr {
+                zeroize_cbor_bytes(item);
+            }
+        }
+        Value::Map(pairs) => {
+            for (k, val) in pairs {
+                zeroize_cbor_bytes(k);
+                zeroize_cbor_bytes(val);
+            }
+        }
+        _ => {}
     }
 }
 

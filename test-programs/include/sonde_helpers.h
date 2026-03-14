@@ -114,8 +114,8 @@ struct sonde_context {
  * Helper call numbers MUST match helper_ids in
  * crates/sonde-node/src/bpf_helpers.rs.
  *
- * The __unused attribute suppresses -Wunused-variable for helpers that
- * a given program does not call (e.g. nop.c uses none of them).
+ * A #pragma GCC diagnostic block around the declarations suppresses
+ * -Wunused-variable for helpers a given program does not call.
  *
  * NOTE on gateway verification: the gateway currently verifies ELF files
  * using Prevail's LinuxPlatform (crates/sonde-gateway/src/program.rs).
@@ -211,7 +211,7 @@ static int (*gpio_write)(__u32 pin, __u32 value) = (void *)6;
  *           hardware fault)
  *
  * Single argument; reading returned in R0.  See
- * bpf_dispatch.rs::helper_adc_read and docs/bpf-environment.md §7.4.
+ * bpf_dispatch.rs::helper_adc_read and docs/bpf-environment.md §6.1.
  */
 static int (*adc_read)(__u32 channel) = (void *)7;
 

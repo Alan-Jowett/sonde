@@ -1463,10 +1463,7 @@ mod tests {
     fn test_map_ptr_index_duplicate_returns_error() {
         let mut idx = MapPtrIndex::new();
         assert!(idx.insert(0x1000, 0).is_ok());
-        assert_eq!(
-            idx.insert(0x1000, 1),
-            Err(MapPtrInsertError::Duplicate),
-        );
+        assert_eq!(idx.insert(0x1000, 1), Err(MapPtrInsertError::Duplicate),);
         // Original mapping should be unchanged
         assert_eq!(idx.get(0x1000), Some(0));
     }

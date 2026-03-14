@@ -558,7 +558,12 @@ impl SerialPort for PipeSerial {
 
     /// Write is bounded by `MAX_TX_BUF` and panics on overflow so tests
     /// fail loudly instead of silently dropping bridge messages.
+    /// Returns `false` if the duplex has been closed (i.e. `is_connected()`
+    /// is already `false`), so the bridge observes write failure promptly.
     fn write(&mut self, data: &[u8]) -> bool {
+        if !self.is_connected() {
+            return false;
+        }
         {
             let mut tx = self.tx_buf.lock().unwrap();
             const MAX_TX_BUF: usize = 64 * 1024;
@@ -615,6 +620,7 @@ fn create_pipe_serial(
                         match result {
                             Ok(0) => {
                                 connected.store(false, Ordering::Relaxed);
+                                stop.store(true, Ordering::Relaxed);
                                 break;
                             }
                             Ok(n) => {
@@ -776,13 +782,35 @@ impl ModemTestEnv {
     }
 }
 
+impl ModemTestEnv {
+    /// Gracefully shut down the modem environment, surfacing any panics
+    /// from the pipe shuttle task or bridge thread.
+    ///
+    /// Tests should call this instead of relying on `Drop` so that task
+    /// panics (e.g. from the `assert!` caps or I/O errors) propagate as
+    /// test failures rather than being silently swallowed by `abort()`.
+    pub async fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.pipe_task.take() {
+            // Await (not abort) so panics propagate to the test.
+            match handle.await {
+                Ok(()) => {}
+                Err(e) if e.is_cancelled() => {}
+                Err(e) => std::panic::resume_unwind(e.into_panic()),
+            }
+        }
+        if let Some(handle) = self.bridge_thread.take() {
+            handle.join().expect("bridge thread panicked");
+        }
+    }
+}
+
 impl Drop for ModemTestEnv {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // Abort the pipe shuttle task so it stops promptly.  Abort alone
-        // does not propagate panics (that would require awaiting the handle),
-        // but the task's internal asserts will have already printed to stderr
-        // before the abort lands, giving visibility into failures.
+        // Abort the pipe shuttle task — `Drop` cannot `.await` so abort is
+        // the only option here. Tests should call `shutdown().await` first
+        // to surface panics; this is a safety-net for cleanup only.
         if let Some(handle) = self.pipe_task.take() {
             handle.abort();
         }

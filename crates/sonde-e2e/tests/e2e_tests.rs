@@ -517,7 +517,7 @@ async fn t_e2e_050_modem_startup_handshake() {
 
     // ModemTestEnv::new performs the full startup handshake internally.
     // If it succeeds, the handshake worked correctly.
-    let (env, _transport) = ModemTestEnv::new(channel).await;
+    let (mut env, _transport) = ModemTestEnv::new(channel).await;
 
     // Verify the modem MAC was captured from MODEM_READY.
     assert_eq!(
@@ -525,6 +525,8 @@ async fn t_e2e_050_modem_startup_handshake() {
         &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
         "modem MAC should match ChannelRadio's fixed MAC"
     );
+
+    env.shutdown().await;
 }
 
 /// T-E2E-051 — Frame round-trip through real modem bridge.
@@ -539,7 +541,7 @@ async fn t_e2e_050_modem_startup_handshake() {
 async fn t_e2e_051_modem_frame_round_trip() {
     use sonde_e2e::harness::ModemTestEnv;
 
-    let (env, mut channel_transport) = ModemTestEnv::new(1).await;
+    let (mut env, mut channel_transport) = ModemTestEnv::new(1).await;
     let psk = [0x51; 32];
     env.register_node("bridge-node", 1, psk).await;
 
@@ -566,6 +568,8 @@ async fn t_e2e_051_modem_frame_round_trip() {
     let record = env.storage.get_node("bridge-node").await.unwrap().unwrap();
     assert_eq!(record.last_battery_mv, Some(3300));
     assert!(record.last_seen.is_some());
+
+    env.shutdown().await;
 }
 
 /// T-E2E-052 — Consecutive wake cycles through modem bridge.
@@ -576,7 +580,7 @@ async fn t_e2e_051_modem_frame_round_trip() {
 async fn t_e2e_052_bridged_consecutive_cycles() {
     use sonde_e2e::harness::ModemTestEnv;
 
-    let (env, mut channel_transport) = ModemTestEnv::new(1).await;
+    let (mut env, mut channel_transport) = ModemTestEnv::new(1).await;
     let psk = [0x52; 32];
     env.register_node("multi-bridge", 1, psk).await;
 
@@ -608,6 +612,8 @@ async fn t_e2e_052_bridged_consecutive_cycles() {
             assert_ne!(n1, n2, "nonce collision between cycles: 0x{:016x}", n1);
         }
     }
+
+    env.shutdown().await;
 }
 
 /// T-E2E-053 — Wrong PSK through modem bridge (silent discard).
@@ -619,7 +625,7 @@ async fn t_e2e_052_bridged_consecutive_cycles() {
 async fn t_e2e_053_bridged_wrong_psk() {
     use sonde_e2e::harness::ModemTestEnv;
 
-    let (env, mut channel_transport) = ModemTestEnv::new(1).await;
+    let (mut env, mut channel_transport) = ModemTestEnv::new(1).await;
     env.register_node("bad-psk-bridge", 1, [0xAA; 32]).await;
 
     // Node uses a different PSK.
@@ -641,6 +647,8 @@ async fn t_e2e_053_bridged_wrong_psk() {
         record.last_seen.is_none(),
         "last_seen should be None — gateway should not have processed the WAKE"
     );
+
+    env.shutdown().await;
 }
 
 /// T-E2E-054 — Program update through modem bridge.
@@ -652,7 +660,7 @@ async fn t_e2e_053_bridged_wrong_psk() {
 async fn t_e2e_054_bridged_program_update() {
     use sonde_e2e::harness::ModemTestEnv;
 
-    let (env, mut channel_transport) = ModemTestEnv::new(1).await;
+    let (mut env, mut channel_transport) = ModemTestEnv::new(1).await;
     let psk = [0x54; 32];
     env.register_node("prog-bridge", 1, psk).await;
 
@@ -698,6 +706,8 @@ async fn t_e2e_054_bridged_program_update() {
         Some(hash),
         "gateway should confirm program via PROGRAM_ACK through modem bridge"
     );
+
+    env.shutdown().await;
 }
 
 // ===========================================================================

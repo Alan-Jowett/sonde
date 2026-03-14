@@ -128,10 +128,16 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
                 |row| row.get(0),
             )
             .map_err(map_err)?;
-        let mut psk: [u8; 32] = psk_blob
-            .as_slice()
-            .try_into()
-            .expect("SQL filter guarantees exactly 32 bytes");
+        if psk_blob.len() != 32 {
+            let len = psk_blob.len();
+            psk_blob.zeroize();
+            return Err(StorageError::Internal(format!(
+                "legacy PSK migration: node `{node_id}` has a {len}-byte psk \
+                 blob (expected 32); database may be corrupt",
+            )));
+        }
+        let mut psk = [0u8; 32];
+        psk.copy_from_slice(&psk_blob);
         psk_blob.zeroize();
         let encrypted = encrypt_psk(master_key, node_id, &psk);
         psk.zeroize();
@@ -168,12 +174,12 @@ fn validate_master_key(conn: &Connection, master_key: &[u8; 32]) -> Result<(), S
 
     if let Some((node_id, psk_blob)) = psk_row {
         let _decrypted =
-            Zeroizing::new(decrypt_psk(master_key, &node_id, &psk_blob).map_err(|_| {
-                StorageError::Internal(
-                    "master key validation failed — the provided key cannot decrypt existing PSK \
-                     data; ensure the correct master key is supplied"
-                        .into(),
-                )
+            Zeroizing::new(decrypt_psk(master_key, &node_id, &psk_blob).map_err(|e| {
+                StorageError::Internal(format!(
+                    "master key validation failed — cannot decrypt PSK for node \
+                     `{node_id}`: {e}; this may indicate a wrong master key or \
+                     corrupt/tampered database data",
+                ))
             })?);
     }
     Ok(())

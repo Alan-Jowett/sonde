@@ -358,9 +358,41 @@ async fn t0802c_ingest_empty_image() {
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  T-0803: AssignProgram
-// ═══════════════════════════════════════════════════════════════════════
+/// T-0802d: IngestProgram with abi_version — round-trip through ListPrograms.
+#[tokio::test]
+async fn t0802d_ingest_abi_version_round_trip() {
+    let h = TestHarness::new();
+
+    let cbor = make_cbor_image(&[0xAA, 0xBB]);
+    let resp = h
+        .admin
+        .ingest_program(Request::new(IngestProgramRequest {
+            image_data: cbor,
+            verification_profile: VerificationProfile::Resident.into(),
+            abi_version: Some(3),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // ListPrograms must return the same abi_version.
+    let list = h
+        .admin
+        .list_programs(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner();
+    let prog = list
+        .programs
+        .iter()
+        .find(|p| p.hash == resp.program_hash)
+        .expect("ingested program not found in list");
+    assert_eq!(
+        prog.abi_version,
+        Some(3),
+        "abi_version must round-trip through IngestProgram / ListPrograms"
+    );
+}
 
 #[tokio::test]
 async fn t0803_assign_program() {

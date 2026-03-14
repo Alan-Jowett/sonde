@@ -125,12 +125,14 @@ impl AdminClient {
         &mut self,
         image_data: Vec<u8>,
         profile: i32,
+        abi_version: Option<u32>,
     ) -> Result<(Vec<u8>, u32), tonic::Status> {
         let resp = self
             .inner
             .ingest_program(IngestProgramRequest {
                 image_data,
                 verification_profile: profile,
+                abi_version,
             })
             .await?;
         let inner = resp.into_inner();

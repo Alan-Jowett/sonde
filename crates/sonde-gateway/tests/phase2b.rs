@@ -20,6 +20,7 @@ use sonde_protocol::{
 };
 
 use sonde_gateway::crypto::RustCryptoHmac;
+use tracing_test::traced_test;
 
 // ─── Test helpers ──────────────────────────────────────────────────────
 
@@ -937,14 +938,10 @@ async fn t0609_unknown_node_silent_discard() {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// T-0704: ABI incompatibility — gateway must NOT issue UPDATE_PROGRAM when the
-/// program's ABI version does not match the node's firmware ABI version.
-///
-/// Procedure:
-///  1. Assign a program compiled for ABI 3 to a node.
-///  2. Send WAKE with firmware_abi_version = 2 (node reports ABI 2).
-///  3. Assert: gateway does NOT issue UPDATE_PROGRAM.
-///  4. Assert: warning was emitted (verified structurally by the warn! call in engine.rs).
+/// program's ABI version does not match the node's firmware ABI version,
+/// and must log a warning.
 #[tokio::test]
+#[traced_test]
 async fn t0704_abi_incompatibility_skips_update_program() {
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway(storage.clone());
@@ -964,6 +961,11 @@ async fn t0704_abi_incompatibility_skips_update_program() {
         sonde_protocol::CMD_UPDATE_PROGRAM,
         "gateway must NOT issue UPDATE_PROGRAM for an ABI-incompatible program"
     );
+    // Assert warning was logged.
+    assert!(
+        logs_contain("ABI mismatch"),
+        "expected ABI mismatch warning to be logged"
+    );
 
     // Compatible ABI: store a program for ABI 2 and assign it.
     let prog_hash_abi2 = store_test_program_with_abi(&storage, b"abi2-program", 2).await;
@@ -977,5 +979,83 @@ async fn t0704_abi_incompatibility_skips_update_program() {
         payload2.command_type(),
         sonde_protocol::CMD_UPDATE_PROGRAM,
         "gateway MUST issue UPDATE_PROGRAM when ABI versions match"
+    );
+}
+
+/// T-0705: ABI incompatibility on ephemeral path — gateway must NOT issue
+/// RUN_EPHEMERAL when the program's ABI version does not match the node's
+/// firmware ABI version, and must log a warning.
+#[tokio::test]
+#[traced_test]
+async fn t0705_abi_incompatibility_skips_run_ephemeral() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-705", 0x0705, [0x75; 32]);
+    storage.upsert_node(&node.to_record()).await.unwrap();
+
+    // Store an ephemeral program targeting ABI 3.
+    let lib = ProgramLibrary::new();
+    let image = sonde_protocol::ProgramImage {
+        bytecode: b"eph-abi3".to_vec(),
+        maps: vec![],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+    let mut eph_record = lib
+        .ingest_unverified(cbor, VerificationProfile::Ephemeral)
+        .unwrap();
+    eph_record.abi_version = Some(3);
+    let eph_hash = eph_record.hash.clone();
+    storage.store_program(&eph_record).await.unwrap();
+
+    // Queue the ephemeral program.
+    gw.queue_command(
+        "node-705",
+        PendingCommand::RunEphemeral {
+            program_hash: eph_hash.clone(),
+        },
+    )
+    .await;
+
+    // Node reports ABI 2 — incompatible with the ephemeral program (ABI 3).
+    let (_, _, payload) = do_wake_with_abi(&gw, &node, 1, 2, &[0u8; 32]).await;
+    assert_ne!(
+        payload.command_type(),
+        sonde_protocol::CMD_RUN_EPHEMERAL,
+        "gateway must NOT issue RUN_EPHEMERAL for an ABI-incompatible program"
+    );
+    assert!(
+        logs_contain("ABI mismatch"),
+        "expected ABI mismatch warning to be logged"
+    );
+
+    // The incompatible ephemeral was dropped from the queue. Queue a compatible one (ABI 2).
+    let cbor2 = sonde_protocol::ProgramImage {
+        bytecode: b"eph-abi2".to_vec(),
+        maps: vec![],
+    }
+    .encode_deterministic()
+    .unwrap();
+    let mut eph_record2 = lib
+        .ingest_unverified(cbor2, VerificationProfile::Ephemeral)
+        .unwrap();
+    eph_record2.abi_version = Some(2);
+    let eph_hash2 = eph_record2.hash.clone();
+    storage.store_program(&eph_record2).await.unwrap();
+
+    gw.queue_command(
+        "node-705",
+        PendingCommand::RunEphemeral {
+            program_hash: eph_hash2.clone(),
+        },
+    )
+    .await;
+
+    // Node reports ABI 2 — now compatible.
+    let (_, _, payload2) = do_wake_with_abi(&gw, &node, 2, 2, &[0u8; 32]).await;
+    assert_eq!(
+        payload2.command_type(),
+        sonde_protocol::CMD_RUN_EPHEMERAL,
+        "gateway MUST issue RUN_EPHEMERAL when ABI versions match"
     );
 }

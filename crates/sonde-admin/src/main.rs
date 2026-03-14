@@ -340,7 +340,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     Profile::Resident => 1,
                     Profile::Ephemeral => 2,
                 };
-                let (hash, size) = client.ingest_program(image_data, profile_val).await?;
+                let (hash, size) = client.ingest_program(image_data, profile_val, None).await?;
                 if json {
                     print_json(&serde_json::json!({
                         "program_hash": hex::encode(&hash),

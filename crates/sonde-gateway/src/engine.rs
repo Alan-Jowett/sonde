@@ -488,32 +488,62 @@ impl Gateway {
         };
         if let Some(program_hash) = ephemeral_hash {
             if let Ok(Some(program)) = self.storage.get_program(&program_hash).await {
-                let chunk_size = DEFAULT_CHUNK_SIZE;
-                if let Some(chunk_count) = self
-                    .program_library
-                    .chunk_count(program.image.len(), chunk_size as usize)
-                {
-                    // Program loaded successfully — now remove from queue
-                    {
-                        let mut pending = self.pending_commands.write().await;
-                        if let Some(cmds) = pending.get_mut(&node.node_id) {
-                            if let Some(pos) = cmds
-                                .iter()
-                                .position(|c| matches!(c, PendingCommand::RunEphemeral { .. }))
-                            {
-                                cmds.remove(pos);
+                // GW-0703: ABI compatibility check — drop and warn if the program's ABI version
+                // is set and does not match the node's reported firmware ABI version.
+                // Since the node's ABI is permanent (firmware doesn't change between WAKEs),
+                // an incompatible ephemeral can never be delivered and must be dropped.
+                let abi_ok = match program.abi_version {
+                    Some(prog_abi) if prog_abi != firmware_abi_version => {
+                        warn!(
+                            node_id = %node.node_id,
+                            program_abi = prog_abi,
+                            node_abi = firmware_abi_version,
+                            "ABI mismatch: dropping RunEphemeral"
+                        );
+                        // Remove the incompatible command from the queue so subsequent
+                        // compatible ephemeral commands can be delivered.
+                        {
+                            let mut pending = self.pending_commands.write().await;
+                            if let Some(cmds) = pending.get_mut(&node.node_id) {
+                                if let Some(pos) = cmds.iter().position(|c| {
+                                    matches!(c, PendingCommand::RunEphemeral { program_hash: h } if h == &program.hash)
+                                }) {
+                                    cmds.remove(pos);
+                                }
                             }
                         }
+                        false
                     }
-                    return Some(CommandPayload::RunEphemeral {
-                        program_hash: program.hash,
-                        program_size: program.size,
-                        chunk_size,
-                        chunk_count,
-                    });
+                    _ => true,
+                };
+                if abi_ok {
+                    let chunk_size = DEFAULT_CHUNK_SIZE;
+                    if let Some(chunk_count) = self
+                        .program_library
+                        .chunk_count(program.image.len(), chunk_size as usize)
+                    {
+                        // Program loaded successfully — now remove from queue (match by hash).
+                        let deliver_hash = program.hash.clone();
+                        {
+                            let mut pending = self.pending_commands.write().await;
+                            if let Some(cmds) = pending.get_mut(&node.node_id) {
+                                if let Some(pos) = cmds.iter().position(|c| {
+                                    matches!(c, PendingCommand::RunEphemeral { program_hash: h } if h == &deliver_hash)
+                                }) {
+                                    cmds.remove(pos);
+                                }
+                            }
+                        }
+                        return Some(CommandPayload::RunEphemeral {
+                            program_hash: program.hash,
+                            program_size: program.size,
+                            chunk_size,
+                            chunk_count,
+                        });
+                    }
                 }
             }
-            // Program load/chunking failed — fall through to lower-priority commands
+            // Program load/chunking failed or ABI mismatch — fall through to lower-priority commands
         }
 
         // Priority 2: program_hash mismatch → UPDATE_PROGRAM

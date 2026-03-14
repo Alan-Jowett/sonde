@@ -52,8 +52,10 @@ pub trait SleepController {
 
 /// Serial transport used during USB pairing mode.
 ///
-/// Abstracts the USB-CDC serial port so that `run_pairing_mode` can be
-/// tested with a mock implementation.
+/// Abstracts the USB serial port so that `run_pairing_mode` can be
+/// tested with a mock implementation. The ESP32-C3 implementation
+/// uses the USB Serial/JTAG peripheral; other platforms may use
+/// UART or USB-CDC.
 pub trait PairingSerial {
     /// Read bytes into `buf`. Returns the number of bytes read.
     ///

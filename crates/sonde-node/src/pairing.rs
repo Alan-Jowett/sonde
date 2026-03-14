@@ -88,7 +88,7 @@ pub fn pairing_ready_frame() -> Option<Vec<u8>> {
 /// commands (`PairRequest`, `ResetRequest`, `IdentityRequest`) and
 /// dispatches each to [`handle_pairing_message`].
 ///
-/// Returns when the serial port disconnects (read returns `Err`).
+/// Returns when the serial port disconnects (read or write returns `Err`).
 /// Per the pairing protocol spec, the caller should reboot after this
 /// function returns — if paired, the node will enter normal operation;
 /// if still unpaired, it will re-enter pairing mode.
@@ -101,10 +101,12 @@ pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
     // heap allocations during the idle re-send loop.
     let ready_frame = pairing_ready_frame();
 
-    // Send PAIRING_READY on connection. Ignore write errors here —
-    // the USB host may not have opened the port yet.
+    // Send PAIRING_READY on connection. Treat write errors as
+    // disconnect — if the port is not functional, exit immediately.
     if let Some(ref frame) = ready_frame {
-        let _ = serial.write(frame);
+        if serial.write(frame).is_err() {
+            return;
+        }
     }
 
     let mut decoder = FrameDecoder::new();
@@ -120,7 +122,9 @@ pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
                 idle_ticks += 1;
                 if idle_ticks.is_multiple_of(2) {
                     if let Some(ref frame) = ready_frame {
-                        let _ = serial.write(frame);
+                        if serial.write(frame).is_err() {
+                            return;
+                        }
                     }
                 }
                 continue;

@@ -798,8 +798,11 @@ async fn run_gateway_pump(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match tokio::time::timeout(Duration::from_millis(50), GatewayTransport::recv(&*transport))
-            .await
+        match tokio::time::timeout(
+            Duration::from_millis(50),
+            GatewayTransport::recv(&*transport),
+        )
+        .await
         {
             Ok(Ok((frame, peer))) => {
                 if let Some(response) = gateway.process_frame(&frame, peer.clone()).await {

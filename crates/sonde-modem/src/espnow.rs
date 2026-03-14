@@ -120,17 +120,25 @@ impl EspNowDriver {
         let espnow = EspNow::take()?;
         let rx_queue = Arc::new(Mutex::new(Vec::new()));
 
-        // Register our raw callback first (may fail) so that
-        // RECV_CB_STATE is only set after registration succeeds.
-        // The callback checks RECV_CB_STATE.get() and harmlessly drops
-        // any frames that arrive before the state is installed.
+        // Register callbacks before setting RECV_CB_STATE so that a
+        // failure in any registration does not leave the OnceLock
+        // permanently populated (it cannot be cleared once set).
         unsafe {
             esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))?;
         }
 
-        // Safety: the early guard above ensures this is the first call, so
-        // set() should always succeed.  Defensive error return kept for
-        // robustness against hypothetical concurrent callers.
+        // Register the send callback to track delivery failures (MD-0202).
+        let counters_for_send = Arc::clone(counters);
+        espnow.register_send_cb(move |_mac, status| {
+            if matches!(status, SendStatus::FAIL) {
+                counters_for_send.inc_tx_fail();
+            }
+        })?;
+
+        // All fallible init is done — install recv callback state last.
+        // The early guard above ensures this is the first call, so set()
+        // should always succeed. The recv callback harmlessly drops any
+        // frames that arrived before this point.
         if RECV_CB_STATE
             .set(RecvCallbackState {
                 rx_queue: Arc::clone(&rx_queue),
@@ -142,14 +150,6 @@ impl EspNowDriver {
                 core::num::NonZeroI32::new(esp_idf_sys::ESP_ERR_INVALID_STATE).unwrap(),
             ));
         }
-
-        // Register the send callback to track delivery failures (MD-0202).
-        let counters_for_send = Arc::clone(counters);
-        espnow.register_send_cb(move |_mac, status| {
-            if matches!(status, SendStatus::FAIL) {
-                counters_for_send.inc_tx_fail();
-            }
-        })?;
 
         info!("ESP-NOW initialized on channel 1");
 

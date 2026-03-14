@@ -19,12 +19,16 @@
 | **Nodes** | Trusted (for their own data) | Each node is authenticated via its unique pre-shared key. |
 | **Radio transport (ESP-NOW)** | Untrusted | All traffic on the air interface is considered adversarial. |
 | **Other nodes** | Untrusted | Nodes do not trust or authenticate messages from other nodes. |
+| **Phone (pairing agent)** | Delegated trust | Authorized by the gateway via a phone PSK.  Can provision nodes on the gateway's behalf.  Trust is revocable. |
+| **BLE transport** | Untrusted | BLE LESC provides transport encryption, but the protocol does not rely on it for security guarantees (see [ble-pairing-protocol.md §9.2](ble-pairing-protocol.md#92--ble-link-security)). |
 
 ### 1.2  Assumptions
 
 - The gateway is operated in a controlled environment and its key store is protected.
 - A node's identity is bound to its embedded key; physical access to a node is equivalent to key compromise.
 - The gateway has no persistent outbound connection to nodes — communication is always node-initiated.
+- A phone's pairing authority derives from its phone PSK, issued by the gateway.  The phone is trusted to generate node PSKs and submit registration requests, but the gateway independently validates every request.
+- Phone PSK compromise is equivalent to unauthorized pairing authority.  The gateway operator can revoke a phone PSK to immediately terminate its authority.
 
 ### 1.3  Out-of-scope threats
 
@@ -59,7 +63,9 @@ The gateway stores the per-node key database persistently. The key database maps
 - The key store SHOULD be encrypted at rest.
 - Exporting the key store SHOULD require explicit operator authorization (see [gateway-requirements.md GW-1001](gateway-requirements.md)).
 
-### 2.4  Key provisioning (USB pairing)
+### 2.4  Key provisioning
+
+#### 2.4.1  USB pairing (development / bench testing)
 
 Keys are provisioned through a **USB-mediated pairing** process:
 
@@ -70,16 +76,41 @@ Keys are provisioned through a **USB-mediated pairing** process:
 
 There is no over-the-air key exchange or negotiation. The USB connection provides a physically controlled channel for key material transfer.
 
-Re-pairing is possible: a factory-reset node (see §2.6) can be paired again, receiving a new key and a new identity.
+#### 2.4.2  BLE pairing (field deployment)
+
+A mobile phone app acts as a delegated pairing agent:
+
+1. The phone generates a unique 256-bit PSK for the node.
+2. The phone builds a pairing request containing the node PSK, HMAC-authenticates it with its phone PSK (§2.7), and encrypts it with the gateway's public key.
+3. The phone provisions the node over BLE: sends the node PSK, RF channel, and the encrypted pairing request.
+4. The node stores the PSK and relays the encrypted pairing request to the gateway over ESP-NOW.
+5. The gateway decrypts the request, verifies the phone's HMAC, extracts the node PSK, verifies the ESP-NOW frame HMAC, and registers the node.
+
+The node PSK is transmitted in plaintext over the BLE link (protected by BLE LESC transport encryption).  `NODE_PROVISION` sends both the `node_psk` and the `encrypted_payload` over BLE, so a BLE MITM attacker who defeats Just Works pairing captures all the material needed to craft a valid `PEER_REQUEST`.  The primary mitigation is using a MITM-resistant BLE pairing method (Passkey Entry or Numeric Comparison), which prevents interception entirely.  Secondary mitigations include the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations) and the PairingRequest timestamp tolerance (±86400 s).  Note: the 120 s registration window applies to Phase 1 phone registration (`REGISTER_PHONE`), not to Phase 2 node registration.  Just Works is acceptable only for low-threat environments where physical proximity provides adequate assurance.
+
+See [ble-pairing-protocol.md](ble-pairing-protocol.md) for the full BLE wire protocol.
+
+Re-pairing is possible via either channel: a factory-reset node (see §2.6) can be paired again, receiving a new key and a new identity.
 
 ### 2.5  Key compromise
+
+#### 2.5.1  Node PSK compromise
 
 If a node's key is compromised (e.g., through firmware exploit or physical flash extraction):
 
 - The compromise is **limited to that node** — other nodes are unaffected.
 - The gateway SHOULD remove the compromised node's key from the registry immediately.
 - The node can be **factory-reset** (see §2.6) to erase the compromised key and all persistent state.
-- After factory reset, the node is re-paired via USB with a fresh key, effectively giving it a new identity.
+- After factory reset, the node is re-paired with a fresh key, effectively giving it a new identity.
+
+#### 2.5.2  Phone PSK compromise
+
+If a phone's PSK is compromised (e.g., stolen device, malware):
+
+- The attacker gains the ability to **forge pairing requests** — they can register rogue nodes on the gateway.
+- The compromise does **not** affect existing nodes — each node has its own independent PSK.
+- The gateway operator MUST **revoke** the compromised phone PSK immediately.  After revocation, the gateway rejects all future pairing requests authenticated with that PSK.
+- Nodes registered by the compromised phone before revocation remain valid unless individually removed by the operator.
 
 ### 2.6  Factory reset
 
@@ -89,9 +120,45 @@ A factory reset returns a node to its initial unpaired state. The reset erases:
 - All **persistent map data** — application state is wiped.
 - The **resident BPF program** — the node has no program to execute.
 
-After a factory reset, the node is inert: it cannot authenticate with any gateway and will not execute application logic. To return it to service, the operator must re-pair it via USB (§2.4), which provisions a new key and registers the node in the gateway's key database.
+After a factory reset, the node is inert: it cannot authenticate with any gateway and will not execute application logic. To return it to service, the operator must re-pair it via USB (§2.4.1) or BLE (§2.4.2), which provisions a new key and registers the node in the gateway's key database.
+
+On BLE-equipped nodes, holding the pairing button during boot also triggers a factory reset before accepting a new provision (see [ble-pairing-protocol.md §8.2.1](ble-pairing-protocol.md#821--factory-reset-via-ble)).
 
 Factory reset is the standard remediation path for key compromise, decommissioning, and transferring a node to a different deployment.
+
+### 2.7  Phone PSK provisioning and trust delegation
+
+The BLE pairing protocol ([ble-pairing-protocol.md](ble-pairing-protocol.md)) introduces delegated pairing authority via phone PSKs.
+
+#### 2.7.1  Phone PSK lifecycle
+
+1. **Issuance.** The gateway generates a unique 256-bit phone PSK and transmits it to the phone over BLE during phone-to-gateway pairing.  The phone PSK payload is encrypted at the application layer using ECDH key agreement (gateway Ed25519 keypair converted to X25519 + phone ephemeral X25519), HKDF-SHA256 key derivation, and AES-256-GCM (see [ble-pairing-protocol.md §5.5](ble-pairing-protocol.md#55--phone_registered-0x82)).  This is independent of the BLE link-layer encryption (LESC).
+2. **Storage.** The gateway stores the phone PSK alongside a human-readable label, issuance timestamp, and active/revoked status.  The phone stores the phone PSK in the app's secure storage.
+3. **Usage.** The phone uses its PSK to HMAC-authenticate every pairing request it creates.  The gateway verifies the HMAC before accepting the registration.
+4. **Revocation.** The gateway operator can revoke a phone PSK at any time.  Revoked PSKs are retained in the database (for audit) but all future pairing requests signed with them are rejected.
+
+#### 2.7.2  Trust properties
+
+| Property | Guarantee |
+|----------|-----------|
+| **Authorization** | Only phones holding a valid (non-revoked) PSK can register nodes. |
+| **Isolation** | Each phone has a unique PSK.  One phone cannot forge requests as another phone. |
+| **Auditability** | The gateway records which phone PSK was used to register each node (stored as a `registered_by` association in the node database — schema to be defined in a future gateway design PR). |
+| **Revocability** | Revoking a phone PSK immediately disables that phone's pairing authority. |
+| **No gateway key exposure** | The phone PSK is a symmetric pairing credential — it does not grant access to the gateway's private key, the node key database, or any other gateway state. |
+
+#### 2.7.3  Gateway Ed25519 keypair
+
+The gateway holds an Ed25519 keypair used for two purposes:
+
+1. **Challenge-response signing** — during phone-to-gateway pairing (Phase 1), the gateway signs the phone's challenge nonce to prove identity (see [ble-pairing-protocol.md §5.3](ble-pairing-protocol.md#53--gw_info_response-0x81)).
+2. **Key agreement** — the Ed25519 key is converted to X25519 for ECDH-based encryption of pairing request payloads, so that only the gateway can decrypt them.
+
+Properties:
+
+- The private key (stored as a 32-byte Ed25519 seed) is encrypted at rest (protected by the master key from GW-0601a).
+- The public key is not secret — it provides identity verification and payload confidentiality in transit.  Authentication of pairing requests is provided by the phone's HMAC.
+- **Failover / backup:** The gateway keypair and `gateway_id` MUST be replicated to any failover or replacement gateway.  Phones pin the gateway public key on first contact (TOFU, §5.3), so a new keypair would require all phones to re-register.  Similarly, in-flight encrypted pairing payloads (§5.5) use `gateway_id` as HKDF salt and GCM AAD — a different `gateway_id` would fail decryption.  Operators MUST back up the Ed25519 seed and `gateway_id` alongside the node key database when configuring high-availability deployments.
 
 ---
 
@@ -326,7 +393,9 @@ All gateway instances in a failover group MUST serve identical programs for any 
 | Replay protection | Session-scoped sequence numbers (nonce + random starting seq) | WAKE messages are replayable (low risk — see §4.8); no persistent state required |
 | Program integrity | Content hash (`PROGRAM_ACK`) | Gateway key store must be protected |
 | Key storage | Dedicated flash partition | Software-accessible; mitigate with secure boot / flash encryption |
-| Key provisioning | USB-mediated pairing | Requires physical USB access |
+| Key provisioning | USB pairing (bench) or BLE pairing via phone (field) | USB requires physical cable; BLE requires authorized phone |
+| Delegated pairing | Phone PSK + HMAC authenticates pairing requests | Phone PSK compromise allows rogue registration until revoked |
+| Pairing payload confidentiality | ECDH + AES-256-GCM (gateway public key) | Gateway private key compromise exposes all pairing payloads |
 | Identity binding | PSK = node identity | Factory reset + re-pair to revoke / replace identity |
 
 ---
@@ -357,13 +426,20 @@ The security model makes deliberate tradeoffs between security and usability. Th
 
 **Chosen: on-site pairing.** Factory-set keys are the most secure option (provisioning happens in a controlled environment, keys never traverse a field channel), but on-site pairing enables simpler logistics: nodes ship as blank devices and are paired to the target gateway during installation. This is essential for deployments where the operator and the manufacturer are different parties, or where nodes may be redeployed across gateways.
 
-### 9.3  Pairing channel: USB vs over-the-air
+### 9.3  Pairing channel: USB vs BLE vs over-the-air
 
-| | USB-mediated pairing | Over-the-air (OTA) pairing |
-|---|---|---|
-| **Channel security** | Physical point-to-point connection; no eavesdropping or interception | Radio channel is broadcast; vulnerable to eavesdropping and man-in-the-middle (MITM) attacks |
-| **MITM resistance** | Inherent — an attacker must physically intercept the USB cable | Requires a key-agreement protocol (e.g., Diffie–Hellman with out-of-band verification) to resist MITM |
-| **Convenience** | Operator must physically connect each node | Nodes could be paired at range without physical contact |
-| **Complexity** | Simple: generate key, write to both ends | Requires a secure pairing protocol, trust-on-first-use policy, or out-of-band verification step |
+| | USB-mediated pairing | BLE-mediated pairing (via phone) | Over-the-air (ESP-NOW) pairing |
+|---|---|---|---|
+| **Channel security** | Physical point-to-point; no eavesdropping | BLE LESC encrypted transport; MITM possible with Just Works | Broadcast radio; vulnerable to eavesdropping and MITM |
+| **MITM resistance** | Inherent — physical cable | BLE MITM can intercept node PSK, but cannot forge the gateway-encrypted pairing payload | Requires a key-agreement protocol with out-of-band verification |
+| **Convenience** | Operator must physically cable each node | Phone app over BLE — no cable required | Fully wireless — no physical contact |
+| **Complexity** | Simple: generate key, write to both ends | Moderate: phone PSK trust delegation, ECDH encryption, HMAC authentication | Complex: secure key-agreement over untrusted radio |
+| **Field usability** | Poor — requires laptop + USB cable on-site | Good — phone app, no special hardware | Good — but security concerns outweigh convenience |
 
-**Chosen: USB.** USB-mediated pairing eliminates the MITM attack surface entirely — the key is transferred over a physically controlled channel. OTA pairing would require a secure key-agreement protocol over the untrusted ESP-NOW radio, adding protocol complexity and a new class of attacks. Since nodes must be physically installed anyway, requiring a USB connection during that process is an acceptable cost.
+**Chosen: BLE for field deployment, USB retained for development.**
+
+BLE-mediated pairing via a phone app provides the best tradeoff between security and field usability.  The phone acts as a delegated agent whose authority is revocable (phone PSK revocation).  However, `NODE_PROVISION` transmits both the `node_psk` and the `encrypted_payload` over the BLE link, so a BLE MITM attacker who defeats Just Works pairing captures sufficient material to craft a valid `PEER_REQUEST` and race the legitimate node.  This constitutes a node PSK compromise.  The `node_id` uniqueness check and timestamp tolerance (±86400 s) limit replay but do not prevent a race.  The primary mitigation is using a MITM-resistant BLE pairing method (Passkey Entry or Numeric Comparison).  Just Works is acceptable for low-threat environments where physical proximity provides adequate assurance.
+
+USB pairing is retained for bench testing and development, where cable access is not a burden and the simpler protocol is preferable.
+
+Direct ESP-NOW pairing (without BLE intermediary) was considered and rejected — it would require a secure key-agreement protocol over the untrusted radio, adding complexity and a new attack surface.  The BLE intermediary isolates the key exchange from the operational radio channel.

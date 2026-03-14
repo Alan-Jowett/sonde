@@ -388,7 +388,12 @@ struct ChannelRadio {
 }
 
 impl Radio for ChannelRadio {
-    fn send(&mut self, _peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+        assert_eq!(
+            peer_mac, &self.node_mac,
+            "ChannelRadio: send to unexpected peer MAC {:02x?}, expected {:02x?}",
+            peer_mac, self.node_mac
+        );
         use std::sync::mpsc::TrySendError;
         match self.to_node.try_send(data.to_vec()) {
             Ok(()) => {}

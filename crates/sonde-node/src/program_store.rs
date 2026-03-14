@@ -31,32 +31,41 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         Self { storage }
     }
 
-    /// Load the currently active resident program from flash.
+    /// Load the hash and raw bytes of the currently active resident program.
     ///
-    /// Returns `(hash, decoded_program)`.  The hash is always present when
-    /// raw bytes exist on disk (even if CBOR decode fails), so the WAKE
-    /// message includes the correct `program_hash` regardless of image
-    /// validity.  The decoded program is `None` when no image is stored,
-    /// the partition index is invalid, or CBOR decode fails.
-    pub fn load_active(&self, sha: &dyn Sha256Provider) -> (Vec<u8>, Option<LoadedProgram>) {
+    /// Returns `(hash, raw_bytes)`.  The caller is responsible for decoding
+    /// the CBOR image only when BPF execution is needed — this avoids
+    /// unnecessary CPU/heap work in cycles that exit early (Reboot,
+    /// UpdateSchedule, UpdateProgram).
+    pub fn load_active_raw(&self, sha: &dyn Sha256Provider) -> (Vec<u8>, Option<Vec<u8>>) {
         let (_interval, active_partition) = self.storage.read_schedule();
         if active_partition > 1 {
             return (Vec::new(), None);
         }
-        let image_bytes = match self.storage.read_program(active_partition) {
-            Some(b) => b,
-            None => return (Vec::new(), None),
-        };
-        let hash = sha.hash(&image_bytes).to_vec();
-        let program = ProgramImage::decode(&image_bytes)
-            .ok()
-            .map(|image| LoadedProgram {
-                bytecode: image.bytecode,
-                map_defs: image.maps,
-                hash: hash.clone(),
-                is_ephemeral: false,
-            });
-        (hash, program)
+        match self.storage.read_program(active_partition) {
+            Some(image_bytes) => {
+                let hash = sha.hash(&image_bytes).to_vec();
+                (hash, Some(image_bytes))
+            }
+            None => (Vec::new(), None),
+        }
+    }
+
+    /// Decode raw CBOR image bytes into a `LoadedProgram`.
+    ///
+    /// Called in step 9 of the wake cycle when BPF execution is needed.
+    /// Separated from `load_active_raw` so that decode is deferred until
+    /// we know the program will actually execute.
+    pub fn decode_image(
+        image_bytes: &[u8],
+        hash: Vec<u8>,
+    ) -> Option<LoadedProgram> {
+        ProgramImage::decode(image_bytes).ok().map(|image| LoadedProgram {
+            bytecode: image.bytecode,
+            map_defs: image.maps,
+            hash,
+            is_ephemeral: false,
+        })
     }
 
     /// Install a new resident program via chunked transfer.

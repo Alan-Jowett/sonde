@@ -93,13 +93,13 @@ where
     let (base_interval_s, _active_partition) = storage.read_schedule();
     let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
 
-    // 4. Load active resident program hash and (optionally) decoded image.
-    // The hash is always computed from raw NVS bytes so WAKE includes the
-    // correct program_hash even if CBOR decode fails.  The decoded image is
-    // reused for BPF execution to avoid a second NVS read later in the cycle.
-    let (program_hash, resident_program) = {
+    // 4. Load active resident program hash and raw bytes from NVS.
+    // Only the hash is needed for the WAKE message; CBOR decode is
+    // deferred to step 9 to avoid unnecessary CPU/heap work when the
+    // cycle exits early (Reboot, UpdateSchedule, UpdateProgram).
+    let (program_hash, resident_image_bytes) = {
         let program_store = ProgramStore::new(storage);
-        program_store.load_active(sha)
+        program_store.load_active_raw(sha)
     };
 
     // 5. Generate WAKE nonce
@@ -252,9 +252,12 @@ where
     let resident_installed_this_cycle = loaded_program.as_ref().is_some_and(|p| !p.is_ephemeral);
 
     // Use the resident program loaded at step 4 if no new program was
-    // transferred this cycle (avoids a second NVS read).
+    // transferred this cycle (avoids a second NVS read). Decode is
+    // deferred to here so cycles that exit early skip CBOR parsing.
     if loaded_program.is_none() {
-        loaded_program = resident_program;
+        if let Some(raw) = resident_image_bytes {
+            loaded_program = ProgramStore::<S>::decode_image(&raw, program_hash.clone());
+        }
     }
 
     if let Some(program) = loaded_program {

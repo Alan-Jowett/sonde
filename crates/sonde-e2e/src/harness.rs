@@ -543,7 +543,7 @@ struct PipeSerial {
     rx_buf: Arc<Mutex<VecDeque<u8>>>,
     tx_buf: Arc<Mutex<VecDeque<u8>>>,
     tx_notify: Arc<tokio::sync::Notify>,
-    connected: bool,
+    connected: Arc<AtomicBool>,
 }
 
 impl SerialPort for PipeSerial {
@@ -574,7 +574,7 @@ impl SerialPort for PipeSerial {
     }
 
     fn is_connected(&self) -> bool {
-        self.connected
+        self.connected.load(Ordering::Relaxed)
     }
 }
 
@@ -587,12 +587,13 @@ fn create_pipe_serial(
     let rx_buf: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::new()));
     let tx_buf: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::new()));
     let tx_notify = Arc::new(tokio::sync::Notify::new());
+    let connected = Arc::new(AtomicBool::new(true));
 
     let pipe = PipeSerial {
         rx_buf: Arc::clone(&rx_buf),
         tx_buf: Arc::clone(&tx_buf),
         tx_notify: Arc::clone(&tx_notify),
-        connected: true,
+        connected: Arc::clone(&connected),
     };
 
     let handle = {
@@ -612,7 +613,10 @@ fn create_pipe_serial(
                 tokio::select! {
                     result = reader.read(&mut read_buf) => {
                         match result {
-                            Ok(0) => break,
+                            Ok(0) => {
+                                connected.store(false, Ordering::Relaxed);
+                                break;
+                            }
                             Ok(n) => {
                                 let mut rx = rx_buf.lock().unwrap();
                                 assert!(
@@ -623,8 +627,9 @@ fn create_pipe_serial(
                                 rx.extend(&read_buf[..n]);
                             }
                             Err(e) => {
-                                eprintln!("PipeSerial: duplex read error: {e}");
-                                break;
+                                connected.store(false, Ordering::Relaxed);
+                                stop.store(true, Ordering::Relaxed);
+                                panic!("PipeSerial: duplex read error: {e}");
                             }
                         }
                     }
@@ -635,8 +640,9 @@ fn create_pipe_serial(
                         };
                         if !data.is_empty() {
                             if let Err(e) = writer.write_all(&data).await {
-                                eprintln!("PipeSerial: duplex write error: {e}");
-                                break;
+                                connected.store(false, Ordering::Relaxed);
+                                stop.store(true, Ordering::Relaxed);
+                                panic!("PipeSerial: duplex write error: {e}");
                             }
                             let _ = writer.flush().await;
                         }

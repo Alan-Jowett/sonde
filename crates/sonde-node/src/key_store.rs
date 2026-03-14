@@ -57,7 +57,7 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         self.storage.reset_schedule()?;
         // Clear stored WiFi channel so re-pairing with a different gateway
         // on a different channel is not broken by a stale channel value.
-        let _ = self.storage.write_channel(1);
+        self.storage.write_channel(1)?;
         Ok(())
     }
 }

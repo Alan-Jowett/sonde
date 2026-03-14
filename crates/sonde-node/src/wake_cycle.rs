@@ -31,11 +31,6 @@ const RESPONSE_TIMEOUT_MS: u32 = 50;
 /// Default instruction budget for BPF execution.
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
 
-/// Minimum sleep interval in seconds. Prevents a tight wake-sleep loop
-/// that would drain the battery in hours if the gateway sets interval=0
-/// or a BPF program calls set_next_wake(0).
-const MIN_SLEEP_INTERVAL_S: u32 = 1;
-
 /// Default map budget in bytes (~4 KB for ESP32-C3 after firmware overhead).
 /// Used by tests; production code receives the budget via `MapStorage`.
 #[cfg(test)]

@@ -149,12 +149,12 @@ impl MapStorage {
             }
             if def.max_entries == 0 {
                 return Err(NodeError::ProgramDecodeFailed(
-                    "array map max_entries must be > 0".into(),
+                    "map max_entries must be > 0".into(),
                 ));
             }
             if def.value_size == 0 {
                 return Err(NodeError::ProgramDecodeFailed(
-                    "array map value_size must be > 0".into(),
+                    "map value_size must be > 0".into(),
                 ));
             }
         }

@@ -13,6 +13,11 @@ pub enum WakeReason {
     ProgramUpdate = 0x02,
 }
 
+/// Minimum sleep interval in seconds. Prevents a tight wake-sleep loop
+/// that would drain the battery in hours if the gateway sets interval=0
+/// or a BPF program calls set_next_wake(0).
+pub const MIN_SLEEP_INTERVAL_S: u32 = 1;
+
 /// Manages wake intervals and wake reason tracking.
 ///
 /// The sleep manager tracks the base interval (set by `UPDATE_SCHEDULE`),
@@ -77,7 +82,7 @@ impl SleepManager {
             Some(override_s) => core::cmp::min(override_s, self.base_interval_s),
             None => self.base_interval_s,
         };
-        raw.max(1)
+        raw.max(MIN_SLEEP_INTERVAL_S)
     }
 
     /// Returns true if `set_next_wake()` was called during this cycle

@@ -120,6 +120,18 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
                 .map_err(map_err)
         })?;
 
+    if legacy_ids.is_empty() {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        count = legacy_ids.len(),
+        "migrating {} legacy plaintext PSK(s) to AES-256-GCM encryption — \
+         this is irreversible; verify the master key is correct and ensure \
+         a database backup exists before proceeding",
+        legacy_ids.len(),
+    );
+
     for node_id in &legacy_ids {
         let mut psk_blob: Vec<u8> = tx
             .query_row(

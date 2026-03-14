@@ -5,8 +5,6 @@
 /// All arguments and return values are u64 per the BPF calling convention.
 pub type HelperFn = fn(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64;
 
-use std::borrow::Cow;
-
 /// Errors during BPF program execution.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BpfError {
@@ -15,14 +13,21 @@ pub enum BpfError {
     /// The program exceeded the maximum call depth (8 frames).
     CallDepthExceeded,
     /// The bytecode is invalid or malformed.
-    InvalidBytecode(Cow<'static, str>),
+    InvalidBytecode(&'static str),
     /// A helper was called that is not registered.
     HelperNotRegistered(u32),
     /// Error during program loading.
-    LoadError(Cow<'static, str>),
+    LoadError(&'static str),
+    /// Error loading a specific map (preserves map index without allocation).
+    MapLoadError {
+        /// Zero-based index of the map that failed to load.
+        index: usize,
+        /// Static description of the failure.
+        kind: &'static str,
+    },
     /// Runtime error during BPF execution (memory violation, pointer
     /// arithmetic error, etc.).
-    RuntimeError(Cow<'static, str>),
+    RuntimeError(&'static str),
 }
 
 impl core::fmt::Display for BpfError {
@@ -33,6 +38,7 @@ impl core::fmt::Display for BpfError {
             BpfError::InvalidBytecode(msg) => write!(f, "invalid bytecode: {}", msg),
             BpfError::HelperNotRegistered(id) => write!(f, "helper {} not registered", id),
             BpfError::LoadError(msg) => write!(f, "load error: {}", msg),
+            BpfError::MapLoadError { index, kind } => write!(f, "map {}: {}", index, kind),
             BpfError::RuntimeError(msg) => write!(f, "runtime error: {}", msg),
         }
     }

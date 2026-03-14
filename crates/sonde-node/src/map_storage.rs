@@ -137,19 +137,19 @@ impl MapStorage {
         for def in map_defs {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
                 return Err(NodeError::ProgramDecodeFailed(
-                    "unsupported map type: only BPF_MAP_TYPE_ARRAY (1) is supported".into(),
+                    "unsupported map type: only BPF_MAP_TYPE_ARRAY (1) is supported",
                 ));
             }
             if def.key_size != ARRAY_MAP_KEY_SIZE {
                 return Err(NodeError::ProgramDecodeFailed(
-                    "array map key_size must be 4 (u32)".into(),
+                    "array map key_size must be 4 (u32)",
                 ));
             }
         }
         // Also verify arithmetic doesn't overflow
         if Self::required_bytes_checked(map_defs).is_none() {
             return Err(NodeError::ProgramDecodeFailed(
-                "invalid map definitions: size calculation overflowed".into(),
+                "invalid map definitions: size calculation overflowed",
             ));
         }
         Ok(())
@@ -163,11 +163,11 @@ impl MapStorage {
     pub fn allocate(&mut self, map_defs: &[MapDef]) -> NodeResult<()> {
         Self::validate_map_defs(map_defs)?;
 
-        let required = Self::required_bytes_checked(map_defs).ok_or_else(|| {
+        let required = Self::required_bytes_checked(map_defs).ok_or(
             NodeError::ProgramDecodeFailed(
-                "invalid map definitions: size calculation overflowed".into(),
-            )
-        })?;
+                "invalid map definitions: size calculation overflowed",
+            ),
+        )?;
         if required > self.budget_bytes {
             return Err(NodeError::MapBudgetExceeded {
                 required,

@@ -143,16 +143,21 @@ The BLE pairing protocol ([ble-pairing-protocol.md](ble-pairing-protocol.md)) in
 |----------|-----------|
 | **Authorization** | Only phones holding a valid (non-revoked) PSK can register nodes. |
 | **Isolation** | Each phone has a unique PSK.  One phone cannot forge requests as another phone. |
-| **Auditability** | The gateway records which phone PSK was used to register each node (`registered_by` field). |
+| **Auditability** | The gateway records which phone PSK was used to register each node (stored as a `registered_by` association in the node database — schema to be defined in a future gateway design PR). |
 | **Revocability** | Revoking a phone PSK immediately disables that phone's pairing authority. |
 | **No gateway key exposure** | The phone PSK is a symmetric pairing credential — it does not grant access to the gateway's private key, the node key database, or any other gateway state. |
 
 #### 2.7.3  Gateway Ed25519 keypair
 
-The gateway holds an Ed25519 keypair used exclusively for encrypting pairing request payloads.  The public key is distributed to phones during phone-to-gateway pairing.  Phones use it (converted to X25519) to encrypt node registration payloads so that only the gateway can decrypt them.
+The gateway holds an Ed25519 keypair used for two purposes:
 
-- The private key is stored encrypted at rest (protected by the master key from GW-0601a).
-- The public key is not secret — it provides confidentiality for payloads in transit, not authentication (authentication is provided by the phone's HMAC).
+1. **Challenge-response signing** — during phone-to-gateway pairing (Phase 1), the gateway signs the phone's challenge nonce to prove identity (see [ble-pairing-protocol.md §5.3](ble-pairing-protocol.md)).
+2. **Key agreement** — the Ed25519 key is converted to X25519 for ECDH-based encryption of pairing request payloads, so that only the gateway can decrypt them.
+
+Properties:
+
+- The private key (stored as a 32-byte Ed25519 seed) is encrypted at rest (protected by the master key from GW-0601a).
+- The public key is not secret — it provides identity verification and payload confidentiality in transit.  Authentication of pairing requests is provided by the phone's HMAC.
 
 ---
 

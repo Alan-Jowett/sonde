@@ -390,29 +390,31 @@ impl GatewayAdmin for AdminService {
 
     /// Export gateway state (nodes + programs).
     ///
-    /// Disabled until GW-0601a-compliant operator authentication/authorization
-    /// and protection (e.g. encryption) of exported PSK material are implemented.
+    /// Disabled until admin authentication/authorization is implemented.
+    /// PSK material is now encrypted at rest (GW-0601a); however, exporting
+    /// requires operator authorization to prevent unauthorized bulk key extraction.
     /// Handler routing configuration export is also deferred to Phase 2C-iii.
     async fn export_state(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ExportStateResponse>, Status> {
         Err(Status::unimplemented(
-            "`export_state` is disabled until admin authz/authn and protected export are implemented (GW-0601a)",
+            "`export_state` is disabled until admin authentication/authorization is implemented",
         ))
     }
 
     /// Import gateway state (nodes + programs).
     ///
-    /// Disabled until GW-0601a-compliant operator authentication/authorization
-    /// and protection (e.g. encryption) of exported PSK material are implemented.
+    /// Disabled until admin authentication/authorization is implemented.
+    /// PSK material is now encrypted at rest (GW-0601a); however, importing
+    /// requires operator authorization to prevent unauthorized key injection.
     /// Handler routing configuration import is also deferred to Phase 2C-iii.
     async fn import_state(
         &self,
         _request: Request<ImportStateRequest>,
     ) -> Result<Response<Empty>, Status> {
         Err(Status::unimplemented(
-            "`import_state` is disabled until admin authz/authn and protected export are implemented (GW-0601a)",
+            "`import_state` is disabled until admin authentication/authorization is implemented",
         ))
     }
 

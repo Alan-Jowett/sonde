@@ -434,17 +434,29 @@ impl MapStorage {
                 crate::bpf_dispatch::MAX_MAPS,
             )));
         }
-        for def in map_defs {
+        for (i, def) in map_defs.iter().enumerate() {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
                 return Err(NodeError::ProgramDecodeFailed(format!(
-                    "unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
-                    def.map_type
+                    "map[{}]: unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
+                    i, def.map_type
                 )));
             }
             if def.key_size != ARRAY_MAP_KEY_SIZE {
                 return Err(NodeError::ProgramDecodeFailed(format!(
-                    "array map key_size must be 4 (u32), got {}",
-                    def.key_size
+                    "map[{}]: key_size must be 4 (u32), got {}",
+                    i, def.key_size
+                )));
+            }
+            if def.max_entries == 0 {
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "map[{}]: max_entries must be > 0",
+                    i
+                )));
+            }
+            if def.value_size == 0 {
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "map[{}]: value_size must be > 0",
+                    i
                 )));
             }
             if def.max_entries == 0 {
@@ -750,34 +762,17 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_zero_max_entries() {
-        let mut ms = MapStorage::new(4096);
-        let defs = vec![array_map_def(4, 0)];
-        let result = ms.allocate(&defs);
-        assert!(result.is_err());
-        let msg = format!("{:?}", result.unwrap_err());
-        assert!(
-            msg.contains("max_entries"),
-            "error should mention max_entries: {msg}"
-        );
+    fn test_validate_rejects_zero_max_entries() {
+        let defs = vec![array_map_def(8, 0)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
     }
 
     #[test]
-    fn test_reject_zero_value_size() {
-        let mut ms = MapStorage::new(4096);
-        let defs = vec![MapDef {
-            map_type: 1,
-            key_size: 4,
-            value_size: 0,
-            max_entries: 4,
-        }];
-        let result = ms.allocate(&defs);
-        assert!(result.is_err());
-        let msg = format!("{:?}", result.unwrap_err());
-        assert!(
-            msg.contains("value_size"),
-            "error should mention value_size: {msg}"
-        );
+    fn test_validate_rejects_zero_value_size() {
+        let defs = vec![array_map_def(0, 4)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
     }
 
     /// Verify that when the same program runs again (layout_matches == true)

@@ -766,7 +766,8 @@ impl ModemTestEnv {
 
         // Create gateway engine.
         let storage = Arc::new(
-            SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32])).expect("failed to create in-memory SQLite storage"),
+            SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32]))
+                .expect("failed to create in-memory SQLite storage"),
         );
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
         let pending_commands: PendingCommandMap = Arc::new(RwLock::new(HashMap::new()));

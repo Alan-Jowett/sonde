@@ -204,9 +204,9 @@ static int (*gpio_write)(__u32 pin, __u32 value) = (void *)6;
  *           hardware fault)
  *
  * The firmware ABI takes only `channel` (in R1) and returns the reading
- * directly in R0 (see bpf_dispatch.rs::helper_adc_read).  This matches
- * the implemented behavior; docs/bpf-environment.md §7.4 will be updated
- * to reflect this single-argument form.
+ * directly in R0 (see bpf_dispatch.rs::helper_adc_read).  This is the
+ * authoritative declaration; docs/bpf-environment.md §7.4 should be
+ * updated to match this single-argument form.
  */
 static int (*adc_read)(__u32 channel) = (void *)7;
 
@@ -308,9 +308,13 @@ static int (*set_next_wake)(__u32 seconds) = (void *)15;
  * Output is platform-dependent (serial console or ring buffer).  Not
  * intended for production use.
  *
- * @fmt:     format string (null-terminated)
- * @fmt_len: length of the format string in bytes (including null terminator)
+ * @fmt:     pointer to the message byte slice (need not be null-terminated)
+ * @fmt_len: number of bytes to log (do NOT include a trailing null)
  * Returns: 0 on success, -1 on error
+ *
+ * NOTE: Varargs are accepted by this declaration for C compatibility but
+ * are ignored by the firmware implementation — only `fmt` and `fmt_len`
+ * are used.
  */
 static int (*bpf_trace_printk)(const char *fmt, __u32 fmt_len, ...) = (void *)16;
 

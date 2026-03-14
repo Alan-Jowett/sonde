@@ -167,17 +167,19 @@ enum StateAction {
     Export {
         /// Output file path.
         file: String,
-        /// Passphrase used to encrypt the bundle.
-        #[arg(long)]
-        passphrase: String,
+        /// Passphrase used to encrypt the bundle.  If omitted, reads from
+        /// SONDE_PASSPHRASE env var, or prompts on stdin.
+        #[arg(long, env = "SONDE_PASSPHRASE")]
+        passphrase: Option<String>,
     },
     /// Import gateway state from a previously exported file.
     Import {
         /// Input file path.
         file: String,
-        /// Passphrase used when the bundle was exported.
-        #[arg(long)]
-        passphrase: String,
+        /// Passphrase used when the bundle was exported.  If omitted, reads
+        /// from SONDE_PASSPHRASE env var, or prompts on stdin.
+        #[arg(long, env = "SONDE_PASSPHRASE")]
+        passphrase: Option<String>,
     },
 }
 
@@ -302,9 +304,31 @@ fn parse_key_hint(s: &str) -> Result<u16, String> {
     }
 }
 
+<<<<<<< HEAD
 /// Run USB commands that operate locally (no gateway connection needed):
 /// FactoryReset, Identity, and raw Pair.
 fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
+=======
+/// Resolve the passphrase from the CLI arg (which also reads `SONDE_PASSPHRASE`
+/// env via clap's `env` attribute), or prompt on stdin if neither is set.
+fn resolve_passphrase(arg: &Option<String>) -> Result<String, String> {
+    if let Some(p) = arg {
+        return Ok(p.clone());
+    }
+    eprint!("Passphrase: ");
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_line(&mut buf)
+        .map_err(|e| format!("failed to read passphrase from stdin: {e}"))?;
+    let trimmed = buf.trim_end_matches('\n').trim_end_matches('\r');
+    if trimmed.is_empty() {
+        return Err("passphrase must not be empty".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn run_usb(action: &UsbAction, json: bool) -> Result<(), String> {
+>>>>>>> 6c6328b (fix(gateway,admin): harden state bundle crypto and CLI passphrase handling)
     match action {
         UsbAction::Pair {
             port,
@@ -593,7 +617,8 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
 
         Commands::State { action } => match action {
             StateAction::Export { file, passphrase } => {
-                let data = client.export_state(passphrase).await?;
+                let pass = resolve_passphrase(passphrase)?;
+                let data = client.export_state(&pass).await?;
                 std::fs::write(file, &data)?;
                 if json {
                     print_json(&serde_json::json!({"exported_bytes": data.len(), "file": file}))?;
@@ -602,8 +627,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
             StateAction::Import { file, passphrase } => {
+                let pass = resolve_passphrase(passphrase)?;
                 let data = std::fs::read(file)?;
-                client.import_state(data, passphrase).await?;
+                client.import_state(data, &pass).await?;
                 if json {
                     print_json(&serde_json::json!({"imported": true, "file": file}))?;
                 } else {

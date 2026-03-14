@@ -29,8 +29,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use pbkdf2::pbkdf2_hmac;
-use rand::RngExt;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::program::{ProgramRecord, VerificationProfile};
 use crate::registry::NodeRecord;
@@ -44,6 +44,8 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 /// Total header size: magic(8) + version(4) + salt(16) + nonce(12).
 const HEADER_LEN: usize = 8 + 4 + SALT_LEN + NONCE_LEN;
+/// Minimum AES-GCM authentication tag size.
+const GCM_TAG_LEN: usize = 16;
 
 // ── Error type ───────────────────────────────────────────────────────────────
 
@@ -106,14 +108,18 @@ pub fn encrypt_state(
         return Err(BundleError::EmptyPassphrase);
     }
 
-    let plaintext = encode_cbor(nodes, programs)?;
+    let plaintext = Zeroizing::new(encode_cbor(nodes, programs)?);
 
-    // Random salt and nonce — unique per export to prevent key/nonce reuse.
-    let salt: [u8; SALT_LEN] = rand::rng().random();
-    let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
+    // Random salt and nonce via rand's thread-local CSPRNG (ChaCha12, seeded
+    // from OS entropy in rand 0.10) — unique per export to prevent key/nonce
+    // reuse.
+    let mut salt = [0u8; SALT_LEN];
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::fill(&mut salt);
+    rand::fill(&mut nonce_bytes);
 
-    let key = derive_key(passphrase, &salt);
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let key = Zeroizing::new(derive_key(passphrase, &salt));
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -140,7 +146,7 @@ pub fn decrypt_state(
     if passphrase.is_empty() {
         return Err(BundleError::EmptyPassphrase);
     }
-    if bundle.len() <= HEADER_LEN {
+    if bundle.len() < HEADER_LEN + GCM_TAG_LEN {
         return Err(BundleError::Truncated);
     }
 
@@ -159,13 +165,15 @@ pub fn decrypt_state(
     let nonce_bytes: &[u8; NONCE_LEN] = bundle[28..40].try_into().unwrap();
     let ciphertext = &bundle[HEADER_LEN..];
 
-    let key = derive_key(passphrase, salt);
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let key = Zeroizing::new(derive_key(passphrase, salt));
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| BundleError::Crypto)?;
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| BundleError::Crypto)?,
+    );
 
     decode_cbor(&plaintext)
 }

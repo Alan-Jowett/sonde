@@ -87,6 +87,15 @@ fn storage_err(e: crate::storage::StorageError) -> Status {
     }
 }
 
+/// Map `BundleError` to gRPC status: encode failures → INTERNAL, everything
+/// else (bad input) → INVALID_ARGUMENT.
+fn bundle_err(e: crate::state_bundle::BundleError) -> Status {
+    match e {
+        crate::state_bundle::BundleError::Encode(_) => Status::internal(e.to_string()),
+        _ => Status::invalid_argument(e.to_string()),
+    }
+}
+
 #[tonic::async_trait]
 impl GatewayAdmin for AdminService {
     async fn list_nodes(
@@ -401,8 +410,13 @@ impl GatewayAdmin for AdminService {
         let passphrase = &request.into_inner().passphrase;
         let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
         let programs = self.storage.list_programs().await.map_err(storage_err)?;
+<<<<<<< HEAD
         let data = crate::state_bundle::encrypt_state(&nodes, &programs, passphrase)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
+=======
+        let data = crate::state_bundle::encrypt_state(&nodes, &programs, &req.passphrase)
+            .map_err(bundle_err)?;
+>>>>>>> 6c6328b (fix(gateway,admin): harden state bundle crypto and CLI passphrase handling)
         Ok(Response::new(ExportStateResponse { data }))
     }
 
@@ -417,7 +431,7 @@ impl GatewayAdmin for AdminService {
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
         let (nodes, programs) = crate::state_bundle::decrypt_state(&req.data, &req.passphrase)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+            .map_err(bundle_err)?;
 
         // Remove all existing nodes and programs, then apply the bundle.
         // Nodes are removed first so no node references remain when programs

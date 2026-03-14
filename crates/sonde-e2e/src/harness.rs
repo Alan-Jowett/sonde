@@ -530,18 +530,17 @@ impl SerialPort for PipeSerial {
         (n, false)
     }
 
-    /// Write is intentionally unbounded — this is a test adapter where
-    /// backpressure is not needed and silently dropping bridge messages
-    /// would cause hard-to-diagnose test failures.
+    /// Write is bounded by `MAX_TX_BUF` and panics on overflow so tests
+    /// fail loudly instead of silently dropping bridge messages.
     fn write(&mut self, data: &[u8]) -> bool {
         {
             let mut tx = self.tx_buf.lock().unwrap();
-            // Bound the buffer to prevent unbounded memory growth if the
-            // other side stops draining.
             const MAX_TX_BUF: usize = 64 * 1024;
-            if tx.len() + data.len() > MAX_TX_BUF {
-                return false;
-            }
+            assert!(
+                tx.len() + data.len() <= MAX_TX_BUF,
+                "PipeSerial tx_buf exceeded {MAX_TX_BUF} bytes — \
+                 bridge is writing faster than the duplex drains"
+            );
             tx.extend(data);
         }
         self.tx_notify.notify_one();
@@ -732,12 +731,10 @@ impl ModemTestEnv {
 impl Drop for ModemTestEnv {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.pipe_task.take() {
-            // The pipe shuttle task runs an unconditional loop (no stop
-            // flag) so abort is the only way to tear it down.  Buffered
-            // bytes are not needed after the bridge thread exits.
-            handle.abort();
-        }
+        // The pipe shuttle task checks `stop` every 50 ms and exits
+        // cleanly.  Taking the handle detaches it; the task finishes
+        // on its own without needing abort.
+        self.pipe_task.take();
         if let Some(handle) = self.bridge_thread.take() {
             if std::thread::panicking() {
                 let _ = handle.join();

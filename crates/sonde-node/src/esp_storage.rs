@@ -10,8 +10,14 @@
 //! - Key partition: `"psk"` (32-byte blob), `"key_hint"` (u32), `"magic"` (u32)
 //! - Schedule: `"interval"` (u32), `"active_p"` (u32, 0 or 1)
 //! - Programs: `"prog_a"` (blob, ≤4096 B), `"prog_b"` (blob, ≤4096 B)
-//! - Early wake flag: `"early_wake"` (u32, 0 or 1)
 //! - WiFi channel: `"channel"` (u32, 1–13)
+//!
+//! The early-wake flag is stored in RTC slow SRAM (`.rtc.data` section)
+//! rather than NVS, so it survives deep sleep without incurring flash wear.
+//! It is reset on power loss or hardware reset, which is acceptable — a
+//! missed early wake is harmless.
+
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsDefault};
 
@@ -23,6 +29,15 @@ const MAGIC_VALUE: u32 = 0xDEAD_BEEF;
 /// Default wake interval in seconds (5 minutes).
 const DEFAULT_INTERVAL_S: u32 = 300;
 
+/// Early-wake flag stored in RTC slow SRAM.
+///
+/// Survives ESP32 deep sleep but is reset to 0 on power loss or hardware
+/// reset (acceptable — a missed early wake is harmless). Using RTC SRAM
+/// eliminates all flash wear that the previous NVS-backed implementation
+/// incurred on every wake cycle.
+#[link_section = ".rtc.data"]
+static EARLY_WAKE_FLAG: AtomicU32 = AtomicU32::new(0);
+
 /// NVS-backed implementation of [`crate::traits::PlatformStorage`].
 pub struct NvsStorage {
     nvs: EspNvs<NvsDefault>,
@@ -30,15 +45,6 @@ pub struct NvsStorage {
 
 impl NvsStorage {
     /// Open (or create) the `"sonde"` NVS namespace.
-    ///
-    /// NOTE: The `early_wake` flag is stored in NVS as a temporary
-    /// simplification. It should be migrated to `#[link_section = ".rtc.data"]`
-    /// RTC slow memory so it naturally resets on power loss and avoids
-    /// flash wear. See the TODO in `set_early_wake_flag`.
-    ///
-    /// The flag is NOT cleared here — `determine_wake_reason()` in
-    /// `run_wake_cycle` reads it via `take_early_wake_flag()` which
-    /// atomically reads and clears.
     pub fn new(partition: EspNvsPartition<NvsDefault>) -> Result<Self, NodeError> {
         let nvs = EspNvs::new(partition, NVS_NAMESPACE, true)
             .map_err(|e| NodeError::StorageError(format!("NVS open: {:?}", e)))?;
@@ -197,30 +203,12 @@ impl crate::traits::PlatformStorage for NvsStorage {
     // --- Wake reason flags ---
 
     fn take_early_wake_flag(&mut self) -> bool {
-        let flag = self.nvs.get_u32("early_wake").ok().flatten().unwrap_or(0);
-        if flag != 0 {
-            if let Err(e) = self.nvs.set_u32("early_wake", 0) {
-                log::warn!("failed to clear early_wake flag: {:?}", e);
-            }
-            true
-        } else {
-            false
-        }
+        EARLY_WAKE_FLAG.swap(0, Ordering::Relaxed) != 0
     }
 
-    // NOTE: Early-wake flag is stored in NVS, not RTC SRAM. NVS is simpler
-    // and survives power loss, but incurs flash wear on every cycle. RTC SRAM
-    // would eliminate wear since it is a raw memory region, but requires
-    // linker-section tricks and is lost on power-off. This is a known
-    // tradeoff; NVS is acceptable for the current wake-interval range.
     fn set_early_wake_flag(&mut self) -> NodeResult<()> {
-        let current = self.nvs.get_u32("early_wake").ok().flatten().unwrap_or(0);
-        if current == 1 {
-            return Ok(());
-        }
-        self.nvs
-            .set_u32("early_wake", 1)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
+        EARLY_WAKE_FLAG.store(1, Ordering::Relaxed);
+        Ok(())
     }
 
     // --- WiFi channel ---

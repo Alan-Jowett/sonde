@@ -29,18 +29,17 @@ impl UsbCdcDriver {
         usb: impl Peripheral<P = USB_SERIAL> + 'static,
         usb_d_min: impl Peripheral<P = UsbDMinGpio> + 'static,
         usb_d_plus: impl Peripheral<P = UsbDPlusGpio> + 'static,
-    ) -> Self {
+    ) -> Result<Self, esp_idf_sys::EspError> {
         let config = UsbSerialConfig::new();
-        let serial = UsbSerialDriver::new(usb, usb_d_min, usb_d_plus, &config)
-            .expect("failed to initialize USB-CDC");
+        let serial = UsbSerialDriver::new(usb, usb_d_min, usb_d_plus, &config)?;
         info!("USB-CDC initialized");
-        Self {
+        Ok(Self {
             serial,
             // Start connected so boot MODEM_READY is sent. The flag will
             // flip to false on write/read errors and back to true when
             // data arrives.
             connected: Arc::new(AtomicBool::new(true)),
-        }
+        })
     }
 
     /// Mark the connection as dropped (called when DTR de-asserts).

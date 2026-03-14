@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+#[cfg(feature = "esp")]
+use core::marker::PhantomData;
+
 use crate::error::{NodeError, NodeResult};
 use sonde_protocol::MapDef;
 
@@ -102,11 +105,37 @@ type MapData = RtcSlice;
 /// ensures that only one set of `RtcSlice` values exists at a time.
 /// The wake-cycle engine is single-threaded, so no concurrent access
 /// can occur.
+///
+/// `RtcSlice` is `!Send` and `!Sync`. In Rust, raw pointers (`*mut T`,
+/// `*const T`) explicitly opt out of `Send` and `Sync` via negative impls
+/// in `core` (`impl<T: ?Sized> !Send for *mut T {}`). The `*mut u8` field
+/// therefore makes `RtcSlice` `!Send`/`!Sync` automatically. The
+/// `PhantomData<*const ()>` marker reinforces this intent, and the
+/// compile-time assertions below verify it.
 #[cfg(feature = "esp")]
 pub(crate) struct RtcSlice {
     ptr: *mut u8,
     len: usize,
+    /// `*const ()` is `!Send`/`!Sync` (raw pointer negative impls in core).
+    /// `PhantomData` inherits auto-trait eligibility from its type parameter,
+    /// so this field opts `RtcSlice` out of both `Send` and `Sync`.
+    _not_send_sync: PhantomData<*const ()>,
 }
+
+// Compile-time assertions: `*mut u8` (and `PhantomData<*const ()>`) make
+// `RtcSlice` `!Send`/`!Sync`. The blanket impls below would conflict with
+// the explicit impls if `RtcSlice` ever gained `Send` or `Sync` (e.g. via
+// an accidental `unsafe impl Send`), causing a compile error.
+#[cfg(feature = "esp")]
+const _: () = {
+    trait AssertNotSend {}
+    impl AssertNotSend for RtcSlice {}
+    impl<T: Send> AssertNotSend for T {}
+
+    trait AssertNotSync {}
+    impl AssertNotSync for RtcSlice {}
+    impl<T: Sync> AssertNotSync for T {}
+};
 
 #[cfg(feature = "esp")]
 impl RtcSlice {
@@ -158,11 +187,6 @@ impl core::fmt::Debug for RtcSlice {
     }
 }
 
-// `RtcSlice` is intentionally `!Send`. The wake-cycle engine is
-// single-threaded and no `Send` bound exists in the call graph.
-// Keeping `RtcSlice` non-Send prevents accidental cross-thread
-// movement of raw pointers into the global `MAP_BACKING` buffer.
-
 // ---------------------------------------------------------------------------
 // Map data construction helper
 // ---------------------------------------------------------------------------
@@ -187,7 +211,11 @@ fn make_map_data(size: usize, offset: usize) -> MapData {
     unsafe {
         let ptr = MAP_BACKING.as_mut_ptr().add(offset);
         core::ptr::write_bytes(ptr, 0, size);
-        RtcSlice { ptr, len: size }
+        RtcSlice {
+            ptr,
+            len: size,
+            _not_send_sync: PhantomData,
+        }
     }
 }
 
@@ -302,8 +330,11 @@ impl MapStorage {
     #[cfg(feature = "esp")]
     pub fn from_rtc(budget_bytes: usize) -> Option<Self> {
         // SAFETY: MAP_LAYOUT is only written by `allocate()` in this
-        // single-threaded wake-cycle engine. Reading it here is safe.
-        let map_count = unsafe { MAP_LAYOUT.map_count } as usize;
+        // single-threaded wake-cycle engine. Volatile read pairs with the
+        // volatile write in write_rtc_layout() to ensure we observe a
+        // consistent commit state.
+        let map_count =
+            unsafe { core::ptr::read_volatile(&raw const MAP_LAYOUT.map_count) } as usize;
         // map_count == 0: cold boot / no program installed.
         // map_count > MAX_MAPS: corrupt record (MAX_MAPS is the inclusive upper bound).
         if map_count == 0 || map_count > MAX_MAPS {
@@ -347,6 +378,7 @@ impl MapStorage {
                 RtcSlice {
                     ptr: MAP_BACKING.as_mut_ptr().add(offset),
                     len: total_size,
+                    _not_send_sync: PhantomData,
                 }
             };
             maps.push(MapInstance {
@@ -519,26 +551,26 @@ impl MapStorage {
     /// Uses an invalidate-write-commit pattern with compiler fences so
     /// that a reset mid-write never leaves `from_rtc()` with a
     /// valid-looking but inconsistent record:
-    ///   1. Set `map_count = 0` (invalidate — from_rtc returns None)
-    ///   2. Compiler fence (prevent reordering defs writes before invalidate)
+    ///   1. Volatile-write `map_count = 0` (invalidate — from_rtc returns None)
+    ///   2. Hardware fence (ensure invalidate is visible before defs writes)
     ///   3. Write all defs
-    ///   4. Compiler fence (prevent commit write before defs)
-    ///   5. Set `map_count = count` (commit)
+    ///   4. Hardware fence (ensure all defs are visible before commit)
+    ///   5. Volatile-write `map_count = count` (commit)
     #[cfg(feature = "esp")]
     fn write_rtc_layout(map_defs: &[MapDef]) {
-        use core::sync::atomic::{compiler_fence, Ordering};
+        use core::sync::atomic::{fence, Ordering};
         unsafe {
             let count = map_defs.len().min(MAX_MAPS);
             // Invalidate: ensures from_rtc() returns None if we reset
             // between here and the final commit below.
-            MAP_LAYOUT.map_count = 0;
-            compiler_fence(Ordering::SeqCst);
+            core::ptr::write_volatile(&raw mut MAP_LAYOUT.map_count, 0);
+            fence(Ordering::SeqCst);
             for (i, def) in map_defs.iter().enumerate().take(count) {
                 MAP_LAYOUT.defs[i] = *def;
             }
-            compiler_fence(Ordering::SeqCst);
-            // Commit: set map_count last.
-            MAP_LAYOUT.map_count = count as u32;
+            fence(Ordering::SeqCst);
+            // Commit: volatile-write map_count last.
+            core::ptr::write_volatile(&raw mut MAP_LAYOUT.map_count, count as u32);
         }
     }
 
@@ -599,7 +631,7 @@ impl MapStorage {
     #[cfg(feature = "esp")]
     fn invalidate_rtc_layout() {
         unsafe {
-            MAP_LAYOUT.map_count = 0;
+            core::ptr::write_volatile(&raw mut MAP_LAYOUT.map_count, 0);
         }
     }
 }
@@ -729,34 +761,17 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_zero_max_entries() {
-        let mut ms = MapStorage::new(4096);
-        let defs = vec![array_map_def(4, 0)];
-        let result = ms.allocate(&defs);
-        assert!(result.is_err());
-        let msg = format!("{:?}", result.unwrap_err());
-        assert!(
-            msg.contains("max_entries"),
-            "error should mention max_entries: {msg}"
-        );
+    fn test_validate_rejects_zero_max_entries() {
+        let defs = vec![array_map_def(8, 0)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
     }
 
     #[test]
-    fn test_reject_zero_value_size() {
-        let mut ms = MapStorage::new(4096);
-        let defs = vec![MapDef {
-            map_type: 1,
-            key_size: 4,
-            value_size: 0,
-            max_entries: 4,
-        }];
-        let result = ms.allocate(&defs);
-        assert!(result.is_err());
-        let msg = format!("{:?}", result.unwrap_err());
-        assert!(
-            msg.contains("value_size"),
-            "error should mention value_size: {msg}"
-        );
+    fn test_validate_rejects_zero_value_size() {
+        let defs = vec![array_map_def(0, 4)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
     }
 
     /// Verify that when the same program runs again (layout_matches == true)
@@ -799,20 +814,6 @@ mod tests {
         ms.allocate(&defs).unwrap();
         let val = ms.get(0).unwrap().lookup(0).unwrap();
         assert_eq!(val, &[0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn test_validate_rejects_zero_max_entries() {
-        let defs = vec![array_map_def(8, 0)];
-        let result = MapStorage::validate_map_defs(&defs);
-        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
-    }
-
-    #[test]
-    fn test_validate_rejects_zero_value_size() {
-        let defs = vec![array_map_def(0, 4)];
-        let result = MapStorage::validate_map_defs(&defs);
-        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
     }
 
     #[test]

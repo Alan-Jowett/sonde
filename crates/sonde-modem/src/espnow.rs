@@ -434,9 +434,17 @@ impl Radio for EspNowDriver {
         }
         self.current_channel = 1;
 
-        if let Ok(mut ring) = self.rx_ring.lock() {
-            ring.clear();
-        }
+        let mut ring = match self.rx_ring.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                if !self.poison_warned.swap(true, Ordering::Relaxed) {
+                    warn!("rx_ring mutex poisoned in reset_state, recovering");
+                }
+                poisoned.into_inner()
+            }
+        };
+        ring.clear();
+        drop(ring);
         info!("ESP-NOW re-initialized on channel 1");
     }
 }

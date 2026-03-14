@@ -9,7 +9,7 @@
 //! callback, eliminating per-frame heap allocation from the WiFi task
 //! context.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -167,6 +167,7 @@ pub struct EspNowTransport {
     espnow: EspNow<'static>,
     rx_ring: Arc<Mutex<RxRing>>,
     rx_condvar: Arc<Condvar>,
+    poison_warned: AtomicBool,
 }
 
 impl EspNowTransport {
@@ -237,6 +238,7 @@ impl EspNowTransport {
             espnow,
             rx_ring,
             rx_condvar,
+            poison_warned: AtomicBool::new(false),
         })
     }
 }
@@ -267,7 +269,9 @@ impl crate::traits::Transport for EspNowTransport {
         let mut ring = match self.rx_ring.lock() {
             Ok(g) => g,
             Err(poisoned) => {
-                log::warn!("rx_ring mutex poisoned in recv(), recovering");
+                if !self.poison_warned.swap(true, Ordering::Relaxed) {
+                    log::warn!("rx_ring mutex poisoned in recv(), recovering");
+                }
                 poisoned.into_inner()
             }
         };
@@ -297,7 +301,9 @@ impl crate::traits::Transport for EspNowTransport {
             let (guard, _timeout_result) = match self.rx_condvar.wait_timeout(ring, remaining) {
                 Ok(result) => result,
                 Err(poisoned) => {
-                    log::warn!("rx_ring mutex poisoned in wait_timeout, recovering");
+                    if !self.poison_warned.swap(true, Ordering::Relaxed) {
+                        log::warn!("rx_ring mutex poisoned in wait_timeout, recovering");
+                    }
                     poisoned.into_inner()
                 }
             };

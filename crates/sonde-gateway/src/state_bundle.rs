@@ -436,6 +436,24 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         .filter(|&s| s >= 0)
         .map(|s| UNIX_EPOCH + Duration::from_secs(s as u64));
 
+    // Validate hash fields if present: must be 32 bytes (SHA-256).
+    if let Some(Some(ref h)) = assigned_program_hash {
+        if h.len() != 32 {
+            return Err(BundleError::Decode(format!(
+                "assigned_program_hash must be 32 bytes, got {}",
+                h.len()
+            )));
+        }
+    }
+    if let Some(Some(ref h)) = current_program_hash {
+        if h.len() != 32 {
+            return Err(BundleError::Decode(format!(
+                "current_program_hash must be 32 bytes, got {}",
+                h.len()
+            )));
+        }
+    }
+
     Ok(NodeRecord {
         node_id,
         key_hint,
@@ -512,6 +530,20 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
     let profile_int = profile_int.ok_or_else(|| {
         BundleError::Decode("missing verification_profile in program entry".into())
     })?;
+
+    // Validate invariants: hash must be 32 bytes, size must match image length.
+    if hash.len() != 32 {
+        return Err(BundleError::Decode(format!(
+            "program hash must be 32 bytes, got {}",
+            hash.len()
+        )));
+    }
+    if size != image.len() as u32 {
+        return Err(BundleError::Decode(format!(
+            "program size field ({size}) does not match image length ({})",
+            image.len()
+        )));
+    }
 
     let verification_profile = match profile_int {
         1 => VerificationProfile::Resident,

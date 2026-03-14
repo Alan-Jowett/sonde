@@ -310,21 +310,19 @@ fn parse_key_hint(s: &str) -> Result<u16, String> {
 fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
 =======
 /// Resolve the passphrase from the CLI arg (which also reads `SONDE_PASSPHRASE`
-/// env via clap's `env` attribute), or prompt on stdin if neither is set.
+/// env via clap's `env` attribute), or prompt on the TTY without echo if
+/// neither is set.
 fn resolve_passphrase(arg: &Option<String>) -> Result<String, String> {
     if let Some(p) = arg {
         return Ok(p.clone());
     }
     eprint!("Passphrase: ");
-    let mut buf = String::new();
-    std::io::stdin()
-        .read_line(&mut buf)
-        .map_err(|e| format!("failed to read passphrase from stdin: {e}"))?;
-    let trimmed = buf.trim_end_matches('\n').trim_end_matches('\r');
-    if trimmed.is_empty() {
+    std::io::Write::flush(&mut std::io::stderr()).ok();
+    let pass = rpassword::read_password().map_err(|e| format!("failed to read passphrase: {e}"))?;
+    if pass.is_empty() {
         return Err("passphrase must not be empty".into());
     }
-    Ok(trimmed.to_string())
+    Ok(pass)
 }
 
 fn run_usb(action: &UsbAction, json: bool) -> Result<(), String> {

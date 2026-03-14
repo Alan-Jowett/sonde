@@ -527,7 +527,7 @@ The only status value sent is `0` (registered).  All error conditions result in 
 
 The `registration_proof` field is `HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)` — an HMAC binding the acknowledgement to the exact encrypted payload.  Both the node and the gateway can compute this value (both have the node PSK and the encrypted_payload bytes).
 
-A BLE eavesdropper observing `NODE_PROVISION` captures both `node_psk` and `encrypted_payload`.  This constitutes a **node PSK compromise** — the attacker can race the legitimate node to register first, or impersonate the node on ESP-NOW after registration.  The `node_id` uniqueness check (step 10 in §7.3) and timestamp tolerance (±86400 s, step 9) limit replay and duplication but do not prevent a race.  The primary mitigation is using a **MITM-resistant BLE pairing method** (Passkey Entry or Numeric Comparison) to prevent eavesdropping.  Just Works is acceptable only in low-threat environments where physical proximity provides adequate assurance.
+An active BLE MITM attacker who defeats Just Works pairing can observe `NODE_PROVISION` and capture both `node_psk` and `encrypted_payload`.  (Passive eavesdropping alone cannot recover GATT writes when LESC encryption is active.)  This constitutes a **node PSK compromise** — the attacker can race the legitimate node to register first, or impersonate the node on ESP-NOW after registration.  The `node_id` uniqueness check (step 10 in §7.3) and timestamp tolerance (±86400 s, step 9) limit replay and duplication but do not prevent a race.  The primary mitigation is using a **MITM-resistant BLE pairing method** (Passkey Entry or Numeric Comparison) to prevent interception.  Just Works is acceptable only in low-threat environments where physical proximity provides adequate assurance.
 
 **Node verification of PEER_ACK:**
 
@@ -668,8 +668,8 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 | Unauthorized phone registration | Registration window must be opened by operator action; gateway rejects `REGISTER_PHONE` when closed (§5.4.1). |
 | Rogue phone registers a node | Phone HMAC verification (step 6 in §7.3).  Attacker needs a valid phone PSK. |
 | Compromised phone PSK | Gateway operator revokes the phone PSK.  Previously registered nodes remain valid. |
-| BLE passive eavesdrop captures node PSK | `NODE_PROVISION` sends both `node_psk` and `encrypted_payload` over BLE.  A BLE eavesdropper captures all pairing material.  Mitigated by one-time-use of the encrypted payload (`node_id` uniqueness, step 10 in §7.3) and timestamp tolerance (±86400 s, step 9). |
-| BLE active MITM captures node PSK | Same as passive eavesdrop.  For high-assurance deployments, use BLE Passkey Entry or Numeric Comparison pairing to prevent MITM.  Just Works is acceptable for low-threat environments. |
+| BLE eavesdrop / MITM captures node PSK | `NODE_PROVISION` sends both `node_psk` and `encrypted_payload` over BLE.  Passive eavesdropping cannot recover this data when LESC encryption is active; an **active MITM** (defeating Just Works) is required.  Mitigated by one-time-use of the encrypted payload (`node_id` uniqueness, step 10 in §7.3), timestamp tolerance (±86400 s, step 9), and using Passkey Entry or Numeric Comparison for high-assurance deployments. |
+| BLE active MITM captures node PSK | Same as above.  For high-assurance deployments, use BLE Passkey Entry or Numeric Comparison pairing to prevent MITM.  Just Works is acceptable for low-threat environments. |
 | Forged PEER_ACK | `registration_proof` = HMAC over encrypted payload (§7.2) raises the bar.  Deferred payload erasure (§8.3.1) ensures the node self-heals if a forged ACK is accepted — it reverts to PEER_REQUEST if the subsequent WAKE fails. |
 | Replay of PEER_REQUEST | Timestamp check (±24h) + node_id uniqueness (step 9–10 in §7.3). |
 | Phone A reads Phone B's pairing requests | Impossible — each encrypted with gateway public key, authenticated with different phone PSK. |
@@ -760,7 +760,7 @@ A minimal PairingRequest (20-char node_id, no sensors) is ~80 bytes CBOR.  This 
 
 | Extension | Approach |
 |-----------|----------|
-| Phone certificate revocation list | Gateway pushes revocation updates to phones via BLE management service. |
+| Phone PSK revocation list | Gateway pushes revocation updates to phones via BLE management service. |
 | Multi-frame PEER_REQUEST | Add a `fragment_index` / `fragment_total` field to the CBOR payload for payloads exceeding 202 bytes. |
 | Bidirectional phone ↔ gateway management | Add GATT characteristics for querying registered nodes, revoking phones, etc. |
 | Firmware OTA via BLE | Separate BLE service with sequential block writes + SHA-256 verification. |

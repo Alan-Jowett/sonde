@@ -106,9 +106,10 @@ type MapData = RtcSlice;
 /// The wake-cycle engine is single-threaded, so no concurrent access
 /// can occur.
 ///
-/// `RtcSlice` is `!Send` and `!Sync` by construction: `*mut u8` opts out
-/// of both auto-traits, and the `PhantomData<*const ()>` marker makes this
-/// intent explicit so it cannot be accidentally overridden.
+/// `RtcSlice` is `!Send` and `!Sync`: `*mut u8` opts out of both auto-traits
+/// and `PhantomData<*const ()>` reinforces this. The compile-time assertions
+/// below (`AssertNotSend`, `AssertNotSync`) will produce a "conflicting
+/// implementations" error if this invariant is ever broken.
 #[cfg(feature = "esp")]
 pub(crate) struct RtcSlice {
     ptr: *mut u8,
@@ -117,6 +118,20 @@ pub(crate) struct RtcSlice {
     /// opts out, but this prevents accidental `unsafe impl Send` additions).
     _not_send_sync: PhantomData<*const ()>,
 }
+
+// Compile-time assertions: if `RtcSlice` ever gains `Send` or `Sync`, these
+// produce a "conflicting implementations" error because the blanket impl
+// would overlap with the explicit impl.
+#[cfg(feature = "esp")]
+const _: () = {
+    trait AssertNotSend {}
+    impl AssertNotSend for RtcSlice {}
+    impl<T: Send> AssertNotSend for T {}
+
+    trait AssertNotSync {}
+    impl AssertNotSync for RtcSlice {}
+    impl<T: Sync> AssertNotSync for T {}
+};
 
 #[cfg(feature = "esp")]
 impl RtcSlice {
@@ -311,8 +326,11 @@ impl MapStorage {
     #[cfg(feature = "esp")]
     pub fn from_rtc(budget_bytes: usize) -> Option<Self> {
         // SAFETY: MAP_LAYOUT is only written by `allocate()` in this
-        // single-threaded wake-cycle engine. Reading it here is safe.
-        let map_count = unsafe { MAP_LAYOUT.map_count } as usize;
+        // single-threaded wake-cycle engine. Volatile read pairs with the
+        // volatile write in write_rtc_layout() to ensure we observe a
+        // consistent commit state.
+        let map_count =
+            unsafe { core::ptr::read_volatile(&raw const MAP_LAYOUT.map_count) } as usize;
         // map_count == 0: cold boot / no program installed.
         // map_count > MAX_MAPS: corrupt record (MAX_MAPS is the inclusive upper bound).
         if map_count == 0 || map_count > MAX_MAPS {
@@ -517,26 +535,26 @@ impl MapStorage {
     /// Uses an invalidate-write-commit pattern with compiler fences so
     /// that a reset mid-write never leaves `from_rtc()` with a
     /// valid-looking but inconsistent record:
-    ///   1. Set `map_count = 0` (invalidate — from_rtc returns None)
-    ///   2. Compiler fence (prevent reordering defs writes before invalidate)
+    ///   1. Volatile-write `map_count = 0` (invalidate — from_rtc returns None)
+    ///   2. Hardware fence (ensure invalidate is visible before defs writes)
     ///   3. Write all defs
-    ///   4. Compiler fence (prevent commit write before defs)
-    ///   5. Set `map_count = count` (commit)
+    ///   4. Hardware fence (ensure all defs are visible before commit)
+    ///   5. Volatile-write `map_count = count` (commit)
     #[cfg(feature = "esp")]
     fn write_rtc_layout(map_defs: &[MapDef]) {
-        use core::sync::atomic::{compiler_fence, Ordering};
+        use core::sync::atomic::{fence, Ordering};
         unsafe {
             let count = map_defs.len().min(MAX_MAPS);
             // Invalidate: ensures from_rtc() returns None if we reset
             // between here and the final commit below.
-            MAP_LAYOUT.map_count = 0;
-            compiler_fence(Ordering::SeqCst);
+            core::ptr::write_volatile(&raw mut MAP_LAYOUT.map_count, 0);
+            fence(Ordering::SeqCst);
             for (i, def) in map_defs.iter().enumerate().take(count) {
                 MAP_LAYOUT.defs[i] = *def;
             }
-            compiler_fence(Ordering::SeqCst);
-            // Commit: set map_count last.
-            MAP_LAYOUT.map_count = count as u32;
+            fence(Ordering::SeqCst);
+            // Commit: volatile-write map_count last.
+            core::ptr::write_volatile(&raw mut MAP_LAYOUT.map_count, count as u32);
         }
     }
 
@@ -597,7 +615,7 @@ impl MapStorage {
     #[cfg(feature = "esp")]
     fn invalidate_rtc_layout() {
         unsafe {
-            MAP_LAYOUT.map_count = 0;
+            core::ptr::write_volatile(&raw mut MAP_LAYOUT.map_count, 0);
         }
     }
 }

@@ -143,17 +143,29 @@ impl MapStorage {
                 crate::bpf_dispatch::MAX_MAPS,
             )));
         }
-        for def in map_defs {
+        for (i, def) in map_defs.iter().enumerate() {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
                 return Err(NodeError::ProgramDecodeFailed(format!(
-                    "unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
-                    def.map_type
+                    "map[{}]: unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
+                    i, def.map_type
                 )));
             }
             if def.key_size != ARRAY_MAP_KEY_SIZE {
                 return Err(NodeError::ProgramDecodeFailed(format!(
-                    "array map key_size must be 4 (u32), got {}",
-                    def.key_size
+                    "map[{}]: key_size must be 4 (u32), got {}",
+                    i, def.key_size
+                )));
+            }
+            if def.max_entries == 0 {
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "map[{}]: max_entries must be > 0",
+                    i
+                )));
+            }
+            if def.value_size == 0 {
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "map[{}]: value_size must be > 0",
+                    i
                 )));
             }
         }
@@ -359,6 +371,20 @@ mod tests {
             array_map_def(32, 4), // 4 * (4+32) = 144
         ];
         assert_eq!(MapStorage::required_bytes(&defs), 336);
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_max_entries() {
+        let defs = vec![array_map_def(8, 0)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_value_size() {
+        let defs = vec![array_map_def(0, 4)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
     }
 
     #[test]

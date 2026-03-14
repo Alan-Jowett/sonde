@@ -401,17 +401,29 @@ impl MapStorage {
                 MAX_MAPS
             )));
         }
-        for def in map_defs {
+        for (i, def) in map_defs.iter().enumerate() {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
                 return Err(NodeError::ProgramDecodeFailed(format!(
-                    "unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
-                    def.map_type
+                    "map[{}]: unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
+                    i, def.map_type
                 )));
             }
             if def.key_size != ARRAY_MAP_KEY_SIZE {
                 return Err(NodeError::ProgramDecodeFailed(format!(
-                    "array map key_size must be 4 (u32), got {}",
-                    def.key_size
+                    "map[{}]: key_size must be 4 (u32), got {}",
+                    i, def.key_size
+                )));
+            }
+            if def.max_entries == 0 {
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "map[{}]: max_entries must be > 0",
+                    i
+                )));
+            }
+            if def.value_size == 0 {
+                return Err(NodeError::ProgramDecodeFailed(format!(
+                    "map[{}]: value_size must be > 0",
+                    i
                 )));
             }
             if def.max_entries == 0 {
@@ -787,5 +799,46 @@ mod tests {
         ms.allocate(&defs).unwrap();
         let val = ms.get(0).unwrap().lookup(0).unwrap();
         assert_eq!(val, &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_max_entries() {
+        let defs = vec![array_map_def(8, 0)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_value_size() {
+        let defs = vec![array_map_def(0, 4)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_validate_too_many_maps() {
+        let defs: Vec<MapDef> = (0..MAX_MAPS + 1)
+            .map(|_| array_map_def(4, 1))
+            .collect();
+        let result = MapStorage::validate_map_defs(&defs);
+        match result {
+            Err(NodeError::ProgramDecodeFailed(msg)) => {
+                let expected_count = format!("{}", MAX_MAPS + 1);
+                assert!(
+                    msg.contains(&expected_count),
+                    "error message should mention the map count: {msg}"
+                );
+            }
+            Err(other) => panic!("expected ProgramDecodeFailed, got: {other}"),
+            Ok(()) => panic!("expected error for too many maps"),
+        }
+    }
+
+    #[test]
+    fn test_validate_exactly_max_maps() {
+        let defs: Vec<MapDef> = (0..MAX_MAPS)
+            .map(|_| array_map_def(4, 1))
+            .collect();
+        assert!(MapStorage::validate_map_defs(&defs).is_ok());
     }
 }

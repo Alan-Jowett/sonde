@@ -18,7 +18,6 @@
 //! dispatch for wiring helpers to platform state.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use sonde_protocol::HmacProvider;
 
@@ -43,6 +42,70 @@ const MAX_SEND_RECV_TIMEOUT_MS: u32 = 5000;
 /// Maximum delay allowed by `delay_us` helper (1 second).
 const MAX_DELAY_US: u32 = 1_000_000;
 
+/// Upper bound on the number of BPF maps supported per program.
+/// Typical usage is 1–4 maps (bounded by RTC SRAM budget).
+pub const MAX_MAPS: usize = 16;
+
+// ---------------------------------------------------------------------------
+// Map pointer index
+// ---------------------------------------------------------------------------
+
+/// Error returned by [`MapPtrIndex::insert`].
+#[derive(Debug, PartialEq)]
+enum MapPtrInsertError {
+    /// The index is already at capacity (`MAX_MAPS`).
+    Overflow,
+    /// The pointer already exists in the index.
+    Duplicate,
+}
+
+/// Fixed-size flat array mapping relocated map pointers to map indices.
+///
+/// Replaces `HashMap<u64, usize>` for zero heap allocation and faster
+/// lookup over the small (1–4 entry) typical map counts.
+///
+/// Map pointers originate from `Vec::as_ptr()` in [`MapStorage`], which
+/// guarantees non-null for non-zero-capacity vectors. The sentinel value `0`
+/// therefore never collides with a valid map pointer.
+struct MapPtrIndex {
+    entries: [(u64, usize); MAX_MAPS],
+    len: usize,
+}
+
+impl MapPtrIndex {
+    fn new() -> Self {
+        Self {
+            entries: [(0, 0); MAX_MAPS],
+            len: 0,
+        }
+    }
+
+    /// Insert a map pointer → index mapping. Returns an error if the
+    /// index is full or if the pointer is a duplicate (which would cause
+    /// `get()` to resolve the wrong map).
+    fn insert(&mut self, ptr: u64, idx: usize) -> Result<(), MapPtrInsertError> {
+        if self.len >= MAX_MAPS {
+            return Err(MapPtrInsertError::Overflow);
+        }
+        // Reject duplicates in all builds — not just debug. Duplicate
+        // pointers can arise from zero-sized maps (empty Vec returns a
+        // dangling non-null pointer that may collide).
+        if self.entries[..self.len].iter().any(|(p, _)| *p == ptr) {
+            return Err(MapPtrInsertError::Duplicate);
+        }
+        self.entries[self.len] = (ptr, idx);
+        self.len += 1;
+        Ok(())
+    }
+
+    fn get(&self, ptr: u64) -> Option<usize> {
+        self.entries[..self.len]
+            .iter()
+            .find(|(p, _)| *p == ptr)
+            .map(|(_, idx)| *idx)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch context
 // ---------------------------------------------------------------------------
@@ -66,8 +129,8 @@ struct DispatchContext {
     gateway_timestamp_ms: u64,
     command_received_at_ms: u64,
     battery_mv: u32,
-    /// Relocated map pointer → index mapping for O(1) helper dispatch.
-    map_ptr_index: HashMap<u64, usize>,
+    /// Relocated map pointer → index mapping (linear scan, bounded by MAX_MAPS).
+    map_ptr_index: MapPtrIndex,
 }
 
 thread_local! {
@@ -117,15 +180,42 @@ pub unsafe fn install(
     CTX.with(|cell| {
         let mut borrow = cell.borrow_mut();
         assert!(borrow.is_none(), "BPF dispatch context already installed");
-        // Build pointer→index map for O(1) lookup in map helpers.
+        // Build pointer→index map for fast lookup in map helpers.
         let map_ptr_index = {
             // SAFETY: caller guarantees map_storage is valid until clear().
             let ms = unsafe { &*map_storage };
-            ms.map_pointers()
-                .iter()
-                .enumerate()
-                .map(|(i, &p)| (p, i))
-                .collect()
+            let mut index = MapPtrIndex::new();
+            let mut ok = true;
+            for (i, &p) in ms.map_pointers().iter().enumerate() {
+                match index.insert(p, i) {
+                    Ok(()) => {}
+                    Err(MapPtrInsertError::Overflow) => {
+                        log::error!(
+                            "map pointer index overflow at map {i} \
+                             (capacity {MAX_MAPS}) — \
+                             all map helpers will return errors this cycle"
+                        );
+                        ok = false;
+                        break;
+                    }
+                    Err(MapPtrInsertError::Duplicate) => {
+                        log::error!(
+                            "duplicate map pointer at map {i} — \
+                             all map helpers will return errors this cycle"
+                        );
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            // If any insert failed, use an empty index so all map
+            // operations fail consistently rather than having a partial
+            // index where some maps work and others silently don't.
+            if !ok {
+                MapPtrIndex::new()
+            } else {
+                index
+            }
         };
         *borrow = Some(DispatchContext {
             hal,
@@ -230,6 +320,8 @@ pub fn helper_i2c_write_read(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64
         let read_len = r5 as usize;
         if write_ptr.is_null()
             || read_ptr.is_null()
+            || write_len == 0
+            || read_len == 0
             || write_len > MAX_BUS_TRANSFER_LEN
             || read_len > MAX_BUS_TRANSFER_LEN
         {
@@ -392,8 +484,8 @@ pub fn helper_map_lookup_elem(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) ->
         }
         unsafe {
             let key = core::ptr::read_unaligned(key_ptr);
-            let map_idx = match ctx.map_ptr_index.get(&r1) {
-                Some(&idx) => idx,
+            let map_idx = match ctx.map_ptr_index.get(r1) {
+                Some(idx) => idx,
                 None => return 0,
             };
             let maps = &*ctx.map_storage;
@@ -425,8 +517,8 @@ pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> 
         }
         unsafe {
             let key = core::ptr::read_unaligned(key_ptr);
-            let map_idx = match ctx.map_ptr_index.get(&r1) {
-                Some(&idx) => idx,
+            let map_idx = match ctx.map_ptr_index.get(r1) {
+                Some(idx) => idx,
                 None => return (-1i64) as u64,
             };
             let maps = &mut *ctx.map_storage;
@@ -846,6 +938,58 @@ mod tests {
                 let result =
                     helper_i2c_read(0x0048, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0);
                 assert_eq!(result as i64, -1);
+            },
+        );
+    }
+
+    #[test]
+    fn test_helper_i2c_write_read_rejects_zero_length() {
+        // Zero-length write_len or read_len must return -1.
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let write_buf = [0x42u8; 2];
+        let mut read_buf = [0u8; 2];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                let handle = crate::hal::i2c_handle(0, 0x48) as u64;
+
+                // Zero write_len → -1
+                let result = helper_i2c_write_read(
+                    handle,
+                    write_buf.as_ptr() as u64,
+                    0, // write_len = 0
+                    read_buf.as_mut_ptr() as u64,
+                    read_buf.len() as u64,
+                );
+                assert_eq!(result as i64, -1, "zero write_len should be rejected");
+
+                // Zero read_len → -1
+                let result = helper_i2c_write_read(
+                    handle,
+                    write_buf.as_ptr() as u64,
+                    write_buf.len() as u64,
+                    read_buf.as_mut_ptr() as u64,
+                    0, // read_len = 0
+                );
+                assert_eq!(result as i64, -1, "zero read_len should be rejected");
             },
         );
     }
@@ -1339,5 +1483,51 @@ mod tests {
                 assert_eq!(result as i64, -1);
             },
         );
+    }
+
+    // -- MapPtrIndex unit tests ---------------------------------------------
+
+    #[test]
+    fn test_map_ptr_index_basic_insert_and_get() {
+        let mut idx = MapPtrIndex::new();
+        assert!(idx.insert(0x1000, 0).is_ok());
+        assert!(idx.insert(0x2000, 1).is_ok());
+        assert_eq!(idx.get(0x1000), Some(0));
+        assert_eq!(idx.get(0x2000), Some(1));
+        assert_eq!(idx.get(0x3000), None);
+    }
+
+    #[test]
+    fn test_map_ptr_index_overflow_returns_error() {
+        let mut idx = MapPtrIndex::new();
+        for i in 0..MAX_MAPS {
+            assert!(
+                idx.insert(0x1000 + i as u64, i).is_ok(),
+                "insert {i} should succeed"
+            );
+        }
+        // MAX_MAPS+1 should fail with overflow
+        assert_eq!(
+            idx.insert(0xFFFF, MAX_MAPS),
+            Err(MapPtrInsertError::Overflow)
+        );
+    }
+
+    #[test]
+    fn test_map_ptr_index_duplicate_returns_error() {
+        let mut idx = MapPtrIndex::new();
+        assert!(idx.insert(0x1000, 0).is_ok());
+        assert_eq!(idx.insert(0x1000, 1), Err(MapPtrInsertError::Duplicate),);
+        // Original mapping should be unchanged
+        assert_eq!(idx.get(0x1000), Some(0));
+    }
+
+    #[test]
+    fn test_map_ptr_index_get_returns_first_match() {
+        let mut idx = MapPtrIndex::new();
+        assert!(idx.insert(0x1000, 0).is_ok());
+        assert!(idx.insert(0x2000, 1).is_ok());
+        assert!(idx.insert(0x3000, 2).is_ok());
+        assert_eq!(idx.get(0x2000), Some(1));
     }
 }

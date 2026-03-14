@@ -84,11 +84,11 @@ These are the glue components that simulate ESP-NOW radio:
 ```rust
 /// Simulates ESP-NOW broadcast between a modem and one or more nodes.
 ///
-/// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_rx` takes
+/// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_one` takes
 /// `&self` and `Radio::send` takes `&mut self` — both synchronous.
-/// The receiver is wrapped in `Mutex` to satisfy `drain_rx(&self)`.
+/// The receiver is wrapped in `Mutex` to satisfy `drain_one(&self)`.
 ///
-/// `drain_rx()` returns `Vec<RecvFrame>` which includes `rssi: i8`.
+/// `drain_one()` returns `Option<RecvFrame>` which includes `rssi: i8`.
 /// The ChannelRadio uses a fixed RSSI value (e.g., -40) for all
 /// simulated frames since RSSI is not relevant to protocol correctness.
 ///
@@ -118,7 +118,7 @@ struct ChannelTransport {
 
 The `ChannelRadio` implements `sonde_modem::bridge::Radio` (all required methods):
 - `send(&mut self, peer_mac, data)` → pushes to `to_node` sender.
-- `drain_rx(&self)` → locks `from_node` mutex, drains all pending frames as `Vec<RecvFrame>`.
+- `drain_one(&self)` → locks `from_node` mutex, pops one pending frame as `Option<RecvFrame>`.
 - `set_channel(&mut self, ch) → Result<(), &'static str>` → stores channel, returns `Ok(())`.
 - `channel(&self) → u8` → returns stored channel.
 - `scan_channels(&mut self) → Vec<(u8, u8, i8)>` → returns empty vec (no APs in simulation).

@@ -137,42 +137,34 @@ impl MapStorage {
     /// the dispatch-time pointer index cannot hold more entries.
     pub fn validate_map_defs(map_defs: &[MapDef]) -> NodeResult<()> {
         if map_defs.len() > crate::bpf_dispatch::MAX_MAPS {
-            return Err(NodeError::ProgramDecodeFailed(format!(
-                "program defines {} maps, but at most {} are supported",
-                map_defs.len(),
-                crate::bpf_dispatch::MAX_MAPS,
-            )));
+            return Err(NodeError::ProgramDecodeFailed(
+                "program defines too many maps (exceeds MAX_MAPS)",
+            ));
         }
-        for (i, def) in map_defs.iter().enumerate() {
+        for def in map_defs {
             if def.map_type != BPF_MAP_TYPE_ARRAY {
-                return Err(NodeError::ProgramDecodeFailed(format!(
-                    "map[{}]: unsupported map_type {}: only BPF_MAP_TYPE_ARRAY (1) is supported",
-                    i, def.map_type
-                )));
+                return Err(NodeError::ProgramDecodeFailed(
+                    "unsupported map type: only BPF_MAP_TYPE_ARRAY (1) is supported",
+                ));
             }
             if def.key_size != ARRAY_MAP_KEY_SIZE {
-                return Err(NodeError::ProgramDecodeFailed(format!(
-                    "map[{}]: key_size must be 4 (u32), got {}",
-                    i, def.key_size
-                )));
+                return Err(NodeError::ProgramDecodeFailed(
+                    "array map key_size must be 4 (u32)",
+                ));
             }
             if def.max_entries == 0 {
-                return Err(NodeError::ProgramDecodeFailed(format!(
-                    "map[{}]: max_entries must be > 0",
-                    i
-                )));
+                return Err(NodeError::ProgramDecodeFailed(
+                    "map max_entries must be > 0",
+                ));
             }
             if def.value_size == 0 {
-                return Err(NodeError::ProgramDecodeFailed(format!(
-                    "map[{}]: value_size must be > 0",
-                    i
-                )));
+                return Err(NodeError::ProgramDecodeFailed("map value_size must be > 0"));
             }
         }
         // Also verify arithmetic doesn't overflow
         if Self::required_bytes_checked(map_defs).is_none() {
             return Err(NodeError::ProgramDecodeFailed(
-                "invalid map definitions: size calculation overflowed".into(),
+                "invalid map definitions: size calculation overflowed",
             ));
         }
         Ok(())
@@ -186,11 +178,9 @@ impl MapStorage {
     pub fn allocate(&mut self, map_defs: &[MapDef]) -> NodeResult<()> {
         Self::validate_map_defs(map_defs)?;
 
-        let required = Self::required_bytes_checked(map_defs).ok_or_else(|| {
-            NodeError::ProgramDecodeFailed(
-                "invalid map definitions: size calculation overflowed".into(),
-            )
-        })?;
+        let required = Self::required_bytes_checked(map_defs).ok_or(
+            NodeError::ProgramDecodeFailed("invalid map definitions: size calculation overflowed"),
+        )?;
         if required > self.budget_bytes {
             return Err(NodeError::MapBudgetExceeded {
                 required,
@@ -395,10 +385,9 @@ mod tests {
         let result = MapStorage::validate_map_defs(&defs);
         match result {
             Err(NodeError::ProgramDecodeFailed(msg)) => {
-                let expected_count = format!("{} maps", crate::bpf_dispatch::MAX_MAPS + 1);
                 assert!(
-                    msg.contains(&expected_count),
-                    "error message should mention the map count: {msg}"
+                    msg.contains("too many maps"),
+                    "error message should mention too many maps: {msg}"
                 );
             }
             Err(other) => panic!("expected ProgramDecodeFailed, got: {other}"),

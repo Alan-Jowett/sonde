@@ -201,7 +201,7 @@ mod tests {
         fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
             if self.key.is_some() {
                 return Err(crate::error::NodeError::StorageError(
-                    "already paired; factory reset required".into(),
+                    "already paired; factory reset required",
                 ));
             }
             self.key = Some((key_hint, *psk));
@@ -399,37 +399,37 @@ mod tests {
             None
         }
         fn write_key(&mut self, _key_hint: u16, _psk: &[u8; 32]) -> NodeResult<()> {
-            Err(NodeError::StorageError("write failed".into()))
+            Err(NodeError::StorageError("write failed"))
         }
         fn erase_key(&mut self) -> NodeResult<()> {
-            Err(NodeError::StorageError("erase failed".into()))
+            Err(NodeError::StorageError("erase failed"))
         }
         fn read_schedule(&self) -> (u32, u8) {
             (60, 0)
         }
         fn write_schedule_interval(&mut self, _interval_s: u32) -> NodeResult<()> {
-            Err(NodeError::StorageError("write failed".into()))
+            Err(NodeError::StorageError("write failed"))
         }
         fn write_active_partition(&mut self, _partition: u8) -> NodeResult<()> {
-            Err(NodeError::StorageError("write failed".into()))
+            Err(NodeError::StorageError("write failed"))
         }
         fn reset_schedule(&mut self) -> NodeResult<()> {
-            Err(NodeError::StorageError("write failed".into()))
+            Err(NodeError::StorageError("write failed"))
         }
         fn read_program(&self, _partition: u8) -> Option<Vec<u8>> {
             None
         }
         fn write_program(&mut self, _partition: u8, _image: &[u8]) -> NodeResult<()> {
-            Err(NodeError::StorageError("write failed".into()))
+            Err(NodeError::StorageError("write failed"))
         }
         fn erase_program(&mut self, _partition: u8) -> NodeResult<()> {
-            Err(NodeError::StorageError("erase failed".into()))
+            Err(NodeError::StorageError("erase failed"))
         }
         fn take_early_wake_flag(&mut self) -> bool {
             false
         }
         fn set_early_wake_flag(&mut self) -> NodeResult<()> {
-            Err(NodeError::StorageError("write failed".into()))
+            Err(NodeError::StorageError("write failed"))
         }
     }
 

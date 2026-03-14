@@ -101,7 +101,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
 
         // Decode the CBOR program image
         let image = ProgramImage::decode(image_bytes)
-            .map_err(|e| NodeError::ProgramDecodeFailed(format!("{}", e)))?;
+            .map_err(|_| NodeError::ProgramDecodeFailed("program image decode failed"))?;
 
         // Validate map definitions (type, key_size, overflow) and budget
         // before committing the A/B swap so a bad program never becomes active.
@@ -117,9 +117,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         // Write to the inactive partition
         let (_interval, active_partition) = self.storage.read_schedule();
         if active_partition > 1 {
-            return Err(NodeError::StorageError(
-                "invalid active partition index".into(),
-            ));
+            return Err(NodeError::StorageError("invalid active partition index"));
         }
         let inactive_partition = 1 - active_partition;
         self.storage
@@ -131,7 +129,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         let written_bytes = self
             .storage
             .read_program(inactive_partition)
-            .ok_or_else(|| NodeError::StorageError("failed to re-read written program".into()))?;
+            .ok_or(NodeError::StorageError("failed to re-read written program"))?;
         let written_hash = sha.hash(&written_bytes);
         if written_hash.as_slice() != expected_hash {
             return Err(NodeError::ProgramHashMismatch);
@@ -166,7 +164,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         }
 
         let image = ProgramImage::decode(image_bytes)
-            .map_err(|e| NodeError::ProgramDecodeFailed(format!("{}", e)))?;
+            .map_err(|_| NodeError::ProgramDecodeFailed("program image decode failed"))?;
 
         // Validate map definitions before returning Ok, so the caller
         // won't send PROGRAM_ACK for an unrunnable program.
@@ -176,7 +174,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         // maps would destroy the resident program's sleep-persistent state.
         if !image.maps.is_empty() {
             return Err(NodeError::ProgramDecodeFailed(
-                "ephemeral programs must not declare maps".into(),
+                "ephemeral programs must not declare maps",
             ));
         }
 

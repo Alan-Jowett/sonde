@@ -183,19 +183,16 @@ impl EspNowTransport {
         channel: u8,
     ) -> Result<Self, NodeError> {
         if channel < 1 || channel > 13 {
-            return Err(NodeError::Transport(format!(
-                "invalid channel {}: must be 1–13",
-                channel
-            )));
+            return Err(NodeError::Transport("invalid WiFi channel (must be 1–13)"));
         }
 
         // WiFi STA mode (required for ESP-NOW)
         let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))
-            .map_err(|e| NodeError::Transport(format!("WiFi init: {:?}", e)))?;
+            .map_err(|_| NodeError::Transport("WiFi init failed"))?;
         let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)
-            .map_err(|e| NodeError::Transport(format!("WiFi wrap: {:?}", e)))?;
+            .map_err(|_| NodeError::Transport("WiFi wrap failed"))?;
         wifi.start()
-            .map_err(|e| NodeError::Transport(format!("WiFi start: {:?}", e)))?;
+            .map_err(|_| NodeError::Transport("WiFi start failed"))?;
 
         // Set the WiFi channel before ESP-NOW init so the node and gateway
         // communicate on the same channel.
@@ -204,11 +201,10 @@ impl EspNowTransport {
                 channel,
                 esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE,
             ))
-            .map_err(|e| NodeError::Transport(format!("set channel {}: {:?}", channel, e)))?;
+            .map_err(|_| NodeError::Transport("set WiFi channel failed"))?;
         }
 
-        let espnow =
-            EspNow::take().map_err(|e| NodeError::Transport(format!("ESP-NOW init: {:?}", e)))?;
+        let espnow = EspNow::take().map_err(|_| NodeError::Transport("ESP-NOW init failed"))?;
 
         // Register broadcast peer (channel = 0 means "use current WiFi channel")
         let peer_info = PeerInfo {
@@ -218,7 +214,7 @@ impl EspNowTransport {
         };
         espnow
             .add_peer(peer_info)
-            .map_err(|e| NodeError::Transport(format!("add peer: {:?}", e)))?;
+            .map_err(|_| NodeError::Transport("add ESP-NOW peer failed"))?;
 
         // Set up receive ring buffer and callback.
         let rx_ring = Arc::new(Mutex::new(RxRing::default()));
@@ -229,10 +225,10 @@ impl EspNowTransport {
                 condvar: Arc::clone(&rx_condvar),
                 contention_drops: AtomicU32::new(0),
             })
-            .map_err(|_| NodeError::Transport("recv callback already registered".into()))?;
+            .map_err(|_| NodeError::Transport("recv callback already registered"))?;
         unsafe {
             esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))
-                .map_err(|e| NodeError::Transport(format!("register recv cb: {:?}", e)))?;
+                .map_err(|_| NodeError::Transport("register recv callback failed"))?;
         }
 
         Ok(Self {
@@ -247,11 +243,11 @@ impl EspNowTransport {
 impl crate::traits::Transport for EspNowTransport {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
         if frame.len() > ESPNOW_MAX_DATA_SIZE {
-            return Err(NodeError::Transport("frame too large".into()));
+            return Err(NodeError::Transport("frame too large"));
         }
         self.espnow
             .send(BROADCAST_MAC, frame)
-            .map_err(|e| NodeError::Transport(format!("send: {:?}", e)))
+            .map_err(|_| NodeError::Transport("ESP-NOW send failed"))
     }
 
     fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
@@ -270,7 +266,7 @@ impl crate::traits::Transport for EspNowTransport {
         let mut ring = self
             .rx_ring
             .lock()
-            .map_err(|_| NodeError::Transport("rx_ring lock poisoned".into()))?;
+            .map_err(|_| NodeError::Transport("rx_ring lock poisoned"))?;
         loop {
             if let Some(len) = ring.pop_into(&mut buf) {
                 // Re-read drop_count right before returning so drops
@@ -297,7 +293,7 @@ impl crate::traits::Transport for EspNowTransport {
             let (guard, _timeout_result) = self
                 .rx_condvar
                 .wait_timeout(ring, remaining)
-                .map_err(|_| NodeError::Transport("rx_ring lock poisoned".into()))?;
+                .map_err(|_| NodeError::Transport("rx_ring lock poisoned"))?;
             ring = guard;
         }
     }

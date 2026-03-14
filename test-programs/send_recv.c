@@ -6,7 +6,7 @@
  *
  * Demonstrates the request-response pattern using send_recv().  On success
  * the reply is echoed back to the gateway via send().  On timeout or error
- * a two-byte error report is sent instead.
+ * a single-byte 0xFF error marker is sent instead.
  *
  * Corresponds to send_recv_program in docs/node-validation.md §2.4.
  */

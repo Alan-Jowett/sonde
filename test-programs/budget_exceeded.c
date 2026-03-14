@@ -42,9 +42,9 @@ int program(struct sonde_context *ctx)
      * Return the sum so the result register is live and the loop body cannot
      * be elided.
      */
-    int sum = 0;
-    for (int i = 0; i < ITERATIONS; i++) {
+    __s64 sum = 0;
+    for (__s64 i = 0; i < ITERATIONS; i++) {
         sum += i;
     }
-    return sum;
+    return (__s32)sum;
 }

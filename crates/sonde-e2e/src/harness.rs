@@ -382,9 +382,8 @@ struct ChannelRadio {
 
 impl Radio for ChannelRadio {
     fn send(&mut self, _peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
-        self.to_node
-            .send(data.to_vec())
-            .expect("ChannelRadio: node receiver dropped — test wiring broken");
+        // Ignore SendError: the node receiver may be dropped during teardown.
+        let _ = self.to_node.send(data.to_vec());
     }
 
     fn drain_rx(&self) -> Vec<RecvFrame> {
@@ -712,7 +711,11 @@ impl Drop for ModemTestEnv {
             handle.abort();
         }
         if let Some(handle) = self.bridge_thread.take() {
-            let _ = handle.join();
+            if std::thread::panicking() {
+                let _ = handle.join();
+            } else {
+                handle.join().expect("bridge thread panicked");
+            }
         }
     }
 }

@@ -44,7 +44,7 @@ const MAX_DELAY_US: u32 = 1_000_000;
 
 /// Upper bound on the number of BPF maps supported per program.
 /// Typical usage is 1–4 maps (bounded by RTC SRAM budget).
-const MAX_MAPS: usize = 16;
+pub const MAX_MAPS: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Map pointer index
@@ -1426,7 +1426,10 @@ mod tests {
     fn test_map_ptr_index_overflow_returns_false() {
         let mut idx = MapPtrIndex::new();
         for i in 0..MAX_MAPS {
-            assert!(idx.insert(0x1000 + i as u64, i), "insert {i} should succeed");
+            assert!(
+                idx.insert(0x1000 + i as u64, i),
+                "insert {i} should succeed"
+            );
         }
         // MAX_MAPS+1 should fail
         assert!(!idx.insert(0xFFFF, MAX_MAPS));
@@ -1436,7 +1439,10 @@ mod tests {
     fn test_map_ptr_index_duplicate_returns_false() {
         let mut idx = MapPtrIndex::new();
         assert!(idx.insert(0x1000, 0));
-        assert!(!idx.insert(0x1000, 1), "duplicate pointer should be rejected");
+        assert!(
+            !idx.insert(0x1000, 1),
+            "duplicate pointer should be rejected"
+        );
         // Original mapping should be unchanged
         assert_eq!(idx.get(0x1000), Some(0));
     }

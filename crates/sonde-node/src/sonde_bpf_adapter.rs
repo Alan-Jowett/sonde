@@ -335,4 +335,15 @@ mod tests {
         let result = interp.execute(0, 1);
         assert!(matches!(result, Err(BpfError::InstructionBudgetExceeded)));
     }
+
+    #[test]
+    fn test_instruction_budget_exact() {
+        // prog_return(42) has 2 instructions; a budget of exactly 2 should
+        // succeed.
+        let mut interp = SondeBpfInterpreter::new();
+        let prog = prog_return(42);
+        interp.load(&prog, &[], &[]).unwrap();
+        let result = interp.execute(0, 2).unwrap();
+        assert_eq!(result, 42);
+    }
 }

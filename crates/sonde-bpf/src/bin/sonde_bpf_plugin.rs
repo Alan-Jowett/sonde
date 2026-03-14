@@ -45,7 +45,7 @@ fn run() -> Result<(), String> {
         &mut memory,
         helpers,
         false,
-        u64::MAX,
+        sonde_bpf::interpreter::UNLIMITED_BUDGET,
     )
     .map_err(|e| format!("{e}"))?;
 

@@ -553,11 +553,19 @@ fn mem_atomic64(
     Ok(())
 }
 
+/// Sentinel value for `instruction_budget` that disables metering.
+///
+/// Pass this to [`execute_program`] or [`execute_program_no_maps`] when you
+/// do not want to impose a limit on the number of instructions executed.
+pub const UNLIMITED_BUDGET: u64 = u64::MAX;
+
 /// Execute a BPF program without map access.
 ///
 /// This is a safe wrapper around [`execute_program`] for programs that do
 /// not use BPF maps.  Since `maps` is empty, the safety invariants on
 /// [`MapRegion`] are trivially satisfied.
+///
+/// Pass [`UNLIMITED_BUDGET`] as `instruction_budget` to disable metering.
 pub fn execute_program_no_maps(
     prog: &[u8],
     ctx: &mut [u8],
@@ -698,6 +706,12 @@ pub unsafe fn execute_program(
                 }
                 let next = ebpf::get_insn(prog, pc);
                 pc += 1;
+                // LD_DW_IMM occupies two 8-byte slots; charge the second slot
+                // so the budget accurately reflects the number of slots consumed.
+                insn_count += 1;
+                if insn_count > instruction_budget {
+                    return Err(BpfError::InstructionBudgetExceeded { pc });
+                }
 
                 match src as u8 {
                     0 => {

@@ -93,15 +93,14 @@ where
     let (base_interval_s, _active_partition) = storage.read_schedule();
     let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
 
-    // 4. Load active resident program once — hash used in WAKE, image reused
-    // for BPF execution to avoid a second NVS read later in the cycle.
-    let resident_program = {
+    // 4. Load active resident program hash and (optionally) decoded image.
+    // The hash is always computed from raw NVS bytes so WAKE includes the
+    // correct program_hash even if CBOR decode fails.  The decoded image is
+    // reused for BPF execution to avoid a second NVS read later in the cycle.
+    let (program_hash, resident_program) = {
         let program_store = ProgramStore::new(storage);
         program_store.load_active(sha)
     };
-    let program_hash = resident_program
-        .as_ref()
-        .map_or_else(Vec::new, |p| p.hash.clone());
 
     // 5. Generate WAKE nonce
     let wake_nonce = rng.random_u64();

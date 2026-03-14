@@ -32,22 +32,31 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
     }
 
     /// Load the currently active resident program from flash.
-    /// Returns `None` if no program is installed or the active partition
-    /// index is invalid.
-    pub fn load_active(&self, sha: &dyn Sha256Provider) -> Option<LoadedProgram> {
+    ///
+    /// Returns `(hash, decoded_program)`.  The hash is always present when
+    /// raw bytes exist on disk (even if CBOR decode fails), so the WAKE
+    /// message includes the correct `program_hash` regardless of image
+    /// validity.  The decoded program is `None` when no image is stored,
+    /// the partition index is invalid, or CBOR decode fails.
+    pub fn load_active(&self, sha: &dyn Sha256Provider) -> (Vec<u8>, Option<LoadedProgram>) {
         let (_interval, active_partition) = self.storage.read_schedule();
         if active_partition > 1 {
-            return None;
+            return (Vec::new(), None);
         }
-        let image_bytes = self.storage.read_program(active_partition)?;
+        let image_bytes = match self.storage.read_program(active_partition) {
+            Some(b) => b,
+            None => return (Vec::new(), None),
+        };
         let hash = sha.hash(&image_bytes).to_vec();
-        let image = ProgramImage::decode(&image_bytes).ok()?;
-        Some(LoadedProgram {
-            bytecode: image.bytecode,
-            map_defs: image.maps,
-            hash,
-            is_ephemeral: false,
-        })
+        let program = ProgramImage::decode(&image_bytes)
+            .ok()
+            .map(|image| LoadedProgram {
+                bytecode: image.bytecode,
+                map_defs: image.maps,
+                hash: hash.clone(),
+                is_ephemeral: false,
+            });
+        (hash, program)
     }
 
     /// Install a new resident program via chunked transfer.

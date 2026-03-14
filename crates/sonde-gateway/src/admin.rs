@@ -430,8 +430,8 @@ impl GatewayAdmin for AdminService {
         request: Request<ImportStateRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
-        let (nodes, programs) = crate::state_bundle::decrypt_state(&req.data, &req.passphrase)
-            .map_err(bundle_err)?;
+        let (nodes, programs) =
+            crate::state_bundle::decrypt_state(&req.data, &req.passphrase).map_err(bundle_err)?;
 
         // Remove all existing nodes and programs, then apply the bundle.
         // Nodes are removed first so no node references remain when programs

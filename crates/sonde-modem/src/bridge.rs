@@ -24,6 +24,11 @@ use crate::status::ModemCounters;
 /// Firmware version: major.minor.patch.build (one byte each).
 const FIRMWARE_VERSION: [u8; 4] = [0, 1, 0, 0];
 
+/// Maximum number of received radio frames forwarded per `poll()` call.
+/// Prevents starvation of serial decode and other poll() work under
+/// sustained RX burst traffic.
+const MAX_RX_FRAMES_PER_POLL: usize = 16;
+
 /// Abstraction over a serial byte stream (USB-CDC on device, PTY in tests).
 pub trait SerialPort {
     /// Read available bytes. Returns `(bytes_read, reconnected)` where
@@ -41,8 +46,8 @@ pub trait SerialPort {
 pub trait Radio {
     /// Send a frame to the given peer MAC.
     fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]);
-    /// Drain received frames from the queue.
-    fn drain_rx(&self) -> Vec<RecvFrame>;
+    /// Drain one received frame from the queue, or `None` if empty.
+    fn drain_one(&self) -> Option<RecvFrame>;
     /// Set the radio channel. Returns a descriptive error on failure.
     fn set_channel(&mut self, channel: u8) -> Result<(), &'static str>;
     /// Get the current channel.
@@ -151,12 +156,19 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
             }
         }
 
-        // Forward any received radio frames to the serial port.
-        let rx_frames = self.radio.drain_rx();
-        for rf in rx_frames {
-            let msg = ModemMessage::RecvFrame(rf);
-            if self.send_msg(&msg) {
-                self.counters.inc_rx();
+        // Forward any received radio frames to the serial port, one at a time
+        // to avoid a transient heap spike from bulk-draining the queue.
+        // Cap at 16 frames per poll to prevent starvation of serial decode
+        // and other poll() work under sustained RX load.
+        for _ in 0..MAX_RX_FRAMES_PER_POLL {
+            match self.radio.drain_one() {
+                Some(rf) => {
+                    let msg = ModemMessage::RecvFrame(rf);
+                    if self.send_msg(&msg) {
+                        self.counters.inc_rx();
+                    }
+                }
+                None => break,
             }
         }
     }
@@ -232,6 +244,7 @@ mod tests {
     use super::*;
     use sonde_protocol::modem::{decode_modem_frame, ModemMessage};
     use std::cell::RefCell;
+    use std::collections::VecDeque;
 
     /// Mock serial port that records writes and plays back reads.
     struct MockSerial {
@@ -285,7 +298,7 @@ mod tests {
     /// Mock radio that captures sends and injects receives.
     struct MockRadio {
         sent: Vec<(Vec<u8>, [u8; MAC_SIZE])>,
-        rx_queue: RefCell<Vec<RecvFrame>>,
+        rx_queue: RefCell<VecDeque<RecvFrame>>,
         channel: u8,
         mac: [u8; MAC_SIZE],
     }
@@ -294,14 +307,14 @@ mod tests {
         fn new() -> Self {
             Self {
                 sent: Vec::new(),
-                rx_queue: RefCell::new(Vec::new()),
+                rx_queue: RefCell::new(VecDeque::new()),
                 channel: 1,
                 mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
             }
         }
 
         fn inject_rx(&self, frame: RecvFrame) {
-            self.rx_queue.borrow_mut().push(frame);
+            self.rx_queue.borrow_mut().push_back(frame);
         }
     }
 
@@ -309,8 +322,8 @@ mod tests {
         fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
             self.sent.push((data.to_vec(), *peer_mac));
         }
-        fn drain_rx(&self) -> Vec<RecvFrame> {
-            std::mem::take(&mut *self.rx_queue.borrow_mut())
+        fn drain_one(&self) -> Option<RecvFrame> {
+            self.rx_queue.borrow_mut().pop_front()
         }
         fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
             if channel == 0 || channel > 14 {
@@ -780,5 +793,51 @@ mod tests {
             "expected Status after reconnect, got {:?}",
             msg
         );
+    }
+
+    /// RX cap: poll() forwards at most MAX_RX_FRAMES_PER_POLL frames per call.
+    /// Remaining frames are forwarded in subsequent poll() calls.
+    #[test]
+    fn rx_cap_limits_frames_per_poll() {
+        let mut bridge = make_bridge();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        // Inject more frames than the per-poll cap.
+        let total = MAX_RX_FRAMES_PER_POLL + 5;
+        for i in 0..total {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -40,
+                frame_data: vec![i as u8],
+            });
+        }
+
+        // First poll should forward exactly MAX_RX_FRAMES_PER_POLL.
+        bridge.poll();
+        let tx1 = bridge.usb.take_tx();
+        let mut count1 = 0;
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&tx1);
+        while let Ok(Some(msg)) = decoder.decode() {
+            if matches!(msg, ModemMessage::RecvFrame(_)) {
+                count1 += 1;
+            }
+        }
+        assert_eq!(count1, MAX_RX_FRAMES_PER_POLL);
+
+        // Second poll should forward the remaining 5.
+        bridge.poll();
+        let tx2 = bridge.usb.take_tx();
+        let mut count2 = 0;
+        decoder = FrameDecoder::new();
+        decoder.push(&tx2);
+        while let Ok(Some(msg)) = decoder.decode() {
+            if matches!(msg, ModemMessage::RecvFrame(_)) {
+                count2 += 1;
+            }
+        }
+        assert_eq!(count2, 5);
+
+        // Total forwarded must equal total injected.
+        assert_eq!(count1 + count2, total);
     }
 }

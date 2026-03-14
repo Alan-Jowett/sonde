@@ -120,6 +120,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
         let (n, reconnected) = self.usb.read(&mut self.rx_buf);
         if reconnected {
             info!("USB reconnected, sending MODEM_READY");
+            self.decoder.reset();
             self.send_modem_ready();
         }
         if n > 0 {

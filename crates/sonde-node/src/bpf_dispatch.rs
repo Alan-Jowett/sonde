@@ -230,6 +230,8 @@ pub fn helper_i2c_write_read(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64
         let read_len = r5 as usize;
         if write_ptr.is_null()
             || read_ptr.is_null()
+            || write_len == 0
+            || read_len == 0
             || write_len > MAX_BUS_TRANSFER_LEN
             || read_len > MAX_BUS_TRANSFER_LEN
         {

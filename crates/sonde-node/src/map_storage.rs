@@ -147,6 +147,16 @@ impl MapStorage {
                     def.key_size
                 )));
             }
+            if def.max_entries == 0 {
+                return Err(NodeError::ProgramDecodeFailed(
+                    "array map max_entries must be > 0".into(),
+                ));
+            }
+            if def.value_size == 0 {
+                return Err(NodeError::ProgramDecodeFailed(
+                    "array map value_size must be > 0".into(),
+                ));
+            }
         }
         // Also verify arithmetic doesn't overflow
         if Self::required_bytes_checked(map_defs).is_none() {
@@ -350,5 +360,19 @@ mod tests {
             array_map_def(32, 4), // 4 * (4+32) = 144
         ];
         assert_eq!(MapStorage::required_bytes(&defs), 336);
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_max_entries() {
+        let defs = vec![array_map_def(8, 0)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_value_size() {
+        let defs = vec![array_map_def(0, 4)];
+        let result = MapStorage::validate_map_defs(&defs);
+        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
     }
 }

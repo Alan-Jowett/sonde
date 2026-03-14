@@ -39,13 +39,14 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         self.storage.write_key(key_hint, psk)
     }
 
-    /// Factory reset: erase PSK, programs, map data, and schedule.
+    /// Factory reset: erase PSK, programs, map data, schedule, and channel.
     ///
     /// Per security.md §2.6 and node-design.md §6.2, this erases:
     /// 1. Key partition (PSK + key_hint + magic)
     /// 2. Both program partitions
     /// 3. All map data in sleep-persistent memory (zeroed)
     /// 4. Schedule partition (reset to default interval)
+    /// 5. Stored WiFi channel (reset to default)
     ///
     /// After this, the node is inert until re-paired via USB.
     pub fn factory_reset(&mut self, map_storage: &mut MapStorage) -> NodeResult<()> {
@@ -54,6 +55,9 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         self.storage.erase_program(1)?;
         map_storage.clear_all();
         self.storage.reset_schedule()?;
+        // Clear stored WiFi channel so re-pairing with a different gateway
+        // on a different channel is not broken by a stale channel value.
+        let _ = self.storage.write_channel(1);
         Ok(())
     }
 }

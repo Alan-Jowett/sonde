@@ -69,12 +69,15 @@ impl SleepManager {
     /// Compute the effective sleep duration in seconds.
     ///
     /// Returns `min(next_wake_override, base_interval_s)` if an override
-    /// was requested, otherwise `base_interval_s`.
+    /// was requested, otherwise `base_interval_s`. The result is clamped
+    /// to a minimum of 1 second to prevent a tight wake-sleep loop that
+    /// would drain the battery.
     pub fn effective_sleep_s(&self) -> u32 {
-        match self.next_wake_override_s {
+        let raw = match self.next_wake_override_s {
             Some(override_s) => core::cmp::min(override_s, self.base_interval_s),
             None => self.base_interval_s,
-        }
+        };
+        raw.max(1)
     }
 
     /// Returns true if `set_next_wake()` was called during this cycle
@@ -147,5 +150,18 @@ mod tests {
 
         let sm2 = SleepManager::new(60, WakeReason::ProgramUpdate);
         assert_eq!(sm2.wake_reason(), WakeReason::ProgramUpdate);
+    }
+
+    #[test]
+    fn test_zero_interval_clamped_to_minimum() {
+        let sm = SleepManager::new(0, WakeReason::Scheduled);
+        assert_eq!(sm.effective_sleep_s(), 1);
+    }
+
+    #[test]
+    fn test_zero_next_wake_clamped_to_minimum() {
+        let mut sm = SleepManager::new(300, WakeReason::Scheduled);
+        sm.set_next_wake(0);
+        assert_eq!(sm.effective_sleep_s(), 1);
     }
 }

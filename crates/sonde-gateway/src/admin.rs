@@ -415,6 +415,11 @@ impl GatewayAdmin for AdminService {
         request: Request<ExportStateRequest>,
     ) -> Result<Response<ExportStateResponse>, Status> {
         let req = request.into_inner();
+        // Validate passphrase early to avoid loading sensitive material
+        // for a request that will fail anyway.
+        if req.passphrase.is_empty() {
+            return Err(Status::invalid_argument("passphrase must not be empty"));
+        }
         let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
         let programs = self.storage.list_programs().await.map_err(storage_err)?;
         let passphrase = Zeroizing::new(req.passphrase);
@@ -424,7 +429,7 @@ impl GatewayAdmin for AdminService {
             crate::state_bundle::encrypt_state(&nodes, &programs, &passphrase)
         })
         .await
-        .map_err(|e| Status::internal(format!("encrypt task panicked: {e}")))?
+        .map_err(|e| Status::internal(format!("encrypt task failed: {e}")))?
         .map_err(bundle_err)?;
         Ok(Response::new(ExportStateResponse { data }))
     }
@@ -469,7 +474,7 @@ impl GatewayAdmin for AdminService {
             crate::state_bundle::decrypt_state(&data, &passphrase)
         })
         .await
-        .map_err(|e| Status::internal(format!("decrypt task panicked: {e}")))?
+        .map_err(|e| Status::internal(format!("decrypt task failed: {e}")))?
         .map_err(bundle_err)?;
 
         // Replace all nodes and programs with the bundle contents.

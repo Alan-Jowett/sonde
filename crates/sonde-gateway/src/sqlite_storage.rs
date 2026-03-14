@@ -1014,4 +1014,41 @@ mod tests {
             "wrong key must fail to open"
         );
     }
+
+    #[tokio::test]
+    async fn test_replace_state_encrypts_psks() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        // Seed with an existing node that will be replaced.
+        store.upsert_node(&make_node("old", 1)).await.unwrap();
+
+        let node_a = make_node("node-a", 10);
+        let node_b = make_node("node-b", 20);
+        let prog = make_program(0xCC);
+
+        store
+            .replace_state(&[node_a.clone(), node_b.clone()], &[prog.clone()])
+            .await
+            .unwrap();
+
+        // Old node must be gone.
+        assert!(store.get_node("old").await.unwrap().is_none());
+
+        // New nodes must be readable (PSKs decryptable).
+        let fetched_a = store.get_node("node-a").await.unwrap().unwrap();
+        assert_eq!(fetched_a.psk, node_a.psk);
+        assert_eq!(fetched_a.key_hint, 10);
+
+        let fetched_b = store.get_node("node-b").await.unwrap().unwrap();
+        assert_eq!(fetched_b.psk, node_b.psk);
+
+        // list_nodes must also return both (verifies no plaintext blob
+        // trips the 60-byte decrypt_psk check).
+        let all_nodes = store.list_nodes().await.unwrap();
+        assert_eq!(all_nodes.len(), 2);
+
+        // Program must be present.
+        let fetched_prog = store.get_program(&prog.hash).await.unwrap().unwrap();
+        assert_eq!(fetched_prog.image, prog.image);
+    }
 }

@@ -18,6 +18,7 @@ use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::transport::Transport;
 use sonde_gateway::AdminService;
+use zeroize::Zeroizing;
 
 #[cfg(unix)]
 const DEFAULT_ADMIN_SOCKET: &str = "/var/run/sonde/admin.sock";
@@ -58,6 +59,52 @@ struct Cli {
     /// as defined in the file. See gateway-design.md §9 for the format.
     #[arg(long)]
     handler_config: Option<PathBuf>,
+
+    /// Path to a file containing the 32-byte master key as 64 hex characters.
+    ///
+    /// The master key encrypts node PSKs at rest (GW-0601a). If not provided,
+    /// the gateway falls back to the `SONDE_MASTER_KEY` environment variable.
+    #[arg(long)]
+    master_key_file: Option<PathBuf>,
+}
+
+/// Load the 32-byte master key from a file or environment variable.
+///
+/// Priority:
+/// 1. `--master-key-file <path>` — file containing 64 hex characters
+/// 2. `SONDE_MASTER_KEY` env var — 64 hex characters
+///
+/// Returns an error if neither source is available or the key is malformed.
+fn load_master_key(cli: &Cli) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    let hex = if let Some(path) = &cli.master_key_file {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read master key file {}: {e}", path.display()))?;
+        raw.trim().to_string()
+    } else if let Ok(val) = std::env::var("SONDE_MASTER_KEY") {
+        val.trim().to_string()
+    } else {
+        return Err(
+            "master key required: provide --master-key-file or set SONDE_MASTER_KEY env var".into(),
+        );
+    };
+
+    if hex.len() != 64 {
+        return Err(format!(
+            "master key must be exactly 64 hex characters, got {}",
+            hex.len()
+        )
+        .into());
+    }
+
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("master key contains non-hex characters".into());
+    }
+
+    let mut key = [0u8; 32];
+    for (i, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)?;
+    }
+    Ok(key)
 }
 
 #[tokio::main]
@@ -73,16 +120,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(db = %cli.db, port = %cli.port, channel = cli.channel, "starting sonde-gateway");
 
-    // 1. Open persistent storage
-    let storage = Arc::new(SqliteStorage::open(&cli.db)?);
+    // 1. Load master key for at-rest PSK encryption (GW-0601a)
+    let master_key = Zeroizing::new(load_master_key(&cli)?);
+    info!("master key loaded");
+
+    // 2. Open persistent storage
+    let storage = Arc::new(SqliteStorage::open(&cli.db, master_key)?);
     info!("storage opened: {}", cli.db);
 
-    // 2. Session manager
+    // 3. Session manager
     let session_manager = Arc::new(SessionManager::new(Duration::from_secs(
         cli.session_timeout,
     )));
 
-    // 3. Shared pending-command queue (admin → engine)
+    // 4. Shared pending-command queue (admin → engine)
     let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
@@ -111,13 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
     };
 
-    // 5. Open serial port and create modem transport
+    // 6. Open serial port and create modem transport
     let serial_port =
         tokio_serial::SerialStream::open(&tokio_serial::new(&cli.port, cli.baud_rate))?;
     let transport = Arc::new(UsbEspNowTransport::new(serial_port, cli.channel).await?);
     info!(channel = cli.channel, "modem transport ready");
 
-    // 6. Start gRPC admin server
+    // 7. Start gRPC admin server
     let admin_service = AdminService::new(storage.clone(), pending_commands, session_manager);
     let admin_socket = cli.admin_socket.clone();
 
@@ -127,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 7. Main frame-processing loop
+    // 8. Main frame-processing loop
     info!("entering frame processing loop");
     let transport_ref = transport.clone();
 
@@ -151,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 8. Wait for shutdown
+    // 9. Wait for shutdown
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("received ctrl-c, shutting down");

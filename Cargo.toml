@@ -19,7 +19,8 @@ default-members = [
 # Only affects firmware builds; regular `cargo build --release` uses defaults.
 [profile.firmware]
 inherits = "release"
-opt-level = "s"
+opt-level = "z"
 lto = true
 codegen-units = 1
 strip = "symbols"
+panic = "abort"

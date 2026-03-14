@@ -15,9 +15,12 @@
  * will terminate the program early regardless of profile.
  *
  * NOTE: sonde-bpf does not yet enforce the instruction_budget parameter at
- * runtime.  Termination is currently guaranteed solely by Prevail
- * verification on the gateway (bounded loops, no infinite recursion).  Once
- * metering support is added this program will exercise the budget-exceeded
+ * runtime.  Termination today relies on Prevail verification: bounded loops
+ * and no infinite recursion.  Under the Resident profile
+ * (check_for_termination = false) loop bounds are still structurally
+ * enforced by BPF constraints; the Ephemeral profile
+ * (check_for_termination = true) additionally proves termination.  Once
+ * runtime metering is added, this program will exercise the budget-exceeded
  * path.  See crates/sonde-node/src/sonde_bpf_adapter.rs for the current
  * limitation.
  *

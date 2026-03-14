@@ -101,54 +101,66 @@ impl EspNowDriver {
         nvs: EspDefaultNvsPartition,
         counters: &Arc<ModemCounters>,
         usb_connected: Arc<AtomicBool>,
-    ) -> Self {
-        // Initialize WiFi in station mode (required for ESP-NOW).
-        let esp_wifi =
-            EspWifi::new(modem, sysloop.clone(), Some(nvs)).expect("failed to create WiFi");
-        let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop).expect("failed to wrap WiFi");
+    ) -> Result<Self, esp_idf_sys::EspError> {
+        // Guard: fail fast before touching any ESP-IDF state if the driver
+        // was already constructed (OnceLock is already populated).
+        if RECV_CB_STATE.get().is_some() {
+            return Err(esp_idf_sys::EspError::from_non_zero(
+                core::num::NonZeroI32::new(esp_idf_sys::ESP_ERR_INVALID_STATE).unwrap(),
+            ));
+        }
 
-        wifi.start().expect("failed to start WiFi");
+        // Initialize WiFi in station mode (required for ESP-NOW).
+        let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))?;
+        let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)?;
+
+        wifi.start()?;
         info!("WiFi started in station mode");
 
-        let espnow = EspNow::take().expect("failed to take ESP-NOW");
+        let espnow = EspNow::take()?;
         let rx_queue = Arc::new(Mutex::new(Vec::new()));
 
-        // Install the global recv callback state and register our raw
-        // callback that extracts RSSI from rx_ctrl.
-        assert!(
-            RECV_CB_STATE
-                .set(RecvCallbackState {
-                    rx_queue: Arc::clone(&rx_queue),
-                    usb_connected,
-                })
-                .is_ok(),
-            "RECV_CB_STATE already initialized; EspNowDriver::new must only be called once"
-        );
+        // Register our raw callback first (may fail) so that
+        // RECV_CB_STATE is only set after registration succeeds.
+        // The callback checks RECV_CB_STATE.get() and harmlessly drops
+        // any frames that arrive before the state is installed.
         unsafe {
-            esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))
-                .expect("failed to register ESP-NOW recv callback");
+            esp_idf_sys::esp!(esp_idf_sys::esp_now_register_recv_cb(Some(raw_recv_cb)))?;
+        }
+
+        // Safety: the early guard above ensures this is the first call, so
+        // set() should always succeed.  Defensive error return kept for
+        // robustness against hypothetical concurrent callers.
+        if RECV_CB_STATE
+            .set(RecvCallbackState {
+                rx_queue: Arc::clone(&rx_queue),
+                usb_connected,
+            })
+            .is_err()
+        {
+            return Err(esp_idf_sys::EspError::from_non_zero(
+                core::num::NonZeroI32::new(esp_idf_sys::ESP_ERR_INVALID_STATE).unwrap(),
+            ));
         }
 
         // Register the send callback to track delivery failures (MD-0202).
         let counters_for_send = Arc::clone(counters);
-        espnow
-            .register_send_cb(move |_mac, status| {
-                if matches!(status, SendStatus::FAIL) {
-                    counters_for_send.inc_tx_fail();
-                }
-            })
-            .expect("failed to register ESP-NOW send callback");
+        espnow.register_send_cb(move |_mac, status| {
+            if matches!(status, SendStatus::FAIL) {
+                counters_for_send.inc_tx_fail();
+            }
+        })?;
 
         info!("ESP-NOW initialized on channel 1");
 
-        Self {
+        Ok(Self {
             wifi,
             espnow,
             peer_table: PeerTable::new(),
             counters: Arc::clone(counters),
             rx_queue,
             current_channel: 1,
-        }
+        })
     }
 
     /// Remove all peers from both the ESP-NOW stack and the local table.

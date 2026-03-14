@@ -21,7 +21,7 @@ fn main() {
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::log::EspLogger;
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
-    use log::info;
+    use log::{error, info};
 
     use sonde_modem::bridge::Bridge;
     use sonde_modem::status::ModemCounters;
@@ -41,7 +41,11 @@ fn main() {
         peripherals.usb_serial,
         peripherals.pins.gpio19,
         peripherals.pins.gpio20,
-    );
+    )
+    .unwrap_or_else(|e| {
+        error!("failed to initialize USB-CDC: {:?}", e);
+        panic!("fatal: USB-CDC init failed");
+    });
 
     // Share the USB connected flag with the ESP-NOW receive callback
     // so it can discard frames when USB is disconnected (MD-0301).
@@ -52,7 +56,11 @@ fn main() {
         nvs,
         &counters,
         usb_connected,
-    );
+    )
+    .unwrap_or_else(|e| {
+        error!("failed to initialize ESP-NOW: {:?}", e);
+        panic!("fatal: ESP-NOW init failed");
+    });
 
     let mut bridge = Bridge::new(usb, espnow, counters);
 

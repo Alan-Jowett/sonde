@@ -2229,6 +2229,7 @@ dependencies = [
  "hmac",
  "sha2",
  "sonde-gateway",
+ "sonde-modem",
  "sonde-node",
  "sonde-protocol",
  "tokio",

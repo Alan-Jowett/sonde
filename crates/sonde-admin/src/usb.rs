@@ -9,6 +9,9 @@
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
+use rand::RngExt;
+use sha2::{Digest, Sha256};
+
 use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, IdentityResponse, ModemCodecError, ModemMessage, PairRequest,
     PAIRING_STATUS_SUCCESS, PSK_SIZE,
@@ -18,13 +21,23 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const IDENTITY_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Generate a 256-bit PSK from the OS CSPRNG.
+pub fn generate_psk() -> [u8; PSK_SIZE] {
+    rand::rng().random()
+}
+
+/// Derive the `key_hint` from a PSK: upper 16 bits of SHA-256(PSK), big-endian.
+pub fn derive_key_hint(psk: &[u8; PSK_SIZE]) -> u16 {
+    let hash = Sha256::digest(psk);
+    u16::from_be_bytes([hash[0], hash[1]])
+}
+
 /// Pair a node by sending `PAIR_REQUEST` with the given `key_hint` and PSK.
-pub fn pair_node(
-    port_name: &str,
-    key_hint: u16,
-    psk: [u8; PSK_SIZE],
-    json: bool,
-) -> Result<(), String> {
+///
+/// This function performs only the USB serial exchange. Callers are
+/// responsible for printing the result and, for the auto-pairing flow,
+/// for registering the node with the gateway afterward.
+pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<(), String> {
     let mut port = serialport::new(port_name, 115_200)
         .timeout(READY_TIMEOUT)
         .open()
@@ -59,14 +72,6 @@ pub fn pair_node(
         match ack {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::PairAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({"status": "success", "key_hint": format!("0x{:04x}", key_hint)})
-                    );
-                } else {
-                    println!("Pairing successful (key_hint=0x{:04x})", key_hint);
-                }
                 return Ok(());
             }
             ModemMessage::PairAck(a) => {

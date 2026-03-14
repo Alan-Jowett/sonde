@@ -59,7 +59,11 @@ Generated on first gateway startup.  Private key stored encrypted at rest (GW-06
 | `gw_public_key` | 32 bytes | Distributed to phones during Phase 1. |
 | `gateway_id` | 16 bytes | Random identifier, generated alongside the keypair.  Used as HKDF salt and AES-GCM AAD. |
 
-The Ed25519 public key is converted to X25519 using the birational map defined in RFC 8032 §5.1.5 / RFC 7748 §4.1.  Implementations MUST use the same conversion as libsodium's `crypto_sign_ed25519_pk_to_curve25519` (which computes the Montgomery u-coordinate from the Edwards y-coordinate: `u = (1+y)/(1-y) mod p`).  This ensures interoperability between gateway and phone implementations.
+The Ed25519 public key is converted to X25519 using the standard birational map (RFC 8032 → RFC 7748) whenever ECDH is needed.  Implementations MUST use a conversion routine equivalent to libsodium's `crypto_sign_ed25519_pk_to_curve25519` (public key) and `crypto_sign_ed25519_sk_to_curve25519` (private key), which:
+
+1. Decode the Ed25519 public key's compressed-Y coordinate, clear the sign bit (bit 255), and compute the corresponding X25519 u-coordinate via the birational map `u = (1 + y) / (1 - y) mod p`.
+2. For the private key, hash the 32-byte Ed25519 seed with SHA-512 and clamp the lower 32 bytes per RFC 7748 §5 (clear bits 0–2, set bit 254, clear bit 255).
+3. Reject the conversion if the resulting X25519 public key is a low-order point (all-zero or one of the small-order points on Curve25519), returning an error rather than proceeding with ECDH.
 
 ### 2.2  Phone PSK
 
@@ -576,7 +580,7 @@ The PEER_REQUEST frame is HMAC'd with the node PSK (step 8), but the gateway doe
 - The encrypted payload can only be decrypted by the gateway (ECDH confidentiality).
 - The phone HMAC proves the PSK was issued by an authorized phone (authentication).
 - The frame HMAC proves the transmitting node holds the same PSK (proof of provisioning).
-- An attacker who intercepts the node PSK over BLE cannot forge the encrypted payload (needs phone PSK + gateway public key).
+- An attacker who intercepts the node PSK over BLE cannot forge a *new* encrypted payload for a different `node_id` (requires the phone PSK for HMAC authentication and the gateway public key for ECDH encryption).  However, the attacker *can* replay the captured `encrypted_payload` and `node_psk` together to craft a valid `PEER_REQUEST` for the same node identity.  This replay/race risk is mitigated by the `node_id` uniqueness check at the gateway, the PairingRequest timestamp tolerance (±86400 s), and — for high-assurance deployments — using a MITM-resistant BLE pairing method (Passkey Entry or Numeric Comparison) to prevent interception in the first place.
 
 ---
 

@@ -28,7 +28,7 @@ fn main() {
     use sonde_node::esp_sleep::EspSleepController;
     use sonde_node::esp_storage::NvsStorage;
     use sonde_node::esp_transport::EspNowTransport;
-    use sonde_node::map_storage::MapStorage;
+    use sonde_node::map_storage::{MapStorage, MAP_BUDGET};
     use sonde_node::pairing::run_pairing_mode;
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
     use sonde_node::traits::{PlatformStorage, SleepController};
@@ -51,8 +51,15 @@ fn main() {
     let mut storage =
         NvsStorage::new(nvs_partition.clone()).expect("failed to initialize NVS storage");
 
-    // Map storage: 4 KB budget (fits in ESP32-C3 RTC SRAM)
-    let mut map_storage = MapStorage::new(4096);
+    // Map storage: backed by MAP_BACKING in RTC slow SRAM so that map data
+    // survives deep sleep (ND-0603). MAP_BUDGET is ~6 KB on ESP32-C3.
+    //
+    // Try to restore from the RTC layout record written by the previous wake
+    // cycle. If the record is absent (cold boot) or invalid, fall back to an
+    // empty MapStorage so the wake-cycle engine's normal allocate-on-mismatch
+    // path handles initialisation.
+    let mut map_storage =
+        MapStorage::from_rtc(MAP_BUDGET).unwrap_or_else(|| MapStorage::new(MAP_BUDGET));
 
     // --- Check pairing status BEFORE initializing the radio ---
     // Per pairing-protocol.md §11: when unpaired, the node enters

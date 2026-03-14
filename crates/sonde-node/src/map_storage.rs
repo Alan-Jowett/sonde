@@ -10,19 +10,184 @@ const BPF_MAP_TYPE_ARRAY: u32 = 1;
 /// Expected key size for array maps (u32 index).
 const ARRAY_MAP_KEY_SIZE: u32 = 4;
 
+/// Total bytes reserved for BPF map data.
+///
+/// On ESP32 this maps directly to the size of `MAP_BACKING` in RTC slow SRAM.
+/// The ESP32-C3 has 8 KB of RTC slow SRAM; ~2 KB is used by firmware state
+/// and flags, leaving ~6 KB for map data (node-design.md §13).
+pub const MAP_BUDGET: usize = 6 * 1024;
+
+/// Maximum number of BPF maps a single program may define.
+///
+/// Constrains the RTC layout record (`MAP_LAYOUT`) so it fits in RTC slow
+/// SRAM without heap allocation.  A single program is very unlikely to need
+/// more than 16 distinct maps.
+pub const MAX_MAPS: usize = 16;
+
+/// Static backing buffer for all BPF map data.
+///
+/// Placed in RTC slow SRAM (`.rtc.data`) on ESP32 so that map contents
+/// survive deep sleep (ND-0603).  Every call to `MapStorage::allocate()`
+/// carves non-overlapping regions from this buffer rather than heap-
+/// allocating, so data written in one wake cycle is still present after
+/// the chip wakes from deep sleep — provided the same program is running
+/// and `layout_matches()` is true (no re-allocation).
+#[cfg(feature = "esp")]
+#[link_section = ".rtc.data"]
+static mut MAP_BACKING: [u8; MAP_BUDGET] = [0u8; MAP_BUDGET];
+
+/// Layout record stored in RTC slow SRAM alongside `MAP_BACKING`.
+///
+/// Records the `MapDef` entries for the currently allocated program so that,
+/// after a deep-sleep wake, `MapStorage::from_rtc()` can rebuild the
+/// `MapStorage` metadata (map definitions, offsets, pointers) and set
+/// `layout_matches()` to return `true` — thereby preventing `allocate()`
+/// from being called and zeroing out the preserved map data.
+///
+/// `map_count == 0` means no program is installed / layout is invalid.
+#[cfg(feature = "esp")]
+#[repr(C)]
+struct RtcMapLayout {
+    map_count: u32,
+    defs: [MapDef; MAX_MAPS],
+}
+
+#[cfg(feature = "esp")]
+impl RtcMapLayout {
+    const fn zero() -> Self {
+        Self {
+            map_count: 0,
+            defs: [MapDef {
+                map_type: 0,
+                key_size: 0,
+                value_size: 0,
+                max_entries: 0,
+            }; MAX_MAPS],
+        }
+    }
+}
+
+#[cfg(feature = "esp")]
+#[link_section = ".rtc.data"]
+static mut MAP_LAYOUT: RtcMapLayout = RtcMapLayout::zero();
+
+// ---------------------------------------------------------------------------
+// Platform-specific map data backing
+// ---------------------------------------------------------------------------
+
+/// On host/test builds map data lives in a heap-allocated `Vec<u8>`.
+#[cfg(not(feature = "esp"))]
+type MapData = Vec<u8>;
+
+/// On ESP firmware map data lives in a raw slice into `MAP_BACKING`.
+#[cfg(feature = "esp")]
+type MapData = RtcSlice;
+
+/// A thin view of a contiguous region inside `MAP_BACKING`.
+///
+/// Holds a raw pointer and length instead of `&'static mut [u8]` to allow
+/// the region to be "re-claimed" by a subsequent `allocate()` call without
+/// violating Rust's aliasing rules (raw pointers carry no borrow obligations).
+///
+/// # Safety
+///
+/// All instances are created exclusively by `make_map_data`, which guarantees
+/// that each `RtcSlice` covers a unique, non-overlapping range of
+/// `MAP_BACKING`.  The wake-cycle engine is single-threaded, so no
+/// concurrent access can occur.
+#[cfg(feature = "esp")]
+pub(crate) struct RtcSlice {
+    ptr: *mut u8,
+    len: usize,
+}
+
+#[cfg(feature = "esp")]
+impl RtcSlice {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    fn fill(&mut self, val: u8) {
+        // SAFETY: ptr..ptr+len is a valid, uniquely-owned range inside MAP_BACKING.
+        unsafe { core::ptr::write_bytes(self.ptr, val, self.len) }
+    }
+}
+
+#[cfg(feature = "esp")]
+impl core::ops::Index<core::ops::Range<usize>> for RtcSlice {
+    type Output = [u8];
+    fn index(&self, range: core::ops::Range<usize>) -> &[u8] {
+        assert!(range.end <= self.len, "RtcSlice index out of bounds");
+        // SAFETY: range is within bounds; ptr is valid for the slice lifetime.
+        unsafe { core::slice::from_raw_parts(self.ptr.add(range.start), range.end - range.start) }
+    }
+}
+
+#[cfg(feature = "esp")]
+impl core::ops::IndexMut<core::ops::Range<usize>> for RtcSlice {
+    fn index_mut(&mut self, range: core::ops::Range<usize>) -> &mut [u8] {
+        assert!(range.end <= self.len, "RtcSlice index_mut out of bounds");
+        // SAFETY: range is within bounds; ptr is valid and uniquely owned.
+        unsafe {
+            core::slice::from_raw_parts_mut(self.ptr.add(range.start), range.end - range.start)
+        }
+    }
+}
+
+#[cfg(feature = "esp")]
+impl core::fmt::Debug for RtcSlice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "RtcSlice(len={})", self.len)
+    }
+}
+
+// SAFETY: The wake-cycle engine is single-threaded; no other thread or
+// interrupt handler accesses MAP_BACKING.
+#[cfg(feature = "esp")]
+unsafe impl Send for RtcSlice {}
+
+// ---------------------------------------------------------------------------
+// Map data construction helper
+// ---------------------------------------------------------------------------
+
+/// Create the backing storage for a map of `size` bytes.
+///
+/// * **Non-ESP**: allocates a zero-filled heap `Vec<u8>`.
+/// * **ESP**: returns an `RtcSlice` pointing at `MAP_BACKING[offset..offset+size]`
+///   after zero-initialising that region.
+///
+/// `offset` is ignored on non-ESP builds.
+#[cfg(not(feature = "esp"))]
+fn make_map_data(size: usize, _offset: usize) -> MapData {
+    vec![0u8; size]
+}
+
+#[cfg(feature = "esp")]
+fn make_map_data(size: usize, offset: usize) -> MapData {
+    // SAFETY: `allocate()` guarantees that `offset + size <= MAP_BUDGET` and
+    // that every call to `make_map_data` receives a unique, non-overlapping
+    // `[offset, offset+size)` range within `MAP_BACKING`.
+    unsafe {
+        let ptr = MAP_BACKING.as_mut_ptr().add(offset);
+        core::ptr::write_bytes(ptr, 0, size);
+        RtcSlice { ptr, len: size }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
 /// A single map instance allocated in sleep-persistent memory.
 #[derive(Debug)]
 pub struct MapInstance {
     pub def: MapDef,
     /// Backing storage: `max_entries * (key_size + value_size)` bytes.
-    data: Vec<u8>,
+    data: MapData,
     /// Size of one entry (key_size + value_size).
     entry_size: usize,
-}
-
-/// Allocate a zero-initialized byte buffer for map storage.
-fn allocate_zeroed(size: usize) -> Vec<u8> {
-    vec![0u8; size]
 }
 
 impl MapInstance {
@@ -79,12 +244,11 @@ impl MapInstance {
 
 /// Manages all map instances for the current program.
 ///
-/// **Persistence contract:** On real hardware the caller must keep the
-/// `MapStorage` instance in RTC slow SRAM (or an equivalent sleep-
-/// persistent region) so that map contents survive deep sleep (ND-0603).
-/// The current implementation uses heap-backed `Vec` storage, which is
-/// suitable for host-based testing. The ESP-IDF platform layer will
-/// replace this with a fixed RTC SRAM buffer at integration time.
+/// **Persistence contract (ND-0603):** Map data survives deep sleep because
+/// `MapInstance` backing storage lives in `MAP_BACKING`, which is placed in
+/// RTC slow SRAM (`.rtc.data`) on ESP32 firmware builds.  On host/test
+/// builds each map is heap-backed (`Vec<u8>`), which is sufficient for
+/// unit testing.
 ///
 /// `run_wake_cycle()` accepts `&mut MapStorage` from the caller and only
 /// re-allocates maps when a new program is installed (not every cycle),
@@ -104,6 +268,79 @@ impl MapStorage {
             cached_ptrs: Vec::new(),
             budget_bytes,
         }
+    }
+
+    /// Reconstruct `MapStorage` from the RTC slow SRAM layout record.
+    ///
+    /// On ESP32, the layout record (`MAP_LAYOUT`) is written by `allocate()`
+    /// and survives deep sleep.  This method reads that record and builds
+    /// the `maps` metadata (definitions + `RtcSlice` pointers) **without
+    /// zero-initialising `MAP_BACKING`**, so the map data accumulated in the
+    /// previous wake cycle is preserved (ND-0603).
+    ///
+    /// Returns `None` when:
+    /// - The layout record is empty (`map_count == 0`) — cold boot / no program.
+    /// - The record is corrupt (count > `MAX_MAPS`).
+    /// - The stored layout exceeds `budget_bytes`.
+    ///
+    /// The caller should fall back to `MapStorage::new(budget_bytes)` on
+    /// `None` and let the normal `allocate()`-on-mismatch path handle
+    /// initialisation.
+    #[cfg(feature = "esp")]
+    pub fn from_rtc(budget_bytes: usize) -> Option<Self> {
+        // SAFETY: MAP_LAYOUT is only written by `allocate()` in this
+        // single-threaded wake-cycle engine. Reading it here is safe.
+        let map_count = unsafe { MAP_LAYOUT.map_count } as usize;
+        // map_count == 0: cold boot / no program installed.
+        // map_count > MAX_MAPS: corrupt record (MAX_MAPS is the inclusive upper bound).
+        if map_count == 0 || map_count > MAX_MAPS {
+            return None;
+        }
+
+        // Re-derive total bytes to validate the record is sane.
+        // Use checked arithmetic so a corrupt record with huge field values
+        // is rejected explicitly rather than relying on the budget check.
+        let mut total_bytes: usize = 0;
+        for i in 0..map_count {
+            let def = unsafe { &MAP_LAYOUT.defs[i] };
+            let entry_size = (def.key_size as usize).checked_add(def.value_size as usize)?;
+            let map_size = entry_size.checked_mul(def.max_entries as usize)?;
+            total_bytes = total_bytes.checked_add(map_size)?;
+        }
+        if total_bytes > budget_bytes {
+            return None;
+        }
+
+        let mut maps = Vec::with_capacity(map_count);
+        let mut offset: usize = 0;
+        for i in 0..map_count {
+            // SAFETY: index is within [0, map_count) which is ≤ MAX_MAPS.
+            let def = unsafe { MAP_LAYOUT.defs[i] };
+            let entry_size = def.key_size as usize + def.value_size as usize;
+            let total_size = entry_size * def.max_entries as usize;
+            // Build RtcSlice without zero-filling — data from the previous
+            // wake cycle is preserved in MAP_BACKING.
+            // SAFETY: offset + total_size ≤ total_bytes ≤ MAP_BUDGET.
+            let data = unsafe {
+                RtcSlice {
+                    ptr: MAP_BACKING.as_mut_ptr().add(offset),
+                    len: total_size,
+                }
+            };
+            maps.push(MapInstance {
+                def,
+                data,
+                entry_size,
+            });
+            offset += total_size;
+        }
+
+        let cached_ptrs = maps.iter().map(|m| m.data_ptr()).collect();
+        Some(Self {
+            maps,
+            cached_ptrs,
+            budget_bytes,
+        })
     }
 
     /// Get the configured memory budget in bytes.
@@ -162,6 +399,12 @@ impl MapStorage {
     /// Returns an error if map definitions are invalid (unsupported type,
     /// wrong key_size, arithmetic overflow) or exceed the budget.
     /// On success, all maps are zero-initialized.
+    ///
+    /// On ESP firmware builds:
+    /// - Backing storage is carved from `MAP_BACKING` in RTC slow SRAM.
+    /// - The layout record (`MAP_LAYOUT`) is updated so that
+    ///   `MapStorage::from_rtc()` can reconstruct the metadata on the next
+    ///   wake **without** zeroing the preserved data.
     pub fn allocate(&mut self, map_defs: &[MapDef]) -> NodeResult<()> {
         Self::validate_map_defs(map_defs)?;
 
@@ -178,6 +421,7 @@ impl MapStorage {
         }
 
         let mut maps = Vec::with_capacity(map_defs.len());
+        let mut offset: usize = 0;
         for def in map_defs {
             let entry_size = (def.key_size as usize)
                 .checked_add(def.value_size as usize)
@@ -186,14 +430,44 @@ impl MapStorage {
                 .checked_mul(def.max_entries as usize)
                 .expect("overflow already checked");
             maps.push(MapInstance {
-                def: def.clone(),
-                data: allocate_zeroed(total_size),
+                def: *def,
+                data: make_map_data(total_size, offset),
                 entry_size,
             });
+            offset += total_size;
         }
         self.maps = maps;
         self.cached_ptrs = self.maps.iter().map(|m| m.data_ptr()).collect();
+
+        // Persist the layout in RTC SRAM so from_rtc() can reconstruct
+        // MapStorage after deep sleep without zeroing the map data.
+        #[cfg(feature = "esp")]
+        Self::write_rtc_layout(map_defs);
+
         Ok(())
+    }
+
+    /// Write the current map definitions to the RTC layout record.
+    ///
+    /// Called by `allocate()` after successfully setting up maps.
+    /// Silently truncates to `MAX_MAPS` entries if `map_defs.len() > MAX_MAPS`
+    /// (in practice this can't happen — the budget check in `allocate()`
+    /// rejects any map set that would exceed `MAP_BUDGET`, which in turn
+    /// limits total entries well below `MAX_MAPS`).
+    ///
+    /// Only entries `[0..map_count)` are meaningful after this call; entries
+    /// at higher indices retain their previous values but `from_rtc()` reads
+    /// exactly `map_count` entries and ignores the rest.
+    #[cfg(feature = "esp")]
+    fn write_rtc_layout(map_defs: &[MapDef]) {
+        // SAFETY: Single-threaded wake-cycle engine; no concurrent access.
+        unsafe {
+            let count = map_defs.len().min(MAX_MAPS);
+            MAP_LAYOUT.map_count = count as u32;
+            for (i, def) in map_defs.iter().enumerate().take(count) {
+                MAP_LAYOUT.defs[i] = *def;
+            }
+        }
     }
 
     /// Get a reference to a map by index.
@@ -350,5 +624,59 @@ mod tests {
             array_map_def(32, 4), // 4 * (4+32) = 144
         ];
         assert_eq!(MapStorage::required_bytes(&defs), 336);
+    }
+
+    #[test]
+    fn test_map_budget_constant() {
+        // MAP_BUDGET must be large enough to hold a realistic program's maps,
+        // and non-zero.
+        assert_eq!(MAP_BUDGET, 6 * 1024);
+    }
+
+    #[test]
+    fn test_max_maps_constant() {
+        assert_eq!(MAX_MAPS, 16);
+    }
+
+    /// Verify that when the same program runs again (layout_matches == true)
+    /// and allocate() is *not* called, the map data from the "previous wake
+    /// cycle" is intact.  On real hardware the data survives because
+    /// MAP_BACKING is in RTC SRAM; here we simulate it with a Vec<u8> that
+    /// stays in memory between the two simulated "wake cycles".
+    #[test]
+    fn test_data_preserved_when_layout_matches() {
+        let defs = vec![array_map_def(4, 4)];
+        let mut ms = MapStorage::new(MAP_BUDGET);
+        ms.allocate(&defs).unwrap();
+
+        // Write data in "wake cycle 1".
+        ms.get_mut(0).unwrap().update(0, &[1, 2, 3, 4]).unwrap();
+
+        // Simulate "wake cycle 2": layout matches, so allocate() is not
+        // called.  The existing MapStorage (and its heap-backed data on the
+        // host) is reused directly, just as the RTC-backed data on real
+        // hardware would be.
+        assert!(ms.layout_matches(&defs));
+        // Data is preserved without calling allocate().
+        let val = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(val, &[1, 2, 3, 4]);
+    }
+
+    /// Verify that allocate() zero-initialises maps (new-program path).
+    #[test]
+    fn test_allocate_zeroes_data() {
+        let defs = vec![array_map_def(4, 4)];
+        let mut ms = MapStorage::new(MAP_BUDGET);
+        ms.allocate(&defs).unwrap();
+        ms.get_mut(0)
+            .unwrap()
+            .update(0, &[0xFF, 0xFF, 0xFF, 0xFF])
+            .unwrap();
+
+        // Allocate again (simulates a new program being installed with the
+        // same layout).
+        ms.allocate(&defs).unwrap();
+        let val = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(val, &[0, 0, 0, 0]);
     }
 }

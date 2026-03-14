@@ -162,6 +162,14 @@ where
             chunk_count,
             ..
         } => {
+            // Drop the cached resident image bytes before starting the
+            // chunked transfer.  During UpdateProgram/RunEphemeral the
+            // node will allocate a reassembly buffer (up to
+            // MAX_RESIDENT_IMAGE_SIZE); freeing the ~4 KB resident cache
+            // here avoids holding both buffers simultaneously, reducing
+            // peak heap usage on memory-constrained targets (ESP32-C3).
+            resident_image_bytes = None;
+
             let max_image_size = if is_ephemeral {
                 MAX_EPHEMERAL_IMAGE_SIZE
             } else {
@@ -226,9 +234,6 @@ where
                                 // ProgramUpdate again.
                                 sleep_mgr.set_wake_reason(WakeReason::ProgramUpdate);
                             }
-                            // Free the cached NVS buffer — it is no longer
-                            // needed now that the transfer produced a program.
-                            resident_image_bytes = None;
                             loaded_program = Some(program);
                         }
                         Err(_) => {
@@ -995,6 +1000,8 @@ mod tests {
         pub active_partition: u8,
         pub programs: [Option<Vec<u8>>; 2],
         pub early_wake_flag: bool,
+        /// Counts how many times `read_program()` is called.
+        pub read_program_count: std::cell::Cell<u32>,
     }
 
     impl MockStorage {
@@ -1005,6 +1012,7 @@ mod tests {
                 active_partition: 0,
                 programs: [None, None],
                 early_wake_flag: false,
+                read_program_count: std::cell::Cell::new(0),
             }
         }
 
@@ -1043,6 +1051,7 @@ mod tests {
             Ok(())
         }
         fn read_program(&self, partition: u8) -> Option<Vec<u8>> {
+            self.read_program_count.set(self.read_program_count.get() + 1);
             self.programs[partition as usize].clone()
         }
         fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
@@ -2973,5 +2982,61 @@ mod tests {
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         assert!(interp.executed, "interpreter must have executed");
+    }
+
+    #[test]
+    fn test_nop_cycle_reads_program_exactly_once() {
+        // Verify the single-read optimization: a no-update (Nop) wake
+        // cycle must call read_program() exactly once — step 4 reads the
+        // raw bytes and step 9 decodes them in-memory without a second
+        // NVS read.
+        let psk = [0x42; 32];
+        let key_hint = 1u16;
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut transport = MockTransport::new();
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            1000,
+            1710000000000,
+            CommandPayload::Nop,
+        );
+        transport.queue_response(Some(command_frame));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(interp.executed, "BPF must have executed");
+        assert_eq!(
+            storage.read_program_count.get(),
+            1,
+            "read_program() must be called exactly once (no double NVS read)"
+        );
     }
 }

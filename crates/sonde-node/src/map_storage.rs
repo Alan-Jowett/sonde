@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+#[cfg(feature = "esp")]
+use core::marker::PhantomData;
+
 use crate::error::{NodeError, NodeResult};
 use sonde_protocol::MapDef;
 
@@ -102,10 +105,17 @@ type MapData = RtcSlice;
 /// ensures that only one set of `RtcSlice` values exists at a time.
 /// The wake-cycle engine is single-threaded, so no concurrent access
 /// can occur.
+///
+/// `RtcSlice` is `!Send` and `!Sync` by construction: `*mut u8` opts out
+/// of both auto-traits, and the `PhantomData<*const ()>` marker makes this
+/// intent explicit so it cannot be accidentally overridden.
 #[cfg(feature = "esp")]
 pub(crate) struct RtcSlice {
     ptr: *mut u8,
     len: usize,
+    /// Marker to make `!Send`/`!Sync` intent explicit (raw pointer already
+    /// opts out, but this prevents accidental `unsafe impl Send` additions).
+    _not_send_sync: PhantomData<*const ()>,
 }
 
 #[cfg(feature = "esp")]
@@ -158,10 +168,7 @@ impl core::fmt::Debug for RtcSlice {
     }
 }
 
-// `RtcSlice` is intentionally `!Send`. The wake-cycle engine is
-// single-threaded and no `Send` bound exists in the call graph.
-// Keeping `RtcSlice` non-Send prevents accidental cross-thread
-// movement of raw pointers into the global `MAP_BACKING` buffer.
+
 
 // ---------------------------------------------------------------------------
 // Map data construction helper
@@ -187,7 +194,11 @@ fn make_map_data(size: usize, offset: usize) -> MapData {
     unsafe {
         let ptr = MAP_BACKING.as_mut_ptr().add(offset);
         core::ptr::write_bytes(ptr, 0, size);
-        RtcSlice { ptr, len: size }
+        RtcSlice {
+            ptr,
+            len: size,
+            _not_send_sync: PhantomData,
+        }
     }
 }
 
@@ -347,6 +358,7 @@ impl MapStorage {
                 RtcSlice {
                     ptr: MAP_BACKING.as_mut_ptr().add(offset),
                     len: total_size,
+                    _not_send_sync: PhantomData,
                 }
             };
             maps.push(MapInstance {

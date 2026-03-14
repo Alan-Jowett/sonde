@@ -18,7 +18,6 @@
 //! dispatch for wiring helpers to platform state.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use sonde_protocol::HmacProvider;
 
@@ -42,6 +41,57 @@ const MAX_SEND_RECV_TIMEOUT_MS: u32 = 5000;
 
 /// Maximum delay allowed by `delay_us` helper (1 second).
 const MAX_DELAY_US: u32 = 1_000_000;
+
+/// Upper bound on the number of BPF maps supported per program.
+/// Typical usage is 1–4 maps (bounded by RTC SRAM budget).
+const MAX_MAPS: usize = 16;
+
+// ---------------------------------------------------------------------------
+// Map pointer index
+// ---------------------------------------------------------------------------
+
+/// Fixed-size flat array mapping relocated map pointers to map indices.
+///
+/// Replaces `HashMap<u64, usize>` for zero heap allocation and faster lookup
+/// over the small (1–4 entry) typical map counts.
+/// Fixed-size flat array mapping relocated map pointers to map indices.
+///
+/// Replaces `HashMap<u64, usize>` for zero heap allocation and faster lookup
+/// over the small (1–4 entry) typical map counts.
+///
+/// Map pointers originate from `Vec::as_ptr()` in [`MapStorage`], which the
+/// Rust allocator guarantees to be non-null. The sentinel value `0` therefore
+/// never collides with a valid map pointer.
+struct MapPtrIndex {
+    entries: [(u64, usize); MAX_MAPS],
+    len: usize,
+}
+
+impl MapPtrIndex {
+    fn new() -> Self {
+        Self {
+            entries: [(0, 0); MAX_MAPS],
+            len: 0,
+        }
+    }
+
+    fn insert(&mut self, ptr: u64, idx: usize) {
+        assert!(
+            self.len < MAX_MAPS,
+            "BPF map count exceeds MAX_MAPS ({})",
+            MAX_MAPS
+        );
+        self.entries[self.len] = (ptr, idx);
+        self.len += 1;
+    }
+
+    fn get(&self, ptr: u64) -> Option<usize> {
+        self.entries[..self.len]
+            .iter()
+            .find(|(p, _)| *p == ptr)
+            .map(|(_, idx)| *idx)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Dispatch context
@@ -67,7 +117,7 @@ struct DispatchContext {
     command_received_at_ms: u64,
     battery_mv: u32,
     /// Relocated map pointer → index mapping for O(1) helper dispatch.
-    map_ptr_index: HashMap<u64, usize>,
+    map_ptr_index: MapPtrIndex,
 }
 
 thread_local! {
@@ -117,15 +167,15 @@ pub unsafe fn install(
     CTX.with(|cell| {
         let mut borrow = cell.borrow_mut();
         assert!(borrow.is_none(), "BPF dispatch context already installed");
-        // Build pointer→index map for O(1) lookup in map helpers.
+        // Build pointer→index map for fast lookup in map helpers.
         let map_ptr_index = {
             // SAFETY: caller guarantees map_storage is valid until clear().
             let ms = unsafe { &*map_storage };
-            ms.map_pointers()
-                .iter()
-                .enumerate()
-                .map(|(i, &p)| (p, i))
-                .collect()
+            let mut index = MapPtrIndex::new();
+            for (i, &p) in ms.map_pointers().iter().enumerate() {
+                index.insert(p, i);
+            }
+            index
         };
         *borrow = Some(DispatchContext {
             hal,
@@ -392,8 +442,8 @@ pub fn helper_map_lookup_elem(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) ->
         }
         unsafe {
             let key = core::ptr::read_unaligned(key_ptr);
-            let map_idx = match ctx.map_ptr_index.get(&r1) {
-                Some(&idx) => idx,
+            let map_idx = match ctx.map_ptr_index.get(r1) {
+                Some(idx) => idx,
                 None => return 0,
             };
             let maps = &*ctx.map_storage;
@@ -425,8 +475,8 @@ pub fn helper_map_update_elem(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> 
         }
         unsafe {
             let key = core::ptr::read_unaligned(key_ptr);
-            let map_idx = match ctx.map_ptr_index.get(&r1) {
-                Some(&idx) => idx,
+            let map_idx = match ctx.map_ptr_index.get(r1) {
+                Some(idx) => idx,
                 None => return (-1i64) as u64,
             };
             let maps = &mut *ctx.map_storage;

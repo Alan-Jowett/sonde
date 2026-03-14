@@ -265,9 +265,13 @@ async fn main() {
     {
         let json = matches!(cli.format, OutputFormat::Json);
         // clap enforces `--node-id` is present when `--raw` is absent.
-        let node_id = node_id
-            .as_deref()
-            .expect("clap enforces --node-id for auto mode");
+        let node_id = match node_id.as_deref() {
+            Some(id) => id,
+            None => {
+                eprintln!("Error: --node-id is required unless --raw is set");
+                process::exit(1);
+            }
+        };
         let result = run_usb_pair_auto(&mut client, port, node_id, *channel, json).await;
         if let Err(e) = result {
             eprintln!("Error: {e}");
@@ -338,7 +342,7 @@ async fn run_usb_pair_auto(
     channel: Option<u8>,
     json: bool,
 ) -> Result<(), String> {
-    let psk = usb::generate_psk();
+    let psk = usb::generate_psk()?;
     let key_hint = usb::derive_key_hint(&psk);
 
     usb::pair_node_inner(port, key_hint, psk, channel)?;

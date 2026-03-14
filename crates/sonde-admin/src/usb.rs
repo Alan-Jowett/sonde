@@ -21,10 +21,10 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const IDENTITY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Generate a 256-bit PSK from the OS CSPRNG.
-pub fn generate_psk() -> [u8; PSK_SIZE] {
+pub fn generate_psk() -> Result<[u8; PSK_SIZE], String> {
     let mut psk = [0u8; PSK_SIZE];
-    getrandom::fill(&mut psk).expect("OS CSPRNG must be available for PSK generation");
-    psk
+    getrandom::fill(&mut psk).map_err(|e| format!("OS CSPRNG unavailable: {e}"))?;
+    Ok(psk)
 }
 
 /// Derive the `key_hint` from a PSK: lower 16 bits of SHA-256(PSK), big-endian.

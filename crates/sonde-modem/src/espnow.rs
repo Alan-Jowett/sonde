@@ -112,7 +112,7 @@ impl EspNowDriver {
         info!("WiFi started in station mode");
 
         let espnow = EspNow::take().expect("failed to take ESP-NOW");
-        let rx_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let rx_queue = Arc::new(Mutex::new(VecDeque::with_capacity(64)));
 
         // Install the global recv callback state and register our raw
         // callback that extracts RSSI from rx_ctrl.
@@ -198,7 +198,13 @@ impl Radio for EspNowDriver {
 
     /// Drain one received frame from the queue.
     fn drain_one(&self) -> Option<RecvFrame> {
-        self.rx_queue.lock().ok()?.pop_front()
+        match self.rx_queue.lock() {
+            Ok(mut q) => q.pop_front(),
+            Err(poisoned) => {
+                warn!("rx_queue mutex poisoned, recovering");
+                poisoned.into_inner().pop_front()
+            }
+        }
     }
 
     /// Set the WiFi/ESP-NOW channel. Clears the peer table and removes

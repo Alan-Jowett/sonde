@@ -152,10 +152,17 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
 
         // Forward any received radio frames to the serial port, one at a time
         // to avoid a transient heap spike from bulk-draining the queue.
-        while let Some(rf) = self.radio.drain_one() {
-            let msg = ModemMessage::RecvFrame(rf);
-            if self.send_msg(&msg) {
-                self.counters.inc_rx();
+        // Cap at 16 frames per poll to prevent starvation of serial decode
+        // and other poll() work under sustained RX load.
+        for _ in 0..16 {
+            match self.radio.drain_one() {
+                Some(rf) => {
+                    let msg = ModemMessage::RecvFrame(rf);
+                    if self.send_msg(&msg) {
+                        self.counters.inc_rx();
+                    }
+                }
+                None => break,
             }
         }
     }

@@ -442,6 +442,10 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<ImportStateRequest>,
     ) -> Result<Response<Empty>, Status> {
+        // Acquire the import lock to prevent new sessions from being
+        // created between the active_count check and replace_state.
+        let _import_guard = self.session_manager.acquire_import_lock().await;
+
         // Reject import while sessions are active to avoid mixed in-memory
         // and on-disk state.
         let active = self.session_manager.active_count().await;

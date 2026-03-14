@@ -71,6 +71,10 @@ pub struct Session {
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, Session>>,
     timeout: Duration,
+    /// Held as a write-lock during state import to prevent new sessions
+    /// from being created while the storage is being replaced.  Normal
+    /// frame processing acquires a read-lock (zero contention).
+    import_lock: RwLock<()>,
 }
 
 impl SessionManager {
@@ -79,11 +83,13 @@ impl SessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             timeout,
+            import_lock: RwLock::new(()),
         }
     }
 
     /// Create (or replace) a session for the given node.
     /// Any existing session for this node is silently replaced (GW-0602).
+    /// Blocks while a state import is in progress (import_lock).
     pub async fn create_session(
         &self,
         node_id: String,
@@ -91,6 +97,7 @@ impl SessionManager {
         wake_nonce: u64,
         starting_seq: u64,
     ) -> Session {
+        let _guard = self.import_lock.read().await;
         let session = Session {
             node_id: node_id.clone(),
             peer_address,
@@ -174,5 +181,12 @@ impl SessionManager {
     /// Return the number of active sessions.
     pub async fn active_count(&self) -> usize {
         self.sessions.read().await.len()
+    }
+
+    /// Acquire the import lock (write-side), preventing any new sessions
+    /// from being created while the guard is held.  Callers should check
+    /// [`active_count`] after acquiring to verify the gateway is quiescent.
+    pub async fn acquire_import_lock(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+        self.import_lock.write().await
     }
 }

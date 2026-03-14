@@ -419,9 +419,17 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                 }
                 Some(3) => {
                     psk = Some(match v {
-                        Value::Bytes(b) => b
-                            .try_into()
-                            .map_err(|_| BundleError::Decode("psk must be 32 bytes".into()))?,
+                        Value::Bytes(mut b) => {
+                            use zeroize::Zeroize;
+                            if b.len() != 32 {
+                                b.zeroize();
+                                return Err(BundleError::Decode("psk must be 32 bytes".into()));
+                            }
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&b);
+                            b.zeroize();
+                            arr
+                        }
                         _ => return Err(BundleError::Decode("psk must be bytes".into())),
                     });
                 }

@@ -18,6 +18,7 @@ use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::transport::Transport;
 use sonde_gateway::AdminService;
+use zeroize::Zeroizing;
 
 #[cfg(unix)]
 const DEFAULT_ADMIN_SOCKET: &str = "/var/run/sonde/admin.sock";
@@ -74,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(db = %cli.db, port = %cli.port, channel = cli.channel, "starting sonde-gateway");
 
     // 1. Load master key for at-rest PSK encryption (GW-0601a)
-    let master_key = load_master_key(&cli)?;
+    let master_key = Zeroizing::new(load_master_key(&cli)?);
     info!("master key loaded");
 
     // 2. Open persistent storage

@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use async_trait::async_trait;
-use zeroize::Zeroizing;
 use rusqlite::{params, Connection, OptionalExtension};
+use zeroize::Zeroizing;
 
 use crate::program::{ProgramRecord, VerificationProfile};
 use crate::registry::NodeRecord;
@@ -34,8 +34,7 @@ fn encrypt_psk(
     let cipher = Aes256Gcm::new(key);
 
     let mut nonce_bytes = [0u8; 12];
-    getrandom::fill(&mut nonce_bytes)
-        .map_err(|e| StorageError::Internal(format!("nonce generation: {e}")))?;
+    rand::fill(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let payload = Payload {
@@ -63,7 +62,11 @@ fn encrypt_psk(
 /// [`migrate_legacy_psks`] during [`SqliteStorage::open`]. This function
 /// does not accept plaintext blobs — after migration, all stored PSKs
 /// must be [`ENCRYPTED_PSK_LEN`] bytes.
-fn decrypt_psk(master_key: &[u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8; 32], StorageError> {
+fn decrypt_psk(
+    master_key: &[u8; 32],
+    node_id: &str,
+    blob: &[u8],
+) -> Result<[u8; 32], StorageError> {
     if blob.len() != ENCRYPTED_PSK_LEN {
         return Err(StorageError::Internal(format!(
             "encrypted psk blob has wrong length: expected {ENCRYPTED_PSK_LEN}, got {}",
@@ -80,11 +83,12 @@ fn decrypt_psk(master_key: &[u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8;
         aad: node_id.as_bytes(),
     };
 
-    let plaintext = cipher.decrypt(nonce, payload).map_err(|_| {
+    let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
         StorageError::Internal("psk decryption failed — wrong master key or data corruption".into())
-    })?;
+    })?);
 
     plaintext
+        .as_slice()
         .try_into()
         .map_err(|_| StorageError::Internal("decrypted psk is not 32 bytes".into()))
 }
@@ -96,29 +100,36 @@ fn decrypt_psk(master_key: &[u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8;
 /// PSK and transparently re-encrypted with the current master key.  After this
 /// function returns all PSK blobs in the database are [`ENCRYPTED_PSK_LEN`]
 /// bytes long and decryption can unconditionally use the AES-256-GCM path.
-fn migrate_legacy_psks(conn: &Connection, master_key: &[u8; 32]) -> Result<(), StorageError> {
-    let mut stmt = conn
+fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(), StorageError> {
+    // Collect legacy rows into a Vec before starting the transaction,
+    // so the statement borrow is released before `conn.transaction()`.
+    let legacy: Vec<(String, Vec<u8>)> = conn
         .prepare("SELECT node_id, psk FROM nodes WHERE LENGTH(psk) = 32")
-        .map_err(map_err)?;
-    let legacy: Vec<(String, Vec<u8>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(map_err)?
-        .collect::<Result<_, _>>()
-        .map_err(map_err)?;
+        .map_err(map_err)
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(map_err)?
+                .collect::<Result<_, _>>()
+                .map_err(map_err)
+        })?;
 
     if legacy.is_empty() {
         return Ok(());
     }
 
     let tx = conn
-        .unchecked_transaction()
+        .transaction()
         .map_err(|e| StorageError::Internal(format!("begin migration tx: {e}")))?;
     for (node_id, psk_blob) in legacy {
         // SQL WHERE clause guarantees LENGTH(psk) = 32.
-        let psk: [u8; 32] = psk_blob
+        let mut psk: [u8; 32] = psk_blob
             .try_into()
             .expect("SQL filter guarantees exactly 32 bytes");
-        let encrypted = encrypt_psk(master_key, &node_id, &psk)?;
+        let encrypted = encrypt_psk(master_key, &node_id, &psk);
+        // Zeroize plaintext PSK before checking the encrypt result.
+        use zeroize::Zeroize;
+        psk.zeroize();
+        let encrypted = encrypted?;
         tx.execute(
             "UPDATE nodes SET psk = ?1 WHERE node_id = ?2",
             params![encrypted, node_id],
@@ -176,8 +187,11 @@ impl SqliteStorage {
     /// sidecars have restrictive permissions (e.g., 0600) as an additional
     /// layer of protection. This can be done by setting `umask(0o077)` before
     /// calling `open()`, or by adjusting permissions after creation.
-    pub fn open(path: impl AsRef<Path>, master_key: [u8; 32]) -> Result<Self, StorageError> {
-        let conn =
+    pub fn open(
+        path: impl AsRef<Path>,
+        master_key: Zeroizing<[u8; 32]>,
+    ) -> Result<Self, StorageError> {
+        let mut conn =
             Connection::open(path).map_err(|e| StorageError::Internal(format!("open: {e}")))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
@@ -206,7 +220,7 @@ impl SqliteStorage {
     }
 
     /// Create an in-memory SQLite database (for testing).
-    pub fn in_memory(master_key: [u8; 32]) -> Result<Self, StorageError> {
+    pub fn in_memory(master_key: Zeroizing<[u8; 32]>) -> Result<Self, StorageError> {
         Self::open(":memory:", master_key)
     }
 
@@ -549,7 +563,11 @@ mod tests {
     use super::*;
 
     /// A fixed test master key — must not be used outside of tests.
-    const TEST_MASTER_KEY: [u8; 32] = [0x42u8; 32];
+    const TEST_MASTER_KEY_RAW: [u8; 32] = [0x42u8; 32];
+
+    fn test_key() -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(TEST_MASTER_KEY_RAW)
+    }
 
     fn make_node(id: &str, key_hint: u16) -> NodeRecord {
         NodeRecord {
@@ -579,7 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_node_crud() {
-        let store = SqliteStorage::in_memory(TEST_MASTER_KEY).unwrap();
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
 
         // Initially empty.
         assert!(store.list_nodes().await.unwrap().is_empty());
@@ -614,7 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_program_crud() {
-        let store = SqliteStorage::in_memory(TEST_MASTER_KEY).unwrap();
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
 
         // Initially empty.
         assert!(store.list_programs().await.unwrap().is_empty());
@@ -640,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nodes_by_key_hint() {
-        let store = SqliteStorage::in_memory(TEST_MASTER_KEY).unwrap();
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
 
         store.upsert_node(&make_node("a", 10)).await.unwrap();
         store.upsert_node(&make_node("b", 10)).await.unwrap();
@@ -667,14 +685,14 @@ mod tests {
 
         // First open: write data.
         {
-            let store = SqliteStorage::open(&db_path, TEST_MASTER_KEY).unwrap();
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
             store.upsert_node(&make_node("p1", 5)).await.unwrap();
             store.store_program(&make_program(0xAA)).await.unwrap();
         }
 
         // Second open: data survives.
         {
-            let store = SqliteStorage::open(&db_path, TEST_MASTER_KEY).unwrap();
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
             assert!(store.get_node("p1").await.unwrap().is_some());
             assert!(store.get_program(&vec![0xAA; 32]).await.unwrap().is_some());
         }
@@ -682,7 +700,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_upsert_overwrites() {
-        let store = SqliteStorage::in_memory(TEST_MASTER_KEY).unwrap();
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
 
         let mut node = make_node("u1", 1);
         node.schedule_interval_s = 30;
@@ -792,7 +810,7 @@ mod tests {
 
         // Open with the master key — migration runs automatically.
         {
-            let store = SqliteStorage::open(&db_path, TEST_MASTER_KEY).unwrap();
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
             // The node must be readable and return the correct PSK.
             let node = store.get_node("legacy-node").await.unwrap().unwrap();
             assert_eq!(node.psk, psk, "migrated PSK must match original plaintext");
@@ -848,7 +866,7 @@ mod tests {
         }
 
         // Open with SqliteStorage — migration should add abi_version column.
-        let store = SqliteStorage::open(&db_path, TEST_MASTER_KEY).unwrap();
+        let store = SqliteStorage::open(&db_path, test_key()).unwrap();
 
         // The migrated row has abi_version = NULL (i.e., None).
         let prog = store

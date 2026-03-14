@@ -64,7 +64,8 @@ pub trait PairingSerial {
     /// (the pairing loop treats any error as a disconnect signal).
     fn read(&mut self, buf: &mut [u8], timeout_ms: u32) -> NodeResult<usize>;
 
-    /// Write `data` to the serial port.
+    /// Write `data` to the serial port. Returns `Err` on I/O error or
+    /// if the data could not be delivered after retries (disconnect).
     fn write(&mut self, data: &[u8]) -> NodeResult<()>;
 }
 

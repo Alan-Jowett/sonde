@@ -33,6 +33,10 @@ CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 # NVS, ESP-NOW, and BPF interpreter initialization.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
+# FreeRTOS tick rate — pinned to 1000 Hz (1 ms/tick).
+# The ESP pairing serial driver's ms_to_ticks() depends on this value.
+CONFIG_FREERTOS_HZ=1000
+
 # Disable unused WiFi features to reduce binary size.
 # The node only needs STA mode for ESP-NOW.
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n

@@ -101,6 +101,9 @@ impl PairingSerial for EspUsbSerialJtag {
 
     fn write(&mut self, data: &[u8]) -> NodeResult<()> {
         let mut remaining = data;
+        // Retry up to 3 times on timeout before giving up.
+        let mut retries = 0;
+        const MAX_RETRIES: u32 = 3;
         while !remaining.is_empty() {
             let n = unsafe {
                 esp_idf_sys::usb_serial_jtag_write_bytes(
@@ -113,12 +116,15 @@ impl PairingSerial for EspUsbSerialJtag {
                 return Err(NodeError::Transport("USB Serial/JTAG write error".into()));
             }
             if n == 0 {
-                // Timeout — host not reading yet. Return Ok so the
-                // pairing loop continues instead of interpreting this
-                // as a disconnect. The frame is silently dropped; the
-                // loop will re-send PAIRING_READY on the next idle tick.
-                return Ok(());
+                retries += 1;
+                if retries >= MAX_RETRIES {
+                    return Err(NodeError::Transport(
+                        "USB Serial/JTAG write timeout after retries".into(),
+                    ));
+                }
+                continue;
             }
+            retries = 0;
             remaining = &remaining[n as usize..];
         }
         Ok(())

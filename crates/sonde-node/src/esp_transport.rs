@@ -9,6 +9,7 @@
 //! callback, eliminating per-frame heap allocation from the WiFi task
 //! context.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -84,20 +85,26 @@ impl RxRing {
         true
     }
 
-    /// Pop the oldest frame slot by value. Returns `None` if the ring is
-    /// empty. The caller converts the slot to a `Vec<u8>` outside the lock.
-    fn pop(&mut self) -> Option<FrameSlot> {
+    /// Copy the oldest frame's payload into `buf`, returning the number of
+    /// bytes copied. Only `data[..len]` bytes are copied under the lock,
+    /// avoiding a full 250-byte memcpy. Returns `None` if the ring is empty.
+    fn pop_into(&mut self, buf: &mut [u8; ESPNOW_MAX_DATA_SIZE]) -> Option<usize> {
         if self.count == 0 {
             if self.drop_count > 0 {
-                log::warn!("ESP-NOW recv ring dropped {} frame(s)", self.drop_count);
+                log::warn!(
+                    "ESP-NOW recv ring: {} full drop(s)",
+                    self.drop_count,
+                );
                 self.drop_count = 0;
             }
             return None;
         }
-        let slot = self.slots[self.tail];
+        let slot = &self.slots[self.tail];
+        let len = slot.len;
+        buf[..len].copy_from_slice(&slot.data[..len]);
         self.tail = (self.tail + 1) % RX_RING_CAP;
         self.count -= 1;
-        Some(slot)
+        Some(len)
     }
 }
 
@@ -105,6 +112,7 @@ impl RxRing {
 struct RecvState {
     rx_ring: Arc<Mutex<RxRing>>,
     condvar: Arc<Condvar>,
+    contention_drops: AtomicU32,
 }
 
 /// Global callback state — set once during [`EspNowTransport::new`].
@@ -137,6 +145,7 @@ unsafe extern "C" fn raw_recv_cb(
                     false
                 }
             } else {
+                state.contention_drops.fetch_add(1, Ordering::Relaxed);
                 false
             }
         };
@@ -219,6 +228,7 @@ impl EspNowTransport {
             .set(RecvState {
                 rx_ring: Arc::clone(&rx_ring),
                 condvar: Arc::clone(&rx_condvar),
+                contention_drops: AtomicU32::new(0),
             })
             .map_err(|_| NodeError::Transport("recv callback already registered".into()))?;
         unsafe {
@@ -247,15 +257,24 @@ impl crate::traits::Transport for EspNowTransport {
 
     fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
         let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
+        // Pre-allocate buffer outside the lock for pop_into to copy into.
+        let mut buf = [0u8; ESPNOW_MAX_DATA_SIZE];
         let mut ring = self
             .rx_ring
             .lock()
             .map_err(|_| NodeError::Transport("rx_ring lock poisoned".into()))?;
+        // Drain any contention_drops accumulated by the callback into the
+        // ring's deferred log on each entry so the warning is emitted.
+        if let Some(state) = RECV_STATE.get() {
+            let cd = state.contention_drops.swap(0, Ordering::Relaxed);
+            if cd > 0 {
+                log::warn!("ESP-NOW recv ring: {} contention drop(s)", cd);
+            }
+        }
         loop {
-            if let Some(slot) = ring.pop() {
-                // Drop the lock before allocating Vec from the slot data.
+            if let Some(len) = ring.pop_into(&mut buf) {
                 drop(ring);
-                return Ok(Some(slot.data[..slot.len].to_vec()));
+                return Ok(Some(buf[..len].to_vec()));
             }
             let now = Instant::now();
             if now >= deadline {

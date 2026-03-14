@@ -838,6 +838,7 @@ async fn t0810_export_state_returns_encrypted_bundle() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
             verification_profile: 1, // Resident
+            abi_version: None,
         }))
         .await
         .unwrap();
@@ -889,6 +890,7 @@ async fn t0810_import_state_restores_nodes_and_programs() {
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
             verification_profile: 1,
+            abi_version: None,
         }))
         .await
         .unwrap();

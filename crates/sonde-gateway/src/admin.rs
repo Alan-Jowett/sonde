@@ -412,16 +412,11 @@ impl GatewayAdmin for AdminService {
         &self,
         request: Request<ExportStateRequest>,
     ) -> Result<Response<ExportStateResponse>, Status> {
-        let passphrase = &request.into_inner().passphrase;
+        let req = request.into_inner();
         let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
         let programs = self.storage.list_programs().await.map_err(storage_err)?;
-<<<<<<< HEAD
-        let data = crate::state_bundle::encrypt_state(&nodes, &programs, passphrase)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
-=======
         let data = crate::state_bundle::encrypt_state(&nodes, &programs, &req.passphrase)
             .map_err(bundle_err)?;
->>>>>>> 6c6328b (fix(gateway,admin): harden state bundle crypto and CLI passphrase handling)
         Ok(Response::new(ExportStateResponse { data }))
     }
 

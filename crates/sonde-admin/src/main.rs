@@ -304,11 +304,6 @@ fn parse_key_hint(s: &str) -> Result<u16, String> {
     }
 }
 
-<<<<<<< HEAD
-/// Run USB commands that operate locally (no gateway connection needed):
-/// FactoryReset, Identity, and raw Pair.
-fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
-=======
 /// Resolve the passphrase from the CLI arg (which also reads `SONDE_PASSPHRASE`
 /// env via clap's `env` attribute), or prompt on the TTY without echo if
 /// neither is set.
@@ -328,8 +323,9 @@ fn resolve_passphrase(arg: &Option<String>) -> Result<String, String> {
     Ok(pass)
 }
 
-fn run_usb(action: &UsbAction, json: bool) -> Result<(), String> {
->>>>>>> 6c6328b (fix(gateway,admin): harden state bundle crypto and CLI passphrase handling)
+/// Run USB commands that operate locally (no gateway connection needed):
+/// FactoryReset, Identity, and raw Pair.
+fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
     match action {
         UsbAction::Pair {
             port,

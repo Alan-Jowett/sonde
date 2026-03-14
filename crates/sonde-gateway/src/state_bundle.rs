@@ -261,6 +261,7 @@ fn program_to_cbor(p: &ProgramRecord) -> ciborium::value::Value {
             Value::Integer(4u8.into()),
             Value::Integer(profile_u8.into()),
         ),
+        (Value::Integer(5u8.into()), opt_u32_val(p.abi_version)),
     ])
 }
 
@@ -483,6 +484,7 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
     let mut image: Option<Vec<u8>> = None;
     let mut size: Option<u32> = None;
     let mut profile_int: Option<u32> = None;
+    let mut abi_version: Option<Option<u32>> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -517,6 +519,9 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
                             ))
                         }
                     });
+                }
+                Some(5) => {
+                    abi_version = Some(opt_u32_from_cbor(v, "abi_version")?);
                 }
                 _ => {}
             }
@@ -560,6 +565,7 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
         image,
         size,
         verification_profile,
+        abi_version: abi_version.flatten(),
     })
 }
 
@@ -626,6 +632,7 @@ mod tests {
             image,
             size: 64,
             verification_profile: profile,
+            abi_version: None,
         }
     }
 

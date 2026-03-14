@@ -91,10 +91,13 @@ type MapData = RtcSlice;
 ///
 /// # Safety
 ///
-/// All instances are created exclusively by `make_map_data`, which guarantees
-/// that each `RtcSlice` covers a unique, non-overlapping range of
-/// `MAP_BACKING`.  The wake-cycle engine is single-threaded, so no
-/// concurrent access can occur.
+/// All instances are created exclusively by `make_map_data` (called from
+/// `allocate()`), which guarantees that each `RtcSlice` covers a unique,
+/// non-overlapping range of `MAP_BACKING`. The `allocate()` method is the
+/// only code path that constructs `RtcSlice` values — safe code outside
+/// this module cannot create arbitrary slices into `MAP_BACKING`.
+/// The wake-cycle engine is single-threaded, so no concurrent access
+/// can occur.
 #[cfg(feature = "esp")]
 pub(crate) struct RtcSlice {
     ptr: *mut u8,
@@ -151,8 +154,9 @@ impl core::fmt::Debug for RtcSlice {
     }
 }
 
-// `*mut u8` is `!Send` by default. `RtcSlice` wraps a pointer into
-// the static `MAP_BACKING` buffer.
+// `*mut u8` is `!Send` by default in Rust (all raw pointers opt out of
+// auto-Send — see `impl<T: ?Sized> !Send for *mut T` in core).
+// `RtcSlice` wraps a pointer into the static `MAP_BACKING` buffer.
 //
 // On ESP32 the wake-cycle engine is single-threaded, so `Send` is not
 // strictly required by the current call graph. We provide it defensively

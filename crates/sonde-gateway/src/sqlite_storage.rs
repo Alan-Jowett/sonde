@@ -54,10 +54,23 @@ fn encrypt_psk(
 
 /// Decrypt an encrypted PSK blob produced by [`encrypt_psk`].
 ///
+/// As a backwards-compatibility safety net, a 32-byte blob is treated as a
+/// legacy plaintext PSK (written before GW-0601a). In practice the
+/// [`migrate_legacy_psks`] step in [`SqliteStorage::open`] re-encrypts all
+/// such blobs before any node is read, so this branch should never be hit on
+/// a properly opened database.
+///
 /// Returns `StorageError::Internal` if the blob length is wrong or the
 /// GCM authentication tag check fails (which indicates data corruption or
 /// an incorrect master key).
 fn decrypt_psk(master_key: [u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8; 32], StorageError> {
+    // Legacy plaintext PSK written by a pre-GW-0601a gateway. `migrate_legacy_psks`
+    // re-encrypts all such blobs on `open()`, so this branch is a safety net only.
+    if blob.len() == 32 {
+        let psk: [u8; 32] = blob.try_into().expect("length already checked to be 32");
+        return Ok(psk);
+    }
+
     if blob.len() != ENCRYPTED_PSK_LEN {
         return Err(StorageError::Internal(format!(
             "encrypted psk blob has wrong length: expected {ENCRYPTED_PSK_LEN}, got {}",
@@ -81,6 +94,38 @@ fn decrypt_psk(master_key: [u8; 32], node_id: &str, blob: &[u8]) -> Result<[u8; 
     plaintext
         .try_into()
         .map_err(|_| StorageError::Internal("decrypted psk is not 32 bytes".into()))
+}
+
+/// Re-encrypt any legacy plaintext PSK blobs left over from pre-GW-0601a
+/// databases.  Called once during [`SqliteStorage::open`].
+///
+/// Any row whose `psk` column is exactly 32 bytes is treated as a plaintext
+/// PSK and transparently re-encrypted with the current master key.  After this
+/// function returns all PSK blobs in the database are [`ENCRYPTED_PSK_LEN`]
+/// bytes long and decryption can unconditionally use the AES-256-GCM path.
+fn migrate_legacy_psks(conn: &Connection, master_key: [u8; 32]) -> Result<(), StorageError> {
+    let mut stmt = conn
+        .prepare("SELECT node_id, psk FROM nodes WHERE LENGTH(psk) = 32")
+        .map_err(map_err)?;
+    let legacy: Vec<(String, Vec<u8>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(map_err)?
+        .collect::<Result<_, _>>()
+        .map_err(map_err)?;
+
+    for (node_id, psk_blob) in legacy {
+        // SQL WHERE clause guarantees LENGTH(psk) = 32.
+        let psk: [u8; 32] = psk_blob
+            .try_into()
+            .expect("SQL filter guarantees exactly 32 bytes");
+        let encrypted = encrypt_psk(master_key, &node_id, &psk)?;
+        conn.execute(
+            "UPDATE nodes SET psk = ?1 WHERE node_id = ?2",
+            params![encrypted, node_id],
+        )
+        .map_err(map_err)?;
+    }
+    Ok(())
 }
 
 const SCHEMA: &str = "
@@ -706,5 +751,67 @@ mod tests {
         store.store_program(&new_prog).await.unwrap();
         let fetched = store.get_program(&new_prog.hash).await.unwrap().unwrap();
         assert_eq!(fetched.abi_version, Some(2));
+    }
+
+    /// GW-0601a migration: existing databases with plaintext 32-byte PSK blobs
+    /// must be transparently re-encrypted on the first `open()` with a master key.
+    #[tokio::test]
+    async fn test_legacy_psk_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        let psk = [0xBEu8; 32];
+
+        // Simulate a pre-GW-0601a database by writing a plaintext PSK blob directly.
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+            )
+            .unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute(
+                "INSERT INTO nodes \
+                 (node_id, key_hint, psk, schedule_interval_s) \
+                 VALUES ('legacy-node', 7, ?1, 60)",
+                params![psk.to_vec()],
+            )
+            .unwrap();
+            // Verify the blob is 32 bytes (plaintext) before migration.
+            let blob: Vec<u8> = conn
+                .query_row(
+                    "SELECT psk FROM nodes WHERE node_id = 'legacy-node'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(blob.len(), 32, "pre-migration blob must be 32 bytes");
+        }
+
+        // Open with the master key — migration runs automatically.
+        {
+            let store = SqliteStorage::open(&db_path, TEST_MASTER_KEY).unwrap();
+            // The node must be readable and return the correct PSK.
+            let node = store.get_node("legacy-node").await.unwrap().unwrap();
+            assert_eq!(node.psk, psk, "migrated PSK must match original plaintext");
+        }
+
+        // After migration the on-disk blob must be encrypted (60 bytes).
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(&db_path).unwrap();
+            let blob: Vec<u8> = conn
+                .query_row(
+                    "SELECT psk FROM nodes WHERE node_id = 'legacy-node'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                blob.len(),
+                ENCRYPTED_PSK_LEN,
+                "post-migration blob must be encrypted"
+            );
+        }
     }
 }

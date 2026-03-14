@@ -163,15 +163,23 @@ enum ScheduleAction {
 
 #[derive(Subcommand)]
 enum StateAction {
-    /// Export gateway state to a file.
+    /// Export gateway state to a file (AES-256-GCM encrypted).
     Export {
         /// Output file path.
         file: String,
+        /// Passphrase used to encrypt the bundle.  If omitted, reads from
+        /// SONDE_PASSPHRASE env var, or prompts on stdin.
+        #[arg(long, env = "SONDE_PASSPHRASE")]
+        passphrase: Option<String>,
     },
-    /// Import gateway state from a file.
+    /// Import gateway state from a previously exported file.
     Import {
         /// Input file path.
         file: String,
+        /// Passphrase used when the bundle was exported.  If omitted, reads
+        /// from SONDE_PASSPHRASE env var, or prompts on stdin.
+        #[arg(long, env = "SONDE_PASSPHRASE")]
+        passphrase: Option<String>,
     },
 }
 
@@ -294,6 +302,25 @@ fn parse_key_hint(s: &str) -> Result<u16, String> {
         s.parse::<u16>()
             .map_err(|e| format!("invalid key_hint: {e}"))
     }
+}
+
+/// Resolve the passphrase from the CLI arg (which also reads `SONDE_PASSPHRASE`
+/// env via clap's `env` attribute), or prompt on the TTY without echo if
+/// neither is set.
+fn resolve_passphrase(arg: &Option<String>) -> Result<String, String> {
+    if let Some(p) = arg {
+        if p.is_empty() {
+            return Err("passphrase must not be empty".into());
+        }
+        return Ok(p.clone());
+    }
+    eprint!("Passphrase: ");
+    std::io::Write::flush(&mut std::io::stderr()).ok();
+    let pass = rpassword::read_password().map_err(|e| format!("failed to read passphrase: {e}"))?;
+    if pass.is_empty() {
+        return Err("passphrase must not be empty".into());
+    }
+    Ok(pass)
 }
 
 /// Run USB commands that operate locally (no gateway connection needed):
@@ -586,8 +613,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
         }
 
         Commands::State { action } => match action {
-            StateAction::Export { file } => {
-                let data = client.export_state().await?;
+            StateAction::Export { file, passphrase } => {
+                let pass = resolve_passphrase(passphrase)?;
+                let data = client.export_state(&pass).await?;
                 std::fs::write(file, &data)?;
                 if json {
                     print_json(&serde_json::json!({"exported_bytes": data.len(), "file": file}))?;
@@ -595,9 +623,10 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     println!("Exported {} bytes to {file}", data.len());
                 }
             }
-            StateAction::Import { file } => {
+            StateAction::Import { file, passphrase } => {
+                let pass = resolve_passphrase(passphrase)?;
                 let data = std::fs::read(file)?;
-                client.import_state(data).await?;
+                client.import_state(data, &pass).await?;
                 if json {
                     print_json(&serde_json::json!({"imported": true, "file": file}))?;
                 } else {

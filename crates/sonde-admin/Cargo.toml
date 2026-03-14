@@ -9,7 +9,7 @@ name = "sonde-admin"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
 prost = "0.14"
 getrandom = "0.4"
@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["full"] }
 tonic = "0.14"
 tonic-prost = "0.14"
 tower = "0.5"
+rpassword = "7.4.0"
 
 [build-dependencies]
 tonic-prost-build = "0.14"

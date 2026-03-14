@@ -641,6 +641,80 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    async fn replace_state(
+        &self,
+        nodes: &[NodeRecord],
+        programs: &[ProgramRecord],
+    ) -> Result<(), StorageError> {
+        let nodes = nodes.to_vec();
+        let programs = programs.to_vec();
+        let mk = self.master_key.clone();
+        self.with_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
+
+            let result = (|| -> Result<(), StorageError> {
+                conn.execute("DELETE FROM nodes", []).map_err(map_err)?;
+                conn.execute("DELETE FROM programs", []).map_err(map_err)?;
+
+                for record in &programs {
+                    conn.execute(
+                        "INSERT INTO programs (hash, image, size, verification_profile, abi_version) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            &record.hash,
+                            &record.image,
+                            record.size,
+                            profile_to_str(&record.verification_profile),
+                            record.abi_version,
+                        ],
+                    )
+                    .map_err(map_err)?;
+                }
+
+                for record in &nodes {
+                    let last_seen_epoch: Option<i64> =
+                        record.last_seen.as_ref().map(system_time_to_epoch_s);
+                    let encrypted_psk =
+                        encrypt_psk(&mk, &record.node_id, &record.psk)?;
+                    conn.execute(
+                        "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
+                         current_program_hash, schedule_interval_s, firmware_abi_version, \
+                         last_battery_mv, last_seen_epoch_s) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![
+                            &record.node_id,
+                            record.key_hint,
+                            &encrypted_psk,
+                            record.assigned_program_hash.as_deref(),
+                            record.current_program_hash.as_deref(),
+                            record.schedule_interval_s,
+                            record.firmware_abi_version,
+                            record.last_battery_mv,
+                            last_seen_epoch,
+                        ],
+                    )
+                    .map_err(map_err)?;
+                }
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => {
+                    conn.execute_batch("COMMIT").map_err(|e| {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        map_err(e)
+                    })?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -942,5 +1016,42 @@ mod tests {
             SqliteStorage::open(&db_path, wrong_key).is_err(),
             "wrong key must fail to open"
         );
+    }
+
+    #[tokio::test]
+    async fn test_replace_state_encrypts_psks() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        // Seed with an existing node that will be replaced.
+        store.upsert_node(&make_node("old", 1)).await.unwrap();
+
+        let node_a = make_node("node-a", 10);
+        let node_b = make_node("node-b", 20);
+        let prog = make_program(0xCC);
+
+        store
+            .replace_state(&[node_a.clone(), node_b.clone()], &[prog.clone()])
+            .await
+            .unwrap();
+
+        // Old node must be gone.
+        assert!(store.get_node("old").await.unwrap().is_none());
+
+        // New nodes must be readable (PSKs decryptable).
+        let fetched_a = store.get_node("node-a").await.unwrap().unwrap();
+        assert_eq!(fetched_a.psk, node_a.psk);
+        assert_eq!(fetched_a.key_hint, 10);
+
+        let fetched_b = store.get_node("node-b").await.unwrap().unwrap();
+        assert_eq!(fetched_b.psk, node_b.psk);
+
+        // list_nodes must also return both (verifies no plaintext blob
+        // trips the 60-byte decrypt_psk check).
+        let all_nodes = store.list_nodes().await.unwrap();
+        assert_eq!(all_nodes.len(), 2);
+
+        // Program must be present.
+        let fetched_prog = store.get_program(&prog.hash).await.unwrap().unwrap();
+        assert_eq!(fetched_prog.image, prog.image);
     }
 }

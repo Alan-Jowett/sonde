@@ -7,6 +7,7 @@ use std::time::UNIX_EPOCH;
 
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
+use zeroize::Zeroizing;
 
 use crate::engine::PendingCommand;
 use crate::program::{ProgramLibrary, VerificationProfile};
@@ -84,6 +85,16 @@ fn storage_err(e: crate::storage::StorageError) -> Status {
     match e {
         crate::storage::StorageError::NotFound(_) => Status::not_found(e.to_string()),
         _ => Status::internal(e.to_string()),
+    }
+}
+
+/// Map `BundleError` to gRPC status: encode/RNG failures → INTERNAL (server
+/// error), everything else (bad input) → INVALID_ARGUMENT.
+fn bundle_err(e: crate::state_bundle::BundleError) -> Status {
+    match e {
+        crate::state_bundle::BundleError::Encode(_) => Status::internal(e.to_string()),
+        crate::state_bundle::BundleError::Rng => Status::internal(e.to_string()),
+        _ => Status::invalid_argument(e.to_string()),
     }
 }
 
@@ -388,34 +399,96 @@ impl GatewayAdmin for AdminService {
         }))
     }
 
-    /// Export gateway state (nodes + programs).
+    /// Export gateway state (nodes + programs) as an AES-256-GCM-encrypted
+    /// CBOR bundle.
     ///
-    /// Disabled until admin authentication/authorization is implemented.
-    /// PSK material is now encrypted at rest (GW-0601a); however, exporting
-    /// requires operator authorization to prevent unauthorized bulk key extraction.
-    /// Handler routing configuration export is also deferred to Phase 2C-iii.
+    /// The passphrase is used to derive the encryption key via
+    /// PBKDF2-HMAC-SHA256.  Handler routing configuration is not included
+    /// in the bundle (deferred to Phase 2C-iii).
+    ///
+    /// **Security note:** This RPC returns PSK material (encrypted with the
+    /// operator passphrase).  The admin gRPC endpoint MUST be bound to a
+    /// local-only transport (Unix socket / named pipe) or protected by
+    /// authentication before deployment.  See GW-0800 and security.md §2.3.
     async fn export_state(
         &self,
-        _request: Request<Empty>,
+        request: Request<ExportStateRequest>,
     ) -> Result<Response<ExportStateResponse>, Status> {
-        Err(Status::unimplemented(
-            "`export_state` is disabled until admin authentication/authorization is implemented",
-        ))
+        let req = request.into_inner();
+        // Validate passphrase early to avoid loading sensitive material
+        // for a request that will fail anyway.
+        if req.passphrase.is_empty() {
+            return Err(Status::invalid_argument("passphrase must not be empty"));
+        }
+        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let programs = self.storage.list_programs().await.map_err(storage_err)?;
+        let passphrase = Zeroizing::new(req.passphrase);
+        // Offload CPU-bound PBKDF2 + AES-GCM encryption to a blocking thread
+        // so the Tokio runtime is not stalled.
+        let data = tokio::task::spawn_blocking(move || {
+            crate::state_bundle::encrypt_state(&nodes, &programs, &passphrase)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("encrypt task failed: {e}")))?
+        .map_err(bundle_err)?;
+        Ok(Response::new(ExportStateResponse { data }))
     }
 
-    /// Import gateway state (nodes + programs).
+    /// Import gateway state from a bundle previously produced by `export_state`.
     ///
-    /// Disabled until admin authentication/authorization is implemented.
-    /// PSK material is now encrypted at rest (GW-0601a); however, importing
-    /// requires operator authorization to prevent unauthorized key injection.
-    /// Handler routing configuration import is also deferred to Phase 2C-iii.
+    /// Replaces the current node registry and program library with the bundle
+    /// contents.  Rejects the request with `FAILED_PRECONDITION` if any node
+    /// sessions are active (the gateway should be quiescent before import).
+    /// Pending commands are cleared after a successful import to prevent stale
+    /// commands from being delivered to nodes whose records were replaced.
+    ///
+    /// **Security note:** see [`export_state`] — this RPC accepts key material
+    /// and should only be exposed on a local-only or authenticated transport.
     async fn import_state(
         &self,
-        _request: Request<ImportStateRequest>,
+        request: Request<ImportStateRequest>,
     ) -> Result<Response<Empty>, Status> {
-        Err(Status::unimplemented(
-            "`import_state` is disabled until admin authentication/authorization is implemented",
-        ))
+        // Acquire the import lock to prevent new sessions from being
+        // created between the active_count check and replace_state.
+        let _import_guard = self.session_manager.acquire_import_lock().await;
+
+        // Reap expired sessions before checking count so stale sessions
+        // don't block imports indefinitely.
+        self.session_manager.reap_expired().await;
+
+        // Reject import while sessions are active to avoid mixed in-memory
+        // and on-disk state.
+        let active = self.session_manager.active_count().await;
+        if active > 0 {
+            return Err(Status::failed_precondition(format!(
+                "cannot import state while {active} session(s) are active; \
+                 wait for sessions to expire or restart the gateway"
+            )));
+        }
+
+        let req = request.into_inner();
+        let data = req.data;
+        let passphrase = Zeroizing::new(req.passphrase);
+        // Offload CPU-bound PBKDF2 + AES-GCM decryption to a blocking thread.
+        let (nodes, programs) = tokio::task::spawn_blocking(move || {
+            crate::state_bundle::decrypt_state(&data, &passphrase)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("decrypt task failed: {e}")))?
+        .map_err(bundle_err)?;
+
+        // Replace all nodes and programs with the bundle contents.
+        // SqliteStorage performs this in a single transaction; other backends
+        // use the default non-atomic delete-then-insert fallback.
+        self.storage
+            .replace_state(&nodes, &programs)
+            .await
+            .map_err(storage_err)?;
+
+        // Clear any pending commands queued for the old node set.
+        self.pending_commands.write().await.clear();
+
+        Ok(Response::new(Empty {}))
     }
 
     /// Get modem status (channel, counters, uptime).

@@ -52,12 +52,8 @@ const MAX_MAPS: usize = 16;
 
 /// Fixed-size flat array mapping relocated map pointers to map indices.
 ///
-/// Replaces `HashMap<u64, usize>` for zero heap allocation and faster lookup
-/// over the small (1–4 entry) typical map counts.
-/// Fixed-size flat array mapping relocated map pointers to map indices.
-///
-/// Replaces `HashMap<u64, usize>` for zero heap allocation and faster lookup
-/// over the small (1–4 entry) typical map counts.
+/// Replaces `HashMap<u64, usize>` for zero heap allocation and faster
+/// lookup over the small (1–4 entry) typical map counts.
 ///
 /// Map pointers originate from `Vec::as_ptr()` in [`MapStorage`], which the
 /// Rust allocator guarantees to be non-null. The sentinel value `0` therefore
@@ -76,6 +72,12 @@ impl MapPtrIndex {
     }
 
     fn insert(&mut self, ptr: u64, idx: usize) {
+        // Check for duplicate — each map pointer must be unique.
+        debug_assert!(
+            self.entries[..self.len].iter().all(|(p, _)| *p != ptr),
+            "duplicate map pointer 0x{:x} in MapPtrIndex",
+            ptr
+        );
         assert!(
             self.len < MAX_MAPS,
             "BPF map count exceeds MAX_MAPS ({})",
@@ -116,7 +118,7 @@ struct DispatchContext {
     gateway_timestamp_ms: u64,
     command_received_at_ms: u64,
     battery_mv: u32,
-    /// Relocated map pointer → index mapping for O(1) helper dispatch.
+    /// Relocated map pointer → index mapping (linear scan, bounded by MAX_MAPS).
     map_ptr_index: MapPtrIndex,
 }
 

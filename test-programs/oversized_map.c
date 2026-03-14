@@ -5,9 +5,13 @@
  * oversized_map — declares a map that exceeds the RTC SRAM budget.
  *
  * The ESP32-C3 provides approximately 4 KB of usable sleep-persistent map
- * storage.  This program declares a single ARRAY map with 1 024 uint32_t
- * entries, requiring 1 024 × (4 + 4) = 8 192 bytes — more than double the
- * available budget.
+ * storage.  This program declares a single ARRAY map with 2 048 uint32_t
+ * entries.  Sonde's firmware sizes each entry as (key_size + value_size),
+ * so: 2 048 × (4 + 4) = 16 384 bytes — well above the ~4 KB budget.
+ *
+ * Even under a value-only sizing model (2 048 × 4 = 8 192 bytes) the map
+ * still clearly exceeds the budget, making this test robust regardless of
+ * the exact allocation strategy.
  *
  * The gateway's ingestion pipeline (or the node firmware on install) must
  * reject this program because its map footprint exceeds the platform limit.
@@ -19,12 +23,12 @@
 #include "include/sonde_helpers.h"
 
 /**
- * Oversized map: 1 024 entries × (4-byte key + 4-byte value) = 8 192 bytes.
- * This exceeds the ~4 KB RTC SRAM budget on the ESP32-C3 reference platform.
+ * Oversized map: 2 048 entries × (4-byte key + 4-byte value) = 16 384 bytes.
+ * This far exceeds the ~4 KB RTC SRAM budget on the ESP32-C3 reference platform.
  */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1024);
+    __uint(max_entries, 2048);
     __type(key, __u32);
     __type(value, __u32);
 } big_map SEC(".maps");

@@ -102,7 +102,7 @@ int program(struct sonde_context *ctx)
     __u8 chip_id = 0;
     int rc = bme280_read_reg(BME280_REG_CHIP_ID, &chip_id);
     if (rc < 0 || chip_id != BME280_CHIP_ID) {
-        bpf_trace_printk(err_no_device, sizeof(err_no_device));
+        bpf_trace_printk(err_no_device, (__u32)sizeof(err_no_device));
         return 0;
     }
 
@@ -110,7 +110,7 @@ int program(struct sonde_context *ctx)
     __u8 raw[BME280_RAW_DATA_LEN];
     rc = bme280_trigger_and_read(raw);
     if (rc < 0) {
-        bpf_trace_printk(err_read_fail, sizeof(err_read_fail));
+        bpf_trace_printk(err_read_fail, (__u32)sizeof(err_read_fail));
         return 0;
     }
 

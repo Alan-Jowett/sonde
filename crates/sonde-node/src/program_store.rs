@@ -107,9 +107,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         // Write to the inactive partition
         let (_interval, active_partition) = self.storage.read_schedule();
         if active_partition > 1 {
-            return Err(NodeError::StorageError(
-                "invalid active partition index",
-            ));
+            return Err(NodeError::StorageError("invalid active partition index"));
         }
         let inactive_partition = 1 - active_partition;
         self.storage
@@ -118,12 +116,10 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         // Re-read the written program and verify its hash to detect
         // flash write corruption or partial writes before committing
         // the A/B swap.
-        let written_bytes =
-            self.storage
-                .read_program(inactive_partition)
-                .ok_or(NodeError::StorageError(
-                    "failed to re-read written program",
-                ))?;
+        let written_bytes = self
+            .storage
+            .read_program(inactive_partition)
+            .ok_or(NodeError::StorageError("failed to re-read written program"))?;
         let written_hash = sha.hash(&written_bytes);
         if written_hash.as_slice() != expected_hash {
             return Err(NodeError::ProgramHashMismatch);

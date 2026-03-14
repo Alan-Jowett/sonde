@@ -88,9 +88,7 @@ impl EspNowTransport {
         channel: u8,
     ) -> Result<Self, NodeError> {
         if channel < 1 || channel > 13 {
-            return Err(NodeError::Transport(
-                "invalid WiFi channel (must be 1–13)",
-            ));
+            return Err(NodeError::Transport("invalid WiFi channel (must be 1–13)"));
         }
 
         // WiFi STA mode (required for ESP-NOW)
@@ -111,8 +109,7 @@ impl EspNowTransport {
             .map_err(|_| NodeError::Transport("set WiFi channel failed"))?;
         }
 
-        let espnow =
-            EspNow::take().map_err(|_| NodeError::Transport("ESP-NOW init failed"))?;
+        let espnow = EspNow::take().map_err(|_| NodeError::Transport("ESP-NOW init failed"))?;
 
         // Register broadcast peer (channel = 0 means "use current WiFi channel")
         let peer_info = PeerInfo {

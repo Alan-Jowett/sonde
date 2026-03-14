@@ -66,9 +66,7 @@ impl BpfInterpreter for SondeBpfInterpreter {
         }
 
         if map_ptrs.len() != map_defs.len() {
-            return Err(BpfError::LoadError(
-                "map_ptrs and map_defs length mismatch",
-            ));
+            return Err(BpfError::LoadError("map_ptrs and map_defs length mismatch"));
         }
 
         // Build MapRegion descriptors from map_ptrs + map_defs.
@@ -87,12 +85,13 @@ impl BpfInterpreter for SondeBpfInterpreter {
                     index: i,
                     kind: "entry size overflow (key_size + value_size)",
                 })?;
-            let total_bytes = entry_size
-                .checked_mul(def.max_entries as u64)
-                .ok_or(BpfError::MapLoadError {
-                    index: i,
-                    kind: "total size overflow (entry_size * max_entries)",
-                })?;
+            let total_bytes =
+                entry_size
+                    .checked_mul(def.max_entries as u64)
+                    .ok_or(BpfError::MapLoadError {
+                        index: i,
+                        kind: "total size overflow (entry_size * max_entries)",
+                    })?;
             new_regions.push(MapRegion {
                 relocated_ptr: ptr,
                 value_size: def.value_size,

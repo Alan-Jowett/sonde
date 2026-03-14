@@ -164,9 +164,7 @@ impl MapStorage {
         Self::validate_map_defs(map_defs)?;
 
         let required = Self::required_bytes_checked(map_defs).ok_or(
-            NodeError::ProgramDecodeFailed(
-                "invalid map definitions: size calculation overflowed",
-            ),
+            NodeError::ProgramDecodeFailed("invalid map definitions: size calculation overflowed"),
         )?;
         if required > self.budget_bytes {
             return Err(NodeError::MapBudgetExceeded {

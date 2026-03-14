@@ -497,11 +497,7 @@ fn verify_and_decode_command(
             // for the two required fields.
             return decode_command_as_nop(&decoded.payload);
         }
-        Err(_) => {
-            return Err(NodeError::MalformedPayload(
-                "COMMAND payload decode failed",
-            ))
-        }
+        Err(_) => return Err(NodeError::MalformedPayload("COMMAND payload decode failed")),
     };
 
     match gateway_msg {

@@ -179,8 +179,11 @@ pub unsafe fn install(
             let mut ok = true;
             for (i, &p) in ms.map_pointers().iter().enumerate() {
                 if !index.insert(p, i) {
+                    // Overflow is unreachable when validate_map_defs()
+                    // enforces map_count <= MAX_MAPS, so this is a
+                    // duplicate pointer (e.g. zero-sized map collision).
                     log::error!(
-                        "map pointer index overflow or duplicate at map {i} — \
+                        "duplicate map pointer {p:#x} at map {i} — \
                          all map helpers will return errors this cycle"
                     );
                     ok = false;

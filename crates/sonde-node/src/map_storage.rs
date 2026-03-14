@@ -369,8 +369,9 @@ mod tests {
         let result = MapStorage::validate_map_defs(&defs);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
+        let expected_count = format!("{} maps", crate::bpf_dispatch::MAX_MAPS + 1);
         assert!(
-            err_msg.contains("17 maps"),
+            err_msg.contains(&expected_count),
             "error should mention the map count: {err_msg}"
         );
     }

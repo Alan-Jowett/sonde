@@ -50,14 +50,6 @@ pub const MAX_MAPS: usize = 16;
 // Map pointer index
 // ---------------------------------------------------------------------------
 
-/// Fixed-size flat array mapping relocated map pointers to map indices.
-///
-/// Replaces `HashMap<u64, usize>` for zero heap allocation and faster
-/// lookup over the small (1–4 entry) typical map counts.
-///
-/// Map pointers originate from `Vec::as_ptr()` in [`MapStorage`], which the
-/// Rust allocator guarantees to be non-null. The sentinel value `0` therefore
-/// never collides with a valid map pointer.
 /// Error returned by [`MapPtrIndex::insert`].
 #[derive(Debug, PartialEq)]
 enum MapPtrInsertError {
@@ -67,6 +59,14 @@ enum MapPtrInsertError {
     Duplicate,
 }
 
+/// Fixed-size flat array mapping relocated map pointers to map indices.
+///
+/// Replaces `HashMap<u64, usize>` for zero heap allocation and faster
+/// lookup over the small (1–4 entry) typical map counts.
+///
+/// Map pointers originate from `Vec::as_ptr()` in [`MapStorage`], which
+/// guarantees non-null for non-zero-capacity vectors. The sentinel value `0`
+/// therefore never collides with a valid map pointer.
 struct MapPtrIndex {
     entries: [(u64, usize); MAX_MAPS],
     len: usize,

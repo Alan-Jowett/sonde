@@ -76,14 +76,24 @@ pub struct EspNowTransport {
 impl EspNowTransport {
     /// Initialise WiFi in STA mode and start ESP-NOW.
     ///
-    /// Registers a broadcast peer and installs the raw receive callback.
+    /// Sets the WiFi channel to `channel` before starting ESP-NOW so that
+    /// the node communicates on the same channel as the gateway. Registers
+    /// a broadcast peer and installs the raw receive callback.
     /// Must only be called once per process (the global `RECV_STATE` is
     /// a `OnceLock`).
     pub fn new(
         modem: Modem,
         sysloop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
+        channel: u8,
     ) -> Result<Self, NodeError> {
+        if channel < 1 || channel > 13 {
+            return Err(NodeError::Transport(format!(
+                "invalid channel {}: must be 1–13",
+                channel
+            )));
+        }
+
         // WiFi STA mode (required for ESP-NOW)
         let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))
             .map_err(|e| NodeError::Transport(format!("WiFi init: {:?}", e)))?;
@@ -92,10 +102,20 @@ impl EspNowTransport {
         wifi.start()
             .map_err(|e| NodeError::Transport(format!("WiFi start: {:?}", e)))?;
 
+        // Set the WiFi channel before ESP-NOW init so the node and gateway
+        // communicate on the same channel.
+        unsafe {
+            esp_idf_sys::esp!(esp_idf_sys::esp_wifi_set_channel(
+                channel,
+                esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE,
+            ))
+            .map_err(|e| NodeError::Transport(format!("set channel {}: {:?}", channel, e)))?;
+        }
+
         let espnow =
             EspNow::take().map_err(|e| NodeError::Transport(format!("ESP-NOW init: {:?}", e)))?;
 
-        // Register broadcast peer
+        // Register broadcast peer (channel = 0 means "use current WiFi channel")
         let peer_info = PeerInfo {
             peer_addr: BROADCAST_MAC,
             channel: 0,

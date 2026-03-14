@@ -139,8 +139,11 @@ pub const ESPNOW_MAX_DATA_SIZE: usize = 250;
 /// Size of a pre-shared key (PSK).
 pub const PSK_SIZE: usize = 32;
 
-/// PAIR_REQUEST body: key_hint (2B) + psk (32B).
+/// PAIR_REQUEST body without channel: key_hint (2B) + psk (32B).
 pub const PAIR_REQUEST_BODY_SIZE: usize = 2 + PSK_SIZE; // 34
+
+/// PAIR_REQUEST body with optional channel: key_hint (2B) + psk (32B) + channel (1B).
+pub const PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL: usize = PAIR_REQUEST_BODY_SIZE + 1; // 35
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -303,11 +306,16 @@ pub struct ModemError {
     pub message: Vec<u8>,
 }
 
-/// PAIR_REQUEST (Host → Node): provision key_hint and PSK.
+/// PAIR_REQUEST (Host → Node): provision key_hint, PSK, and optional WiFi channel.
+///
+/// `channel` is an optional WiFi channel (1–13). When present, the node stores
+/// it in NVS and uses it for ESP-NOW communication. When absent, the node
+/// retains its previously configured channel (or defaults to channel 1).
 #[derive(Clone, PartialEq)]
 pub struct PairRequest {
     pub key_hint: u16,
     pub psk: [u8; PSK_SIZE],
+    pub channel: Option<u8>,
 }
 
 impl core::fmt::Debug for PairRequest {
@@ -315,6 +323,7 @@ impl core::fmt::Debug for PairRequest {
         f.debug_struct("PairRequest")
             .field("key_hint", &self.key_hint)
             .field("psk", &"[REDACTED]")
+            .field("channel", &self.channel)
             .finish()
     }
 }
@@ -452,9 +461,17 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             Ok((MODEM_MSG_ERROR, body))
         }
         ModemMessage::PairRequest(pr) => {
-            let mut body = Vec::with_capacity(PAIR_REQUEST_BODY_SIZE);
+            let body_size = if pr.channel.is_some() {
+                PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL
+            } else {
+                PAIR_REQUEST_BODY_SIZE
+            };
+            let mut body = Vec::with_capacity(body_size);
             body.extend_from_slice(&pr.key_hint.to_be_bytes());
             body.extend_from_slice(&pr.psk);
+            if let Some(ch) = pr.channel {
+                body.push(ch);
+            }
             Ok((PAIRING_MSG_PAIR_REQUEST, body))
         }
         ModemMessage::ResetRequest => Ok((PAIRING_MSG_RESET_REQUEST, Vec::new())),
@@ -704,15 +721,29 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
         }
 
         PAIRING_MSG_PAIR_REQUEST => {
-            // The codec validates body size and returns BodyTooShort/BodyTooLong
-            // on mismatch. Per pairing-protocol.md §4.1, the *node receiver*
-            // should silently discard invalid frames — that policy is enforced
-            // by the caller, not the codec.
-            check_exact_body(msg_type, body, PAIR_REQUEST_BODY_SIZE)?;
+            // Accept 34 bytes (without channel) or 35 bytes (with channel).
+            // Per pairing-protocol.md §4.1, the *node receiver* should silently
+            // discard invalid frames — that policy is enforced by the caller,
+            // not the codec.
+            check_body_range(
+                msg_type,
+                body,
+                PAIR_REQUEST_BODY_SIZE,
+                PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL,
+            )?;
             let key_hint = u16::from_be_bytes([body[0], body[1]]);
             let mut psk = [0u8; PSK_SIZE];
             psk.copy_from_slice(&body[2..2 + PSK_SIZE]);
-            Ok(ModemMessage::PairRequest(PairRequest { key_hint, psk }))
+            let channel = if body.len() == PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL {
+                Some(body[PAIR_REQUEST_BODY_SIZE])
+            } else {
+                None
+            };
+            Ok(ModemMessage::PairRequest(PairRequest {
+                key_hint,
+                psk,
+                channel,
+            }))
         }
 
         PAIRING_MSG_RESET_REQUEST => {
@@ -1311,6 +1342,7 @@ mod tests {
         let msg = ModemMessage::PairRequest(PairRequest {
             key_hint: 0x1234,
             psk,
+            channel: None,
         });
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
@@ -1324,6 +1356,7 @@ mod tests {
         let msg = ModemMessage::PairRequest(PairRequest {
             key_hint: 0xBEEF,
             psk,
+            channel: None,
         });
         let frame = encode_modem_frame(&msg).unwrap();
         // LEN = 1 (TYPE) + 34 (BODY) = 35
@@ -1337,6 +1370,26 @@ mod tests {
         assert_eq!(frame[5], 0xAB);
         let (decoded, _) = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn pair_request_with_channel_round_trips() {
+        let psk = [0xCD; PSK_SIZE];
+        let msg = ModemMessage::PairRequest(PairRequest {
+            key_hint: 0x1234,
+            psk,
+            channel: Some(6),
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        // LEN = 1 (TYPE) + 35 (BODY) = 36
+        assert_eq!(frame[0], 0x00);
+        assert_eq!(frame[1], 36);
+        assert_eq!(frame[2], PAIRING_MSG_PAIR_REQUEST);
+        // channel byte is last
+        assert_eq!(frame[frame.len() - 1], 6);
+        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+        assert_eq!(consumed, frame.len());
     }
 
     #[test]
@@ -1422,6 +1475,7 @@ mod tests {
         let f2 = encode_modem_frame(&ModemMessage::PairRequest(PairRequest {
             key_hint: 0x0042,
             psk: [0xFF; PSK_SIZE],
+            channel: None,
         }))
         .unwrap();
         let f3 = encode_modem_frame(&ModemMessage::PairAck(PairAck {
@@ -1444,6 +1498,7 @@ mod tests {
             ModemMessage::PairRequest(PairRequest {
                 key_hint: 0x0042,
                 psk: [0xFF; PSK_SIZE],
+                channel: None,
             })
         );
         assert_eq!(

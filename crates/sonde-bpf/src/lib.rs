@@ -20,7 +20,7 @@
 //!     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
 //! ];
 //! let mut mem = [];
-//! let result = interpreter::execute_program_no_maps(prog, &mut mem, &[], false).unwrap();
+//! let result = interpreter::execute_program_no_maps(prog, &mut mem, &[], false, interpreter::UNLIMITED_BUDGET).unwrap();
 //! assert_eq!(result, 42);
 //! ```
 

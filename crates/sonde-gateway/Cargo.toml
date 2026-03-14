@@ -23,6 +23,8 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-serial = "5.4"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_yaml_ng = "0.10.0"
 
 [[bin]]
 name = "sonde-gateway"
@@ -30,3 +32,6 @@ path = "src/bin/gateway.rs"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+tracing-test = { version = "0.2.6", features = ["no-env-filter"] }

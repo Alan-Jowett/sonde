@@ -61,6 +61,7 @@ fn make_program_from_bytecode(
         image: cbor,
         size,
         verification_profile: profile,
+        abi_version: None,
     };
     (record, hash)
 }
@@ -855,6 +856,7 @@ async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
     serial.enqueue(&ModemMessage::PairRequest(PairRequest {
         key_hint: KEY_HINT,
         psk: PSK,
+        channel: None,
     }));
     serial.enqueue(&ModemMessage::IdentityRequest);
     // Mock serial disconnects after all messages are consumed.

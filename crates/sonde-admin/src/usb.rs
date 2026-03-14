@@ -26,18 +26,48 @@ pub fn generate_psk() -> [u8; PSK_SIZE] {
     rand::rng().random()
 }
 
-/// Derive the `key_hint` from a PSK: upper 16 bits of SHA-256(PSK), big-endian.
+/// Derive the `key_hint` from a PSK: lower 16 bits of SHA-256(PSK), big-endian.
+///
+/// "Lower 16 bits" means the two least-significant bytes of the 256-bit
+/// SHA-256 digest, i.e. `hash[30..32]` in big-endian order.
 pub fn derive_key_hint(psk: &[u8; PSK_SIZE]) -> u16 {
     let hash = Sha256::digest(psk);
-    u16::from_be_bytes([hash[0], hash[1]])
+    u16::from_be_bytes([hash[30], hash[31]])
 }
 
-/// Pair a node by sending `PAIR_REQUEST` with the given `key_hint` and PSK.
+/// Pair a node by sending `PAIR_REQUEST` with the given `key_hint`, PSK, and
+/// optional WiFi `channel`.
 ///
 /// This function performs only the USB serial exchange. Callers are
 /// responsible for printing the result and, for the auto-pairing flow,
 /// for registering the node with the gateway afterward.
-pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<(), String> {
+pub fn pair_node(
+    port_name: &str,
+    key_hint: u16,
+    psk: [u8; PSK_SIZE],
+    channel: Option<u8>,
+    json: bool,
+) -> Result<(), String> {
+    pair_node_inner(port_name, key_hint, psk, channel)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"status": "success", "key_hint": format!("0x{:04x}", key_hint)})
+        );
+    } else {
+        println!("Pairing successful (key_hint=0x{:04x})", key_hint);
+    }
+    Ok(())
+}
+
+/// Pair a node without printing output. Used by the auto-pairing flow so that
+/// the caller can print a combined success message after gateway registration.
+pub fn pair_node_inner(
+    port_name: &str,
+    key_hint: u16,
+    psk: [u8; PSK_SIZE],
+    channel: Option<u8>,
+) -> Result<(), String> {
     let mut port = serialport::new(port_name, 115_200)
         .timeout(READY_TIMEOUT)
         .open()
@@ -55,7 +85,11 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
         ));
     }
 
-    let req = ModemMessage::PairRequest(PairRequest { key_hint, psk });
+    let req = ModemMessage::PairRequest(PairRequest {
+        key_hint,
+        psk,
+        channel,
+    });
     let frame = encode_modem_frame(&req).map_err(|e| format!("encode: {}", e))?;
     port.write_all(&frame)
         .map_err(|e| format!("write: {}", e))?;
@@ -84,6 +118,25 @@ pub fn pair_node(port_name: &str, key_hint: u16, psk: [u8; PSK_SIZE]) -> Result<
 
 /// Factory-reset a node by sending `RESET_REQUEST`.
 pub fn factory_reset_node(port_name: &str, json: bool) -> Result<(), String> {
+    factory_reset_inner(port_name)?;
+    if json {
+        println!("{}", serde_json::json!({"status": "success"}));
+    } else {
+        println!("Factory reset successful");
+    }
+    Ok(())
+}
+
+/// Factory-reset a node without printing any output.
+///
+/// Used in the auto-pairing rollback path so that no success message is
+/// emitted on a code path that is already reporting an error.
+pub fn factory_reset_silent(port_name: &str) -> Result<(), String> {
+    factory_reset_inner(port_name)
+}
+
+/// Send `RESET_REQUEST` and wait for `RESET_ACK`. No printing.
+fn factory_reset_inner(port_name: &str) -> Result<(), String> {
     let mut port = serialport::new(port_name, 115_200)
         .timeout(READY_TIMEOUT)
         .open()
@@ -115,11 +168,6 @@ pub fn factory_reset_node(port_name: &str, json: bool) -> Result<(), String> {
         match ack {
             ModemMessage::PairingReady(_) => continue, // §6.4: ignore re-sent ready
             ModemMessage::ResetAck(a) if a.status == PAIRING_STATUS_SUCCESS => {
-                if json {
-                    println!("{}", serde_json::json!({"status": "success"}));
-                } else {
-                    println!("Factory reset successful");
-                }
                 return Ok(());
             }
             ModemMessage::ResetAck(a) => {

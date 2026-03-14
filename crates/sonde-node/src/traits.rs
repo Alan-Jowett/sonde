@@ -119,4 +119,16 @@ pub trait PlatformStorage {
 
     /// Set the "early wake requested" flag (persists through deep sleep).
     fn set_early_wake_flag(&mut self) -> NodeResult<()>;
+
+    // --- WiFi channel ---
+
+    /// Read the stored WiFi channel (1–13). Returns `None` if not set.
+    fn read_channel(&self) -> Option<u8> {
+        None
+    }
+
+    /// Persist the WiFi channel (1–13) to storage.
+    fn write_channel(&mut self, _channel: u8) -> NodeResult<()> {
+        Ok(())
+    }
 }

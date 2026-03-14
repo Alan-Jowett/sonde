@@ -207,6 +207,10 @@ enum UsbAction {
         /// 32-byte PSK as 64 hex chars (raw mode only).
         #[arg(long, requires = "raw")]
         psk: Option<String>,
+        /// WiFi channel for ESP-NOW (1–13). If omitted the node retains its
+        /// current channel (defaulting to 1 on first boot).
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=13))]
+        channel: Option<u8>,
     },
     /// Factory reset a node via USB.
     FactoryReset {
@@ -254,6 +258,7 @@ async fn main() {
                 port,
                 node_id,
                 raw: false,
+                channel,
                 ..
             },
     } = &cli.command
@@ -263,7 +268,7 @@ async fn main() {
         let node_id = node_id
             .as_deref()
             .expect("clap enforces --node-id for auto mode");
-        let result = run_usb_pair_auto(&mut client, port, node_id, json).await;
+        let result = run_usb_pair_auto(&mut client, port, node_id, *channel, json).await;
         if let Err(e) = result {
             eprintln!("Error: {e}");
             process::exit(1);
@@ -296,6 +301,7 @@ fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
             raw: true,
             key_hint,
             psk,
+            channel,
             ..
         } => {
             let key_hint_str = key_hint
@@ -312,16 +318,7 @@ fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
             }
             let mut psk_arr = [0u8; sonde_protocol::modem::PSK_SIZE];
             psk_arr.copy_from_slice(&psk_bytes);
-            usb::pair_node(port, kh, psk_arr)?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"status": "success", "key_hint": format!("0x{:04x}", kh)})
-                );
-            } else {
-                println!("Pairing successful (key_hint=0x{:04x})", kh);
-            }
-            Ok(())
+            usb::pair_node(port, kh, psk_arr, *channel, json)
         }
         UsbAction::Pair { raw: false, .. } => {
             unreachable!("auto pair is handled in the async path")
@@ -332,17 +329,19 @@ fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
 }
 
 /// Auto pairing: generate PSK, pair via USB, register with gateway.
-/// On gateway failure, send RESET_REQUEST to roll back the node.
+/// On gateway failure, silently send RESET_REQUEST to roll back the node,
+/// then report the error.
 async fn run_usb_pair_auto(
     client: &mut AdminClient,
     port: &str,
     node_id: &str,
+    channel: Option<u8>,
     json: bool,
 ) -> Result<(), String> {
     let psk = usb::generate_psk();
     let key_hint = usb::derive_key_hint(&psk);
 
-    usb::pair_node(port, key_hint, psk)?;
+    usb::pair_node_inner(port, key_hint, psk, channel)?;
 
     match client
         .register_node(node_id, key_hint as u32, psk.to_vec())
@@ -367,8 +366,8 @@ async fn run_usb_pair_auto(
             Ok(())
         }
         Err(e) => {
-            // Gateway registration failed — roll back the node via RESET_REQUEST.
-            let rollback = usb::factory_reset_node(port, false);
+            // Gateway registration failed — silently roll back the node.
+            let rollback = usb::factory_reset_silent(port);
             if let Err(rb_err) = rollback {
                 Err(format!(
                     "gateway registration failed: {}. Rollback also failed: {}. \
@@ -448,7 +447,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     Profile::Resident => 1,
                     Profile::Ephemeral => 2,
                 };
-                let (hash, size) = client.ingest_program(image_data, profile_val).await?;
+                let (hash, size) = client.ingest_program(image_data, profile_val, None).await?;
                 if json {
                     print_json(&serde_json::json!({
                         "program_hash": hex::encode(&hash),

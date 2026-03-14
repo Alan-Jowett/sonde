@@ -80,7 +80,10 @@ fn main() {
     let mut hal = EspHal::new();
     let battery = EspBatteryReader;
 
-    let mut transport = EspNowTransport::new(peripherals.modem, sysloop, nvs_partition)
+    // Read the stored WiFi channel (falls back to channel 1 if not yet set).
+    let channel = storage.read_channel().unwrap_or(1);
+
+    let mut transport = EspNowTransport::new(peripherals.modem, sysloop, nvs_partition, channel)
         .expect("failed to initialize ESP-NOW transport");
 
     let mut interpreter = SondeBpfInterpreter::new();

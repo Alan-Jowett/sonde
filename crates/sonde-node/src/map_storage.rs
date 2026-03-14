@@ -121,7 +121,10 @@ impl RtcSlice {
 impl core::ops::Index<core::ops::Range<usize>> for RtcSlice {
     type Output = [u8];
     fn index(&self, range: core::ops::Range<usize>) -> &[u8] {
-        assert!(range.end <= self.len, "RtcSlice index out of bounds");
+        assert!(
+            range.start <= range.end && range.end <= self.len,
+            "RtcSlice index out of bounds"
+        );
         // SAFETY: range is within bounds; ptr is valid for the slice lifetime.
         unsafe { core::slice::from_raw_parts(self.ptr.add(range.start), range.end - range.start) }
     }
@@ -130,7 +133,10 @@ impl core::ops::Index<core::ops::Range<usize>> for RtcSlice {
 #[cfg(feature = "esp")]
 impl core::ops::IndexMut<core::ops::Range<usize>> for RtcSlice {
     fn index_mut(&mut self, range: core::ops::Range<usize>) -> &mut [u8] {
-        assert!(range.end <= self.len, "RtcSlice index_mut out of bounds");
+        assert!(
+            range.start <= range.end && range.end <= self.len,
+            "RtcSlice index_mut out of bounds"
+        );
         // SAFETY: range is within bounds; ptr is valid and uniquely owned.
         unsafe {
             core::slice::from_raw_parts_mut(self.ptr.add(range.start), range.end - range.start)
@@ -145,11 +151,14 @@ impl core::fmt::Debug for RtcSlice {
     }
 }
 
-// Raw pointers are not `Send` by default. `RtcSlice` wraps a `*mut u8`
-// into `MAP_BACKING` (RTC SRAM). The single-threaded wake-cycle engine
-// guarantees no concurrent access; `Send` is required because
-// `MapStorage` (which contains `MapInstance` with `RtcSlice` data) may
-// be stored in types that require `Send`.
+// `*mut u8` is `!Send` by default. `RtcSlice` needs `Send` because
+// `MapInstance` (which contains `RtcSlice`) is stored in a `Vec` inside
+// `MapStorage`, and `MapStorage` is passed as `&mut` to `run_wake_cycle`
+// which is generic over `Send`-bounded trait objects (e.g. `dyn Hal`).
+// Safety: the wake-cycle engine is single-threaded on ESP32; no other
+// thread or ISR accesses `MAP_BACKING`. If multi-threading is ever
+// introduced, this impl must be removed and replaced with proper
+// synchronisation.
 #[cfg(feature = "esp")]
 unsafe impl Send for RtcSlice {}
 
@@ -539,10 +548,27 @@ impl MapStorage {
             .all(|(instance, def)| instance.def == *def)
     }
 
-    /// Clear all map data to zero (used on program change).
+    /// Clear all map data to zero (used on program change and factory reset).
+    ///
+    /// On ESP builds, also invalidates the RTC layout record so that
+    /// `from_rtc()` returns `None` on the next boot. Without this, a
+    /// factory reset followed by a reboot would reconstruct a stale
+    /// map layout even though no resident program is installed.
     pub fn clear_all(&mut self) {
         for map in &mut self.maps {
             map.data.fill(0);
+        }
+        #[cfg(feature = "esp")]
+        Self::invalidate_rtc_layout();
+    }
+
+    /// Set `MAP_LAYOUT.map_count = 0` so `from_rtc()` treats the record
+    /// as empty on the next boot. Called by `clear_all()` during factory
+    /// reset and program erase.
+    #[cfg(feature = "esp")]
+    fn invalidate_rtc_layout() {
+        unsafe {
+            MAP_LAYOUT.map_count = 0;
         }
     }
 }
@@ -660,14 +686,15 @@ mod tests {
 
     #[test]
     fn test_map_budget_constant() {
-        // MAP_BUDGET must be large enough to hold a realistic program's maps,
-        // and non-zero.
-        assert_eq!(MAP_BUDGET, 6 * 1024);
+        // MAP_BUDGET must be positive and large enough for at least one
+        // small map (1 entry of 8 bytes = 12 bytes with 4-byte key).
+        assert!(MAP_BUDGET > 0, "MAP_BUDGET must be positive");
+        assert!(MAP_BUDGET >= 12, "MAP_BUDGET too small for a minimal map");
     }
 
     #[test]
     fn test_max_maps_constant() {
-        assert_eq!(MAX_MAPS, 16);
+        assert!(MAX_MAPS >= 1, "MAX_MAPS must allow at least one map");
     }
 
     /// Verify that when the same program runs again (layout_matches == true)

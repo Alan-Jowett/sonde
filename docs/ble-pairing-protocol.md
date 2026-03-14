@@ -108,6 +108,8 @@ Two GATT services are defined — one on the gateway (or its BLE-connected modem
 |----------------|------|------------|-------------|
 | Node Command | `0000FE51-...` | Write, Indicate | Phone writes provision data, node sends ACK as indication. |
 
+> **Note:** UUIDs are provisional; final values will be assigned before v1.0.
+
 ### 3.4  MTU and fragmentation
 
 Both services require an ATT MTU ≥ 247 bytes (negotiated via MTU exchange).  Messages larger than (MTU − 3) bytes use **Write Long** (ATT Prepare Write + Execute Write) for writes, and are reassembled from multiple indications on the receiving side using the length-prefixed envelope (§4).
@@ -122,7 +124,7 @@ All messages on both the Gateway Command and Node Command characteristics use a 
 
 ```
 ┌──────────┬──────────┬───────────────────────────┐
-│ TYPE (1B)│ LEN (2B) │ BODY (0..65533 bytes)      │
+│ TYPE (1B)│ LEN (2B) │ BODY (0..65535 bytes)      │
 │          │ BE u16   │                             │
 └──────────┴──────────┴───────────────────────────┘
 ```
@@ -131,7 +133,7 @@ All messages on both the Gateway Command and Node Command characteristics use a 
 |-------|------|-------------|
 | `TYPE` | 1 byte | Message type discriminator (§4.1, §4.2). |
 | `LEN` | 2 bytes, big-endian u16 | Length of BODY in bytes. |
-| `BODY` | 0–65533 bytes | Type-specific payload. |
+| `BODY` | 0–65535 bytes | Type-specific payload (up to `LEN` bytes). |
 
 Total envelope overhead: 3 bytes.
 
@@ -144,6 +146,21 @@ Total envelope overhead: 3 bytes.
 | 0x81 | GW → Phone | `GW_INFO_RESPONSE` | Gateway public key + id. |
 | 0x82 | GW → Phone | `PHONE_REGISTERED` | Encrypted phone PSK + channel. |
 | 0xFF | Either | `ERROR` | Error response. |
+
+#### 4.1.1  ERROR body layout
+
+| Offset | Size | Field   | Description          |
+|--------|------|---------|----------------------|
+| 0      | 1    | status  | Error code (u8)      |
+| 1      | var  | message | UTF-8 diagnostic text |
+
+**Status codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0x01 | Generic error |
+| 0x02 | Registration window closed |
+| 0x03 | Already paired |
 
 ### 4.2  Phone–node message types (Node Command characteristic)
 
@@ -246,7 +263,7 @@ This prevents an unauthorized device from silently registering as a pairing agen
 
 The gateway encrypts the response so the phone PSK is never sent in plaintext (even within the BLE LESC session):
 
-1. Convert `gw_private_key` (Ed25519) to X25519 private key.
+1. Convert `gw_private_key` (Ed25519) to X25519 private key: extract the 32-byte seed from the Ed25519 private key, compute SHA-512(seed), and take the first 32 bytes clamped per RFC 7748 §5.  This matches the procedure used by libsodium's `crypto_sign_ed25519_sk_to_curve25519`.
 2. `shared_secret` = X25519(gw_x25519_private, ephemeral_pubkey from REGISTER_PHONE).
 3. `aes_key` = HKDF-SHA256(ikm = shared_secret, salt = gateway_id, info = `"sonde-phone-reg-v1"`, len = 32).
 4. `nonce` = 12 random bytes from OS CSPRNG.
@@ -474,7 +491,7 @@ The node transmits `PEER_REQUEST` on each boot cycle until it receives `PEER_ACK
 ```
 ┌─────────────────────────────────────────┬───────────────┬────────┐
 │ Header (11 bytes)                       │ CBOR payload  │ HMAC   │
-│ key_hint[2] ‖ msg_type[1] ‖ seq[8]     │               │ [32]   │
+│ key_hint[2] ‖ msg_type[1] ‖ nonce[8]   │               │ [32]   │
 └─────────────────────────────────────────┴───────────────┴────────┘
 ```
 
@@ -482,7 +499,7 @@ The node transmits `PEER_REQUEST` on each boot cycle until it receives `PEER_ACK
 |-------------|-------|
 | `key_hint` | Node's key_hint (echoed back). |
 | `msg_type` | `0x84`. |
-| `seq` | Gateway-assigned sequence number (matches the nonce from the PEER_REQUEST). |
+| `nonce` | Echoes the `nonce` from the corresponding PEER_REQUEST (same as the nonce-echo pattern used in COMMAND). |
 
 **CBOR payload**:
 
@@ -497,12 +514,12 @@ The only status value sent is `0` (registered).  All error conditions result in 
 
 The `registration_proof` field is `HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)` — an HMAC binding the acknowledgement to the exact encrypted payload.  Both the node and the gateway can compute this value (both have the node PSK and the encrypted_payload bytes).
 
-While an attacker who intercepted the node PSK over BLE could also compute this HMAC, they would need to observe the encrypted_payload bytes from the PEER_REQUEST ESP-NOW frame.  The `registration_proof` raises the bar from "knows PSK" to "knows PSK AND observed the specific PEER_REQUEST transmission."
+A BLE eavesdropper observing `NODE_PROVISION` captures both `node_psk` and `encrypted_payload`.  The registration window and one-time-use of the encrypted payload are the primary mitigations.  For high-assurance deployments, use BLE Passkey or Numeric Comparison pairing to prevent MITM.
 
 **Node verification of PEER_ACK:**
 
 1. Verify frame HMAC over (header ‖ cbor_payload) using node PSK.
-2. Verify `seq` matches the nonce sent in the PEER_REQUEST.
+2. Verify `nonce` matches the nonce sent in the PEER_REQUEST.
 3. Compute expected `registration_proof` = `HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)` using the stored encrypted payload from NVS.
 4. If `registration_proof` does not match → discard (potential forgery).
 5. If all checks pass → set registration-complete flag.
@@ -615,11 +632,11 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 
 | NVS key | Type | Size | Description |
 |---------|------|------|-------------|
-| `magic` | u32 | 4 | Presence marker (0xS0ND = paired). |
+| `magic` | u32 | 4 | Presence marker (`0x534F4E44` — big-endian ASCII "SOND"). |
 | `key_hint` | u32 | 4 | Node key_hint (stored as u32, used as u16). |
 | `psk` | blob | 32 | Node PSK. |
 | `channel` | u32 | 4 | RF channel (1–13). |
-| `peer_payload` | blob | variable | Encrypted pairing payload (erased after PEER_ACK). |
+| `peer_payload` | blob | variable | Encrypted pairing payload.  Retained until the first successful WAKE/COMMAND exchange, then erased. |
 | `reg_complete` | u32 | 4 | Registration-complete flag (1 = registered). |
 | `interval` | u32 | 4 | Wake cycle interval (seconds). |
 | `active_p` | u32 | 4 | Active program partition (0 or 1). |
@@ -638,8 +655,8 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 | Unauthorized phone registration | Registration window must be opened by operator action; gateway rejects `REGISTER_PHONE` when closed (§5.4.1). |
 | Rogue phone registers a node | Phone HMAC verification (step 6 in §7.3).  Attacker needs a valid phone PSK. |
 | Compromised phone PSK | Gateway operator revokes the phone PSK.  Previously registered nodes remain valid. |
-| BLE passive eavesdrop captures node PSK | Node PSK is useless without gateway registration, which requires phone PSK. |
-| BLE active MITM captures node PSK | Same as passive — encrypted payload cannot be forged without phone PSK + gateway public key. |
+| BLE passive eavesdrop captures node PSK | `NODE_PROVISION` sends both `node_psk` and `encrypted_payload` over BLE.  A BLE eavesdropper captures all pairing material.  Mitigated by the limited registration window and one-time-use of the encrypted payload. |
+| BLE active MITM captures node PSK | Same as passive eavesdrop.  For high-assurance deployments, use BLE Passkey Entry or Numeric Comparison pairing to prevent MITM.  Just Works is acceptable for low-threat environments. |
 | Forged PEER_ACK | `registration_proof` = HMAC over encrypted payload (§7.2) raises the bar.  Deferred payload erasure (§8.3.1) ensures the node self-heals if a forged ACK is accepted — it reverts to PEER_REQUEST if the subsequent WAKE fails. |
 | Replay of PEER_REQUEST | Timestamp check (±24h) + node_id uniqueness (step 9–10 in §7.3). |
 | Phone A reads Phone B's pairing requests | Impossible — each encrypted with gateway public key, authenticated with different phone PSK. |
@@ -647,7 +664,7 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 
 ### 9.2  BLE link security
 
-BLE LESC Just Works provides AES-CCM encrypted transport.  This is the **only** protection for the node PSK in transit (phone → node).  An active MITM can defeat Just Works, but the intercepted PSK is a dead credential without the gateway-bound encrypted payload.
+BLE LESC Just Works provides AES-CCM encrypted transport.  This is the **only** protection for the node PSK in transit (phone → node).  An active MITM can defeat Just Works and capture both the `node_psk` and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The registration window (default 120 s) and one-time-use of the encrypted payload are the primary mitigations.
 
 For higher-security deployments, BLE Passkey Entry or Numeric Comparison could be used instead of Just Works (the protocol is agnostic to the BLE pairing method).
 
@@ -692,7 +709,7 @@ For higher-security deployments, BLE Passkey Entry or Numeric Comparison could b
 | Node BLE advertising name | `"sonde-XXXX"` | XXXX = last 4 hex digits of BLE MAC. |
 | Max node_id length | 64 bytes | UTF-8. |
 | Max sensor label length | 64 bytes | UTF-8. |
-| Max encrypted_payload size | 512 bytes | Fits in ESP-NOW frame (250B max), see §11.1. |
+| Max encrypted_payload size | 202 bytes | Must fit in ESP-NOW frame (250B max), see §11.1. |
 
 ### 11.1  Encrypted payload size budget
 

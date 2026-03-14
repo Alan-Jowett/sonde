@@ -20,7 +20,7 @@
 | **Radio transport (ESP-NOW)** | Untrusted | All traffic on the air interface is considered adversarial. |
 | **Other nodes** | Untrusted | Nodes do not trust or authenticate messages from other nodes. |
 | **Phone (pairing agent)** | Delegated trust | Authorized by the gateway via a phone PSK.  Can provision nodes on the gateway's behalf.  Trust is revocable. |
-| **BLE transport** | Untrusted | BLE LESC provides transport encryption, but the protocol does not rely on it for security guarantees (see [ble-pairing-protocol.md §5.4](ble-pairing-protocol.md)). |
+| **BLE transport** | Untrusted | BLE LESC provides transport encryption, but the protocol does not rely on it for security guarantees (see [ble-pairing-protocol.md §9.2](ble-pairing-protocol.md#92--ble-link-security)). |
 
 ### 1.2  Assumptions
 
@@ -86,7 +86,7 @@ A mobile phone app acts as a delegated pairing agent:
 4. The node stores the PSK and relays the encrypted pairing request to the gateway over ESP-NOW.
 5. The gateway decrypts the request, verifies the phone's HMAC, extracts the node PSK, verifies the ESP-NOW frame HMAC, and registers the node.
 
-The node PSK is transmitted in plaintext over the BLE link (protected by BLE LESC transport encryption).  Even if the BLE link is compromised, the intercepted PSK is useless — the gateway will not register a node unless the accompanying pairing request passes phone HMAC verification and gateway decryption.
+The node PSK is transmitted in plaintext over the BLE link (protected by BLE LESC transport encryption).  `NODE_PROVISION` sends both the `node_psk` and the `encrypted_payload` over BLE, so a BLE MITM attacker who defeats Just Works pairing captures all the material needed to craft a valid `PEER_REQUEST`.  The primary mitigations are the limited registration window (default 120 s) and the one-time-use nature of the encrypted payload.  For high-assurance deployments, use BLE Passkey Entry or Numeric Comparison pairing to prevent MITM.  Just Works is acceptable for low-threat environments where physical proximity provides adequate assurance.
 
 See [ble-pairing-protocol.md](ble-pairing-protocol.md) for the full BLE wire protocol.
 
@@ -432,7 +432,7 @@ The security model makes deliberate tradeoffs between security and usability. Th
 
 **Chosen: BLE for field deployment, USB retained for development.**
 
-BLE-mediated pairing via a phone app provides the best tradeoff between security and field usability.  The phone acts as a delegated agent whose authority is revocable (phone PSK revocation).  The node PSK is protected in transit by BLE LESC encryption, and the pairing request payload is additionally encrypted with the gateway's public key — an attacker who defeats BLE encryption still cannot register a rogue node (they lack the phone PSK to forge a valid HMAC).
+BLE-mediated pairing via a phone app provides the best tradeoff between security and field usability.  The phone acts as a delegated agent whose authority is revocable (phone PSK revocation).  However, `NODE_PROVISION` transmits both the `node_psk` and the `encrypted_payload` over the BLE link, so a BLE MITM attacker who defeats Just Works pairing captures sufficient material to craft a valid `PEER_REQUEST`.  The limited registration window (default 120 s) and one-time-use of the encrypted payload are the primary mitigations.  For high-assurance deployments, BLE Passkey Entry or Numeric Comparison pairing should be used to prevent MITM; Just Works is acceptable for low-threat environments.
 
 USB pairing is retained for bench testing and development, where cable access is not a burden and the simpler protocol is preferable.
 

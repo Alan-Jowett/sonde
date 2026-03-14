@@ -314,6 +314,15 @@ impl MapStorage {
             return None;
         }
 
+        // Re-validate recovered MapDef semantics (map_type, key_size, etc.)
+        // so a corrupt RTC record doesn't produce MapStorage with invalid defs.
+        let recovered_defs: Vec<MapDef> = (0..map_count)
+            .map(|i| unsafe { MAP_LAYOUT.defs[i] })
+            .collect();
+        if Self::validate_map_defs(&recovered_defs).is_err() {
+            return None;
+        }
+
         let mut maps = Vec::with_capacity(map_count);
         let mut offset: usize = 0;
         for i in 0..map_count {
@@ -429,6 +438,15 @@ impl MapStorage {
                 available: self.budget_bytes,
             });
         }
+        // On ESP builds, also reject if required exceeds the fixed-size
+        // MAP_BACKING buffer to prevent out-of-bounds writes.
+        #[cfg(feature = "esp")]
+        if required > MAP_BUDGET {
+            return Err(NodeError::MapBudgetExceeded {
+                required,
+                available: MAP_BUDGET,
+            });
+        }
 
         let mut maps = Vec::with_capacity(map_defs.len());
         let mut offset: usize = 0;
@@ -463,14 +481,19 @@ impl MapStorage {
     /// `validate_map_defs()` rejects programs with more than `MAX_MAPS`
     /// maps, so truncation cannot occur in practice.
     ///
-    /// Writes `defs` before `map_count` so that `map_count` acts as a
-    /// commit marker: if the device resets mid-write, `from_rtc()` sees
-    /// either the old count (safe) or the new count with fully written
-    /// defs (correct).
+    /// Uses an invalidate-write-commit pattern so that a reset mid-write
+    /// never leaves `from_rtc()` with a valid-looking but inconsistent
+    /// record:
+    ///   1. Set `map_count = 0` (invalidate — from_rtc returns None)
+    ///   2. Write all defs
+    ///   3. Set `map_count = count` (commit)
     #[cfg(feature = "esp")]
     fn write_rtc_layout(map_defs: &[MapDef]) {
         unsafe {
             let count = map_defs.len().min(MAX_MAPS);
+            // Invalidate: ensures from_rtc() returns None if we reset
+            // between here and the final commit below.
+            MAP_LAYOUT.map_count = 0;
             for (i, def) in map_defs.iter().enumerate().take(count) {
                 MAP_LAYOUT.defs[i] = *def;
             }

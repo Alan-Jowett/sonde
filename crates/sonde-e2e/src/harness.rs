@@ -737,9 +737,13 @@ async fn run_gateway_pump(
         match tokio::time::timeout(Duration::from_millis(50), transport.recv()).await {
             Ok(Ok((frame, peer))) => {
                 if let Some(response) = gateway.process_frame(&frame, peer.clone()).await {
-                    let _ = transport.send(&response, &peer).await;
+                    transport
+                        .send(&response, &peer)
+                        .await
+                        .expect("gateway pump: transport send failed");
                 }
             }
+            Ok(Err(_)) if stop.load(Ordering::Relaxed) => break,
             Ok(Err(e)) => panic!("gateway pump: transport recv failed: {e:?}"),
             Err(_) => {} // timeout — keep looping
         }

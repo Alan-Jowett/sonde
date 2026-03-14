@@ -313,9 +313,9 @@ impl MapStorage {
     #[cfg(feature = "esp")]
     pub fn from_rtc(budget_bytes: usize) -> Option<Self> {
         // SAFETY: MAP_LAYOUT is only written by `allocate()` in this
-        // single-threaded wake-cycle engine. Volatile read pairs with the
-        // volatile write in write_rtc_layout() to ensure we observe a
-        // consistent commit state.
+        // single-threaded wake-cycle engine. Volatile reads pair with the
+        // volatile writes in write_rtc_layout() to prevent the compiler
+        // from reordering or eliding accesses across the commit boundary.
         let map_count =
             unsafe { core::ptr::read_volatile(&raw const MAP_LAYOUT.map_count) } as usize;
         // map_count == 0: cold boot / no program installed.
@@ -329,7 +329,8 @@ impl MapStorage {
         // is rejected explicitly rather than relying on the budget check.
         let mut total_bytes: usize = 0;
         for i in 0..map_count {
-            let def = unsafe { &MAP_LAYOUT.defs[i] };
+            // Volatile read to pair with volatile writes in write_rtc_layout().
+            let def = unsafe { core::ptr::read_volatile(&raw const MAP_LAYOUT.defs[i]) };
             let entry_size = (def.key_size as usize).checked_add(def.value_size as usize)?;
             let map_size = entry_size.checked_mul(def.max_entries as usize)?;
             total_bytes = total_bytes.checked_add(map_size)?;
@@ -341,7 +342,7 @@ impl MapStorage {
         // Re-validate recovered MapDef semantics (map_type, key_size, etc.)
         // so a corrupt RTC record doesn't produce MapStorage with invalid defs.
         let recovered_defs: Vec<MapDef> = (0..map_count)
-            .map(|i| unsafe { MAP_LAYOUT.defs[i] })
+            .map(|i| unsafe { core::ptr::read_volatile(&raw const MAP_LAYOUT.defs[i]) })
             .collect();
         if Self::validate_map_defs(&recovered_defs).is_err() {
             return None;
@@ -351,7 +352,7 @@ impl MapStorage {
         let mut offset: usize = 0;
         for i in 0..map_count {
             // SAFETY: index is within [0, map_count) which is ≤ MAX_MAPS.
-            let def = unsafe { MAP_LAYOUT.defs[i] };
+            let def = unsafe { core::ptr::read_volatile(&raw const MAP_LAYOUT.defs[i]) };
             let entry_size = def.key_size as usize + def.value_size as usize;
             let total_size = entry_size * def.max_entries as usize;
             // Build RtcSlice without zero-filling — data from the previous
@@ -406,8 +407,9 @@ impl MapStorage {
     /// Validate map definitions: checks type, key_size, entry counts, and arithmetic.
     ///
     /// Call this before committing program installs to ensure the maps
-    /// are compatible with this platform. Rejects zero-entry and zero-value-size
-    /// maps because they produce duplicate `data_ptr()` values.
+    /// are compatible with this platform. Rejects zero-entry maps (which
+    /// produce duplicate `data_ptr()` values and break map indexing) and
+    /// zero-value-size maps (which are semantically invalid).
     pub fn validate_map_defs(map_defs: &[MapDef]) -> NodeResult<()> {
         if map_defs.len() > MAX_MAPS {
             return Err(NodeError::ProgramDecodeFailed(
@@ -427,18 +429,13 @@ impl MapStorage {
             }
             if def.max_entries == 0 {
                 return Err(NodeError::ProgramDecodeFailed(
-                    "map max_entries must be > 0",
+                    "map max_entries must be > 0: zero-entry maps produce \
+                     duplicate data_ptr() values and break map indexing",
                 ));
             }
             if def.value_size == 0 {
                 return Err(NodeError::ProgramDecodeFailed(
                     "map value_size must be > 0: zero-byte values are not supported",
-                ));
-            }
-            if def.max_entries == 0 {
-                return Err(NodeError::ProgramDecodeFailed(
-                    "map max_entries must be > 0: zero-entry maps produce \
-                     duplicate data_ptr() values and break map indexing",
                 ));
             }
         }
@@ -522,7 +519,7 @@ impl MapStorage {
     /// valid-looking but inconsistent record:
     ///   1. Volatile-write `map_count = 0` (invalidate — from_rtc returns None)
     ///   2. Hardware fence (ensure invalidate is visible before defs writes)
-    ///   3. Write all defs
+    ///   3. Volatile-write all defs
     ///   4. Hardware fence (ensure all defs are visible before commit)
     ///   5. Volatile-write `map_count = count` (commit)
     #[cfg(feature = "esp")]
@@ -535,7 +532,7 @@ impl MapStorage {
             core::ptr::write_volatile(&raw mut MAP_LAYOUT.map_count, 0);
             fence(Ordering::SeqCst);
             for (i, def) in map_defs.iter().enumerate().take(count) {
-                MAP_LAYOUT.defs[i] = *def;
+                core::ptr::write_volatile(&raw mut MAP_LAYOUT.defs[i], *def);
             }
             fence(Ordering::SeqCst);
             // Commit: volatile-write map_count last.

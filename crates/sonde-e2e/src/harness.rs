@@ -513,10 +513,10 @@ impl NodeTransport for ChannelTransport {
         match self.tx.try_send(frame.to_vec()) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(NodeError::Transport(
-                "node→bridge channel full (cap 64); bridge is not draining".into(),
+                "node→bridge channel full (cap 64); bridge is not draining",
             )),
             Err(TrySendError::Disconnected(..)) => {
-                Err(NodeError::Transport("channel disconnected".into()))
+                Err(NodeError::Transport("channel disconnected"))
             }
         }
     }
@@ -527,7 +527,7 @@ impl NodeTransport for ChannelTransport {
             Ok(data) => Ok(Some(data)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err(NodeError::Transport("channel disconnected".into()))
+                Err(NodeError::Transport("channel disconnected"))
             }
         }
     }

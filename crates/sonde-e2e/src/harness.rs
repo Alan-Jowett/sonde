@@ -60,7 +60,7 @@ impl E2eTestEnv {
     /// Create a fresh in-memory test environment.
     pub fn new() -> Self {
         let storage = Arc::new(
-            SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
+            SqliteStorage::in_memory([0u8; 32]).expect("failed to create in-memory SQLite storage"),
         );
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
         let pending_commands: PendingCommandMap = Arc::new(RwLock::new(HashMap::new()));
@@ -87,7 +87,7 @@ impl E2eTestEnv {
     /// `handler_cmd` is the path to the handler binary and its arguments.
     pub fn new_with_handler(handler_cmd: &str, handler_args: &[&str]) -> Self {
         let storage = Arc::new(
-            SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
+            SqliteStorage::in_memory([0u8; 32]).expect("failed to create in-memory SQLite storage"),
         );
         let config = HandlerConfig {
             matchers: vec![ProgramMatcher::Any],

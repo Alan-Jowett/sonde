@@ -10,6 +10,7 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 use log::{info, warn};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -21,7 +22,7 @@ use crate::status::ModemCounters;
 
 /// Shared state for the raw ESP-NOW receive callback.
 struct RecvCallbackState {
-    rx_queue: Arc<Mutex<Vec<RecvFrame>>>,
+    rx_queue: Arc<Mutex<VecDeque<RecvFrame>>>,
     usb_connected: Arc<AtomicBool>,
 }
 
@@ -74,7 +75,7 @@ unsafe extern "C" fn raw_recv_cb(
         // queue is being drained. Drop the frame if contended.
         if let Ok(mut q) = state.rx_queue.try_lock() {
             if q.len() < 64 {
-                q.push(RecvFrame {
+                q.push_back(RecvFrame {
                     peer_mac: *src_addr,
                     rssi,
                     frame_data: payload.to_vec(),
@@ -90,7 +91,7 @@ pub struct EspNowDriver {
     espnow: EspNow<'static>,
     peer_table: PeerTable,
     counters: Arc<ModemCounters>,
-    rx_queue: Arc<Mutex<Vec<RecvFrame>>>,
+    rx_queue: Arc<Mutex<VecDeque<RecvFrame>>>,
     current_channel: u8,
 }
 
@@ -111,7 +112,7 @@ impl EspNowDriver {
         info!("WiFi started in station mode");
 
         let espnow = EspNow::take().expect("failed to take ESP-NOW");
-        let rx_queue = Arc::new(Mutex::new(Vec::new()));
+        let rx_queue = Arc::new(Mutex::new(VecDeque::new()));
 
         // Install the global recv callback state and register our raw
         // callback that extracts RSSI from rx_ctrl.
@@ -195,13 +196,9 @@ impl Radio for EspNowDriver {
         }
     }
 
-    /// Drain received frames from the queue.
-    fn drain_rx(&self) -> Vec<RecvFrame> {
-        if let Ok(mut q) = self.rx_queue.lock() {
-            std::mem::take(&mut *q)
-        } else {
-            Vec::new()
-        }
+    /// Drain one received frame from the queue.
+    fn drain_one(&self) -> Option<RecvFrame> {
+        self.rx_queue.lock().ok()?.pop_front()
     }
 
     /// Set the WiFi/ESP-NOW channel. Clears the peer table and removes

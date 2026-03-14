@@ -41,8 +41,8 @@ pub trait SerialPort {
 pub trait Radio {
     /// Send a frame to the given peer MAC.
     fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]);
-    /// Drain received frames from the queue.
-    fn drain_rx(&self) -> Vec<RecvFrame>;
+    /// Drain one received frame from the queue, or `None` if empty.
+    fn drain_one(&self) -> Option<RecvFrame>;
     /// Set the radio channel. Returns a descriptive error on failure.
     fn set_channel(&mut self, channel: u8) -> Result<(), &'static str>;
     /// Get the current channel.
@@ -150,9 +150,9 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
             }
         }
 
-        // Forward any received radio frames to the serial port.
-        let rx_frames = self.radio.drain_rx();
-        for rf in rx_frames {
+        // Forward any received radio frames to the serial port, one at a time
+        // to avoid a transient heap spike from bulk-draining the queue.
+        while let Some(rf) = self.radio.drain_one() {
             let msg = ModemMessage::RecvFrame(rf);
             if self.send_msg(&msg) {
                 self.counters.inc_rx();
@@ -231,6 +231,7 @@ mod tests {
     use super::*;
     use sonde_protocol::modem::{decode_modem_frame, ModemMessage};
     use std::cell::RefCell;
+    use std::collections::VecDeque;
 
     /// Mock serial port that records writes and plays back reads.
     struct MockSerial {
@@ -284,7 +285,7 @@ mod tests {
     /// Mock radio that captures sends and injects receives.
     struct MockRadio {
         sent: Vec<(Vec<u8>, [u8; MAC_SIZE])>,
-        rx_queue: RefCell<Vec<RecvFrame>>,
+        rx_queue: RefCell<VecDeque<RecvFrame>>,
         channel: u8,
         mac: [u8; MAC_SIZE],
     }
@@ -293,14 +294,14 @@ mod tests {
         fn new() -> Self {
             Self {
                 sent: Vec::new(),
-                rx_queue: RefCell::new(Vec::new()),
+                rx_queue: RefCell::new(VecDeque::new()),
                 channel: 1,
                 mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
             }
         }
 
         fn inject_rx(&self, frame: RecvFrame) {
-            self.rx_queue.borrow_mut().push(frame);
+            self.rx_queue.borrow_mut().push_back(frame);
         }
     }
 
@@ -308,8 +309,8 @@ mod tests {
         fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
             self.sent.push((data.to_vec(), *peer_mac));
         }
-        fn drain_rx(&self) -> Vec<RecvFrame> {
-            std::mem::take(&mut *self.rx_queue.borrow_mut())
+        fn drain_one(&self) -> Option<RecvFrame> {
+            self.rx_queue.borrow_mut().pop_front()
         }
         fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
             if channel == 0 || channel > 14 {

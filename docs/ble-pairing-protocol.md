@@ -59,7 +59,7 @@ Generated on first gateway startup.  Private key stored encrypted at rest (GW-06
 | `gw_public_key` | 32 bytes | Distributed to phones during Phase 1. |
 | `gateway_id` | 16 bytes | Random identifier, generated alongside the keypair.  Used as HKDF salt and AES-GCM AAD. |
 
-The Ed25519 public key is converted to X25519 using the standard birational map (RFC 8032 → RFC 7748) whenever ECDH is needed.
+The Ed25519 public key is converted to X25519 using the birational map defined in RFC 8032 §5.1.5 / RFC 7748 §4.1.  Implementations MUST use the same conversion as libsodium's `crypto_sign_ed25519_pk_to_curve25519` (which computes the Montgomery u-coordinate from the Edwards y-coordinate: `u = (1+y)/(1-y) mod p`).  This ensures interoperability between gateway and phone implementations.
 
 ### 2.2  Phone PSK
 
@@ -108,7 +108,7 @@ Two GATT services are defined — one on the gateway (or its BLE-connected modem
 |----------------|------|------------|-------------|
 | Node Command | `0000FE51-...` | Write, Indicate | Phone writes provision data, node sends ACK as indication. |
 
-> **Note:** UUIDs are provisional; final values will be assigned before v1.0.
+> **Note:** UUIDs are provisional placeholders using the Bluetooth SIG base UUID.  These 16-bit short UUIDs in the `0xFE**` range are reserved by the SIG and MUST NOT ship without assignment.  Before v1.0, these will be replaced with randomly-generated vendor-specific 128-bit UUIDs (not based on the SIG base UUID) to avoid collisions with assigned services.
 
 ### 3.4  MTU and fragmentation
 
@@ -280,16 +280,18 @@ Offset  Size             Field
 12      ciphertext_len   ciphertext      Encrypted inner + 16-byte GCM tag
 ```
 
-The **inner plaintext** (36 bytes):
+The **inner plaintext** (36 bytes, only meaningful when `status = 0x00`):
 
 ```
 Offset  Size  Field
 ─────── ───── ────────────────
-0       1     status          0x00 = accepted, 0x01 = rejected
+0       1     status          0x00 = accepted
 1       32    phone_psk       256-bit phone PSK
 33      2     phone_key_hint  BE u16
 35      1     rf_channel      WiFi channel (1–13)
 ```
+
+Registration rejection is signaled exclusively via `ERROR` (0xFF) with the appropriate status code (§4.1.1) — `PHONE_REGISTERED` is only sent on success (`status = 0x00`).
 
 ### 5.6  Error handling
 
@@ -299,8 +301,9 @@ Offset  Size  Field
 | `GW_INFO_RESPONSE` not received within 5 s | Phone disconnects, reports timeout. |
 | Gateway signature verification fails | Phone disconnects, reports error ("gateway authentication failed — possible impersonation"). |
 | `PHONE_REGISTERED` not received within 30 s | Phone disconnects, reports timeout (allows time for operator confirmation). |
-| `status` = 0x01 (rejected) | Phone reports rejection ("registration window not open — ask operator to enable pairing"), disconnects. |
-| `ERROR` (0xFF) received in response to `REGISTER_PHONE` | Phone reports rejection, disconnects. |
+| `ERROR` (0xFF) with status `0x02` received | Phone reports rejection ("registration window not open — ask operator to enable pairing"), disconnects. |
+| `ERROR` (0xFF) with status `0x03` received | Phone reports rejection ("already paired with this gateway"), disconnects. |
+| `ERROR` (0xFF) with other status received | Phone reports generic rejection, disconnects. |
 | AES-GCM decryption failure | Phone reports error (ephemeral key mismatch), disconnects. |
 
 ### 5.7  Phone persistence

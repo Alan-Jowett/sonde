@@ -4,22 +4,33 @@
 //! Bridge harness that wires gateway and node together via in-memory frame
 //! queues for end-to-end integration testing.
 //!
-//! Phase 1: direct in-process bridge — the node calls
-//! `Gateway::process_frame` synchronously via `block_in_place`.
-//! Modem / ESP-NOW radio integration will be added in a later phase.
+//! Two transport modes are available:
+//!
+//! - **Direct** (`BridgeTransport`): node calls `Gateway::process_frame`
+//!   synchronously via `block_in_place`. Fast and deterministic.
+//! - **Modem-bridged** (`ModemTestEnv` + `ChannelTransport`): frames flow
+//!   through the real `sonde_modem::bridge::Bridge`, exercising the modem
+//!   serial codec, peer table, and gateway `UsbEspNowTransport`.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::handler::{HandlerConfig, HandlerRouter, ProgramMatcher};
+use sonde_gateway::modem::UsbEspNowTransport;
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
+use sonde_gateway::transport::Transport as GatewayTransport;
+
+use sonde_modem::bridge::{Bridge, Radio, SerialPort};
+use sonde_modem::status::ModemCounters;
 
 use sonde_node::bpf_helpers::SondeContext;
 use sonde_node::bpf_runtime::{BpfError, BpfInterpreter, HelperFn};
@@ -29,7 +40,7 @@ use sonde_node::map_storage::MapStorage;
 use sonde_node::traits::{Clock, PairingSerial, PlatformStorage, Rng, Transport as NodeTransport};
 use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
 
-use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage};
+use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, RecvFrame, MAC_SIZE};
 use sonde_protocol::{HmacProvider, Sha256Provider};
 
 // ---------------------------------------------------------------------------
@@ -204,6 +215,62 @@ impl NodeProxy {
             sent_frames: transport.sent_frames().to_vec(),
         }
     }
+
+    /// Run one wake cycle through the real modem bridge.
+    ///
+    /// Frames flow: node → ChannelTransport → mpsc → ChannelRadio →
+    /// Bridge → PipeSerial → duplex → UsbEspNowTransport → Gateway
+    /// and back.
+    ///
+    /// A gateway frame pump runs concurrently via a tokio task.
+    /// The node wake cycle runs via `block_in_place` since it is
+    /// synchronous (uses `mpsc::recv_timeout` internally).
+    pub async fn run_wake_cycle_bridged(
+        &mut self,
+        env: &ModemTestEnv,
+        transport: &mut ChannelTransport,
+    ) -> WakeCycleStats {
+        transport.reset_stats();
+
+        let pump_stop = Arc::new(AtomicBool::new(false));
+        let pump = tokio::spawn(run_gateway_pump(
+            env.gateway.clone(),
+            env.transport.clone(),
+            Arc::clone(&pump_stop),
+        ));
+
+        let mut hal = MockHal;
+        let clock = MockClock::new();
+        let battery = MockBattery;
+        let hmac = TestHmac;
+        let sha = TestSha256;
+        let mut interpreter = MockBpfInterpreter::new();
+
+        let outcome = tokio::task::block_in_place(|| {
+            run_wake_cycle(
+                transport,
+                &mut self.storage,
+                &mut hal,
+                &mut self.rng,
+                &clock,
+                &battery,
+                &mut interpreter,
+                &mut self.map_storage,
+                &hmac,
+                &sha,
+            )
+        });
+
+        pump_stop.store(true, Ordering::Relaxed);
+        let _ = pump.await;
+
+        WakeCycleStats {
+            outcome,
+            response_count: 0, // Not tracked in bridged mode
+            wake_nonces: transport.wake_nonces().to_vec(),
+            sent_frames: transport.sent_frames().to_vec(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +358,400 @@ impl NodeTransport for BridgeTransport {
     /// (send WAKE → recv COMMAND, send GET_CHUNK → recv CHUNK).
     fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
         Ok(self.pending_response.take())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ChannelRadio — mpsc-backed Radio trait for modem bridge tests
+// ---------------------------------------------------------------------------
+
+/// Simulates ESP-NOW broadcast between a modem bridge and one or more nodes.
+///
+/// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_rx` takes
+/// `&self` and `Radio::send` takes `&mut self` — both synchronous.
+struct ChannelRadio {
+    /// Frames sent by the bridge (gateway → node) arrive at the node.
+    to_node: std::sync::mpsc::Sender<Vec<u8>>,
+    /// Frames sent by the node arrive here for the bridge.
+    from_node: Mutex<std::sync::mpsc::Receiver<Vec<u8>>>,
+    /// Current radio channel.
+    channel: u8,
+    /// Fixed MAC address for the simulated modem.
+    mac: [u8; MAC_SIZE],
+}
+
+impl Radio for ChannelRadio {
+    fn send(&mut self, _peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+        let _ = self.to_node.send(data.to_vec());
+    }
+
+    fn drain_rx(&self) -> Vec<RecvFrame> {
+        let rx = self.from_node.lock().unwrap();
+        let mut frames = Vec::new();
+        while let Ok(data) = rx.try_recv() {
+            frames.push(RecvFrame {
+                peer_mac: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+                rssi: -40,
+                frame_data: data,
+            });
+        }
+        frames
+    }
+
+    fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
+        if channel == 0 || channel > 14 {
+            return Err("invalid channel");
+        }
+        self.channel = channel;
+        Ok(())
+    }
+
+    fn channel(&self) -> u8 {
+        self.channel
+    }
+
+    fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
+        vec![]
+    }
+
+    fn mac_address(&self) -> [u8; MAC_SIZE] {
+        self.mac
+    }
+
+    fn reset_state(&mut self) {
+        self.channel = 1;
+        let rx = self.from_node.lock().unwrap();
+        while rx.try_recv().is_ok() {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ChannelTransport — mpsc-backed node Transport for modem bridge tests
+// ---------------------------------------------------------------------------
+
+/// Node-side transport backed by the same mpsc channels as `ChannelRadio`.
+///
+/// Uses `std::sync::mpsc::recv_timeout()` to implement the synchronous
+/// `sonde_node::traits::Transport::recv(timeout_ms)` contract.
+pub struct ChannelTransport {
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    tx: std::sync::mpsc::Sender<Vec<u8>>,
+    /// Nonces extracted from outbound WAKE frames.
+    wake_nonces: Vec<u64>,
+    /// `(msg_type, nonce)` for every outbound frame.
+    sent_frames: Vec<(u8, u64)>,
+}
+
+impl ChannelTransport {
+    /// Reset per-cycle tracking counters.
+    pub fn reset_stats(&mut self) {
+        self.wake_nonces.clear();
+        self.sent_frames.clear();
+    }
+
+    /// Nonces from WAKE frames sent during the last cycle.
+    pub fn wake_nonces(&self) -> &[u64] {
+        &self.wake_nonces
+    }
+
+    /// `(msg_type, nonce)` for every outbound frame.
+    pub fn sent_frames(&self) -> &[(u8, u64)] {
+        &self.sent_frames
+    }
+}
+
+impl NodeTransport for ChannelTransport {
+    fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+        // Capture header metadata (same as BridgeTransport).
+        if frame.len() >= sonde_protocol::HEADER_SIZE {
+            let msg_type = frame[sonde_protocol::OFFSET_MSG_TYPE];
+            let nonce_end = sonde_protocol::OFFSET_NONCE + 8;
+            let nonce = u64::from_be_bytes(
+                frame[sonde_protocol::OFFSET_NONCE..nonce_end]
+                    .try_into()
+                    .unwrap(),
+            );
+            self.sent_frames.push((msg_type, nonce));
+            if msg_type == sonde_protocol::MSG_WAKE {
+                self.wake_nonces.push(nonce);
+            }
+        }
+
+        self.tx
+            .send(frame.to_vec())
+            .map_err(|e| NodeError::Transport(format!("channel send: {e}")))?;
+        Ok(())
+    }
+
+    fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+        match self
+            .rx
+            .recv_timeout(Duration::from_millis(timeout_ms as u64))
+        {
+            Ok(data) => Ok(Some(data)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(None),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PipeSerial — bridges sync SerialPort to async tokio::io::duplex
+// ---------------------------------------------------------------------------
+
+/// Adapter that implements the synchronous `SerialPort` trait backed by
+/// shared ring buffers. A background tokio task shuttles bytes between
+/// the duplex stream and these buffers.
+struct PipeSerial {
+    rx_buf: Arc<Mutex<VecDeque<u8>>>,
+    tx_buf: Arc<Mutex<VecDeque<u8>>>,
+    tx_notify: Arc<tokio::sync::Notify>,
+    connected: bool,
+    first_read: bool,
+}
+
+impl SerialPort for PipeSerial {
+    fn read(&mut self, buf: &mut [u8]) -> (usize, bool) {
+        let reconnected = self.first_read;
+        self.first_read = false;
+
+        let mut rx = self.rx_buf.lock().unwrap();
+        let n = buf.len().min(rx.len());
+        for b in buf.iter_mut().take(n) {
+            *b = rx.pop_front().unwrap();
+        }
+        (n, reconnected)
+    }
+
+    fn write(&mut self, data: &[u8]) -> bool {
+        {
+            let mut tx = self.tx_buf.lock().unwrap();
+            tx.extend(data);
+        }
+        self.tx_notify.notify_one();
+        true
+    }
+
+    fn is_connected(&self) -> bool {
+        self.connected
+    }
+}
+
+/// Create a `PipeSerial` and spawn a background tokio task that shuttles
+/// bytes between the duplex server half and the adapter's ring buffers.
+fn create_pipe_serial(
+    server: tokio::io::DuplexStream,
+    stop: Arc<AtomicBool>,
+) -> (PipeSerial, tokio::task::JoinHandle<()>) {
+    let rx_buf: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let tx_buf: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let tx_notify = Arc::new(tokio::sync::Notify::new());
+
+    let pipe = PipeSerial {
+        rx_buf: Arc::clone(&rx_buf),
+        tx_buf: Arc::clone(&tx_buf),
+        tx_notify: Arc::clone(&tx_notify),
+        connected: true,
+        first_read: false,
+    };
+
+    let handle = {
+        let rx_buf = Arc::clone(&rx_buf);
+        let tx_buf = Arc::clone(&tx_buf);
+        let tx_notify = Arc::clone(&tx_notify);
+
+        tokio::spawn(async move {
+            let (mut reader, mut writer) = tokio::io::split(server);
+            let mut read_buf = [0u8; 1024];
+
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                tokio::select! {
+                    result = reader.read(&mut read_buf) => {
+                        match result {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                let mut rx = rx_buf.lock().unwrap();
+                                rx.extend(&read_buf[..n]);
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    _ = tx_notify.notified() => {
+                        let data: Vec<u8> = {
+                            let mut tx = tx_buf.lock().unwrap();
+                            tx.drain(..).collect()
+                        };
+                        if !data.is_empty() {
+                            if writer.write_all(&data).await.is_err() {
+                                break;
+                            }
+                            let _ = writer.flush().await;
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {
+                        let data: Vec<u8> = {
+                            let mut tx = tx_buf.lock().unwrap();
+                            tx.drain(..).collect()
+                        };
+                        if !data.is_empty() {
+                            if writer.write_all(&data).await.is_err() {
+                                break;
+                            }
+                            let _ = writer.flush().await;
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    (pipe, handle)
+}
+
+// ---------------------------------------------------------------------------
+// ModemTestEnv — modem-in-loop test environment
+// ---------------------------------------------------------------------------
+
+/// Test environment that wires the real modem `Bridge` between gateway
+/// and node using in-memory channels and duplex streams.
+///
+/// ```text
+/// Node ←(mpsc)→ ChannelRadio ←→ Bridge ←(PipeSerial/duplex)→ UsbEspNowTransport ←→ Gateway
+/// ```
+pub struct ModemTestEnv {
+    pub gateway: Arc<Gateway>,
+    pub storage: Arc<SqliteStorage>,
+    pub transport: Arc<UsbEspNowTransport>,
+    pub pending_commands: Option<PendingCommandMap>,
+    stop: Arc<AtomicBool>,
+    bridge_thread: Option<std::thread::JoinHandle<()>>,
+    pipe_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ModemTestEnv {
+    /// Create a modem-in-loop test environment.
+    ///
+    /// Spawns the real `Bridge` in a dedicated thread and connects it to
+    /// `UsbEspNowTransport` via `tokio::io::duplex`. Returns both the
+    /// environment and a `ChannelTransport` for the node to use.
+    pub async fn new(channel: u8) -> (Self, ChannelTransport) {
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // mpsc channels for radio simulation (bridge ↔ node).
+        let (bridge_to_node_tx, bridge_to_node_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (node_to_bridge_tx, node_to_bridge_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+        let channel_radio = ChannelRadio {
+            to_node: bridge_to_node_tx,
+            from_node: Mutex::new(node_to_bridge_rx),
+            channel: 1,
+            mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        };
+
+        let channel_transport = ChannelTransport {
+            rx: bridge_to_node_rx,
+            tx: node_to_bridge_tx,
+            wake_nonces: Vec::new(),
+            sent_frames: Vec::new(),
+        };
+
+        // Duplex stream for serial link (gateway transport ↔ bridge).
+        let (client, server) = tokio::io::duplex(4096);
+
+        // Create PipeSerial adapter with background task.
+        let (pipe_serial, pipe_task) = create_pipe_serial(server, Arc::clone(&stop));
+
+        // Start bridge in a dedicated thread.
+        let bridge_stop = Arc::clone(&stop);
+        let bridge_thread = std::thread::spawn(move || {
+            let counters = ModemCounters::new();
+            let mut bridge = Bridge::new(pipe_serial, channel_radio, counters);
+            while !bridge_stop.load(Ordering::Relaxed) {
+                bridge.poll();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        // Create UsbEspNowTransport — performs startup handshake.
+        let transport = UsbEspNowTransport::new(client, channel)
+            .await
+            .expect("modem startup handshake failed");
+        let transport = Arc::new(transport);
+
+        // Create gateway engine.
+        let storage = Arc::new(
+            SqliteStorage::in_memory().expect("failed to create in-memory SQLite storage"),
+        );
+        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+        let pending_commands: PendingCommandMap = Arc::new(RwLock::new(HashMap::new()));
+        let gateway = Arc::new(Gateway::new_with_pending(
+            storage.clone(),
+            pending_commands.clone(),
+            session_manager,
+        ));
+
+        let env = Self {
+            gateway,
+            storage,
+            transport,
+            pending_commands: Some(pending_commands),
+            stop,
+            bridge_thread: Some(bridge_thread),
+            pipe_task: Some(pipe_task),
+        };
+
+        (env, channel_transport)
+    }
+
+    /// Register a node in the gateway's storage.
+    pub async fn register_node(&self, node_id: &str, key_hint: u16, psk: [u8; 32]) {
+        let node = NodeRecord::new(node_id.into(), key_hint, psk);
+        self.storage.upsert_node(&node).await.unwrap();
+    }
+}
+
+impl Drop for ModemTestEnv {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.pipe_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.bridge_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gateway frame pump — drives gateway recv/process/send loop
+// ---------------------------------------------------------------------------
+
+/// Run a gateway frame-processing loop over the modem transport.
+///
+/// Receives frames from the transport, processes them through the gateway
+/// engine, and sends responses back. Runs until `stop` is set.
+async fn run_gateway_pump(
+    gateway: Arc<Gateway>,
+    transport: Arc<UsbEspNowTransport>,
+    stop: Arc<AtomicBool>,
+) {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        match tokio::time::timeout(Duration::from_millis(50), transport.recv()).await {
+            Ok(Ok((frame, peer))) => {
+                if let Some(response) = gateway.process_frame(&frame, peer.clone()).await {
+                    let _ = transport.send(&response, &peer).await;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => {} // timeout — keep looping
+        }
     }
 }
 

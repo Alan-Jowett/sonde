@@ -65,29 +65,6 @@ fn make_program_from_bytecode(
     (record, hash)
 }
 
-/// Read a single modem message from an async stream using `FrameDecoder`.
-///
-/// Handles partial reads, frame coalescing, and empty-frame errors.
-async fn read_modem_msg(
-    reader: &mut (impl tokio::io::AsyncReadExt + Unpin),
-    decoder: &mut sonde_protocol::modem::FrameDecoder,
-    buf: &mut [u8],
-) -> sonde_protocol::modem::ModemMessage {
-    use sonde_protocol::modem::ModemCodecError;
-
-    loop {
-        match decoder.decode() {
-            Ok(Some(msg)) => return msg,
-            Ok(None) => {}
-            Err(ModemCodecError::EmptyFrame) => continue,
-            Err(e) => panic!("modem decode error: {e}"),
-        }
-        let n = reader.read(buf).await.expect("read from modem stream");
-        assert!(n > 0, "unexpected EOF on modem stream");
-        decoder.push(&buf[..n]);
-    }
-}
-
 /// T-E2E-001 — NOP wake cycle.
 ///
 /// A paired node with no pending commands completes a normal WAKE/COMMAND
@@ -526,148 +503,196 @@ async fn t_e2e_041_sequence_numbers() {
 // Modem transport tests
 // ===========================================================================
 
-/// T-E2E-050 — Modem startup handshake.
+/// T-E2E-050 — Modem startup handshake via real bridge.
 ///
 /// Validates the RESET → MODEM_READY → SET_CHANNEL → SET_CHANNEL_ACK
-/// startup sequence between `UsbEspNowTransport` and a simulated modem.
+/// startup sequence using the real `Bridge` running in a thread with
+/// `ChannelRadio` and `PipeSerial`, connected to `UsbEspNowTransport`.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_050_modem_startup_handshake() {
-    use sonde_gateway::modem::UsbEspNowTransport;
-    use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, ModemReady};
-    use tokio::io::AsyncWriteExt;
+    use sonde_e2e::harness::ModemTestEnv;
 
-    let (client, mut server) = tokio::io::duplex(1024);
-
-    let test_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let channel: u8 = 6;
 
-    // Simulate modem on the server side in a background task.
-    let modem_task = tokio::spawn(async move {
-        let mut decoder = FrameDecoder::new();
-        let mut buf = [0u8; 256];
+    // ModemTestEnv::new performs the full startup handshake internally.
+    // If it succeeds, the handshake worked correctly.
+    let (env, _transport) = ModemTestEnv::new(channel).await;
 
-        // 1. Read RESET frame.
-        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-        assert!(
-            matches!(msg, ModemMessage::Reset),
-            "first message should be RESET"
-        );
-
-        // 2. Send MODEM_READY.
-        let ready = encode_modem_frame(&ModemMessage::ModemReady(ModemReady {
-            firmware_version: [0x01, 0x00, 0x00, 0x00],
-            mac_address: test_mac,
-        }))
-        .unwrap();
-        server.write_all(&ready).await.unwrap();
-
-        // 3. Read SET_CHANNEL.
-        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-        let ch = match msg {
-            ModemMessage::SetChannel(c) => c,
-            other => panic!("expected SET_CHANNEL, got {:?}", other),
-        };
-
-        // 4. Send SET_CHANNEL_ACK.
-        let ack = encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap();
-        server.write_all(&ack).await.unwrap();
-    });
-
-    // Create transport — this performs the full handshake.
-    let transport = UsbEspNowTransport::new(client, channel).await;
-    assert!(
-        transport.is_ok(),
-        "modem startup handshake should succeed: {:?}",
-        transport.err()
+    // Verify the modem MAC was captured from MODEM_READY.
+    assert_eq!(
+        env.transport.modem_mac(),
+        &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        "modem MAC should match ChannelRadio's fixed MAC"
     );
-
-    modem_task.await.unwrap();
 }
 
-/// T-E2E-051 — Frame round-trip through modem bridge.
+/// T-E2E-051 — Frame round-trip through real modem bridge.
 ///
-/// Sends a frame from the gateway transport to a simulated modem and
-/// verifies the modem receives it correctly. Then the modem sends a
-/// frame back and the gateway transport receives it.
+/// Exercises the full frame path: node → ChannelTransport → mpsc →
+/// ChannelRadio → Bridge → PipeSerial → duplex → UsbEspNowTransport →
+/// Gateway → (response) → same path back to node.
+///
+/// Uses `ModemTestEnv` to wire all components together and
+/// `NodeProxy::run_wake_cycle_bridged` to drive the node.
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_051_modem_frame_round_trip() {
-    use sonde_gateway::modem::UsbEspNowTransport;
-    use sonde_gateway::transport::Transport;
-    use sonde_protocol::modem::{
-        encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, RecvFrame,
-    };
-    use tokio::io::AsyncWriteExt;
+    use sonde_e2e::harness::ModemTestEnv;
 
-    let (client, mut server) = tokio::io::duplex(4096);
+    let (env, mut channel_transport) = ModemTestEnv::new(1).await;
+    let psk = [0x51; 32];
+    env.register_node("bridge-node", 1, psk).await;
 
-    let modem_mac = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
-    let peer_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
-    let channel: u8 = 1;
+    let mut node = NodeProxy::new(1, psk);
+    let stats = node
+        .run_wake_cycle_bridged(&env, &mut channel_transport)
+        .await;
 
-    // Simulate modem: startup handshake + frame echo.
-    let modem_task = tokio::spawn(async move {
-        let mut decoder = FrameDecoder::new();
-        let mut buf = [0u8; 1024];
+    // A successful wake cycle through the modem bridge proves frames
+    // survived the full encode/decode round-trip.
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "NOP wake cycle through modem bridge should succeed"
+    );
 
-        // Startup handshake.
-        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-        assert!(matches!(msg, ModemMessage::Reset));
+    // Verify WAKE frame was sent.
+    assert!(
+        !stats.wake_nonces.is_empty(),
+        "node should have sent at least one WAKE frame"
+    );
 
-        let ready = encode_modem_frame(&ModemMessage::ModemReady(ModemReady {
-            firmware_version: [0x01, 0x00, 0x00, 0x00],
-            mac_address: modem_mac,
-        }))
-        .unwrap();
-        server.write_all(&ready).await.unwrap();
+    // Verify gateway updated telemetry (proves frames reached the gateway).
+    let record = env.storage.get_node("bridge-node").await.unwrap().unwrap();
+    assert_eq!(record.last_battery_mv, Some(3300));
+    assert!(record.last_seen.is_some());
+}
 
-        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-        let ch = match msg {
-            ModemMessage::SetChannel(c) => c,
-            other => panic!("expected SET_CHANNEL, got {:?}", other),
-        };
-        let ack = encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap();
-        server.write_all(&ack).await.unwrap();
+/// T-E2E-052 — Consecutive wake cycles through modem bridge.
+///
+/// Runs two wake cycles on the same node through the modem bridge.
+/// Verifies state persistence and nonce uniqueness across cycles.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_052_bridged_consecutive_cycles() {
+    use sonde_e2e::harness::ModemTestEnv;
 
-        // Read SEND_FRAME from gateway transport.
-        let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-        let frame_data = match msg {
-            ModemMessage::SendFrame(sf) => {
-                assert_eq!(sf.peer_mac, peer_mac, "peer MAC should match");
-                sf.frame_data
-            }
-            other => panic!("expected SEND_FRAME, got {:?}", other),
-        };
-        assert_eq!(
-            frame_data,
-            vec![0x01, 0x02, 0x03],
-            "frame data should match"
-        );
+    let (env, mut channel_transport) = ModemTestEnv::new(1).await;
+    let psk = [0x52; 32];
+    env.register_node("multi-bridge", 1, psk).await;
 
-        // Send RECV_FRAME back (simulating a response from the peer).
-        let recv = encode_modem_frame(&ModemMessage::RecvFrame(RecvFrame {
-            peer_mac,
-            rssi: -50,
-            frame_data: vec![0x04, 0x05, 0x06],
-        }))
-        .unwrap();
-        server.write_all(&recv).await.unwrap();
-    });
+    let mut node = NodeProxy::new(1, psk);
 
-    // Create transport.
-    let transport = UsbEspNowTransport::new(client, channel).await.unwrap();
+    let stats1 = node
+        .run_wake_cycle_bridged(&env, &mut channel_transport)
+        .await;
+    assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(
+        !stats1.wake_nonces.is_empty(),
+        "first cycle should send at least one WAKE"
+    );
 
-    // Send a frame through the transport.
-    transport
-        .send(&[0x01, 0x02, 0x03], &peer_mac.to_vec())
+    let stats2 = node
+        .run_wake_cycle_bridged(&env, &mut channel_transport)
+        .await;
+    assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(
+        !stats2.wake_nonces.is_empty(),
+        "second cycle should send at least one WAKE"
+    );
+
+    assert_ne!(
+        stats1.wake_nonces[0], stats2.wake_nonces[0],
+        "consecutive bridged wake cycles must use different nonces"
+    );
+}
+
+/// T-E2E-053 — Wrong PSK through modem bridge (silent discard).
+///
+/// When the node's PSK does not match the gateway's record, the gateway
+/// silently discards frames. With the modem bridge in the loop, the node
+/// should exhaust retries and sleep normally.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_053_bridged_wrong_psk() {
+    use sonde_e2e::harness::ModemTestEnv;
+
+    let (env, mut channel_transport) = ModemTestEnv::new(1).await;
+    env.register_node("bad-psk-bridge", 1, [0xAA; 32]).await;
+
+    // Node uses a different PSK.
+    let mut node = NodeProxy::new(1, [0xBB; 32]);
+    let stats = node
+        .run_wake_cycle_bridged(&env, &mut channel_transport)
+        .await;
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Gateway should not have updated telemetry.
+    let record = env
+        .storage
+        .get_node("bad-psk-bridge")
         .await
+        .unwrap()
         .unwrap();
+    assert!(
+        record.last_seen.is_none(),
+        "last_seen should be None — gateway should not have processed the WAKE"
+    );
+}
 
-    // Receive the response frame.
-    let (recv_data, recv_peer) = transport.recv().await.unwrap();
-    assert_eq!(recv_data, vec![0x04, 0x05, 0x06]);
-    assert_eq!(recv_peer, peer_mac.to_vec());
+/// T-E2E-054 — Program update through modem bridge.
+///
+/// A full chunked program transfer flowing through the modem bridge.
+/// Validates that multi-frame exchanges (WAKE → COMMAND → GET_CHUNK →
+/// CHUNK → PROGRAM_ACK) survive the serial codec round-trip.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_054_bridged_program_update() {
+    use sonde_e2e::harness::ModemTestEnv;
 
-    modem_task.await.unwrap();
+    let (env, mut channel_transport) = ModemTestEnv::new(1).await;
+    let psk = [0x54; 32];
+    env.register_node("prog-bridge", 1, psk).await;
+
+    let (program, hash) = make_test_program();
+    env.storage.store_program(&program).await.unwrap();
+
+    let mut node_rec = env.storage.get_node("prog-bridge").await.unwrap().unwrap();
+    node_rec.assigned_program_hash = Some(hash.clone());
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    let mut node = NodeProxy::new(1, psk);
+    let stats = node
+        .run_wake_cycle_bridged(&env, &mut channel_transport)
+        .await;
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Verify chunked transfer occurred.
+    let get_chunk_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
+        .count();
+    assert!(
+        get_chunk_count > 0,
+        "node should have sent GET_CHUNK frames through modem bridge"
+    );
+
+    let ack_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(
+        ack_count, 1,
+        "node should have sent exactly one PROGRAM_ACK through modem bridge"
+    );
+
+    // Verify gateway confirmed the update.
+    let updated = env.storage.get_node("prog-bridge").await.unwrap().unwrap();
+    assert_eq!(
+        updated.current_program_hash,
+        Some(hash),
+        "gateway should confirm program via PROGRAM_ACK through modem bridge"
+    );
 }
 
 // ===========================================================================

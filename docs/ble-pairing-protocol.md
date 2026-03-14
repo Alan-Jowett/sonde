@@ -2,7 +2,7 @@
   Copyright (c) 2026 sonde contributors -->
 # BLE Pairing Protocol Specification
 
-> **Document status:** Draft
+> **Document status:** Draft — under review
 > **Scope:** Wire-level protocol for BLE-mediated pairing between a mobile phone app, sonde nodes, and the sonde gateway.
 > **Audience:** Implementers building the mobile pairing app, the node firmware BLE handler, or the gateway pairing subsystem.
 > **Related:** [pairing-protocol.md](pairing-protocol.md) (legacy USB), [protocol.md](protocol.md), [security.md](security.md)

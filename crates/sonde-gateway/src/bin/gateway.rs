@@ -59,6 +59,52 @@ struct Cli {
     /// as defined in the file. See gateway-design.md §9 for the format.
     #[arg(long)]
     handler_config: Option<PathBuf>,
+
+    /// Path to a file containing the 32-byte master key as 64 hex characters.
+    ///
+    /// The master key encrypts node PSKs at rest (GW-0601a). If not provided,
+    /// the gateway falls back to the `SONDE_MASTER_KEY` environment variable.
+    #[arg(long)]
+    master_key_file: Option<PathBuf>,
+}
+
+/// Load the 32-byte master key from a file or environment variable.
+///
+/// Priority:
+/// 1. `--master-key-file <path>` — file containing 64 hex characters
+/// 2. `SONDE_MASTER_KEY` env var — 64 hex characters
+///
+/// Returns an error if neither source is available or the key is malformed.
+fn load_master_key(cli: &Cli) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    let hex = if let Some(path) = &cli.master_key_file {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read master key file {}: {e}", path.display()))?;
+        raw.trim().to_string()
+    } else if let Ok(val) = std::env::var("SONDE_MASTER_KEY") {
+        val.trim().to_string()
+    } else {
+        return Err(
+            "master key required: provide --master-key-file or set SONDE_MASTER_KEY env var".into(),
+        );
+    };
+
+    if hex.len() != 64 {
+        return Err(format!(
+            "master key must be exactly 64 hex characters, got {}",
+            hex.len()
+        )
+        .into());
+    }
+
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("master key contains non-hex characters".into());
+    }
+
+    let mut key = [0u8; 32];
+    for (i, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)?;
+    }
+    Ok(key)
 }
 
 #[tokio::main]

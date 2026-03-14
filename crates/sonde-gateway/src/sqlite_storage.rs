@@ -243,6 +243,13 @@ impl SqliteStorage {
             conn.execute_batch("ALTER TABLE programs ADD COLUMN abi_version INTEGER")
                 .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
         }
+        // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted
+        // form. This must run before `validate_master_key` since validation only
+        // checks encrypted blobs.
+        migrate_legacy_psks(&mut conn, &master_key)?;
+        // Verify that the master key can actually decrypt existing PSK data.
+        // Catches a wrong key at startup rather than at first node read.
+        validate_master_key(&conn, &master_key)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             master_key,
@@ -751,58 +758,6 @@ mod tests {
         assert_eq!(fetched.last_battery_mv, Some(3300));
     }
 
-    /// Verify that opening an existing database that predates the `abi_version`
-    /// column applies the migration and continues to work correctly.
-    #[tokio::test]
-    async fn test_abi_version_migration() {
-        use rusqlite::Connection;
-        use tempfile::tempdir;
-
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("old.db");
-
-        // Create a "legacy" database without the abi_version column.
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS programs (
-                    hash BLOB PRIMARY KEY,
-                    image BLOB NOT NULL,
-                    size INTEGER NOT NULL,
-                    verification_profile TEXT NOT NULL
-                );",
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO programs (hash, image, size, verification_profile) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![vec![0x01u8; 32], vec![0x02u8; 4], 4i64, "Resident"],
-            )
-            .unwrap();
-        }
-
-        // Open with SqliteStorage — migration should add abi_version column.
-        let store = SqliteStorage::open(&db_path).unwrap();
-
-        // The migrated row has abi_version = NULL (i.e., None).
-        let prog = store
-            .get_program(&vec![0x01u8; 32])
-            .await
-            .unwrap()
-            .expect("program must survive migration");
-        assert_eq!(
-            prog.abi_version, None,
-            "migrated rows must have abi_version = None"
-        );
-
-        // Writing and reading a new program with abi_version works.
-        let mut new_prog = make_program(0x42);
-        new_prog.abi_version = Some(2);
-        store.store_program(&new_prog).await.unwrap();
-        let fetched = store.get_program(&new_prog.hash).await.unwrap().unwrap();
-        assert_eq!(fetched.abi_version, Some(2));
-    }
-
     /// GW-0601a migration: existing databases with plaintext 32-byte PSK blobs
     /// must be transparently re-encrypted on the first `open()` with a master key.
     #[tokio::test]
@@ -915,5 +870,29 @@ mod tests {
         store.store_program(&new_prog).await.unwrap();
         let fetched = store.get_program(&new_prog.hash).await.unwrap().unwrap();
         assert_eq!(fetched.abi_version, Some(2));
+    }
+
+    /// Verify that `open()` rejects a wrong master key when encrypted PSK rows
+    /// already exist in the database.
+    #[tokio::test]
+    async fn test_wrong_master_key_rejected_at_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("keycheck.db");
+
+        // Create a database with a node encrypted under the test key.
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.upsert_node(&make_node("node-a", 1)).await.unwrap();
+        }
+
+        // Re-opening with the same key must succeed.
+        SqliteStorage::open(&db_path, test_key()).expect("correct key must succeed");
+
+        // Re-opening with a different key must fail.
+        let wrong_key = Zeroizing::new([0xFFu8; 32]);
+        assert!(
+            SqliteStorage::open(&db_path, wrong_key).is_err(),
+            "wrong key must fail to open"
+        );
     }
 }

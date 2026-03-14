@@ -2202,12 +2202,14 @@ name = "sonde-admin"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "getrandom",
  "hex",
  "hyper-util",
  "prost",
  "serde",
  "serde_json",
  "serialport",
+ "sha2",
  "sonde-protocol",
  "tokio",
  "tonic",

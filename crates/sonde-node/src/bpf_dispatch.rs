@@ -58,6 +58,15 @@ pub const MAX_MAPS: usize = 16;
 /// Map pointers originate from `Vec::as_ptr()` in [`MapStorage`], which the
 /// Rust allocator guarantees to be non-null. The sentinel value `0` therefore
 /// never collides with a valid map pointer.
+/// Error returned by [`MapPtrIndex::insert`].
+#[derive(Debug, PartialEq)]
+enum MapPtrInsertError {
+    /// The index is already at capacity (`MAX_MAPS`).
+    Overflow,
+    /// The pointer already exists in the index.
+    Duplicate,
+}
+
 struct MapPtrIndex {
     entries: [(u64, usize); MAX_MAPS],
     len: usize,
@@ -71,22 +80,22 @@ impl MapPtrIndex {
         }
     }
 
-    /// Insert a map pointer → index mapping. Returns `false` if the
+    /// Insert a map pointer → index mapping. Returns an error if the
     /// index is full or if the pointer is a duplicate (which would cause
     /// `get()` to resolve the wrong map).
-    fn insert(&mut self, ptr: u64, idx: usize) -> bool {
+    fn insert(&mut self, ptr: u64, idx: usize) -> Result<(), MapPtrInsertError> {
         if self.len >= MAX_MAPS {
-            return false;
+            return Err(MapPtrInsertError::Overflow);
         }
         // Reject duplicates in all builds — not just debug. Duplicate
         // pointers can arise from zero-sized maps (empty Vec returns a
         // dangling non-null pointer that may collide).
         if self.entries[..self.len].iter().any(|(p, _)| *p == ptr) {
-            return false;
+            return Err(MapPtrInsertError::Duplicate);
         }
         self.entries[self.len] = (ptr, idx);
         self.len += 1;
-        true
+        Ok(())
     }
 
     fn get(&self, ptr: u64) -> Option<usize> {
@@ -178,16 +187,25 @@ pub unsafe fn install(
             let mut index = MapPtrIndex::new();
             let mut ok = true;
             for (i, &p) in ms.map_pointers().iter().enumerate() {
-                if !index.insert(p, i) {
-                    // Overflow is unreachable when validate_map_defs()
-                    // enforces map_count <= MAX_MAPS, so this is a
-                    // duplicate pointer (e.g. zero-sized map collision).
-                    log::error!(
-                        "duplicate map pointer {p:#x} at map {i} — \
-                         all map helpers will return errors this cycle"
-                    );
-                    ok = false;
-                    break;
+                match index.insert(p, i) {
+                    Ok(()) => {}
+                    Err(MapPtrInsertError::Overflow) => {
+                        log::error!(
+                            "map pointer index overflow at map {i} \
+                             (capacity {MAX_MAPS}) — \
+                             all map helpers will return errors this cycle"
+                        );
+                        ok = false;
+                        break;
+                    }
+                    Err(MapPtrInsertError::Duplicate) => {
+                        log::error!(
+                            "duplicate map pointer at map {i} — \
+                             all map helpers will return errors this cycle"
+                        );
+                        ok = false;
+                        break;
+                    }
                 }
             }
             // If any insert failed, use an empty index so all map
@@ -1418,33 +1436,36 @@ mod tests {
     #[test]
     fn test_map_ptr_index_basic_insert_and_get() {
         let mut idx = MapPtrIndex::new();
-        assert!(idx.insert(0x1000, 0));
-        assert!(idx.insert(0x2000, 1));
+        assert!(idx.insert(0x1000, 0).is_ok());
+        assert!(idx.insert(0x2000, 1).is_ok());
         assert_eq!(idx.get(0x1000), Some(0));
         assert_eq!(idx.get(0x2000), Some(1));
         assert_eq!(idx.get(0x3000), None);
     }
 
     #[test]
-    fn test_map_ptr_index_overflow_returns_false() {
+    fn test_map_ptr_index_overflow_returns_error() {
         let mut idx = MapPtrIndex::new();
         for i in 0..MAX_MAPS {
             assert!(
-                idx.insert(0x1000 + i as u64, i),
+                idx.insert(0x1000 + i as u64, i).is_ok(),
                 "insert {i} should succeed"
             );
         }
-        // MAX_MAPS+1 should fail
-        assert!(!idx.insert(0xFFFF, MAX_MAPS));
+        // MAX_MAPS+1 should fail with overflow
+        assert_eq!(
+            idx.insert(0xFFFF, MAX_MAPS),
+            Err(MapPtrInsertError::Overflow)
+        );
     }
 
     #[test]
-    fn test_map_ptr_index_duplicate_returns_false() {
+    fn test_map_ptr_index_duplicate_returns_error() {
         let mut idx = MapPtrIndex::new();
-        assert!(idx.insert(0x1000, 0));
-        assert!(
-            !idx.insert(0x1000, 1),
-            "duplicate pointer should be rejected"
+        assert!(idx.insert(0x1000, 0).is_ok());
+        assert_eq!(
+            idx.insert(0x1000, 1),
+            Err(MapPtrInsertError::Duplicate),
         );
         // Original mapping should be unchanged
         assert_eq!(idx.get(0x1000), Some(0));
@@ -1453,9 +1474,9 @@ mod tests {
     #[test]
     fn test_map_ptr_index_get_returns_first_match() {
         let mut idx = MapPtrIndex::new();
-        assert!(idx.insert(0x1000, 0));
-        assert!(idx.insert(0x2000, 1));
-        assert!(idx.insert(0x3000, 2));
+        assert!(idx.insert(0x1000, 0).is_ok());
+        assert!(idx.insert(0x2000, 1).is_ok());
+        assert!(idx.insert(0x3000, 2).is_ok());
         assert_eq!(idx.get(0x2000), Some(1));
     }
 }

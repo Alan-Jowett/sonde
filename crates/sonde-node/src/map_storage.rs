@@ -367,13 +367,17 @@ mod tests {
             .map(|_| array_map_def(4, 1))
             .collect();
         let result = MapStorage::validate_map_defs(&defs);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        let expected_count = format!("{} maps", crate::bpf_dispatch::MAX_MAPS + 1);
-        assert!(
-            err_msg.contains(&expected_count),
-            "error should mention the map count: {err_msg}"
-        );
+        match result {
+            Err(NodeError::ProgramDecodeFailed(msg)) => {
+                let expected_count = format!("{} maps", crate::bpf_dispatch::MAX_MAPS + 1);
+                assert!(
+                    msg.contains(&expected_count),
+                    "error message should mention the map count: {msg}"
+                );
+            }
+            Err(other) => panic!("expected ProgramDecodeFailed, got: {other}"),
+            Ok(()) => panic!("expected error for too many maps"),
+        }
     }
 
     #[test]

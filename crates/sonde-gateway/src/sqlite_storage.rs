@@ -34,7 +34,8 @@ fn encrypt_psk(
     let cipher = Aes256Gcm::new(key);
 
     let mut nonce_bytes = [0u8; 12];
-    rand::fill(&mut nonce_bytes);
+    getrandom::fill(&mut nonce_bytes)
+        .map_err(|e| StorageError::Internal(format!("nonce rng: {e}")))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let payload = Payload {
@@ -120,14 +121,17 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
     let tx = conn
         .transaction()
         .map_err(|e| StorageError::Internal(format!("begin migration tx: {e}")))?;
-    for (node_id, psk_blob) in legacy {
+    for (node_id, mut psk_blob) in legacy {
         // SQL WHERE clause guarantees LENGTH(psk) = 32.
         let mut psk: [u8; 32] = psk_blob
+            .as_slice()
             .try_into()
             .expect("SQL filter guarantees exactly 32 bytes");
+        // Zeroize the Vec that held the plaintext PSK from the query.
+        use zeroize::Zeroize;
+        psk_blob.zeroize();
         let encrypted = encrypt_psk(master_key, &node_id, &psk);
         // Zeroize plaintext PSK before checking the encrypt result.
-        use zeroize::Zeroize;
         psk.zeroize();
         let encrypted = encrypted?;
         tx.execute(
@@ -160,13 +164,14 @@ fn validate_master_key(conn: &Connection, master_key: &[u8; 32]) -> Result<(), S
         .map_err(map_err)?;
 
     if let Some((node_id, psk_blob)) = psk_row {
-        decrypt_psk(master_key, &node_id, &psk_blob).map_err(|_| {
-            StorageError::Internal(
-                "master key validation failed — the provided key cannot decrypt existing PSK \
-                 data; ensure the correct master key is supplied"
-                    .into(),
-            )
-        })?;
+        let _decrypted =
+            Zeroizing::new(decrypt_psk(master_key, &node_id, &psk_blob).map_err(|_| {
+                StorageError::Internal(
+                    "master key validation failed — the provided key cannot decrypt existing PSK \
+                     data; ensure the correct master key is supplied"
+                        .into(),
+                )
+            })?);
     }
     Ok(())
 }
@@ -203,7 +208,7 @@ CREATE TABLE IF NOT EXISTS programs (
 /// (GW-0601a). The master key is never written to the database.
 pub struct SqliteStorage {
     conn: Arc<Mutex<Connection>>,
-    master_key: Zeroizing<[u8; 32]>,
+    master_key: Arc<Zeroizing<[u8; 32]>>,
 }
 
 impl SqliteStorage {
@@ -252,7 +257,7 @@ impl SqliteStorage {
         validate_master_key(&conn, &master_key)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            master_key,
+            master_key: Arc::new(master_key),
         })
     }
 

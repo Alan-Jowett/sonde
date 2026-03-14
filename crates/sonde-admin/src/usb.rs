@@ -18,11 +18,13 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const IDENTITY_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Pair a node by sending `PAIR_REQUEST` with the given `key_hint` and PSK.
+/// Pair a node by sending `PAIR_REQUEST` with the given `key_hint`, PSK, and
+/// optional WiFi `channel`.
 pub fn pair_node(
     port_name: &str,
     key_hint: u16,
     psk: [u8; PSK_SIZE],
+    channel: Option<u8>,
     json: bool,
 ) -> Result<(), String> {
     let mut port = serialport::new(port_name, 115_200)
@@ -42,7 +44,11 @@ pub fn pair_node(
         ));
     }
 
-    let req = ModemMessage::PairRequest(PairRequest { key_hint, psk });
+    let req = ModemMessage::PairRequest(PairRequest {
+        key_hint,
+        psk,
+        channel,
+    });
     let frame = encode_modem_frame(&req).map_err(|e| format!("encode: {}", e))?;
     port.write_all(&frame)
         .map_err(|e| format!("write: {}", e))?;

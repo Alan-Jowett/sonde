@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ use tracing::{error, info};
 
 use sonde_gateway::admin::pb::gateway_admin_server::GatewayAdminServer;
 use sonde_gateway::engine::{Gateway, PendingCommand};
+use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::modem::UsbEspNowTransport;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
@@ -49,6 +51,13 @@ struct Cli {
     /// Serial port baud rate.
     #[arg(long, default_value_t = 115_200)]
     baud_rate: u32,
+
+    /// Path to a YAML handler configuration file.
+    ///
+    /// When provided, APP_DATA frames are routed to external handler processes
+    /// as defined in the file. See gateway-design.md §9 for the format.
+    #[arg(long)]
+    handler_config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -77,12 +86,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    // 4. Gateway engine
-    let gateway = Arc::new(Gateway::new_with_pending(
-        storage.clone(),
-        pending_commands.clone(),
-        session_manager.clone(),
-    ));
+    // 4. Gateway engine — wire up handler router when a config file was given
+    let gateway = if let Some(config_path) = &cli.handler_config {
+        let configs = load_handler_configs(config_path).map_err(|e| {
+            error!("failed to load handler config: {e}");
+            e
+        })?;
+        info!(
+            path = %config_path.display(),
+            count = configs.len(),
+            "loaded handler config"
+        );
+        let router = Arc::new(HandlerRouter::new(configs));
+        Arc::new(Gateway::new_with_handler(
+            storage.clone(),
+            Duration::from_secs(cli.session_timeout),
+            router,
+        ))
+    } else {
+        Arc::new(Gateway::new_with_pending(
+            storage.clone(),
+            pending_commands.clone(),
+            session_manager.clone(),
+        ))
+    };
 
     // 5. Open serial port and create modem transport
     let serial_port =

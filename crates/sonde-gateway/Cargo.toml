@@ -25,6 +25,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-serial = "5.4"
 tokio-stream = "0.1"
 futures = "0.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_yaml_ng = "0.10.0"
 
 [[bin]]
 name = "sonde-gateway"
@@ -32,3 +34,6 @@ path = "src/bin/gateway.rs"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+tracing-test = { version = "0.2.6", features = ["no-env-filter"] }

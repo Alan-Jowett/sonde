@@ -184,10 +184,11 @@ impl GatewayAdmin for AdminService {
     ) -> Result<Response<IngestProgramResponse>, Status> {
         let req = request.into_inner();
         let profile = parse_profile(req.verification_profile)?;
-        let record = self
+        let mut record = self
             .program_library
             .ingest_unverified(req.image_data, profile)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        record.abi_version = req.abi_version;
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
             program_size: record.size,
@@ -211,6 +212,7 @@ impl GatewayAdmin for AdminService {
                 hash: p.hash.clone(),
                 size: p.size,
                 verification_profile: profile_to_proto(&p.verification_profile),
+                abi_version: p.abi_version,
             })
             .collect();
         Ok(Response::new(ListProgramsResponse { programs }))

@@ -20,6 +20,7 @@ use sonde_protocol::{
 };
 
 use sonde_gateway::crypto::RustCryptoHmac;
+use tracing_test::traced_test;
 
 // ─── Test helpers ──────────────────────────────────────────────────────
 
@@ -138,6 +139,27 @@ async fn store_test_program_with_profile(
     hash
 }
 
+/// Create a program image with a specific ABI version, ingest, store, and return its hash.
+async fn store_test_program_with_abi(
+    storage: &InMemoryStorage,
+    bytecode: &[u8],
+    abi_version: u32,
+) -> Vec<u8> {
+    let lib = ProgramLibrary::new();
+    let image = sonde_protocol::ProgramImage {
+        bytecode: bytecode.to_vec(),
+        maps: vec![],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+    let mut record = lib
+        .ingest_unverified(cbor, VerificationProfile::Resident)
+        .unwrap();
+    record.abi_version = Some(abi_version);
+    let hash = record.hash.clone();
+    storage.store_program(&record).await.unwrap();
+    hash
+}
+
 /// Decode a gateway response frame and return the GatewayMessage.
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
     let decoded = decode_frame(raw).unwrap();
@@ -146,15 +168,16 @@ fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) 
     (decoded.header, msg)
 }
 
-/// Send a WAKE and return the (starting_seq, timestamp_ms, CommandPayload)
-/// from the COMMAND response.
-async fn do_wake(
+/// Send a WAKE with a specific firmware ABI version and return
+/// the (starting_seq, timestamp_ms, CommandPayload) from the COMMAND response.
+async fn do_wake_with_abi(
     gw: &Gateway,
     node: &TestNode,
     nonce: u64,
+    firmware_abi_version: u32,
     program_hash: &[u8],
 ) -> (u64, u64, CommandPayload) {
-    let frame = node.build_wake(nonce, 1, program_hash, 3300);
+    let frame = node.build_wake(nonce, firmware_abi_version, program_hash, 3300);
     let resp = gw
         .process_frame(&frame, node.peer_address())
         .await
@@ -168,6 +191,17 @@ async fn do_wake(
         } => (starting_seq, timestamp_ms, payload),
         other => panic!("expected Command, got {:?}", other),
     }
+}
+
+/// Send a WAKE and return the (starting_seq, timestamp_ms, CommandPayload)
+/// from the COMMAND response.
+async fn do_wake(
+    gw: &Gateway,
+    node: &TestNode,
+    nonce: u64,
+    program_hash: &[u8],
+) -> (u64, u64, CommandPayload) {
+    do_wake_with_abi(gw, node, nonce, 1, program_hash).await
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -897,4 +931,131 @@ async fn t0609_unknown_node_silent_discard() {
 
     // Verify no state changed (no sessions created)
     assert_eq!(gw.session_manager().active_count().await, 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-07xx: Firmware ABI Version Tests
+// ═══════════════════════════════════════════════════════════════════════
+
+/// T-0704: ABI incompatibility — gateway must NOT issue UPDATE_PROGRAM when the
+/// program's ABI version does not match the node's firmware ABI version,
+/// and must log a warning.
+#[tokio::test]
+#[traced_test]
+async fn t0704_abi_incompatibility_skips_update_program() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    // Store a program that targets ABI version 3.
+    let prog_hash = store_test_program_with_abi(&storage, b"abi3-program", 3).await;
+
+    let node = TestNode::new("node-704", 0x0704, [0x74; 32]);
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(prog_hash.clone());
+    storage.upsert_node(&record).await.unwrap();
+
+    // Node reports firmware ABI version 2 — incompatible with the assigned program (ABI 3).
+    let (_, _, payload) = do_wake_with_abi(&gw, &node, 1, 2, &[0u8; 32]).await;
+    assert_ne!(
+        payload.command_type(),
+        sonde_protocol::CMD_UPDATE_PROGRAM,
+        "gateway must NOT issue UPDATE_PROGRAM for an ABI-incompatible program"
+    );
+    // Assert warning was logged.
+    assert!(
+        logs_contain("ABI mismatch"),
+        "expected ABI mismatch warning to be logged"
+    );
+
+    // Compatible ABI: store a program for ABI 2 and assign it.
+    let prog_hash_abi2 = store_test_program_with_abi(&storage, b"abi2-program", 2).await;
+    let mut record2 = storage.get_node("node-704").await.unwrap().unwrap();
+    record2.assigned_program_hash = Some(prog_hash_abi2.clone());
+    storage.upsert_node(&record2).await.unwrap();
+
+    // Same node reports ABI 2 — now the program is compatible.
+    let (_, _, payload2) = do_wake_with_abi(&gw, &node, 2, 2, &[0u8; 32]).await;
+    assert_eq!(
+        payload2.command_type(),
+        sonde_protocol::CMD_UPDATE_PROGRAM,
+        "gateway MUST issue UPDATE_PROGRAM when ABI versions match"
+    );
+}
+
+/// T-0705: ABI incompatibility on ephemeral path — gateway must NOT issue
+/// RUN_EPHEMERAL when the program's ABI version does not match the node's
+/// firmware ABI version, and must log a warning.
+#[tokio::test]
+#[traced_test]
+async fn t0705_abi_incompatibility_skips_run_ephemeral() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-705", 0x0705, [0x75; 32]);
+    storage.upsert_node(&node.to_record()).await.unwrap();
+
+    // Store an ephemeral program targeting ABI 3.
+    let lib = ProgramLibrary::new();
+    let image = sonde_protocol::ProgramImage {
+        bytecode: b"eph-abi3".to_vec(),
+        maps: vec![],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+    let mut eph_record = lib
+        .ingest_unverified(cbor, VerificationProfile::Ephemeral)
+        .unwrap();
+    eph_record.abi_version = Some(3);
+    let eph_hash = eph_record.hash.clone();
+    storage.store_program(&eph_record).await.unwrap();
+
+    // Queue the ephemeral program.
+    gw.queue_command(
+        "node-705",
+        PendingCommand::RunEphemeral {
+            program_hash: eph_hash.clone(),
+        },
+    )
+    .await;
+
+    // Node reports ABI 2 — incompatible with the ephemeral program (ABI 3).
+    let (_, _, payload) = do_wake_with_abi(&gw, &node, 1, 2, &[0u8; 32]).await;
+    assert_ne!(
+        payload.command_type(),
+        sonde_protocol::CMD_RUN_EPHEMERAL,
+        "gateway must NOT issue RUN_EPHEMERAL for an ABI-incompatible program"
+    );
+    assert!(
+        logs_contain("ABI mismatch"),
+        "expected ABI mismatch warning to be logged"
+    );
+
+    // The incompatible ephemeral was dropped from the queue. Queue a compatible one (ABI 2).
+    let cbor2 = sonde_protocol::ProgramImage {
+        bytecode: b"eph-abi2".to_vec(),
+        maps: vec![],
+    }
+    .encode_deterministic()
+    .unwrap();
+    let mut eph_record2 = lib
+        .ingest_unverified(cbor2, VerificationProfile::Ephemeral)
+        .unwrap();
+    eph_record2.abi_version = Some(2);
+    let eph_hash2 = eph_record2.hash.clone();
+    storage.store_program(&eph_record2).await.unwrap();
+
+    gw.queue_command(
+        "node-705",
+        PendingCommand::RunEphemeral {
+            program_hash: eph_hash2.clone(),
+        },
+    )
+    .await;
+
+    // Node reports ABI 2 — now compatible.
+    let (_, _, payload2) = do_wake_with_abi(&gw, &node, 2, 2, &[0u8; 32]).await;
+    assert_eq!(
+        payload2.command_type(),
+        sonde_protocol::CMD_RUN_EPHEMERAL,
+        "gateway MUST issue RUN_EPHEMERAL when ABI versions match"
+    );
 }

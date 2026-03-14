@@ -42,6 +42,8 @@ pub enum BpfError {
     InvalidPointerArithmetic { pc: usize },
     /// Invalid map index in a LD_DW_IMM relocation.
     InvalidMapIndex { pc: usize, index: i32 },
+    /// The program exceeded the instruction budget.
+    InstructionBudgetExceeded { pc: usize },
 }
 
 impl core::fmt::Display for BpfError {
@@ -71,6 +73,9 @@ impl core::fmt::Display for BpfError {
             }
             Self::InvalidMapIndex { pc, index } => {
                 write!(f, "invalid map index {index} at insn #{pc}")
+            }
+            Self::InstructionBudgetExceeded { pc } => {
+                write!(f, "instruction budget exceeded at insn #{pc}")
             }
         }
     }
@@ -548,19 +553,28 @@ fn mem_atomic64(
     Ok(())
 }
 
+/// Sentinel value for `instruction_budget` that disables metering.
+///
+/// Pass this to [`execute_program`] or [`execute_program_no_maps`] when you
+/// do not want to impose a limit on the number of instructions executed.
+pub const UNLIMITED_BUDGET: u64 = u64::MAX;
+
 /// Execute a BPF program without map access.
 ///
 /// This is a safe wrapper around [`execute_program`] for programs that do
 /// not use BPF maps.  Since `maps` is empty, the safety invariants on
 /// [`MapRegion`] are trivially satisfied.
+///
+/// Pass [`UNLIMITED_BUDGET`] as `instruction_budget` to disable metering.
 pub fn execute_program_no_maps(
     prog: &[u8],
     ctx: &mut [u8],
     helpers: &[HelperDescriptor],
     read_only_ctx: bool,
+    instruction_budget: u64,
 ) -> Result<u64, BpfError> {
     // SAFETY: maps is empty — no raw pointer invariants to uphold.
-    unsafe { execute_program(prog, ctx, helpers, &[], read_only_ctx) }
+    unsafe { execute_program(prog, ctx, helpers, &[], read_only_ctx, instruction_budget) }
 }
 
 /// Execute a BPF program.
@@ -573,6 +587,10 @@ pub fn execute_program_no_maps(
 /// * `maps` — table of map region descriptors.
 /// * `read_only_ctx` — when `true`, writes to the context region are
 ///   rejected with `ReadOnlyWrite`.  When `false`, the region is writable.
+/// * `instruction_budget` — maximum number of instruction slots that may be
+///   executed before the program is terminated with
+///   [`BpfError::InstructionBudgetExceeded`].  Pass [`UNLIMITED_BUDGET`] to
+///   disable metering.
 ///
 /// # Returns
 /// The value of `r0` when the program exits.
@@ -601,6 +619,7 @@ pub unsafe fn execute_program(
     helpers: &[HelperDescriptor],
     maps: &[MapRegion],
     read_only_ctx: bool,
+    instruction_budget: u64,
 ) -> Result<u64, BpfError> {
     let num_insns = prog.len() / INSN_SIZE;
     if !prog.len().is_multiple_of(INSN_SIZE) {
@@ -663,8 +682,13 @@ pub unsafe fn execute_program(
     };
 
     let mut pc: usize = 0;
+    let mut insn_count: u64 = 0;
 
     while pc < num_insns {
+        insn_count += 1;
+        if insn_count > instruction_budget {
+            return Err(BpfError::InstructionBudgetExceeded { pc });
+        }
         let insn = ebpf::get_insn(prog, pc);
         pc += 1;
 
@@ -686,6 +710,12 @@ pub unsafe fn execute_program(
                 }
                 let next = ebpf::get_insn(prog, pc);
                 pc += 1;
+                // LD_DW_IMM occupies two 8-byte slots; charge the second slot
+                // so the budget accurately reflects the number of slots consumed.
+                insn_count += 1;
+                if insn_count > instruction_budget {
+                    return Err(BpfError::InstructionBudgetExceeded { pc: pc - 1 });
+                }
 
                 match src as u8 {
                     0 => {

@@ -743,9 +743,10 @@ fn test_instruction_budget_ld_dw_imm_counts_two_slots() {
     ]);
     let mut mem = [];
     // Budget of 1: the second slot of LD_DW_IMM is slot #2, which exceeds the budget.
+    // The exceeded slot is slot index 1 (the second 8-byte slot of LD_DW_IMM).
     assert!(matches!(
         execute_program_no_maps(&prog, &mut mem, &[], false, 1),
-        Err(BpfError::InstructionBudgetExceeded { .. })
+        Err(BpfError::InstructionBudgetExceeded { pc: 1 })
     ));
     // Budget of 2: LD_DW_IMM (2 slots) + EXIT (1 slot) = 3 total — budget=2 fails.
     assert!(matches!(

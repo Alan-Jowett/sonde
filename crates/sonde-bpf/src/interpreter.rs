@@ -587,6 +587,10 @@ pub fn execute_program_no_maps(
 /// * `maps` — table of map region descriptors.
 /// * `read_only_ctx` — when `true`, writes to the context region are
 ///   rejected with `ReadOnlyWrite`.  When `false`, the region is writable.
+/// * `instruction_budget` — maximum number of instruction slots that may be
+///   executed before the program is terminated with
+///   [`BpfError::InstructionBudgetExceeded`].  Pass [`UNLIMITED_BUDGET`] to
+///   disable metering.
 ///
 /// # Returns
 /// The value of `r0` when the program exits.
@@ -710,7 +714,7 @@ pub unsafe fn execute_program(
                 // so the budget accurately reflects the number of slots consumed.
                 insn_count += 1;
                 if insn_count > instruction_budget {
-                    return Err(BpfError::InstructionBudgetExceeded { pc });
+                    return Err(BpfError::InstructionBudgetExceeded { pc: pc - 1 });
                 }
 
                 match src as u8 {

@@ -502,6 +502,10 @@ impl NodeTransport for ChannelTransport {
 // PipeSerial — bridges sync SerialPort to async tokio::io::duplex
 // ---------------------------------------------------------------------------
 
+/// Safety cap on PipeSerial rx_buf to prevent unbounded growth if the
+/// gateway side writes faster than the bridge thread drains.
+const MAX_RX_BUF: usize = 64 * 1024;
+
 /// Adapter that implements the synchronous `SerialPort` trait backed by
 /// shared ring buffers. A background tokio task shuttles bytes between
 /// the duplex stream and these buffers.
@@ -526,6 +530,9 @@ impl SerialPort for PipeSerial {
         (n, false)
     }
 
+    /// Write is intentionally unbounded — this is a test adapter where
+    /// backpressure is not needed and silently dropping bridge messages
+    /// would cause hard-to-diagnose test failures.
     fn write(&mut self, data: &[u8]) -> bool {
         {
             let mut tx = self.tx_buf.lock().unwrap();
@@ -583,6 +590,11 @@ fn create_pipe_serial(
                             Ok(0) => break,
                             Ok(n) => {
                                 let mut rx = rx_buf.lock().unwrap();
+                                assert!(
+                                    rx.len() + n <= MAX_RX_BUF,
+                                    "PipeSerial rx_buf exceeded {MAX_RX_BUF} bytes — \
+                                     gateway is writing faster than bridge drains"
+                                );
                                 rx.extend(&read_buf[..n]);
                             }
                             Err(_) => break,
@@ -721,6 +733,9 @@ impl Drop for ModemTestEnv {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.pipe_task.take() {
+            // The pipe shuttle task runs an unconditional loop (no stop
+            // flag) so abort is the only way to tear it down.  Buffered
+            // bytes are not needed after the bridge thread exits.
             handle.abort();
         }
         if let Some(handle) = self.bridge_thread.take() {

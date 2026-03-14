@@ -578,8 +578,7 @@ fn chunked_transfer<T: Transport>(
     // Reject transfers that exceed the maximum program image size
     if program_size_usize > max_image_size {
         return Err(NodeError::MalformedPayload(
-            format!("program_size ({program_size}) exceeds maximum image size ({max_image_size})")
-                .into(),
+            "program_size exceeds maximum image size".into(),
         ));
     }
 
@@ -592,10 +591,7 @@ fn chunked_transfer<T: Transport>(
     let expected_chunk_count = sonde_protocol::chunk_count(program_size_usize, chunk_size_usize);
     if expected_chunk_count != Some(chunk_count) {
         return Err(NodeError::MalformedPayload(
-            format!(
-                "chunk_count ({chunk_count}) does not match expected value ({expected_chunk_count:?})"
-            )
-            .into(),
+            "chunk_count does not match program_size / chunk_size".into(),
         ));
     }
 

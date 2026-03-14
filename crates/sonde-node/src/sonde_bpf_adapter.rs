@@ -74,27 +74,27 @@ impl BpfInterpreter for SondeBpfInterpreter {
         // Build MapRegion descriptors from map_ptrs + map_defs.
         // Use a temporary vec so self.map_regions is only updated on success.
         let mut new_regions = Vec::with_capacity(map_ptrs.len());
-        for (i, (&ptr, def)) in map_ptrs.iter().zip(map_defs.iter()).enumerate() {
+        for (&ptr, def) in map_ptrs.iter().zip(map_defs.iter()) {
             if ptr == 0 {
-                return Err(BpfError::LoadError(format!("map {i}: null pointer").into()));
+                return Err(BpfError::LoadError("map pointer is null".into()));
             }
             let entry_size = (def.key_size as u64)
                 .checked_add(def.value_size as u64)
                 .ok_or_else(|| {
-                    BpfError::LoadError(format!("map {i}: entry size overflow").into())
+                    BpfError::LoadError("map entry size overflow (key_size + value_size)".into())
                 })?;
             let total_bytes = entry_size
                 .checked_mul(def.max_entries as u64)
                 .ok_or_else(|| {
-                    BpfError::LoadError(format!("map {i}: total size overflow").into())
+                    BpfError::LoadError("map total size overflow (entry_size * max_entries)".into())
                 })?;
             new_regions.push(MapRegion {
                 relocated_ptr: ptr,
                 value_size: def.value_size,
                 data_start: ptr,
-                data_end: ptr.checked_add(total_bytes).ok_or_else(|| {
-                    BpfError::LoadError(format!("map {i}: pointer + size overflow").into())
-                })?,
+                data_end: ptr
+                    .checked_add(total_bytes)
+                    .ok_or_else(|| BpfError::LoadError("map pointer + size overflow".into()))?,
             });
         }
 

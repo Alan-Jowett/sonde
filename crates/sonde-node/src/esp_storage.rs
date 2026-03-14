@@ -131,7 +131,7 @@ impl crate::traits::PlatformStorage for NvsStorage {
     fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
         if partition > 1 {
             return Err(NodeError::StorageError(
-                "invalid active partition index".into(),
+                "invalid active partition index (must be 0 or 1)".into(),
             ));
         }
         self.nvs
@@ -169,11 +169,13 @@ impl crate::traits::PlatformStorage for NvsStorage {
     fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
         if partition > 1 {
             return Err(NodeError::StorageError(
-                "invalid program partition index".into(),
+                "invalid program partition index (must be 0 or 1)".into(),
             ));
         }
         if image.len() > 4096 {
-            return Err(NodeError::StorageError("program image too large".into()));
+            return Err(NodeError::StorageError(
+                "program image too large (max 4096 bytes)".into(),
+            ));
         }
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
         self.nvs
@@ -184,7 +186,7 @@ impl crate::traits::PlatformStorage for NvsStorage {
     fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
         if partition > 1 {
             return Err(NodeError::StorageError(
-                "invalid program partition index".into(),
+                "invalid program partition index (must be 0 or 1)".into(),
             ));
         }
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
@@ -222,7 +224,9 @@ impl crate::traits::PlatformStorage for NvsStorage {
 
     fn write_channel(&mut self, channel: u8) -> NodeResult<()> {
         if channel < 1 || channel > 13 {
-            return Err(NodeError::StorageError("invalid WiFi channel".into()));
+            return Err(NodeError::StorageError(
+                "invalid WiFi channel (must be 1-13)".into(),
+            ));
         }
         self.nvs
             .set_u32("channel", channel as u32)

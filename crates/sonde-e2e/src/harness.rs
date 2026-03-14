@@ -371,7 +371,7 @@ impl NodeTransport for BridgeTransport {
 /// `&self` and `Radio::send` takes `&mut self` — both synchronous.
 struct ChannelRadio {
     /// Frames sent by the bridge (gateway → node) arrive at the node.
-    to_node: std::sync::mpsc::Sender<Vec<u8>>,
+    to_node: std::sync::mpsc::SyncSender<Vec<u8>>,
     /// Frames sent by the node arrive here for the bridge.
     from_node: Mutex<std::sync::mpsc::Receiver<Vec<u8>>>,
     /// Current radio channel.
@@ -436,7 +436,7 @@ impl Radio for ChannelRadio {
 /// `sonde_node::traits::Transport::recv(timeout_ms)` contract.
 pub struct ChannelTransport {
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
-    tx: std::sync::mpsc::Sender<Vec<u8>>,
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
     /// Nonces extracted from outbound WAKE frames.
     wake_nonces: Vec<u64>,
     /// `(msg_type, nonce)` for every outbound frame.
@@ -529,6 +529,12 @@ impl SerialPort for PipeSerial {
     fn write(&mut self, data: &[u8]) -> bool {
         {
             let mut tx = self.tx_buf.lock().unwrap();
+            // Bound the buffer to prevent unbounded memory growth if the
+            // other side stops draining.
+            const MAX_TX_BUF: usize = 64 * 1024;
+            if tx.len() + data.len() > MAX_TX_BUF {
+                return false;
+            }
             tx.extend(data);
         }
         self.tx_notify.notify_one();
@@ -594,6 +600,9 @@ fn create_pipe_serial(
                             let _ = writer.flush().await;
                         }
                     }
+                    // Periodic stop-flag check so the task can shut down
+                    // gracefully without relying on abort().
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {}
                 }
             }
         })
@@ -631,9 +640,11 @@ impl ModemTestEnv {
     pub async fn new(channel: u8) -> (Self, ChannelTransport) {
         let stop = Arc::new(AtomicBool::new(false));
 
-        // mpsc channels for radio simulation (bridge ↔ node).
-        let (bridge_to_node_tx, bridge_to_node_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let (node_to_bridge_tx, node_to_bridge_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        // Bounded channels for radio simulation (bridge ↔ node).
+        // Capacity of 64 frames provides backpressure and prevents OOM
+        // if either side stalls.
+        let (bridge_to_node_tx, bridge_to_node_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
+        let (node_to_bridge_tx, node_to_bridge_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
 
         let channel_radio = ChannelRadio {
             to_node: bridge_to_node_tx,
@@ -662,7 +673,9 @@ impl ModemTestEnv {
             let mut bridge = Bridge::new(pipe_serial, channel_radio, counters);
             while !bridge_stop.load(Ordering::Relaxed) {
                 bridge.poll();
-                std::thread::sleep(Duration::from_millis(1));
+                // 2ms poll interval — fast enough for E2E test latency
+                // requirements while avoiding tight CPU-burning loops.
+                std::thread::sleep(Duration::from_millis(2));
             }
         });
 

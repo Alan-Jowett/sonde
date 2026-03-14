@@ -158,9 +158,7 @@ impl MapStorage {
                 ));
             }
             if def.value_size == 0 {
-                return Err(NodeError::ProgramDecodeFailed(
-                    "map value_size must be > 0",
-                ));
+                return Err(NodeError::ProgramDecodeFailed("map value_size must be > 0"));
             }
         }
         // Also verify arithmetic doesn't overflow

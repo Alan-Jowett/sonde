@@ -57,42 +57,38 @@ impl BpfInterpreter for SondeBpfInterpreter {
         map_defs: &[sonde_protocol::MapDef],
     ) -> Result<(), BpfError> {
         if bytecode.is_empty() {
-            return Err(BpfError::InvalidBytecode("empty bytecode".into()));
+            return Err(BpfError::InvalidBytecode("empty bytecode"));
         }
         if !bytecode.len().is_multiple_of(8) {
             return Err(BpfError::InvalidBytecode(
-                "bytecode length must be a multiple of 8".into(),
+                "bytecode length must be a multiple of 8",
             ));
         }
 
         if map_ptrs.len() != map_defs.len() {
-            return Err(BpfError::LoadError(format!(
-                "map_ptrs length ({}) does not match map_defs length ({})",
-                map_ptrs.len(),
-                map_defs.len()
-            )));
+            return Err(BpfError::LoadError("map_ptrs and map_defs length mismatch"));
         }
 
         // Build MapRegion descriptors from map_ptrs + map_defs.
         // Use a temporary vec so self.map_regions is only updated on success.
         let mut new_regions = Vec::with_capacity(map_ptrs.len());
-        for (i, (&ptr, def)) in map_ptrs.iter().zip(map_defs.iter()).enumerate() {
+        for (&ptr, def) in map_ptrs.iter().zip(map_defs.iter()) {
             if ptr == 0 {
-                return Err(BpfError::LoadError(format!("map {i}: null pointer")));
+                return Err(BpfError::LoadError("map pointer is null"));
             }
             let entry_size = (def.key_size as u64)
                 .checked_add(def.value_size as u64)
-                .ok_or_else(|| BpfError::LoadError(format!("map {i}: entry size overflow")))?;
+                .ok_or(BpfError::LoadError("map entry size overflow"))?;
             let total_bytes = entry_size
                 .checked_mul(def.max_entries as u64)
-                .ok_or_else(|| BpfError::LoadError(format!("map {i}: total size overflow")))?;
+                .ok_or(BpfError::LoadError("map total size overflow"))?;
             new_regions.push(MapRegion {
                 relocated_ptr: ptr,
                 value_size: def.value_size,
                 data_start: ptr,
-                data_end: ptr.checked_add(total_bytes).ok_or_else(|| {
-                    BpfError::LoadError(format!("map {i}: pointer + size overflow"))
-                })?,
+                data_end: ptr
+                    .checked_add(total_bytes)
+                    .ok_or(BpfError::LoadError("map pointer+size overflow"))?,
             });
         }
 
@@ -108,7 +104,7 @@ impl BpfInterpreter for SondeBpfInterpreter {
         let bytecode = self
             .bytecode
             .as_ref()
-            .ok_or_else(|| BpfError::LoadError("no program loaded".into()))?;
+            .ok_or(BpfError::LoadError("no program loaded"))?;
 
         // Copy context into a local buffer (read-only for the interpreter).
         let mut ctx_buf = [0u8; SondeContext::SIZE];
@@ -149,12 +145,12 @@ impl BpfInterpreter for SondeBpfInterpreter {
                 SbErr::CallDepthExceeded { .. } => BpfError::CallDepthExceeded,
                 SbErr::UnknownHelper { id, .. } => BpfError::HelperNotRegistered(id),
                 SbErr::OutOfBounds { .. } | SbErr::UnknownOpcode { .. } => {
-                    BpfError::InvalidBytecode(format!("{e}"))
+                    BpfError::InvalidBytecode("invalid or out-of-bounds bytecode")
                 }
                 SbErr::InvalidMapIndex { .. } | SbErr::InvalidHelperArgument { .. } => {
-                    BpfError::LoadError(format!("{e}"))
+                    BpfError::LoadError("invalid map index or helper argument")
                 }
-                _ => BpfError::RuntimeError(format!("{e}")),
+                _ => BpfError::RuntimeError("BPF runtime error"),
             }
         })
     }

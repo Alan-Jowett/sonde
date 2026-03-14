@@ -13,9 +13,9 @@ pub enum NodeError {
     /// Frame has an unexpected or unknown `msg_type`.
     UnexpectedMsgType(u8),
     /// CBOR payload could not be decoded.
-    MalformedPayload(String),
+    MalformedPayload(&'static str),
     /// Transport-level send/receive failure.
-    Transport(String),
+    Transport(&'static str),
     /// No PSK provisioned — node is unpaired.
     Unpaired,
     /// Node is already paired — factory reset required before re-pairing.
@@ -23,7 +23,7 @@ pub enum NodeError {
     /// Program hash mismatch after chunked transfer.
     ProgramHashMismatch,
     /// Program image CBOR decoding failed.
-    ProgramDecodeFailed(String),
+    ProgramDecodeFailed(&'static str),
     /// Map definitions exceed the sleep-persistent memory budget.
     MapBudgetExceeded { required: usize, available: usize },
     /// Map key/index is out of bounds.
@@ -31,7 +31,7 @@ pub enum NodeError {
     /// Map value size does not match the map definition.
     MapValueSizeMismatch { expected: u32, actual: usize },
     /// BPF execution error.
-    BpfError(String),
+    BpfError(&'static str),
     /// A BPF helper returned an error.
     HelperError { helper_id: u32, code: i64 },
     /// Operation not permitted for ephemeral programs.
@@ -43,7 +43,7 @@ pub enum NodeError {
     /// Response timeout.
     Timeout,
     /// Flash storage operation failed.
-    StorageError(String),
+    StorageError(&'static str),
     /// Chunk index mismatch in CHUNK response.
     ChunkIndexMismatch { expected: u32, received: u32 },
     /// Reboot requested by gateway.

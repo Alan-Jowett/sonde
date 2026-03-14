@@ -61,9 +61,9 @@ impl EspUsbSerialJtag {
             info!("USB Serial/JTAG driver already active, reusing");
             false
         } else {
-            return Err(NodeError::Transport(format!(
-                "usb_serial_jtag_driver_install failed: {ret}"
-            )));
+            return Err(NodeError::Transport(
+                "usb_serial_jtag_driver_install failed",
+            ));
         };
 
         // Brief delay to let any buffered boot text drain from the USB
@@ -94,7 +94,7 @@ impl PairingSerial for EspUsbSerialJtag {
             )
         };
         if n < 0 {
-            return Err(NodeError::Transport("USB Serial/JTAG read error".into()));
+            return Err(NodeError::Transport("USB Serial/JTAG read error"));
         }
         Ok(n as usize)
     }
@@ -113,13 +113,13 @@ impl PairingSerial for EspUsbSerialJtag {
                 )
             };
             if n < 0 {
-                return Err(NodeError::Transport("USB Serial/JTAG write error".into()));
+                return Err(NodeError::Transport("USB Serial/JTAG write error"));
             }
             if n == 0 {
                 retries += 1;
                 if retries >= MAX_RETRIES {
                     return Err(NodeError::Transport(
-                        "USB Serial/JTAG write timeout after retries".into(),
+                        "USB Serial/JTAG write timeout after retries",
                     ));
                 }
                 continue;

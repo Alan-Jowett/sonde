@@ -47,7 +47,7 @@ impl NvsStorage {
     /// Open (or create) the `"sonde"` NVS namespace.
     pub fn new(partition: EspNvsPartition<NvsDefault>) -> Result<Self, NodeError> {
         let nvs = EspNvs::new(partition, NVS_NAMESPACE, true)
-            .map_err(|e| NodeError::StorageError(format!("NVS open: {:?}", e)))?;
+            .map_err(|_| NodeError::StorageError("NVS open failed"))?;
         Ok(Self { nvs })
     }
 }
@@ -76,30 +76,30 @@ impl crate::traits::PlatformStorage for NvsStorage {
 
     fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
         if self.read_key().is_some() {
-            return Err(NodeError::StorageError("already paired".into()));
+            return Err(NodeError::StorageError("already paired"));
         }
         self.nvs
             .set_blob("psk", psk)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))?;
+            .map_err(|_| NodeError::StorageError("psk write failed"))?;
         self.nvs
             .set_u32("key_hint", key_hint as u32)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))?;
+            .map_err(|_| NodeError::StorageError("key_hint write failed"))?;
         self.nvs
             .set_u32("magic", MAGIC_VALUE)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))?;
+            .map_err(|_| NodeError::StorageError("magic write failed"))?;
         Ok(())
     }
 
     fn erase_key(&mut self) -> NodeResult<()> {
         self.nvs
             .remove("psk")
-            .map_err(|e| NodeError::StorageError(format!("erase psk: {:?}", e)))?;
+            .map_err(|_| NodeError::StorageError("erase psk failed"))?;
         self.nvs
             .remove("key_hint")
-            .map_err(|e| NodeError::StorageError(format!("erase key_hint: {:?}", e)))?;
+            .map_err(|_| NodeError::StorageError("erase key_hint failed"))?;
         self.nvs
             .remove("magic")
-            .map_err(|e| NodeError::StorageError(format!("erase magic: {:?}", e)))?;
+            .map_err(|_| NodeError::StorageError("erase magic failed"))?;
         Ok(())
     }
 
@@ -125,28 +125,25 @@ impl crate::traits::PlatformStorage for NvsStorage {
     fn write_schedule_interval(&mut self, interval_s: u32) -> NodeResult<()> {
         self.nvs
             .set_u32("interval", interval_s)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
+            .map_err(|_| NodeError::StorageError("interval write failed"))
     }
 
     fn write_active_partition(&mut self, partition: u8) -> NodeResult<()> {
         if partition > 1 {
-            return Err(NodeError::StorageError(format!(
-                "invalid partition: {} (must be 0 or 1)",
-                partition
-            )));
+            return Err(NodeError::StorageError("invalid active partition index"));
         }
         self.nvs
             .set_u32("active_p", partition as u32)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
+            .map_err(|_| NodeError::StorageError("active_p write failed"))
     }
 
     fn reset_schedule(&mut self) -> NodeResult<()> {
         self.nvs
             .set_u32("interval", DEFAULT_INTERVAL_S)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))?;
+            .map_err(|_| NodeError::StorageError("interval reset failed"))?;
         self.nvs
             .set_u32("active_p", 0)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
+            .map_err(|_| NodeError::StorageError("active_p reset failed"))
     }
 
     // --- Program partitions ---
@@ -169,34 +166,25 @@ impl crate::traits::PlatformStorage for NvsStorage {
 
     fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
         if partition > 1 {
-            return Err(NodeError::StorageError(format!(
-                "invalid partition: {} (must be 0 or 1)",
-                partition
-            )));
+            return Err(NodeError::StorageError("invalid program partition index"));
         }
         if image.len() > 4096 {
-            return Err(NodeError::StorageError(format!(
-                "program image too large: {} bytes (max 4096)",
-                image.len()
-            )));
+            return Err(NodeError::StorageError("program image too large"));
         }
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
         self.nvs
             .set_blob(key, image)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
+            .map_err(|_| NodeError::StorageError("program write failed"))
     }
 
     fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
         if partition > 1 {
-            return Err(NodeError::StorageError(format!(
-                "invalid partition: {} (must be 0 or 1)",
-                partition
-            )));
+            return Err(NodeError::StorageError("invalid program partition index"));
         }
         let key = if partition == 0 { "prog_a" } else { "prog_b" };
         self.nvs
             .remove(key)
-            .map_err(|e| NodeError::StorageError(format!("erase {}: {:?}", key, e)))?;
+            .map_err(|_| NodeError::StorageError("program erase failed"))?;
         Ok(())
     }
 
@@ -207,8 +195,18 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn set_early_wake_flag(&mut self) -> NodeResult<()> {
+<<<<<<< HEAD
         EARLY_WAKE_FLAG.store(1, Ordering::Relaxed);
         Ok(())
+=======
+        let current = self.nvs.get_u32("early_wake").ok().flatten().unwrap_or(0);
+        if current == 1 {
+            return Ok(());
+        }
+        self.nvs
+            .set_u32("early_wake", 1)
+            .map_err(|_| NodeError::StorageError("early_wake write failed"))
+>>>>>>> bb23fa0 (Replace String payloads with &'static str in NodeError and BpfError to eliminate heap allocation in error paths)
     }
 
     // --- WiFi channel ---
@@ -224,13 +222,10 @@ impl crate::traits::PlatformStorage for NvsStorage {
 
     fn write_channel(&mut self, channel: u8) -> NodeResult<()> {
         if channel < 1 || channel > 13 {
-            return Err(NodeError::StorageError(format!(
-                "invalid channel: {} (must be 1–13)",
-                channel
-            )));
+            return Err(NodeError::StorageError("invalid WiFi channel"));
         }
         self.nvs
             .set_u32("channel", channel as u32)
-            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
+            .map_err(|_| NodeError::StorageError("channel write failed"))
     }
 }

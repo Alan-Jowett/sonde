@@ -13,14 +13,14 @@ pub enum BpfError {
     /// The program exceeded the maximum call depth (8 frames).
     CallDepthExceeded,
     /// The bytecode is invalid or malformed.
-    InvalidBytecode(String),
+    InvalidBytecode(&'static str),
     /// A helper was called that is not registered.
     HelperNotRegistered(u32),
     /// Error during program loading.
-    LoadError(String),
+    LoadError(&'static str),
     /// Runtime error during BPF execution (memory violation, pointer
     /// arithmetic error, etc.).
-    RuntimeError(String),
+    RuntimeError(&'static str),
 }
 
 impl core::fmt::Display for BpfError {

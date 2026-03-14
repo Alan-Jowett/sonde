@@ -43,9 +43,16 @@ int program(struct sonde_context *ctx)
         return 0;
     }
 
-    /* Echo the reply to the gateway as an acknowledgement. */
+    /* Echo the reply to the gateway as an acknowledgement.
+     * Clamp rc to the buffer capacity as a defence-in-depth measure
+     * in case a future ABI change allows send_recv() to report a
+     * length exceeding the provided capacity.
+     */
     if (rc > 0) {
-        send(reply, (__u32)rc);
+        __u32 len = (__u32)rc;
+        if (len > sizeof(reply))
+            len = sizeof(reply);
+        send(reply, len);
     }
 
     return 0;

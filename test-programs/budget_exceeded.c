@@ -35,14 +35,14 @@
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {
-    (void)ctx;
-
     /*
-     * Accumulate a sum to prevent the compiler from optimising the loop away.
-     * Return the sum so the result register is live and the loop body cannot
-     * be elided.
+     * Seed the accumulator from a runtime value (ctx->timestamp) so
+     * the compiler cannot optimise the loop into a closed-form constant.
+     * Without this, clang may legally compute the sum at compile time
+     * and emit a single-instruction program, defeating the purpose of
+     * exercising the runtime instruction budget.
      */
-    __s64 sum = 0;
+    __s64 sum = (__s64)ctx->timestamp;
     for (__s64 i = 0; i < ITERATIONS; i++) {
         sum += i;
     }

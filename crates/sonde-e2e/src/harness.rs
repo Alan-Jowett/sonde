@@ -382,8 +382,16 @@ struct ChannelRadio {
 
 impl Radio for ChannelRadio {
     fn send(&mut self, _peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
-        // Ignore SendError: the node receiver may be dropped during teardown.
-        let _ = self.to_node.send(data.to_vec());
+        use std::sync::mpsc::TrySendError;
+        match self.to_node.try_send(data.to_vec()) {
+            Ok(()) => {}
+            // Node receiver dropped during teardown — harmless.
+            Err(TrySendError::Disconnected(_)) => {}
+            // Channel full — fail fast rather than deadlocking the bridge thread.
+            Err(TrySendError::Full(_)) => {
+                panic!("ChannelRadio: bridge→node channel full (cap 64); node is not draining")
+            }
+        }
     }
 
     fn drain_rx(&self) -> Vec<RecvFrame> {
@@ -691,10 +699,17 @@ impl ModemTestEnv {
         });
 
         // Create UsbEspNowTransport — performs startup handshake.
-        let transport = UsbEspNowTransport::new(client, channel)
-            .await
-            .expect("modem startup handshake failed");
-        let transport = Arc::new(transport);
+        // If the handshake fails, signal the bridge thread and pipe task to
+        // stop so they don't leak.
+        let transport = match UsbEspNowTransport::new(client, channel).await {
+            Ok(t) => Arc::new(t),
+            Err(e) => {
+                stop.store(true, Ordering::Relaxed);
+                pipe_task.abort();
+                let _ = bridge_thread.join();
+                panic!("modem startup handshake failed: {e}");
+            }
+        };
 
         // Create gateway engine.
         let storage = Arc::new(

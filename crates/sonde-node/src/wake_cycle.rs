@@ -95,8 +95,8 @@ where
 
     // 4. Load active resident program hash and raw bytes from NVS.
     // Only the hash is needed for the WAKE message; CBOR decode is
-    // deferred to step 9 to avoid unnecessary CPU/heap work when the
-    // cycle exits early (Reboot, UpdateSchedule, UpdateProgram).
+    // deferred to step 9 so that cycles which return early (Reboot,
+    // transport/transfer failures) skip the decode entirely.
     let (program_hash, mut resident_image_bytes) = {
         let program_store = ProgramStore::new(storage);
         program_store.load_active_raw(sha)

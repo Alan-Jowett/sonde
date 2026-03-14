@@ -35,8 +35,8 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
     ///
     /// Returns `(hash, raw_bytes)`.  The caller is responsible for decoding
     /// the CBOR image only when BPF execution is needed — this avoids
-    /// unnecessary CPU/heap work in cycles that exit early (Reboot,
-    /// UpdateSchedule, UpdateProgram).
+    /// unnecessary CPU/heap work in cycles that return early (Reboot,
+    /// transport failures, transfer failures).
     ///
     /// Returns an empty hash and `None` bytes when no program is installed
     /// or when the active partition index is invalid (> 1).

@@ -103,20 +103,15 @@ type MapData = RtcSlice;
 /// The singleton invariant — exactly one live `MapStorage` on ESP builds —
 /// ensures that only one set of `RtcSlice` values exists at a time.
 /// The wake-cycle engine is single-threaded, so no concurrent access
-/// can occur.
-///
-/// `RtcSlice` is `!Send` and `!Sync`. In Rust, raw pointers (`*mut T`,
-/// `*const T`) explicitly opt out of `Send` and `Sync` via negative impls
-/// in `core` (`impl<T: ?Sized> !Send for *mut T {}`). The `*mut u8` field
-/// therefore makes `RtcSlice` `!Send`/`!Sync` automatically. The
-/// `PhantomData<*const ()>` marker reinforces this intent.
+/// can occur. `RtcSlice` must not be moved across threads; the
+/// `PhantomData<*const ()>` marker documents this intent.
 #[cfg(feature = "esp")]
 pub(crate) struct RtcSlice {
     ptr: *mut u8,
     len: usize,
-    /// `*const ()` is `!Send`/`!Sync` (raw pointer negative impls in core).
-    /// `PhantomData` inherits auto-trait eligibility from its type parameter,
-    /// so this field opts `RtcSlice` out of both `Send` and `Sync`.
+    /// Marker field documenting that `RtcSlice` should not be transferred
+    /// across thread boundaries — the backing `MAP_BACKING` buffer has no
+    /// synchronisation.
     _not_send_sync: PhantomData<*const ()>,
 }
 

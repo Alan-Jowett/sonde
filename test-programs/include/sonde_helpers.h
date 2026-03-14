@@ -48,7 +48,9 @@ typedef signed long long        __s64;
  * BPF map type constants
  * ---------------------------------------------------------------------- */
 
-#define BPF_MAP_TYPE_ARRAY 2
+/* Sonde uses map_type = 1 for ARRAY (not the Linux BPF value of 2).
+ * The node firmware rejects any other value; see map_storage.rs. */
+#define BPF_MAP_TYPE_ARRAY 1
 
 /* -------------------------------------------------------------------------
  * BPF map definition macros (subset of libbpf's bpf_helpers.h)
@@ -96,8 +98,8 @@ struct sonde_context {
  * are combined into one word.  See docs/bpf-environment.md §6.1.
  * ---------------------------------------------------------------------- */
 
-/** Build an I2C handle: (bus << 16) | 7-bit device address. */
-#define I2C_HANDLE(bus, addr) ((__u32)(((__u32)(bus) << 16) | (__u32)(addr)))
+/** Build an I2C handle: (bus << 16) | (addr & 0x7F).  Masks addr to 7 bits. */
+#define I2C_HANDLE(bus, addr) ((__u32)(((__u32)(bus) << 16) | ((__u32)(addr) & 0x7Fu)))
 
 /** Build a SPI handle: (bus << 16). */
 #define SPI_HANDLE(bus)       ((__u32)((__u32)(bus) << 16))
@@ -198,10 +200,14 @@ static int (*gpio_write)(__u32 pin, __u32 value) = (void *)6;
  * adc_read — read a raw value from an ADC channel.
  *
  * @channel: platform ADC channel index
- * @value:   output pointer; receives the raw ADC reading on success
- * Returns:  0 on success, negative on error (invalid channel, hardware fault)
+ * Returns:  raw ADC reading on success, negative on error (invalid channel,
+ *           hardware fault)
+ *
+ * NOTE: docs/bpf-environment.md §7.4 documents a two-argument form with an
+ * output pointer; the actual firmware ABI takes only `channel` and returns the
+ * reading directly in R0 (see bpf_dispatch.rs::helper_adc_read).
  */
-static int (*adc_read)(__u32 channel, __u32 *value) = (void *)7;
+static int (*adc_read)(__u32 channel) = (void *)7;
 
 /**
  * send — fire-and-forget APP_DATA message to the gateway.

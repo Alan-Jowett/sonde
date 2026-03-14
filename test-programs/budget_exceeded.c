@@ -6,9 +6,13 @@
  * instruction budget once metering is implemented.
  *
  * The loop is bounded by a compile-time constant so the Prevail verifier
- * accepts it as semantically safe (termination is guaranteed).  The
- * iteration count is large enough that, when runtime instruction metering
- * is added to sonde-bpf, the interpreter will terminate the program early.
+ * accepts it when using the Ephemeral profile (where termination checking
+ * is enabled, `check_for_termination = true`).  When ingested as a
+ * Resident program, Prevail's termination check is disabled
+ * (`check_for_termination = false`), so the Resident profile accepts any
+ * bounded loop regardless.  The iteration count is large enough that,
+ * once runtime instruction metering is added to sonde-bpf, the interpreter
+ * will terminate the program early regardless of profile.
  *
  * NOTE: sonde-bpf does not yet enforce the instruction_budget parameter at
  * runtime.  Termination is currently guaranteed solely by Prevail

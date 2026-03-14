@@ -11,13 +11,18 @@
 #   make clean    -- remove all compiled objects
 #
 # After compiling, the resulting ELF object files must be converted to
-# CBOR program images before they can be ingested.  The gateway's ELF
-# ingestion path (GW-0400) performs this conversion; the sonde-admin
-# CLI currently accepts only CBOR-encoded images (not raw ELF).
+# CBOR program images before they can be ingested.
 #
-# Workflow: compile → ingest ELF via gateway (GW-0400 converts to CBOR
-# internally) → gateway verifies and stores.  See the gateway design
-# doc for the ingestion API details.
+# Current ingestion paths:
+#   - ProgramLibrary::ingest_elf()  (internal gateway API, GW-0400)
+#     Parses the ELF, runs Prevail verification, converts to CBOR, and
+#     stores the result.  Not yet exposed via the admin gRPC API.
+#   - GatewayAdmin.IngestProgram (gRPC / sonde-admin CLI)
+#     Accepts a CBOR-encoded ProgramImage directly.  Does not parse ELF.
+#
+# Until ELF ingestion is wired into the admin API, convert the ELF to
+# CBOR via ProgramLibrary::ingest_elf() in an integration test or a
+# custom tool, then use sonde-admin to upload the resulting CBOR image.
 
 CLANG  ?= clang
 CFLAGS := -target bpf -O2 -Wall -Wextra -I.

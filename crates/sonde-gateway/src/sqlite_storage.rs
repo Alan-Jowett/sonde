@@ -102,36 +102,43 @@ fn decrypt_psk(
 /// function returns all PSK blobs in the database are [`ENCRYPTED_PSK_LEN`]
 /// bytes long and decryption can unconditionally use the AES-256-GCM path.
 fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(), StorageError> {
-    // Collect legacy rows into a Vec before starting the transaction,
-    // so the statement borrow is released before `conn.transaction()`.
-    let legacy: Vec<(String, Vec<u8>)> = conn
-        .prepare("SELECT node_id, psk FROM nodes WHERE LENGTH(psk) = 32")
+    use zeroize::Zeroize;
+
+    // Collect only node_ids that need migration — avoids buffering plaintext
+    // PSK material for the entire registry in memory at once.
+    let legacy_ids: Vec<String> = conn
+        .prepare("SELECT node_id FROM nodes WHERE LENGTH(psk) = 32")
         .map_err(map_err)
         .and_then(|mut stmt| {
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            stmt.query_map([], |row| row.get(0))
                 .map_err(map_err)?
                 .collect::<Result<_, _>>()
                 .map_err(map_err)
         })?;
 
-    if legacy.is_empty() {
+    if legacy_ids.is_empty() {
         return Ok(());
     }
 
     let tx = conn
         .transaction()
         .map_err(|e| StorageError::Internal(format!("begin migration tx: {e}")))?;
-    for (node_id, mut psk_blob) in legacy {
-        // SQL WHERE clause guarantees LENGTH(psk) = 32.
+    for node_id in &legacy_ids {
+        // Fetch the single plaintext PSK for this node inside the transaction.
+        let mut psk_blob: Vec<u8> = tx
+            .query_row(
+                "SELECT psk FROM nodes WHERE node_id = ?1",
+                params![node_id],
+                |row| row.get(0),
+            )
+            .map_err(map_err)?;
+        // SQL WHERE clause in the outer query guarantees LENGTH(psk) = 32.
         let mut psk: [u8; 32] = psk_blob
             .as_slice()
             .try_into()
             .expect("SQL filter guarantees exactly 32 bytes");
-        // Zeroize the Vec that held the plaintext PSK from the query.
-        use zeroize::Zeroize;
         psk_blob.zeroize();
-        let encrypted = encrypt_psk(master_key, &node_id, &psk);
-        // Zeroize plaintext PSK before checking the encrypt result.
+        let encrypted = encrypt_psk(master_key, node_id, &psk);
         psk.zeroize();
         let encrypted = encrypted?;
         tx.execute(

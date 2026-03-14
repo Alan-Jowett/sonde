@@ -37,7 +37,10 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
 
-    info!("sonde-node booting");
+    // Use println! for boot markers — ensures they're flushed to UART
+    // immediately, even if the firmware hangs during peripheral init
+    // (e.g., WiFi/ESP-NOW in QEMU where no radio hardware exists).
+    println!("sonde-node booting");
     info!("firmware ABI version: {}", sonde_node::FIRMWARE_ABI_VERSION);
 
     // --- Initialize platform ---
@@ -56,6 +59,8 @@ fn main() {
     let mut storage =
         NvsStorage::new(nvs_partition.clone()).expect("failed to initialize NVS storage");
 
+    println!("sonde-node ready");
+
     let mut transport = EspNowTransport::new(peripherals.modem, sysloop, nvs_partition)
         .expect("failed to initialize ESP-NOW transport");
 
@@ -63,8 +68,6 @@ fn main() {
 
     // Map storage: 4 KB budget (fits in ESP32-C3 RTC SRAM)
     let mut map_storage = MapStorage::new(4096);
-
-    info!("sonde-node ready");
 
     // --- Wake cycle ---
     let outcome = run_wake_cycle(

@@ -47,6 +47,32 @@ const HEADER_LEN: usize = 8 + 4 + SALT_LEN + NONCE_LEN;
 /// Minimum AES-GCM authentication tag size.
 const GCM_TAG_LEN: usize = 16;
 
+// ── CBOR key IDs (root map) ─────────────────────────────────────────────────
+
+const ROOT_KEY_VERSION: i64 = 1;
+const ROOT_KEY_NODES: i64 = 2;
+const ROOT_KEY_PROGRAMS: i64 = 3;
+
+// ── CBOR key IDs (node map) ─────────────────────────────────────────────────
+
+const NODE_KEY_ID: i64 = 1;
+const NODE_KEY_HINT: i64 = 2;
+const NODE_KEY_PSK: i64 = 3;
+const NODE_KEY_ASSIGNED_HASH: i64 = 4;
+const NODE_KEY_CURRENT_HASH: i64 = 5;
+const NODE_KEY_SCHEDULE: i64 = 6;
+const NODE_KEY_FW_ABI: i64 = 7;
+const NODE_KEY_BATTERY: i64 = 8;
+const NODE_KEY_LAST_SEEN: i64 = 9;
+
+// ── CBOR key IDs (program map) ──────────────────────────────────────────────
+
+const PROG_KEY_HASH: i64 = 1;
+const PROG_KEY_IMAGE: i64 = 2;
+const PROG_KEY_SIZE: i64 = 3;
+const PROG_KEY_PROFILE: i64 = 4;
+const PROG_KEY_ABI: i64 = 5;
+
 // ── Error type ───────────────────────────────────────────────────────────────
 
 /// Errors from state-bundle operations.
@@ -200,11 +226,17 @@ fn encode_cbor(nodes: &[NodeRecord], programs: &[ProgramRecord]) -> Result<Vec<u
 
     let mut root = Value::Map(vec![
         (
-            Value::Integer(1u8.into()),
+            Value::Integer(ROOT_KEY_VERSION.into()),
             Value::Integer(FORMAT_VERSION.into()),
         ),
-        (Value::Integer(2u8.into()), Value::Array(node_values)),
-        (Value::Integer(3u8.into()), Value::Array(program_values)),
+        (
+            Value::Integer(ROOT_KEY_NODES.into()),
+            Value::Array(node_values),
+        ),
+        (
+            Value::Integer(ROOT_KEY_PROGRAMS.into()),
+            Value::Array(program_values),
+        ),
     ]);
 
     let mut buf = Vec::new();
@@ -226,30 +258,42 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
     });
 
     Value::Map(vec![
-        (Value::Integer(1u8.into()), Value::Text(n.node_id.clone())),
         (
-            Value::Integer(2u8.into()),
+            Value::Integer(NODE_KEY_ID.into()),
+            Value::Text(n.node_id.clone()),
+        ),
+        (
+            Value::Integer(NODE_KEY_HINT.into()),
             Value::Integer(n.key_hint.into()),
         ),
-        (Value::Integer(3u8.into()), Value::Bytes(n.psk.to_vec())),
         (
-            Value::Integer(4u8.into()),
+            Value::Integer(NODE_KEY_PSK.into()),
+            Value::Bytes(n.psk.to_vec()),
+        ),
+        (
+            Value::Integer(NODE_KEY_ASSIGNED_HASH.into()),
             opt_bytes_val(&n.assigned_program_hash),
         ),
         (
-            Value::Integer(5u8.into()),
+            Value::Integer(NODE_KEY_CURRENT_HASH.into()),
             opt_bytes_val(&n.current_program_hash),
         ),
         (
-            Value::Integer(6u8.into()),
+            Value::Integer(NODE_KEY_SCHEDULE.into()),
             Value::Integer(n.schedule_interval_s.into()),
         ),
         (
-            Value::Integer(7u8.into()),
+            Value::Integer(NODE_KEY_FW_ABI.into()),
             opt_u32_val(n.firmware_abi_version),
         ),
-        (Value::Integer(8u8.into()), opt_u32_val(n.last_battery_mv)),
-        (Value::Integer(9u8.into()), opt_i64_val(last_seen_s)),
+        (
+            Value::Integer(NODE_KEY_BATTERY.into()),
+            opt_u32_val(n.last_battery_mv),
+        ),
+        (
+            Value::Integer(NODE_KEY_LAST_SEEN.into()),
+            opt_i64_val(last_seen_s),
+        ),
     ])
 }
 
@@ -262,14 +306,26 @@ fn program_to_cbor(p: &ProgramRecord) -> ciborium::value::Value {
     };
 
     Value::Map(vec![
-        (Value::Integer(1u8.into()), Value::Bytes(p.hash.clone())),
-        (Value::Integer(2u8.into()), Value::Bytes(p.image.clone())),
-        (Value::Integer(3u8.into()), Value::Integer(p.size.into())),
         (
-            Value::Integer(4u8.into()),
+            Value::Integer(PROG_KEY_HASH.into()),
+            Value::Bytes(p.hash.clone()),
+        ),
+        (
+            Value::Integer(PROG_KEY_IMAGE.into()),
+            Value::Bytes(p.image.clone()),
+        ),
+        (
+            Value::Integer(PROG_KEY_SIZE.into()),
+            Value::Integer(p.size.into()),
+        ),
+        (
+            Value::Integer(PROG_KEY_PROFILE.into()),
             Value::Integer(profile_u8.into()),
         ),
-        (Value::Integer(5u8.into()), opt_u32_val(p.abi_version)),
+        (
+            Value::Integer(PROG_KEY_ABI.into()),
+            opt_u32_val(p.abi_version),
+        ),
     ])
 }
 
@@ -338,20 +394,20 @@ fn decode_cbor(data: &[u8]) -> Result<(Vec<NodeRecord>, Vec<ProgramRecord>), Bun
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
             match i64::try_from(key_int).ok() {
-                Some(1) => {
+                Some(ROOT_KEY_VERSION) => {
                     version_opt = Some(match v {
                         Value::Integer(i) => u32::try_from(i)
                             .map_err(|_| BundleError::Decode("version out of range".into()))?,
                         _ => return Err(BundleError::Decode("version must be integer".into())),
                     });
                 }
-                Some(2) => {
+                Some(ROOT_KEY_NODES) => {
                     nodes_opt = Some(match v {
                         Value::Array(a) => a,
                         _ => return Err(BundleError::Decode("nodes must be array".into())),
                     });
                 }
-                Some(3) => {
+                Some(ROOT_KEY_PROGRAMS) => {
                     programs_opt = Some(match v {
                         Value::Array(a) => a,
                         _ => return Err(BundleError::Decode("programs must be array".into())),
@@ -404,20 +460,20 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
             match i64::try_from(key_int).ok() {
-                Some(1) => {
+                Some(NODE_KEY_ID) => {
                     node_id = Some(match v {
                         Value::Text(s) => s,
                         _ => return Err(BundleError::Decode("node_id must be text".into())),
                     });
                 }
-                Some(2) => {
+                Some(NODE_KEY_HINT) => {
                     key_hint = Some(match v {
                         Value::Integer(i) => u16::try_from(i)
                             .map_err(|_| BundleError::Decode("key_hint out of range".into()))?,
                         _ => return Err(BundleError::Decode("key_hint must be integer".into())),
                     });
                 }
-                Some(3) => {
+                Some(NODE_KEY_PSK) => {
                     psk = Some(match v {
                         Value::Bytes(mut b) => {
                             use zeroize::Zeroize;
@@ -433,13 +489,13 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                         _ => return Err(BundleError::Decode("psk must be bytes".into())),
                     });
                 }
-                Some(4) => {
+                Some(NODE_KEY_ASSIGNED_HASH) => {
                     assigned_program_hash = Some(opt_bytes_from_cbor(v, "assigned_program_hash")?);
                 }
-                Some(5) => {
+                Some(NODE_KEY_CURRENT_HASH) => {
                     current_program_hash = Some(opt_bytes_from_cbor(v, "current_program_hash")?);
                 }
-                Some(6) => {
+                Some(NODE_KEY_SCHEDULE) => {
                     schedule_interval_s = Some(match v {
                         Value::Integer(i) => u32::try_from(i).map_err(|_| {
                             BundleError::Decode("schedule_interval_s out of range".into())
@@ -451,13 +507,13 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                         }
                     });
                 }
-                Some(7) => {
+                Some(NODE_KEY_FW_ABI) => {
                     firmware_abi_version = Some(opt_u32_from_cbor(v, "firmware_abi_version")?);
                 }
-                Some(8) => {
+                Some(NODE_KEY_BATTERY) => {
                     last_battery_mv = Some(opt_u32_from_cbor(v, "last_battery_mv")?);
                 }
-                Some(9) => {
+                Some(NODE_KEY_LAST_SEEN) => {
                     last_seen_epoch_s = Some(opt_i64_from_cbor(v, "last_seen_epoch_s")?);
                 }
                 _ => {} // ignore unknown fields for forward compatibility
@@ -529,26 +585,26 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
             match i64::try_from(key_int).ok() {
-                Some(1) => {
+                Some(PROG_KEY_HASH) => {
                     hash = Some(match v {
                         Value::Bytes(b) => b,
                         _ => return Err(BundleError::Decode("hash must be bytes".into())),
                     });
                 }
-                Some(2) => {
+                Some(PROG_KEY_IMAGE) => {
                     image = Some(match v {
                         Value::Bytes(b) => b,
                         _ => return Err(BundleError::Decode("image must be bytes".into())),
                     });
                 }
-                Some(3) => {
+                Some(PROG_KEY_SIZE) => {
                     size = Some(match v {
                         Value::Integer(i) => u32::try_from(i)
                             .map_err(|_| BundleError::Decode("size out of range".into()))?,
                         _ => return Err(BundleError::Decode("size must be integer".into())),
                     });
                 }
-                Some(4) => {
+                Some(PROG_KEY_PROFILE) => {
                     profile_int = Some(match v {
                         Value::Integer(i) => u32::try_from(i).map_err(|_| {
                             BundleError::Decode("verification_profile out of range".into())
@@ -560,7 +616,7 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
                         }
                     });
                 }
-                Some(5) => {
+                Some(PROG_KEY_ABI) => {
                     abi_version = Some(opt_u32_from_cbor(v, "abi_version")?);
                 }
                 _ => {}
@@ -809,5 +865,25 @@ mod tests {
         assert!(n.firmware_abi_version.is_none());
         assert!(n.last_battery_mv.is_none());
         assert!(n.last_seen.is_none());
+    }
+
+    #[test]
+    fn roundtrip_abi_version_fields() {
+        let mut node = make_node("abi-node", 0x0099);
+        node.firmware_abi_version = Some(3);
+
+        let prog = ProgramRecord {
+            hash: vec![0xCC; 32],
+            image: vec![0xDD; 48],
+            size: 48,
+            verification_profile: VerificationProfile::Ephemeral,
+            abi_version: Some(2),
+        };
+
+        let bundle = encrypt_state(&[node], &[prog], "abi-pass").unwrap();
+        let (out_nodes, out_programs) = decrypt_state(&bundle, "abi-pass").unwrap();
+
+        assert_eq!(out_nodes[0].firmware_abi_version, Some(3));
+        assert_eq!(out_programs[0].abi_version, Some(2));
     }
 }

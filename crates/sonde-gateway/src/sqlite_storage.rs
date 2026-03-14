@@ -701,7 +701,10 @@ impl Storage for SqliteStorage {
 
             match result {
                 Ok(()) => {
-                    conn.execute_batch("COMMIT").map_err(map_err)?;
+                    conn.execute_batch("COMMIT").map_err(|e| {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        map_err(e)
+                    })?;
                     Ok(())
                 }
                 Err(e) => {

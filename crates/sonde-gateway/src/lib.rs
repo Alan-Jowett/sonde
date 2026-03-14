@@ -10,6 +10,7 @@ pub mod program;
 pub mod registry;
 pub mod session;
 pub mod sqlite_storage;
+pub mod state_bundle;
 pub mod storage;
 pub mod transport;
 

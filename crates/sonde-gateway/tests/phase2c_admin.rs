@@ -115,6 +115,12 @@ fn make_cbor_image(bytecode: &[u8]) -> Vec<u8> {
     image.encode_deterministic().unwrap()
 }
 
+/// Minimal `mov r0, 0; exit` BPF program — two valid instructions.
+const MINIMAL_BPF: &[u8] = &[
+    0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+];
+
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
     let decoded = decode_frame(raw).unwrap();
     assert!(verify_frame(&decoded, psk, &RustCryptoHmac));
@@ -811,29 +817,217 @@ async fn t0809_assign_program_wake_delivers_update() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  T-0810: ExportState + ImportState are disabled (GW-0601a)
+//  T-0810: ExportState + ImportState (GW-0805)
 // ═══════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn t0810_export_state_disabled() {
+async fn t0810_export_state_returns_encrypted_bundle() {
     let h = TestHarness::new();
 
-    let err = h
-        .admin
-        .export_state(Request::new(Empty {}))
+    // Register a node and ingest a program so there is something to export.
+    h.admin
+        .register_node(Request::new(RegisterNodeRequest {
+            node_id: "exp-node".into(),
+            key_hint: 0x0042,
+            psk: vec![0xABu8; 32],
+        }))
         .await
-        .unwrap_err();
-    assert_eq!(err.code(), tonic::Code::Unimplemented);
+        .unwrap();
+    let cbor = make_cbor_image(MINIMAL_BPF);
+    h.admin
+        .ingest_program(Request::new(IngestProgramRequest {
+            image_data: cbor,
+            verification_profile: 1, // Resident
+        }))
+        .await
+        .unwrap();
+
+    let resp = h
+        .admin
+        .export_state(Request::new(ExportStateRequest {
+            passphrase: "test-passphrase".into(),
+        }))
+        .await
+        .unwrap();
+
+    let data = resp.into_inner().data;
+    // The bundle must be non-empty and start with the expected magic bytes.
+    assert!(!data.is_empty());
+    assert_eq!(&data[..8], b"SNDESTAT");
 }
 
 #[tokio::test]
-async fn t0810_import_state_disabled() {
+async fn t0810_export_empty_passphrase_rejected() {
     let h = TestHarness::new();
 
     let err = h
         .admin
-        .import_state(Request::new(ImportStateRequest { data: vec![0x01] }))
+        .export_state(Request::new(ExportStateRequest {
+            passphrase: "".into(),
+        }))
         .await
         .unwrap_err();
-    assert_eq!(err.code(), tonic::Code::Unimplemented);
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn t0810_import_state_restores_nodes_and_programs() {
+    let h = TestHarness::new();
+
+    // Populate the source gateway.
+    h.admin
+        .register_node(Request::new(RegisterNodeRequest {
+            node_id: "import-node".into(),
+            key_hint: 0x0007,
+            psk: vec![0xCDu8; 32],
+        }))
+        .await
+        .unwrap();
+    let cbor = make_cbor_image(MINIMAL_BPF);
+    let ingest_resp = h
+        .admin
+        .ingest_program(Request::new(IngestProgramRequest {
+            image_data: cbor,
+            verification_profile: 1,
+        }))
+        .await
+        .unwrap();
+    let prog_hash = ingest_resp.into_inner().program_hash;
+
+    // Export.
+    let export_resp = h
+        .admin
+        .export_state(Request::new(ExportStateRequest {
+            passphrase: "failover-pass".into(),
+        }))
+        .await
+        .unwrap();
+    let bundle = export_resp.into_inner().data;
+
+    // Import into a fresh gateway.
+    let h2 = TestHarness::new();
+    h2.admin
+        .import_state(Request::new(ImportStateRequest {
+            data: bundle,
+            passphrase: "failover-pass".into(),
+        }))
+        .await
+        .unwrap();
+
+    // Verify node was restored.
+    let nodes = h2
+        .admin
+        .list_nodes(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .nodes;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].node_id, "import-node");
+    assert_eq!(nodes[0].key_hint, 0x0007);
+
+    // Verify program was restored.
+    let programs = h2
+        .admin
+        .list_programs(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .programs;
+    assert_eq!(programs.len(), 1);
+    assert_eq!(programs[0].hash, prog_hash);
+}
+
+#[tokio::test]
+async fn t0810_import_wrong_passphrase_rejected() {
+    let h = TestHarness::new();
+
+    let export_resp = h
+        .admin
+        .export_state(Request::new(ExportStateRequest {
+            passphrase: "correct-pass".into(),
+        }))
+        .await
+        .unwrap();
+    let bundle = export_resp.into_inner().data;
+
+    let err = h
+        .admin
+        .import_state(Request::new(ImportStateRequest {
+            data: bundle,
+            passphrase: "wrong-pass".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn t0810_import_invalid_data_rejected() {
+    let h = TestHarness::new();
+
+    let err = h
+        .admin
+        .import_state(Request::new(ImportStateRequest {
+            data: vec![0xFF; 50],
+            passphrase: "some-pass".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn t0810_import_replaces_existing_state() {
+    let h = TestHarness::new();
+
+    // Populate with initial state.
+    h.admin
+        .register_node(Request::new(RegisterNodeRequest {
+            node_id: "old-node".into(),
+            key_hint: 0x0001,
+            psk: vec![0x11u8; 32],
+        }))
+        .await
+        .unwrap();
+
+    // Export.
+    let bundle = h
+        .admin
+        .export_state(Request::new(ExportStateRequest {
+            passphrase: "replace-pass".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .data;
+
+    // Add a second node AFTER the export.
+    h.admin
+        .register_node(Request::new(RegisterNodeRequest {
+            node_id: "new-node".into(),
+            key_hint: 0x0002,
+            psk: vec![0x22u8; 32],
+        }))
+        .await
+        .unwrap();
+
+    // Import the earlier bundle — should replace, leaving only "old-node".
+    h.admin
+        .import_state(Request::new(ImportStateRequest {
+            data: bundle,
+            passphrase: "replace-pass".into(),
+        }))
+        .await
+        .unwrap();
+
+    let nodes = h
+        .admin
+        .list_nodes(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .nodes;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].node_id, "old-node");
 }

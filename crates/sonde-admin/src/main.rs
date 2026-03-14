@@ -163,15 +163,21 @@ enum ScheduleAction {
 
 #[derive(Subcommand)]
 enum StateAction {
-    /// Export gateway state to a file.
+    /// Export gateway state to a file (AES-256-GCM encrypted).
     Export {
         /// Output file path.
         file: String,
+        /// Passphrase used to encrypt the bundle.
+        #[arg(long)]
+        passphrase: String,
     },
-    /// Import gateway state from a file.
+    /// Import gateway state from a previously exported file.
     Import {
         /// Input file path.
         file: String,
+        /// Passphrase used when the bundle was exported.
+        #[arg(long)]
+        passphrase: String,
     },
 }
 
@@ -586,8 +592,8 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
         }
 
         Commands::State { action } => match action {
-            StateAction::Export { file } => {
-                let data = client.export_state().await?;
+            StateAction::Export { file, passphrase } => {
+                let data = client.export_state(passphrase).await?;
                 std::fs::write(file, &data)?;
                 if json {
                     print_json(&serde_json::json!({"exported_bytes": data.len(), "file": file}))?;
@@ -595,9 +601,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     println!("Exported {} bytes to {file}", data.len());
                 }
             }
-            StateAction::Import { file } => {
+            StateAction::Import { file, passphrase } => {
                 let data = std::fs::read(file)?;
-                client.import_state(data).await?;
+                client.import_state(data, passphrase).await?;
                 if json {
                     print_json(&serde_json::json!({"imported": true, "file": file}))?;
                 } else {

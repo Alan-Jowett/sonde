@@ -388,32 +388,68 @@ impl GatewayAdmin for AdminService {
         }))
     }
 
-    /// Export gateway state (nodes + programs).
+    /// Export gateway state (nodes + programs) as an AES-256-GCM-encrypted
+    /// CBOR bundle.
     ///
-    /// Disabled until GW-0601a-compliant operator authentication/authorization
-    /// and protection (e.g. encryption) of exported PSK material are implemented.
-    /// Handler routing configuration export is also deferred to Phase 2C-iii.
+    /// The passphrase is used to derive the encryption key via
+    /// PBKDF2-HMAC-SHA256.  Handler routing configuration is not included
+    /// in the bundle (deferred to Phase 2C-iii).
     async fn export_state(
         &self,
-        _request: Request<Empty>,
+        request: Request<ExportStateRequest>,
     ) -> Result<Response<ExportStateResponse>, Status> {
-        Err(Status::unimplemented(
-            "`export_state` is disabled until admin authz/authn and protected export are implemented (GW-0601a)",
-        ))
+        let passphrase = &request.into_inner().passphrase;
+        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let programs = self.storage.list_programs().await.map_err(storage_err)?;
+        let data = crate::state_bundle::encrypt_state(&nodes, &programs, passphrase)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        Ok(Response::new(ExportStateResponse { data }))
     }
 
-    /// Import gateway state (nodes + programs).
+    /// Import gateway state from a bundle previously produced by `export_state`.
     ///
-    /// Disabled until GW-0601a-compliant operator authentication/authorization
-    /// and protection (e.g. encryption) of exported PSK material are implemented.
-    /// Handler routing configuration import is also deferred to Phase 2C-iii.
+    /// Replaces the current node registry and program library with the bundle
+    /// contents.  Existing nodes and programs are removed before the bundle is
+    /// applied.  A fresh gateway with no active sessions is the intended target.
     async fn import_state(
         &self,
-        _request: Request<ImportStateRequest>,
+        request: Request<ImportStateRequest>,
     ) -> Result<Response<Empty>, Status> {
-        Err(Status::unimplemented(
-            "`import_state` is disabled until admin authz/authn and protected export are implemented (GW-0601a)",
-        ))
+        let req = request.into_inner();
+        let (nodes, programs) = crate::state_bundle::decrypt_state(&req.data, &req.passphrase)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        // Remove all existing nodes and programs, then apply the bundle.
+        // Nodes are removed first so no node references remain when programs
+        // are removed (avoids any future FK enforcement).
+        let existing_nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        for n in existing_nodes {
+            self.storage
+                .delete_node(&n.node_id)
+                .await
+                .map_err(storage_err)?;
+        }
+        let existing_programs = self.storage.list_programs().await.map_err(storage_err)?;
+        for p in existing_programs {
+            self.storage
+                .delete_program(&p.hash)
+                .await
+                .map_err(storage_err)?;
+        }
+
+        // Store programs before nodes so any assigned_program_hash reference is
+        // satisfied when nodes are written.
+        for program in &programs {
+            self.storage
+                .store_program(program)
+                .await
+                .map_err(storage_err)?;
+        }
+        for node in &nodes {
+            self.storage.upsert_node(node).await.map_err(storage_err)?;
+        }
+
+        Ok(Response::new(Empty {}))
     }
 
     /// Get modem status (channel, counters, uptime).

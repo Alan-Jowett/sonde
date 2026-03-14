@@ -218,13 +218,27 @@ impl AdminClient {
 
     // -- State export/import --
 
-    pub async fn export_state(&mut self) -> Result<Vec<u8>, tonic::Status> {
-        let resp = self.inner.export_state(Empty {}).await?;
+    pub async fn export_state(&mut self, passphrase: &str) -> Result<Vec<u8>, tonic::Status> {
+        let resp = self
+            .inner
+            .export_state(ExportStateRequest {
+                passphrase: passphrase.to_string(),
+            })
+            .await?;
         Ok(resp.into_inner().data)
     }
 
-    pub async fn import_state(&mut self, data: Vec<u8>) -> Result<(), tonic::Status> {
-        self.inner.import_state(ImportStateRequest { data }).await?;
+    pub async fn import_state(
+        &mut self,
+        data: Vec<u8>,
+        passphrase: &str,
+    ) -> Result<(), tonic::Status> {
+        self.inner
+            .import_state(ImportStateRequest {
+                data,
+                passphrase: passphrase.to_string(),
+            })
+            .await?;
         Ok(())
     }
 

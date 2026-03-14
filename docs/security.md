@@ -132,7 +132,7 @@ The BLE pairing protocol ([ble-pairing-protocol.md](ble-pairing-protocol.md)) in
 
 #### 2.7.1  Phone PSK lifecycle
 
-1. **Issuance.** The gateway generates a unique 256-bit phone PSK and transmits it to the phone over BLE during phone-to-gateway pairing.  The BLE channel is encrypted with an ephemeral ECDH key derived from the gateway's Ed25519 keypair (see [ble-pairing-protocol.md §5.5](ble-pairing-protocol.md#55--phone_registered-0x82)).
+1. **Issuance.** The gateway generates a unique 256-bit phone PSK and transmits it to the phone over BLE during phone-to-gateway pairing.  The phone PSK payload is encrypted at the application layer using ECDH key agreement (gateway Ed25519 keypair converted to X25519 + phone ephemeral X25519), HKDF-SHA256 key derivation, and AES-256-GCM (see [ble-pairing-protocol.md §5.5](ble-pairing-protocol.md#55--phone_registered-0x82)).  This is independent of the BLE link-layer encryption (LESC).
 2. **Storage.** The gateway stores the phone PSK alongside a human-readable label, issuance timestamp, and active/revoked status.  The phone stores the phone PSK in the app's secure storage.
 3. **Usage.** The phone uses its PSK to HMAC-authenticate every pairing request it creates.  The gateway verifies the HMAC before accepting the registration.
 4. **Revocation.** The gateway operator can revoke a phone PSK at any time.  Revoked PSKs are retained in the database (for audit) but all future pairing requests signed with them are rejected.

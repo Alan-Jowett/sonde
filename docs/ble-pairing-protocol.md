@@ -100,13 +100,13 @@ Two GATT services are defined — one on the gateway (or its BLE-connected modem
 
 | Characteristic | UUID | Properties | Description |
 |----------------|------|------------|-------------|
-| Gateway Command | `0000FE61-...` | Write, Indicate | Phone writes commands, gateway sends responses as indications. |
+| Gateway Command | `0000FE61-0000-1000-8000-00805F9B34FB` | Write, Indicate | Phone writes commands, gateway sends responses as indications. |
 
 ### 3.3  Node Provisioning Service characteristics
 
 | Characteristic | UUID | Properties | Description |
 |----------------|------|------------|-------------|
-| Node Command | `0000FE51-...` | Write, Indicate | Phone writes provision data, node sends ACK as indication. |
+| Node Command | `0000FE51-0000-1000-8000-00805F9B34FB` | Write, Indicate | Phone writes provision data, node sends ACK as indication. |
 
 > **Note:** UUIDs are provisional placeholders using the Bluetooth SIG base UUID.  These 16-bit short UUIDs in the `0xFE**` range are reserved by the SIG and MUST NOT ship without assignment.  Before v1.0, these will be replaced with randomly-generated vendor-specific 128-bit UUIDs (not based on the SIG base UUID) to avoid collisions with assigned services.
 
@@ -596,7 +596,7 @@ On reset, the node checks conditions in this order:
 ### 8.2  BLE pairing mode
 
 1. Start BLE stack, register Node Provisioning Service (§3.3).
-2. Begin advertising with service UUID `0000FE50-...`.  Advertising name: `"sonde-XXXX"` where `XXXX` is the last 4 hex digits of the MAC address.
+2. Begin advertising with service UUID `0000FE50-0000-1000-8000-00805F9B34FB` (Node Provisioning Service, §3.2).  Advertising name: `"sonde-XXXX"` where `XXXX` is the last 4 hex digits of the MAC address.
 3. On BLE connection: negotiate MTU ≥ 247, accept LESC Just Works pairing.
 4. On `NODE_PROVISION` write:
    a. Parse fields per §6.6.
@@ -696,8 +696,8 @@ For higher-security deployments, BLE Passkey Entry or Numeric Comparison could b
 |----------|-------|-------------|
 | Gateway Pairing Service UUID | `0000FE60-0000-1000-8000-00805F9B34FB` | BLE service on gateway. |
 | Node Provisioning Service UUID | `0000FE50-0000-1000-8000-00805F9B34FB` | BLE service on node. |
-| Gateway Command char UUID | `0000FE61-...` | Write + Indicate. |
-| Node Command char UUID | `0000FE51-...` | Write + Indicate. |
+| Gateway Command char UUID | `0000FE61-0000-1000-8000-00805F9B34FB` | Write + Indicate. |
+| Node Command char UUID | `0000FE51-0000-1000-8000-00805F9B34FB` | Write + Indicate. |
 | Minimum ATT MTU | 247 bytes | Required for both services. |
 | `PEER_REQUEST` ESP-NOW msg_type | 0x05 | Node → Gateway. |
 | `PEER_ACK` ESP-NOW msg_type | 0x84 | Gateway → Node. |

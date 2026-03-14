@@ -855,6 +855,7 @@ async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
     serial.enqueue(&ModemMessage::PairRequest(PairRequest {
         key_hint: KEY_HINT,
         psk: PSK,
+        channel: None,
     }));
     serial.enqueue(&ModemMessage::IdentityRequest);
     // Mock serial disconnects after all messages are consumed.

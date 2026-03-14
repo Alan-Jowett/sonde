@@ -11,6 +11,7 @@
 //! - Schedule: `"interval"` (u32), `"active_p"` (u32, 0 or 1)
 //! - Programs: `"prog_a"` (blob, ≤4096 B), `"prog_b"` (blob, ≤4096 B)
 //! - Early wake flag: `"early_wake"` (u32, 0 or 1)
+//! - WiFi channel: `"channel"` (u32, 1–13)
 
 use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsDefault};
 
@@ -219,6 +220,29 @@ impl crate::traits::PlatformStorage for NvsStorage {
         }
         self.nvs
             .set_u32("early_wake", 1)
+            .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
+    }
+
+    // --- WiFi channel ---
+
+    fn read_channel(&self) -> Option<u8> {
+        let ch = self.nvs.get_u32("channel").ok().flatten()?;
+        if ch >= 1 && ch <= 13 {
+            Some(ch as u8)
+        } else {
+            None
+        }
+    }
+
+    fn write_channel(&mut self, channel: u8) -> NodeResult<()> {
+        if channel < 1 || channel > 13 {
+            return Err(NodeError::StorageError(format!(
+                "invalid channel: {} (must be 1–13)",
+                channel
+            )));
+        }
+        self.nvs
+            .set_u32("channel", channel as u32)
             .map_err(|e| NodeError::StorageError(format!("{:?}", e)))
     }
 }

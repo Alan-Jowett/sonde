@@ -75,7 +75,7 @@ Message type values are allocated from reserved ranges in the [modem protocol](m
 
 | Type | Name | Body |
 |------|------|------|
-| 0x10 | `PAIR_REQUEST` | key_hint (2B BE) + psk (32B) = 34 bytes |
+| 0x10 | `PAIR_REQUEST` | key_hint (2B BE) + psk (32B) [+ channel (1B)] = 34 or 35 bytes |
 | 0x11 | `RESET_REQUEST` | Empty (0 bytes) |
 | 0x12 | `IDENTITY_REQUEST` | Empty (0 bytes) |
 
@@ -94,14 +94,17 @@ Message type values are allocated from reserved ranges in the [modem protocol](m
 
 ### 4.1  PAIR_REQUEST (Host → Node)
 
-Provisions a PSK on the node. The host generates the key_hint and PSK; the node stores them in its key partition.
+Provisions a PSK and optional WiFi channel on the node. The host generates the key_hint and PSK; the node stores them in its key partition.
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
 | 0 | 2 | key_hint | Big-endian u16 |
 | 2 | 32 | psk | 256-bit pre-shared key |
+| 34 | 1 | channel *(optional)* | WiFi channel number (1–13) |
 
-**Total body: 34 bytes.** The node silently discards the request if the body is not exactly 34 bytes.
+**Body: 34 bytes without channel, 35 bytes with channel.** The node silently discards the request if the body is not 34 or 35 bytes.
+
+When the `channel` field is present, the node stores it persistently and uses it on next boot to configure the WiFi channel for ESP-NOW communication. When absent, the node retains its previously stored channel (defaulting to channel 1 on first boot).
 
 ### 4.2  PAIR_ACK (Node → Host)
 

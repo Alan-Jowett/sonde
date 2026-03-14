@@ -30,7 +30,7 @@ fn main() {
     use sonde_node::esp_transport::EspNowTransport;
     use sonde_node::map_storage::MapStorage;
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
-    use sonde_node::traits::SleepController;
+    use sonde_node::traits::{PlatformStorage, SleepController};
     use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
 
     // Link ESP-IDF patches and initialize logging.
@@ -56,7 +56,10 @@ fn main() {
     let mut storage =
         NvsStorage::new(nvs_partition.clone()).expect("failed to initialize NVS storage");
 
-    let mut transport = EspNowTransport::new(peripherals.modem, sysloop, nvs_partition)
+    // Read the stored WiFi channel (falls back to channel 1 if not yet set).
+    let channel = storage.read_channel().unwrap_or(1);
+
+    let mut transport = EspNowTransport::new(peripherals.modem, sysloop, nvs_partition, channel)
         .expect("failed to initialize ESP-NOW transport");
 
     let mut interpreter = SondeBpfInterpreter::new();

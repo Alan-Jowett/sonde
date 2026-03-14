@@ -31,12 +31,22 @@ pub fn handle_pairing_message<S: PlatformStorage>(
 ) -> (Option<Vec<u8>>, PairingAction) {
     match msg {
         ModemMessage::PairRequest(req) => {
-            let mut ks = KeyStore::new(storage);
-            let status = match ks.pair(req.key_hint, &req.psk) {
-                Ok(()) => PAIRING_STATUS_SUCCESS,
-                Err(crate::error::NodeError::AlreadyPaired) => PAIR_ACK_ALREADY_PAIRED,
-                Err(_) => PAIRING_STATUS_STORAGE_ERROR,
+            let status = {
+                let mut ks = KeyStore::new(storage);
+                match ks.pair(req.key_hint, &req.psk) {
+                    Ok(()) => PAIRING_STATUS_SUCCESS,
+                    Err(crate::error::NodeError::AlreadyPaired) => PAIR_ACK_ALREADY_PAIRED,
+                    Err(_) => PAIRING_STATUS_STORAGE_ERROR,
+                }
             };
+            // Persist the channel if pairing succeeded and a channel was supplied.
+            if status == PAIRING_STATUS_SUCCESS {
+                if let Some(ch) = req.channel {
+                    if let Err(e) = storage.write_channel(ch) {
+                        log::warn!("failed to store channel {}: {:?}", ch, e);
+                    }
+                }
+            }
             let ack = ModemMessage::PairAck(PairAck { status });
             let frame = encode_modem_frame(&ack).ok();
             (frame, PairingAction::Continue)
@@ -95,16 +105,21 @@ mod tests {
     /// In-memory storage for testing.
     struct FakeStorage {
         key: Option<(u16, [u8; 32])>,
+        channel: Option<u8>,
     }
 
     impl FakeStorage {
         fn new() -> Self {
-            Self { key: None }
+            Self {
+                key: None,
+                channel: None,
+            }
         }
 
         fn paired(key_hint: u16, psk: [u8; 32]) -> Self {
             Self {
                 key: Some((key_hint, psk)),
+                channel: None,
             }
         }
     }
@@ -153,6 +168,13 @@ mod tests {
         fn set_early_wake_flag(&mut self) -> NodeResult<()> {
             Ok(())
         }
+        fn read_channel(&self) -> Option<u8> {
+            self.channel
+        }
+        fn write_channel(&mut self, channel: u8) -> NodeResult<()> {
+            self.channel = Some(channel);
+            Ok(())
+        }
     }
 
     fn decode_response(frame: &[u8]) -> ModemMessage {
@@ -169,6 +191,7 @@ mod tests {
         let msg = ModemMessage::PairRequest(PairRequest {
             key_hint: 0x1234,
             psk,
+            channel: None,
         });
 
         let (frame, _action) = handle_pairing_message(&msg, &mut storage, &mut maps);
@@ -180,15 +203,40 @@ mod tests {
             })
         );
         assert_eq!(storage.read_key(), Some((0x1234, psk)));
+        assert_eq!(storage.read_channel(), None);
     }
 
     #[test]
-    fn pair_already_paired_returns_already_paired() {
+    fn pair_with_channel_stores_channel() {
+        let mut storage = FakeStorage::new();
+        let mut maps = MapStorage::new(1024);
+        let psk = [0xAA; PSK_SIZE];
+        let msg = ModemMessage::PairRequest(PairRequest {
+            key_hint: 0x1234,
+            psk,
+            channel: Some(6),
+        });
+
+        let (frame, _action) = handle_pairing_message(&msg, &mut storage, &mut maps);
+        let resp = decode_response(frame.as_ref().unwrap());
+        assert_eq!(
+            resp,
+            ModemMessage::PairAck(PairAck {
+                status: PAIRING_STATUS_SUCCESS
+            })
+        );
+        assert_eq!(storage.read_key(), Some((0x1234, psk)));
+        assert_eq!(storage.read_channel(), Some(6));
+    }
+
+    #[test]
+    fn pair_already_paired_does_not_store_channel() {
         let mut storage = FakeStorage::paired(0x0001, [0xBB; 32]);
         let mut maps = MapStorage::new(1024);
         let msg = ModemMessage::PairRequest(PairRequest {
             key_hint: 0x9999,
             psk: [0xCC; PSK_SIZE],
+            channel: Some(11),
         });
 
         let (frame, _action) = handle_pairing_message(&msg, &mut storage, &mut maps);
@@ -199,6 +247,8 @@ mod tests {
                 status: PAIR_ACK_ALREADY_PAIRED,
             })
         );
+        // Channel must NOT be stored when pairing is rejected.
+        assert_eq!(storage.read_channel(), None);
     }
 
     #[test]
@@ -320,6 +370,7 @@ mod tests {
         let msg = ModemMessage::PairRequest(PairRequest {
             key_hint: 0x1234,
             psk: [0xAA; PSK_SIZE],
+            channel: None,
         });
 
         let (frame, _action) = handle_pairing_message(&msg, &mut storage, &mut maps);

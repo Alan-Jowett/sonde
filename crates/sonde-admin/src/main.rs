@@ -201,6 +201,10 @@ enum UsbAction {
         /// 32-byte PSK as hex string (64 hex characters).
         #[arg(long)]
         psk: String,
+        /// WiFi channel for ESP-NOW (1–13). If omitted the node retains its
+        /// current channel (defaulting to 1 on first boot).
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=13))]
+        channel: Option<u8>,
     },
     /// Factory reset a node via USB.
     FactoryReset {
@@ -259,6 +263,7 @@ fn run_usb(action: &UsbAction, json: bool) -> Result<(), String> {
             port,
             key_hint,
             psk,
+            channel,
         } => {
             let kh = parse_key_hint(key_hint)?;
             let psk_bytes = hex::decode(psk).map_err(|e| format!("invalid PSK hex: {e}"))?;
@@ -270,7 +275,7 @@ fn run_usb(action: &UsbAction, json: bool) -> Result<(), String> {
             }
             let mut psk_arr = [0u8; sonde_protocol::modem::PSK_SIZE];
             psk_arr.copy_from_slice(&psk_bytes);
-            usb::pair_node(port, kh, psk_arr, json)
+            usb::pair_node(port, kh, psk_arr, *channel, json)
         }
         UsbAction::FactoryReset { port } => usb::factory_reset_node(port, json),
         UsbAction::Identity { port } => usb::query_identity(port, json),

@@ -5,9 +5,10 @@
 //!
 //! The node communicates with the gateway over ESP-NOW using broadcast
 //! frames (destination MAC `FF:FF:FF:FF:FF:FF`). Received frames are
-//! buffered in a shared queue populated by an ESP-NOW receive callback.
+//! buffered in a fixed-slot ring buffer populated by an ESP-NOW receive
+//! callback, eliminating per-frame heap allocation from the WiFi task
+//! context.
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -24,19 +25,95 @@ use crate::error::{NodeError, NodeResult};
 /// Broadcast MAC used for all node → gateway transmissions.
 const BROADCAST_MAC: [u8; 6] = [0xFF; 6];
 
+/// Capacity of the receive ring buffer (number of frame slots).
+const RX_RING_CAP: usize = 16;
+
+/// A single pre-allocated frame slot in the ring buffer.
+#[derive(Clone, Copy)]
+struct FrameSlot {
+    data: [u8; ESPNOW_MAX_DATA_SIZE],
+    len: usize,
+}
+
+impl Default for FrameSlot {
+    fn default() -> Self {
+        Self {
+            data: [0u8; ESPNOW_MAX_DATA_SIZE],
+            len: 0,
+        }
+    }
+}
+
+/// Fixed-capacity ring buffer for received ESP-NOW frames.
+///
+/// All storage is pre-allocated; [`RxRing::push`] never allocates heap
+/// memory, making it safe to call from the WiFi task receive callback.
+struct RxRing {
+    slots: [FrameSlot; RX_RING_CAP],
+    head: usize,
+    tail: usize,
+    count: usize,
+    drop_count: u32,
+}
+
+impl Default for RxRing {
+    fn default() -> Self {
+        Self {
+            slots: [FrameSlot::default(); RX_RING_CAP],
+            head: 0,
+            tail: 0,
+            count: 0,
+            drop_count: 0,
+        }
+    }
+}
+
+impl RxRing {
+    /// Copy `payload` into the next ring slot. Returns `false` if full.
+    ///
+    /// No heap allocation; safe to call from the WiFi task context.
+    fn push(&mut self, payload: &[u8]) -> bool {
+        if self.count >= RX_RING_CAP || payload.len() > ESPNOW_MAX_DATA_SIZE {
+            return false;
+        }
+        let slot = &mut self.slots[self.head];
+        slot.len = payload.len();
+        slot.data[..payload.len()].copy_from_slice(payload);
+        self.head = (self.head + 1) % RX_RING_CAP;
+        self.count += 1;
+        true
+    }
+
+    /// Pop the oldest frame slot by value. Returns `None` if the ring is
+    /// empty. The caller converts the slot to a `Vec<u8>` outside the lock.
+    fn pop(&mut self) -> Option<FrameSlot> {
+        if self.count == 0 {
+            if self.drop_count > 0 {
+                log::warn!("ESP-NOW recv ring dropped {} frame(s)", self.drop_count);
+                self.drop_count = 0;
+            }
+            return None;
+        }
+        let slot = self.slots[self.tail];
+        self.tail = (self.tail + 1) % RX_RING_CAP;
+        self.count -= 1;
+        Some(slot)
+    }
+}
+
 /// Shared state for the raw ESP-NOW receive callback.
 struct RecvState {
-    rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    rx_ring: Arc<Mutex<RxRing>>,
     condvar: Arc<Condvar>,
 }
 
 /// Global callback state — set once during [`EspNowTransport::new`].
 static RECV_STATE: std::sync::OnceLock<RecvState> = std::sync::OnceLock::new();
 
-/// Raw ESP-NOW receive callback — pushes frame data to the shared queue.
+/// Raw ESP-NOW receive callback — copies frame data into the ring buffer.
 ///
-/// Uses `try_lock` to avoid blocking the ESP-NOW/WiFi task and caps
-/// the queue at 64 entries to bound memory usage.
+/// Uses `try_lock` to avoid blocking the ESP-NOW/WiFi task and drops
+/// frames when the ring is full. No heap allocation occurs here.
 unsafe extern "C" fn raw_recv_cb(
     recv_info: *const esp_idf_sys::esp_now_recv_info_t,
     data: *const u8,
@@ -51,13 +128,22 @@ unsafe extern "C" fn raw_recv_cb(
     }
     let payload = unsafe { core::slice::from_raw_parts(data, len) };
     if let Some(state) = RECV_STATE.get() {
-        if let Ok(mut q) = state.rx_queue.try_lock() {
-            if q.len() < 64 {
-                q.push_back(payload.to_vec());
-                state.condvar.notify_one();
+        let enqueued = {
+            if let Ok(mut ring) = state.rx_ring.try_lock() {
+                if ring.push(payload) {
+                    true
+                } else {
+                    ring.drop_count += 1;
+                    false
+                }
             } else {
-                log::warn!("ESP-NOW recv queue full, dropping frame");
+                false
             }
+        };
+        // Notify after releasing the lock to avoid waking the consumer
+        // into immediate contention on the same mutex.
+        if enqueued {
+            state.condvar.notify_one();
         }
     }
 }
@@ -65,11 +151,12 @@ unsafe extern "C" fn raw_recv_cb(
 /// ESP-NOW transport backed by `esp-idf-svc`.
 ///
 /// Holds the WiFi + ESP-NOW handles for the lifetime of the transport
-/// and maintains a receive queue filled by a global callback.
+/// and maintains a fixed-slot ring buffer filled by a global callback.
+/// No heap allocation occurs in the receive callback path.
 pub struct EspNowTransport {
     _wifi: BlockingWifi<EspWifi<'static>>,
     espnow: EspNow<'static>,
-    rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    rx_ring: Arc<Mutex<RxRing>>,
     rx_condvar: Arc<Condvar>,
 }
 
@@ -125,12 +212,12 @@ impl EspNowTransport {
             .add_peer(peer_info)
             .map_err(|e| NodeError::Transport(format!("add peer: {:?}", e)))?;
 
-        // Set up receive callback
-        let rx_queue = Arc::new(Mutex::new(VecDeque::with_capacity(16)));
+        // Set up receive ring buffer and callback.
+        let rx_ring = Arc::new(Mutex::new(RxRing::default()));
         let rx_condvar = Arc::new(Condvar::new());
         RECV_STATE
             .set(RecvState {
-                rx_queue: Arc::clone(&rx_queue),
+                rx_ring: Arc::clone(&rx_ring),
                 condvar: Arc::clone(&rx_condvar),
             })
             .map_err(|_| NodeError::Transport("recv callback already registered".into()))?;
@@ -142,7 +229,7 @@ impl EspNowTransport {
         Ok(Self {
             _wifi: wifi,
             espnow,
-            rx_queue,
+            rx_ring,
             rx_condvar,
         })
     }
@@ -160,13 +247,15 @@ impl crate::traits::Transport for EspNowTransport {
 
     fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
         let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
-        let mut q = self
-            .rx_queue
+        let mut ring = self
+            .rx_ring
             .lock()
-            .map_err(|_| NodeError::Transport("rx_queue lock poisoned".into()))?;
+            .map_err(|_| NodeError::Transport("rx_ring lock poisoned".into()))?;
         loop {
-            if let Some(frame) = q.pop_front() {
-                return Ok(Some(frame));
+            if let Some(slot) = ring.pop() {
+                // Drop the lock before allocating Vec from the slot data.
+                drop(ring);
+                return Ok(Some(slot.data[..slot.len].to_vec()));
             }
             let now = Instant::now();
             if now >= deadline {
@@ -175,9 +264,9 @@ impl crate::traits::Transport for EspNowTransport {
             let remaining = deadline - now;
             let (guard, _timeout_result) = self
                 .rx_condvar
-                .wait_timeout(q, remaining)
-                .map_err(|_| NodeError::Transport("rx_queue lock poisoned".into()))?;
-            q = guard;
+                .wait_timeout(ring, remaining)
+                .map_err(|_| NodeError::Transport("rx_ring lock poisoned".into()))?;
+            ring = guard;
         }
     }
 }

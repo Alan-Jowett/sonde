@@ -315,7 +315,7 @@ Set the state of a GPIO pin.
 #### `adc_read`
 
 ```c
-int adc_read(uint32_t channel, uint32_t *value);
+int adc_read(uint32_t channel);
 ```
 
 Read a raw value from an ADC channel.
@@ -323,9 +323,8 @@ Read a raw value from an ADC channel.
 | Parameter | Description |
 |---|---|
 | `channel` | ADC channel index (platform-dependent). |
-| `value` | Pointer to store the raw ADC reading. |
 
-**Returns:** `0` on success, negative on failure.
+**Returns:** Raw ADC reading on success, negative on failure (invalid channel, hardware fault).
 
 **Availability:** Resident and ephemeral.
 

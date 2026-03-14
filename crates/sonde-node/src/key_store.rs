@@ -39,13 +39,14 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         self.storage.write_key(key_hint, psk)
     }
 
-    /// Factory reset: erase PSK, programs, map data, and schedule.
+    /// Factory reset: erase PSK, programs, map data, schedule, and channel.
     ///
     /// Per security.md §2.6 and node-design.md §6.2, this erases:
     /// 1. Key partition (PSK + key_hint + magic)
     /// 2. Both program partitions
     /// 3. All map data in sleep-persistent memory (zeroed)
     /// 4. Schedule partition (reset to default interval)
+    /// 5. Stored WiFi channel (reset to default)
     ///
     /// After this, the node is inert until re-paired via USB.
     pub fn factory_reset(&mut self, map_storage: &mut MapStorage) -> NodeResult<()> {
@@ -54,6 +55,9 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         self.storage.erase_program(1)?;
         map_storage.clear_all();
         self.storage.reset_schedule()?;
+        // Clear stored WiFi channel so re-pairing with a different gateway
+        // on a different channel is not broken by a stale channel value.
+        self.storage.write_channel(1)?;
         Ok(())
     }
 }
@@ -70,6 +74,7 @@ mod tests {
         active_partition: u8,
         programs: [Option<Vec<u8>>; 2],
         early_wake_flag: bool,
+        channel: Option<u8>,
     }
 
     impl MockStorage {
@@ -80,6 +85,7 @@ mod tests {
                 active_partition: 0,
                 programs: [None, None],
                 early_wake_flag: false,
+                channel: None,
             }
         }
     }
@@ -146,6 +152,15 @@ mod tests {
             self.early_wake_flag = true;
             Ok(())
         }
+
+        fn read_channel(&self) -> Option<u8> {
+            self.channel
+        }
+
+        fn write_channel(&mut self, channel: u8) -> NodeResult<()> {
+            self.channel = Some(channel);
+            Ok(())
+        }
     }
 
     #[test]
@@ -191,6 +206,7 @@ mod tests {
         storage.programs[1] = Some(vec![4, 5, 6]);
         storage.schedule_interval = 300;
         storage.active_partition = 1;
+        storage.channel = Some(6);
 
         let mut map_storage = MapStorage::new(4096);
         // Allocate some maps to verify they get cleared
@@ -219,7 +235,8 @@ mod tests {
         assert!(storage.programs[1].is_none());
         assert_eq!(storage.schedule_interval, 60); // reset to default
         assert_eq!(storage.active_partition, 0); // reset to default
-                                                 // Map data should be zeroed
+        assert_eq!(storage.channel, Some(1)); // reset to default channel
+                                              // Map data should be zeroed
         assert_eq!(
             map_storage.get(0).unwrap().lookup(0).unwrap(),
             &[0, 0, 0, 0]

@@ -37,6 +37,9 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
     /// the CBOR image only when BPF execution is needed — this avoids
     /// unnecessary CPU/heap work in cycles that exit early (Reboot,
     /// UpdateSchedule, UpdateProgram).
+    ///
+    /// Returns an empty hash and `None` bytes when no program is installed
+    /// or when the active partition index is invalid (> 1).
     pub fn load_active_raw(&self, sha: &dyn Sha256Provider) -> (Vec<u8>, Option<Vec<u8>>) {
         let (_interval, active_partition) = self.storage.read_schedule();
         if active_partition > 1 {
@@ -51,21 +54,23 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         }
     }
 
-    /// Decode raw CBOR image bytes into a `LoadedProgram`.
+    /// Decode raw CBOR image bytes into a [`LoadedProgram`] for a **resident**
+    /// program (sets `is_ephemeral: false`).
     ///
     /// Called in step 9 of the wake cycle when BPF execution is needed.
-    /// Separated from `load_active_raw` so that decode is deferred until
-    /// we know the program will actually execute.
-    pub fn decode_image(
-        image_bytes: &[u8],
-        hash: Vec<u8>,
-    ) -> Option<LoadedProgram> {
-        ProgramImage::decode(image_bytes).ok().map(|image| LoadedProgram {
-            bytecode: image.bytecode,
-            map_defs: image.maps,
-            hash,
-            is_ephemeral: false,
-        })
+    /// Separated from [`load_active_raw`](Self::load_active_raw) so that
+    /// decode is deferred until we know the program will actually execute.
+    ///
+    /// Returns `None` if CBOR decoding fails.
+    pub(crate) fn decode_image(image_bytes: &[u8], hash: Vec<u8>) -> Option<LoadedProgram> {
+        ProgramImage::decode(image_bytes)
+            .ok()
+            .map(|image| LoadedProgram {
+                bytecode: image.bytecode,
+                map_defs: image.maps,
+                hash,
+                is_ephemeral: false,
+            })
     }
 
     /// Install a new resident program via chunked transfer.
@@ -431,5 +436,60 @@ mod tests {
         let mut store = ProgramStore::new(&mut storage);
         let result = store.install_resident(&cbor, &hash, &TestSha256, 4096);
         assert!(matches!(result, Err(NodeError::StorageError(_))));
+    }
+
+    // ---- load_active_raw tests ----
+
+    #[test]
+    fn test_load_active_raw_no_program() {
+        let mut storage = MockStorage::new();
+        let store = ProgramStore::new(&mut storage);
+        let (hash, bytes) = store.load_active_raw(&TestSha256);
+        assert!(hash.is_empty());
+        assert!(bytes.is_none());
+    }
+
+    #[test]
+    fn test_load_active_raw_invalid_partition() {
+        let mut storage = MockStorage::new();
+        storage.active_partition = 5;
+        let store = ProgramStore::new(&mut storage);
+        let (hash, bytes) = store.load_active_raw(&TestSha256);
+        assert!(hash.is_empty());
+        assert!(bytes.is_none());
+    }
+
+    #[test]
+    fn test_load_active_raw_valid_program() {
+        let (cbor, expected_hash) =
+            make_test_image(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], &[]);
+        let mut storage = MockStorage::new();
+        storage.programs[0] = Some(cbor.clone());
+        let store = ProgramStore::new(&mut storage);
+        let (hash, bytes) = store.load_active_raw(&TestSha256);
+        assert_eq!(hash, expected_hash);
+        assert_eq!(bytes.unwrap(), cbor);
+    }
+
+    // ---- decode_image tests ----
+
+    #[test]
+    fn test_decode_image_valid() {
+        let (cbor, hash) = make_test_image(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], &[]);
+        let loaded = ProgramStore::<MockStorage>::decode_image(&cbor, hash.clone()).unwrap();
+        assert_eq!(loaded.hash, hash);
+        assert!(!loaded.is_ephemeral);
+        assert_eq!(
+            loaded.bytecode,
+            vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn test_decode_image_invalid_cbor() {
+        let bad_bytes = vec![0xFF, 0xFE, 0xFD];
+        let hash = vec![0x42; 32];
+        let result = ProgramStore::<MockStorage>::decode_image(&bad_bytes, hash);
+        assert!(result.is_none());
     }
 }

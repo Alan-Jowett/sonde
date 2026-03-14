@@ -97,7 +97,7 @@ where
     // Only the hash is needed for the WAKE message; CBOR decode is
     // deferred to step 9 to avoid unnecessary CPU/heap work when the
     // cycle exits early (Reboot, UpdateSchedule, UpdateProgram).
-    let (program_hash, resident_image_bytes) = {
+    let (program_hash, mut resident_image_bytes) = {
         let program_store = ProgramStore::new(storage);
         program_store.load_active_raw(sha)
     };
@@ -226,6 +226,9 @@ where
                                 // ProgramUpdate again.
                                 sleep_mgr.set_wake_reason(WakeReason::ProgramUpdate);
                             }
+                            // Free the cached NVS buffer — it is no longer
+                            // needed now that the transfer produced a program.
+                            resident_image_bytes = None;
                             loaded_program = Some(program);
                         }
                         Err(_) => {
@@ -256,7 +259,7 @@ where
     // deferred to here so cycles that exit early skip CBOR parsing.
     if loaded_program.is_none() {
         if let Some(raw) = resident_image_bytes {
-            loaded_program = ProgramStore::<S>::decode_image(&raw, program_hash.clone());
+            loaded_program = ProgramStore::<S>::decode_image(&raw, program_hash);
         }
     }
 

@@ -649,7 +649,11 @@ fn create_pipe_serial(
                                 stop.store(true, Ordering::Relaxed);
                                 panic!("PipeSerial: duplex write error: {e}");
                             }
-                            let _ = writer.flush().await;
+                            if let Err(e) = writer.flush().await {
+                                connected.store(false, Ordering::Relaxed);
+                                stop.store(true, Ordering::Relaxed);
+                                panic!("PipeSerial: duplex flush error: {e}");
+                            }
                         }
                     }
                     // Periodic stop-flag check so the task can shut down
@@ -744,7 +748,12 @@ impl ModemTestEnv {
             Err(e) => {
                 stop.store(true, Ordering::Relaxed);
                 pipe_task.abort();
-                let _ = bridge_thread.join();
+                // Surface bridge thread panics (e.g. channel overflow
+                // assertions) so the real root cause is not hidden behind
+                // the handshake error.
+                if let Err(panic_payload) = bridge_thread.join() {
+                    std::panic::resume_unwind(panic_payload);
+                }
                 panic!("modem startup handshake failed: {e}");
             }
         };

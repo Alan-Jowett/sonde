@@ -141,6 +141,36 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
     Ok(())
 }
 
+/// Verify that the provided master key can decrypt an existing PSK row.
+///
+/// This is called during [`SqliteStorage::open`] after legacy migration to catch
+/// a wrong master key as early as possible — at startup — rather than silently
+/// accepting the database and producing decryption errors on every node read.
+///
+/// If no encrypted PSK rows exist yet (new or empty database) the function
+/// returns `Ok(())` since there is nothing to validate against.
+fn validate_master_key(conn: &Connection, master_key: &[u8; 32]) -> Result<(), StorageError> {
+    let psk_row: Option<(String, Vec<u8>)> = conn
+        .query_row(
+            "SELECT node_id, psk FROM nodes WHERE LENGTH(psk) = ?1 LIMIT 1",
+            params![ENCRYPTED_PSK_LEN as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(map_err)?;
+
+    if let Some((node_id, psk_blob)) = psk_row {
+        decrypt_psk(master_key, &node_id, &psk_blob).map_err(|_| {
+            StorageError::Internal(
+                "master key validation failed — the provided key cannot decrypt existing PSK \
+                 data; ensure the correct master key is supplied"
+                    .into(),
+            )
+        })?;
+    }
+    Ok(())
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
     node_id TEXT PRIMARY KEY,

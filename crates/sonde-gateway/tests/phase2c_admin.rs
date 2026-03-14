@@ -893,7 +893,8 @@ async fn t0810_import_state_restores_nodes_and_programs() {
         .admin
         .ingest_program(Request::new(IngestProgramRequest {
             image_data: cbor,
-            verification_profile: VerificationProfile::Resident.into(),            abi_version: None,
+            verification_profile: VerificationProfile::Resident.into(),
+            abi_version: None,
         }))
         .await
         .unwrap();

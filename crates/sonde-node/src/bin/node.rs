@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! ESP32 node firmware entry point.
+//! ESP32-C3 node firmware entry point.
 //!
-//! This binary is only built with the `esp` feature enabled and the
-//! `xtensa-esp32-espidf` target.
+//! This binary is only built with the `esp` feature enabled.
 
 #[cfg(not(feature = "esp"))]
 fn main() {
@@ -25,12 +24,14 @@ fn main() {
 
     use sonde_node::crypto::{EspRng, SoftwareHmac, SoftwareSha256};
     use sonde_node::esp_hal::{EspBatteryReader, EspClock, EspHal};
+    use sonde_node::esp_pairing_serial::EspUsbSerialJtag;
     use sonde_node::esp_sleep::EspSleepController;
     use sonde_node::esp_storage::NvsStorage;
     use sonde_node::esp_transport::EspNowTransport;
     use sonde_node::map_storage::MapStorage;
+    use sonde_node::pairing::run_pairing_mode;
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
-    use sonde_node::traits::SleepController;
+    use sonde_node::traits::{PlatformStorage, SleepController};
     use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
 
     // Link ESP-IDF patches and initialize logging.
@@ -45,28 +46,47 @@ fn main() {
     let sysloop = EspSystemEventLoop::take().expect("failed to take event loop");
     let nvs_partition = EspDefaultNvsPartition::take().expect("failed to take NVS");
 
+    let mut sleep_ctrl = EspSleepController;
+
+    let mut storage =
+        NvsStorage::new(nvs_partition.clone()).expect("failed to initialize NVS storage");
+
+    // Map storage: 4 KB budget (fits in ESP32-C3 RTC SRAM)
+    let mut map_storage = MapStorage::new(4096);
+
+    // --- Check pairing status BEFORE initializing the radio ---
+    // Per pairing-protocol.md §11: when unpaired, the node enters
+    // pairing mode on USB Serial/JTAG without starting ESP-NOW.
+    if storage.read_key().is_none() {
+        info!("node is unpaired — entering pairing mode");
+        match EspUsbSerialJtag::new() {
+            Ok(mut usb_serial) => {
+                run_pairing_mode(&mut usb_serial, &mut storage, &mut map_storage);
+                drop(usb_serial);
+                info!("pairing mode exited (USB disconnect) — rebooting");
+            }
+            Err(e) => {
+                info!("failed to initialize USB serial: {:?} — rebooting", e);
+            }
+        }
+        sleep_ctrl.reboot();
+    }
+
+    // --- Node is paired — initialize radio and run wake cycle ---
     let hmac = SoftwareHmac;
     let sha = SoftwareSha256;
     let mut rng = EspRng;
     let clock = EspClock;
     let mut hal = EspHal::new();
     let battery = EspBatteryReader;
-    let mut sleep_ctrl = EspSleepController;
-
-    let mut storage =
-        NvsStorage::new(nvs_partition.clone()).expect("failed to initialize NVS storage");
 
     let mut transport = EspNowTransport::new(peripherals.modem, sysloop, nvs_partition)
         .expect("failed to initialize ESP-NOW transport");
 
     let mut interpreter = SondeBpfInterpreter::new();
 
-    // Map storage: 4 KB budget (fits in ESP32-C3 RTC SRAM)
-    let mut map_storage = MapStorage::new(4096);
-
     info!("sonde-node ready");
 
-    // --- Wake cycle ---
     let outcome = run_wake_cycle(
         &mut transport,
         &mut storage,
@@ -80,7 +100,6 @@ fn main() {
         &sha,
     );
 
-    // --- Handle outcome ---
     match outcome {
         WakeCycleOutcome::Sleep { seconds } => {
             info!("entering deep sleep for {} seconds", seconds);
@@ -91,9 +110,10 @@ fn main() {
             sleep_ctrl.reboot();
         }
         WakeCycleOutcome::Unpaired => {
-            info!("node is unpaired — sleeping indefinitely");
-            // Sleep for max duration (unpaired nodes wait for USB pairing)
-            sleep_ctrl.enter_deep_sleep(u32::MAX);
+            // Should not happen — we checked read_key() above.
+            // If storage was corrupted mid-cycle, reboot to re-enter pairing.
+            info!("unexpected unpaired state — rebooting");
+            sleep_ctrl.reboot();
         }
     }
 }

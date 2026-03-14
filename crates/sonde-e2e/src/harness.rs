@@ -619,7 +619,10 @@ fn create_pipe_serial(
                                 );
                                 rx.extend(&read_buf[..n]);
                             }
-                            Err(_) => break,
+                            Err(e) => {
+                                eprintln!("PipeSerial: duplex read error: {e}");
+                                break;
+                            }
                         }
                     }
                     _ = tx_notify.notified() => {
@@ -628,7 +631,8 @@ fn create_pipe_serial(
                             tx.drain(..).collect()
                         };
                         if !data.is_empty() {
-                            if writer.write_all(&data).await.is_err() {
+                            if let Err(e) = writer.write_all(&data).await {
+                                eprintln!("PipeSerial: duplex write error: {e}");
                                 break;
                             }
                             let _ = writer.flush().await;
@@ -766,8 +770,10 @@ impl ModemTestEnv {
 impl Drop for ModemTestEnv {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // Abort the pipe shuttle task so panics/assertions inside it are
-        // surfaced immediately rather than silently swallowed by detach.
+        // Abort the pipe shuttle task so it stops promptly.  Abort alone
+        // does not propagate panics (that would require awaiting the handle),
+        // but the task's internal asserts will have already printed to stderr
+        // before the abort lands, giving visibility into failures.
         if let Some(handle) = self.pipe_task.take() {
             handle.abort();
         }

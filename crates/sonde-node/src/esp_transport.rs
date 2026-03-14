@@ -144,7 +144,7 @@ unsafe extern "C" fn raw_recv_cb(
             if guard.push(payload) {
                 true
             } else {
-                guard.drop_count += 1;
+                guard.drop_count = guard.drop_count.saturating_add(1);
                 false
             }
         };
@@ -263,10 +263,13 @@ impl crate::traits::Transport for EspNowTransport {
                 log::warn!("ESP-NOW recv ring: {} contention drop(s)", cd);
             }
         }
-        let mut ring = self
-            .rx_ring
-            .lock()
-            .map_err(|_| NodeError::Transport("rx_ring lock poisoned"))?;
+        let mut ring = match self.rx_ring.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::warn!("rx_ring mutex poisoned in recv(), recovering");
+                poisoned.into_inner()
+            }
+        };
         loop {
             if let Some(len) = ring.pop_into(&mut buf) {
                 // Re-read drop_count right before returning so drops
@@ -290,10 +293,13 @@ impl crate::traits::Transport for EspNowTransport {
                 return Ok(None);
             }
             let remaining = deadline - now;
-            let (guard, _timeout_result) = self
-                .rx_condvar
-                .wait_timeout(ring, remaining)
-                .map_err(|_| NodeError::Transport("rx_ring lock poisoned"))?;
+            let (guard, _timeout_result) = match self.rx_condvar.wait_timeout(ring, remaining) {
+                Ok(result) => result,
+                Err(poisoned) => {
+                    log::warn!("rx_ring mutex poisoned in wait_timeout, recovering");
+                    poisoned.into_inner()
+                }
+            };
             ring = guard;
         }
     }

@@ -184,7 +184,7 @@ unsafe extern "C" fn raw_recv_cb(
             Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
         };
         if !guard.push(src_addr, rssi, payload) {
-            guard.drop_count += 1;
+            guard.drop_count = guard.drop_count.saturating_add(1);
         }
     }
 }
@@ -197,6 +197,7 @@ pub struct EspNowDriver {
     counters: Arc<ModemCounters>,
     rx_ring: Arc<Mutex<RxRing>>,
     current_channel: u8,
+    poison_warned: AtomicBool,
 }
 
 impl EspNowDriver {
@@ -266,6 +267,7 @@ impl EspNowDriver {
             counters: Arc::clone(counters),
             rx_ring,
             current_channel: 1,
+            poison_warned: AtomicBool::new(false),
         })
     }
 
@@ -333,7 +335,9 @@ impl Radio for EspNowDriver {
             let mut ring = match self.rx_ring.lock() {
                 Ok(g) => g,
                 Err(poisoned) => {
-                    warn!("rx_ring mutex poisoned, recovering");
+                    if !self.poison_warned.swap(true, Ordering::Relaxed) {
+                        warn!("rx_ring mutex poisoned, recovering");
+                    }
                     poisoned.into_inner()
                 }
             };

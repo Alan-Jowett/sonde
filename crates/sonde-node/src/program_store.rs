@@ -189,74 +189,9 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
     }
 }
 
-/// Resolve LDDW src=1 map references in bytecode.
-///
-/// BPF `LDDW` instructions are 16 bytes (two 8-byte slots). When `src=1`,
-/// the `imm` field (bytes 4..8 of the first slot) contains a map index.
-/// This function replaces the immediate with the runtime pointer to the
-/// map's storage, split across the two 8-byte slots:
-///   slot 0 imm (bytes 4..8) = lower 32 bits of pointer
-///   slot 1 imm (bytes 4..8) = upper 32 bits of pointer
-pub fn resolve_map_references(bytecode: &mut [u8], map_pointers: &[u64]) -> NodeResult<()> {
-    if !bytecode.len().is_multiple_of(8) {
-        return Err(NodeError::ProgramDecodeFailed(
-            "bytecode length not a multiple of 8".into(),
-        ));
-    }
-
-    let mut i = 0;
-    while i + 16 <= bytecode.len() {
-        let opcode = bytecode[i];
-        let src_reg = (bytecode[i + 1] >> 4) & 0x0F;
-
-        // LDDW opcode = 0x18, src=1 means map reference
-        if opcode == 0x18 && src_reg == 1 {
-            let map_index = u32::from_le_bytes([
-                bytecode[i + 4],
-                bytecode[i + 5],
-                bytecode[i + 6],
-                bytecode[i + 7],
-            ]) as usize;
-
-            if map_index >= map_pointers.len() {
-                return Err(NodeError::ProgramDecodeFailed(format!(
-                    "LDDW references map index {} but only {} maps defined",
-                    map_index,
-                    map_pointers.len()
-                )));
-            }
-
-            let ptr = map_pointers[map_index];
-            let lo = (ptr & 0xFFFF_FFFF) as u32;
-            let hi = ((ptr >> 32) & 0xFFFF_FFFF) as u32;
-
-            // Clear the src field (set src=0 after relocation)
-            bytecode[i + 1] &= 0x0F;
-
-            // Write lower 32 bits into slot 0 imm
-            bytecode[i + 4..i + 8].copy_from_slice(&lo.to_le_bytes());
-            // Write upper 32 bits into slot 1 imm
-            bytecode[i + 12..i + 16].copy_from_slice(&hi.to_le_bytes());
-
-            i += 16; // Skip both slots of the LDDW
-        } else if opcode == 0x18 {
-            i += 16; // LDDW with src!=1, skip both slots
-        } else {
-            i += 8; // Normal instruction
-        }
-    }
-
-    // Check for a trailing incomplete LDDW: if the last 8-byte slot starts
-    // an LDDW (opcode 0x18) but there is no second slot, the bytecode is
-    // malformed.
-    if i < bytecode.len() && bytecode[i] == 0x18 {
-        return Err(NodeError::ProgramDecodeFailed(
-            "incomplete trailing LDDW instruction (missing second slot)".into(),
-        ));
-    }
-
-    Ok(())
-}
+// NOTE: `resolve_map_references` was removed in the sonde-bpf migration.
+// LDDW `src=1` map reference relocation is now handled at runtime by the
+// `sonde_bpf` interpreter backend.
 
 #[cfg(test)]
 mod tests {
@@ -380,52 +315,6 @@ mod tests {
         // Active partition should now be 1
         assert_eq!(storage.read_schedule().1, 1);
         assert!(storage.read_program(1).is_some());
-    }
-
-    #[test]
-    fn test_resolve_map_references() {
-        // Build a minimal LDDW src=1, imm=0 instruction (16 bytes)
-        let mut bytecode = vec![0u8; 16];
-        bytecode[0] = 0x18; // LDDW opcode
-        bytecode[1] = 0x10; // src=1, dst=0
-                            // imm = 0 (map index 0)
-        bytecode[4..8].copy_from_slice(&0u32.to_le_bytes());
-
-        let map_pointers = vec![0xDEAD_BEEF_CAFE_BABEu64];
-        resolve_map_references(&mut bytecode, &map_pointers).unwrap();
-
-        // Verify src was cleared to 0
-        assert_eq!((bytecode[1] >> 4) & 0x0F, 0);
-        // Verify lower 32 bits
-        let lo = u32::from_le_bytes([bytecode[4], bytecode[5], bytecode[6], bytecode[7]]);
-        assert_eq!(lo, 0xCAFE_BABE);
-        // Verify upper 32 bits
-        let hi = u32::from_le_bytes([bytecode[12], bytecode[13], bytecode[14], bytecode[15]]);
-        assert_eq!(hi, 0xDEAD_BEEF);
-    }
-
-    #[test]
-    fn test_resolve_map_references_out_of_bounds() {
-        let mut bytecode = vec![0u8; 16];
-        bytecode[0] = 0x18;
-        bytecode[1] = 0x10; // src=1
-        bytecode[4..8].copy_from_slice(&5u32.to_le_bytes()); // map index 5
-
-        let map_pointers = vec![0x1234u64]; // only 1 map
-        let result = resolve_map_references(&mut bytecode, &map_pointers);
-        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
-    }
-
-    #[test]
-    fn test_resolve_map_references_trailing_incomplete_lddw() {
-        // 8-byte trailing LDDW with no second slot
-        let mut bytecode = vec![0u8; 8];
-        bytecode[0] = 0x18; // LDDW opcode
-        bytecode[1] = 0x10; // src=1
-
-        let map_pointers = vec![0x1234u64];
-        let result = resolve_map_references(&mut bytecode, &map_pointers);
-        assert!(matches!(result, Err(NodeError::ProgramDecodeFailed(_))));
     }
 
     #[test]

@@ -12,6 +12,7 @@ sonde-modem = { path = "../sonde-modem" }
 tokio = { version = "1", features = ["full", "test-util"] }
 hmac = "0.12"
 sha2 = "0.10"
+zeroize = "1.8.2"
 
 [lib]
 name = "sonde_e2e"

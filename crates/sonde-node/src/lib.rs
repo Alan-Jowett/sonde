@@ -9,6 +9,8 @@ pub mod error;
 #[cfg(feature = "esp")]
 pub mod esp_hal;
 #[cfg(feature = "esp")]
+pub mod esp_pairing_serial;
+#[cfg(feature = "esp")]
 pub mod esp_sleep;
 #[cfg(feature = "esp")]
 pub mod esp_storage;

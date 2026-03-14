@@ -3,7 +3,7 @@
 
 //! End-to-end integration tests exercising the full gateway ↔ node protocol.
 
-use sonde_e2e::harness::{E2eTestEnv, NodeProxy, TestSha256};
+use sonde_e2e::harness::{E2eTestEnv, MockPairingSerial, NodeProxy, TestSha256};
 use sonde_gateway::engine::PendingCommand;
 use sonde_gateway::{ProgramRecord, VerificationProfile};
 use sonde_node::traits::PlatformStorage;
@@ -801,5 +801,144 @@ async fn t_e2e_030_app_data_round_trip() {
     assert!(
         stats.response_count >= 2,
         "gateway should produce at least 2 responses (COMMAND + APP_DATA_REPLY)"
+    );
+}
+
+// ===========================================================================
+// Lifecycle tests
+// ===========================================================================
+
+/// T-E2E-060 — Full boot → pair → boot → run lifecycle.
+///
+/// Exercises the complete node lifecycle from factory-fresh state using the
+/// real `run_pairing_mode` firmware function with a mock serial transport:
+///
+/// 1. **Boot unpaired** — wake cycle returns `Unpaired`, no frames sent.
+/// 2. **Enter pairing mode** — `run_pairing_mode` sends `PAIRING_READY`,
+///    processes an `IdentityRequest` (→ Unpaired), then a `PairRequest`
+///    (→ success), then another `IdentityRequest` (→ Paired). Mock serial
+///    disconnects after the final message.
+/// 3. **Boot paired** — node sends WAKE, receives COMMAND, sleeps normally.
+/// 4. **Factory reset via pairing mode** — `run_pairing_mode` processes a
+///    `ResetRequest`, then mock serial disconnects.
+/// 5. **Boot unpaired again** — confirms the node reverts to `Unpaired`.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
+    use sonde_node::pairing::run_pairing_mode;
+    use sonde_protocol::modem::{
+        IdentityResponse, ModemMessage, PairAck, PairRequest, PairingReady, ResetAck,
+        PAIRING_STATUS_SUCCESS, PSK_SIZE,
+    };
+
+    let env = E2eTestEnv::new();
+    const KEY_HINT: u16 = 0x1234;
+    const PSK: [u8; PSK_SIZE] = [0xAB; PSK_SIZE];
+
+    let mut node = NodeProxy::new_unpaired();
+
+    // -- Phase 1: Boot unpaired -----------------------------------------------
+    let stats = node.run_wake_cycle(&env);
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Unpaired,
+        "freshly flashed node must report Unpaired"
+    );
+    assert!(
+        stats.sent_frames.is_empty(),
+        "unpaired node must not send any frames"
+    );
+
+    // -- Phase 2: Enter pairing mode (pair via USB) ---------------------------
+    // Simulate a USB host connecting and running the pairing flow.
+    let mut serial = MockPairingSerial::new();
+    serial.enqueue(&ModemMessage::IdentityRequest);
+    serial.enqueue(&ModemMessage::PairRequest(PairRequest {
+        key_hint: KEY_HINT,
+        psk: PSK,
+        channel: None,
+    }));
+    serial.enqueue(&ModemMessage::IdentityRequest);
+    // Mock serial disconnects after all messages are consumed.
+
+    run_pairing_mode(&mut serial, &mut node.storage, &mut node.map_storage);
+
+    // Verify the node's responses.
+    let responses = serial.received();
+    assert_eq!(
+        responses.len(),
+        4,
+        "expected PAIRING_READY + 3 responses, got {:?}",
+        responses
+    );
+    assert!(
+        matches!(
+            responses[0],
+            ModemMessage::PairingReady(PairingReady { .. })
+        ),
+        "first message must be PAIRING_READY"
+    );
+    assert_eq!(
+        responses[1],
+        ModemMessage::IdentityResponse(IdentityResponse::Unpaired),
+        "identity before pairing must be Unpaired"
+    );
+    assert_eq!(
+        responses[2],
+        ModemMessage::PairAck(PairAck {
+            status: PAIRING_STATUS_SUCCESS,
+        }),
+        "pairing must succeed"
+    );
+    assert_eq!(
+        responses[3],
+        ModemMessage::IdentityResponse(IdentityResponse::Paired { key_hint: KEY_HINT }),
+        "identity after pairing must be Paired"
+    );
+    assert_eq!(
+        node.storage.read_key(),
+        Some((KEY_HINT, PSK)),
+        "PSK must be persisted after pairing"
+    );
+
+    // -- Phase 3: Boot paired (simulates reboot after USB disconnect) ---------
+    env.register_node("lifecycle-node", KEY_HINT, PSK).await;
+    let stats = node.run_wake_cycle(&env);
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "paired node should complete a normal wake cycle"
+    );
+    assert!(
+        !stats.wake_nonces.is_empty(),
+        "paired node must send a WAKE frame"
+    );
+
+    // -- Phase 4: Factory reset via pairing mode ------------------------------
+    let mut serial = MockPairingSerial::new();
+    serial.enqueue(&ModemMessage::ResetRequest);
+
+    run_pairing_mode(&mut serial, &mut node.storage, &mut node.map_storage);
+
+    let responses = serial.received();
+    assert_eq!(responses.len(), 2, "expected PAIRING_READY + ResetAck");
+    assert_eq!(
+        responses[1],
+        ModemMessage::ResetAck(ResetAck {
+            status: PAIRING_STATUS_SUCCESS,
+        }),
+        "factory reset must succeed"
+    );
+    assert_eq!(
+        node.storage.read_key(),
+        None,
+        "key must be erased after factory reset"
+    );
+
+    // -- Phase 5: Boot unpaired again -----------------------------------------
+    let stats = node.run_wake_cycle(&env);
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Unpaired,
+        "node must report Unpaired after factory reset"
     );
 }

@@ -358,7 +358,7 @@ where
                 let (load_ptrs, load_defs): (&[u64], &[sonde_protocol::MapDef]) =
                     if program.map_defs.is_empty() && map_storage.map_count() > 0 {
                         load_defs_owned = (0..map_storage.map_count())
-                            .filter_map(|i| map_storage.get(i).map(|m| m.def.clone()))
+                            .filter_map(|i| map_storage.get(i).map(|m| m.def))
                             .collect::<Vec<_>>();
                         (&map_ptrs, &load_defs_owned)
                     } else {

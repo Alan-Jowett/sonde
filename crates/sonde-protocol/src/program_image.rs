@@ -11,7 +11,7 @@ use crate::traits::Sha256Provider;
 
 use alloc::format;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MapDef {
     pub map_type: u32,
     pub key_size: u32,

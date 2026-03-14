@@ -12,7 +12,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 prost = "0.14"
-rand = "0.10"
+getrandom = "0.3"
 serialport = "4"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }

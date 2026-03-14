@@ -158,6 +158,7 @@ Properties:
 
 - The private key (stored as a 32-byte Ed25519 seed) is encrypted at rest (protected by the master key from GW-0601a).
 - The public key is not secret — it provides identity verification and payload confidentiality in transit.  Authentication of pairing requests is provided by the phone's HMAC.
+- **Failover / backup:** The gateway keypair and `gateway_id` MUST be replicated to any failover or replacement gateway.  Phones pin the gateway public key on first contact (TOFU, §5.3), so a new keypair would require all phones to re-register.  Similarly, in-flight encrypted pairing payloads (§5.5) use `gateway_id` as HKDF salt and GCM AAD — a different `gateway_id` would fail decryption.  Operators MUST back up the Ed25519 seed and `gateway_id` alongside the node key database when configuring high-availability deployments.
 
 ---
 

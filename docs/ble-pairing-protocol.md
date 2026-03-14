@@ -545,7 +545,7 @@ An active BLE MITM attacker who defeats Just Works pairing can observe `NODE_PRO
 The gateway performs these steps **in order**.  Failure at any step causes **silent discard** — no `PEER_ACK` is sent.  This is consistent with the radio protocol's error handling ([protocol.md §8](protocol.md#8--error-handling)):
 
 1. **Parse header.** Extract key_hint, verify msg_type = 0x05.  If not → discard.
-2. **Unknown key_hint.** The node is not yet registered — the gateway cannot verify the HMAC yet.  Proceed tentatively.
+2. **Bypass normal key-hint lookup.**  Because the node is not yet registered, the `key_hint` may be unknown **or may collide** with an existing node's key_hint (key_hint is a 16-bit non-unique value).  For `msg_type = 0x05` (PEER_REQUEST), the gateway MUST NOT attempt the normal radio fast-path (key-hint lookup → HMAC verification).  Instead, skip directly to CBOR parsing and decryption — the frame HMAC is verified later (step 8) using the `node_psk` extracted from the decrypted payload.
 3. **Parse CBOR.** Extract `encrypted_payload` (key 1, bstr).  If missing or malformed → discard.
 4. **Decrypt.**
    - Extract `eph_public[32] ‖ nonce[12] ‖ ciphertext[...]` from encrypted_payload.
@@ -570,7 +570,7 @@ The gateway performs these steps **in order**.  Failure at any step causes **sil
 9. **Verify timestamp.** If `|now − timestamp| > 86400` → discard.
 10. **Check node_id uniqueness.** If node_id already registered → discard.
 11. **Verify key_hint consistency.** Frame header key_hint must match `node_key_hint` in the PairingRequest.  If mismatch → discard.
-12. **Register node.** Store (node_id, node_key_hint, node_psk, rf_channel, sensors, registered_by = phone_key_hint).
+12. **Register node.** Store (node_id, node_key_hint, node_psk, rf_channel, sensors, registered_by = phone_id) where `phone_id` is the gateway's internal identifier for the phone PSK record (e.g., database primary key or a stable fingerprint of the phone PSK).  The `phone_key_hint` is a 16-bit non-unique lookup hint and MUST NOT be used as the sole audit identifier — collisions would misattribute registrations.
 13. **Send PEER_ACK(0).** Compute `registration_proof` = `HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)`.  Build CBOR payload `{ 1: 0, 2: registration_proof }`.  HMAC the frame with the node PSK.  The `nonce` field echoes the `nonce` from the PEER_REQUEST header.
 
 ### 7.4  HMAC bootstrap rationale

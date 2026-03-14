@@ -125,6 +125,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
         let (n, reconnected) = self.usb.read(&mut self.rx_buf);
         if reconnected {
             info!("USB reconnected, sending MODEM_READY");
+            self.decoder.reset();
             self.send_modem_ready();
         }
         if n > 0 {
@@ -757,6 +758,41 @@ mod tests {
         let tx = bridge.usb.take_tx();
         let (msg, _) = decode_modem_frame(&tx).unwrap();
         assert!(matches!(msg, ModemMessage::ModemReady(_)));
+    }
+
+    /// Validates that USB reconnect clears stale partial frame data from
+    /// the decoder.  Without `decoder.reset()`, leftover bytes from before
+    /// the disconnect would corrupt the first post-reconnect frame.
+    #[test]
+    fn usb_reconnect_clears_decoder_state() {
+        let mut bridge = make_bridge();
+
+        // Inject stale bytes to leave a partial length-prefixed frame in the
+        // decoder buffer.  These do not form a complete frame.
+        bridge.usb.inject(&[0x01, 0x02, 0x03, 0xFF, 0xFE]);
+        bridge.poll();
+        bridge.usb.take_tx(); // discard any error output
+
+        // Simulate USB reconnect — this should reset the decoder and send
+        // MODEM_READY.
+        bridge.usb.set_reconnect_once();
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::ModemReady(_)));
+
+        // Now inject a complete GET_STATUS frame.  If the decoder was NOT
+        // reset, the stale bytes would corrupt this frame.
+        let status_frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&status_frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(
+            matches!(msg, ModemMessage::Status(_)),
+            "expected Status after reconnect, got {:?}",
+            msg
+        );
     }
 
     /// RX cap: poll() forwards at most MAX_RX_FRAMES_PER_POLL frames per call.

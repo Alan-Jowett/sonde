@@ -91,10 +91,7 @@ impl RxRing {
     fn pop_into(&mut self, buf: &mut [u8; ESPNOW_MAX_DATA_SIZE]) -> Option<usize> {
         if self.count == 0 {
             if self.drop_count > 0 {
-                log::warn!(
-                    "ESP-NOW recv ring: {} full drop(s)",
-                    self.drop_count,
-                );
+                log::warn!("ESP-NOW recv ring: {} full drop(s)", self.drop_count);
                 self.drop_count = 0;
             }
             return None;

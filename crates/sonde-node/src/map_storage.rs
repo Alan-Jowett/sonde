@@ -106,22 +106,26 @@ type MapData = RtcSlice;
 /// The wake-cycle engine is single-threaded, so no concurrent access
 /// can occur.
 ///
-/// `RtcSlice` is `!Send` and `!Sync`: `*mut u8` opts out of both auto-traits
-/// and `PhantomData<*const ()>` reinforces this. The compile-time assertions
-/// below (`AssertNotSend`, `AssertNotSync`) will produce a "conflicting
-/// implementations" error if this invariant is ever broken.
+/// `RtcSlice` is `!Send` and `!Sync`. In Rust, raw pointers (`*mut T`,
+/// `*const T`) explicitly opt out of `Send` and `Sync` via negative impls
+/// in `core` (`impl<T: ?Sized> !Send for *mut T {}`). The `*mut u8` field
+/// therefore makes `RtcSlice` `!Send`/`!Sync` automatically. The
+/// `PhantomData<*const ()>` marker reinforces this intent, and the
+/// compile-time assertions below verify it.
 #[cfg(feature = "esp")]
 pub(crate) struct RtcSlice {
     ptr: *mut u8,
     len: usize,
-    /// Marker to make `!Send`/`!Sync` intent explicit (raw pointer already
-    /// opts out, but this prevents accidental `unsafe impl Send` additions).
+    /// `*const ()` is `!Send`/`!Sync` (raw pointer negative impls in core).
+    /// `PhantomData` inherits auto-trait eligibility from its type parameter,
+    /// so this field opts `RtcSlice` out of both `Send` and `Sync`.
     _not_send_sync: PhantomData<*const ()>,
 }
 
-// Compile-time assertions: if `RtcSlice` ever gains `Send` or `Sync`, these
-// produce a "conflicting implementations" error because the blanket impl
-// would overlap with the explicit impl.
+// Compile-time assertions: `*mut u8` (and `PhantomData<*const ()>`) make
+// `RtcSlice` `!Send`/`!Sync`. The blanket impls below would conflict with
+// the explicit impls if `RtcSlice` ever gained `Send` or `Sync` (e.g. via
+// an accidental `unsafe impl Send`), causing a compile error.
 #[cfg(feature = "esp")]
 const _: () = {
     trait AssertNotSend {}
@@ -732,7 +736,6 @@ mod tests {
         assert_eq!(MapStorage::required_bytes(&defs), 336);
     }
 
-    #[test]
     #[test]
     fn test_map_budget_constant() {
         // MAP_BUDGET must be positive and large enough for at least one

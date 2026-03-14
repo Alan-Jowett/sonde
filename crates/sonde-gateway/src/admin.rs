@@ -403,6 +403,11 @@ impl GatewayAdmin for AdminService {
     /// The passphrase is used to derive the encryption key via
     /// PBKDF2-HMAC-SHA256.  Handler routing configuration is not included
     /// in the bundle (deferred to Phase 2C-iii).
+    ///
+    /// **Security note:** This RPC returns PSK material (encrypted with the
+    /// operator passphrase).  The admin gRPC endpoint MUST be bound to a
+    /// local-only transport (Unix socket / named pipe) or protected by
+    /// authentication before deployment.  See GW-0800 and security.md §2.3.
     async fn export_state(
         &self,
         request: Request<ExportStateRequest>,
@@ -423,12 +428,27 @@ impl GatewayAdmin for AdminService {
     /// Import gateway state from a bundle previously produced by `export_state`.
     ///
     /// Replaces the current node registry and program library with the bundle
-    /// contents.  Existing nodes and programs are removed before the bundle is
-    /// applied.  A fresh gateway with no active sessions is the intended target.
+    /// contents.  Rejects the request with `FAILED_PRECONDITION` if any node
+    /// sessions are active (the gateway should be quiescent before import).
+    /// Pending commands are cleared after a successful import to prevent stale
+    /// commands from being delivered to nodes whose records were replaced.
+    ///
+    /// **Security note:** see [`export_state`] — this RPC accepts key material
+    /// and should only be exposed on a local-only or authenticated transport.
     async fn import_state(
         &self,
         request: Request<ImportStateRequest>,
     ) -> Result<Response<Empty>, Status> {
+        // Reject import while sessions are active to avoid mixed in-memory
+        // and on-disk state.
+        let active = self.session_manager.active_count().await;
+        if active > 0 {
+            return Err(Status::failed_precondition(format!(
+                "cannot import state while {active} session(s) are active; \
+                 wait for sessions to expire or restart the gateway"
+            )));
+        }
+
         let req = request.into_inner();
         let (nodes, programs) =
             crate::state_bundle::decrypt_state(&req.data, &req.passphrase).map_err(bundle_err)?;
@@ -462,6 +482,9 @@ impl GatewayAdmin for AdminService {
         for node in &nodes {
             self.storage.upsert_node(node).await.map_err(storage_err)?;
         }
+
+        // Clear any pending commands queued for the old node set.
+        self.pending_commands.write().await.clear();
 
         Ok(Response::new(Empty {}))
     }

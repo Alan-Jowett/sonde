@@ -75,7 +75,7 @@ typedef signed long long        __s64;
 struct sonde_context {
     __u64 timestamp;             /**< UTC time in milliseconds since Unix epoch */
     __u16 battery_mv;            /**< Battery voltage in millivolts             */
-    __u16 firmware_abi_version;  /**< Firmware ABI version (stable across fw)   */
+    __u16 firmware_abi_version;  /**< Current firmware ABI version               */
     __u8  wake_reason;           /**< Why the node woke (see WAKE_* constants)  */
     __u8  _padding[3];           /**< Explicit padding; must be zero            */
 };
@@ -114,6 +114,9 @@ struct sonde_context {
  * Helper call numbers MUST match helper_ids in
  * crates/sonde-node/src/bpf_helpers.rs.
  *
+ * The __unused attribute suppresses -Wunused-variable for helpers that
+ * a given program does not call (e.g. nop.c uses none of them).
+ *
  * NOTE on gateway verification: the gateway currently verifies ELF files
  * using Prevail's LinuxPlatform (crates/sonde-gateway/src/program.rs).
  * Linux BPF assigns different semantics to helper IDs 1–16 than sonde does
@@ -124,6 +127,10 @@ struct sonde_context {
  * provided primarily as compilation examples and for use once a Sonde
  * Prevail platform is in place (GW-0400/GW-0401).
  * ---------------------------------------------------------------------- */
+
+/* Suppress -Wunused-variable for helpers not called by a given program. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
 
 /**
  * i2c_read — read bytes from an I2C device.
@@ -315,5 +322,7 @@ static int (*set_next_wake)(__u32 seconds) = (void *)15;
  * are used.
  */
 static int (*bpf_trace_printk)(const char *fmt, __u32 fmt_len, ...) = (void *)16;
+
+#pragma GCC diagnostic pop
 
 #endif /* SONDE_HELPERS_H */

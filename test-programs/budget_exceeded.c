@@ -46,5 +46,9 @@ int program(struct sonde_context *ctx)
     for (__s64 i = 0; i < ITERATIONS; i++) {
         sum += i;
     }
+    /* Return the computed sum (not 0) to keep the accumulator live and
+     * prevent clang from discarding the loop as dead code.  The program
+     * return value is currently unused by the node firmware (per
+     * bpf-environment.md §4), so the non-zero value is harmless. */
     return (__s32)sum;
 }

@@ -5,8 +5,10 @@
  * send_recv — sends a request to the gateway and waits for a reply.
  *
  * Demonstrates the request-response pattern using send_recv().  On success
- * the reply is echoed back to the gateway via send().  On timeout or error
- * a single-byte 0xFF error marker is sent instead.
+ * with a non-empty reply, the reply is echoed back to the gateway via
+ * send().  On timeout or error a single-byte 0xFF error marker is sent
+ * instead.  An empty reply (rc == 0) is a valid success case — no
+ * acknowledgement is sent.
  *
  * Corresponds to send_recv_program in docs/node-validation.md §2.4.
  */
@@ -47,6 +49,9 @@ int program(struct sonde_context *ctx)
      * Clamp rc to the buffer capacity as a defence-in-depth measure
      * in case a future ABI change allows send_recv() to report a
      * length exceeding the provided capacity.
+     *
+     * rc == 0 means the gateway replied with an empty payload — no
+     * acknowledgement is sent (there is nothing to echo).
      */
     if (rc > 0) {
         __u32 len = (__u32)rc;

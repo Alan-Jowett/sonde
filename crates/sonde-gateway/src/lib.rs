@@ -16,7 +16,10 @@ pub mod transport;
 pub use admin::AdminService;
 pub use crypto::{RustCryptoHmac, RustCryptoSha256};
 pub use engine::{Gateway, PendingCommand};
-pub use handler::{HandlerConfig, HandlerMessage, HandlerRouter, ProgramMatcher};
+pub use handler::{
+    load_handler_configs, HandlerConfig, HandlerConfigError, HandlerMessage, HandlerRouter,
+    ProgramMatcher,
+};
 pub use program::{ProgramLibrary, ProgramRecord, VerificationProfile};
 pub use registry::NodeRecord;
 pub use session::{Session, SessionManager, SessionState};

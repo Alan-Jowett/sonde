@@ -3,10 +3,12 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use ciborium::Value;
+use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
@@ -575,6 +577,106 @@ impl HandlerProcess {
     }
 }
 
+// --- Handler configuration file format ---
+
+/// Raw YAML entry: `program_hash` may be a single string, a list of strings,
+/// or the wildcard `"*"`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawProgramHash {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHandlerEntry {
+    program_hash: RawProgramHash,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHandlerConfigFile {
+    handlers: Vec<RawHandlerEntry>,
+}
+
+/// Error returned when the handler config file cannot be loaded or parsed.
+#[derive(Debug)]
+pub struct HandlerConfigError(pub String);
+
+impl std::fmt::Display for HandlerConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "handler config error: {}", self.0)
+    }
+}
+
+impl std::error::Error for HandlerConfigError {}
+
+/// Parse a hex string into bytes, returning an error on invalid input.
+fn parse_hex(s: &str) -> Result<Vec<u8>, HandlerConfigError> {
+    if !s.len().is_multiple_of(2) {
+        return Err(HandlerConfigError(format!(
+            "hex string has odd length: {s}"
+        )));
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|_| HandlerConfigError(format!("invalid hex character in: {s}")))
+        })
+        .collect()
+}
+
+/// Parse a single program_hash string into a `ProgramMatcher`.
+/// `"*"` becomes `ProgramMatcher::Any`; anything else is treated as hex bytes.
+fn parse_program_matcher(s: &str) -> Result<ProgramMatcher, HandlerConfigError> {
+    if s == "*" {
+        Ok(ProgramMatcher::Any)
+    } else {
+        parse_hex(s).map(ProgramMatcher::Hash)
+    }
+}
+
+/// Load handler configurations from a YAML file.
+///
+/// The expected format is:
+///
+/// ```yaml
+/// handlers:
+///   - program_hash: "a1b2c3..."
+///     command: "/usr/local/bin/my-app"
+///   - program_hash: ["7a8b9c...", "0d1e2f..."]
+///     command: "/usr/local/bin/multi-sensor-app"
+///   - program_hash: "*"
+///     command: "/usr/local/bin/default-handler"
+/// ```
+pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerConfigError> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| HandlerConfigError(format!("failed to read {}: {e}", path.display())))?;
+    let raw: RawHandlerConfigFile = serde_yaml_ng::from_str(&content)
+        .map_err(|e| HandlerConfigError(format!("failed to parse {}: {e}", path.display())))?;
+
+    raw.handlers
+        .into_iter()
+        .map(|entry| {
+            let matchers = match entry.program_hash {
+                RawProgramHash::Single(s) => vec![parse_program_matcher(&s)?],
+                RawProgramHash::Multiple(hashes) => hashes
+                    .into_iter()
+                    .map(|h| parse_program_matcher(&h))
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
+            Ok(HandlerConfig {
+                matchers,
+                command: entry.command,
+                args: entry.args,
+            })
+        })
+        .collect()
+}
+
 // --- HandlerRouter ---
 
 pub struct HandlerRouter {
@@ -854,5 +956,134 @@ mod tests {
         assert_eq!(router.find_handler(&[0xAA]), Some(0));
         assert_eq!(router.find_handler(&[0xBB]), Some(0));
         assert_eq!(router.find_handler(&[0xCC]), None);
+    }
+
+    // --- load_handler_configs tests ---
+
+    #[test]
+    fn test_load_handler_configs_single_hash() {
+        let yaml = r#"
+handlers:
+  - program_hash: "aabb"
+    command: "/usr/bin/handler"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handlers.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let configs = load_handler_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].command, "/usr/bin/handler");
+        assert!(configs[0].args.is_empty());
+        assert_eq!(configs[0].matchers.len(), 1);
+        match &configs[0].matchers[0] {
+            ProgramMatcher::Hash(h) => assert_eq!(h, &[0xaa, 0xbb]),
+            _ => panic!("expected Hash matcher"),
+        }
+    }
+
+    #[test]
+    fn test_load_handler_configs_catch_all() {
+        let yaml = r#"
+handlers:
+  - program_hash: "*"
+    command: "/usr/bin/default"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handlers.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let configs = load_handler_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert!(matches!(configs[0].matchers[0], ProgramMatcher::Any));
+    }
+
+    #[test]
+    fn test_load_handler_configs_multiple_hashes() {
+        let yaml = r#"
+handlers:
+  - program_hash: ["aabb", "ccdd"]
+    command: "/usr/bin/multi"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handlers.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let configs = load_handler_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].matchers.len(), 2);
+        match &configs[0].matchers[0] {
+            ProgramMatcher::Hash(h) => assert_eq!(h, &[0xaa, 0xbb]),
+            _ => panic!("expected Hash matcher"),
+        }
+        match &configs[0].matchers[1] {
+            ProgramMatcher::Hash(h) => assert_eq!(h, &[0xcc, 0xdd]),
+            _ => panic!("expected Hash matcher"),
+        }
+    }
+
+    #[test]
+    fn test_load_handler_configs_with_args() {
+        let yaml = r#"
+handlers:
+  - program_hash: "aabb"
+    command: "/usr/bin/handler"
+    args: ["--verbose", "--output=/tmp/out"]
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handlers.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let configs = load_handler_configs(&path).unwrap();
+        assert_eq!(configs[0].args, vec!["--verbose", "--output=/tmp/out"]);
+    }
+
+    #[test]
+    fn test_load_handler_configs_multiple_handlers() {
+        let yaml = r#"
+handlers:
+  - program_hash: "a1b2c3"
+    command: "/usr/local/bin/soil-moisture-app"
+  - program_hash: "d4e5f6"
+    command: "/usr/local/bin/temperature-alert-app"
+  - program_hash: ["7a8b9c", "0d1e2f"]
+    command: "/usr/local/bin/multi-sensor-app"
+  - program_hash: "*"
+    command: "/usr/local/bin/default-handler"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handlers.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let configs = load_handler_configs(&path).unwrap();
+        assert_eq!(configs.len(), 4);
+        assert_eq!(configs[0].command, "/usr/local/bin/soil-moisture-app");
+        assert_eq!(configs[1].command, "/usr/local/bin/temperature-alert-app");
+        assert_eq!(configs[2].command, "/usr/local/bin/multi-sensor-app");
+        assert_eq!(configs[2].matchers.len(), 2);
+        assert_eq!(configs[3].command, "/usr/local/bin/default-handler");
+        assert!(matches!(configs[3].matchers[0], ProgramMatcher::Any));
+    }
+
+    #[test]
+    fn test_load_handler_configs_invalid_hex() {
+        let yaml = r#"
+handlers:
+  - program_hash: "zzzz"
+    command: "/usr/bin/handler"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handlers.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let result = load_handler_configs(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().0.contains("invalid hex"));
+    }
+
+    #[test]
+    fn test_load_handler_configs_file_not_found() {
+        let result = load_handler_configs(std::path::Path::new("/nonexistent/path.yaml"));
+        assert!(result.is_err());
     }
 }

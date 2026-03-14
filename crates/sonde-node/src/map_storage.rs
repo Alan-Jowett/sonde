@@ -23,10 +23,9 @@ pub const MAP_BUDGET: usize = 4 * 1024;
 
 /// Maximum number of BPF maps a single program may define.
 ///
-/// Constrains the RTC layout record (`MAP_LAYOUT`) so it fits in RTC slow
-/// SRAM without heap allocation.  A single program is very unlikely to need
-/// more than 16 distinct maps.
-pub const MAX_MAPS: usize = 16;
+/// Re-exported from [`bpf_dispatch`](crate::bpf_dispatch) to ensure the RTC
+/// layout record and the dispatch-time pointer index share one source of truth.
+pub use crate::bpf_dispatch::MAX_MAPS;
 
 /// Static backing buffer for all BPF map data.
 ///
@@ -110,8 +109,7 @@ type MapData = RtcSlice;
 /// `*const T`) explicitly opt out of `Send` and `Sync` via negative impls
 /// in `core` (`impl<T: ?Sized> !Send for *mut T {}`). The `*mut u8` field
 /// therefore makes `RtcSlice` `!Send`/`!Sync` automatically. The
-/// `PhantomData<*const ()>` marker reinforces this intent, and the
-/// compile-time assertions below verify it.
+/// `PhantomData<*const ()>` marker reinforces this intent.
 #[cfg(feature = "esp")]
 pub(crate) struct RtcSlice {
     ptr: *mut u8,
@@ -411,7 +409,7 @@ impl MapStorage {
     /// are compatible with this platform. Rejects zero-entry and zero-value-size
     /// maps because they produce duplicate `data_ptr()` values.
     pub fn validate_map_defs(map_defs: &[MapDef]) -> NodeResult<()> {
-        if map_defs.len() > crate::bpf_dispatch::MAX_MAPS {
+        if map_defs.len() > MAX_MAPS {
             return Err(NodeError::ProgramDecodeFailed(
                 "program defines too many maps (exceeds MAX_MAPS)",
             ));

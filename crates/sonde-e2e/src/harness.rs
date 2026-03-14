@@ -463,10 +463,13 @@ pub struct ChannelTransport {
 }
 
 impl ChannelTransport {
-    /// Reset per-cycle tracking counters.
+    /// Reset per-cycle tracking counters and drain any stale inbound
+    /// frames so they don't leak into the next wake cycle.
     pub fn reset_stats(&mut self) {
         self.wake_nonces.clear();
         self.sent_frames.clear();
+        let rx = self.rx.lock().unwrap();
+        while rx.try_recv().is_ok() {}
     }
 
     /// Nonces from WAKE frames sent during the last cycle.

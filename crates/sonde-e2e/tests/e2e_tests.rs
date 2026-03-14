@@ -600,9 +600,9 @@ async fn t_e2e_052_bridged_consecutive_cycles() {
         "second cycle should send at least one WAKE"
     );
 
-    // Assert full nonce list disjointness — not just the first nonce.
-    // A cycle may send multiple WAKE frames (retries), so checking only
-    // the first nonce could miss a collision in later attempts.
+    // Assert full nonce list disjointness.  Retries within a single cycle
+    // reuse the same nonce, so in practice each list has one entry — this
+    // check primarily guards against the RNG repeating across cycles.
     for n1 in &stats1.wake_nonces {
         for n2 in &stats2.wake_nonces {
             assert_ne!(n1, n2, "nonce collision between cycles: 0x{:016x}", n1);

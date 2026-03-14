@@ -1051,7 +1051,8 @@ mod tests {
             Ok(())
         }
         fn read_program(&self, partition: u8) -> Option<Vec<u8>> {
-            self.read_program_count.set(self.read_program_count.get() + 1);
+            self.read_program_count
+                .set(self.read_program_count.get() + 1);
             self.programs[partition as usize].clone()
         }
         fn write_program(&mut self, partition: u8, image: &[u8]) -> NodeResult<()> {
@@ -3000,14 +3001,8 @@ mod tests {
         let image_cbor = image.encode_deterministic().unwrap();
 
         let mut transport = MockTransport::new();
-        let command_frame = build_command_response(
-            &psk,
-            key_hint,
-            1,
-            1000,
-            1710000000000,
-            CommandPayload::Nop,
-        );
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
         transport.queue_response(Some(command_frame));
 
         let mut storage = MockStorage::new().with_key(key_hint, psk);

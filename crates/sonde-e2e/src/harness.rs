@@ -262,7 +262,7 @@ impl NodeProxy {
         });
 
         pump_stop.store(true, Ordering::Relaxed);
-        let _ = pump.await;
+        pump.await.expect("gateway pump task panicked");
 
         WakeCycleStats {
             outcome,
@@ -382,7 +382,9 @@ struct ChannelRadio {
 
 impl Radio for ChannelRadio {
     fn send(&mut self, _peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
-        let _ = self.to_node.send(data.to_vec());
+        self.to_node
+            .send(data.to_vec())
+            .expect("ChannelRadio: node receiver dropped — test wiring broken");
     }
 
     fn drain_rx(&self) -> Vec<RecvFrame> {
@@ -738,7 +740,7 @@ async fn run_gateway_pump(
                     let _ = transport.send(&response, &peer).await;
                 }
             }
-            Ok(Err(_)) => break,
+            Ok(Err(e)) => panic!("gateway pump: transport recv failed: {e:?}"),
             Err(_) => {} // timeout — keep looping
         }
     }

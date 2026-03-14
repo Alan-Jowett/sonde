@@ -154,15 +154,37 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
     Ok(())
 }
 
-/// Verify that the provided master key can decrypt an existing PSK row.
+/// Verify that the provided master key can decrypt an existing PSK row and
+/// that every PSK blob in the database has an expected length.
 ///
 /// This is called during [`SqliteStorage::open`] after legacy migration to catch
 /// a wrong master key as early as possible — at startup — rather than silently
 /// accepting the database and producing decryption errors on every node read.
 ///
-/// If no encrypted PSK rows exist yet (new or empty database) the function
-/// returns `Ok(())` since there is nothing to validate against.
+/// The function also rejects databases that contain PSK blobs with unexpected
+/// lengths (neither 32-byte legacy plaintext nor [`ENCRYPTED_PSK_LEN`]-byte
+/// encrypted), which would indicate corruption or tampering.
+///
+/// If no PSK rows exist yet (new or empty database) the function returns
+/// `Ok(())` since there is nothing to validate against.
 fn validate_master_key(conn: &Connection, master_key: &[u8; 32]) -> Result<(), StorageError> {
+    // Reject any PSK blobs with unexpected lengths.
+    let bad_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE LENGTH(psk) != ?1 AND LENGTH(psk) != 32",
+            params![ENCRYPTED_PSK_LEN as i64],
+            |row| row.get(0),
+        )
+        .map_err(map_err)?;
+    if bad_count > 0 {
+        return Err(StorageError::Internal(format!(
+            "master key validation failed — {bad_count} node(s) have PSK blobs with \
+             unexpected lengths (expected 32 or {ENCRYPTED_PSK_LEN} bytes); \
+             database may be corrupt or tampered with",
+        )));
+    }
+
+    // Try to decrypt one encrypted row to verify the master key.
     let psk_row: Option<(String, Vec<u8>)> = conn
         .query_row(
             "SELECT node_id, psk FROM nodes WHERE LENGTH(psk) = ?1 LIMIT 1",

@@ -99,14 +99,15 @@ pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
 ) {
     // Pre-compute the PAIRING_READY frame once to avoid repeated
     // heap allocations during the idle re-send loop.
-    let ready_frame = pairing_ready_frame();
+    let ready_frame = match pairing_ready_frame() {
+        Some(frame) => frame,
+        None => return, // Encoding failed — caller should reboot.
+    };
 
     // Send PAIRING_READY on connection. Treat write errors as
     // disconnect — if the port is not functional, exit immediately.
-    if let Some(ref frame) = ready_frame {
-        if serial.write(frame).is_err() {
-            return;
-        }
+    if serial.write(&ready_frame).is_err() {
+        return;
     }
 
     let mut decoder = FrameDecoder::new();
@@ -120,12 +121,8 @@ pub fn run_pairing_mode<S: PlatformStorage, P: PairingSerial>(
                 // Timeout with no data — re-send PAIRING_READY
                 // periodically so a host that connects later discovers us.
                 idle_ticks += 1;
-                if idle_ticks.is_multiple_of(2) {
-                    if let Some(ref frame) = ready_frame {
-                        if serial.write(frame).is_err() {
-                            return;
-                        }
-                    }
+                if idle_ticks.is_multiple_of(2) && serial.write(&ready_frame).is_err() {
+                    return;
                 }
                 continue;
             }

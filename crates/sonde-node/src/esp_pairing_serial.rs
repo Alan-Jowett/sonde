@@ -21,12 +21,15 @@ const RX_BUF_SIZE: u32 = 256;
 
 /// Convert milliseconds to FreeRTOS ticks.
 ///
-/// ESP-IDF v5.x defaults to `configTICK_RATE_HZ = 1000` (1 ms/tick).
-/// We use this default directly since `portTICK_PERIOD_MS` is a C macro
-/// that may not be exported by all `esp-idf-sys` bindgen configurations.
+/// Uses the sdkconfig `configTICK_RATE_HZ` value (1000 Hz by default
+/// in our `sdkconfig.defaults`). If the tick rate changes, update this
+/// constant to match. We avoid `portTICK_PERIOD_MS` because it is a C
+/// macro not reliably exported by all `esp-idf-sys` bindgen versions.
 /// Rounds up to ensure non-zero ms always yields at least 1 tick.
 fn ms_to_ticks(ms: u32) -> u32 {
-    const TICK_PERIOD_MS: u32 = 1; // 1000 Hz tick rate
+    // Must match CONFIG_FREERTOS_HZ in sdkconfig (default: 1000).
+    const TICK_RATE_HZ: u32 = 1000;
+    const TICK_PERIOD_MS: u32 = 1000 / TICK_RATE_HZ;
     if ms == 0 {
         return 0;
     }
@@ -110,9 +113,11 @@ impl PairingSerial for EspUsbSerialJtag {
                 return Err(NodeError::Transport("USB Serial/JTAG write error".into()));
             }
             if n == 0 {
-                // Timeout — host not reading. Return error so caller
-                // knows the frame was not fully delivered.
-                return Err(NodeError::Transport("USB Serial/JTAG write timeout".into()));
+                // Timeout — host not reading yet. Return Ok so the
+                // pairing loop continues instead of interpreting this
+                // as a disconnect. The frame is silently dropped; the
+                // loop will re-send PAIRING_READY on the next idle tick.
+                return Ok(());
             }
             remaining = &remaining[n as usize..];
         }

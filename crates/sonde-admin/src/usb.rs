@@ -222,7 +222,7 @@ fn read_message(
                 // ROM bootloader or console log garbage can produce
                 // spurious large-frame errors. Reset the decoder and
                 // keep trying — the next valid frame will sync up.
-                *decoder = FrameDecoder::new();
+                decoder.reset();
                 continue;
             }
             Err(e) => return Err(format!("decode: {}", e)),

@@ -314,6 +314,9 @@ fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
 /// neither is set.
 fn resolve_passphrase(arg: &Option<String>) -> Result<String, String> {
     if let Some(p) = arg {
+        if p.is_empty() {
+            return Err("passphrase must not be empty".into());
+        }
         return Ok(p.clone());
     }
     eprint!("Passphrase: ");

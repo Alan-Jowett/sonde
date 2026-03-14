@@ -814,4 +814,56 @@ mod tests {
             );
         }
     }
+
+    /// Verify that opening an existing database that predates the `abi_version`
+    /// column applies the migration and continues to work correctly.
+    #[tokio::test]
+    async fn test_abi_version_migration() {
+        use rusqlite::Connection;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("old.db");
+
+        // Create a "legacy" database without the abi_version column.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS programs (
+                    hash BLOB PRIMARY KEY,
+                    image BLOB NOT NULL,
+                    size INTEGER NOT NULL,
+                    verification_profile TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO programs (hash, image, size, verification_profile) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![vec![0x01u8; 32], vec![0x02u8; 4], 4i64, "Resident"],
+            )
+            .unwrap();
+        }
+
+        // Open with SqliteStorage — migration should add abi_version column.
+        let store = SqliteStorage::open(&db_path, TEST_MASTER_KEY).unwrap();
+
+        // The migrated row has abi_version = NULL (i.e., None).
+        let prog = store
+            .get_program(&vec![0x01u8; 32])
+            .await
+            .unwrap()
+            .expect("program must survive migration");
+        assert_eq!(
+            prog.abi_version, None,
+            "migrated rows must have abi_version = None"
+        );
+
+        // Writing and reading a new program with abi_version works.
+        let mut new_prog = make_program(0x42);
+        new_prog.abi_version = Some(2);
+        store.store_program(&new_prog).await.unwrap();
+        let fetched = store.get_program(&new_prog.hash).await.unwrap().unwrap();
+        assert_eq!(fetched.abi_version, Some(2));
+    }
 }

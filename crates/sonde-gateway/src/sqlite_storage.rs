@@ -406,6 +406,81 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    async fn replace_state(
+        &self,
+        nodes: &[NodeRecord],
+        programs: &[ProgramRecord],
+    ) -> Result<(), StorageError> {
+        let nodes = nodes.to_vec();
+        let programs = programs.to_vec();
+        self.with_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
+
+            let result = (|| -> Result<(), StorageError> {
+                conn.execute("DELETE FROM nodes", []).map_err(map_err)?;
+                conn.execute("DELETE FROM programs", []).map_err(map_err)?;
+
+                for record in &programs {
+                    let profile_str = match record.verification_profile {
+                        VerificationProfile::Resident => "resident",
+                        VerificationProfile::Ephemeral => "ephemeral",
+                    };
+                    conn.execute(
+                        "INSERT INTO programs (hash, image, size, verification_profile, abi_version) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            &record.hash,
+                            &record.image,
+                            record.size,
+                            profile_str,
+                            record.abi_version,
+                        ],
+                    )
+                    .map_err(map_err)?;
+                }
+
+                for record in &nodes {
+                    let last_seen_epoch: Option<i64> = record.last_seen.map(|t| {
+                        t.duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0)
+                    });
+                    conn.execute(
+                        "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
+                         current_program_hash, schedule_interval_s, firmware_abi_version, \
+                         last_battery_mv, last_seen_epoch_s) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![
+                            &record.node_id,
+                            record.key_hint,
+                            record.psk.as_slice(),
+                            record.assigned_program_hash.as_deref(),
+                            record.current_program_hash.as_deref(),
+                            record.schedule_interval_s,
+                            record.firmware_abi_version,
+                            record.last_battery_mv,
+                            last_seen_epoch,
+                        ],
+                    )
+                    .map_err(map_err)?;
+                }
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => {
+                    conn.execute_batch("COMMIT").map_err(map_err)?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

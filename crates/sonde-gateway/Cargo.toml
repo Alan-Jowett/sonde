@@ -12,6 +12,7 @@ hmac = "0.12"
 sha2 = "0.10"
 async-trait = "0.1"
 rand = "0.10"
+getrandom = "0.3"
 ciborium = "0.2"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
@@ -29,7 +30,7 @@ tokio-stream = "0.1"
 futures = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml_ng = "0.10.0"
-zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+zeroize = "1.8.2"
 
 [[bin]]
 name = "sonde-gateway"

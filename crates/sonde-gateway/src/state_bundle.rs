@@ -110,13 +110,12 @@ pub fn encrypt_state(
 
     let plaintext = Zeroizing::new(encode_cbor(nodes, programs)?);
 
-    // Random salt and nonce via rand's thread-local CSPRNG (ChaCha12, seeded
-    // from OS entropy in rand 0.10) — unique per export to prevent key/nonce
-    // reuse.
+    // Random salt and nonce via OS CSPRNG — unique per export to prevent
+    // key/nonce reuse.
     let mut salt = [0u8; SALT_LEN];
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::fill(&mut salt);
-    rand::fill(&mut nonce_bytes);
+    getrandom::fill(&mut salt).map_err(|_| BundleError::Crypto)?;
+    getrandom::fill(&mut nonce_bytes).map_err(|_| BundleError::Crypto)?;
 
     let key = Zeroizing::new(derive_key(passphrase, &salt));
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
@@ -435,7 +434,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let last_seen = last_seen_epoch_s
         .flatten()
         .filter(|&s| s >= 0)
-        .map(|s| UNIX_EPOCH + Duration::from_secs(s as u64));
+        .and_then(|s| UNIX_EPOCH.checked_add(Duration::from_secs(s as u64)));
 
     // Validate hash fields if present: must be 32 bytes (SHA-256).
     if let Some(Some(ref h)) = assigned_program_hash {
@@ -543,10 +542,12 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
             hash.len()
         )));
     }
-    if size != image.len() as u32 {
+    let image_len = u32::try_from(image.len()).map_err(|_| {
+        BundleError::Decode(format!("program image too large: {} bytes", image.len()))
+    })?;
+    if size != image_len {
         return Err(BundleError::Decode(format!(
-            "program size field ({size}) does not match image length ({})",
-            image.len()
+            "program size field ({size}) does not match image length ({image_len})"
         )));
     }
 

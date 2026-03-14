@@ -45,6 +45,33 @@ pub trait Storage: Send + Sync {
     async fn store_program(&self, record: &ProgramRecord) -> Result<(), StorageError>;
     async fn delete_program(&self, hash: &[u8]) -> Result<(), StorageError>;
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError>;
+
+    /// Atomically replace all nodes and programs with the given sets.
+    ///
+    /// Implementations should perform the replacement in a single transaction
+    /// where possible. The default implementation is non-atomic (delete-then-insert).
+    async fn replace_state(
+        &self,
+        nodes: &[NodeRecord],
+        programs: &[ProgramRecord],
+    ) -> Result<(), StorageError> {
+        // Default: non-atomic fallback for backends that don't support transactions.
+        let existing_nodes = self.list_nodes().await?;
+        for n in existing_nodes {
+            self.delete_node(&n.node_id).await?;
+        }
+        let existing_programs = self.list_programs().await?;
+        for p in existing_programs {
+            self.delete_program(&p.hash).await?;
+        }
+        for program in programs {
+            self.store_program(program).await?;
+        }
+        for node in nodes {
+            self.upsert_node(node).await?;
+        }
+        Ok(())
+    }
 }
 
 /// In-memory storage backend for testing.

@@ -104,9 +104,13 @@ fn decrypt_psk(
 fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(), StorageError> {
     use zeroize::Zeroize;
 
-    // Collect only node_ids that need migration — avoids buffering plaintext
-    // PSK material for the entire registry in memory at once.
-    let legacy_ids: Vec<String> = conn
+    let tx = conn
+        .transaction()
+        .map_err(|e| StorageError::Internal(format!("begin migration tx: {e}")))?;
+
+    // Collect only node_ids so plaintext PSK material is never buffered for
+    // more than one row at a time.
+    let legacy_ids: Vec<String> = tx
         .prepare("SELECT node_id FROM nodes WHERE LENGTH(psk) = 32")
         .map_err(map_err)
         .and_then(|mut stmt| {
@@ -116,15 +120,7 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
                 .map_err(map_err)
         })?;
 
-    if legacy_ids.is_empty() {
-        return Ok(());
-    }
-
-    let tx = conn
-        .transaction()
-        .map_err(|e| StorageError::Internal(format!("begin migration tx: {e}")))?;
     for node_id in &legacy_ids {
-        // Fetch the single plaintext PSK for this node inside the transaction.
         let mut psk_blob: Vec<u8> = tx
             .query_row(
                 "SELECT psk FROM nodes WHERE node_id = ?1",
@@ -132,7 +128,6 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
                 |row| row.get(0),
             )
             .map_err(map_err)?;
-        // SQL WHERE clause in the outer query guarantees LENGTH(psk) = 32.
         let mut psk: [u8; 32] = psk_blob
             .as_slice()
             .try_into()
@@ -147,6 +142,7 @@ fn migrate_legacy_psks(conn: &mut Connection, master_key: &[u8; 32]) -> Result<(
         )
         .map_err(map_err)?;
     }
+
     tx.commit()
         .map_err(|e| StorageError::Internal(format!("commit migration tx: {e}")))?;
     Ok(())

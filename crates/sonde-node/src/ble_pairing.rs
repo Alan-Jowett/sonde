@@ -203,14 +203,6 @@ pub fn handle_node_provision<S: PlatformStorage>(
         return NODE_ACK_STORAGE_ERROR;
     }
 
-    // Persist the RF channel.
-    if storage.write_channel(provision.rf_channel).is_err() {
-        // Rollback: erase the key we just wrote so no partial credentials
-        // remain in NVS (ND-0908).
-        let _ = storage.erase_key();
-        return NODE_ACK_STORAGE_ERROR;
-    }
-
     // Persist the opaque encrypted payload for PEER_REQUEST (ND-0916).
     if storage
         .write_peer_payload(&provision.encrypted_payload)
@@ -223,6 +215,15 @@ pub fn handle_node_provision<S: PlatformStorage>(
     // Clear the registration-complete flag so the next boot enters the
     // PEER_REQUEST path instead of the normal WAKE cycle (ND-0906).
     if storage.write_reg_complete(false).is_err() {
+        let _ = storage.erase_key();
+        let _ = storage.erase_peer_payload();
+        return NODE_ACK_STORAGE_ERROR;
+    }
+
+    // Persist the RF channel last so a failure in any earlier write does
+    // not leave a stale channel value that could leak across pairing
+    // attempts (ND-0908).
+    if storage.write_channel(provision.rf_channel).is_err() {
         let _ = storage.erase_key();
         let _ = storage.erase_peer_payload();
         return NODE_ACK_STORAGE_ERROR;
@@ -664,7 +665,7 @@ mod tests {
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
     }
 
-    /// T-N907 variant: write_channel failure → NODE_ACK(0x02), key rolled back.
+    /// T-N907 variant: write_channel failure → NODE_ACK(0x02), key+payload rolled back.
     #[test]
     fn t_n907_nvs_write_channel_failure() {
         let mut storage = MockStorage::new();
@@ -674,8 +675,9 @@ mod tests {
 
         let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
-        // Key must be rolled back — no partial credentials (ND-0908)
+        // Key and peer_payload must be rolled back (ND-0908)
         assert!(storage.read_key().is_none());
+        assert!(storage.read_peer_payload().is_none());
     }
 
     /// T-N907 variant: write_peer_payload failure → NODE_ACK(0x02), key rolled back.

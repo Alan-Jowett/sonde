@@ -79,7 +79,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     //
     // For now, log a warning so the boot sequence can be exercised in QEMU
     // and on hardware without a host BLE controller.
-    warn!("BLE pairing mode: BLE GATT server not yet implemented; sleeping before return");
+    warn!("BLE pairing mode: BLE GATT server not yet implemented; entering deep sleep");
 
     // Suppress unused-import warnings while the stub is in place.
     let _ = (
@@ -91,9 +91,10 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         NODE_ACK_STORAGE_ERROR,
     );
 
-    // Sleep for a short backoff so the caller can reboot or deep-sleep
-    // without creating a tight reboot loop.  Once the real BLE GATT server
-    // is implemented this sleep will be replaced by the event-driven GATT
-    // loop.
-    std::thread::sleep(std::time::Duration::from_secs(30));
+    // Block indefinitely until the real BLE GATT server is implemented.
+    // This prevents the caller from rebooting immediately and creating a
+    // battery-draining reboot loop on unpaired nodes.
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
 }

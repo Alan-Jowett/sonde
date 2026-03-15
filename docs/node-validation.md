@@ -934,8 +934,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Provision node; let it transmit PEER_REQUEST.
 2. Do not send PEER_ACK.
-3. Assert: node listens for 10 seconds after transmission.
-4. Assert: node enters deep sleep after the 10-second timeout.
+3. Assert: node listens for at least 10 seconds (±500 ms) after end of PEER_REQUEST transmission.
+4. Assert: node enters deep sleep after the listen window expires.
 
 ---
 

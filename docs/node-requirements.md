@@ -867,12 +867,12 @@ The node MUST transmit PEER_REQUEST on each boot until it receives a valid PEER_
 **Source:** ble-pairing-protocol.md §8.3
 
 **Description:**  
-After transmitting a PEER_REQUEST the node MUST listen for a PEER_ACK for 10 seconds. On timeout the node MUST enter deep sleep and retry on the next wake.
+After transmitting a PEER_REQUEST the node MUST listen for a PEER_ACK for at least 10 seconds (measured from the end of the PEER_REQUEST transmission). On timeout the node MUST enter deep sleep and retry on the next wake.
 
 **Acceptance criteria:**
 
-1. The node listens for exactly 10 seconds after sending PEER_REQUEST.
-2. If no PEER_ACK arrives within 10 seconds the node enters deep sleep.
+1. The node listens for at least 10 seconds (±500 ms tolerance for FreeRTOS tick resolution) after completing PEER_REQUEST transmission.
+2. If no PEER_ACK arrives within the listen window the node enters deep sleep.
 
 ---
 

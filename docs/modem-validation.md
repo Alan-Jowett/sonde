@@ -357,7 +357,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ## 8  BLE pairing relay tests
 
-### T-0600  Gateway Pairing Service advertisement
+### T-0600  Gateway Pairing Service lifecycle
 
 **Validates:** MD-0407, MD-0412, MD-0413
 
@@ -371,6 +371,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 7. Connect a BLE client to the modem, then disconnect.
 8. Scan for BLE advertisements again.
 9. Assert: Gateway Pairing Service UUID is advertised again after disconnect (BLE still enabled).
+
+> **Note:** This test consolidates the default-off (T-0617), enable (T-0618), and post-disconnect re-advertisement assertions into a single lifecycle test. T-0617 and T-0618 are subsumed by this test.
 
 ---
 
@@ -450,16 +452,17 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
-### T-0607  BLE LESC pairing
+### T-0607  BLE LESC Numeric Comparison — link establishment
 
-**Validates:** MD-0404, MD-0414
+**Validates:** MD-0404
 
 **Procedure:**
 1. Send `BLE_ENABLE`. Connect to modem via BLE and initiate LESC Numeric Comparison pairing.
 2. Assert: `BLE_PAIRING_CONFIRM` received on gateway side with a 6-digit passkey.
 3. Send `BLE_PAIRING_CONFIRM_REPLY(0x01)` (accept).
-4. Assert: pairing succeeds and the link is encrypted.
-5. Assert: `BLE_CONNECTED` received on gateway side.
+4. Assert: pairing succeeds, link is encrypted, and `BLE_CONNECTED` received.
+
+> **Note:** This test validates link establishment only. Pin relay accept/reject/timeout semantics are covered by T-0620, T-0621, and T-0622 (MD-0414).
 
 ---
 
@@ -693,7 +696,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0604 | USB-CDC → BLE indication relay | MD-0401 |
 | T-0605 | Indication fragmentation | MD-0403 |
 | T-0606 | Opaque relay (no content inspection) | MD-0401 |
-| T-0607 | BLE LESC pairing | MD-0404, MD-0414 |
+| T-0607 | BLE LESC Numeric Comparison — link establishment | MD-0404 |
 | T-0608 | BLE disconnect cleanup | MD-0405 |
 | T-0609 | BLE and ESP-NOW concurrent operation | MD-0405 |
 | T-0609a | Second BLE connection rejected while one is active | MD-0405 |
@@ -706,8 +709,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0614 | BLE_CONNECTED notification | MD-0410 |
 | T-0615 | BLE_DISCONNECTED notification | MD-0411 |
 | T-0616 | BLE relay round-trip | MD-0408, MD-0409 |
-| T-0617 | BLE advertising off by default | MD-0412 |
-| T-0618 | BLE_ENABLE starts advertising | MD-0413 |
+| T-0617 | *(Subsumed by T-0600)* | MD-0412 |
+| T-0618 | *(Subsumed by T-0600)* | MD-0413 |
 | T-0619 | BLE_DISABLE stops advertising and disconnects | MD-0413 |
 | T-0620 | Numeric Comparison pin relay | MD-0414 |
 | T-0621 | Numeric Comparison rejected | MD-0414 |

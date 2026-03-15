@@ -389,6 +389,17 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0602a  MTU negotiation below minimum rejected
+
+**Validates:** MD-0402
+
+**Procedure:**
+1. Connect to modem via BLE and force a low MTU (e.g., 185).
+2. Assert: modem rejects or disconnects the BLE connection.
+3. Assert: no `BLE_CONNECTED` event is sent to the gateway.
+
+---
+
 ### T-0603  BLE write → USB-CDC relay
 
 **Validates:** MD-0401
@@ -463,6 +474,18 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 1. Establish a BLE connection and start a GATT write/indicate exchange.
 2. Simultaneously send ESP-NOW frames through the modem.
 3. Assert: both BLE and ESP-NOW operations complete successfully without interference.
+
+---
+
+### T-0609a  Second BLE connection rejected while one is active
+
+**Validates:** MD-0405
+
+**Procedure:**
+1. Connect a first phone via BLE. Confirm `BLE_CONNECTED` received on gateway side.
+2. Attempt to connect a second BLE client to the Gateway Pairing Service.
+3. Assert: the second connection is rejected or queued — only one concurrent BLE client is supported.
+4. Assert: the first connection continues to operate normally.
 
 ---
 
@@ -572,6 +595,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0600 | Gateway Pairing Service advertisement | MD-0407 |
 | T-0601 | BLE GATT characteristic setup | MD-0400 |
 | T-0602 | MTU negotiation ≥ 247 | MD-0402 |
+| T-0602a | MTU negotiation below minimum rejected | MD-0402 |
 | T-0603 | BLE write → USB-CDC relay | MD-0401 |
 | T-0604 | USB-CDC → BLE indication relay | MD-0401 |
 | T-0605 | Indication fragmentation | MD-0403 |
@@ -579,6 +603,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0607 | BLE LESC pairing | MD-0404 |
 | T-0608 | BLE disconnect cleanup | MD-0405 |
 | T-0609 | BLE and ESP-NOW concurrent operation | MD-0405 |
+| T-0609a | Second BLE connection rejected while one is active | MD-0405 |
 | T-0610 | BLE connection notification (if implemented) | MD-0406 |
 | T-0611 | BLE_INDICATE relay to phone | MD-0408 |
 | T-0612 | BLE_INDICATE with no BLE client | MD-0408 |

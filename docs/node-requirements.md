@@ -693,7 +693,7 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 **Source:** ble-pairing-protocol.md §8.1
 
 **Description:**  
-On boot the node MUST check, in order: (1) USB-CDC connected → enter USB pairing mode, (2) no PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode, (3) PSK stored and `reg-complete` NOT set → send PEER_REQUEST, (4) PSK stored and `reg-complete` set → normal WAKE cycle.
+On boot the node MUST check, in order: (1) USB-CDC connected → enter USB pairing mode, (2) no PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode, (3) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (4) PSK stored and `reg_complete` flag set → normal WAKE cycle.  (The `reg_complete` NVS key is defined in ND-0916.)
 
 **Acceptance criteria:**
 
@@ -786,12 +786,12 @@ On a NODE_PROVISION write the node MUST parse the fields `node_key_hint`, `node_
 **Source:** ble-pairing-protocol.md §8.2, steps 4d–4f
 
 **Description:**  
-On a valid NODE_PROVISION the node MUST write `node_psk`, `node_key_hint`, `rf_channel`, and `encrypted_payload` to NVS, clear the `registration-complete` flag, and respond with NODE_ACK(0x00).
+On a valid NODE_PROVISION the node MUST write the node PSK (NVS key `psk`), key hint (NVS key `key_hint`), RF channel (NVS key `channel`), and encrypted payload (NVS key `peer_payload`) to NVS, clear the registration-complete flag (NVS key `reg_complete`), and respond with NODE_ACK(0x00).  See ND-0916 for the complete NVS key mapping.
 
 **Acceptance criteria:**
 
-1. All four values are persisted in NVS.
-2. The `registration-complete` flag is cleared.
+1. All four values are persisted in NVS under the keys defined in ND-0916.
+2. The `reg_complete` flag is cleared (set to 0).
 3. The node responds with NODE_ACK(0x00).
 
 ---
@@ -832,7 +832,7 @@ If writing to NVS fails during NODE_PROVISION processing, the node MUST respond 
 **Source:** ble-pairing-protocol.md §7.1, §8.3
 
 **Description:**  
-In the post-provision boot path (PSK stored, `reg-complete` NOT set) the node MUST initialise ESP-NOW on the stored `rf_channel`, load `encrypted_payload` from NVS, and build a PEER_REQUEST frame (`msg_type` = 0x05, random 8-byte nonce, CBOR `{1: encrypted_payload}`, HMAC with `node_psk`).
+In the post-provision boot path (PSK stored, `reg_complete` NOT set) the node MUST initialise ESP-NOW on the stored RF channel (NVS key `channel`), load the encrypted payload (NVS key `peer_payload`) from NVS, and build a PEER_REQUEST frame (`msg_type` = 0x05, random 8-byte nonce, CBOR `{1: encrypted_payload}`, HMAC with the node PSK from NVS key `psk`).
 
 **Acceptance criteria:**
 
@@ -911,11 +911,11 @@ On receiving a valid PEER_ACK the node MUST set the `registration-complete` flag
 **Source:** ble-pairing-protocol.md §8.3.1
 
 **Description:**  
-After the first successful WAKE/COMMAND exchange (the gateway responds with a valid COMMAND) the node MUST erase `encrypted_payload` from NVS.
+After the first successful WAKE/COMMAND exchange (the gateway responds with a valid COMMAND) the node MUST erase the encrypted payload from NVS (NVS key `peer_payload`).
 
 **Acceptance criteria:**
 
-1. After a successful WAKE/COMMAND cycle, `encrypted_payload` is no longer present in NVS.
+1. After a successful WAKE/COMMAND cycle, the `peer_payload` NVS key is no longer present.
 
 ---
 

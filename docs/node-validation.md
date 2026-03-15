@@ -786,9 +786,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Configure node with no USB-CDC, no PSK, pairing button not held.
 2. Assert: node enters BLE pairing mode.
-3. Configure node with PSK stored, `reg-complete` not set, no USB-CDC.
+3. Configure node with PSK stored, `reg_complete` not set, no USB-CDC.
 4. Assert: node sends PEER_REQUEST.
-5. Configure node with PSK stored, `reg-complete` set, no USB-CDC.
+5. Configure node with PSK stored, `reg_complete` set, no USB-CDC.
 6. Assert: node enters normal WAKE cycle.
 7. Configure node with USB-CDC connected (regardless of PSK state).
 8. Assert: node enters USB pairing mode.
@@ -842,8 +842,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Boot unpaired node into BLE pairing mode.
 2. Write NODE_PROVISION with valid `node_key_hint`, `node_psk`, `rf_channel`, `encrypted_payload`.
 3. Assert: node responds NODE_ACK(0x00).
-4. Assert: NVS contains `node_psk`, `node_key_hint`, `rf_channel`, `encrypted_payload`.
-5. Assert: `reg-complete` flag is cleared.
+4. Assert: NVS contains `psk`, `key_hint`, `channel`, `peer_payload` (see ND-0916 for key mapping).
+5. Assert: `reg_complete` flag is cleared.
 
 ---
 

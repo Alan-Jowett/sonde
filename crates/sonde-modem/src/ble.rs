@@ -184,20 +184,14 @@ impl EspBleDriver {
         let state_disconnect = Arc::clone(&state);
         ble_server.on_disconnect(move |desc, reason| {
             let peer_addr: [u8; MAC_SIZE] = desc.address().as_le_bytes();
-            // Forward the real HCI reason code from BLEError when available;
-            // on a clean disconnect (Ok), use the "local host terminated" code.
-            let reason_code: u8 = match &reason {
-                Ok(()) => 0x16, // BLE_ERR_CONN_TERM_LOCAL
-                Err(e) => {
-                    // BLEError wraps the NimBLE/HCI error code.  Extract the
-                    // raw value via Debug formatting as a fallback since
-                    // BLEError doesn't expose a public code() accessor.
-                    let dbg = format!("{:?}", e);
-                    dbg.trim_start_matches("BLEError(")
-                        .trim_end_matches(')')
-                        .parse::<i32>()
-                        .unwrap_or(0x13) as u8
-                }
+            // Forward the HCI disconnect reason code.  BLEError wraps the
+            // raw NimBLE error code, but doesn't expose a public accessor.
+            // On a clean disconnect `reason` is `Ok(())`; on error we use
+            // a generic code since we can't extract the actual value.
+            let reason_code: u8 = if reason.is_ok() {
+                0x16 // BLE_ERR_CONN_TERM_LOCAL
+            } else {
+                0x13 // BLE_ERR_REM_USER_CONN_TERM (best-effort default)
             };
             info!(
                 "BLE: client disconnected addr={:?} reason=0x{:02x}",
@@ -344,13 +338,6 @@ impl EspBleDriver {
 
 impl Ble for EspBleDriver {
     fn enable(&mut self) {
-        {
-            let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            if s.advertising {
-                return; // Already enabled — no-op (MD-0407).
-            }
-        }
-
         let ble_device = BLEDevice::take();
         let ble_advertising = ble_device.get_advertising();
 
@@ -392,6 +379,7 @@ impl Ble for EspBleDriver {
 
         if let Ok(mut s) = self.state.lock() {
             s.advertising = false;
+            s.mtu = 0;
             s.conn_handle = None;
             s.indication_queue.clear();
             s.awaiting_confirm = false;
@@ -483,38 +471,29 @@ impl Ble for EspBleDriver {
 impl EspBleDriver {
     /// Send the next indication chunk from the queue, if any.
     ///
-    /// # Known limitation (MD-0405)
-    ///
-    /// `indicate()` in esp32-nimble v0.11 blocks until the peer sends an ATT
-    /// Handle Value Confirmation (or returns an error on timeout/disconnect).
-    /// Because this is driven from the bridge `poll()` loop, a slow peer can
-    /// stall USB/radio processing, violating MD-0405's requirement that BLE
-    /// pairing not interfere with concurrent ESP-NOW operations.
-    ///
-    /// The blocking duration is bounded by the NimBLE ATT confirmation timeout
-    /// (~30s).  `CONFIG_ESP_TASK_WDT_TIMEOUT_S` is set to 35s to accommodate
-    /// this.  A dedicated FreeRTOS task for indication sending is required to
-    /// fully satisfy MD-0405; this is tracked as a follow-up item.
+    /// Uses `notify_with()` which queues the indication via
+    /// `ble_gatts_indicate_custom` (non-blocking).  NimBLE handles ATT
+    /// Handle Value Confirmation pacing internally.
     fn send_next_chunk(&self) {
-        let chunk = {
+        let (chunk, conn_handle) = {
             let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            if s.awaiting_confirm || s.indication_queue.is_empty() || s.mtu == 0 {
+            if s.awaiting_confirm || s.indication_queue.is_empty() || s.conn_handle.is_none() {
                 return;
             }
             let chunk = s.indication_queue.pop_front().unwrap();
             s.awaiting_confirm = true;
-            chunk
+            (chunk, s.conn_handle.unwrap())
         };
 
-        let notify_result = self.gateway_cmd_char.lock().set_value(&chunk).indicate();
-        // In esp32-nimble v0.11, `indicate()` blocks until the ATT
-        // Handle Value Confirmation is received from the peer (or
-        // returns an error on timeout/disconnect). Clearing
-        // awaiting_confirm immediately is correct because the
-        // confirmation has already been received before `Ok(())` is
-        // returned.
-        match notify_result {
+        // notify_with() queues the indication via ble_gatts_indicate_custom
+        // (non-blocking).  NimBLE paces indications internally via
+        // set_indicate_wait / clear_indicate_wait and fires on_notify_tx
+        // when the ATT Handle Value Confirmation arrives from the peer.
+        let chr = self.gateway_cmd_char.lock();
+        match chr.notify_with(&chunk, conn_handle) {
             Ok(()) => {
+                // Indication queued successfully.  Clear awaiting_confirm
+                // since NimBLE handles confirmation pacing internally.
                 if let Ok(mut s) = self.state.lock() {
                     s.awaiting_confirm = false;
                 }

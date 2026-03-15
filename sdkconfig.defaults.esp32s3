@@ -16,11 +16,7 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 
 # --- Watchdog ---
 CONFIG_ESP_TASK_WDT_EN=y
-# NimBLE indicate() blocks until ATT Handle Value Confirmation (up to 30s
-# on a slow/unresponsive peer).  The watchdog timeout must exceed this to
-# avoid spurious panics.  Moving indication sending to a dedicated FreeRTOS
-# task would allow a shorter timeout but is deferred as a future improvement.
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=35
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_PANIC=y
 
 # --- Logging ---

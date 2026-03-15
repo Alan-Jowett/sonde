@@ -81,8 +81,8 @@ struct BleState {
     /// `on_authentication_complete` from the connection descriptor, which
     /// reflects the post-MTU-exchange value.
     mtu: u16,
-    /// Connection handle for the current client (0 = not connected).
-    conn_handle: u16,
+    /// Connection handle for the current client (`None` = not connected).
+    conn_handle: Option<u16>,
     /// Numeric Comparison passkey relayed to gateway; operator decision pending.
     /// `BleEvent::Connected` is deferred until the operator accepts (MD-0414).
     pairing_pending: bool,
@@ -102,7 +102,7 @@ impl BleState {
             awaiting_confirm: false,
             advertising: false,
             mtu: 0,
-            conn_handle: 0,
+            conn_handle: None,
             pairing_pending: false,
             deferred_connected: None,
             authenticated: false,
@@ -175,7 +175,7 @@ impl EspBleDriver {
                 // after this connection ends (MD-0407).
                 s.advertising = false;
                 s.mtu = mtu;
-                s.conn_handle = desc.conn_handle();
+                s.conn_handle = Some(desc.conn_handle());
             }
         });
 
@@ -183,23 +183,39 @@ impl EspBleDriver {
         let state_disconnect = Arc::clone(&state);
         ble_server.on_disconnect(move |desc, reason| {
             let peer_addr: [u8; MAC_SIZE] = desc.address().as_le_bytes();
-            let reason_code: u8 = if reason.is_ok() { 0x16 } else { 0x13 };
+            // Forward the real HCI reason code from BLEError when available;
+            // on a clean disconnect (Ok), use the "local host terminated" code.
+            let reason_code: u8 = match &reason {
+                Ok(()) => 0x16, // BLE_ERR_CONN_TERM_LOCAL
+                Err(e) => {
+                    // BLEError wraps the NimBLE/HCI error code.  Extract the
+                    // raw value via Debug formatting as a fallback since
+                    // BLEError doesn't expose a public code() accessor.
+                    let dbg = format!("{:?}", e);
+                    dbg.trim_start_matches("BLEError(")
+                        .trim_end_matches(')')
+                        .parse::<i32>()
+                        .unwrap_or(0x13) as u8
+                }
+            };
             info!(
-                "BLE: client disconnected addr={:?} reason={:?}",
-                peer_addr, reason
+                "BLE: client disconnected addr={:?} reason=0x{:02x}",
+                peer_addr, reason_code
             );
             if let Ok(mut s) = state_disconnect.lock() {
                 s.mtu = 0;
-                s.conn_handle = 0;
+                s.conn_handle = None;
                 s.indication_queue.clear();
                 s.awaiting_confirm = false;
                 s.pairing_pending = false;
                 s.deferred_connected = None;
                 s.authenticated = false;
-                s.events.push_back(BleEvent::Disconnected {
-                    peer_addr,
-                    reason: reason_code,
-                });
+                if s.events.len() < MAX_BLE_EVENT_QUEUE {
+                    s.events.push_back(BleEvent::Disconnected {
+                        peer_addr,
+                        reason: reason_code,
+                    });
+                }
             }
         });
 
@@ -234,7 +250,9 @@ impl EspBleDriver {
             info!("BLE: Numeric Comparison passkey = {:06}", passkey);
             if let Ok(mut s) = state_confirm.lock() {
                 s.pairing_pending = true;
-                s.events.push_back(BleEvent::PairingConfirm { passkey });
+                if s.events.len() < MAX_BLE_EVENT_QUEUE {
+                    s.events.push_back(BleEvent::PairingConfirm { passkey });
+                }
             }
             true
         });
@@ -266,10 +284,12 @@ impl EspBleDriver {
                     } else {
                         info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
                         s.authenticated = true;
-                        s.events.push_back(BleEvent::Connected {
-                            peer_addr,
-                            mtu: s.mtu,
-                        });
+                        if s.events.len() < MAX_BLE_EVENT_QUEUE {
+                            s.events.push_back(BleEvent::Connected {
+                                peer_addr,
+                                mtu: s.mtu,
+                            });
+                        }
                         false
                     }
                 } else {
@@ -365,13 +385,13 @@ impl Ble for EspBleDriver {
             let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
             s.conn_handle
         };
-        if conn_handle != 0 {
-            let _ = ble_device.get_server().disconnect(conn_handle);
+        if let Some(handle) = conn_handle {
+            let _ = ble_device.get_server().disconnect(handle);
         }
 
         if let Ok(mut s) = self.state.lock() {
             s.advertising = false;
-            s.conn_handle = 0;
+            s.conn_handle = None;
             s.indication_queue.clear();
             s.awaiting_confirm = false;
             s.pairing_pending = false;
@@ -397,12 +417,14 @@ impl Ble for EspBleDriver {
         // Fragment into chunks of at most (MTU − 3) bytes (MD-0403).
         // Enforce at least 1 byte per chunk to prevent chunks(0) panic (MD-0402).
         let chunk_size = max_indication_payload(mtu).max(1);
+        let num_chunks = data.len().div_ceil(chunk_size);
         {
             let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            // Reject if the indication queue is already full to prevent
-            // unbounded heap growth from a fast gateway.
-            if s.indication_queue.len() >= MAX_INDICATION_CHUNKS {
-                warn!("BLE: indication queue full; dropping payload");
+            if s.indication_queue.len() + num_chunks > MAX_INDICATION_CHUNKS {
+                warn!(
+                    "BLE: indication queue full; dropping payload ({} chunks)",
+                    num_chunks
+                );
                 return;
             }
             for chunk in data.chunks(chunk_size) {
@@ -431,11 +453,11 @@ impl Ble for EspBleDriver {
                     s.deferred_connected = None;
                     s.conn_handle
                 } else {
-                    0
+                    None
                 }
             };
-            if conn_handle != 0 {
-                let _ = BLEDevice::take().get_server().disconnect(conn_handle);
+            if let Some(handle) = conn_handle {
+                let _ = BLEDevice::take().get_server().disconnect(handle);
             }
         }
     }
@@ -460,7 +482,7 @@ impl Ble for EspBleDriver {
 impl EspBleDriver {
     /// Send the next indication chunk from the queue, if any.
     ///
-    /// # Blocking behavior
+    /// # Known limitation (MD-0405)
     ///
     /// `indicate()` in esp32-nimble v0.11 blocks until the peer sends an ATT
     /// Handle Value Confirmation (or returns an error on timeout/disconnect).
@@ -470,9 +492,8 @@ impl EspBleDriver {
     ///
     /// The blocking duration is bounded by the NimBLE ATT confirmation timeout
     /// (~30s).  `CONFIG_ESP_TASK_WDT_TIMEOUT_S` is set to 35s to accommodate
-    /// this.  Moving indication sending to a dedicated FreeRTOS task would
-    /// decouple BLE from the bridge loop and allow a shorter watchdog timeout;
-    /// this is deferred as a future improvement.
+    /// this.  A dedicated FreeRTOS task for indication sending is required to
+    /// fully satisfy MD-0405; this is tracked as a follow-up item.
     fn send_next_chunk(&self) {
         let chunk = {
             let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());

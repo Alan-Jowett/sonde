@@ -23,6 +23,8 @@ prost = "0.14"
 prevail = { git = "https://github.com/elazarg/prevail-rust.git", rev = "bc5be2ea", default-features = false }
 tempfile = "3"
 zeroize = "1.8.2"
+ed25519-dalek = { version = "2", features = ["zeroize"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

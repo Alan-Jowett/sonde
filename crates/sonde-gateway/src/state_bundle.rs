@@ -32,6 +32,8 @@ use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
+use crate::gateway_identity::GatewayIdentity;
+use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
 use crate::registry::NodeRecord;
 
@@ -52,6 +54,8 @@ const GCM_TAG_LEN: usize = 16;
 const ROOT_KEY_VERSION: i64 = 1;
 const ROOT_KEY_NODES: i64 = 2;
 const ROOT_KEY_PROGRAMS: i64 = 3;
+const ROOT_KEY_IDENTITY: i64 = 4;
+const ROOT_KEY_PHONE_PSKS: i64 = 5;
 
 // ── CBOR key IDs (node map) ─────────────────────────────────────────────────
 
@@ -72,6 +76,19 @@ const PROG_KEY_IMAGE: i64 = 2;
 const PROG_KEY_SIZE: i64 = 3;
 const PROG_KEY_PROFILE: i64 = 4;
 const PROG_KEY_ABI: i64 = 5;
+
+// ── CBOR key IDs (gateway identity map) ─────────────────────────────────────
+
+const IDENT_KEY_SEED: i64 = 1;
+const IDENT_KEY_GATEWAY_ID: i64 = 2;
+
+// ── CBOR key IDs (phone PSK map) ────────────────────────────────────────────
+
+const PHONE_KEY_HINT: i64 = 1;
+const PHONE_KEY_PSK: i64 = 2;
+const PHONE_KEY_LABEL: i64 = 3;
+const PHONE_KEY_ISSUED_AT: i64 = 4;
+const PHONE_KEY_STATUS: i64 = 5;
 
 // ── Error type ───────────────────────────────────────────────────────────────
 
@@ -121,6 +138,14 @@ impl fmt::Display for BundleError {
 
 impl std::error::Error for BundleError {}
 
+/// Full state bundle contents including gateway identity and phone PSKs.
+type FullState = (
+    Vec<NodeRecord>,
+    Vec<ProgramRecord>,
+    Option<GatewayIdentity>,
+    Vec<PhonePskRecord>,
+);
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Serialize and encrypt gateway state into a portable binary bundle.
@@ -135,11 +160,23 @@ pub fn encrypt_state(
     programs: &[ProgramRecord],
     passphrase: &str,
 ) -> Result<Vec<u8>, BundleError> {
+    encrypt_state_full(nodes, programs, None, &[], passphrase)
+}
+
+/// Extended version of [`encrypt_state`] that also includes gateway identity
+/// and phone PSKs (GW-1203, GW-1210).
+pub fn encrypt_state_full(
+    nodes: &[NodeRecord],
+    programs: &[ProgramRecord],
+    identity: Option<&GatewayIdentity>,
+    phone_psks: &[PhonePskRecord],
+    passphrase: &str,
+) -> Result<Vec<u8>, BundleError> {
     if passphrase.is_empty() {
         return Err(BundleError::EmptyPassphrase);
     }
 
-    let plaintext = Zeroizing::new(encode_cbor(nodes, programs)?);
+    let plaintext = Zeroizing::new(encode_cbor(nodes, programs, identity, phone_psks)?);
 
     // Random salt and nonce via OS CSPRNG — unique per export to prevent
     // key/nonce reuse.
@@ -173,6 +210,13 @@ pub fn decrypt_state(
     bundle: &[u8],
     passphrase: &str,
 ) -> Result<(Vec<NodeRecord>, Vec<ProgramRecord>), BundleError> {
+    let full = decrypt_state_full(bundle, passphrase)?;
+    Ok((full.0, full.1))
+}
+
+/// Extended version of [`decrypt_state`] that also returns gateway identity
+/// and phone PSKs if present in the bundle.
+pub fn decrypt_state_full(bundle: &[u8], passphrase: &str) -> Result<FullState, BundleError> {
     if passphrase.is_empty() {
         return Err(BundleError::EmptyPassphrase);
     }
@@ -218,13 +262,18 @@ fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
 
 // ── CBOR encoding ─────────────────────────────────────────────────────────────
 
-fn encode_cbor(nodes: &[NodeRecord], programs: &[ProgramRecord]) -> Result<Vec<u8>, BundleError> {
+fn encode_cbor(
+    nodes: &[NodeRecord],
+    programs: &[ProgramRecord],
+    identity: Option<&GatewayIdentity>,
+    phone_psks: &[PhonePskRecord],
+) -> Result<Vec<u8>, BundleError> {
     use ciborium::value::Value;
 
     let node_values: Vec<Value> = nodes.iter().map(node_to_cbor).collect();
     let program_values: Vec<Value> = programs.iter().map(program_to_cbor).collect();
 
-    let mut root = Value::Map(vec![
+    let mut root_entries = vec![
         (
             Value::Integer(ROOT_KEY_VERSION.into()),
             Value::Integer(FORMAT_VERSION.into()),
@@ -237,7 +286,24 @@ fn encode_cbor(nodes: &[NodeRecord], programs: &[ProgramRecord]) -> Result<Vec<u
             Value::Integer(ROOT_KEY_PROGRAMS.into()),
             Value::Array(program_values),
         ),
-    ]);
+    ];
+
+    if let Some(id) = identity {
+        root_entries.push((
+            Value::Integer(ROOT_KEY_IDENTITY.into()),
+            identity_to_cbor(id),
+        ));
+    }
+
+    if !phone_psks.is_empty() {
+        let phone_values: Vec<Value> = phone_psks.iter().map(phone_psk_to_cbor).collect();
+        root_entries.push((
+            Value::Integer(ROOT_KEY_PHONE_PSKS.into()),
+            Value::Array(phone_values),
+        ));
+    }
+
+    let mut root = Value::Map(root_entries);
 
     let mut buf = Vec::new();
     let result =
@@ -329,6 +395,55 @@ fn program_to_cbor(p: &ProgramRecord) -> ciborium::value::Value {
     ])
 }
 
+fn identity_to_cbor(id: &GatewayIdentity) -> ciborium::value::Value {
+    use ciborium::value::Value;
+
+    Value::Map(vec![
+        (
+            Value::Integer(IDENT_KEY_SEED.into()),
+            Value::Bytes(id.seed().to_vec()),
+        ),
+        (
+            Value::Integer(IDENT_KEY_GATEWAY_ID.into()),
+            Value::Bytes(id.gateway_id().to_vec()),
+        ),
+    ])
+}
+
+fn phone_psk_to_cbor(p: &PhonePskRecord) -> ciborium::value::Value {
+    use ciborium::value::Value;
+
+    let issued_at_s: i64 = p
+        .issued_at
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0);
+
+    Value::Map(vec![
+        (
+            Value::Integer(PHONE_KEY_HINT.into()),
+            Value::Integer(p.phone_key_hint.into()),
+        ),
+        (
+            Value::Integer(PHONE_KEY_PSK.into()),
+            Value::Bytes(p.psk.to_vec()),
+        ),
+        (
+            Value::Integer(PHONE_KEY_LABEL.into()),
+            Value::Text(p.label.clone()),
+        ),
+        (
+            Value::Integer(PHONE_KEY_ISSUED_AT.into()),
+            Value::Integer(issued_at_s.into()),
+        ),
+        (
+            Value::Integer(PHONE_KEY_STATUS.into()),
+            Value::Text(p.status.to_string()),
+        ),
+    ])
+}
+
 fn opt_bytes_val(v: &Option<Vec<u8>>) -> ciborium::value::Value {
     match v {
         Some(b) => ciborium::value::Value::Bytes(b.clone()),
@@ -376,7 +491,7 @@ fn zeroize_cbor_bytes(v: &mut ciborium::value::Value) {
 
 // ── CBOR decoding ─────────────────────────────────────────────────────────────
 
-fn decode_cbor(data: &[u8]) -> Result<(Vec<NodeRecord>, Vec<ProgramRecord>), BundleError> {
+fn decode_cbor(data: &[u8]) -> Result<FullState, BundleError> {
     use ciborium::value::Value;
 
     let root: Value =
@@ -390,6 +505,8 @@ fn decode_cbor(data: &[u8]) -> Result<(Vec<NodeRecord>, Vec<ProgramRecord>), Bun
     let mut version_opt: Option<u32> = None;
     let mut nodes_opt: Option<Vec<Value>> = None;
     let mut programs_opt: Option<Vec<Value>> = None;
+    let mut identity_opt: Option<Value> = None;
+    let mut phone_psks_opt: Option<Vec<Value>> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -411,6 +528,15 @@ fn decode_cbor(data: &[u8]) -> Result<(Vec<NodeRecord>, Vec<ProgramRecord>), Bun
                     programs_opt = Some(match v {
                         Value::Array(a) => a,
                         _ => return Err(BundleError::Decode("programs must be array".into())),
+                    });
+                }
+                Some(ROOT_KEY_IDENTITY) => {
+                    identity_opt = Some(v);
+                }
+                Some(ROOT_KEY_PHONE_PSKS) => {
+                    phone_psks_opt = Some(match v {
+                        Value::Array(a) => a,
+                        _ => return Err(BundleError::Decode("phone_psks must be array".into())),
                     });
                 }
                 _ => {} // ignore unknown keys for forward compatibility
@@ -436,7 +562,15 @@ fn decode_cbor(data: &[u8]) -> Result<(Vec<NodeRecord>, Vec<ProgramRecord>), Bun
         .map(program_from_cbor)
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok((nodes, programs))
+    let identity = identity_opt.map(identity_from_cbor).transpose()?;
+
+    let phone_psks = phone_psks_opt
+        .unwrap_or_default()
+        .into_iter()
+        .map(phone_psk_from_cbor)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((nodes, programs, identity, phone_psks))
 }
 
 fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> {
@@ -707,6 +841,178 @@ fn opt_i64_from_cbor(v: ciborium::value::Value, field: &str) -> Result<Option<i6
     }
 }
 
+fn identity_from_cbor(v: ciborium::value::Value) -> Result<GatewayIdentity, BundleError> {
+    use ciborium::value::Value;
+
+    let map = match v {
+        Value::Map(m) => m,
+        _ => return Err(BundleError::Decode("identity must be a CBOR map".into())),
+    };
+
+    let mut seed_opt: Option<[u8; 32]> = None;
+    let mut gateway_id_opt: Option<[u8; 16]> = None;
+
+    for (k, v) in map {
+        if let Value::Integer(key_int) = k {
+            match i64::try_from(key_int).ok() {
+                Some(IDENT_KEY_SEED) => {
+                    seed_opt = Some(match v {
+                        Value::Bytes(mut b) => {
+                            use zeroize::Zeroize;
+                            if b.len() != 32 {
+                                b.zeroize();
+                                return Err(BundleError::Decode("seed must be 32 bytes".into()));
+                            }
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&b);
+                            b.zeroize();
+                            arr
+                        }
+                        _ => return Err(BundleError::Decode("seed must be bytes".into())),
+                    });
+                }
+                Some(IDENT_KEY_GATEWAY_ID) => {
+                    gateway_id_opt = Some(match v {
+                        Value::Bytes(b) => {
+                            if b.len() != 16 {
+                                return Err(BundleError::Decode(
+                                    "gateway_id must be 16 bytes".into(),
+                                ));
+                            }
+                            let mut arr = [0u8; 16];
+                            arr.copy_from_slice(&b);
+                            arr
+                        }
+                        _ => return Err(BundleError::Decode("gateway_id must be bytes".into())),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let seed = seed_opt.ok_or_else(|| BundleError::Decode("missing seed in identity".into()))?;
+    let gateway_id = gateway_id_opt
+        .ok_or_else(|| BundleError::Decode("missing gateway_id in identity".into()))?;
+
+    Ok(GatewayIdentity::from_parts(
+        Zeroizing::new(seed),
+        gateway_id,
+    ))
+}
+
+fn phone_psk_from_cbor(v: ciborium::value::Value) -> Result<PhonePskRecord, BundleError> {
+    use ciborium::value::Value;
+
+    let map = match v {
+        Value::Map(m) => m,
+        _ => {
+            return Err(BundleError::Decode(
+                "phone_psk entry must be a CBOR map".into(),
+            ))
+        }
+    };
+
+    let mut hint_opt: Option<u16> = None;
+    let mut psk_opt: Option<[u8; 32]> = None;
+    let mut label_opt: Option<String> = None;
+    let mut issued_at_opt: Option<i64> = None;
+    let mut status_opt: Option<PhonePskStatus> = None;
+
+    for (k, v) in map {
+        if let Value::Integer(key_int) = k {
+            match i64::try_from(key_int).ok() {
+                Some(PHONE_KEY_HINT) => {
+                    hint_opt = Some(match v {
+                        Value::Integer(i) => u16::try_from(i).map_err(|_| {
+                            BundleError::Decode("phone_key_hint out of range".into())
+                        })?,
+                        _ => {
+                            return Err(BundleError::Decode(
+                                "phone_key_hint must be integer".into(),
+                            ))
+                        }
+                    });
+                }
+                Some(PHONE_KEY_PSK) => {
+                    psk_opt = Some(match v {
+                        Value::Bytes(mut b) => {
+                            use zeroize::Zeroize;
+                            if b.len() != 32 {
+                                b.zeroize();
+                                return Err(BundleError::Decode(
+                                    "phone psk must be 32 bytes".into(),
+                                ));
+                            }
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&b);
+                            b.zeroize();
+                            arr
+                        }
+                        _ => return Err(BundleError::Decode("phone psk must be bytes".into())),
+                    });
+                }
+                Some(PHONE_KEY_LABEL) => {
+                    label_opt = Some(match v {
+                        Value::Text(s) => {
+                            if s.len() > crate::phone_trust::PHONE_LABEL_MAX_BYTES {
+                                return Err(BundleError::Decode(format!(
+                                    "phone label exceeds {}-byte limit: {} bytes",
+                                    crate::phone_trust::PHONE_LABEL_MAX_BYTES,
+                                    s.len()
+                                )));
+                            }
+                            s
+                        }
+                        _ => return Err(BundleError::Decode("label must be text".into())),
+                    });
+                }
+                Some(PHONE_KEY_ISSUED_AT) => {
+                    issued_at_opt = Some(match v {
+                        Value::Integer(i) => i64::try_from(i)
+                            .map_err(|_| BundleError::Decode("issued_at out of range".into()))?,
+                        _ => return Err(BundleError::Decode("issued_at must be integer".into())),
+                    });
+                }
+                Some(PHONE_KEY_STATUS) => {
+                    status_opt = Some(match v {
+                        Value::Text(s) => PhonePskStatus::from_str_value(&s).ok_or_else(|| {
+                            BundleError::Decode(format!("unknown phone psk status: {s}"))
+                        })?,
+                        _ => return Err(BundleError::Decode("status must be text".into())),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let phone_key_hint =
+        hint_opt.ok_or_else(|| BundleError::Decode("missing phone_key_hint".into()))?;
+    let psk = psk_opt.ok_or_else(|| BundleError::Decode("missing phone psk".into()))?;
+    let label = label_opt.ok_or_else(|| BundleError::Decode("missing phone label".into()))?;
+    let issued_at_s =
+        issued_at_opt.ok_or_else(|| BundleError::Decode("missing phone issued_at".into()))?;
+    let status = status_opt.ok_or_else(|| BundleError::Decode("missing phone status".into()))?;
+
+    let issued_at = if issued_at_s >= 0 {
+        UNIX_EPOCH
+            .checked_add(Duration::from_secs(issued_at_s as u64))
+            .ok_or_else(|| BundleError::Decode("issued_at overflows SystemTime".into()))?
+    } else {
+        UNIX_EPOCH
+    };
+
+    Ok(PhonePskRecord {
+        phone_id: 0, // assigned by storage on import
+        phone_key_hint,
+        psk: Zeroizing::new(psk),
+        label,
+        issued_at,
+        status,
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -885,5 +1191,68 @@ mod tests {
 
         assert_eq!(out_nodes[0].firmware_abi_version, Some(3));
         assert_eq!(out_programs[0].abi_version, Some(2));
+    }
+
+    #[test]
+    fn roundtrip_identity_and_phone_psks() {
+        use crate::gateway_identity::GatewayIdentity;
+        use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
+
+        let identity = GatewayIdentity::generate().unwrap();
+        let phone = PhonePskRecord {
+            phone_id: 0,
+            phone_key_hint: 0x1234,
+            psk: Zeroizing::new([0xDD; 32]),
+            label: "Test Phone".to_string(),
+            issued_at: UNIX_EPOCH + Duration::from_secs(1700000000),
+            status: PhonePskStatus::Active,
+        };
+        let phone_revoked = PhonePskRecord {
+            phone_id: 0,
+            phone_key_hint: 0x5678,
+            psk: Zeroizing::new([0xEE; 32]),
+            label: "Revoked Phone".to_string(),
+            issued_at: UNIX_EPOCH + Duration::from_secs(1700001000),
+            status: PhonePskStatus::Revoked,
+        };
+
+        let bundle = encrypt_state_full(
+            &[],
+            &[],
+            Some(&identity),
+            &[phone.clone(), phone_revoked.clone()],
+            "id-pass",
+        )
+        .unwrap();
+
+        let (nodes, programs, loaded_id, loaded_phones) =
+            decrypt_state_full(&bundle, "id-pass").unwrap();
+
+        assert!(nodes.is_empty());
+        assert!(programs.is_empty());
+
+        // Identity round-trips.
+        let loaded_id = loaded_id.unwrap();
+        assert_eq!(loaded_id.public_key(), identity.public_key());
+        assert_eq!(loaded_id.gateway_id(), identity.gateway_id());
+        assert_eq!(loaded_id.seed(), identity.seed());
+
+        // Phone PSKs round-trip.
+        assert_eq!(loaded_phones.len(), 2);
+        assert_eq!(loaded_phones[0].phone_key_hint, 0x1234);
+        assert_eq!(*loaded_phones[0].psk, [0xDD; 32]);
+        assert_eq!(loaded_phones[0].label, "Test Phone");
+        assert_eq!(loaded_phones[0].status, PhonePskStatus::Active);
+        assert_eq!(loaded_phones[1].phone_key_hint, 0x5678);
+        assert_eq!(loaded_phones[1].status, PhonePskStatus::Revoked);
+    }
+
+    #[test]
+    fn backward_compatible_bundle_without_identity() {
+        // A bundle without identity/phone PSKs (old format) still decodes.
+        let bundle = encrypt_state(&[], &[], "compat").unwrap();
+        let (_, _, identity, phones) = decrypt_state_full(&bundle, "compat").unwrap();
+        assert!(identity.is_none());
+        assert!(phones.is_empty());
     }
 }

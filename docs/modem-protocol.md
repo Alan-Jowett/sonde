@@ -248,11 +248,11 @@ Gateway sends a BLE indication payload to the connected phone via the Gateway Co
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| `ble_data` | Bytes | 1 .. 511 bytes | Opaque payload relayed to the BLE client. Typically a BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4), but the modem does not inspect or validate the contents. |
+| `ble_data` | Bytes | 1 .. 511 bytes | Opaque payload relayed to the BLE client. Typically a BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4), but the modem does not inspect or validate the contents. A `BLE_INDICATE` with an empty body (len = 1, i.e. type byte only, no `ble_data`) is invalid and MUST be silently discarded by the modem. |
 
 ### 4.10  BLE_RECV (Modem → Gateway)
 
-A BLE GATT write was received on the Gateway Command characteristic from the connected phone. The modem forwards the complete reassembled write payload (after Write Long reassembly if applicable).
+A BLE GATT write was received on the Gateway Command characteristic from the connected phone. The modem forwards the complete reassembled write payload (after Write Long reassembly if applicable). Empty GATT writes (zero payload bytes) MUST be silently discarded — no `BLE_RECV` is sent.
 
 ```
 ┌──────────────────────────────────┐

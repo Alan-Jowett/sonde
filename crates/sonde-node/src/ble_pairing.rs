@@ -205,6 +205,9 @@ pub fn handle_node_provision<S: PlatformStorage>(
 
     // Persist the RF channel.
     if storage.write_channel(provision.rf_channel).is_err() {
+        // Rollback: erase the key we just wrote so no partial credentials
+        // remain in NVS (ND-0908).
+        let _ = storage.erase_key();
         return NODE_ACK_STORAGE_ERROR;
     }
 
@@ -213,12 +216,15 @@ pub fn handle_node_provision<S: PlatformStorage>(
         .write_peer_payload(&provision.encrypted_payload)
         .is_err()
     {
+        let _ = storage.erase_key();
         return NODE_ACK_STORAGE_ERROR;
     }
 
     // Clear the registration-complete flag so the next boot enters the
     // PEER_REQUEST path instead of the normal WAKE cycle (ND-0906).
     if storage.write_reg_complete(false).is_err() {
+        let _ = storage.erase_key();
+        let _ = storage.erase_peer_payload();
         return NODE_ACK_STORAGE_ERROR;
     }
 
@@ -486,7 +492,7 @@ mod tests {
         body[34] = 1; // channel 1
         body[35] = 0x00;
         body[36] = 0x00; // payload_len = 0
-        // body[37] is the trailing byte
+                         // body[37] is the trailing byte
         let err = parse_node_provision(&body).unwrap_err();
         assert_eq!(err, "trailing bytes after encrypted_payload");
     }
@@ -569,8 +575,7 @@ mod tests {
         let psk_a = [0x11u8; 32];
         let payload_a = vec![0x01, 0x02];
         let provision_a = make_provision(0x0001, psk_a, 3, &payload_a);
-        let status_a =
-            handle_node_provision(&provision_a, &mut storage, &mut maps, false, false);
+        let status_a = handle_node_provision(&provision_a, &mut storage, &mut maps, false, false);
         assert_eq!(status_a, NODE_ACK_SUCCESS);
         assert_eq!(storage.read_key().unwrap().1, psk_a);
 
@@ -578,9 +583,11 @@ mod tests {
         let psk_b = [0x22u8; 32];
         let payload_b = vec![0x03, 0x04, 0x05];
         let provision_b = make_provision(0x0002, psk_b, 11, &payload_b);
-        let status_b =
-            handle_node_provision(&provision_b, &mut storage, &mut maps, false, false);
-        assert_eq!(status_b, NODE_ACK_SUCCESS, "same-session re-provision must succeed");
+        let status_b = handle_node_provision(&provision_b, &mut storage, &mut maps, false, false);
+        assert_eq!(
+            status_b, NODE_ACK_SUCCESS,
+            "same-session re-provision must succeed"
+        );
 
         // NVS now contains credentials B
         let key = storage
@@ -603,8 +610,7 @@ mod tests {
         let mut maps = MapStorage::new(1024);
 
         let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
-        let status =
-            handle_node_provision(&provision, &mut storage, &mut maps, false, true);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, true);
         assert_eq!(status, NODE_ACK_ALREADY_PAIRED);
 
         // Original key is unchanged
@@ -658,7 +664,7 @@ mod tests {
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
     }
 
-    /// T-N907 variant: write_channel failure → NODE_ACK(0x02).
+    /// T-N907 variant: write_channel failure → NODE_ACK(0x02), key rolled back.
     #[test]
     fn t_n907_nvs_write_channel_failure() {
         let mut storage = MockStorage::new();
@@ -668,9 +674,11 @@ mod tests {
 
         let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
+        // Key must be rolled back — no partial credentials (ND-0908)
+        assert!(storage.read_key().is_none());
     }
 
-    /// T-N907 variant: write_peer_payload failure → NODE_ACK(0x02).
+    /// T-N907 variant: write_peer_payload failure → NODE_ACK(0x02), key rolled back.
     #[test]
     fn t_n907_nvs_write_peer_payload_failure() {
         let mut storage = MockStorage::new();
@@ -680,9 +688,11 @@ mod tests {
 
         let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
+        // Key must be rolled back — no partial credentials (ND-0908)
+        assert!(storage.read_key().is_none());
     }
 
-    /// T-N907 variant: write_reg_complete failure → NODE_ACK(0x02).
+    /// T-N907 variant: write_reg_complete failure → NODE_ACK(0x02), key+payload rolled back.
     #[test]
     fn t_n907_nvs_write_reg_complete_failure() {
         let mut storage = MockStorage::new();
@@ -692,6 +702,9 @@ mod tests {
 
         let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
+        // Key and peer_payload must be rolled back (ND-0908)
+        assert!(storage.read_key().is_none());
+        assert!(storage.read_peer_payload().is_none());
     }
 
     // --- Full round-trip: parse envelope → handle → encode ACK ---

@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MIT
   Copyright (c) 2026 sonde contributors -->
-# Why Aren’t We Using `$FAMOUS_IETF_PROTOCOL`?
+# Why Aren’t We Using Standard IETF IoT Protocols?
 
 This project deliberately **does not** use several well‑known IETF IoT security protocols. This is not because we are unaware of them. It is because **they do not solve the actual problem we have**.
 

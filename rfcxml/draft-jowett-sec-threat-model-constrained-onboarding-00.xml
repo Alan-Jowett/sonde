@@ -1,7 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE rfc [
-  <!ENTITY nbsp "&#160;">
-]>
 <rfc xmlns:xi="http://www.w3.org/2001/XInclude"
      category="info"
      docName="draft-jowett-sec-threat-model-constrained-onboarding-00"

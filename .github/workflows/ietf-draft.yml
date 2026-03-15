@@ -4,12 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'rfcxml/**'
+      - 'rfcxml/*.xml'
       - '.github/workflows/ietf-draft.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'rfcxml/**'
+      - 'rfcxml/*.xml'
       - '.github/workflows/ietf-draft.yml'
 
 jobs:
@@ -30,7 +30,12 @@ jobs:
         run: |
           shopt -s nullglob
           mkdir -p output
-          for xml in rfcxml/*.xml; do
+          xmls=(rfcxml/*.xml)
+          if [ ${#xmls[@]} -eq 0 ]; then
+            echo "::error::No XML drafts found in rfcxml/"
+            exit 1
+          fi
+          for xml in "${xmls[@]}"; do
             base="$(basename "${xml%.xml}")"
             xml2rfc "$xml" --text --out "output/${base}.txt"
             xml2rfc "$xml" --html --out "output/${base}.html"

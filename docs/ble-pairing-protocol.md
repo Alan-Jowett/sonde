@@ -681,9 +681,11 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 
 ### 9.2  BLE link security
 
-BLE LESC Numeric Comparison is the **default** pairing method.  The modem relays the 6-digit passkey to the gateway via `BLE_PAIRING_CONFIRM` (modem-protocol.md §4.15), and the gateway displays it to the operator via the admin CLI.  The operator verifies that the pin matches the phone's display and confirms via `BLE_PAIRING_CONFIRM_REPLY`.  This provides MITM protection for the BLE link.
+BLE LESC Numeric Comparison is the **default** pairing method for the **gateway pairing service** (phone ↔ modem/gateway).  The modem relays the 6-digit passkey to the gateway via `BLE_PAIRING_CONFIRM` (modem-protocol.md §4.15), and the gateway displays it to the operator via the admin CLI.  The operator verifies that the pin matches the phone's display and confirms via `BLE_PAIRING_CONFIRM_REPLY`.  This provides MITM protection for the BLE link.
 
-Just Works remains available as a fallback for environments without operator presence, but does not provide MITM protection.  When using Just Works, an active MITM can defeat the pairing and capture both the `node_psk` and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The primary mitigations are the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations, step 10 in §7.3) and the PairingRequest timestamp tolerance (±86400 s, step 9 in §7.3).  The 120 s registration window applies only to Phase 1 phone registration (`REGISTER_PHONE` §5.4.1), not to Phase 2 node registration.
+> **Note:** The node provisioning service (phone ↔ node) uses LESC Just Works, because nodes are headless devices with no operator interface to display or confirm a pin.  Numeric Comparison applies only to the gateway/modem side.
+
+Just Works remains available as a fallback for the gateway pairing service in environments without operator presence, but does not provide MITM protection.  When using Just Works, an active MITM can defeat the pairing and capture both the `node_psk` and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The primary mitigations are the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations, step 10 in §7.3) and the PairingRequest timestamp tolerance (±86400 s, step 9 in §7.3).  The 120 s registration window applies only to Phase 1 phone registration (`REGISTER_PHONE` §5.4.1), not to Phase 2 node registration.
 
 For even higher assurance, BLE Passkey Entry can be used in place of Numeric Comparison — the protocol is agnostic to the specific LESC pairing method.
 

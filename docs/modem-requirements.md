@@ -411,13 +411,13 @@ The modem MUST support one BLE connection at a time for the Gateway Pairing Serv
 
 ---
 
-### MD-0406  BLE connection notification to gateway
+### MD-0406  BLE connection lifecycle events (superseded)
 
-**Priority:** Should
+**Priority:** *(Superseded by MD-0410 and MD-0411)*
 **Source:** ble-pairing-protocol.md §3
 
 **Description:**
-The modem SHOULD notify the gateway over USB-CDC when a BLE client connects or disconnects, so the gateway can manage pairing session state.
+This requirement is superseded by MD-0410 (`BLE_CONNECTED`) and MD-0411 (`BLE_DISCONNECTED`), which make connection/disconnection notifications mandatory with defined serial message types. No additional notification mechanism is needed.
 
 **Acceptance criteria:**
 
@@ -450,13 +450,14 @@ BLE advertising is OFF by default after boot and after `RESET`. The modem MUST s
 **Source:** modem-protocol.md §4.9
 
 **Description:**
-On receiving a `BLE_INDICATE` (0x20) serial message from the gateway, the modem MUST deliver the `ble_data` as a GATT indication on the Gateway Command characteristic. If no BLE client is connected, the modem MUST silently discard the message. The modem MUST handle indication fragmentation per ble-pairing-protocol.md §3.4.
+On receiving a `BLE_INDICATE` (0x20) serial message from the gateway, the modem MUST deliver the `ble_data` as a GATT indication on the Gateway Command characteristic. If no BLE client is connected, the modem MUST silently discard the message. If the serial frame body is empty (no `ble_data`), the modem MUST silently discard the message (per modem-protocol.md §4.9). The modem MUST handle indication fragmentation per ble-pairing-protocol.md §3.4.
 
 **Acceptance criteria:**
 
 1. `BLE_INDICATE` data is delivered as a GATT indication to the connected phone.
 2. If no BLE client is connected, the message is silently discarded.
-3. Messages larger than (MTU − 3) bytes are fragmented into multiple indications.
+3. If the serial frame body is empty (no `ble_data`), the message is silently discarded.
+4. Messages larger than (MTU − 3) bytes are fragmented into multiple indications.
 
 ---
 
@@ -466,13 +467,14 @@ On receiving a `BLE_INDICATE` (0x20) serial message from the gateway, the modem 
 **Source:** modem-protocol.md §4.10
 
 **Description:**
-When a phone writes to the Gateway Command characteristic, the modem MUST forward the complete reassembled write payload to the gateway as a `BLE_RECV` (0xA0) serial message. The modem MUST NOT inspect or modify the payload.
+When a phone writes to the Gateway Command characteristic, the modem MUST forward the complete reassembled write payload to the gateway as a `BLE_RECV` (0xA0) serial message. The modem MUST NOT inspect or modify the payload. Empty GATT writes (zero payload bytes) MUST be silently discarded — no `BLE_RECV` is sent (per modem-protocol.md §4.10).
 
 **Acceptance criteria:**
 
 1. GATT writes are forwarded as `BLE_RECV` serial messages.
 2. Write Long payloads are reassembled before forwarding.
 3. The payload is forwarded unmodified.
+4. Empty GATT writes are silently discarded.
 
 ---
 

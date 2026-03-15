@@ -899,12 +899,12 @@ The node MUST verify the PEER_ACK frame HMAC using `node_psk`, verify that the n
 **Source:** ble-pairing-protocol.md §7.2, §8.3
 
 **Description:**  
-On receiving a valid PEER_ACK the node MUST set the `reg_complete` flag in NVS. The `encrypted_payload` MUST be retained in NVS until the first successful WAKE/COMMAND exchange.
+On receiving a valid PEER_ACK the node MUST set the `reg_complete` flag in NVS. The encrypted payload (NVS key `peer_payload`) MUST be retained in NVS until the first successful WAKE/COMMAND exchange.
 
 **Acceptance criteria:**
 
 1. The `reg_complete` flag is set in NVS after a valid PEER_ACK.
-2. The `encrypted_payload` remains in NVS until the first WAKE/COMMAND cycle succeeds.
+2. The `peer_payload` NVS key remains until the first WAKE/COMMAND cycle succeeds.
 
 ---
 

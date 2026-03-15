@@ -364,7 +364,7 @@ TestNode {
 1. Initiate Phase 2 with valid Phase 1 artifacts.
 2. Capture the generated `node_psk`.
 3. Assert: `node_psk` is exactly 32 bytes.
-4. Assert: `node_psk` is generated via `getrandom::fill()` (verified by injecting a mock RNG provider in tests or by asserting `getrandom` is the sole randomness source via code inspection).
+4. Assert: `node_psk` is generated via the injectable RNG provider. In CI, inject a mock RNG and assert it was called with the correct buffer size (32 bytes). In production builds, the provider delegates to `getrandom::fill()`.
 
 ---
 
@@ -679,14 +679,15 @@ TestNode {
 
 ---
 
-### T-PT-702  All randomness from getrandom
+### T-PT-702  All randomness from injectable RNG provider
 
 **Validates:** PT-0901
 
 **Procedure:**
-1. Audit all call sites that generate random values (challenges, ephemeral keys, node PSKs, AES-GCM nonces).
-2. Assert: every call traces to `getrandom::fill()`.
-3. Assert: no use of `rand::rng()` for cryptographic randomness in the pairing crate.
+1. The pairing core MUST accept an injectable RNG provider trait.
+2. In CI, inject a mock RNG provider and run the full Phase 1 + Phase 2 flows.
+3. Assert: all random values (challenges, ephemeral keys, node PSKs, nonces) are sourced from the mock provider.
+4. Assert: no direct calls to `rand::rng()` exist in the pairing crate (enforced via a `#![deny(clippy::disallowed_methods)]` or equivalent CI lint rule).
 
 ---
 

@@ -909,9 +909,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 2. Capture the transmitted PEER_REQUEST frame.
 3. Assert: `msg_type` = 0x05.
 4. Assert: nonce is exactly 8 bytes and is sourced from the RNG abstraction (verified via mock RNG in test). Assert it is not a fixed constant (e.g., not always zero).
-5. Assert: CBOR payload decodes to `{1: encrypted_payload}` matching NVS value.
-6. Assert: HMAC-SHA256 over header+payload verifies with `node_psk`.
-7. Assert: ESP-NOW channel matches stored `rf_channel`.
+5. Assert: CBOR payload decodes to `{1: <value>}` where the value matches NVS key `peer_payload`.
+6. Assert: HMAC-SHA256 over header+payload verifies with the PSK from NVS key `psk`.
+7. Assert: ESP-NOW channel matches NVS key `channel`.
 
 ---
 
@@ -986,7 +986,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N916  First successful WAKE/COMMAND erases encrypted payload
+### T-N916  First successful WAKE/COMMAND erases encrypted payload (`peer_payload`)
 
 **Validates:** ND-0914
 

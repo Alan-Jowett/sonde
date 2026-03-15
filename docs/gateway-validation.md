@@ -1297,10 +1297,12 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-1222
 
 **Procedure:**
-1. Start a BLE pairing session.
-2. Connect phone. Modem sends `BLE_PAIRING_CONFIRM(passkey=123456)`.
-3. Assert: admin CLI displays "Confirm BLE pairing PIN: 123456".
-4. Operator accepts. Assert: gateway sends `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
+1. Start a BLE pairing session via admin API (`OpenBlePairing`).
+2. Connect phone via BLE. Modem sends `BLE_PAIRING_CONFIRM(passkey=123456)`.
+3. Assert: gateway forwards the passkey to the admin API client (e.g., as a streaming gRPC event or CLI prompt).
+4. Admin client accepts. Assert: gateway sends `BLE_PAIRING_CONFIRM_REPLY(0x01)` to modem.
+
+> **Note:** In automated integration tests, run `sonde-admin pairing start` against a mock modem that injects `BLE_PAIRING_CONFIRM`, capture stdout, and assert the passkey appears. Operator confirmation is simulated by piping `y` to stdin.
 
 ---
 

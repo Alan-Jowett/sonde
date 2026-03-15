@@ -542,6 +542,28 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0613a  Empty BLE_INDICATE silently discarded
+
+**Validates:** MD-0408
+
+**Procedure:**
+1. Connect a phone via BLE.
+2. Send a `BLE_INDICATE` serial frame with an empty body (no `ble_data`).
+3. Assert: modem silently discards the message — no indication is sent to the phone.
+
+---
+
+### T-0613b  Empty GATT write silently discarded
+
+**Validates:** MD-0409
+
+**Procedure:**
+1. Connect a phone via BLE.
+2. Phone writes zero bytes to the Gateway Command characteristic.
+3. Assert: no `BLE_RECV` message is sent to the gateway.
+
+---
+
 ### T-0614  BLE_CONNECTED notification
 
 **Validates:** MD-0410
@@ -687,6 +709,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0611 | BLE_INDICATE relay to phone | MD-0408 |
 | T-0612 | BLE_INDICATE with no BLE client | MD-0408 |
 | T-0613 | BLE_RECV forwarding | MD-0409 |
+| T-0613a | Empty BLE_INDICATE silently discarded | MD-0408 |
+| T-0613b | Empty GATT write silently discarded | MD-0409 |
 | T-0614 | BLE_CONNECTED notification | MD-0410 |
 | T-0615 | BLE_DISCONNECTED notification | MD-0411 |
 | T-0616 | BLE relay round-trip | MD-0408, MD-0409 |

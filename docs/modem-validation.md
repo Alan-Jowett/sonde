@@ -674,7 +674,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0401 | SET_CHANNEL with invalid channel | modem-protocol.md §6.1 |
 | T-0402 | Framing error recovery | MD-0102 |
 | T-0500 | Modem does not interpret frame contents | §6 Non-requirements |
-| T-0600 | Gateway Pairing Service advertisement | MD-0407, MD-0412, MD-0413 |
+| T-0600 | Gateway Pairing Service lifecycle | MD-0407, MD-0412, MD-0413 |
 | T-0601 | BLE GATT characteristic setup | MD-0400 |
 | T-0602 | MTU negotiation ≥ 247 | MD-0402 |
 | T-0602a | MTU negotiation below minimum rejected | MD-0402 |

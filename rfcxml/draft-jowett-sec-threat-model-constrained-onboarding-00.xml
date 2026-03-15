@@ -108,6 +108,14 @@ over Unauthenticated Local Transports</title>
       </t>
 
       <t>
+        This document is intended for designers of constrained-device
+        onboarding systems that lack factory-provisioned identity,
+        security reviewers evaluating such systems, and implementers
+        composing bootstrap mechanisms with protocols such as EDHOC
+        <xref target="RFC9528"/> and OSCORE <xref target="RFC8613"/>.
+      </t>
+
+      <t>
         The key words "<bcp14>MUST</bcp14>", "<bcp14>MUST NOT</bcp14>",
         "<bcp14>REQUIRED</bcp14>", "<bcp14>SHALL</bcp14>",
         "<bcp14>SHALL NOT</bcp14>", "<bcp14>SHOULD</bcp14>",
@@ -117,6 +125,11 @@ over Unauthenticated Local Transports</title>
         as described in BCP 14 <xref target="RFC2119"/>
         <xref target="RFC8174"/> when, and only when, they appear in all
         capitals, as shown here.
+        Although this document is categorized as Informational and does
+        not define an interoperable protocol, BCP 14 keywords are used
+        to express the precision of security guidance; they indicate the
+        strength of a recommendation, not a conformance requirement for
+        interoperability.
       </t>
     </section>
 
@@ -131,7 +144,9 @@ over Unauthenticated Local Transports</title>
           The entity that serves as the root of trust for a deployment.
           It stores device credentials, validates enrollment requests,
           and enforces policy.  Examples include a local gateway, a
-          network controller, or a cloud service.
+          network controller, or a cloud service.  This is a logical
+          role and does not necessarily correspond to an ACE
+          Authorization Server <xref target="RFC9200"/>.
         </dd>
 
         <dt>Constrained Device:</dt>
@@ -269,7 +284,9 @@ over Unauthenticated Local Transports</title>
         <t>
           Several IETF standards address aspects of constrained-device
           security.  This document addresses a gap that none of them
-          individually fill:
+          individually fill: none can be applied as-is to bootstrapping
+          trust in devices that lack factory-provisioned identity and
+          operate over unauthenticated local transports.
         </t>
 
         <dl>
@@ -771,7 +788,9 @@ over Unauthenticated Local Transports</title>
         <t>
           The operational cost is limited to a spurious log entry and
           possibly a wasted command to a device that is not listening.
-          Both are self-correcting.
+          Both are self-correcting.  Replay is acceptable here precisely
+          because the session-initiation message triggers no privileged
+          or irreversible state change on the authority.
         </t>
       </section>
     </section>
@@ -1032,7 +1051,10 @@ over Unauthenticated Local Transports</title>
         race conditions are inherent and cannot be eliminated by
         protocol design alone.  The goal is to detect, bound, and
         recover from these races rather than pretend they do not
-        exist.
+        exist.  The patterns in this section bound risk when an
+        unauthenticated transport is chosen; they are not an
+        endorsement of such transports for high-threat environments
+        where authenticated pairing is feasible.
       </t>
 
       <section anchor="mitm-race">

@@ -53,10 +53,14 @@ pub const NODE_ACK_STORAGE_ERROR: u8 = 0x02;
 
 /// Maximum encrypted_payload size accepted by `parse_node_provision`.
 ///
-/// Mirrors the NVS read buffer / write limit in `esp_storage` (512 bytes).
-/// Rejecting oversize payloads early avoids an unbounded heap allocation
-/// from a malicious or buggy phone.
-pub const PEER_PAYLOAD_MAX_LEN: usize = 512;
+/// This must fit in a single PEER_REQUEST ESP-NOW frame (250 bytes total).
+/// After the 11-byte header, 32-byte HMAC, and ~5 bytes of CBOR framing
+/// for `{ 1: bstr(N) }`, at most 202 bytes remain for the payload.
+/// See ble-pairing-protocol.md §11.1.
+///
+/// The NVS read buffer in `esp_storage` (512 bytes) is larger than this
+/// limit, so NVS is never the bottleneck.
+pub const PEER_PAYLOAD_MAX_LEN: usize = 202;
 
 /// Minimum body length for a NODE_PROVISION with an empty encrypted_payload.
 const NODE_PROVISION_MIN_LEN: usize = 37;

@@ -247,13 +247,20 @@ impl crate::traits::PlatformStorage for NvsStorage {
         }
     }
 
+    fn has_peer_payload(&self) -> bool {
+        // Check NVS key existence without allocating a read buffer.
+        // get_blob with a zero-length buffer returns Ok(None) when the key
+        // is absent, and Err (buffer too small) when the key is present.
+        let mut buf = [0u8; 0];
+        self.nvs.get_blob("peer_payload", &mut buf).is_err()
+    }
+
     fn write_peer_payload(&mut self, payload: &[u8]) -> NodeResult<()> {
-        // Mirror the read buffer size so a stored payload can always be read
-        // back.  The AES-256-GCM encrypted pairing payload is 44 + ≤ ~256
-        // bytes of CBOR, so 512 bytes is a comfortable upper bound.
-        if payload.len() > 512 {
+        // Cap at the PEER_REQUEST wire limit (202 bytes) so a stored payload
+        // always fits in a single ESP-NOW frame.  See ble_pairing::PEER_PAYLOAD_MAX_LEN.
+        if payload.len() > crate::ble_pairing::PEER_PAYLOAD_MAX_LEN {
             return Err(NodeError::StorageError(
-                "peer_payload too large (max 512 bytes)",
+                "peer_payload too large (max 202 bytes for PEER_REQUEST frame)",
             ));
         }
         self.nvs
@@ -262,10 +269,12 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn erase_peer_payload(&mut self) -> NodeResult<()> {
-        self.nvs
-            .remove("peer_payload")
-            .map(|_| ())
-            .map_err(|_| NodeError::StorageError("peer_payload erase failed"))
+        // Idempotent: treat "key not found" as success.
+        match self.nvs.remove("peer_payload") {
+            Ok(_) => Ok(()),
+            Err(_) if !self.has_peer_payload() => Ok(()), // already absent
+            Err(_) => Err(NodeError::StorageError("peer_payload erase failed")),
+        }
     }
 
     fn read_reg_complete(&self) -> bool {

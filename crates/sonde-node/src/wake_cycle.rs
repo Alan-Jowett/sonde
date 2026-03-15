@@ -18,6 +18,7 @@ use crate::error::{NodeError, NodeResult};
 use crate::hal::{BatteryReader, Hal};
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
+use crate::peer_request::peer_request_exchange;
 use crate::program_store::{LoadedProgram, ProgramStore};
 use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
@@ -93,6 +94,52 @@ where
     let (base_interval_s, _active_partition) = storage.read_schedule();
     let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
 
+    // 3a. PEER_REQUEST/PEER_ACK exchange (ND-0909–ND-0913).
+    //     If PSK is stored but reg_complete is not set, the node has been
+    //     BLE-provisioned but not yet acknowledged by the gateway.  Run the
+    //     PEER_REQUEST exchange before proceeding to the normal WAKE cycle.
+    //
+    //     If reg_complete is false but peer_payload is absent, the node was
+    //     either USB-paired (no payload) or the payload was erased after a
+    //     permanent error.  In both cases we fall through to the normal WAKE
+    //     cycle — the gateway will accept the WAKE regardless.
+    if !storage.read_reg_complete() {
+        if let Some(encrypted_payload) = storage.read_peer_payload() {
+            match peer_request_exchange(
+                transport,
+                storage,
+                &identity,
+                &encrypted_payload,
+                rng,
+                clock,
+                hmac,
+            ) {
+                Ok(true) => {
+                    // Registration complete — fall through to normal WAKE cycle.
+                }
+                Ok(false) => {
+                    // Timeout — sleep and retry next wake cycle (ND-0910/ND-0911).
+                    return WakeCycleOutcome::Sleep {
+                        seconds: sleep_mgr.effective_sleep_s(),
+                    };
+                }
+                Err(e) => {
+                    // Distinguish permanent errors (malformed payload, oversize)
+                    // from transient ones (transport timeout, storage I/O).
+                    // MalformedPayload errors are non-recoverable — the stored
+                    // payload will never succeed, so erase it to break the loop.
+                    if matches!(e, NodeError::MalformedPayload(_)) {
+                        log::warn!("PEER_REQUEST permanent error: {} — erasing peer_payload", e);
+                        let _ = storage.erase_peer_payload();
+                    }
+                    return WakeCycleOutcome::Sleep {
+                        seconds: sleep_mgr.effective_sleep_s(),
+                    };
+                }
+            }
+        }
+    }
+
     // 4. Load active resident program hash and raw bytes from NVS.
     // Only the hash is needed for the WAKE message; CBOR decode is
     // deferred to step 9 so that cycles which return early (Reboot,
@@ -118,9 +165,28 @@ where
     );
 
     let (starting_seq, timestamp_ms, command_payload) = match command_result {
-        Ok(cmd) => cmd,
+        Ok(cmd) => {
+            // WAKE/COMMAND succeeded — erase peer_payload if still present (ND-0914).
+            if storage.has_peer_payload() {
+                if let Err(e) = storage.erase_peer_payload() {
+                    log::warn!("failed to erase peer_payload after WAKE success: {}", e);
+                }
+            }
+            cmd
+        }
         Err(_) => {
-            // WAKE retries exhausted or transport error — sleep
+            // WAKE retries exhausted or transport error.
+            // Self-healing (ND-0915): if reg_complete is set and peer_payload
+            // is still present (meaning deferred erasure hasn't happened yet),
+            // clear reg_complete so the next boot reverts to PEER_REQUEST.
+            // Once peer_payload has been erased (after a prior successful
+            // WAKE/COMMAND), transient WAKE failures should NOT revert to
+            // PEER_REQUEST since there is no payload to re-send.
+            if storage.read_reg_complete() && storage.has_peer_payload() {
+                if let Err(e) = storage.write_reg_complete(false) {
+                    log::warn!("failed to clear reg_complete after WAKE failure: {}", e);
+                }
+            }
             return WakeCycleOutcome::Sleep {
                 seconds: sleep_mgr.effective_sleep_s(),
             };
@@ -1002,6 +1068,9 @@ mod tests {
         pub early_wake_flag: bool,
         /// Counts how many times `read_program()` is called.
         pub read_program_count: std::cell::Cell<u32>,
+        pub channel: Option<u8>,
+        pub peer_payload: Option<Vec<u8>>,
+        pub reg_complete: bool,
     }
 
     impl MockStorage {
@@ -1013,6 +1082,9 @@ mod tests {
                 programs: [None, None],
                 early_wake_flag: false,
                 read_program_count: std::cell::Cell::new(0),
+                channel: None,
+                peer_payload: None,
+                reg_complete: false,
             }
         }
 
@@ -1070,6 +1142,31 @@ mod tests {
         }
         fn set_early_wake_flag(&mut self) -> NodeResult<()> {
             self.early_wake_flag = true;
+            Ok(())
+        }
+        fn read_channel(&self) -> Option<u8> {
+            self.channel
+        }
+        fn write_channel(&mut self, ch: u8) -> NodeResult<()> {
+            self.channel = Some(ch);
+            Ok(())
+        }
+        fn read_peer_payload(&self) -> Option<Vec<u8>> {
+            self.peer_payload.clone()
+        }
+        fn write_peer_payload(&mut self, p: &[u8]) -> NodeResult<()> {
+            self.peer_payload = Some(p.to_vec());
+            Ok(())
+        }
+        fn erase_peer_payload(&mut self) -> NodeResult<()> {
+            self.peer_payload = None;
+            Ok(())
+        }
+        fn read_reg_complete(&self) -> bool {
+            self.reg_complete
+        }
+        fn write_reg_complete(&mut self, c: bool) -> NodeResult<()> {
+            self.reg_complete = c;
             Ok(())
         }
     }
@@ -3033,5 +3130,212 @@ mod tests {
             1,
             "read_program() must be called exactly once (no double NVS read)"
         );
+    }
+
+    // ===================================================================
+    // PEER_REQUEST integration tests (ND-0909–ND-0915)
+    // ===================================================================
+
+    /// Build a valid PEER_ACK frame for testing.
+    fn build_peer_ack_response(
+        psk: &[u8; 32],
+        key_hint: u16,
+        echo_nonce: u64,
+        encrypted_payload: &[u8],
+    ) -> Vec<u8> {
+        use sonde_protocol::{MSG_PEER_ACK, PEER_ACK_KEY_PROOF, PEER_ACK_KEY_STATUS};
+
+        // registration_proof = HMAC-SHA256(psk, "sonde-peer-ack-v1" || payload)
+        let mut proof_input = Vec::new();
+        proof_input.extend_from_slice(b"sonde-peer-ack-v1");
+        proof_input.extend_from_slice(encrypted_payload);
+        let proof = TestHmac.compute(psk, &proof_input);
+
+        let cbor_map = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Integer(PEER_ACK_KEY_STATUS.into()),
+                ciborium::Value::Integer(0.into()),
+            ),
+            (
+                ciborium::Value::Integer(PEER_ACK_KEY_PROOF.into()),
+                ciborium::Value::Bytes(proof.to_vec()),
+            ),
+        ]);
+        let mut cbor_buf = Vec::new();
+        ciborium::into_writer(&cbor_map, &mut cbor_buf).unwrap();
+
+        let header = FrameHeader {
+            key_hint,
+            msg_type: MSG_PEER_ACK,
+            nonce: echo_nonce,
+        };
+        encode_frame(&header, &cbor_buf, psk, &TestHmac).unwrap()
+    }
+
+    /// PEER_REQUEST is attempted when reg_complete=false and peer_payload present.
+    /// After valid PEER_ACK, reg_complete is set and WAKE proceeds normally.
+    #[test]
+    fn test_peer_request_then_wake() {
+        let psk = [0x42u8; 32];
+        let key_hint = 0x1234u16;
+        let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+
+        let mut transport = MockTransport::new();
+
+        // MockRng starts at 0: first random_u64() returns 1 (PEER_REQUEST nonce),
+        // second returns 2 (WAKE nonce).
+        let peer_ack = build_peer_ack_response(&psk, key_hint, 1, &payload);
+        transport.queue_response(Some(peer_ack));
+
+        let command =
+            build_command_response(&psk, key_hint, 2, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.peer_payload = Some(payload);
+        storage.reg_complete = false;
+
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(storage.reg_complete);
+        assert!(storage.peer_payload.is_none());
+        assert_eq!(transport.outbound.len(), 2);
+    }
+
+    /// When reg_complete=true, PEER_REQUEST is skipped and WAKE proceeds directly.
+    #[test]
+    fn test_skip_peer_request_when_reg_complete() {
+        let psk = [0x42u8; 32];
+        let key_hint = 0x1234u16;
+
+        let mut transport = MockTransport::new();
+        let command =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.reg_complete = true;
+
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert_eq!(transport.outbound.len(), 1);
+    }
+
+    /// T-N917: WAKE failure after reg_complete clears the flag (self-healing)
+    /// when peer_payload is still present.
+    #[test]
+    fn test_wake_failure_clears_reg_complete() {
+        let psk = [0x42u8; 32];
+        let key_hint = 0x1234u16;
+
+        let mut transport = MockTransport::new();
+        for _ in 0..4 {
+            transport.queue_response(None);
+        }
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.reg_complete = true;
+        // peer_payload still present → self-healing can revert to PEER_REQUEST
+        storage.peer_payload = Some(vec![0xDE, 0xAD]);
+
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(!storage.reg_complete);
+    }
+
+    /// WAKE failure after peer_payload erased does NOT clear reg_complete.
+    /// Once peer_payload is gone, transient WAKE failures should not revert
+    /// to PEER_REQUEST since there is no payload to re-send.
+    #[test]
+    fn test_wake_failure_keeps_reg_complete_when_payload_erased() {
+        let psk = [0x42u8; 32];
+        let key_hint = 0x1234u16;
+
+        let mut transport = MockTransport::new();
+        for _ in 0..4 {
+            transport.queue_response(None);
+        }
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.reg_complete = true;
+        // peer_payload already erased (prior WAKE/COMMAND succeeded)
+        storage.peer_payload = None;
+
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // reg_complete must remain set — no payload to revert with
+        assert!(storage.reg_complete);
     }
 }

@@ -140,6 +140,15 @@ pub trait PlatformStorage {
         None
     }
 
+    /// Check whether a peer payload is stored without reading/copying it.
+    ///
+    /// Default implementation delegates to `read_peer_payload().is_some()`.
+    /// Platform-specific implementations can override this to avoid heap
+    /// allocation (e.g., NVS key existence check).
+    fn has_peer_payload(&self) -> bool {
+        self.read_peer_payload().is_some()
+    }
+
     /// Persist the encrypted peer payload received in NODE_PROVISION.
     fn write_peer_payload(&mut self, _payload: &[u8]) -> NodeResult<()> {
         Ok(())

@@ -18,11 +18,13 @@ pub const MSG_WAKE: u8 = 0x01;
 pub const MSG_GET_CHUNK: u8 = 0x02;
 pub const MSG_PROGRAM_ACK: u8 = 0x03;
 pub const MSG_APP_DATA: u8 = 0x04;
+pub const MSG_PEER_REQUEST: u8 = 0x05;
 
 // msg_type codes (gateway -> node)
 pub const MSG_COMMAND: u8 = 0x81;
 pub const MSG_CHUNK: u8 = 0x82;
 pub const MSG_APP_DATA_REPLY: u8 = 0x83;
+pub const MSG_PEER_ACK: u8 = 0x84;
 
 // Command codes
 pub const CMD_NOP: u8 = 0x00;
@@ -46,6 +48,15 @@ pub const KEY_CHUNK_INDEX: u64 = 11;
 pub const KEY_CHUNK_DATA: u64 = 12;
 pub const KEY_STARTING_SEQ: u64 = 13;
 pub const KEY_TIMESTAMP_MS: u64 = 14;
+
+// CBOR integer keys (PEER_REQUEST / PEER_ACK messages)
+// Keys are scoped per msg_type — key 1 in PEER_REQUEST (encrypted_payload)
+// is unrelated to key 1 in WAKE (firmware_abi_version).
+// PEER_REQUEST: { 1: encrypted_payload }
+// PEER_ACK:     { 1: status, 2: registration_proof }
+pub const PEER_REQ_KEY_PAYLOAD: u64 = 1;
+pub const PEER_ACK_KEY_STATUS: u64 = 1;
+pub const PEER_ACK_KEY_PROOF: u64 = 2;
 
 // CBOR integer keys (program image -- separate keyspace)
 pub const IMG_KEY_BYTECODE: u64 = 1;

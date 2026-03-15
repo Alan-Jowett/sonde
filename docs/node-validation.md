@@ -1085,7 +1085,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0902 | T-N902 |
 | ND-0903 | T-N902 |
 | ND-0904 | T-N903 |
-| ND-0905 | T-N904, T-N905, T-N906 |
+| ND-0905 | T-N904, T-N905, T-N905a, T-N906 |
 | ND-0906 | T-N904 |
 | ND-0907 | T-N908 |
 | ND-0908 | T-N907 |

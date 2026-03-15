@@ -1052,7 +1052,7 @@ A configurable stub handler process (or in-process mock) that:
 1. Generate an Ed25519 keypair.
 2. Convert to X25519 using the gateway's conversion function.
 3. Assert: the resulting X25519 key matches the expected output for a known test vector.
-4. Supply a low-order point as input.
+4. Supply an Ed25519 public key that maps to a low-order X25519 point (e.g., a key whose birational-map output is all-zero or a known small-order Curve25519 point).
 5. Assert: the conversion is rejected with an error.
 
 ---

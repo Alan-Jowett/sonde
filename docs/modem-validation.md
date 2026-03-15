@@ -482,7 +482,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Validates:** MD-0405
 
 **Procedure:**
-1. Connect a first phone via BLE. Confirm `BLE_CONNECTED` received on gateway side.
+1. Connect a first phone via BLE. Complete MTU negotiation and LESC pairing. Confirm `BLE_CONNECTED` received on gateway side.
 2. Attempt to connect a second BLE client to the Gateway Pairing Service.
 3. Assert: the second connection is rejected or queued — only one concurrent BLE client is supported.
 4. Assert: the first connection continues to operate normally.
@@ -506,7 +506,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Validates:** MD-0408
 
 **Procedure:**
-1. Connect a phone via BLE. Confirm `BLE_CONNECTED` received on gateway side.
+1. Connect a phone via BLE. Complete MTU negotiation and LESC pairing. Confirm `BLE_CONNECTED` received on gateway side.
 2. Send `BLE_INDICATE` (0x20) from gateway with a test BLE envelope.
 3. Assert: phone receives a GATT indication with the exact bytes.
 

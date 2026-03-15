@@ -908,7 +908,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Provision node via BLE, reboot (PSK stored, `reg_complete` not set).
 2. Capture the transmitted PEER_REQUEST frame.
 3. Assert: `msg_type` = 0x05.
-4. Assert: nonce is 8 bytes and differs across reboots (use a mock RNG to verify the nonce source; all-zero is theoretically valid but should not appear with a functioning CSPRNG).
+4. Assert: nonce is exactly 8 bytes and is sourced from the RNG abstraction (verified via mock RNG in test). Assert it is not a fixed constant (e.g., not always zero).
 5. Assert: CBOR payload decodes to `{1: encrypted_payload}` matching NVS value.
 6. Assert: HMAC-SHA256 over header+payload verifies with `node_psk`.
 7. Assert: ESP-NOW channel matches stored `rf_channel`.
@@ -1074,7 +1074,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0904 | T-N903 |
 | ND-0905 | T-N904, T-N905, T-N906 |
 | ND-0906 | T-N904 |
-| ND-0907 | T-N908 |
+| ND-0907 | T-N905, T-N908 |
 | ND-0908 | T-N907 |
 | ND-0909 | T-N909 |
 | ND-0910 | T-N910 |

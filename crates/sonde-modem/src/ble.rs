@@ -424,13 +424,30 @@ impl EspBleDriver {
                 // If the client used Write with Response (need_rsp), acknowledge it.
                 // Without this, the client's ATT write will timeout.
                 if need_rsp {
-                    if let Ok(s) = state.lock() {
-                        if let (Some(if_), Some(_ch)) = (s.gatts_if, s.char_handle) {
-                            drop(s);
-                            // Response with empty value (just an acknowledgement).
-                            // Error is logged but not fatal — the write data was already queued.
-                            // The actual `gatts.send_response()` call is performed here;
-                            // we use a minimal GattResponse with success status.
+                    let (gatts_if_opt, char_handle_opt) = {
+                        let s = state.lock().unwrap_or_else(|p| p.into_inner());
+                        (s.gatts_if, s.char_handle)
+                    };
+                    if let (Some(if_), Some(_ch)) = (gatts_if_opt, char_handle_opt) {
+                        // Send an ATT Write Response (empty body = success acknowledgement).
+                        // ESP_BLE_GATT_RSP_BY_APP means we must call gatts_send_response.
+                        // We use the raw ESP-IDF call here because esp-idf-svc's high-level
+                        // wrapper may not be available in all v0.51 builds.
+                        let mut rsp = esp_idf_sys::esp_gatt_rsp_t::default();
+                        rsp.attr_value.len = 0;
+                        // Safety: `if_` is a valid interface handle issued by ESP-IDF;
+                        // `rsp` is a stack-allocated response with zero-length payload.
+                        let ret = unsafe {
+                            esp_idf_sys::esp_ble_gatts_send_response(
+                                if_,
+                                conn_id,
+                                trans_id,
+                                esp_idf_sys::esp_gatt_status_t_ESP_GATT_OK,
+                                &mut rsp,
+                            )
+                        };
+                        if ret != esp_idf_sys::ESP_OK {
+                            warn!("BLE: send_response failed (err={})", ret);
                         }
                     }
                 }
@@ -564,11 +581,17 @@ impl Ble for EspBleDriver {
         if let Ok(s) = self.state.lock() {
             if let Some(addr) = s.peer_addr {
                 let addr_raw: [u8; 6] = addr.into();
-                unsafe {
+                // Safety: `addr_raw` is a valid 6-byte BLE address copied from `BdAddr`.
+                // The pointer is cast to `*mut u8` as required by the FFI signature, and
+                // is only used for the synchronous duration of the ESP-IDF call.
+                let ret = unsafe {
                     esp_idf_sys::esp_ble_confirm_reply(
                         addr_raw.as_ptr() as *mut u8,
                         passkey_decision,
-                    );
+                    )
+                };
+                if ret != esp_idf_sys::ESP_OK {
+                    warn!("BLE: esp_ble_confirm_reply failed (err={})", ret);
                 }
             }
         }

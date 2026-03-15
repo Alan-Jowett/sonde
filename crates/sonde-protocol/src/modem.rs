@@ -50,6 +50,20 @@ pub const MODEM_MSG_GET_STATUS: u8 = 0x04;
 /// Perform a WiFi AP scan; modem responds with `SCAN_RESULT`.
 pub const MODEM_MSG_SCAN_CHANNELS: u8 = 0x05;
 
+// -- BLE relay commands (Gateway → Modem, 0x20–0x2F) --
+
+/// Send a BLE indication to the connected phone via the Gateway Command characteristic.
+pub const MODEM_MSG_BLE_INDICATE: u8 = 0x20;
+
+/// Enable BLE advertising for the Gateway Pairing Service.
+pub const MODEM_MSG_BLE_ENABLE: u8 = 0x21;
+
+/// Disable BLE advertising and disconnect any active BLE client.
+pub const MODEM_MSG_BLE_DISABLE: u8 = 0x22;
+
+/// Accept or reject a BLE Numeric Comparison pairing.
+pub const MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY: u8 = 0x23;
+
 // -- Modem → Gateway (events / responses) --
 
 /// Modem initialized and ready (sent on boot and after `RESET`).
@@ -69,6 +83,20 @@ pub const MODEM_MSG_SCAN_RESULT: u8 = 0x86;
 
 /// Unrecoverable modem error.
 pub const MODEM_MSG_ERROR: u8 = 0x8F;
+
+// -- BLE relay events (Modem → Gateway, 0xA0–0xAF) --
+
+/// A BLE GATT write was received from the connected phone.
+pub const MODEM_MSG_BLE_RECV: u8 = 0xA0;
+
+/// A BLE client connected and completed LESC pairing.
+pub const MODEM_MSG_BLE_CONNECTED: u8 = 0xA1;
+
+/// The BLE client disconnected.
+pub const MODEM_MSG_BLE_DISCONNECTED: u8 = 0xA2;
+
+/// Numeric Comparison passkey relay — gateway must display and confirm/reject.
+pub const MODEM_MSG_BLE_PAIRING_CONFIRM: u8 = 0xA3;
 
 // -- Error codes (body of ERROR message) --
 
@@ -144,6 +172,29 @@ pub const PAIR_REQUEST_BODY_SIZE: usize = 2 + PSK_SIZE; // 34
 
 /// PAIR_REQUEST body with optional channel: key_hint (2B) + psk (32B) + channel (1B).
 pub const PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL: usize = PAIR_REQUEST_BODY_SIZE + 1; // 35
+
+// -- Body sizes for BLE relay messages --
+
+/// BLE_CONNECTED body: peer_addr (6B) + mtu (2B BE u16).
+pub const BLE_CONNECTED_BODY_SIZE: usize = MAC_SIZE + 2; // 8
+
+/// BLE_DISCONNECTED body: peer_addr (6B) + reason (1B).
+pub const BLE_DISCONNECTED_BODY_SIZE: usize = MAC_SIZE + 1; // 7
+
+/// BLE_PAIRING_CONFIRM body: passkey (4B BE u32).
+pub const BLE_PAIRING_CONFIRM_BODY_SIZE: usize = 4;
+
+/// BLE_PAIRING_CONFIRM_REPLY body: accept (1B).
+pub const BLE_PAIRING_CONFIRM_REPLY_BODY_SIZE: usize = 1;
+
+/// Minimum BLE_INDICATE / BLE_RECV body: at least 1 byte of BLE payload data.
+pub const BLE_DATA_MIN_BODY_SIZE: usize = 1;
+
+/// Maximum BLE_INDICATE / BLE_RECV body: serial frame max minus TYPE byte.
+pub const BLE_DATA_MAX_BODY_SIZE: usize = (SERIAL_MAX_LEN as usize) - 1; // 511
+
+/// Minimum negotiated ATT MTU for BLE connections (MD-0402).
+pub const BLE_MIN_MTU: u16 = 247;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -228,6 +279,12 @@ pub enum ModemMessage {
     GetStatus,
     ScanChannels,
 
+    // -- BLE relay commands (Gateway → Modem) --
+    BleIndicate(Vec<u8>),
+    BleEnable,
+    BleDisable,
+    BlePairingConfirmReply(BlePairingConfirmReply),
+
     // -- Modem → Gateway --
     ModemReady(ModemReady),
     RecvFrame(RecvFrame),
@@ -235,6 +292,12 @@ pub enum ModemMessage {
     Status(ModemStatus),
     ScanResult(ScanResult),
     Error(ModemError),
+
+    // -- BLE relay events (Modem → Gateway) --
+    BleRecv(Vec<u8>),
+    BleConnected(BleConnected),
+    BleDisconnected(BleDisconnected),
+    BlePairingConfirm(BlePairingConfirm),
 
     // -- USB Pairing Protocol --
     PairRequest(PairRequest),
@@ -353,6 +416,41 @@ pub enum IdentityResponse {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairingReady {
     pub firmware_version: u32,
+}
+
+/// BLE_CONNECTED (Modem → Gateway): a BLE client connected after LESC pairing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BleConnected {
+    /// BLE address of the connected phone.
+    pub peer_addr: [u8; MAC_SIZE],
+    /// Negotiated ATT MTU (always ≥ `BLE_MIN_MTU`).
+    pub mtu: u16,
+}
+
+/// BLE_DISCONNECTED (Modem → Gateway): the BLE client disconnected.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BleDisconnected {
+    /// BLE address of the disconnected phone.
+    pub peer_addr: [u8; MAC_SIZE],
+    /// HCI disconnect reason code.
+    pub reason: u8,
+}
+
+/// BLE_PAIRING_CONFIRM (Modem → Gateway): relay Numeric Comparison passkey to gateway.
+///
+/// The gateway (or admin CLI) must display the passkey to the operator, who verifies
+/// it matches the phone display and responds with `BLE_PAIRING_CONFIRM_REPLY`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlePairingConfirm {
+    /// 6-digit Numeric Comparison passkey (0–999999). Display as zero-padded 6 digits.
+    pub passkey: u32,
+}
+
+/// BLE_PAIRING_CONFIRM_REPLY (Gateway → Modem): accept or reject Numeric Comparison.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlePairingConfirmReply {
+    /// `true` = accept (operator confirmed pin matches), `false` = reject.
+    pub accept: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +592,61 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             let mut body = Vec::with_capacity(4);
             body.extend_from_slice(&pr.firmware_version.to_be_bytes());
             Ok((PAIRING_MSG_PAIRING_READY, body))
+        }
+        ModemMessage::BleIndicate(data) => {
+            if data.is_empty() {
+                return Err(ModemCodecError::BodyTooShort {
+                    msg_type: MODEM_MSG_BLE_INDICATE,
+                    expected_min: BLE_DATA_MIN_BODY_SIZE,
+                    actual: 0,
+                });
+            }
+            if data.len() > BLE_DATA_MAX_BODY_SIZE {
+                return Err(ModemCodecError::BodyTooLong {
+                    msg_type: MODEM_MSG_BLE_INDICATE,
+                    expected_max: BLE_DATA_MAX_BODY_SIZE,
+                    actual: data.len(),
+                });
+            }
+            Ok((MODEM_MSG_BLE_INDICATE, data.clone()))
+        }
+        ModemMessage::BleEnable => Ok((MODEM_MSG_BLE_ENABLE, Vec::new())),
+        ModemMessage::BleDisable => Ok((MODEM_MSG_BLE_DISABLE, Vec::new())),
+        ModemMessage::BlePairingConfirmReply(reply) => Ok((
+            MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY,
+            alloc::vec![reply.accept as u8],
+        )),
+        ModemMessage::BleRecv(data) => {
+            if data.is_empty() {
+                return Err(ModemCodecError::BodyTooShort {
+                    msg_type: MODEM_MSG_BLE_RECV,
+                    expected_min: BLE_DATA_MIN_BODY_SIZE,
+                    actual: 0,
+                });
+            }
+            if data.len() > BLE_DATA_MAX_BODY_SIZE {
+                return Err(ModemCodecError::BodyTooLong {
+                    msg_type: MODEM_MSG_BLE_RECV,
+                    expected_max: BLE_DATA_MAX_BODY_SIZE,
+                    actual: data.len(),
+                });
+            }
+            Ok((MODEM_MSG_BLE_RECV, data.clone()))
+        }
+        ModemMessage::BleConnected(c) => {
+            let mut body = Vec::with_capacity(BLE_CONNECTED_BODY_SIZE);
+            body.extend_from_slice(&c.peer_addr);
+            body.extend_from_slice(&c.mtu.to_be_bytes());
+            Ok((MODEM_MSG_BLE_CONNECTED, body))
+        }
+        ModemMessage::BleDisconnected(d) => {
+            let mut body = Vec::with_capacity(BLE_DISCONNECTED_BODY_SIZE);
+            body.extend_from_slice(&d.peer_addr);
+            body.push(d.reason);
+            Ok((MODEM_MSG_BLE_DISCONNECTED, body))
+        }
+        ModemMessage::BlePairingConfirm(p) => {
+            Ok((MODEM_MSG_BLE_PAIRING_CONFIRM, p.passkey.to_be_bytes().to_vec()))
         }
         ModemMessage::Unknown { msg_type, body } => Ok((*msg_type, body.clone())),
     }
@@ -803,6 +956,68 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             Ok(ModemMessage::PairingReady(PairingReady {
                 firmware_version,
             }))
+        }
+
+        MODEM_MSG_BLE_INDICATE => {
+            check_body_range(
+                msg_type,
+                body,
+                BLE_DATA_MIN_BODY_SIZE,
+                BLE_DATA_MAX_BODY_SIZE,
+            )?;
+            Ok(ModemMessage::BleIndicate(body.to_vec()))
+        }
+
+        MODEM_MSG_BLE_ENABLE => {
+            check_exact_body(msg_type, body, 0)?;
+            Ok(ModemMessage::BleEnable)
+        }
+
+        MODEM_MSG_BLE_DISABLE => {
+            check_exact_body(msg_type, body, 0)?;
+            Ok(ModemMessage::BleDisable)
+        }
+
+        MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY => {
+            check_exact_body(msg_type, body, BLE_PAIRING_CONFIRM_REPLY_BODY_SIZE)?;
+            Ok(ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply {
+                accept: body[0] != 0,
+            }))
+        }
+
+        MODEM_MSG_BLE_RECV => {
+            check_body_range(
+                msg_type,
+                body,
+                BLE_DATA_MIN_BODY_SIZE,
+                BLE_DATA_MAX_BODY_SIZE,
+            )?;
+            Ok(ModemMessage::BleRecv(body.to_vec()))
+        }
+
+        MODEM_MSG_BLE_CONNECTED => {
+            check_exact_body(msg_type, body, BLE_CONNECTED_BODY_SIZE)?;
+            let mut peer_addr = [0u8; MAC_SIZE];
+            peer_addr.copy_from_slice(&body[..MAC_SIZE]);
+            let mtu = u16::from_be_bytes([body[MAC_SIZE], body[MAC_SIZE + 1]]);
+            Ok(ModemMessage::BleConnected(BleConnected { peer_addr, mtu }))
+        }
+
+        MODEM_MSG_BLE_DISCONNECTED => {
+            check_exact_body(msg_type, body, BLE_DISCONNECTED_BODY_SIZE)?;
+            let mut peer_addr = [0u8; MAC_SIZE];
+            peer_addr.copy_from_slice(&body[..MAC_SIZE]);
+            let reason = body[MAC_SIZE];
+            Ok(ModemMessage::BleDisconnected(BleDisconnected {
+                peer_addr,
+                reason,
+            }))
+        }
+
+        MODEM_MSG_BLE_PAIRING_CONFIRM => {
+            check_exact_body(msg_type, body, BLE_PAIRING_CONFIRM_BODY_SIZE)?;
+            let passkey = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+            Ok(ModemMessage::BlePairingConfirm(BlePairingConfirm { passkey }))
         }
 
         _ => Ok(ModemMessage::Unknown {
@@ -1508,5 +1723,203 @@ mod tests {
             })
         );
         assert_eq!(decoder.decode().unwrap(), None);
+    }
+
+    // -- BLE relay protocol round-trip tests --
+
+    #[test]
+    fn round_trip_ble_indicate() {
+        let msg = ModemMessage::BleIndicate(alloc::vec![0x01, 0x00, 0x02, 0xDE, 0xAD]);
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[2], MODEM_MSG_BLE_INDICATE);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_enable() {
+        let msg = ModemMessage::BleEnable;
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[2], MODEM_MSG_BLE_ENABLE);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_disable() {
+        let msg = ModemMessage::BleDisable;
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[2], MODEM_MSG_BLE_DISABLE);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_pairing_confirm_reply_accept() {
+        let msg = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: true });
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[2], MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY);
+        assert_eq!(frame[3], 0x01);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_pairing_confirm_reply_reject() {
+        let msg = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: false });
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[3], 0x00);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_recv() {
+        let msg = ModemMessage::BleRecv(alloc::vec![0x01, 0x00, 0x03, 0xCA, 0xFE, 0xBA]);
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[2], MODEM_MSG_BLE_RECV);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_connected() {
+        let msg = ModemMessage::BleConnected(BleConnected {
+            peer_addr: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+            mtu: 247,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[2], MODEM_MSG_BLE_CONNECTED);
+        // peer_addr (6) + mtu (2) + TYPE (1) + LEN (2) = total 11 bytes
+        assert_eq!(frame.len(), 2 + 1 + BLE_CONNECTED_BODY_SIZE);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_connected_max_mtu() {
+        let msg = ModemMessage::BleConnected(BleConnected {
+            peer_addr: [0xAA; 6],
+            mtu: 512,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_disconnected() {
+        let msg = ModemMessage::BleDisconnected(BleDisconnected {
+            peer_addr: [0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC],
+            reason: 0x13, // BT_HCI_ERR_REMOTE_USER_TERMINATED
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[2], MODEM_MSG_BLE_DISCONNECTED);
+        assert_eq!(frame.len(), 2 + 1 + BLE_DISCONNECTED_BODY_SIZE);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_pairing_confirm() {
+        let msg = ModemMessage::BlePairingConfirm(BlePairingConfirm { passkey: 123456 });
+        let frame = encode_modem_frame(&msg).unwrap();
+        assert_eq!(frame[2], MODEM_MSG_BLE_PAIRING_CONFIRM);
+        // passkey 123456 = 0x0001_E240
+        assert_eq!(&frame[3..7], &[0x00, 0x01, 0xE2, 0x40]);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn round_trip_ble_pairing_confirm_max_passkey() {
+        let msg = ModemMessage::BlePairingConfirm(BlePairingConfirm { passkey: 999999 });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn ble_indicate_empty_body_encode_error() {
+        let msg = ModemMessage::BleIndicate(alloc::vec![]);
+        let err = encode_modem_frame(&msg).unwrap_err();
+        assert!(matches!(
+            err,
+            ModemCodecError::BodyTooShort {
+                msg_type: MODEM_MSG_BLE_INDICATE,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ble_recv_empty_body_encode_error() {
+        let msg = ModemMessage::BleRecv(alloc::vec![]);
+        let err = encode_modem_frame(&msg).unwrap_err();
+        assert!(matches!(
+            err,
+            ModemCodecError::BodyTooShort {
+                msg_type: MODEM_MSG_BLE_RECV,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ble_indicate_decode_empty_body_error() {
+        // Manually craft a BLE_INDICATE frame with empty body (len = 1, no ble_data).
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&1u16.to_be_bytes()); // len = 1 (TYPE only)
+        frame.push(MODEM_MSG_BLE_INDICATE);
+        let err = decode_modem_frame(&frame).unwrap_err();
+        assert!(matches!(
+            err,
+            ModemCodecError::BodyTooShort {
+                msg_type: MODEM_MSG_BLE_INDICATE,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ble_connected_body_too_short_decode_error() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&4u16.to_be_bytes()); // len = 4 (TYPE + 3 body, need 8)
+        frame.push(MODEM_MSG_BLE_CONNECTED);
+        frame.extend_from_slice(&[0x01, 0x02, 0x03]);
+        let err = decode_modem_frame(&frame).unwrap_err();
+        assert!(matches!(
+            err,
+            ModemCodecError::BodyTooShort {
+                msg_type: MODEM_MSG_BLE_CONNECTED,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ble_pairing_confirm_reply_decode_nonzero_accept() {
+        // Per spec: any non-zero value = accept.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&2u16.to_be_bytes()); // len = 2 (TYPE + 1 body)
+        frame.push(MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY);
+        frame.push(0xFF); // non-zero = accept
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(
+            decoded,
+            ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: true })
+        );
+    }
+
+    #[test]
+    fn ble_indicate_max_payload_round_trip() {
+        // BLE_INDICATE with maximum allowed payload (511 bytes).
+        let data = alloc::vec![0xABu8; BLE_DATA_MAX_BODY_SIZE];
+        let msg = ModemMessage::BleIndicate(data);
+        let frame = encode_modem_frame(&msg).unwrap();
+        // len = TYPE(1) + BODY(511) = 512 = SERIAL_MAX_LEN
+        assert_eq!(u16::from_be_bytes([frame[0], frame[1]]), 512);
+        let (decoded, _) = decode_modem_frame(&frame).unwrap();
+        assert_eq!(decoded, msg);
     }
 }

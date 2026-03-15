@@ -122,8 +122,12 @@ pub fn parse_node_provision(body: &[u8]) -> Result<NodeProvision, &'static str> 
         return Err("rf_channel out of range (must be 1–13)");
     }
     let payload_len = u16::from_be_bytes([body[35], body[36]]) as usize;
-    if body.len() < NODE_PROVISION_MIN_LEN + payload_len {
+    let expected_len = NODE_PROVISION_MIN_LEN + payload_len;
+    if body.len() < expected_len {
         return Err("encrypted_payload truncated");
+    }
+    if body.len() != expected_len {
+        return Err("trailing bytes after encrypted_payload");
     }
     let encrypted_payload = body[37..37 + payload_len].to_vec();
     Ok(NodeProvision {
@@ -144,8 +148,11 @@ pub fn encode_node_ack(status: u8) -> Vec<u8> {
 
 /// Handle a parsed NODE_PROVISION:
 ///
-/// 1. If the node is already paired and `button_held` is false, return
+/// 1. If `paired_on_entry` is true and `button_held` is false, return
 ///    `NODE_ACK_ALREADY_PAIRED` (defense-in-depth — ND-0905 note).
+///    `paired_on_entry` indicates the node was already paired when it
+///    entered BLE mode; it does NOT block same-session re-provision
+///    (ND-0907) after a successful first provision in this BLE session.
 /// 2. If `button_held` is true, perform a factory reset before writing new
 ///    credentials (ND-0917).
 /// 3. Erase any pre-existing PSK to allow same-session re-provision (ND-0907).
@@ -154,17 +161,21 @@ pub fn encode_node_ack(status: u8) -> Vec<u8> {
 ///
 /// Returns a `NODE_ACK` status byte:
 /// - `NODE_ACK_SUCCESS` (0x00) on success.
-/// - `NODE_ACK_ALREADY_PAIRED` (0x01) if already paired without button override.
+/// - `NODE_ACK_ALREADY_PAIRED` (0x01) if paired on entry without button override.
 /// - `NODE_ACK_STORAGE_ERROR` (0x02) on any NVS write failure.
 pub fn handle_node_provision<S: PlatformStorage>(
     provision: &NodeProvision,
     storage: &mut S,
     map_storage: &mut MapStorage,
     button_held: bool,
+    paired_on_entry: bool,
 ) -> u8 {
-    // Defense-in-depth: reject provisioning if the node already has a PSK
-    // and the pairing button was not held (ND-0905 note).
-    if !button_held && storage.read_key().is_some() {
+    // Defense-in-depth: reject provisioning if the node was already paired
+    // when it entered BLE mode and the pairing button was not held.
+    // This does NOT block same-session re-provision (ND-0907) — the caller
+    // passes `paired_on_entry = false` when the node entered BLE mode
+    // unpaired and was provisioned during this session.
+    if !button_held && paired_on_entry {
         return NODE_ACK_ALREADY_PAIRED;
     }
 
@@ -468,6 +479,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_node_provision_trailing_bytes_rejected() {
+        // Valid 37-byte header + 0-byte payload, but 1 extra trailing byte
+        let mut body = vec![0u8; 38];
+        body[2..34].fill(0x42); // psk
+        body[34] = 1; // channel 1
+        body[35] = 0x00;
+        body[36] = 0x00; // payload_len = 0
+        // body[37] is the trailing byte
+        let err = parse_node_provision(&body).unwrap_err();
+        assert_eq!(err, "trailing bytes after encrypted_payload");
+    }
+
+    #[test]
     fn parse_node_provision_invalid_channel_zero() {
         let mut body = vec![0u8; 37];
         body[34] = 0; // channel 0 — invalid
@@ -510,7 +534,7 @@ mod tests {
         let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let provision = make_provision(0xABCD, psk, 6, &payload);
 
-        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_SUCCESS);
 
         // PSK and key_hint stored
@@ -533,10 +557,11 @@ mod tests {
 
     // --- handle_node_provision: T-N905 same-session re-provision ---
 
-    /// T-N905: Second NODE_PROVISION on same connection without button_held returns
-    /// NODE_ACK_ALREADY_PAIRED (defense-in-depth). Re-provision requires button_held.
+    /// T-N905: Second NODE_PROVISION on same BLE connection overwrites credentials
+    /// (ND-0907). The caller passes `paired_on_entry = false` because the node
+    /// was unpaired when it entered BLE mode.
     #[test]
-    fn t_n905_same_session_reprovision_requires_button() {
+    fn t_n905_same_session_reprovision() {
         let mut storage = MockStorage::new();
         let mut maps = MapStorage::new(1024);
 
@@ -544,45 +569,18 @@ mod tests {
         let psk_a = [0x11u8; 32];
         let payload_a = vec![0x01, 0x02];
         let provision_a = make_provision(0x0001, psk_a, 3, &payload_a);
-        let status_a = handle_node_provision(&provision_a, &mut storage, &mut maps, false);
+        let status_a =
+            handle_node_provision(&provision_a, &mut storage, &mut maps, false, false);
         assert_eq!(status_a, NODE_ACK_SUCCESS);
         assert_eq!(storage.read_key().unwrap().1, psk_a);
 
-        // Second provision without button held → rejected (already paired)
+        // Second provision on same session — still paired_on_entry=false
         let psk_b = [0x22u8; 32];
         let payload_b = vec![0x03, 0x04, 0x05];
         let provision_b = make_provision(0x0002, psk_b, 11, &payload_b);
-        let status_b = handle_node_provision(&provision_b, &mut storage, &mut maps, false);
-        assert_eq!(
-            status_b, NODE_ACK_ALREADY_PAIRED,
-            "re-provision without button must be rejected"
-        );
-
-        // NVS still contains credentials A (unchanged)
-        let key = storage.read_key().expect("key should still be stored");
-        assert_eq!(key.0, 0x0001);
-        assert_eq!(key.1, psk_a);
-        assert_eq!(storage.read_channel(), Some(3));
-    }
-
-    /// T-N905 variant: Re-provision with button_held overwrites credentials.
-    #[test]
-    fn t_n905_same_session_reprovision_with_button() {
-        let mut storage = MockStorage::new();
-        let mut maps = MapStorage::new(1024);
-
-        // First provision
-        let psk_a = [0x11u8; 32];
-        let provision_a = make_provision(0x0001, psk_a, 3, &[0x01, 0x02]);
-        let status_a = handle_node_provision(&provision_a, &mut storage, &mut maps, false);
-        assert_eq!(status_a, NODE_ACK_SUCCESS);
-
-        // Second provision with button_held → factory-resets then writes new creds
-        let psk_b = [0x22u8; 32];
-        let payload_b = vec![0x03, 0x04, 0x05];
-        let provision_b = make_provision(0x0002, psk_b, 11, &payload_b);
-        let status_b = handle_node_provision(&provision_b, &mut storage, &mut maps, true);
-        assert_eq!(status_b, NODE_ACK_SUCCESS, "re-provision with button must succeed");
+        let status_b =
+            handle_node_provision(&provision_b, &mut storage, &mut maps, false, false);
+        assert_eq!(status_b, NODE_ACK_SUCCESS, "same-session re-provision must succeed");
 
         // NVS now contains credentials B
         let key = storage
@@ -597,14 +595,16 @@ mod tests {
         );
     }
 
-    /// Already-paired node without button held returns NODE_ACK_ALREADY_PAIRED.
+    /// Already-paired node (paired_on_entry=true) without button held returns
+    /// NODE_ACK_ALREADY_PAIRED (defense-in-depth).
     #[test]
-    fn handle_node_provision_already_paired_no_button() {
+    fn handle_node_provision_already_paired_on_entry_no_button() {
         let mut storage = MockStorage::with_key(0x0099, [0x55u8; 32]);
         let mut maps = MapStorage::new(1024);
 
         let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
-        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        let status =
+            handle_node_provision(&provision, &mut storage, &mut maps, false, true);
         assert_eq!(status, NODE_ACK_ALREADY_PAIRED);
 
         // Original key is unchanged
@@ -628,8 +628,7 @@ mod tests {
         let payload_new = vec![0x12, 0x34];
         let provision = make_provision(0x00AA, psk_new, 7, &payload_new);
 
-        // button_held = true triggers factory reset
-        let status = handle_node_provision(&provision, &mut storage, &mut maps, true);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, true, true);
         assert_eq!(status, NODE_ACK_SUCCESS);
 
         // New credentials written
@@ -655,7 +654,7 @@ mod tests {
         let mut maps = MapStorage::new(1024);
         let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
 
-        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
     }
 
@@ -667,7 +666,7 @@ mod tests {
         let mut maps = MapStorage::new(1024);
         let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
 
-        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
     }
 
@@ -679,7 +678,7 @@ mod tests {
         let mut maps = MapStorage::new(1024);
         let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
 
-        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
     }
 
@@ -691,7 +690,7 @@ mod tests {
         let mut maps = MapStorage::new(1024);
         let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
 
-        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         assert_eq!(status, NODE_ACK_STORAGE_ERROR);
     }
 
@@ -724,9 +723,7 @@ mod tests {
         // Handle
         let mut storage = MockStorage::new();
         let mut maps = MapStorage::new(1024);
-        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
-
-        // Encode ACK
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
         let ack = encode_node_ack(status);
         let (ack_type, ack_body) = parse_ble_envelope(&ack).unwrap();
         assert_eq!(ack_type, BLE_MSG_NODE_ACK);

@@ -29,6 +29,10 @@ const FIRMWARE_VERSION: [u8; 4] = [0, 1, 0, 0];
 /// sustained RX burst traffic.
 const MAX_RX_FRAMES_PER_POLL: usize = 16;
 
+/// Maximum number of BLE events forwarded per `poll()` call.
+/// Prevents starvation of serial decode and radio under sustained BLE traffic.
+const MAX_BLE_EVENTS_PER_POLL: usize = 16;
+
 /// Abstraction over a serial byte stream (USB-CDC on device, PTY in tests).
 pub trait SerialPort {
     /// Read available bytes. Returns `(bytes_read, reconnected)` where
@@ -238,7 +242,9 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         }
 
         // Forward any BLE events to the gateway over USB-CDC.
-        loop {
+        // Cap at MAX_BLE_EVENTS_PER_POLL to prevent starvation of serial
+        // decode and radio under sustained BLE write traffic.
+        for _ in 0..MAX_BLE_EVENTS_PER_POLL {
             match self.ble.drain_event() {
                 Some(BleEvent::Recv(data)) => {
                     let msg = ModemMessage::BleRecv(data);

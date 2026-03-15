@@ -72,6 +72,11 @@ struct BleState {
     mtu: u16,
     /// True if this connection should be rejected due to low MTU (MD-0402).
     mtu_too_low: bool,
+    /// Numeric Comparison passkey relayed to gateway; operator decision pending.
+    /// `BleEvent::Connected` is deferred until the operator accepts (MD-0414).
+    pairing_pending: bool,
+    /// Deferred Connected event stored while awaiting operator confirmation.
+    deferred_connected: Option<([u8; MAC_SIZE], u16)>,
 }
 
 impl BleState {
@@ -83,6 +88,8 @@ impl BleState {
             advertising: false,
             mtu: 0,
             mtu_too_low: false,
+            pairing_pending: false,
+            deferred_connected: None,
         }
     }
 }
@@ -131,8 +138,6 @@ impl EspBleDriver {
             // If a second client connects, disconnect immediately.
             if server.connected_count() > 1 {
                 warn!("BLE: second connection rejected (MD-0405)");
-                // Disconnect the second (latest) client by stopping advertising
-                // and the extra connection will be cleaned up by the stack.
                 let _ = server.disconnect_with_code(
                     desc.conn_handle,
                     esp32_nimble::enums::DisconnReason::ConnTermByLocalHost,
@@ -140,20 +145,32 @@ impl EspBleDriver {
                 return;
             }
 
-            // MD-0402: Reject connections with ATT MTU < 247.
-            if mtu < BLE_MIN_MTU {
-                warn!(
-                    "BLE: MTU {} < minimum {}; disconnecting (MD-0402)",
-                    mtu, BLE_MIN_MTU
-                );
-                if let Ok(mut s) = state_connect.lock() {
-                    s.mtu_too_low = true;
-                }
-                return;
-            }
+            let low_mtu = mtu < BLE_MIN_MTU;
 
             if let Ok(mut s) = state_connect.lock() {
-                s.mtu = mtu;
+                // NimBLE stops advertising when a client connects.  Clear the
+                // flag so that a subsequent enable() will restart advertising
+                // after this connection ends (MD-0407).
+                s.advertising = false;
+
+                if low_mtu {
+                    s.mtu_too_low = true;
+                } else {
+                    s.mtu = mtu;
+                }
+            }
+
+            // MD-0402: Disconnect immediately for low-MTU connections rather
+            // than deferring to the drain_event() poll loop.
+            if low_mtu {
+                warn!(
+                    "BLE: MTU {} < minimum {}; disconnecting immediately (MD-0402)",
+                    mtu, BLE_MIN_MTU
+                );
+                let _ = server.disconnect_with_code(
+                    desc.conn_handle,
+                    esp32_nimble::enums::DisconnReason::ConnTermByLocalHost,
+                );
             }
         });
 
@@ -170,6 +187,8 @@ impl EspBleDriver {
                 s.indication_queue.clear();
                 s.awaiting_confirm = false;
                 s.mtu_too_low = false;
+                s.pairing_pending = false;
+                s.deferred_connected = None;
                 s.events.push_back(BleEvent::Disconnected {
                     peer_addr,
                     reason: reason as u8,
@@ -199,10 +218,15 @@ impl EspBleDriver {
         ble_server.on_confirm_pin(move |passkey| {
             info!("BLE: Numeric Comparison passkey = {:06}", passkey);
             if let Ok(mut s) = state_confirm.lock() {
+                // Mark pairing pending so on_authentication_complete defers the
+                // Connected event until the operator confirms (MD-0414).
+                s.pairing_pending = true;
                 s.events.push_back(BleEvent::PairingConfirm { passkey });
             }
-            // Return true to allow pairing to proceed; operator confirmation is
-            // handled asynchronously via pairing_confirm_reply() (MD-0414).
+            // Return true to allow pairing to proceed at the BLE stack level.
+            // Operator confirmation is handled asynchronously via
+            // pairing_confirm_reply(); a rejection will disconnect the client
+            // and suppress BLE_CONNECTED.
             true
         });
 
@@ -213,8 +237,6 @@ impl EspBleDriver {
                 let peer_addr: [u8; MAC_SIZE] = desc.address().val;
                 if let Ok(mut s) = state_auth.lock() {
                     // MD-0402/MD-0410: Only emit Connected when MTU is accepted.
-                    // Low-MTU connections are pending disconnect and must not
-                    // produce a spurious BLE_CONNECTED event.
                     if s.mtu_too_low || s.mtu < BLE_MIN_MTU {
                         warn!(
                             "BLE: pairing complete but MTU too low ({}); suppressing BLE_CONNECTED",
@@ -222,11 +244,20 @@ impl EspBleDriver {
                         );
                         return;
                     }
-                    info!("BLE: LESC pairing complete — sending BLE_CONNECTED (MD-0410)");
-                    s.events.push_back(BleEvent::Connected {
-                        peer_addr,
-                        mtu: s.mtu,
-                    });
+                    // MD-0414: If Numeric Comparison is pending operator
+                    // confirmation, defer BLE_CONNECTED until accepted.  This
+                    // prevents emitting Connected (and triggering bonding-based
+                    // session setup) before the operator has approved.
+                    if s.pairing_pending {
+                        info!("BLE: LESC pairing complete — deferring BLE_CONNECTED until operator confirms");
+                        s.deferred_connected = Some((peer_addr, s.mtu));
+                    } else {
+                        info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
+                        s.events.push_back(BleEvent::Connected {
+                            peer_addr,
+                            mtu: s.mtu,
+                        });
+                    }
                 }
             } else {
                 warn!("BLE: pairing failed: {:?}", result);
@@ -313,6 +344,8 @@ impl Ble for EspBleDriver {
             s.advertising = false;
             s.indication_queue.clear();
             s.awaiting_confirm = false;
+            s.pairing_pending = false;
+            s.deferred_connected = None;
         }
         info!("BLE advertising stopped (MD-0407)");
     }
@@ -344,17 +377,27 @@ impl Ble for EspBleDriver {
     }
 
     fn pairing_confirm_reply(&mut self, accept: bool) {
-        // Forward the operator's Numeric Comparison decision to NimBLE (MD-0414).
-        // The on_confirm_pin callback returned `true` tentatively; if the gateway
-        // replies with accept=false we need to disconnect the client.
-        if !accept {
+        if accept {
+            info!("BLE: Numeric Comparison accepted by operator");
+            if let Ok(mut s) = self.state.lock() {
+                s.pairing_pending = false;
+                // Emit the deferred Connected event now that the operator approved.
+                if let Some((peer_addr, mtu)) = s.deferred_connected.take() {
+                    s.events.push_back(BleEvent::Connected { peer_addr, mtu });
+                }
+            }
+        } else {
+            warn!("BLE: Numeric Comparison rejected by operator — disconnecting");
+            if let Ok(mut s) = self.state.lock() {
+                s.pairing_pending = false;
+                s.deferred_connected = None;
+            }
             let ble_device = BLEDevice::take();
             let ble_server = ble_device.get_server();
-            // Disconnect all clients to abort the pairing.
             ble_server.disconnect_all();
-            warn!("BLE: Numeric Comparison rejected by operator — disconnecting");
-        } else {
-            info!("BLE: Numeric Comparison accepted by operator");
+            // Note: CONFIG_BT_NIMBLE_NVS_PERSIST=y may leave a stale bond in
+            // NVS.  This is harmless because the gateway will not accept the
+            // session, and the bond will be overwritten on the next pairing.
         }
     }
 
@@ -415,8 +458,8 @@ impl EspBleDriver {
             }
             return;
         };
-        let char = svc.lock().get_characteristic(GATEWAY_COMMAND_UUID);
-        let Some(ch) = char else {
+        let characteristic = svc.lock().get_characteristic(GATEWAY_COMMAND_UUID);
+        let Some(chr) = characteristic else {
             warn!("BLE: GATT characteristic not found; discarding indication chunk");
             if let Ok(mut s) = self.state.lock() {
                 s.awaiting_confirm = false;
@@ -424,7 +467,7 @@ impl EspBleDriver {
             return;
         };
 
-        let notify_result = ch.lock().set_value(&chunk).indicate();
+        let notify_result = chr.lock().set_value(&chunk).indicate();
         // In esp32-nimble v0.11, `indicate()` blocks until the ATT
         // Handle Value Confirmation is received from the peer (or
         // returns an error on timeout/disconnect). Clearing

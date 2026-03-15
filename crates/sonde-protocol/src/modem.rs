@@ -436,14 +436,14 @@ pub struct PairingReady {
 /// BLE_INDICATE (Gateway → Modem): send a BLE indication to the connected phone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BleIndicate {
-    /// Opaque payload relayed to the BLE client (1 .. 511 bytes).
+    /// Opaque payload relayed to the BLE client (1 .. [`BLE_DATA_MAX_BODY_SIZE`] bytes).
     pub ble_data: Vec<u8>,
 }
 
 /// BLE_RECV (Modem → Gateway): a BLE GATT write received from the connected phone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BleRecv {
-    /// Opaque payload received from the BLE client (1 .. 511 bytes).
+    /// Opaque payload received from the BLE client (1 .. [`BLE_DATA_MAX_BODY_SIZE`] bytes).
     pub ble_data: Vec<u8>,
 }
 
@@ -1019,10 +1019,19 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
 
         MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY => {
             check_exact_body(msg_type, body, BLE_PAIRING_CONFIRM_REPLY_BODY_SIZE)?;
+            let accept = match body[0] {
+                0 => false,
+                1 => true,
+                other => {
+                    return Err(ModemCodecError::InvalidFieldValue {
+                        msg_type,
+                        field: "accept",
+                        value: other as usize,
+                    });
+                }
+            };
             Ok(ModemMessage::BlePairingConfirmReply(
-                BlePairingConfirmReply {
-                    accept: body[0] != 0,
-                },
+                BlePairingConfirmReply { accept },
             ))
         }
 
@@ -1850,8 +1859,9 @@ mod tests {
         // TYPE = 0xA1, BODY = 6B addr + 2B mtu (BE)
         assert_eq!(frame[2], MODEM_MSG_BLE_CONNECTED);
         assert_eq!(frame[3..9], [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        assert_eq!(frame[9], 0x00);
-        assert_eq!(frame[10], BLE_MTU_MIN as u8);
+        let mtu_bytes = BLE_MTU_MIN.to_be_bytes();
+        assert_eq!(frame[9], mtu_bytes[0]);
+        assert_eq!(frame[10], mtu_bytes[1]);
         let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
         assert_eq!(consumed, frame.len());
@@ -2089,17 +2099,20 @@ mod tests {
     }
 
     #[test]
-    fn ble_pairing_confirm_reply_nonzero_accept() {
-        // Any non-zero value for accept should decode as true
+    fn ble_pairing_confirm_reply_invalid_accept_byte() {
+        // Only 0x00 and 0x01 are valid; 0xFF must be rejected
         let mut frame = Vec::new();
         frame.extend_from_slice(&2u16.to_be_bytes());
         frame.push(MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY);
-        frame.push(0xFF); // non-zero → accept = true
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(
-            decoded,
-            ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: true })
-        );
+        frame.push(0xFF);
+        assert!(matches!(
+            decode_modem_frame(&frame),
+            Err(ModemCodecError::InvalidFieldValue {
+                msg_type: MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY,
+                field: "accept",
+                value: 0xFF,
+            })
+        ));
     }
 
     #[test]

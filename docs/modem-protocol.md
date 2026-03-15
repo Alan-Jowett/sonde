@@ -86,6 +86,10 @@ Message types are partitioned by direction:
 | 0x03 | `SET_CHANNEL` | §4.2 | Set the WiFi/ESP-NOW channel. Modem responds with `SET_CHANNEL_ACK`. |
 | 0x04 | `GET_STATUS` | (empty) | Query modem status and counters. Modem responds with `STATUS`. |
 | 0x05 | `SCAN_CHANNELS` | (empty) | Perform a WiFi AP scan across all channels. Modem responds with `SCAN_RESULT`. |
+| 0x20 | `BLE_INDICATE` | §4.9 | Send a BLE indication to the connected phone (gateway response wrapped in BLE envelope). |
+| 0x21 | `BLE_ENABLE` | §4.13 | Enable BLE advertising and accept connections for the Gateway Pairing Service. |
+| 0x22 | `BLE_DISABLE` | §4.14 | Disable BLE advertising and disconnect any active BLE client. |
+| 0x23 | `BLE_PAIRING_CONFIRM_REPLY` | §4.16 | Accept or reject the BLE Numeric Comparison pairing. |
 
 ### 3.2  Modem → Gateway
 
@@ -97,6 +101,10 @@ Message types are partitioned by direction:
 | 0x85 | `STATUS` | §4.6 | Modem status and counters (response to `GET_STATUS`). |
 | 0x86 | `SCAN_RESULT` | §4.7 | Per-channel AP survey results (response to `SCAN_CHANNELS`). |
 | 0x8F | `ERROR` | §4.8 | Unrecoverable modem error. |
+| 0xA0 | `BLE_RECV` | §4.10 | A BLE GATT write was received from the connected phone. |
+| 0xA1 | `BLE_CONNECTED` | §4.11 | A BLE client connected to the Gateway Pairing Service. |
+| 0xA2 | `BLE_DISCONNECTED` | §4.12 | The BLE client disconnected. |
+| 0xA3 | `BLE_PAIRING_CONFIRM` | §4.15 | Numeric Comparison pin display request — gateway must show the pin to the operator. |
 
 ---
 
@@ -232,6 +240,104 @@ Reports an unrecoverable modem error. The gateway should log this and may attemp
 | 0x03 | `CHANNEL_SET_FAILED` | Failed to set the requested channel. |
 | 0xFF | `UNKNOWN` | Unclassified error. |
 
+### 4.9  BLE_INDICATE (Gateway → Modem)
+
+Gateway sends a BLE indication payload to the connected phone via the Gateway Command characteristic. The modem handles indication fragmentation per ATT MTU (see ble-pairing-protocol.md §3.4). This is a fire-and-forget operation — no per-message response is sent. If no BLE client is connected, the modem silently discards the message.
+
+```
+┌──────────────────────────────────┐
+│  ble_data (N bytes)              │
+└──────────────────────────────────┘
+```
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `ble_data` | Bytes | 1 .. 511 bytes | Opaque payload relayed to the BLE client. Typically a BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4), but the modem does not inspect or validate the contents. A `BLE_INDICATE` serial frame whose BODY length is 0 (i.e., the serial envelope contains only the type byte and no `ble_data`) is invalid and MUST be silently discarded by the modem. |
+
+### 4.10  BLE_RECV (Modem → Gateway)
+
+A BLE GATT write was received on the Gateway Command characteristic from the connected phone. The modem forwards the complete reassembled write payload (after Write Long reassembly if applicable). Empty GATT writes (zero payload bytes) MUST be silently discarded — no `BLE_RECV` is sent.
+
+```
+┌──────────────────────────────────┐
+│  ble_data (N bytes)              │
+└──────────────────────────────────┘
+```
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `ble_data` | Bytes | 1 .. 511 bytes | Opaque payload received from the BLE client. Typically a BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4), but the modem does not inspect or validate the contents. |
+
+### 4.11  BLE_CONNECTED (Modem → Gateway)
+
+A BLE client connected to the Gateway Pairing Service and completed LESC pairing. Sent after MTU negotiation and LESC pairing succeed.
+
+```
+┌──────────────────┬────────────┐
+│  peer_addr (6B)  │  mtu (2B)  │
+└──────────────────┴────────────┘
+```
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `peer_addr` | Bytes | 6 bytes | BLE address of the connected phone. |
+| `mtu` | Unsigned integer | 2 bytes, big-endian | Negotiated ATT MTU. Always ≥ 247. |
+
+### 4.12  BLE_DISCONNECTED (Modem → Gateway)
+
+The BLE client disconnected from the Gateway Pairing Service.
+
+```
+┌──────────────────┬──────────────┐
+│  peer_addr (6B)  │  reason (1B) │
+└──────────────────┴──────────────┘
+```
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `peer_addr` | Bytes | 6 bytes | BLE address of the disconnected phone. |
+| `reason` | Unsigned integer | 1 byte | BLE HCI disconnect reason code. |
+
+### 4.13  BLE_ENABLE (Gateway → Modem)
+
+Enable BLE advertising for the Gateway Pairing Service. The modem starts advertising and accepts incoming BLE connections. BLE advertising is OFF by default after boot/RESET — the gateway must send `BLE_ENABLE` before a phone can discover the modem. If already enabled, this is a no-op.
+
+Body: (empty — no fields)
+
+### 4.14  BLE_DISABLE (Gateway → Modem)
+
+Disable BLE advertising and disconnect any active BLE client. If a BLE client is connected, the modem disconnects it (triggering a `BLE_DISCONNECTED` event) before stopping advertising. If already disabled, this is a no-op.
+
+Body: (empty — no fields)
+
+### 4.15  BLE_PAIRING_CONFIRM (Modem → Gateway)
+
+During BLE LESC Numeric Comparison pairing, the modem sends this message to the gateway with the 6-digit pin that should be displayed to the operator. The gateway (or admin CLI) shows the pin; the operator verifies it matches the phone's display. The gateway responds with `BLE_PAIRING_CONFIRM_REPLY` (§4.16) to accept or reject the pairing.
+
+```
+┌──────────────────┐
+│  passkey (4B)    │
+└──────────────────┘
+```
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `passkey` | Unsigned integer | 4 bytes, big-endian u32 | 6-digit Numeric Comparison passkey (0–999999). Display as zero-padded 6 digits. |
+
+### 4.16  BLE_PAIRING_CONFIRM_REPLY (Gateway → Modem)
+
+Gateway's response to a `BLE_PAIRING_CONFIRM` — accepts or rejects the Numeric Comparison pairing.
+
+```
+┌──────────────┐
+│  accept (1B) │
+└──────────────┘
+```
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `accept` | Unsigned integer | 1 byte | `0x01` = accept (operator confirmed pin matches), `0x00` = reject (operator rejected or timeout). |
+
 ---
 
 ## 5  Message flows
@@ -255,6 +361,8 @@ Gateway                          Modem
 ```
 
 Any `MODEM_READY` received before `RESET` completes (e.g., from USB enumeration) is discarded. The gateway only accepts `MODEM_READY` after it has sent `RESET`.
+
+**BLE advertising** is OFF after boot and after `RESET`. The gateway must send `BLE_ENABLE` (§4.13) to start BLE advertising before a phone can discover the modem.
 
 ### 5.2  Normal operation (frame relay)
 
@@ -317,6 +425,48 @@ Gateway                          Modem
 ```
 
 On `ERROR`, the gateway logs the error and sends `RESET` to attempt recovery.
+
+### 5.6  BLE pairing relay
+
+When a phone connects via BLE for pairing, the modem relays GATT messages between the phone and the gateway. The gateway must first enable BLE advertising via `BLE_ENABLE`:
+
+```
+Gateway                          Modem                            Phone
+   │                               │                               │
+   │──── BLE_ENABLE ──────────────►│                               │
+   │                               │── start advertising ─────────►│
+   │                               │                               │
+   │                               │◄──── BLE connect ─────────────│
+   │                               │                               │
+   │                               │◄──── LESC Numeric Comparison ─│
+   │◄──── BLE_PAIRING_CONFIRM ────│  (passkey = 123456)           │
+   │                               │                               │
+   │  (operator verifies pin)      │                               │
+   │──── BLE_PAIRING_CONFIRM_REPLY►│  (accept = 0x01)             │
+   │                               │──── pairing complete ────────►│
+   │                               │                               │
+   │◄──── BLE_CONNECTED ──────────│                               │
+   │                               │                               │
+   │                               │◄──── GATT write ──────────────│
+   │◄──── BLE_RECV ───────────────│  (REQUEST_GW_INFO)            │
+   │                               │                               │
+   │──── BLE_INDICATE ────────────►│                               │
+   │                               │──── GATT indication ─────────►│  (GW_INFO_RESPONSE)
+   │                               │                               │
+   │                               │◄──── GATT write ──────────────│
+   │◄──── BLE_RECV ───────────────│  (REGISTER_PHONE)            │
+   │                               │                               │
+   │──── BLE_INDICATE ────────────►│                               │
+   │                               │──── GATT indication ─────────►│  (PHONE_REGISTERED)
+   │                               │                               │
+   │                               │◄──── BLE disconnect ──────────│
+   │◄──── BLE_DISCONNECTED ────────│                               │
+   │                               │                               │
+   │──── BLE_DISABLE ─────────────►│                               │
+   │                               │── stop advertising           │
+```
+
+BLE pairing relay operates concurrently with ESP-NOW frame relay (§5.2). The modem MUST NOT block ESP-NOW operations while a BLE client is connected.
 
 ---
 
@@ -389,7 +539,9 @@ The `firmware_version` field in `MODEM_READY` allows the gateway to detect the m
 |-------|---------|
 | 0x01 – 0x0F | Core modem commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS) |
 | 0x10 – 0x1F | [USB pairing protocol](pairing-protocol.md) host → node commands |
-| 0x20 – 0x7F | Reserved for future gateway → modem commands |
+| 0x20 – 0x2F | BLE relay commands (BLE_INDICATE, BLE_ENABLE, BLE_DISABLE, BLE_PAIRING_CONFIRM_REPLY) |
+| 0x30 – 0x7F | Reserved for future gateway → modem commands |
 | 0x81 – 0x8F | Core modem events/responses |
 | 0x90 – 0x9F | [USB pairing protocol](pairing-protocol.md) node → host responses |
-| 0xA0 – 0xFF | Reserved for future modem → gateway messages |
+| 0xA0 – 0xAF | BLE relay events (BLE_RECV, BLE_CONNECTED, BLE_DISCONNECTED, BLE_PAIRING_CONFIRM) |
+| 0xB0 – 0xFF | Reserved for future modem → gateway messages |

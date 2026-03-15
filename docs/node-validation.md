@@ -777,6 +777,253 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+## 11  BLE pairing and registration tests
+
+### T-N900  Boot priority order
+
+**Validates:** ND-0900
+
+**Procedure:**
+1. Configure node with no USB-CDC, no PSK, pairing button not held.
+2. Assert: node enters BLE pairing mode.
+3. Configure node with PSK stored, `reg_complete` not set, no USB-CDC.
+4. Assert: node sends PEER_REQUEST.
+5. Configure node with PSK stored, `reg_complete` set, no USB-CDC.
+6. Assert: node enters normal WAKE cycle.
+7. Configure node with USB-CDC connected (regardless of PSK state).
+8. Assert: node enters USB pairing mode.
+
+---
+
+### T-N901  Pairing button detection
+
+**Validates:** ND-0901
+
+**Procedure:**
+1. Hold pairing GPIO LOW for 600 ms after reset.
+2. Assert: node detects button hold and enters BLE pairing mode.
+3. Hold pairing GPIO LOW for 300 ms after reset.
+4. Assert: node does NOT detect button hold.
+
+---
+
+### T-N902  BLE GATT service registration and advertising
+
+**Validates:** ND-0902, ND-0903
+
+**Procedure:**
+1. Boot node into BLE pairing mode.
+2. Scan for BLE advertisements from a test central.
+3. Assert: advertisement contains Node Provisioning Service UUID `0000FE50-0000-1000-8000-00805F9B34FB`.
+4. Assert: device name matches `sonde-XXXX` where XXXX = last 4 hex digits of BLE MAC.
+5. Connect and discover services.
+6. Assert: Node Command characteristic `0000FE51-0000-1000-8000-00805F9B34FB` is present with Write+Indicate properties.
+
+---
+
+### T-N903  MTU negotiation and LESC pairing
+
+**Validates:** ND-0904
+
+**Procedure:**
+1. Connect to node in BLE pairing mode.
+2. Request ATT MTU of 247.
+3. Assert: negotiated MTU is ≥ 247.
+4. Initiate LESC Just Works pairing.
+5. Assert: pairing completes successfully.
+
+---
+
+### T-N904  NODE_PROVISION happy path
+
+**Validates:** ND-0905, ND-0906
+
+**Procedure:**
+1. Boot unpaired node into BLE pairing mode.
+2. Write NODE_PROVISION with valid `node_key_hint`, `node_psk`, `rf_channel`, `payload_len`, `encrypted_payload`.
+3. Assert: node responds NODE_ACK(0x00).
+4. Assert: NVS contains `psk`, `key_hint`, `channel`, `peer_payload` (see ND-0916 for key mapping).
+5. Assert: `reg_complete` flag is cleared.
+
+---
+
+### T-N905  Same-session re-provision
+
+**Validates:** ND-0905, ND-0907
+
+**Procedure:**
+1. Boot an unpaired node into BLE pairing mode. Send a first NODE_PROVISION with credentials A — assert NODE_ACK(0x00).
+2. Without disconnecting, send a second NODE_PROVISION with credentials B (same BLE session, per ND-0907).
+3. Assert: node responds NODE_ACK(0x00) (same-session re-provision is allowed).
+4. Assert: NVS contains credentials B (overwritten).
+
+---
+
+### T-N906  NODE_PROVISION with pairing button — factory reset
+
+**Validates:** ND-0905, ND-0917
+
+**Procedure:**
+1. Provision a node with credentials and a resident BPF program.
+2. Reboot with pairing button held ≥ 500 ms.
+3. Write NODE_PROVISION with new credentials.
+4. Assert: existing PSK, persistent map data, and resident BPF program are erased before new credentials are written.
+5. Assert: node responds NODE_ACK(0x00).
+6. Assert: NVS contains only the new credentials.
+
+---
+
+### T-N907  NODE_PROVISION NVS write failure
+
+**Validates:** ND-0908
+
+**Procedure:**
+1. Boot node into BLE pairing mode.
+2. Inject an NVS write failure (e.g., mock NVS full).
+3. Write NODE_PROVISION with valid payload.
+4. Assert: node responds NODE_ACK(0x02).
+5. Assert: no partial credentials remain in NVS.
+
+---
+
+### T-N908  BLE mode persistence and reboot on disconnect
+
+**Validates:** ND-0907
+
+**Procedure:**
+1. Boot node into BLE pairing mode and connect.
+2. Write NODE_PROVISION; receive NODE_ACK(0x00).
+3. Write a second NODE_PROVISION on the same connection.
+4. Assert: node accepts the second provision (remains in BLE mode).
+5. Disconnect BLE.
+6. Assert: node reboots.
+
+---
+
+### T-N909  PEER_REQUEST frame construction
+
+**Validates:** ND-0909
+
+**Procedure:**
+1. Provision node via BLE, reboot (PSK stored, `reg_complete` not set).
+2. Capture the transmitted PEER_REQUEST frame.
+3. Assert: `msg_type` = 0x05.
+4. Assert: nonce is exactly 8 bytes and is sourced from the RNG abstraction (verified via mock RNG in test). Assert it is not a fixed constant (e.g., not always zero).
+5. Assert: CBOR payload decodes to `{1: <value>}` where the value matches NVS key `peer_payload`.
+6. Assert: HMAC-SHA256 over header+payload verifies with the PSK from NVS key `psk`.
+7. Assert: ESP-NOW channel matches NVS key `channel`.
+
+---
+
+### T-N910  PEER_REQUEST retransmission across wake cycles
+
+**Validates:** ND-0910
+
+**Procedure:**
+1. Provision node; do not run a gateway (no PEER_ACK).
+2. Allow two wake cycles to elapse.
+3. Assert: PEER_REQUEST is transmitted on each wake cycle.
+4. Assert: interval between transmissions matches configured wake interval.
+
+---
+
+### T-N911  PEER_ACK timeout — deep sleep
+
+**Validates:** ND-0911
+
+**Procedure:**
+1. Provision node; let it transmit PEER_REQUEST.
+2. Do not send PEER_ACK.
+3. Assert: node listens for at least 10 seconds (±500 ms) after end of PEER_REQUEST transmission.
+4. Assert: node enters deep sleep after the listen window expires.
+
+---
+
+### T-N912  PEER_ACK verification happy path
+
+**Validates:** ND-0912
+
+**Procedure:**
+1. Node sends PEER_REQUEST with nonce N.
+2. Mock gateway responds with PEER_ACK: valid HMAC, nonce = N, correct `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1" ‖ encrypted_payload`).
+3. Assert: node accepts the PEER_ACK.
+
+---
+
+### T-N913  PEER_ACK with wrong nonce — discard
+
+**Validates:** ND-0912
+
+**Procedure:**
+1. Node sends PEER_REQUEST with nonce N.
+2. Mock gateway responds with PEER_ACK containing nonce N+1 (mismatch).
+3. Assert: node discards the PEER_ACK.
+4. Assert: `reg_complete` flag is NOT set.
+
+---
+
+### T-N914  PEER_ACK with wrong registration proof — discard
+
+**Validates:** ND-0912
+
+**Procedure:**
+1. Node sends PEER_REQUEST with nonce N.
+2. Mock gateway responds with PEER_ACK containing correct nonce but incorrect `registration_proof`.
+3. Assert: node discards the PEER_ACK.
+4. Assert: `reg_complete` flag is NOT set.
+
+---
+
+### T-N915  Valid PEER_ACK sets registration-complete flag
+
+**Validates:** ND-0913
+
+**Procedure:**
+1. Node sends PEER_REQUEST.
+2. Mock gateway responds with a valid PEER_ACK.
+3. Assert: `reg_complete` flag is set in NVS.
+4. Assert: `peer_payload` is still present in NVS.
+
+---
+
+### T-N916  First successful WAKE/COMMAND erases encrypted payload (`peer_payload`)
+
+**Validates:** ND-0914
+
+**Procedure:**
+1. Complete BLE pairing and registration (PEER_ACK accepted, `reg_complete` set).
+2. Reboot node; node enters normal WAKE cycle.
+3. Mock gateway responds with a valid COMMAND to the WAKE.
+4. Assert: `peer_payload` is erased from NVS after the COMMAND is processed.
+
+---
+
+### T-N917  WAKE failure after registration — revert to PEER_REQUEST
+
+**Validates:** ND-0915
+
+**Procedure:**
+1. Complete BLE pairing and registration (`reg_complete` set).
+2. Reboot node; node sends WAKE.
+3. Mock gateway does not respond (or responds with invalid HMAC).
+4. Assert: `reg_complete` flag is cleared.
+5. Assert: on next boot the node sends PEER_REQUEST instead of WAKE.
+
+---
+
+### T-N918  NVS layout includes BLE pairing fields
+
+**Validates:** ND-0916
+
+**Procedure:**
+1. Provision node via BLE with a known `encrypted_payload`.
+2. Read NVS contents.
+3. Assert: `peer_payload` key exists and contains the expected blob.
+4. Assert: `reg_complete` key exists as a `u32` value.
+5. Assert: existing NVS keys (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p`, `prog_a`, `prog_b`) are unaffected.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -820,3 +1067,21 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0800 | T-N800 |
 | ND-0801 | T-N801 |
 | ND-0802 | T-N802 |
+| ND-0900 | T-N900 |
+| ND-0901 | T-N901 |
+| ND-0902 | T-N902 |
+| ND-0903 | T-N902 |
+| ND-0904 | T-N903 |
+| ND-0905 | T-N904, T-N905, T-N906 |
+| ND-0906 | T-N904 |
+| ND-0907 | T-N905, T-N908 |
+| ND-0908 | T-N907 |
+| ND-0909 | T-N909 |
+| ND-0910 | T-N910 |
+| ND-0911 | T-N911 |
+| ND-0912 | T-N912, T-N913, T-N914 |
+| ND-0913 | T-N915 |
+| ND-0914 | T-N916 |
+| ND-0915 | T-N917 |
+| ND-0916 | T-N918 |
+| ND-0917 | T-N906 |

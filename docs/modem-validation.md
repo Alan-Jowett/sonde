@@ -355,6 +355,300 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+## 8  BLE pairing relay tests
+
+### T-0600  Gateway Pairing Service lifecycle
+
+**Validates:** MD-0407, MD-0412, MD-0413
+
+**Procedure:**
+1. Power on modem with gateway connected via USB-CDC. Do NOT send `BLE_ENABLE`.
+2. Scan for BLE advertisements from the modem.
+3. Assert: no Gateway Pairing Service UUID advertised (BLE advertising is off by default).
+4. Send `BLE_ENABLE` to modem.
+5. Scan for BLE advertisements from the modem.
+6. Assert: Gateway Pairing Service UUID `0000FE60-0000-1000-8000-00805F9B34FB` is advertised.
+7. Connect a BLE client to the modem, then disconnect.
+8. Scan for BLE advertisements again.
+9. Assert: Gateway Pairing Service UUID is advertised again after disconnect (BLE still enabled).
+
+> **Note:** This test consolidates the default-off (T-0617), enable (T-0618), and post-disconnect re-advertisement assertions into a single lifecycle test. T-0617 and T-0618 are subsumed by this test.
+
+---
+
+### T-0601  BLE GATT characteristic setup
+
+**Validates:** MD-0400
+
+**Procedure:**
+1. Connect to modem via BLE.
+2. Discover services and characteristics.
+3. Assert: Gateway Command characteristic (UUID `0000FE61-0000-1000-8000-00805F9B34FB`) exists with Write and Indicate properties.
+
+---
+
+### T-0602  MTU negotiation ≥ 247
+
+**Validates:** MD-0402
+
+**Procedure:**
+1. Connect to modem via BLE and request MTU = 512.
+2. Assert: negotiated MTU ≥ 247.
+
+---
+
+### T-0602a  MTU negotiation below minimum rejected
+
+**Validates:** MD-0402
+
+**Procedure:**
+1. Connect to modem via BLE and force a low MTU (e.g., 185).
+2. Assert: modem rejects or disconnects the BLE connection.
+3. Assert: no `BLE_CONNECTED` event is sent to the gateway.
+
+---
+
+### T-0603  BLE write → USB-CDC relay
+
+**Validates:** MD-0401
+
+**Procedure:**
+1. Connect via BLE. Write a test envelope (TYPE=0x01, LEN, BODY) to the Gateway Command characteristic.
+2. Read from USB-CDC serial on the gateway side.
+3. Assert: gateway receives a `BLE_RECV` (0xA0) serial message whose `ble_data` payload matches the bytes written over BLE.
+
+---
+
+### T-0604  USB-CDC → BLE indication relay
+
+**Validates:** MD-0401
+
+**Procedure:**
+1. Connect via BLE, subscribe to indications on Gateway Command characteristic.
+2. Send a `BLE_INDICATE` (0x20) serial message from the gateway side containing a test BLE envelope.
+3. Assert: the exact bytes arrive as a BLE indication on the phone side.
+
+---
+
+### T-0605  Indication fragmentation
+
+**Validates:** MD-0403
+
+**Procedure:**
+1. Connect via BLE with MTU = 247. Send a message from the gateway that is > (247 − 3) = 244 bytes.
+2. Assert: the modem fragments the message into multiple indications, each ≤ 244 bytes.
+3. Assert: reassembled message on the phone side matches the original.
+
+---
+
+### T-0606  Opaque relay (no content inspection)
+
+**Validates:** MD-0401
+
+**Procedure:**
+1. Write a GATT payload containing invalid/garbage bytes (not a valid BLE envelope).
+2. Assert: modem forwards the bytes to USB-CDC without modification or error.
+3. Assert: modem does not send any ERROR or diagnostic message.
+
+---
+
+### T-0607  BLE LESC Numeric Comparison — link establishment
+
+**Validates:** MD-0404
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect to modem via BLE and initiate LESC Numeric Comparison pairing.
+2. Assert: `BLE_PAIRING_CONFIRM` received on gateway side with a 6-digit passkey.
+3. Send `BLE_PAIRING_CONFIRM_REPLY(0x01)` (accept).
+4. Assert: pairing succeeds, link is encrypted, and `BLE_CONNECTED` received.
+
+> **Note:** This test validates link establishment only. Pin relay accept/reject/timeout semantics are covered by T-0620, T-0621, and T-0622 (MD-0414).
+
+---
+
+### T-0608  BLE disconnect cleanup
+
+**Validates:** MD-0405
+
+**Procedure:**
+1. Connect via BLE, perform a GATT write, then disconnect.
+2. Reconnect via BLE.
+3. Assert: GATT state is clean (no stale data from previous connection).
+4. Assert: new writes and indications work correctly.
+
+---
+
+### T-0609  BLE and ESP-NOW concurrent operation
+
+**Validates:** MD-0405
+
+**Procedure:**
+1. Establish a BLE connection and start a GATT write/indicate exchange.
+2. Simultaneously send ESP-NOW frames through the modem.
+3. Assert: both BLE and ESP-NOW operations complete successfully without interference.
+
+---
+
+### T-0609a  Second BLE connection rejected while one is active
+
+**Validates:** MD-0405
+
+**Procedure:**
+1. Connect a first phone via BLE. Complete MTU negotiation and LESC pairing. Confirm `BLE_CONNECTED` received on gateway side.
+2. Attempt to connect a second BLE client to the Gateway Pairing Service.
+3. Assert: the second connection is rejected or queued — only one concurrent BLE client is supported.
+4. Assert: the first connection continues to operate normally.
+
+---
+
+### T-0610  *(Removed — superseded by T-0614 and T-0615)*
+
+---
+
+### T-0611  BLE_INDICATE relay to phone
+
+**Validates:** MD-0408
+
+**Procedure:**
+1. Connect a phone via BLE. Complete MTU negotiation and LESC pairing. Confirm `BLE_CONNECTED` received on gateway side.
+2. Send `BLE_INDICATE` (0x20) from gateway with a test BLE envelope.
+3. Assert: phone receives a GATT indication with the exact bytes.
+
+---
+
+### T-0612  BLE_INDICATE with no BLE client
+
+**Validates:** MD-0408
+
+**Procedure:**
+1. With no BLE client connected, send `BLE_INDICATE` from gateway.
+2. Assert: no error; message is silently discarded.
+
+---
+
+### T-0613  BLE_RECV forwarding
+
+**Validates:** MD-0409
+
+**Procedure:**
+1. Connect a phone via BLE.
+2. Phone writes a BLE envelope to the Gateway Command characteristic.
+3. Assert: gateway receives `BLE_RECV` (0xA0) with the exact bytes.
+
+---
+
+### T-0613a  Empty BLE_INDICATE silently discarded
+
+**Validates:** MD-0408
+
+**Procedure:**
+1. Connect a phone via BLE.
+2. Send a `BLE_INDICATE` serial frame with an empty body (no `ble_data`).
+3. Assert: modem silently discards the message — no indication is sent to the phone.
+
+---
+
+### T-0613b  Empty GATT write silently discarded
+
+**Validates:** MD-0409
+
+**Procedure:**
+1. Connect a phone via BLE.
+2. Phone writes zero bytes to the Gateway Command characteristic.
+3. Assert: no `BLE_RECV` message is sent to the gateway.
+
+---
+
+### T-0614  BLE_CONNECTED notification
+
+**Validates:** MD-0410
+
+**Procedure:**
+1. Connect a phone via BLE. Complete LESC pairing and MTU negotiation.
+2. Assert: gateway receives `BLE_CONNECTED` (0xA1) with peer address and MTU ≥ 247.
+
+---
+
+### T-0615  BLE_DISCONNECTED notification
+
+**Validates:** MD-0411
+
+**Procedure:**
+1. Connect a phone via BLE.
+2. Disconnect the phone.
+3. Assert: gateway receives `BLE_DISCONNECTED` (0xA2) with peer address and reason code.
+
+---
+
+### T-0616  BLE relay round-trip
+
+**Validates:** MD-0408, MD-0409
+
+**Procedure:**
+1. Connect a phone via BLE.
+2. Phone writes `REQUEST_GW_INFO` envelope to Gateway Command characteristic.
+3. Assert: gateway receives `BLE_RECV` with the envelope.
+4. Gateway sends `BLE_INDICATE` with `GW_INFO_RESPONSE` envelope.
+5. Assert: phone receives the indication with the exact response bytes.
+
+---
+
+### T-0617  *(Subsumed by T-0600)*
+
+---
+
+### T-0618  *(Subsumed by T-0600)*
+
+---
+
+### T-0619  BLE_DISABLE stops advertising and disconnects
+
+**Validates:** MD-0413
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect a phone via BLE.
+2. Send `BLE_DISABLE`.
+3. Assert: phone is disconnected. `BLE_DISCONNECTED` received.
+4. Scan for BLE advertisements. Assert: no advertising.
+
+---
+
+### T-0620  Numeric Comparison pin relay
+
+**Validates:** MD-0414
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect phone with Numeric Comparison pairing.
+2. Assert: `BLE_PAIRING_CONFIRM` received with a 6-digit passkey.
+3. Send `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
+4. Assert: pairing completes. `BLE_CONNECTED` received.
+
+---
+
+### T-0621  Numeric Comparison rejected
+
+**Validates:** MD-0414
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect phone with Numeric Comparison pairing.
+2. Assert: `BLE_PAIRING_CONFIRM` received.
+3. Send `BLE_PAIRING_CONFIRM_REPLY(0x00)`.
+4. Assert: pairing rejected. No `BLE_CONNECTED` received.
+
+---
+
+### T-0622  Numeric Comparison timeout
+
+**Validates:** MD-0414
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect phone with Numeric Comparison pairing.
+2. Assert: `BLE_PAIRING_CONFIRM` received.
+3. Do not send a reply. Wait 30 s.
+4. Assert: pairing rejected.
+
+---
+
 ## Appendix A  Test index
 
 | ID | Title | Validates |
@@ -380,3 +674,30 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0401 | SET_CHANNEL with invalid channel | modem-protocol.md §6.1 |
 | T-0402 | Framing error recovery | MD-0102 |
 | T-0500 | Modem does not interpret frame contents | §6 Non-requirements |
+| T-0600 | Gateway Pairing Service lifecycle | MD-0407, MD-0412, MD-0413 |
+| T-0601 | BLE GATT characteristic setup | MD-0400 |
+| T-0602 | MTU negotiation ≥ 247 | MD-0402 |
+| T-0602a | MTU negotiation below minimum rejected | MD-0402 |
+| T-0603 | BLE write → USB-CDC relay | MD-0401 |
+| T-0604 | USB-CDC → BLE indication relay | MD-0401 |
+| T-0605 | Indication fragmentation | MD-0403 |
+| T-0606 | Opaque relay (no content inspection) | MD-0401 |
+| T-0607 | BLE LESC Numeric Comparison — link establishment | MD-0404 |
+| T-0608 | BLE disconnect cleanup | MD-0405 |
+| T-0609 | BLE and ESP-NOW concurrent operation | MD-0405 |
+| T-0609a | Second BLE connection rejected while one is active | MD-0405 |
+| T-0610 | *(Removed — superseded by T-0614/T-0615)* | — |
+| T-0611 | BLE_INDICATE relay to phone | MD-0408 |
+| T-0612 | BLE_INDICATE with no BLE client | MD-0408 |
+| T-0613 | BLE_RECV forwarding | MD-0409 |
+| T-0613a | Empty BLE_INDICATE silently discarded | MD-0408 |
+| T-0613b | Empty GATT write silently discarded | MD-0409 |
+| T-0614 | BLE_CONNECTED notification | MD-0410 |
+| T-0615 | BLE_DISCONNECTED notification | MD-0411 |
+| T-0616 | BLE relay round-trip | MD-0408, MD-0409 |
+| T-0617 | *(Subsumed by T-0600)* | MD-0412 |
+| T-0618 | *(Subsumed by T-0600)* | MD-0413 |
+| T-0619 | BLE_DISABLE stops advertising and disconnects | MD-0413 |
+| T-0620 | Numeric Comparison pin relay | MD-0414 |
+| T-0621 | Numeric Comparison rejected | MD-0414 |
+| T-0622 | Numeric Comparison timeout | MD-0414 |

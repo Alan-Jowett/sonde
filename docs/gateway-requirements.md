@@ -912,6 +912,373 @@ On receiving an `ERROR` message from the modem, the gateway MUST log the error c
 
 ---
 
+## 12  BLE pairing
+
+### GW-1200  Ed25519 keypair generation
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §2.1, security.md §2.7.3
+
+**Description:**  
+The gateway MUST generate an Ed25519 keypair on first startup and store the seed encrypted at rest, protected by the master key (per GW-0601a).
+
+**Acceptance criteria:**
+
+1. On first startup with no existing keypair, the gateway generates a new Ed25519 keypair.
+2. The seed is encrypted before writing to persistent storage.
+3. On subsequent startups, the gateway loads and decrypts the existing keypair.
+
+---
+
+### GW-1201  Gateway identity generation
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §2.1
+
+**Description:**  
+The gateway MUST generate a random 16-byte `gateway_id` on first startup and persist it alongside the Ed25519 keypair.
+
+**Acceptance criteria:**
+
+1. On first startup, a 16-byte `gateway_id` is generated from OS CSPRNG.
+2. The `gateway_id` is persisted and stable across restarts.
+3. No two gateways produce the same `gateway_id` (verified probabilistically by generating multiple).
+
+---
+
+### GW-1202  Ed25519 to X25519 conversion
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §5.5
+
+**Description:**  
+The gateway MUST convert its Ed25519 key to X25519 for ECDH key agreement using the standard birational map and MUST reject low-order points.
+
+**Acceptance criteria:**
+
+1. The converted X25519 key produces correct ECDH shared secrets with a known test vector.
+2. Low-order points (including the identity point) are detected and rejected.
+
+---
+
+### GW-1203  Ed25519 seed replication
+
+**Priority:** Must  
+**Source:** security.md §2.7.3
+
+**Description:**  
+The gateway MUST support replicating the Ed25519 seed and `gateway_id` to failover gateways so that all members of a failover group share the same identity.
+
+**Acceptance criteria:**
+
+1. The Ed25519 seed and `gateway_id` can be exported from one gateway and imported into another.
+2. After import, the receiving gateway uses the same public key and `gateway_id`.
+
+---
+
+### GW-1204  BLE GATT server
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §3.1, §3.2
+
+**Description:**  
+The gateway system MUST expose a BLE GATT Gateway Pairing Service (UUID `0000FE60-…`) with a Gateway Command characteristic (UUID `0000FE61-…`) supporting Write and Indicate operations. In modem-relay mode (ble-pairing-protocol.md §12), the modem hosts the GATT service and the gateway exchanges messages via `BLE_RECV` / `BLE_INDICATE` serial messages (modem-protocol.md §4.9–4.10).
+
+**Acceptance criteria:**
+
+1. The service is discoverable via BLE advertisement or scan.
+2. The Gateway Command characteristic accepts Write requests and produces Indications.
+3. Service and characteristic UUIDs match the specification.
+
+---
+
+### GW-1205  ATT MTU negotiation and fragmentation
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §3.4
+
+**Description:**  
+The gateway system MUST ensure ATT MTU ≥ 247 is negotiated and that indications exceeding (MTU−3) bytes are fragmented into sequential chunks with ATT confirmation between each. In modem-relay mode (ble-pairing-protocol.md §12), the modem handles MTU negotiation and indication fragmentation (see MD-0402, MD-0403); the gateway sends complete BLE envelopes via `BLE_INDICATE` and the modem fragments as needed.
+
+**Acceptance criteria:**
+
+1. MTU negotiation requests at least 247.
+2. Indications exceeding (MTU−3) bytes are split into sequential chunks.
+3. Each chunk waits for ATT confirmation before the next is sent.
+
+---
+
+### GW-1206  REQUEST_GW_INFO handling
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §5.2, §5.3
+
+**Description:**  
+On receiving a `REQUEST_GW_INFO` command, the gateway MUST sign (`challenge` ‖ `gateway_id`) with its Ed25519 private key and return a `GW_INFO_RESPONSE` containing `gw_public_key`, `gateway_id`, and `signature`.
+
+**Acceptance criteria:**
+
+1. The response contains the gateway's Ed25519 public key, `gateway_id`, and a valid signature.
+2. The signature verifies against (`challenge` ‖ `gateway_id`) using the gateway's public key.
+3. A different challenge produces a different signature.
+
+---
+
+### GW-1207  Registration window enforcement
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §5.4.1
+
+**Description:**  
+The gateway MUST reject `REGISTER_PHONE` commands when the registration window is closed and return `ERROR(0x02)`.
+
+**Acceptance criteria:**
+
+1. `REGISTER_PHONE` received when the window is closed returns `ERROR` with code `0x02`.
+2. `REGISTER_PHONE` received when the window is open proceeds to processing.
+
+---
+
+### GW-1208  Registration window activation
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §5.4.1, modem-protocol.md §4.13
+
+**Description:**  
+The gateway MUST open the registration window via a physical button hold (≥2 s) or the admin API and auto-close it after a configurable duration (default 120 s). When the registration window is opened via admin API, the gateway MUST also send `BLE_ENABLE` to the modem. When the window closes (auto-close or explicit close), the gateway MUST send `BLE_DISABLE` to the modem.
+
+**Acceptance criteria:**
+
+1. A button hold of ≥2 s opens the registration window.
+2. The admin API can open the registration window.
+3. The window auto-closes after the configured duration.
+4. The default duration is 120 s.
+5. Opening the window sends `BLE_ENABLE` to the modem.
+6. Closing the window (auto-close or explicit) sends `BLE_DISABLE` to the modem.
+
+---
+
+### GW-1209  REGISTER_PHONE processing
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §5.5
+
+**Description:**  
+On `REGISTER_PHONE`, the gateway MUST generate a 256-bit phone PSK from OS CSPRNG, derive `phone_key_hint` = `SHA-256(psk)[30..32]`, perform ECDH with the phone's ephemeral public key, derive an AES key via HKDF-SHA256 (salt=`gateway_id`, info=`"sonde-phone-reg-v1"`), and encrypt the response with AES-256-GCM (AAD=`gateway_id`).
+
+**Acceptance criteria:**
+
+1. The phone PSK is 256 bits generated from OS CSPRNG.
+2. `phone_key_hint` equals the last two bytes of `SHA-256(psk)`.
+3. The ECDH shared secret is derived using the phone's ephemeral public key and the gateway's X25519 key.
+4. The AES key is derived via HKDF-SHA256 with the specified salt and info.
+5. The response payload is encrypted with AES-256-GCM using `gateway_id` as AAD.
+
+---
+
+### GW-1210  Phone PSK storage and revocation
+
+**Priority:** Must  
+**Source:** security.md §2.7.1
+
+**Description:**  
+The gateway MUST store each phone PSK with a label, issuance timestamp, and active/revoked status. The gateway MUST support revocation of phone PSKs via operator action.
+
+**Acceptance criteria:**
+
+1. Each stored phone PSK has a label, issuance timestamp, and status (active or revoked).
+2. An operator can revoke a phone PSK.
+3. Revoked PSKs are not used for PEER_REQUEST phone HMAC verification.
+
+---
+
+### GW-1211  PEER_REQUEST key-hint bypass
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3, step 2
+
+**Description:**  
+For `msg_type` `0x05` (`PEER_REQUEST`), the gateway MUST bypass the normal key-hint fast-path lookup and proceed directly to CBOR parsing and decryption.
+
+**Acceptance criteria:**
+
+1. A `PEER_REQUEST` frame is not rejected due to an unrecognized `key_hint`.
+2. The gateway proceeds to parse the CBOR payload without key-hint lookup.
+
+---
+
+### GW-1212  PEER_REQUEST decryption
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3, steps 3-4
+
+**Description:**  
+The gateway MUST decrypt the `PEER_REQUEST` `encrypted_payload` using ECDH + HKDF-SHA256 (salt=`gateway_id`, info=`"sonde-node-pair-v1"`) + AES-256-GCM (AAD=`gateway_id`). The gateway MUST silently discard frames that fail GCM tag verification.
+
+**Acceptance criteria:**
+
+1. A correctly encrypted `PEER_REQUEST` is decrypted successfully.
+2. A `PEER_REQUEST` with a corrupted GCM tag is silently discarded (no response sent).
+
+---
+
+### GW-1213  Phone HMAC verification
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3, step 6
+
+**Description:**  
+The gateway MUST verify the phone HMAC by looking up all non-revoked phone PSKs matching `phone_key_hint`. The gateway MUST accept if any candidate PSK produces a valid HMAC and silently discard if none match.
+
+**Acceptance criteria:**
+
+1. When multiple non-revoked PSKs share a `phone_key_hint`, each is tried until one matches.
+2. A valid HMAC from any candidate PSK is accepted.
+3. If no candidate matches, the frame is silently discarded.
+
+---
+
+### GW-1214  PEER_REQUEST frame HMAC verification
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3, step 8
+
+**Description:**  
+After decryption, the gateway MUST verify the `PEER_REQUEST` frame HMAC using the extracted `node_psk` and silently discard on mismatch.
+
+**Acceptance criteria:**
+
+1. A frame with a valid HMAC computed from `node_psk` passes verification.
+2. A frame with an invalid HMAC is silently discarded.
+
+---
+
+### GW-1215  PairingRequest timestamp validation
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3, step 9
+
+**Description:**  
+The gateway MUST verify that the `PairingRequest` timestamp is within ±86 400 s of the current time and silently discard if out of range.
+
+**Acceptance criteria:**
+
+1. A timestamp within ±86 400 s of current time is accepted.
+2. A timestamp outside ±86 400 s is silently discarded.
+
+---
+
+### GW-1216  Node ID uniqueness check
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3, step 10
+
+**Description:**  
+The gateway MUST verify that the `node_id` in the `PairingRequest` is not already registered and silently discard if it is a duplicate.
+
+**Acceptance criteria:**
+
+1. A `PairingRequest` with a new `node_id` proceeds to registration.
+2. A `PairingRequest` with an already-registered `node_id` is silently discarded.
+
+---
+
+### GW-1217  Key hint consistency check
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3, step 11
+
+**Description:**  
+The gateway MUST verify that the frame header `key_hint` matches the `node_key_hint` from the `PairingRequest` CBOR and silently discard on mismatch.
+
+**Acceptance criteria:**
+
+1. A frame whose header `key_hint` matches the CBOR `node_key_hint` passes the check.
+2. A mismatch between header `key_hint` and CBOR `node_key_hint` causes silent discard.
+
+---
+
+### GW-1218  Node registration from PEER_REQUEST
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3, step 12
+
+**Description:**  
+The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (a stable phone identifier, not `phone_key_hint`).
+
+**Acceptance criteria:**
+
+1. After successful PEER_REQUEST processing, the node appears in the registry.
+2. The registration record contains all specified fields.
+3. `registered_by` is the phone's stable identifier, not `phone_key_hint`.
+
+---
+
+### GW-1219  PEER_ACK generation
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.2, §7.3 step 13
+
+**Description:**  
+The gateway MUST compute `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1"` ‖ `encrypted_payload`), build a `PEER_ACK` CBOR message `{1: 0, 2: registration_proof}`, HMAC the frame with `node_psk`, and echo the `nonce` from the `PEER_REQUEST`.
+
+**Acceptance criteria:**
+
+1. The `PEER_ACK` contains CBOR `{1: 0, 2: registration_proof}`.
+2. `registration_proof` is HMAC-SHA256 of (`"sonde-peer-ack-v1"` ‖ `encrypted_payload`) keyed with `node_psk`.
+3. The frame HMAC is computed with `node_psk`.
+4. The `nonce` in the `PEER_ACK` header matches the `PEER_REQUEST` nonce.
+
+---
+
+### GW-1220  Silent-discard error model for PEER_REQUEST
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.3
+
+**Description:**  
+The gateway MUST apply the silent-discard error model to all `PEER_REQUEST` verification failures. No `PEER_ACK` is sent on any error.
+
+**Acceptance criteria:**
+
+1. Any verification failure during PEER_REQUEST processing results in no response.
+2. No error frame or partial PEER_ACK is transmitted.
+
+---
+
+### GW-1221  Random nonces for PEER_REQUEST/PEER_ACK
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.1
+
+**Description:**  
+The gateway MUST NOT apply sequence-number anti-replay checks to `msg_type` `0x05`/`0x84` frames. These frames use random nonces instead of sequence numbers.
+
+**Acceptance criteria:**
+
+1. `PEER_REQUEST` frames are not subject to sequence-number validation.
+2. `PEER_ACK` frames use the echoed random nonce, not a gateway-assigned sequence number.
+
+---
+
+### GW-1222  Admin API — BLE pairing session
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §5.4.1, modem-protocol.md §4.13
+
+**Description:**  
+The admin API MUST expose an `OpenBlePairing` RPC (and corresponding `sonde-admin pairing start` CLI command) that opens the phone registration window AND sends `BLE_ENABLE` to the modem. A corresponding `CloseBlePairing` RPC (`sonde-admin pairing stop`) MUST close the window and send `BLE_DISABLE`. The admin CLI MUST display any Numeric Comparison passkey relayed from the modem via `BLE_PAIRING_CONFIRM` and prompt the operator to confirm.
+
+**Acceptance criteria:**
+
+1. `sonde-admin pairing start` opens the registration window and enables BLE advertising.
+2. `sonde-admin pairing stop` closes the window and disables BLE advertising.
+3. Numeric Comparison passkey is displayed to the operator.
+4. Operator can accept or reject the passkey.
+5. Registration window auto-close also sends `BLE_DISABLE`.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -969,3 +1336,26 @@ On receiving an `ERROR` message from the modem, the gateway MUST log the error c
 | GW-1101 | Modem startup sequence | Must |
 | GW-1102 | Modem health monitoring | Should |
 | GW-1103 | Modem error handling | Must |
+| GW-1200 | Ed25519 keypair generation | Must |
+| GW-1201 | Gateway identity generation | Must |
+| GW-1202 | Ed25519 to X25519 conversion | Must |
+| GW-1203 | Ed25519 seed replication | Must |
+| GW-1204 | BLE GATT server | Must |
+| GW-1205 | ATT MTU negotiation and fragmentation | Must |
+| GW-1206 | REQUEST_GW_INFO handling | Must |
+| GW-1207 | Registration window enforcement | Must |
+| GW-1208 | Registration window activation | Must |
+| GW-1209 | REGISTER_PHONE processing | Must |
+| GW-1210 | Phone PSK storage and revocation | Must |
+| GW-1211 | PEER_REQUEST key-hint bypass | Must |
+| GW-1212 | PEER_REQUEST decryption | Must |
+| GW-1213 | Phone HMAC verification | Must |
+| GW-1214 | PEER_REQUEST frame HMAC verification | Must |
+| GW-1215 | PairingRequest timestamp validation | Must |
+| GW-1216 | Node ID uniqueness check | Must |
+| GW-1217 | Key hint consistency check | Must |
+| GW-1218 | Node registration from PEER_REQUEST | Must |
+| GW-1219 | PEER_ACK generation | Must |
+| GW-1220 | Silent-discard error model for PEER_REQUEST | Must |
+| GW-1221 | Random nonces for PEER_REQUEST/PEER_ACK | Must |
+| GW-1222 | Admin API — BLE pairing session | Must |

@@ -39,4 +39,7 @@ CONFIG_BT_NIMBLE_ENABLED=y
 # NimBLE host task stack size — increased for GATT server workload.
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=7000
 # Store bonding keys in NVS for persistent pairing.
-CONFIG_BT_NIMBLE_NVS_PERSIST=y
+# Disabled so that unapproved bonds (from the tentative on_confirm_pin accept)
+# are never persisted.  Each pairing session is independent; the gateway does
+# not rely on persistent BLE bonds.
+CONFIG_BT_NIMBLE_NVS_PERSIST=n

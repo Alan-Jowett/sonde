@@ -196,6 +196,9 @@ pub const BLE_DATA_MAX_BODY_SIZE: usize = (SERIAL_MAX_LEN as usize) - 1; // 511
 /// Minimum negotiated ATT MTU for BLE connections (MD-0402).
 pub const BLE_MIN_MTU: u16 = 247;
 
+/// Maximum valid BLE Numeric Comparison passkey (displayed as 6 zero-padded digits).
+pub const BLE_MAX_PASSKEY: u32 = 999_999;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -222,6 +225,12 @@ pub enum ModemCodecError {
     EncodeTooLong,
     /// Need more bytes to complete the current frame.
     Incomplete,
+    /// A decoded field value is outside its valid range.
+    InvalidFieldValue {
+        msg_type: u8,
+        field: &'static str,
+        value: u64,
+    },
 }
 
 impl fmt::Display for ModemCodecError {
@@ -261,6 +270,17 @@ impl fmt::Display for ModemCodecError {
                 )
             }
             ModemCodecError::Incomplete => write!(f, "incomplete modem frame"),
+            ModemCodecError::InvalidFieldValue {
+                msg_type,
+                field,
+                value,
+            } => {
+                write!(
+                    f,
+                    "modem msg 0x{:02x} field `{}` value {} out of range",
+                    msg_type, field, value
+                )
+            }
         }
     }
 }
@@ -423,8 +443,8 @@ pub struct PairingReady {
 pub struct BleConnected {
     /// BLE address of the connected phone.
     pub peer_addr: [u8; MAC_SIZE],
-    /// Negotiated ATT MTU. The modem only sends this after confirming MTU ≥
-    /// `BLE_MIN_MTU`, but the codec does not range-check this field on decode.
+    /// Negotiated ATT MTU. Validated to be ≥ `BLE_MIN_MTU` on decode; the
+    /// modem only sends this after confirming the MTU exchange result.
     pub mtu: u16,
 }
 
@@ -443,8 +463,8 @@ pub struct BleDisconnected {
 /// it matches the phone display and responds with `BLE_PAIRING_CONFIRM_REPLY`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlePairingConfirm {
-    /// Numeric Comparison passkey. Valid BLE passkeys are in the range 0–999999
-    /// (displayed as zero-padded 6 digits), but the codec does not enforce this range.
+    /// Numeric Comparison passkey (0–999999, displayed as zero-padded 6 digits).
+    /// Validated to be ≤ `BLE_MAX_PASSKEY` on decode.
     pub passkey: u32,
 }
 
@@ -1005,6 +1025,13 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             let mut peer_addr = [0u8; MAC_SIZE];
             peer_addr.copy_from_slice(&body[..MAC_SIZE]);
             let mtu = u16::from_be_bytes([body[MAC_SIZE], body[MAC_SIZE + 1]]);
+            if mtu < BLE_MIN_MTU {
+                return Err(ModemCodecError::InvalidFieldValue {
+                    msg_type,
+                    field: "mtu",
+                    value: mtu as u64,
+                });
+            }
             Ok(ModemMessage::BleConnected(BleConnected { peer_addr, mtu }))
         }
 
@@ -1022,6 +1049,13 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
         MODEM_MSG_BLE_PAIRING_CONFIRM => {
             check_exact_body(msg_type, body, BLE_PAIRING_CONFIRM_BODY_SIZE)?;
             let passkey = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+            if passkey > BLE_MAX_PASSKEY {
+                return Err(ModemCodecError::InvalidFieldValue {
+                    msg_type,
+                    field: "passkey",
+                    value: passkey as u64,
+                });
+            }
             Ok(ModemMessage::BlePairingConfirm(BlePairingConfirm {
                 passkey,
             }))
@@ -1844,6 +1878,43 @@ mod tests {
         let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, _) = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn ble_connected_low_mtu_decode_error() {
+        // MTU below BLE_MIN_MTU should be rejected on decode.
+        let msg = ModemMessage::BleConnected(BleConnected {
+            peer_addr: [0x11; 6],
+            mtu: 23, // default ATT MTU, below BLE_MIN_MTU
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let err = decode_modem_frame(&frame).unwrap_err();
+        assert!(matches!(
+            err,
+            ModemCodecError::InvalidFieldValue {
+                msg_type: MODEM_MSG_BLE_CONNECTED,
+                field: "mtu",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ble_pairing_confirm_invalid_passkey_decode_error() {
+        // Passkey > 999999 should be rejected on decode.
+        let msg = ModemMessage::BlePairingConfirm(BlePairingConfirm {
+            passkey: 1_000_000,
+        });
+        let frame = encode_modem_frame(&msg).unwrap();
+        let err = decode_modem_frame(&frame).unwrap_err();
+        assert!(matches!(
+            err,
+            ModemCodecError::InvalidFieldValue {
+                msg_type: MODEM_MSG_BLE_PAIRING_CONFIRM,
+                field: "passkey",
+                ..
+            }
+        ));
     }
 
     #[test]

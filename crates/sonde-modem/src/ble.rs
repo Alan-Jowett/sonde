@@ -14,7 +14,9 @@
 //! - Only one BLE connection at a time (MD-0405).
 //! - LESC Numeric Comparison pairing: passkey relayed to gateway via `BleEvent::PairingConfirm`;
 //!   gateway replies via `pairing_confirm_reply()` (MD-0404/MD-0414).
-//! - ATT MTU negotiation ≥ 247 bytes; connections with MTU < 247 are rejected (MD-0402).
+//! - ATT MTU negotiation ≥ 247 bytes; connections whose MTU remains below
+//!   `BLE_MIN_MTU` after the ATT MTU Exchange are rejected at authentication
+//!   complete time (MD-0402).
 //! - Indication fragmentation: payloads larger than (MTU − 3) bytes are split into
 //!   multiple indications with confirmation between chunks (MD-0403).
 //! - GATT writes forwarded as `BleEvent::Recv`; empty writes discarded (MD-0409).
@@ -69,9 +71,10 @@ struct BleState {
     /// BLE advertising is currently active.
     advertising: bool,
     /// Negotiated ATT MTU for the current connection (0 = not connected).
+    /// Updated in `on_connect` with the initial connection MTU; by the time
+    /// `on_authentication_complete` fires, the ATT MTU Exchange should have
+    /// completed and the value should reflect the negotiated MTU.
     mtu: u16,
-    /// True if this connection should be rejected due to low MTU (MD-0402).
-    mtu_too_low: bool,
     /// Numeric Comparison passkey relayed to gateway; operator decision pending.
     /// `BleEvent::Connected` is deferred until the operator accepts (MD-0414).
     pairing_pending: bool,
@@ -87,7 +90,6 @@ impl BleState {
             awaiting_confirm: false,
             advertising: false,
             mtu: 0,
-            mtu_too_low: false,
             pairing_pending: false,
             deferred_connected: None,
         }
@@ -128,6 +130,11 @@ impl EspBleDriver {
         let ble_server = ble_device.get_server();
 
         // --- Connection event handler ---
+        //
+        // The initial `desc.conn_params.mtu` may report the default ATT MTU
+        // (23 bytes) before the ATT MTU Exchange has completed.  We store it
+        // but defer MTU enforcement to `on_authentication_complete`, by which
+        // time the exchange should have occurred (MD-0402).
         let state_connect = Arc::clone(&state);
         ble_server.on_connect(move |server, desc| {
             let peer_addr: [u8; MAC_SIZE] = desc.address().val;
@@ -145,32 +152,12 @@ impl EspBleDriver {
                 return;
             }
 
-            let low_mtu = mtu < BLE_MIN_MTU;
-
             if let Ok(mut s) = state_connect.lock() {
                 // NimBLE stops advertising when a client connects.  Clear the
                 // flag so that a subsequent enable() will restart advertising
                 // after this connection ends (MD-0407).
                 s.advertising = false;
-
-                if low_mtu {
-                    s.mtu_too_low = true;
-                } else {
-                    s.mtu = mtu;
-                }
-            }
-
-            // MD-0402: Disconnect immediately for low-MTU connections rather
-            // than deferring to the drain_event() poll loop.
-            if low_mtu {
-                warn!(
-                    "BLE: MTU {} < minimum {}; disconnecting immediately (MD-0402)",
-                    mtu, BLE_MIN_MTU
-                );
-                let _ = server.disconnect_with_code(
-                    desc.conn_handle,
-                    esp32_nimble::enums::DisconnReason::ConnTermByLocalHost,
-                );
+                s.mtu = mtu;
             }
         });
 
@@ -186,7 +173,6 @@ impl EspBleDriver {
                 s.mtu = 0;
                 s.indication_queue.clear();
                 s.awaiting_confirm = false;
-                s.mtu_too_low = false;
                 s.pairing_pending = false;
                 s.deferred_connected = None;
                 s.events.push_back(BleEvent::Disconnected {
@@ -207,26 +193,22 @@ impl EspBleDriver {
         // --- Numeric Comparison passkey relay (MD-0414) ---
         //
         // NimBLE calls on_confirm_pin synchronously during the SMP exchange and
-        // requires an immediate yes/no decision.  Because our confirmation is an
-        // asynchronous round-trip (Modem -> Gateway -> Modem), we return `true` to
-        // let the pairing proceed, then relay the passkey to the gateway for
-        // operator verification.  If the gateway responds with accept=false, we
-        // call `pairing_confirm_reply(false)` which disconnects the client; this
-        // is best-effort --- the BLE link may already have completed LESC key
-        // exchange by then, but the gateway will not accept the session.
+        // requires an immediate yes/no decision.  We return `true` to let
+        // pairing proceed, then relay the passkey to the gateway for operator
+        // verification.  `BleEvent::Connected` is deferred until the operator
+        // replies via `pairing_confirm_reply()`.
+        //
+        // If the operator rejects, `pairing_confirm_reply(false)` disconnects
+        // the client and suppresses Connected.  NVS bond persistence is
+        // disabled (`CONFIG_BT_NIMBLE_NVS_PERSIST=n`) so no unapproved bond
+        // is stored; each pairing session is independent.
         let state_confirm = Arc::clone(&state);
         ble_server.on_confirm_pin(move |passkey| {
             info!("BLE: Numeric Comparison passkey = {:06}", passkey);
             if let Ok(mut s) = state_confirm.lock() {
-                // Mark pairing pending so on_authentication_complete defers the
-                // Connected event until the operator confirms (MD-0414).
                 s.pairing_pending = true;
                 s.events.push_back(BleEvent::PairingConfirm { passkey });
             }
-            // Return true to allow pairing to proceed at the BLE stack level.
-            // Operator confirmation is handled asynchronously via
-            // pairing_confirm_reply(); a rejection will disconnect the client
-            // and suppress BLE_CONNECTED.
             true
         });
 
@@ -236,18 +218,22 @@ impl EspBleDriver {
             if result.is_ok() {
                 let peer_addr: [u8; MAC_SIZE] = desc.address().val;
                 if let Ok(mut s) = state_auth.lock() {
-                    // MD-0402/MD-0410: Only emit Connected when MTU is accepted.
-                    if s.mtu_too_low || s.mtu < BLE_MIN_MTU {
+                    // MD-0402: Reject connections whose MTU is still below the
+                    // minimum after authentication completes.  By this point the
+                    // ATT MTU Exchange should have finished; if the peer doesn't
+                    // support the required MTU, we disconnect.
+                    if s.mtu < BLE_MIN_MTU {
                         warn!(
-                            "BLE: pairing complete but MTU too low ({}); suppressing BLE_CONNECTED",
+                            "BLE: pairing complete but MTU too low ({}); disconnecting (MD-0402)",
                             s.mtu
                         );
+                        // Queue a disconnect; on_disconnect will emit Disconnected.
+                        let ble_device = BLEDevice::take();
+                        ble_device.get_server().disconnect_all();
                         return;
                     }
                     // MD-0414: If Numeric Comparison is pending operator
-                    // confirmation, defer BLE_CONNECTED until accepted.  This
-                    // prevents emitting Connected (and triggering bonding-based
-                    // session setup) before the operator has approved.
+                    // confirmation, defer BLE_CONNECTED until accepted.
                     if s.pairing_pending {
                         info!("BLE: LESC pairing complete — deferring BLE_CONNECTED until operator confirms");
                         s.deferred_connected = Some((peer_addr, s.mtu));
@@ -381,7 +367,6 @@ impl Ble for EspBleDriver {
             info!("BLE: Numeric Comparison accepted by operator");
             if let Ok(mut s) = self.state.lock() {
                 s.pairing_pending = false;
-                // Emit the deferred Connected event now that the operator approved.
                 if let Some((peer_addr, mtu)) = s.deferred_connected.take() {
                     s.events.push_back(BleEvent::Connected { peer_addr, mtu });
                 }
@@ -395,30 +380,10 @@ impl Ble for EspBleDriver {
             let ble_device = BLEDevice::take();
             let ble_server = ble_device.get_server();
             ble_server.disconnect_all();
-            // Note: CONFIG_BT_NIMBLE_NVS_PERSIST=y may leave a stale bond in
-            // NVS.  This is harmless because the gateway will not accept the
-            // session, and the bond will be overwritten on the next pairing.
         }
     }
 
     fn drain_event(&self) -> Option<BleEvent> {
-        // MD-0402: disconnect if the negotiated MTU is below the minimum.
-        {
-            let (too_low, mtu) = {
-                let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-                (s.mtu_too_low, s.mtu)
-            };
-            if too_low {
-                warn!("BLE: disconnecting due to low MTU {} (MD-0402)", mtu);
-                let ble_device = BLEDevice::take();
-                let ble_server = ble_device.get_server();
-                ble_server.disconnect_all();
-                if let Ok(mut s) = self.state.lock() {
-                    s.mtu_too_low = false;
-                }
-            }
-        }
-
         // Send the next pending indication chunk if confirmed.
         {
             let (pending, awaiting) = {
@@ -437,6 +402,17 @@ impl Ble for EspBleDriver {
 
 impl EspBleDriver {
     /// Send the next indication chunk from the queue, if any.
+    ///
+    /// # Blocking behavior
+    ///
+    /// `indicate()` in esp32-nimble v0.11 blocks until the peer sends an ATT
+    /// Handle Value Confirmation (or returns an error on timeout/disconnect).
+    /// Because this is driven from the bridge `poll()` loop, a slow peer can
+    /// stall USB/radio processing.  The blocking duration is bounded by the
+    /// NimBLE ATT confirmation timeout (typically 30s), which must be kept
+    /// below `CONFIG_ESP_TASK_WDT_TIMEOUT_S` to avoid watchdog panics.
+    /// Moving indication sending to a dedicated FreeRTOS task would remove
+    /// this coupling but is deferred as a future improvement.
     fn send_next_chunk(&self) {
         let chunk = {
             let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());

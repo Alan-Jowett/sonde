@@ -1,0 +1,155 @@
+Internet-Draft                                              A. Jowett
+Intended status: Informational                              Individual
+Expires: <TBD>                                              <TBD>
+
+
+        Threat-Model-First Onboarding of Constrained Devices
+      over Encrypted but Unauthenticated Local Transports
+
+Abstract
+
+   Constrained devices are frequently onboarded using local transports
+   that provide confidentiality but limited or no peer authentication,
+   such as Bluetooth Low Energy (BLE) "Just Works" pairing or
+   proprietary short-range radios. While these transports are often
+   described as "secure", they do not provide device identity
+   guarantees, and naive onboarding designs frequently conflate
+   encrypted channels with authenticated peers.
+
+   This document describes observed failure modes, threat models, and
+   design patterns for bootstrapping trust in constrained devices over
+   encrypted but unauthenticated local transports. It does not define a
+   new protocol. Instead, it documents practical lessons from deployed
+   systems, including delegation of onboarding authority, handling of
+   unavoidable race conditions, bootstrap message semantics, and
+   transition to steady-state secure communication. The goal is to
+   provide guidance to designers of constrained device onboarding
+   systems and to clarify the security properties such systems can and
+   cannot achieve.
+
+Status of This Memo
+
+   This Internet-Draft is submitted in full conformance with the
+   provisions of BCP 78 and BCP 79.
+
+   Internet-Drafts are working documents of the Internet Engineering
+   Task Force (IETF). Note that other groups may also distribute
+   working documents as Internet-Drafts. The list of current Internet-
+   Drafts is at https://datatracker.ietf.org/drafts/current/.
+
+   Internet-Drafts are draft documents valid for a maximum of six
+   months and may be updated, replaced, or obsoleted by other documents
+   at any time. It is inappropriate to use Internet-Drafts as reference
+   material or to cite them other than as "work in progress".
+
+Copyright Notice
+
+   Copyright (c) <TBD> IETF Trust and the persons identified as the
+   document authors. All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (https://trustee.ietf.org/license-info) in effect on the date of
+   publication of this document. Please review these documents
+   carefully, as they describe your rights and restrictions with
+   respect to this document.
+
+
+Table of Contents
+
+   1.  Introduction
+   2.  Scope and Non-Goals
+   3.  Threat Model Overview
+   4.  Bootstrap Versus Steady-State Security
+   5.  Delegated Onboarding Authorities
+   6.  Handling Unavoidable Races
+   7.  Security Considerations
+   8.  IANA Considerations
+   9.  References
+
+
+1.  Introduction
+
+   Constrained devices such as sensors, actuators, and embedded
+   controllers are commonly onboarded into a larger system using
+   short-range local transports. These transports are attractive
+   because they are widely available, energy-efficient, and often
+   supported by commodity user devices such as smartphones.
+
+   In practice, many such transports provide confidentiality and
+   integrity for messages exchanged between two endpoints, but do not
+   provide strong guarantees about the identity of the peer during
+   initial contact. Bluetooth Low Energy (BLE) pairing using the "Just
+   Works" association model is a common example: the resulting link is
+   encrypted, but is vulnerable to active man-in-the-middle attacks
+   during pairing and does not provide meaningful peer authentication.
+
+   A recurring design error in onboarding systems is the assumption
+   that an encrypted local channel implies that the communicating peer
+   is the intended device. This assumption leads to protocols that
+   implicitly rely on properties the transport does not provide,
+   resulting in race conditions, identity confusion, or brittle
+   security checks layered on top of the channel.
+
+   At the same time, many real-world systems intentionally accept
+   these limitations in exchange for usability, cost, or power-
+   consumption constraints. Rather than attempting to eliminate all
+   attacks -- which is often infeasible -- such systems instead aim to
+   bound the impact of attacks, ensure recoverability, and concentrate
+   trust decisions in components capable of enforcing policy.
+
+   This document captures design patterns and failure modes observed
+   in deployed constrained-device onboarding systems that operate over
+   encrypted but unauthenticated local transports. It focuses on
+   threat-model-first reasoning, explicit separation of bootstrap and
+   steady-state security properties, and the use of delegated
+   authorities during onboarding. The document does not propose new
+   cryptographic mechanisms or replace existing standards such as
+   EDHOC, OSCORE, or Bluetooth Security Manager Protocol (SMP);
+   instead, it complements them by clarifying the assumptions required
+   for safe composition.
+
+
+2.  Scope and Non-Goals
+
+   <TBD>
+
+
+3.  Threat Model Overview
+
+   <TBD>
+
+
+4.  Bootstrap Versus Steady-State Security
+
+   <TBD>
+
+
+5.  Delegated Onboarding Authorities
+
+   <TBD>
+
+
+6.  Handling Unavoidable Races
+
+   <TBD>
+
+
+7.  Security Considerations
+
+   <TBD>
+
+
+8.  IANA Considerations
+
+   This document has no IANA actions.
+
+
+9.  References
+
+   <TBD>
+
+Author's Address
+
+   Alan Jowett
+   <email TBD>

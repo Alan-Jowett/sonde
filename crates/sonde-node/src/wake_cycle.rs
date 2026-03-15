@@ -18,6 +18,7 @@ use crate::error::{NodeError, NodeResult};
 use crate::hal::{BatteryReader, Hal};
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
+use crate::peer_request::peer_request_exchange;
 use crate::program_store::{LoadedProgram, ProgramStore};
 use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
@@ -93,6 +94,40 @@ where
     let (base_interval_s, _active_partition) = storage.read_schedule();
     let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
 
+    // 3a. PEER_REQUEST/PEER_ACK exchange (ND-0909–ND-0913).
+    //     If PSK is stored but reg_complete is not set, the node has been
+    //     BLE-provisioned but not yet acknowledged by the gateway.  Run the
+    //     PEER_REQUEST exchange before proceeding to the normal WAKE cycle.
+    if !storage.read_reg_complete() {
+        if let Some(encrypted_payload) = storage.read_peer_payload() {
+            match peer_request_exchange(
+                transport,
+                storage,
+                &identity,
+                &encrypted_payload,
+                rng,
+                clock,
+                hmac,
+            ) {
+                Ok(true) => {
+                    // Registration complete — fall through to normal WAKE cycle.
+                }
+                Ok(false) => {
+                    // Timeout — sleep and retry next wake cycle (ND-0910/ND-0911).
+                    return WakeCycleOutcome::Sleep {
+                        seconds: sleep_mgr.effective_sleep_s(),
+                    };
+                }
+                Err(_) => {
+                    // Transport or storage error — sleep and retry.
+                    return WakeCycleOutcome::Sleep {
+                        seconds: sleep_mgr.effective_sleep_s(),
+                    };
+                }
+            }
+        }
+    }
+
     // 4. Load active resident program hash and raw bytes from NVS.
     // Only the hash is needed for the WAKE message; CBOR decode is
     // deferred to step 9 so that cycles which return early (Reboot,
@@ -118,9 +153,20 @@ where
     );
 
     let (starting_seq, timestamp_ms, command_payload) = match command_result {
-        Ok(cmd) => cmd,
+        Ok(cmd) => {
+            // WAKE/COMMAND succeeded — erase peer_payload if present (ND-0914).
+            if storage.read_peer_payload().is_some() {
+                let _ = storage.erase_peer_payload();
+            }
+            cmd
+        }
         Err(_) => {
-            // WAKE retries exhausted or transport error — sleep
+            // WAKE retries exhausted or transport error.
+            // Self-healing (ND-0915): if reg_complete is set but WAKE failed,
+            // clear reg_complete so the next boot reverts to PEER_REQUEST.
+            if storage.read_reg_complete() {
+                let _ = storage.write_reg_complete(false);
+            }
             return WakeCycleOutcome::Sleep {
                 seconds: sleep_mgr.effective_sleep_s(),
             };

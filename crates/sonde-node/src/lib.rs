@@ -23,6 +23,7 @@ pub mod hal;
 pub mod key_store;
 pub mod map_storage;
 pub mod pairing;
+pub mod peer_request;
 pub mod program_store;
 pub mod sleep;
 pub mod sonde_bpf_adapter;

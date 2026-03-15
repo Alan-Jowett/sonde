@@ -384,7 +384,7 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 
 ---
 
-### Phase 6: `sonde-bpf` crate — ✅ DONE
+### Phase 6: `sonde-bpf` crate — ⚠️ MOSTLY DONE
 
 **Goal:** A zero-allocation, `no_std`-compatible BPF interpreter based on RFC 9669 that replaces `rbpf` as the node's execution backend. The crate defaults to `std` but supports `no_std` when the default `std` feature is disabled.
 
@@ -402,7 +402,7 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 
 **Known gap:** `sonde-bpf` does not yet enforce the instruction budget required by ND-0605. Step 6.3 addresses this (issue #106).
 
-**Exit criteria:** `sonde-bpf` passes the `bpf_conformance` test suite. `sonde-node` can use `sonde-bpf` as its interpreter backend with instruction budget enforcement. All existing node tests still pass.
+**Exit criteria:** `sonde-bpf` passes the `bpf_conformance` test suite. `sonde-node` uses `sonde-bpf` as its interpreter backend. All existing node tests still pass. Instruction budget enforcement (step 6.3, issue #106) is required before this phase is fully complete.
 
 ---
 
@@ -410,10 +410,10 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 
 **Goal:** End-to-end integration tests exercising the full stack (node + gateway + modem) in a single process.
 
-**Validation:** [e2e-validation.md](e2e-validation.md) (14 test cases, T-E2E-001 through T-E2E-051)
+**Validation:** [e2e-validation.md](e2e-validation.md) (14 specified test cases, T-E2E-001 through T-E2E-051)
 **Dependencies:** `sonde-gateway`, `sonde-node`, `sonde-modem`, `sonde-protocol`, `tokio`.
 
-**Status:** E2E harness implemented with 19 tests (T-E2E-001 through T-E2E-060), covering protocol compatibility, program distribution, command dispatch, application data, error handling, and modem-bridged scenarios. Modem-in-loop integration via physical USB (`PipeSerial` + `ChannelRadio`) is not yet implemented (tracked in issue #115).
+**Status:** E2E harness implemented with 19 tests — the 14 cases from the validation spec plus 5 additional tests (T-E2E-002b, T-E2E-052 through T-E2E-054, T-E2E-060) covering consecutive wake cycles, extended modem-bridge scenarios, and the full boot-pair-run lifecycle. Modem-in-loop integration via physical USB (`PipeSerial` + `ChannelRadio`) is not yet implemented (tracked in issue #115).
 
 | Step | What to build | Status |
 |---|---|---|

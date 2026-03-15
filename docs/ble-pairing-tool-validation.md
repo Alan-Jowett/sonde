@@ -844,7 +844,7 @@ TestNode {
 | T-PT-603 | PT-0804 | No node PSK persisted after provisioning |
 | T-PT-700 | PT-0900 | No key material in default logs |
 | T-PT-701 | PT-0900 | No key material in verbose logs |
-| T-PT-702 | PT-0901 | All randomness from getrandom |
+| T-PT-702 | PT-0901 | All randomness from injectable RNG provider |
 | T-PT-703 | PT-0903 | Non-zero test keys used |
 | T-PT-800 | PT-1000 | Recovery from BLE disconnect mid-pairing |
 | T-PT-801 | PT-1001 | No resource leaks on failure |

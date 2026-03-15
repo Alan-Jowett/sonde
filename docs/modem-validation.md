@@ -593,25 +593,11 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
-### T-0617  BLE advertising off by default
-
-**Validates:** MD-0412
-
-**Procedure:**
-1. Power on modem. Do NOT send `BLE_ENABLE`.
-2. Scan for BLE advertisements.
-3. Assert: no Gateway Pairing Service UUID advertised.
+### T-0617  *(Subsumed by T-0600)*
 
 ---
 
-### T-0618  BLE_ENABLE starts advertising
-
-**Validates:** MD-0413
-
-**Procedure:**
-1. Send `BLE_ENABLE` to modem.
-2. Scan for BLE advertisements.
-3. Assert: Gateway Pairing Service UUID is advertised.
+### T-0618  *(Subsumed by T-0600)*
 
 ---
 

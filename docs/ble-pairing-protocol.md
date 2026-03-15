@@ -259,7 +259,7 @@ The phone generates a fresh ephemeral X25519 keypair for this request.  The ephe
 The gateway MUST reject `REGISTER_PHONE` requests unless a **registration window** is currently open.  The registration window is opened by an explicit operator action:
 
 - **Physical button** on the gateway (or modem) held for ≥2 seconds, OR
-- **Admin API call** (planned `OpenPhoneRegistration` gRPC — not yet defined in `admin.proto`; will be added in a future PR).
+- **Admin API call** (`OpenBlePairing` / `CloseBlePairing` gRPC — see GW-1222).
 
 The registration window remains open for a configurable duration (default: 120 seconds) and closes automatically.  While closed, `REGISTER_PHONE` receives an `ERROR` response (type `0xFF`) with status `0x02` ("Registration window closed", per §4.1.1).
 

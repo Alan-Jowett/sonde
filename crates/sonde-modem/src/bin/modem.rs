@@ -17,10 +17,7 @@ fn main() {
 
 #[cfg(feature = "esp")]
 fn main() {
-    use std::sync::Arc;
-
     use esp_idf_hal::prelude::Peripherals;
-    use esp_idf_svc::bt::{BleEnabled, BtDriver};
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::log::EspLogger;
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -55,32 +52,15 @@ fn main() {
     // so it can discard frames when USB is disconnected (MD-0301).
     let usb_connected = usb.connected();
 
-    // Initialize BLE GATT server before WiFi/ESP-NOW so the modem peripheral
-    // is consumed once at the ESP-IDF coexistence layer level.  On ESP32-S3,
-    // WiFi and BLE share the radio via ESP-IDF's coexistence management.
-    // After BtDriver takes the modem, we use unsafe Modem::new() for WiFi —
-    // this is the standard coexistence pattern in esp-idf-hal.
-    let bt = Arc::new(
-        BtDriver::<BleEnabled>::new(peripherals.modem, None).unwrap_or_else(|e| {
-            error!("failed to initialize Bluetooth driver: {:?}", e);
-            panic!("fatal: Bluetooth init failed");
-        }),
-    );
-    let ble = EspBleDriver::new(bt).unwrap_or_else(|e| {
-        error!("failed to initialize BLE GATT server: {:?}", e);
-        panic!("fatal: BLE GATT init failed");
-    });
+    // Initialize BLE GATT server (MD-0400).
+    // esp32-nimble manages the NimBLE stack internally; no Modem peripheral
+    // token is needed here. WiFi/ESP-NOW and NimBLE share the radio via
+    // ESP-IDF coexistence management (CONFIG_ESP32_WIFI_BT_COEX).
+    let ble = EspBleDriver::new();
     info!("BLE GATT server initialized (advertising off by default — MD-0412)");
 
-    // WiFi+ESP-NOW: use a second Modem token because the ESP32-S3 hardware
-    // supports simultaneous WiFi and BLE via coexistence.
-    //
-    // Safety: `peripherals.modem` was consumed by BtDriver above.  Creating
-    // a second Modem token is safe on ESP32-S3 because BT and WiFi share the
-    // same radio hardware under ESP-IDF coexistence management.
-    let wifi_modem = unsafe { esp_idf_hal::modem::Modem::new() };
     let espnow = sonde_modem::espnow::EspNowDriver::new(
-        wifi_modem,
+        peripherals.modem,
         sysloop,
         nvs,
         &counters,

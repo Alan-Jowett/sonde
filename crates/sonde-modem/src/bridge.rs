@@ -65,10 +65,7 @@ pub enum BleEvent {
     /// A BLE GATT write was received from the connected phone.
     Recv(Vec<u8>),
     /// A BLE client connected and completed LESC pairing.
-    Connected {
-        peer_addr: [u8; MAC_SIZE],
-        mtu: u16,
-    },
+    Connected { peer_addr: [u8; MAC_SIZE], mtu: u16 },
     /// The BLE client disconnected.
     Disconnected {
         peer_addr: [u8; MAC_SIZE],
@@ -91,7 +88,8 @@ pub trait Ble {
     /// Send an indication to the connected BLE client (MD-0408).
     ///
     /// If no client is connected or `data` is empty, silently discards.
-    fn indicate(&mut self, data: &[u8]);    /// Accept or reject a Numeric Comparison pairing (MD-0414).
+    fn indicate(&mut self, data: &[u8]);
+    /// Accept or reject a Numeric Comparison pairing (MD-0414).
     fn pairing_confirm_reply(&mut self, accept: bool);
     /// Drain one queued BLE event, or `None` if empty.
     fn drain_event(&self) -> Option<BleEvent>;
@@ -1094,10 +1092,11 @@ mod tests {
         let mut bridge = make_bridge_with_ble();
         // Directly call the dispatch path with BleIndicate(vec![]) to verify
         // the Ble::indicate() contract — empty data is a no-op without panicking.
-        bridge
-            .ble
-            .indicate(&[]);
-        assert!(bridge.ble.indicated.is_empty(), "empty indicate should not queue");
+        bridge.ble.indicate(&[]);
+        assert!(
+            bridge.ble.indicated.is_empty(),
+            "empty indicate should not queue"
+        );
     }
 
     /// Validates: T-0612 (BLE_INDICATE with no BLE client: silent discard via NoBle)
@@ -1140,9 +1139,7 @@ mod tests {
     fn ble_recv_forwarded_to_gateway() {
         let mut bridge = make_bridge_with_ble();
         let data = vec![0x01, 0x00, 0x03, 0xCA, 0xFE, 0xBA];
-        bridge
-            .ble
-            .inject_event(BleEvent::Recv(data.clone()));
+        bridge.ble.inject_event(BleEvent::Recv(data.clone()));
         bridge.poll();
         let tx = bridge.usb.take_tx();
         let (msg, _) = decode_modem_frame(&tx).unwrap();

@@ -423,7 +423,8 @@ pub struct PairingReady {
 pub struct BleConnected {
     /// BLE address of the connected phone.
     pub peer_addr: [u8; MAC_SIZE],
-    /// Negotiated ATT MTU (always ≥ `BLE_MIN_MTU`).
+    /// Negotiated ATT MTU. The modem only sends this after confirming MTU ≥
+    /// `BLE_MIN_MTU`, but the codec does not range-check this field on decode.
     pub mtu: u16,
 }
 
@@ -442,7 +443,8 @@ pub struct BleDisconnected {
 /// it matches the phone display and responds with `BLE_PAIRING_CONFIRM_REPLY`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlePairingConfirm {
-    /// 6-digit Numeric Comparison passkey (0–999999). Display as zero-padded 6 digits.
+    /// Numeric Comparison passkey. Valid BLE passkeys are in the range 0–999999
+    /// (displayed as zero-padded 6 digits), but the codec does not enforce this range.
     pub passkey: u32,
 }
 
@@ -645,9 +647,10 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             body.push(d.reason);
             Ok((MODEM_MSG_BLE_DISCONNECTED, body))
         }
-        ModemMessage::BlePairingConfirm(p) => {
-            Ok((MODEM_MSG_BLE_PAIRING_CONFIRM, p.passkey.to_be_bytes().to_vec()))
-        }
+        ModemMessage::BlePairingConfirm(p) => Ok((
+            MODEM_MSG_BLE_PAIRING_CONFIRM,
+            p.passkey.to_be_bytes().to_vec(),
+        )),
         ModemMessage::Unknown { msg_type, body } => Ok((*msg_type, body.clone())),
     }
 }
@@ -980,9 +983,11 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
 
         MODEM_MSG_BLE_PAIRING_CONFIRM_REPLY => {
             check_exact_body(msg_type, body, BLE_PAIRING_CONFIRM_REPLY_BODY_SIZE)?;
-            Ok(ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply {
-                accept: body[0] != 0,
-            }))
+            Ok(ModemMessage::BlePairingConfirmReply(
+                BlePairingConfirmReply {
+                    accept: body[0] != 0,
+                },
+            ))
         }
 
         MODEM_MSG_BLE_RECV => {
@@ -1017,7 +1022,9 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
         MODEM_MSG_BLE_PAIRING_CONFIRM => {
             check_exact_body(msg_type, body, BLE_PAIRING_CONFIRM_BODY_SIZE)?;
             let passkey = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
-            Ok(ModemMessage::BlePairingConfirm(BlePairingConfirm { passkey }))
+            Ok(ModemMessage::BlePairingConfirm(BlePairingConfirm {
+                passkey,
+            }))
         }
 
         _ => Ok(ModemMessage::Unknown {

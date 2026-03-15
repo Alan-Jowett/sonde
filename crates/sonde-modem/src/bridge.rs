@@ -14,10 +14,9 @@ use log::{info, warn};
 use std::sync::Arc;
 
 use sonde_protocol::modem::{
-    encode_modem_frame, BleConnected, BleDisconnected, BlePairingConfirm,
-    BlePairingConfirmReply, BleRecv, FrameDecoder, ModemCodecError, ModemError, ModemMessage,
-    ModemReady, ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame, MAC_SIZE,
-    MODEM_ERR_CHANNEL_SET_FAILED,
+    encode_modem_frame, BleConnected, BleDisconnected, BlePairingConfirm, BlePairingConfirmReply,
+    BleRecv, FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady, ModemStatus,
+    RecvFrame, ScanEntry, ScanResult, SendFrame, MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED,
 };
 
 use crate::status::ModemCounters;
@@ -1066,7 +1065,10 @@ mod tests {
     fn ble_indicate_dispatched() {
         let mut bridge = make_bridge_with_ble();
         let payload = vec![0x01, 0x00, 0x02, 0xDE, 0xAD];
-        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate { ble_data: payload.clone() })).unwrap();
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload.clone(),
+        }))
+        .unwrap();
         bridge.usb.inject(&frame);
         bridge.poll();
         assert_eq!(bridge.ble.indicated.len(), 1);
@@ -1112,7 +1114,10 @@ mod tests {
         // NoBle no-op: no crash, no serial output.
         let mut bridge = make_bridge();
         let payload = vec![0x01, 0x00, 0x02, 0xDE, 0xAD];
-        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate { ble_data: payload })).unwrap();
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload,
+        }))
+        .unwrap();
         bridge.usb.inject(&frame);
         bridge.poll();
         // No crash; serial output is empty (NoBle.indicate() is a no-op).
@@ -1226,8 +1231,10 @@ mod tests {
 
         // Gateway responds with BLE_INDICATE.
         let indicate_data = vec![0x81, 0x00, 0x10]; // GW_INFO_RESPONSE envelope prefix
-        let indicate_frame =
-            encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate { ble_data: indicate_data.clone() })).unwrap();
+        let indicate_frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: indicate_data.clone(),
+        }))
+        .unwrap();
         bridge.usb.inject(&indicate_frame);
 
         bridge.poll();

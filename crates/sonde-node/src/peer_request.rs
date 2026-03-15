@@ -48,16 +48,29 @@ const PEER_ACK_STATUS_OK: u64 = 0;
 /// Build a PEER_REQUEST frame.
 ///
 /// Encodes `{ 1: encrypted_payload }` as CBOR, wraps in a protocol frame
-/// with `msg_type = 0x05`, a random 8-byte nonce, and HMAC-SHA256.
+/// with `msg_type = 0x05`, the provided 8-byte nonce, and HMAC-SHA256.
 ///
-/// Returns `(frame_bytes, nonce)` so the caller can verify the echoed nonce
-/// in PEER_ACK.
+/// The caller generates the nonce (via `Rng`) and retains it to verify
+/// the echoed nonce in PEER_ACK.
+///
+/// Returns `Err` if `encrypted_payload` is too large for the ESP-NOW frame
+/// budget (max 207 bytes of CBOR payload after header + HMAC).
 pub fn build_peer_request_frame(
     identity: &NodeIdentity,
     encrypted_payload: &[u8],
     nonce: u64,
     hmac: &dyn HmacProvider,
 ) -> NodeResult<Vec<u8>> {
+    // The ESP-NOW frame budget is 250 bytes total. After the 11-byte header
+    // and 32-byte HMAC, the maximum CBOR payload is 207 bytes. The CBOR
+    // overhead for { 1: bstr(N) } is ~4 bytes, so encrypted_payload must be
+    // at most ~203 bytes. Check before allocating the CBOR buffer.
+    if encrypted_payload.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+        return Err(NodeError::MalformedPayload(
+            "encrypted_payload exceeds ESP-NOW frame budget",
+        ));
+    }
+
     // Encode CBOR: { 1: bstr(encrypted_payload) }
     let cbor_map = ciborium::Value::Map(alloc::vec![(
         ciborium::Value::Integer(PEER_KEY_PAYLOAD.into()),

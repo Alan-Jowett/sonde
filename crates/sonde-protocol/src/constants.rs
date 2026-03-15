@@ -50,7 +50,8 @@ pub const KEY_STARTING_SEQ: u64 = 13;
 pub const KEY_TIMESTAMP_MS: u64 = 14;
 
 // CBOR integer keys (PEER_REQUEST / PEER_ACK messages)
-// These share the same keyspace as protocol messages (keys 1, 2).
+// Keys are scoped per msg_type — key 1 in PEER_REQUEST (encrypted_payload)
+// is unrelated to key 1 in WAKE (firmware_abi_version).
 // PEER_REQUEST: { 1: encrypted_payload }
 // PEER_ACK:     { 1: status, 2: registration_proof }
 pub const PEER_KEY_PAYLOAD: u64 = 1;

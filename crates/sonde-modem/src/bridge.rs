@@ -14,9 +14,10 @@ use log::{info, warn};
 use std::sync::Arc;
 
 use sonde_protocol::modem::{
-    encode_modem_frame, BleConnected, BleDisconnected, BlePairingConfirm, BlePairingConfirmReply,
-    FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady, ModemStatus, RecvFrame,
-    ScanEntry, ScanResult, SendFrame, MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED,
+    encode_modem_frame, BleConnected, BleDisconnected, BlePairingConfirm,
+    BlePairingConfirmReply, BleRecv, FrameDecoder, ModemCodecError, ModemError, ModemMessage,
+    ModemReady, ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame, MAC_SIZE,
+    MODEM_ERR_CHANNEL_SET_FAILED,
 };
 
 use crate::status::ModemCounters;
@@ -247,7 +248,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         for _ in 0..MAX_BLE_EVENTS_PER_POLL {
             match self.ble.drain_event() {
                 Some(BleEvent::Recv(data)) => {
-                    let msg = ModemMessage::BleRecv(data);
+                    let msg = ModemMessage::BleRecv(BleRecv { ble_data: data });
                     self.send_msg(&msg);
                 }
                 Some(BleEvent::Connected { peer_addr, mtu }) => {
@@ -274,7 +275,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
             ModemMessage::SetChannel(ch) => self.handle_set_channel(ch),
             ModemMessage::GetStatus => self.handle_get_status(),
             ModemMessage::ScanChannels => self.handle_scan_channels(),
-            ModemMessage::BleIndicate(data) => self.handle_ble_indicate(data),
+            ModemMessage::BleIndicate(ind) => self.handle_ble_indicate(ind.ble_data),
             ModemMessage::BleEnable => self.handle_ble_enable(),
             ModemMessage::BleDisable => self.handle_ble_disable(),
             ModemMessage::BlePairingConfirmReply(reply) => {
@@ -362,7 +363,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonde_protocol::modem::{decode_modem_frame, ModemMessage};
+    use sonde_protocol::modem::{decode_modem_frame, BleIndicate, ModemMessage};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -1065,7 +1066,7 @@ mod tests {
     fn ble_indicate_dispatched() {
         let mut bridge = make_bridge_with_ble();
         let payload = vec![0x01, 0x00, 0x02, 0xDE, 0xAD];
-        let frame = encode_modem_frame(&ModemMessage::BleIndicate(payload.clone())).unwrap();
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate { ble_data: payload.clone() })).unwrap();
         bridge.usb.inject(&frame);
         bridge.poll();
         assert_eq!(bridge.ble.indicated.len(), 1);
@@ -1111,7 +1112,7 @@ mod tests {
         // NoBle no-op: no crash, no serial output.
         let mut bridge = make_bridge();
         let payload = vec![0x01, 0x00, 0x02, 0xDE, 0xAD];
-        let frame = encode_modem_frame(&ModemMessage::BleIndicate(payload)).unwrap();
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate { ble_data: payload })).unwrap();
         bridge.usb.inject(&frame);
         bridge.poll();
         // No crash; serial output is empty (NoBle.indicate() is a no-op).
@@ -1150,7 +1151,7 @@ mod tests {
         let tx = bridge.usb.take_tx();
         let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
-            ModemMessage::BleRecv(received) => assert_eq!(received, data),
+            ModemMessage::BleRecv(received) => assert_eq!(received.ble_data, data),
             _ => panic!("expected BleRecv"),
         }
     }
@@ -1226,7 +1227,7 @@ mod tests {
         // Gateway responds with BLE_INDICATE.
         let indicate_data = vec![0x81, 0x00, 0x10]; // GW_INFO_RESPONSE envelope prefix
         let indicate_frame =
-            encode_modem_frame(&ModemMessage::BleIndicate(indicate_data.clone())).unwrap();
+            encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate { ble_data: indicate_data.clone() })).unwrap();
         bridge.usb.inject(&indicate_frame);
 
         bridge.poll();
@@ -1235,7 +1236,7 @@ mod tests {
         let tx = bridge.usb.take_tx();
         let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
-            ModemMessage::BleRecv(d) => assert_eq!(d, recv_data),
+            ModemMessage::BleRecv(d) => assert_eq!(d.ble_data, recv_data),
             _ => panic!("expected BleRecv"),
         }
 

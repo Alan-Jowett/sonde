@@ -772,7 +772,7 @@ The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LES
 **Description:**  
 On a NODE_PROVISION write the node MUST parse the fields `node_key_hint` (2B), `node_psk` (32B), `rf_channel` (1B), `payload_len` (2B BE), and `encrypted_payload` (`payload_len` bytes).  The node MUST validate `payload_len` before reading `encrypted_payload`.  If the pairing button was held at boot, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials.
 
-> **Note:** Under the current boot priority (ND-0900), BLE pairing mode is only entered when no PSK exists or the pairing button is held.  The protocol specification (ble-pairing-protocol.md §8.2 step 4b) additionally defines a NODE_ACK(0x01) "already paired" response for defence-in-depth, but this state is not reachable through the current boot path.  If future requirements add alternative entry paths to BLE pairing mode (e.g., a management command), the node MUST respond NODE_ACK(0x01) when pre-existing credentials are present and the pairing button was not held.
+> **Note:** Under the current boot priority (ND-0900), BLE pairing mode is only entered when no PSK exists or the pairing button is held.  The protocol specification (ble-pairing-protocol.md §8.2 step 4b) additionally defines a NODE_ACK(0x01) "already paired" response for defense-in-depth, but this state is not reachable through the current boot path.  If future requirements add alternative entry paths to BLE pairing mode (e.g., a management command), the node MUST respond NODE_ACK(0x01) when pre-existing credentials are present and the pairing button was not held.
 
 **Acceptance criteria:**
 

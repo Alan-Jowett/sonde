@@ -376,7 +376,7 @@ The encrypted payload MUST NOT exceed 202 bytes (the ESP-NOW frame budget). If t
 **Source:** ble-pairing-protocol.md §6.6, §6.7
 
 **Description:**  
-The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s).
+The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s).
 
 **Acceptance criteria:**
 

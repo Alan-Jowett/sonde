@@ -384,7 +384,7 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 
 ---
 
-### Phase 6: `sonde-bpf` crate — ⚠️ MOSTLY DONE
+### Phase 6: `sonde-bpf` crate — ✅ DONE
 
 **Goal:** A zero-allocation, `no_std`-compatible BPF interpreter based on RFC 9669 that replaces `rbpf` as the node's execution backend. The crate defaults to `std` but supports `no_std` when the default `std` feature is disabled.
 
@@ -396,13 +396,11 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 |---|---|---|
 | 6.1 | Core interpreter (`interpreter.rs`, `ebpf.rs`) | ✅ Done (38+ tests) |
 | 6.2 | `bpf_conformance` plugin (`sonde_bpf_plugin`) | ✅ Done |
-| 6.3 | Add instruction budget enforcement to `execute_program()` | ❌ Not started (tracked in issue #106) |
+| 6.3 | Add instruction budget enforcement to `execute_program()` | ✅ Done (budget param, LD_DW_IMM double-slot charging, 3 tests) |
 | 6.4 | Implement `BpfInterpreter` trait adapter in `sonde-node` (`sonde_bpf_adapter.rs`) | ✅ Done |
 | 6.5 | Run `bpf_conformance` test suite against the plugin | ✅ Done (CI job runs it with one known exclusion: `mem-len`) |
 
-**Known gap:** `sonde-bpf` does not yet enforce the instruction budget required by ND-0605. Step 6.3 addresses this (issue #106).
-
-**Exit criteria:** `sonde-bpf` passes the `bpf_conformance` test suite. `sonde-node` uses `sonde-bpf` as its interpreter backend. All existing node tests still pass. Instruction budget enforcement (step 6.3, issue #106) is required before this phase is fully complete.
+**Exit criteria:** `sonde-bpf` passes the `bpf_conformance` test suite. `sonde-node` uses `sonde-bpf` as its interpreter backend with instruction budget enforcement. All existing node tests still pass. ✅
 
 ---
 
@@ -413,7 +411,7 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 **Validation:** [e2e-validation.md](e2e-validation.md) (14 specified test cases, T-E2E-001 through T-E2E-051)
 **Dependencies:** `sonde-gateway`, `sonde-node`, `sonde-modem`, `sonde-protocol`, `tokio`.
 
-**Status:** E2E harness implemented with 19 tests — the 14 cases from the validation spec plus 5 additional tests (T-E2E-002b, T-E2E-052 through T-E2E-054, T-E2E-060) covering consecutive wake cycles, extended modem-bridge scenarios, and the full boot-pair-run lifecycle. Modem-in-loop integration via physical USB (`PipeSerial` + `ChannelRadio`) is not yet implemented (tracked in issue #115).
+**Status:** E2E harness implemented with 19 tests — the 14 cases from the validation spec plus 5 additional tests (T-E2E-002b, T-E2E-052 through T-E2E-054, T-E2E-060) covering consecutive wake cycles, extended modem-bridge scenarios, and the full boot-pair-run lifecycle. All modem-bridge tests currently use in-memory adapters (`PipeSerial` over tokio duplex, `ChannelRadio` over mpsc); testing with a real hardware modem over a physical serial port is not yet implemented (tracked in issue #115).
 
 | Step | What to build | Status |
 |---|---|---|
@@ -425,7 +423,7 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 | 7.6 | Application data tests (T-E2E-030 to T-E2E-031) | ✅ Done |
 | 7.7 | Error handling tests (T-E2E-040 to T-E2E-041) | ✅ Done |
 | 7.8 | Modem bridge tests (T-E2E-050 to T-E2E-054, T-E2E-060) | ✅ Done (in-process bridge via `ChannelRadio`/`ChannelTransport`) |
-| 7.9 | Modem-in-loop integration (physical USB via `PipeSerial`) | ❌ Not started (tracked in issue #115) |
+| 7.9 | Modem-in-loop integration (real hardware modem over physical serial port) | ❌ Not started (tracked in issue #115) |
 
 **Exit criteria:** All E2E test cases pass (`cargo test -p sonde-e2e`).
 

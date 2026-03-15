@@ -51,6 +51,13 @@ pub const NODE_ACK_STORAGE_ERROR: u8 = 0x02;
 //   37      payload_len  encrypted_payload
 // ---------------------------------------------------------------------------
 
+/// Maximum encrypted_payload size accepted by `parse_node_provision`.
+///
+/// Mirrors the NVS read buffer / write limit in `esp_storage` (512 bytes).
+/// Rejecting oversize payloads early avoids an unbounded heap allocation
+/// from a malicious or buggy phone.
+pub const PEER_PAYLOAD_MAX_LEN: usize = 512;
+
 /// Minimum body length for a NODE_PROVISION with an empty encrypted_payload.
 const NODE_PROVISION_MIN_LEN: usize = 37;
 
@@ -122,6 +129,9 @@ pub fn parse_node_provision(body: &[u8]) -> Result<NodeProvision, &'static str> 
         return Err("rf_channel out of range (must be 1–13)");
     }
     let payload_len = u16::from_be_bytes([body[35], body[36]]) as usize;
+    if payload_len > PEER_PAYLOAD_MAX_LEN {
+        return Err("encrypted_payload too large");
+    }
     let expected_len = NODE_PROVISION_MIN_LEN + payload_len;
     if body.len() < expected_len {
         return Err("encrypted_payload truncated");
@@ -496,6 +506,19 @@ mod tests {
                          // body[37] is the trailing byte
         let err = parse_node_provision(&body).unwrap_err();
         assert_eq!(err, "trailing bytes after encrypted_payload");
+    }
+
+    #[test]
+    fn parse_node_provision_oversize_payload_rejected() {
+        // payload_len exceeds PEER_PAYLOAD_MAX_LEN — rejected before allocation
+        let payload_len = PEER_PAYLOAD_MAX_LEN + 1;
+        let mut body = vec![0u8; 37 + payload_len];
+        body[2..34].fill(0x42); // psk
+        body[34] = 1; // channel 1
+        body[35] = ((payload_len >> 8) & 0xFF) as u8;
+        body[36] = (payload_len & 0xFF) as u8;
+        let err = parse_node_provision(&body).unwrap_err();
+        assert_eq!(err, "encrypted_payload too large");
     }
 
     #[test]

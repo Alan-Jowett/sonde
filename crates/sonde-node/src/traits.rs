@@ -161,7 +161,7 @@ pub trait PlatformStorage {
 
     /// Persist the registration-complete flag.
     /// Set to `true` on valid PEER_ACK (ND-0913); cleared to `false`
-    /// on NODE_PROVISION (ND-0906) and WAKE failure (ND-0915).
+    /// on NODE_PROVISION (ND-0906).
     fn write_reg_complete(&mut self, _complete: bool) -> NodeResult<()> {
         Ok(())
     }

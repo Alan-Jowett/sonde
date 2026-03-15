@@ -712,13 +712,13 @@ mod tests {
     fn test_map_budget_constant() {
         // MAP_BUDGET must be positive and large enough for at least one
         // small map (1 entry of 8 bytes = 12 bytes with 4-byte key).
-        assert!(MAP_BUDGET > 0, "MAP_BUDGET must be positive");
-        assert!(MAP_BUDGET >= 12, "MAP_BUDGET too small for a minimal map");
+        const { assert!(MAP_BUDGET > 0, "MAP_BUDGET must be positive") };
+        const { assert!(MAP_BUDGET >= 12, "MAP_BUDGET too small for a minimal map") };
     }
 
     #[test]
     fn test_max_maps_constant() {
-        assert!(MAX_MAPS >= 1, "MAX_MAPS must allow at least one map");
+        const { assert!(MAX_MAPS >= 1, "MAX_MAPS must allow at least one map") };
     }
 
     #[test]

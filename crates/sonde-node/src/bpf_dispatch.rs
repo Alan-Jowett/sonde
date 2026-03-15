@@ -788,6 +788,7 @@ mod tests {
     }
 
     /// Install the dispatch context for the test, run `f`, then clear.
+    #[allow(clippy::too_many_arguments)]
     fn with_test_context<F, R>(
         hal: &mut TestHal,
         transport: &mut TestTransport,

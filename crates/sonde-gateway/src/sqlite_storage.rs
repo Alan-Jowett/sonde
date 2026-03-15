@@ -853,7 +853,7 @@ mod tests {
         {
             let store = SqliteStorage::open(&db_path, test_key()).unwrap();
             assert!(store.get_node("p1").await.unwrap().is_some());
-            assert!(store.get_program(&vec![0xAA; 32]).await.unwrap().is_some());
+            assert!(store.get_program(&[0xAA; 32]).await.unwrap().is_some());
         }
     }
 
@@ -977,7 +977,7 @@ mod tests {
 
         // The migrated row has abi_version = NULL (i.e., None).
         let prog = store
-            .get_program(&vec![0x01u8; 32])
+            .get_program(&[0x01u8; 32])
             .await
             .unwrap()
             .expect("program must survive migration");
@@ -1030,7 +1030,7 @@ mod tests {
         let prog = make_program(0xCC);
 
         store
-            .replace_state(&[node_a.clone(), node_b.clone()], &[prog.clone()])
+            .replace_state(&[node_a.clone(), node_b.clone()], std::slice::from_ref(&prog))
             .await
             .unwrap();
 

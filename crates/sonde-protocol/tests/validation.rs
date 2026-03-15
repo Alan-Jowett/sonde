@@ -471,15 +471,16 @@ fn test_p029() {
 #[test]
 fn test_p030() {
     // Manually construct CBOR for Wake with battery_mv (key 3) omitted.
-    let mut map = Vec::new();
-    map.push((
-        ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.try_into().unwrap()),
-        ciborium::Value::Integer(1.into()),
-    ));
-    map.push((
-        ciborium::Value::Integer(KEY_PROGRAM_HASH.try_into().unwrap()),
-        ciborium::Value::Bytes(vec![0xAA; 32]),
-    ));
+    let map = vec![
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
+            ciborium::Value::Bytes(vec![0xAA; 32]),
+        ),
+    ];
     // KEY_BATTERY_MV deliberately omitted
     let mut cbor = Vec::new();
     ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();

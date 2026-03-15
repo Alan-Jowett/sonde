@@ -2035,7 +2035,7 @@ mod tests {
             ),
             (
                 ciborium::Value::Integer(14.into()),
-                ciborium::Value::Integer(1710000000000u64.try_into().unwrap()),
+                ciborium::Value::Integer(1710000000000u64.into()),
             ),
         ]);
         let mut payload_cbor = Vec::new();

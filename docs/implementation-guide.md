@@ -105,11 +105,13 @@ sonde/
 │   │
 │   └── sonde-e2e/                # end-to-end test harness (Phase 7)
 │       ├── Cargo.toml
-│       └── src/
-│           ├── lib.rs
-│           ├── harness.rs        # BridgeTransport, ChannelTransport, ChannelRadio, PipeSerial, ModemTestEnv
-│           └── bin/
-│               └── stub_handler.rs  # minimal handler subprocess for E2E tests
+│       ├── src/
+│       │   ├── lib.rs
+│       │   ├── harness.rs        # BridgeTransport, ChannelTransport, ChannelRadio, PipeSerial, ModemTestEnv
+│       │   └── bin/
+│       │       └── stub_handler.rs  # minimal handler subprocess for E2E tests
+│       └── tests/
+│           └── e2e_tests.rs      # 19 integration tests (T-E2E-001 through T-E2E-060)
 │
 ├── proto/
 │   └── admin.proto               # gRPC service definition

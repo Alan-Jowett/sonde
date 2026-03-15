@@ -407,7 +407,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Procedure:**
 1. Connect via BLE. Write a test envelope (TYPE=0x01, LEN, BODY) to the Gateway Command characteristic.
 2. Read from USB-CDC serial on the gateway side.
-3. Assert: the exact bytes written over BLE arrive on USB-CDC with message boundaries preserved.
+3. Assert: gateway receives a `BLE_RECV` (0xA0) serial message whose `ble_data` payload matches the bytes written over BLE.
 
 ---
 

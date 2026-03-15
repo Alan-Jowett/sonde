@@ -786,7 +786,7 @@ On a NODE_PROVISION write the node MUST parse the fields `node_key_hint`, `node_
 **Source:** ble-pairing-protocol.md §8.2, steps 4d–4f
 
 **Description:**  
-On a valid NODE_PROVISION the node MUST write the node PSK (NVS key `psk`), key hint (NVS key `key_hint`), RF channel (NVS key `channel`), and encrypted payload (NVS key `peer_payload`) to NVS, clear the registration-complete flag (NVS key `reg_complete`), and respond with NODE_ACK(0x00).  See ND-0916 for the complete NVS key mapping.
+On a valid NODE_PROVISION the node MUST write the node PSK (NVS key `psk`), key hint (NVS key `key_hint`), RF channel (NVS key `channel`), and encrypted payload (NVS key `peer_payload`) to NVS, clear the reg_complete flag (NVS key `reg_complete`), and respond with NODE_ACK(0x00).  See ND-0916 for the complete NVS key mapping.
 
 **Acceptance criteria:**
 
@@ -853,7 +853,7 @@ The node MUST transmit PEER_REQUEST on each boot until it receives a valid PEER_
 
 **Acceptance criteria:**
 
-1. Each wake cycle re-sends PEER_REQUEST when `reg-complete` is not set.
+1. Each wake cycle re-sends PEER_REQUEST when `reg_complete` is not set.
 2. The interval between retransmissions matches the configured wake interval.
 
 ---
@@ -896,11 +896,11 @@ The node MUST verify the PEER_ACK frame HMAC using `node_psk`, verify that the n
 **Source:** ble-pairing-protocol.md §7.2, §8.3
 
 **Description:**  
-On receiving a valid PEER_ACK the node MUST set the `registration-complete` flag in NVS. The `encrypted_payload` MUST be retained in NVS until the first successful WAKE/COMMAND exchange.
+On receiving a valid PEER_ACK the node MUST set the `reg_complete` flag in NVS. The `encrypted_payload` MUST be retained in NVS until the first successful WAKE/COMMAND exchange.
 
 **Acceptance criteria:**
 
-1. The `registration-complete` flag is set in NVS after a valid PEER_ACK.
+1. The `reg_complete` flag is set in NVS after a valid PEER_ACK.
 2. The `encrypted_payload` remains in NVS until the first WAKE/COMMAND cycle succeeds.
 
 ---
@@ -925,11 +925,11 @@ After the first successful WAKE/COMMAND exchange (the gateway responds with a va
 **Source:** ble-pairing-protocol.md §8.3.1
 
 **Description:**  
-If WAKE fails (no response or HMAC verification failure) after `registration-complete` is set, the node MUST clear the `registration-complete` flag and revert to sending PEER_REQUEST on the next boot.
+If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set, the node MUST clear the `reg_complete` flag and revert to sending PEER_REQUEST on the next boot.
 
 **Acceptance criteria:**
 
-1. A WAKE failure when `registration-complete` is set clears the flag.
+1. A WAKE failure when `reg_complete` is set clears the flag.
 2. The next boot enters the PEER_REQUEST path instead of the normal WAKE cycle.
 
 ---

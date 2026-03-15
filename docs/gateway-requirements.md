@@ -982,7 +982,7 @@ The gateway MUST support replicating the Ed25519 seed and `gateway_id` to failov
 **Source:** ble-pairing-protocol.md §3.1, §3.2
 
 **Description:**  
-The gateway MUST implement a BLE GATT Gateway Pairing Service (UUID `0000FE60-…`) with a Gateway Command characteristic (UUID `0000FE61-…`) supporting Write and Indicate operations.
+The gateway system MUST expose a BLE GATT Gateway Pairing Service (UUID `0000FE60-…`) with a Gateway Command characteristic (UUID `0000FE61-…`) supporting Write and Indicate operations. In modem-relay mode (ble-pairing-protocol.md §12), the modem hosts the GATT service and the gateway exchanges messages via `BLE_RECV` / `BLE_INDICATE` serial messages (modem-protocol.md §4.9–4.10).
 
 **Acceptance criteria:**
 
@@ -998,7 +998,7 @@ The gateway MUST implement a BLE GATT Gateway Pairing Service (UUID `0000FE60-�
 **Source:** ble-pairing-protocol.md §3.4
 
 **Description:**  
-The gateway MUST negotiate an ATT MTU of at least 247 bytes and fragment indications into (MTU−3)-byte chunks sent sequentially with ATT confirmation between each.
+The gateway system MUST ensure ATT MTU ≥ 247 is negotiated and that indications exceeding (MTU−3) bytes are fragmented into sequential chunks with ATT confirmation between each. In modem-relay mode (ble-pairing-protocol.md §12), the modem handles MTU negotiation and indication fragmentation (see MD-0402, MD-0403); the gateway sends complete BLE envelopes via `BLE_INDICATE` and the modem fragments as needed.
 
 **Acceptance criteria:**
 

@@ -905,7 +905,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0909
 
 **Procedure:**
-1. Provision node via BLE, reboot (PSK stored, `reg-complete` not set).
+1. Provision node via BLE, reboot (PSK stored, `reg_complete` not set).
 2. Capture the transmitted PEER_REQUEST frame.
 3. Assert: `msg_type` = 0x05.
 4. Assert: nonce is 8 random bytes (non-zero, differs across reboots).
@@ -958,7 +958,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Node sends PEER_REQUEST with nonce N.
 2. Mock gateway responds with PEER_ACK containing nonce N+1 (mismatch).
 3. Assert: node discards the PEER_ACK.
-4. Assert: `reg-complete` flag is NOT set.
+4. Assert: `reg_complete` flag is NOT set.
 
 ---
 
@@ -970,7 +970,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Node sends PEER_REQUEST with nonce N.
 2. Mock gateway responds with PEER_ACK containing correct nonce but incorrect `registration_proof`.
 3. Assert: node discards the PEER_ACK.
-4. Assert: `reg-complete` flag is NOT set.
+4. Assert: `reg_complete` flag is NOT set.
 
 ---
 
@@ -981,8 +981,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Node sends PEER_REQUEST.
 2. Mock gateway responds with a valid PEER_ACK.
-3. Assert: `reg-complete` flag is set in NVS.
-4. Assert: `encrypted_payload` is still present in NVS.
+3. Assert: `reg_complete` flag is set in NVS.
+4. Assert: `peer_payload` is still present in NVS.
 
 ---
 
@@ -991,10 +991,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0914
 
 **Procedure:**
-1. Complete BLE pairing and registration (PEER_ACK accepted, `reg-complete` set).
+1. Complete BLE pairing and registration (PEER_ACK accepted, `reg_complete` set).
 2. Reboot node; node enters normal WAKE cycle.
 3. Mock gateway responds with a valid COMMAND to the WAKE.
-4. Assert: `encrypted_payload` is erased from NVS after the COMMAND is processed.
+4. Assert: `peer_payload` is erased from NVS after the COMMAND is processed.
 
 ---
 
@@ -1003,10 +1003,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0915
 
 **Procedure:**
-1. Complete BLE pairing and registration (`reg-complete` set).
+1. Complete BLE pairing and registration (`reg_complete` set).
 2. Reboot node; node sends WAKE.
 3. Mock gateway does not respond (or responds with invalid HMAC).
-4. Assert: `reg-complete` flag is cleared.
+4. Assert: `reg_complete` flag is cleared.
 5. Assert: on next boot the node sends PEER_REQUEST instead of WAKE.
 
 ---

@@ -137,10 +137,10 @@ TestNode {
 
 **Procedure:**
 1. Configure mock transport with one gateway device.
-2. Start a scan with timeout = 2 s.
+2. Start a scan with timeout = 15 s.
 3. After 1 s, stop advertising the gateway in the mock.
 4. Assert: after 10 s of no advertisements, the device is removed from results.
-5. Assert: scan stops automatically after the configured timeout.
+5. Assert: scan stops automatically after the configured timeout (15 s).
 
 ---
 

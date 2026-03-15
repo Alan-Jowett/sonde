@@ -1149,7 +1149,7 @@ async fn t0503_multiple_app_data_per_wake() {
         let resp = gw
             .process_frame(&app_frame, node.peer_address())
             .await
-            .expect(&format!("expected reply for APP_DATA #{i}"));
+            .unwrap_or_else(|| panic!("expected reply for APP_DATA #{i}"));
 
         let (hdr, msg) = decode_response(&resp, &node.psk);
         assert_eq!(hdr.msg_type, MSG_APP_DATA_REPLY);

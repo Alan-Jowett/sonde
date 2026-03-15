@@ -163,7 +163,7 @@ mod tests {
         let boot = Instant::now() - Duration::from_secs(5);
         let c = ModemCounters::new_with_boot_time(boot);
         let uptime = c.uptime_s();
-        assert!(uptime >= 4 && uptime <= 6, "expected ~5s, got {}", uptime);
+        assert!((4..=6).contains(&uptime), "expected ~5s, got {}", uptime);
     }
 
     #[test]

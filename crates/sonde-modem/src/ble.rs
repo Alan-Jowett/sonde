@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex};
 use esp32_nimble::utilities::BleUuid;
 use esp32_nimble::{
     enums::{AuthReq, SecurityIOCap},
+    utilities::mutex::Mutex as NimbleMutex,
     BLEAdvertisementData, BLECharacteristic, BLEDevice, NimbleProperties,
 };
 use log::{info, warn};
@@ -127,7 +128,7 @@ pub struct EspBleDriver {
     state: Arc<Mutex<BleState>>,
     /// Cached reference to the Gateway Command characteristic, avoiding
     /// async `get_service()` lookups in sync indication paths.
-    gateway_cmd_char: Arc<Mutex<BLECharacteristic>>,
+    gateway_cmd_char: Arc<NimbleMutex<BLECharacteristic>>,
 }
 
 impl EspBleDriver {

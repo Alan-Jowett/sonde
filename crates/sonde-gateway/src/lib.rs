@@ -4,8 +4,10 @@
 pub mod admin;
 pub mod crypto;
 pub mod engine;
+pub mod gateway_identity;
 pub mod handler;
 pub mod modem;
+pub mod phone_trust;
 pub mod program;
 pub mod registry;
 pub mod session;
@@ -17,10 +19,12 @@ pub mod transport;
 pub use admin::AdminService;
 pub use crypto::{RustCryptoHmac, RustCryptoSha256};
 pub use engine::{Gateway, PendingCommand};
+pub use gateway_identity::{GatewayIdentity, IdentityError};
 pub use handler::{
     load_handler_configs, HandlerConfig, HandlerConfigError, HandlerMessage, HandlerRouter,
     ProgramMatcher,
 };
+pub use phone_trust::{PhonePskRecord, PhonePskStatus};
 pub use program::{ProgramLibrary, ProgramRecord, VerificationProfile};
 pub use registry::NodeRecord;
 pub use session::{Session, SessionManager, SessionState};

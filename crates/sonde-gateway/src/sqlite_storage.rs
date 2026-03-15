@@ -11,6 +11,8 @@ use async_trait::async_trait;
 use rusqlite::{params, Connection, OptionalExtension};
 use zeroize::Zeroizing;
 
+use crate::gateway_identity::GatewayIdentity;
+use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
 use crate::registry::NodeRecord;
 use crate::storage::{Storage, StorageError};
@@ -92,6 +94,152 @@ fn decrypt_psk(
         .as_slice()
         .try_into()
         .map_err(|_| StorageError::Internal("decrypted psk is not 32 bytes".into()))
+}
+
+/// Encrypt a 32-byte Ed25519 seed using AES-256-GCM.
+///
+/// The `gateway_id` is included in the AAD to cryptographically bind the
+/// seed to its associated gateway identity. This prevents a tampered
+/// `gateway_id` from being accepted alongside a valid seed.
+/// Returns `nonce (12 B) || ciphertext+tag (48 B)`.
+fn encrypt_seed(
+    master_key: &[u8; 32],
+    seed: &[u8; 32],
+    gateway_id: &[u8; 16],
+) -> Result<Vec<u8>, StorageError> {
+    let key = Key::<Aes256Gcm>::from_slice(master_key);
+    let cipher = Aes256Gcm::new(key);
+
+    let mut nonce_bytes = [0u8; 12];
+    getrandom::fill(&mut nonce_bytes)
+        .map_err(|e| StorageError::Internal(format!("nonce rng: {e}")))?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let mut aad = Vec::with_capacity(22 + 16);
+    aad.extend_from_slice(b"sonde-gateway-identity");
+    aad.extend_from_slice(gateway_id);
+
+    let payload = Payload {
+        msg: seed.as_slice(),
+        aad: &aad,
+    };
+
+    let ciphertext = cipher
+        .encrypt(nonce, payload)
+        .map_err(|e| StorageError::Internal(format!("seed encrypt: {e}")))?;
+
+    let mut out = Vec::with_capacity(ENCRYPTED_PSK_LEN);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Decrypt an encrypted Ed25519 seed blob.
+///
+/// The `gateway_id` is used as part of the AAD (matching [`encrypt_seed`]),
+/// ensuring that a tampered `gateway_id` is detected as an authentication failure.
+fn decrypt_seed(
+    master_key: &[u8; 32],
+    blob: &[u8],
+    gateway_id: &[u8; 16],
+) -> Result<[u8; 32], StorageError> {
+    if blob.len() != ENCRYPTED_PSK_LEN {
+        return Err(StorageError::Internal(format!(
+            "encrypted seed blob has wrong length: expected {ENCRYPTED_PSK_LEN}, got {}",
+            blob.len()
+        )));
+    }
+
+    let key = Key::<Aes256Gcm>::from_slice(master_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&blob[..12]);
+
+    let mut aad = Vec::with_capacity(22 + 16);
+    aad.extend_from_slice(b"sonde-gateway-identity");
+    aad.extend_from_slice(gateway_id);
+
+    let payload = Payload {
+        msg: &blob[12..],
+        aad: &aad,
+    };
+
+    let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
+        StorageError::Internal(
+            "seed decryption failed — wrong master key or data corruption".into(),
+        )
+    })?);
+
+    plaintext
+        .as_slice()
+        .try_into()
+        .map_err(|_| StorageError::Internal("decrypted seed is not 32 bytes".into()))
+}
+
+/// Encrypt a 32-byte phone PSK using AES-256-GCM.
+///
+/// The `phone_id` (as string) is used as AAD.
+fn encrypt_phone_psk(
+    master_key: &[u8; 32],
+    phone_id: u32,
+    psk: &[u8; 32],
+) -> Result<Vec<u8>, StorageError> {
+    let aad = phone_id.to_string();
+    let key = Key::<Aes256Gcm>::from_slice(master_key);
+    let cipher = Aes256Gcm::new(key);
+
+    let mut nonce_bytes = [0u8; 12];
+    getrandom::fill(&mut nonce_bytes)
+        .map_err(|e| StorageError::Internal(format!("nonce rng: {e}")))?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let payload = Payload {
+        msg: psk.as_slice(),
+        aad: aad.as_bytes(),
+    };
+
+    let ciphertext = cipher
+        .encrypt(nonce, payload)
+        .map_err(|e| StorageError::Internal(format!("phone psk encrypt: {e}")))?;
+
+    let mut out = Vec::with_capacity(ENCRYPTED_PSK_LEN);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Decrypt an encrypted phone PSK blob.
+fn decrypt_phone_psk(
+    master_key: &[u8; 32],
+    phone_id: u32,
+    blob: &[u8],
+) -> Result<[u8; 32], StorageError> {
+    if blob.len() != ENCRYPTED_PSK_LEN {
+        return Err(StorageError::Internal(format!(
+            "encrypted phone psk blob has wrong length: expected {ENCRYPTED_PSK_LEN}, got {}",
+            blob.len()
+        )));
+    }
+
+    let aad = phone_id.to_string();
+    let key = Key::<Aes256Gcm>::from_slice(master_key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&blob[..12]);
+
+    let payload = Payload {
+        msg: &blob[12..],
+        aad: aad.as_bytes(),
+    };
+
+    let plaintext = Zeroizing::new(cipher.decrypt(nonce, payload).map_err(|_| {
+        StorageError::Internal(
+            "phone psk decryption failed — wrong master key or data corruption".into(),
+        )
+    })?);
+
+    plaintext
+        .as_slice()
+        .try_into()
+        .map_err(|_| StorageError::Internal("decrypted phone psk is not 32 bytes".into()))
 }
 
 /// Re-encrypt any legacy plaintext PSK blobs left over from pre-GW-0601a
@@ -240,6 +388,23 @@ CREATE TABLE IF NOT EXISTS programs (
     verification_profile TEXT NOT NULL,
     abi_version INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS gateway_identity (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    encrypted_seed BLOB NOT NULL,
+    gateway_id BLOB NOT NULL,
+    public_key BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS phone_psks (
+    phone_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_key_hint INTEGER NOT NULL,
+    psk BLOB NOT NULL,
+    label TEXT NOT NULL,
+    issued_at_epoch_s INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+CREATE INDEX IF NOT EXISTS idx_phone_psks_key_hint ON phone_psks(phone_key_hint);
 ";
 
 /// SQLite-backed persistent storage for the gateway.
@@ -715,6 +880,272 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    // ── Gateway identity (GW-1200, GW-1201) ───────────────────
+
+    async fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, StorageError> {
+        let mk = self.master_key.clone();
+        self.with_conn(move |conn| {
+            let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = conn
+                .query_row(
+                    "SELECT encrypted_seed, gateway_id, public_key \
+                     FROM gateway_identity WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(map_err)?;
+
+            match row {
+                None => Ok(None),
+                Some((encrypted_seed, gateway_id_vec, public_key_vec)) => {
+                    let gateway_id: [u8; 16] = gateway_id_vec
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| StorageError::Internal("gateway_id is not 16 bytes".into()))?;
+
+                    let seed_bytes = decrypt_seed(&mk, &encrypted_seed, &gateway_id)?;
+                    let seed = Zeroizing::new(seed_bytes);
+
+                    let identity = GatewayIdentity::from_parts(seed, gateway_id);
+
+                    // Validate stored public key matches derived value to detect
+                    // corruption or tampering.
+                    let stored_pk: [u8; 32] = public_key_vec
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| StorageError::Internal("public_key is not 32 bytes".into()))?;
+                    if stored_pk != *identity.public_key() {
+                        return Err(StorageError::Internal(
+                            "stored public key does not match derived value — \
+                             database may be corrupt or tampered with"
+                                .into(),
+                        ));
+                    }
+
+                    Ok(Some(identity))
+                }
+            }
+        })
+        .await
+    }
+
+    async fn store_gateway_identity(&self, identity: &GatewayIdentity) -> Result<(), StorageError> {
+        let mk = self.master_key.clone();
+        let seed = Zeroizing::new(*identity.seed());
+        let gateway_id_arr = *identity.gateway_id();
+        let gateway_id = identity.gateway_id().to_vec();
+        let public_key = identity.public_key().to_vec();
+        self.with_conn(move |conn| {
+            let encrypted_seed = encrypt_seed(&mk, &seed, &gateway_id_arr)?;
+            conn.execute(
+                "INSERT INTO gateway_identity (id, encrypted_seed, gateway_id, public_key) \
+                 VALUES (1, ?1, ?2, ?3) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                 encrypted_seed=excluded.encrypted_seed, \
+                 gateway_id=excluded.gateway_id, \
+                 public_key=excluded.public_key",
+                params![encrypted_seed, gateway_id, public_key],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    // ── Phone trust store (GW-1210) ────────────────────────────
+
+    async fn list_phone_psks(&self) -> Result<Vec<PhonePskRecord>, StorageError> {
+        let mk = self.master_key.clone();
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status \
+                     FROM phone_psks",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
+                .map_err(map_err)?;
+            let mut records = Vec::new();
+            for row in rows {
+                let (phone_id, key_hint, psk_blob, label, issued_at, status_str) =
+                    row.map_err(map_err)?;
+                let psk = Zeroizing::new(decrypt_phone_psk(&mk, phone_id, &psk_blob)?);
+                let status = PhonePskStatus::from_str_value(&status_str).ok_or_else(|| {
+                    StorageError::Internal(format!("unknown phone psk status: {status_str}"))
+                })?;
+                records.push(PhonePskRecord {
+                    phone_id,
+                    phone_key_hint: u16::try_from(key_hint).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "phone_key_hint {key_hint} out of u16 range for phone_id {phone_id}"
+                        ))
+                    })?,
+                    psk,
+                    label,
+                    issued_at: epoch_s_to_system_time(issued_at),
+                    status,
+                });
+            }
+            Ok(records)
+        })
+        .await
+    }
+
+    async fn get_phone_psks_by_key_hint(
+        &self,
+        key_hint: u16,
+    ) -> Result<Vec<PhonePskRecord>, StorageError> {
+        let mk = self.master_key.clone();
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT phone_id, phone_key_hint, psk, label, issued_at_epoch_s, status \
+                     FROM phone_psks WHERE phone_key_hint = ?1",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map(params![key_hint as u32], |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
+                .map_err(map_err)?;
+            let mut records = Vec::new();
+            for row in rows {
+                let (phone_id, kh, psk_blob, label, issued_at, status_str) =
+                    row.map_err(map_err)?;
+                let psk = Zeroizing::new(decrypt_phone_psk(&mk, phone_id, &psk_blob)?);
+                let status = PhonePskStatus::from_str_value(&status_str).ok_or_else(|| {
+                    StorageError::Internal(format!("unknown phone psk status: {status_str}"))
+                })?;
+                records.push(PhonePskRecord {
+                    phone_id,
+                    phone_key_hint: u16::try_from(kh).map_err(|_| {
+                        StorageError::Internal(format!(
+                            "phone_key_hint {kh} out of u16 range for phone_id {phone_id}"
+                        ))
+                    })?,
+                    psk,
+                    label,
+                    issued_at: epoch_s_to_system_time(issued_at),
+                    status,
+                });
+            }
+            Ok(records)
+        })
+        .await
+    }
+
+    async fn store_phone_psk(&self, record: &PhonePskRecord) -> Result<u32, StorageError> {
+        use crate::phone_trust::PHONE_LABEL_MAX_BYTES;
+
+        if record.label.len() > PHONE_LABEL_MAX_BYTES {
+            return Err(StorageError::Internal(format!(
+                "phone label exceeds {PHONE_LABEL_MAX_BYTES}-byte limit: {} bytes",
+                record.label.len()
+            )));
+        }
+
+        let mk = self.master_key.clone();
+        let record = record.clone();
+        self.with_conn(move |conn| {
+            let issued_at = system_time_to_epoch_s(&record.issued_at);
+
+            // Wrap INSERT + UPDATE in a transaction so a crash between them
+            // cannot leave a row with an invalid placeholder PSK.
+            conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
+
+            let result = (|| -> Result<u32, StorageError> {
+                // Insert with a placeholder PSK to get the auto-increment id.
+                conn.execute(
+                    "INSERT INTO phone_psks \
+                     (phone_key_hint, psk, label, issued_at_epoch_s, status) \
+                     VALUES (?1, X'00', ?2, ?3, ?4)",
+                    params![
+                        record.phone_key_hint as u32,
+                        &record.label,
+                        issued_at,
+                        record.status.to_string(),
+                    ],
+                )
+                .map_err(map_err)?;
+
+                let rowid = conn.last_insert_rowid();
+                let phone_id = u32::try_from(rowid).map_err(|_| {
+                    StorageError::Internal(format!("phone_id rowid {rowid} exceeds u32::MAX"))
+                })?;
+
+                // Encrypt PSK with the actual phone_id as AAD and update.
+                let encrypted_psk = encrypt_phone_psk(&mk, phone_id, &record.psk)?;
+                conn.execute(
+                    "UPDATE phone_psks SET psk = ?1 WHERE phone_id = ?2",
+                    params![encrypted_psk, phone_id],
+                )
+                .map_err(map_err)?;
+
+                Ok(phone_id)
+            })();
+
+            match result {
+                Ok(id) => {
+                    conn.execute_batch("COMMIT").map_err(|e| {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        map_err(e)
+                    })?;
+                    Ok(id)
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+        .await
+    }
+
+    async fn revoke_phone_psk(&self, phone_id: u32) -> Result<(), StorageError> {
+        self.with_conn(move |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE phone_psks SET status = 'revoked' WHERE phone_id = ?1",
+                    params![phone_id],
+                )
+                .map_err(map_err)?;
+            if updated == 0 {
+                return Err(StorageError::NotFound(format!("phone_id {phone_id}")));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_phone_psk(&self, phone_id: u32) -> Result<(), StorageError> {
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM phone_psks WHERE phone_id = ?1",
+                params![phone_id],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -1053,5 +1484,229 @@ mod tests {
         // Program must be present.
         let fetched_prog = store.get_program(&prog.hash).await.unwrap().unwrap();
         assert_eq!(fetched_prog.image, prog.image);
+    }
+
+    // ── Gateway identity tests (T-1200, T-1201) ───────────────
+
+    #[tokio::test]
+    async fn test_gateway_identity_store_and_load() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        // No identity initially.
+        assert!(store.load_gateway_identity().await.unwrap().is_none());
+
+        // Generate and store.
+        let identity = GatewayIdentity::generate().unwrap();
+        store.store_gateway_identity(&identity).await.unwrap();
+
+        // Load and verify round-trip.
+        let loaded = store.load_gateway_identity().await.unwrap().unwrap();
+        assert_eq!(loaded.public_key(), identity.public_key());
+        assert_eq!(loaded.gateway_id(), identity.gateway_id());
+        assert_eq!(loaded.seed(), identity.seed());
+    }
+
+    #[tokio::test]
+    async fn test_gateway_identity_persistence_across_reopen() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("identity.db");
+
+        let identity = GatewayIdentity::generate().unwrap();
+
+        // Store identity.
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.store_gateway_identity(&identity).await.unwrap();
+        }
+
+        // Reopen and verify persistence (T-1200 acceptance criteria #3).
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            let loaded = store.load_gateway_identity().await.unwrap().unwrap();
+            assert_eq!(loaded.public_key(), identity.public_key());
+            assert_eq!(loaded.gateway_id(), identity.gateway_id());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_gateway_identity_seed_encrypted_at_rest() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("encrypted.db");
+
+        let identity = GatewayIdentity::generate().unwrap();
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            store.store_gateway_identity(&identity).await.unwrap();
+        }
+
+        // Read the raw encrypted_seed from the database.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            let blob: Vec<u8> = conn
+                .query_row(
+                    "SELECT encrypted_seed FROM gateway_identity WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            // Must be encrypted (60 bytes), not plaintext (32 bytes).
+            assert_eq!(blob.len(), ENCRYPTED_PSK_LEN);
+            // Encrypted blob must NOT match the plaintext seed.
+            assert_ne!(&blob[12..44], identity.seed().as_slice());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_gateway_identity_overwrite() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        let id1 = GatewayIdentity::generate().unwrap();
+        store.store_gateway_identity(&id1).await.unwrap();
+
+        let id2 = GatewayIdentity::generate().unwrap();
+        store.store_gateway_identity(&id2).await.unwrap();
+
+        // Should load the second identity.
+        let loaded = store.load_gateway_identity().await.unwrap().unwrap();
+        assert_eq!(loaded.public_key(), id2.public_key());
+        assert_ne!(loaded.public_key(), id1.public_key());
+    }
+
+    // ── Phone PSK trust store tests (GW-1210) ─────────────────
+
+    fn make_phone_psk(hint: u16, label: &str) -> PhonePskRecord {
+        PhonePskRecord {
+            phone_id: 0, // auto-assigned
+            phone_key_hint: hint,
+            psk: Zeroizing::new([0xBB; 32]),
+            label: label.to_string(),
+            issued_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
+            status: PhonePskStatus::Active,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_phone_psk_store_and_list() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        // No PSKs initially.
+        assert!(store.list_phone_psks().await.unwrap().is_empty());
+
+        let phone_id = store
+            .store_phone_psk(&make_phone_psk(42, "Alice's phone"))
+            .await
+            .unwrap();
+        assert!(phone_id > 0);
+
+        let all = store.list_phone_psks().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].phone_id, phone_id);
+        assert_eq!(all[0].phone_key_hint, 42);
+        assert_eq!(all[0].label, "Alice's phone");
+        assert_eq!(*all[0].psk, [0xBB; 32]);
+        assert_eq!(all[0].status, PhonePskStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn test_phone_psk_lookup_by_key_hint() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        // Store two PSKs with different hints and one with colliding hint.
+        store
+            .store_phone_psk(&make_phone_psk(100, "Phone A"))
+            .await
+            .unwrap();
+        store
+            .store_phone_psk(&make_phone_psk(200, "Phone B"))
+            .await
+            .unwrap();
+        store
+            .store_phone_psk(&make_phone_psk(100, "Phone C"))
+            .await
+            .unwrap();
+
+        // Lookup hint=100 should return 2 records.
+        let found = store.get_phone_psks_by_key_hint(100).await.unwrap();
+        assert_eq!(found.len(), 2);
+
+        // Lookup hint=200 should return 1.
+        let found = store.get_phone_psks_by_key_hint(200).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].label, "Phone B");
+
+        // Lookup non-existent hint returns empty.
+        let found = store.get_phone_psks_by_key_hint(999).await.unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_phone_psk_revocation() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        let phone_id = store
+            .store_phone_psk(&make_phone_psk(42, "Revokable"))
+            .await
+            .unwrap();
+
+        // Revoke it.
+        store.revoke_phone_psk(phone_id).await.unwrap();
+
+        // Verify it's revoked.
+        let all = store.list_phone_psks().await.unwrap();
+        assert_eq!(all[0].status, PhonePskStatus::Revoked);
+
+        // Revoking a non-existent phone_id should return NotFound.
+        let result = store.revoke_phone_psk(99999).await;
+        assert!(matches!(result, Err(StorageError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_phone_psk_delete() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        let phone_id = store
+            .store_phone_psk(&make_phone_psk(42, "Deletable"))
+            .await
+            .unwrap();
+        assert_eq!(store.list_phone_psks().await.unwrap().len(), 1);
+
+        store.delete_phone_psk(phone_id).await.unwrap();
+        assert!(store.list_phone_psks().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_phone_psk_encrypted_at_rest() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("phone.db");
+
+        let psk_bytes = [0xCC; 32];
+        let mut record = make_phone_psk(42, "Encrypted");
+        record.psk = Zeroizing::new(psk_bytes);
+
+        let phone_id;
+        {
+            let store = SqliteStorage::open(&db_path, test_key()).unwrap();
+            phone_id = store.store_phone_psk(&record).await.unwrap();
+        }
+
+        // Read raw blob from database.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            let blob: Vec<u8> = conn
+                .query_row(
+                    "SELECT psk FROM phone_psks WHERE phone_id = ?1",
+                    params![phone_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(blob.len(), ENCRYPTED_PSK_LEN);
+            assert_ne!(&blob[12..44], psk_bytes.as_slice());
+        }
     }
 }

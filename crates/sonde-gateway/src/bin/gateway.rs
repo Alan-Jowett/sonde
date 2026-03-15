@@ -16,6 +16,7 @@ use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::modem::UsbEspNowTransport;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
+use sonde_gateway::storage::Storage;
 use sonde_gateway::transport::Transport;
 use sonde_gateway::AdminService;
 use zeroize::Zeroizing;
@@ -127,6 +128,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Open persistent storage
     let storage = Arc::new(SqliteStorage::open(&cli.db, master_key)?);
     info!("storage opened: {}", cli.db);
+
+    // 2a. Load or generate gateway identity (GW-1200, GW-1201)
+    {
+        use sonde_gateway::gateway_identity::GatewayIdentity;
+
+        fn hex_short(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+
+        let existing = storage.load_gateway_identity().await?;
+        match existing {
+            Some(identity) => {
+                info!(
+                    gateway_id = %hex_short(identity.gateway_id()),
+                    public_key_prefix = %hex_short(&identity.public_key()[..8]),
+                    "gateway identity loaded"
+                );
+            }
+            None => {
+                let identity = GatewayIdentity::generate()
+                    .map_err(|e| format!("failed to generate gateway identity: {e}"))?;
+                storage.store_gateway_identity(&identity).await?;
+                info!(
+                    gateway_id = %hex_short(identity.gateway_id()),
+                    public_key_prefix = %hex_short(&identity.public_key()[..8]),
+                    "gateway identity generated and stored"
+                );
+            }
+        }
+    }
 
     // 3. Session manager
     let session_manager = Arc::new(SessionManager::new(Duration::from_secs(

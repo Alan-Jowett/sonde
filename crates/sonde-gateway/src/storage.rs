@@ -7,6 +7,8 @@ use std::fmt;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
+use crate::gateway_identity::GatewayIdentity;
+use crate::phone_trust::PhonePskRecord;
 use crate::program::ProgramRecord;
 use crate::registry::NodeRecord;
 
@@ -72,12 +74,29 @@ pub trait Storage: Send + Sync {
         }
         Ok(())
     }
+
+    // ── Gateway identity (GW-1200, GW-1201) ───────────────────
+    async fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, StorageError>;
+    async fn store_gateway_identity(&self, identity: &GatewayIdentity) -> Result<(), StorageError>;
+
+    // ── Phone trust store (GW-1210) ────────────────────────────
+    async fn list_phone_psks(&self) -> Result<Vec<PhonePskRecord>, StorageError>;
+    async fn get_phone_psks_by_key_hint(
+        &self,
+        key_hint: u16,
+    ) -> Result<Vec<PhonePskRecord>, StorageError>;
+    async fn store_phone_psk(&self, record: &PhonePskRecord) -> Result<u32, StorageError>;
+    async fn revoke_phone_psk(&self, phone_id: u32) -> Result<(), StorageError>;
+    async fn delete_phone_psk(&self, phone_id: u32) -> Result<(), StorageError>;
 }
 
 /// In-memory storage backend for testing.
 pub struct InMemoryStorage {
     nodes: RwLock<HashMap<String, NodeRecord>>,
     programs: RwLock<HashMap<Vec<u8>, ProgramRecord>>,
+    identity: RwLock<Option<GatewayIdentity>>,
+    phone_psks: RwLock<Vec<PhonePskRecord>>,
+    next_phone_id: RwLock<u32>,
 }
 
 impl InMemoryStorage {
@@ -85,6 +104,9 @@ impl InMemoryStorage {
         Self {
             nodes: RwLock::new(HashMap::new()),
             programs: RwLock::new(HashMap::new()),
+            identity: RwLock::new(None),
+            phone_psks: RwLock::new(Vec::new()),
+            next_phone_id: RwLock::new(1),
         }
     }
 }
@@ -152,5 +174,75 @@ impl Storage for InMemoryStorage {
     async fn list_programs(&self) -> Result<Vec<ProgramRecord>, StorageError> {
         let programs = self.programs.read().await;
         Ok(programs.values().cloned().collect())
+    }
+
+    // ── Gateway identity ───────────────────────────────────────
+
+    async fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, StorageError> {
+        let identity = self.identity.read().await;
+        Ok(identity.clone())
+    }
+
+    async fn store_gateway_identity(&self, identity: &GatewayIdentity) -> Result<(), StorageError> {
+        let mut stored = self.identity.write().await;
+        *stored = Some(identity.clone());
+        Ok(())
+    }
+
+    // ── Phone trust store ──────────────────────────────────────
+
+    async fn list_phone_psks(&self) -> Result<Vec<PhonePskRecord>, StorageError> {
+        let psks = self.phone_psks.read().await;
+        Ok(psks.clone())
+    }
+
+    async fn get_phone_psks_by_key_hint(
+        &self,
+        key_hint: u16,
+    ) -> Result<Vec<PhonePskRecord>, StorageError> {
+        let psks = self.phone_psks.read().await;
+        Ok(psks
+            .iter()
+            .filter(|p| p.phone_key_hint == key_hint)
+            .cloned()
+            .collect())
+    }
+
+    async fn store_phone_psk(&self, record: &PhonePskRecord) -> Result<u32, StorageError> {
+        use crate::phone_trust::PHONE_LABEL_MAX_BYTES;
+
+        if record.label.len() > PHONE_LABEL_MAX_BYTES {
+            return Err(StorageError::Internal(format!(
+                "phone label exceeds {PHONE_LABEL_MAX_BYTES}-byte limit: {} bytes",
+                record.label.len()
+            )));
+        }
+
+        let mut psks = self.phone_psks.write().await;
+        let mut next_id = self.next_phone_id.write().await;
+        let id = *next_id;
+        let mut stored = record.clone();
+        stored.phone_id = id;
+        *next_id = id
+            .checked_add(1)
+            .ok_or_else(|| StorageError::Internal("phone_id overflow".into()))?;
+        psks.push(stored);
+        Ok(id)
+    }
+
+    async fn revoke_phone_psk(&self, phone_id: u32) -> Result<(), StorageError> {
+        let mut psks = self.phone_psks.write().await;
+        let psk = psks
+            .iter_mut()
+            .find(|p| p.phone_id == phone_id)
+            .ok_or_else(|| StorageError::NotFound(format!("phone_id {phone_id}")))?;
+        psk.status = crate::phone_trust::PhonePskStatus::Revoked;
+        Ok(())
+    }
+
+    async fn delete_phone_psk(&self, phone_id: u32) -> Result<(), StorageError> {
+        let mut psks = self.phone_psks.write().await;
+        psks.retain(|p| p.phone_id != phone_id);
+        Ok(())
     }
 }

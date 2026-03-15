@@ -139,11 +139,6 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 └────┬────────────┘                      disconnect
      │ MTU ≥ 247
      ▼
-┌─────────────────┐
-│ TOFU Check      │──── key mismatch ──► Error("public key mismatch")
-└────┬────────────┘                      disconnect
-     │ first use or key matches
-     ▼
 ┌─────────────────────────┐
 │ Authenticating          │
 │ write REQUEST_GW_INFO   │
@@ -152,7 +147,11 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 │                         │──── bad signature ──► Error("auth failed")
 └────┬────────────────────┘                      disconnect
      │ signature valid
-     │ persist gw_public_key + gateway_id (TOFU)
+     ▼
+┌─────────────────┐
+│ TOFU Check      │──── key mismatch ──► Error("public key mismatch")
+└────┬────────────┘                      disconnect
+     │ first use → pin key; or key matches stored key
      ▼
 ┌─────────────────────────┐
 │ Registering             │
@@ -176,7 +175,7 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 
 **Key design decisions:**
 
-- TOFU check occurs *before* writing `REQUEST_GW_INFO`.  If the store already contains a `gw_public_key`, the tool compares it with the key from `GW_INFO_RESPONSE` after authentication.  This means the challenge–response still executes (to verify the gateway is live), but the result is rejected if keys don't match (PT-0302).
+- TOFU check occurs *after* the challenge–response exchange.  The tool first authenticates the gateway via Ed25519 signature verification, then compares the received `gw_public_key` against any previously pinned key in the store.  On first use, the key is pinned; on subsequent connections, a mismatch is rejected.  This ordering ensures the gateway is live and holds the claimed private key before the TOFU decision is made (PT-0302).
 - No artifacts are persisted until the entire flow succeeds.  On any error, the BLE connection is released and the store is left unchanged (PT-0502).
 - Already-paired detection: if the store contains a `gw_public_key`, the tool warns the operator before starting Phase 1 and offers to proceed or cancel (PT-0601).
 
@@ -641,6 +640,13 @@ pub enum PairingError {
 
     #[error("pairing store I/O error: {0}")]
     StoreIo(String),
+
+    // ── Internal errors ──
+    #[error("malformed BLE envelope — incomplete or invalid header")]
+    MalformedEnvelope,
+
+    #[error("random number generation failed — OS CSPRNG unavailable")]
+    RngFailed,
 }
 ```
 
@@ -702,12 +708,19 @@ The `envelope.rs` module handles encoding and decoding the BLE message envelope 
 
 ```rust
 /// Encode a BLE message envelope.
-pub fn encode_envelope(msg_type: u8, body: &[u8]) -> Vec<u8> {
+/// Returns an error if body exceeds 65535 bytes (u16::MAX).
+pub fn encode_envelope(msg_type: u8, body: &[u8]) -> Result<Vec<u8>, PairingError> {
+    if body.len() > u16::MAX as usize {
+        return Err(PairingError::PayloadTooLarge {
+            size: body.len(),
+            max: u16::MAX as usize,
+        });
+    }
     let mut buf = Vec::with_capacity(3 + body.len());
     buf.push(msg_type);
     buf.extend_from_slice(&(body.len() as u16).to_be_bytes());
     buf.extend_from_slice(body);
-    buf
+    Ok(buf)
 }
 
 /// Decode a BLE message envelope.

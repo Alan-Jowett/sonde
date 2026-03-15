@@ -770,13 +770,14 @@ The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LES
 **Source:** ble-pairing-protocol.md §8.2, steps 4a–4c
 
 **Description:**  
-On a NODE_PROVISION write the node MUST parse the fields `node_key_hint`, `node_psk`, `rf_channel`, and `encrypted_payload`. If the node is already paired (PSK exists in NVS from a previous boot) and the pairing button is NOT held, the node MUST respond with NODE_ACK(0x01). If the pairing button is held, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials. A second NODE_PROVISION on the same BLE session after a successful provision (per ND-0907) is treated as a new provision attempt — the node has credentials from the current session, so it responds NODE_ACK(0x01) unless the button was held at boot.
+On a NODE_PROVISION write the node MUST parse the fields `node_key_hint`, `node_psk`, `rf_channel`, and `encrypted_payload`. If the node has credentials from a **previous boot** (PSK exists in NVS before entering BLE pairing mode) and the pairing button was NOT held at boot, the node MUST respond with NODE_ACK(0x01) and leave existing credentials unchanged. If the pairing button was held at boot, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials. A second NODE_PROVISION within the **same BLE session** after a successful provision (per ND-0907) is permitted — the node overwrites the current-session credentials and responds NODE_ACK(0x00), because the "already paired" guard only protects credentials that survived a reboot.
 
 **Acceptance criteria:**
 
 1. All four fields are parsed from the NODE_PROVISION payload.
-2. An already-paired node without button hold responds NODE_ACK(0x01).
-3. An already-paired node with button hold erases existing credentials before proceeding.
+2. A node with pre-existing credentials (from a prior boot) and no button hold responds NODE_ACK(0x01).
+3. A node with pre-existing credentials and button hold erases credentials before proceeding.
+4. A same-session re-provision overwrites current credentials and responds NODE_ACK(0x00).
 
 ---
 

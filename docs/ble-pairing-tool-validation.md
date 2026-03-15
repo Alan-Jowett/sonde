@@ -809,6 +809,7 @@ TestNode {
 | T-PT-206 | PT-0302 | TOFU — mismatched public key rejected |
 | T-PT-207 | PT-0302 | TOFU — operator can clear pinned identity |
 | T-PT-208 | PT-0303 | Phone registration happy path |
+| T-PT-208a | PT-0303 | Phone label validation |
 | T-PT-209 | PT-0303 | ERROR(0x02) — registration window closed |
 | T-PT-210 | PT-0303 | ERROR(0x03) — already paired |
 | T-PT-211 | PT-0303 | PHONE_REGISTERED timeout (30 s) |

@@ -852,10 +852,23 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0905
 
 **Procedure:**
-1. Boot a previously-paired node (hold pairing button to enter BLE pairing mode, then release before sending NODE_PROVISION — or alternatively, send NODE_PROVISION on a node that was provisioned in the current BLE session without rebooting, per ND-0907).
-2. Write NODE_PROVISION with new credentials.
-3. Assert: node responds NODE_ACK(0x01).
-4. Assert: existing NVS credentials are unchanged.
+1. Boot an unpaired node into BLE pairing mode. Send a first NODE_PROVISION with credentials A — assert NODE_ACK(0x00).
+2. Without disconnecting, send a second NODE_PROVISION with credentials B (same BLE session, per ND-0907).
+3. Assert: node responds NODE_ACK(0x00) (same-session re-provision is allowed).
+4. Assert: NVS contains credentials B (overwritten).
+
+---
+
+### T-N905a  NODE_PROVISION rejected for pre-boot credentials without button
+
+**Validates:** ND-0905
+
+**Procedure:**
+1. Provision a node and reboot (credentials now persist from a prior boot).
+2. Enter BLE pairing mode without holding the pairing button (e.g., NVS PSK erased by test harness to trigger BLE mode, then restored before NODE_PROVISION — or use a test-only entry point).
+3. Write NODE_PROVISION with new credentials.
+4. Assert: node responds NODE_ACK(0x01).
+5. Assert: existing NVS credentials are unchanged.
 
 ---
 

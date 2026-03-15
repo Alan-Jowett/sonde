@@ -165,9 +165,13 @@ where
         }
         Err(_) => {
             // WAKE retries exhausted or transport error.
-            // Self-healing (ND-0915): if reg_complete is set but WAKE failed,
+            // Self-healing (ND-0915): if reg_complete is set and peer_payload
+            // is still present (meaning deferred erasure hasn't happened yet),
             // clear reg_complete so the next boot reverts to PEER_REQUEST.
-            if storage.read_reg_complete() {
+            // Once peer_payload has been erased (after a prior successful
+            // WAKE/COMMAND), transient WAKE failures should NOT revert to
+            // PEER_REQUEST since there is no payload to re-send.
+            if storage.read_reg_complete() && storage.read_peer_payload().is_some() {
                 if let Err(e) = storage.write_reg_complete(false) {
                     log::warn!("failed to clear reg_complete after WAKE failure: {}", e);
                 }
@@ -3242,7 +3246,8 @@ mod tests {
         assert_eq!(transport.outbound.len(), 1);
     }
 
-    /// T-N917: WAKE failure after reg_complete clears the flag (self-healing).
+    /// T-N917: WAKE failure after reg_complete clears the flag (self-healing)
+    /// when peer_payload is still present.
     #[test]
     fn test_wake_failure_clears_reg_complete() {
         let psk = [0x42u8; 32];
@@ -3255,6 +3260,8 @@ mod tests {
 
         let mut storage = MockStorage::new().with_key(key_hint, psk);
         storage.reg_complete = true;
+        // peer_payload still present → self-healing can revert to PEER_REQUEST
+        storage.peer_payload = Some(vec![0xDE, 0xAD]);
 
         let mut hal = MockHal;
         let mut rng = MockRng(0);
@@ -3277,5 +3284,47 @@ mod tests {
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         assert!(!storage.reg_complete);
+    }
+
+    /// WAKE failure after peer_payload erased does NOT clear reg_complete.
+    /// Once peer_payload is gone, transient WAKE failures should not revert
+    /// to PEER_REQUEST since there is no payload to re-send.
+    #[test]
+    fn test_wake_failure_keeps_reg_complete_when_payload_erased() {
+        let psk = [0x42u8; 32];
+        let key_hint = 0x1234u16;
+
+        let mut transport = MockTransport::new();
+        for _ in 0..4 {
+            transport.queue_response(None);
+        }
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.reg_complete = true;
+        // peer_payload already erased (prior WAKE/COMMAND succeeded)
+        storage.peer_payload = None;
+
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // reg_complete must remain set — no payload to revert with
+        assert!(storage.reg_complete);
     }
 }

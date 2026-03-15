@@ -39,6 +39,15 @@ extern crate alloc;
 /// Domain separator for registration proof (ble-pairing-protocol.md §7.2).
 const PROOF_DOMAIN: &[u8] = b"sonde-peer-ack-v1";
 
+/// Maximum encrypted_payload size that fits in a PEER_REQUEST frame.
+///
+/// ESP-NOW frame budget is 250 bytes. After the 11-byte header and 32-byte
+/// HMAC, 207 bytes remain for CBOR. The CBOR map `{ 1: bstr(N) }` uses
+/// ~5 bytes of framing overhead (1 map header + 1 key + 2–3 bstr header),
+/// leaving at most 202 bytes for the payload itself.
+/// See ble-pairing-protocol.md §11.1.
+const MAX_ENCRYPTED_PAYLOAD: usize = 202;
+
 /// PEER_ACK listen timeout in milliseconds (ND-0911: ≥10 seconds).
 const PEER_ACK_TIMEOUT_MS: u32 = 10_000;
 
@@ -62,12 +71,12 @@ pub fn build_peer_request_frame(
     hmac: &dyn HmacProvider,
 ) -> NodeResult<Vec<u8>> {
     // The ESP-NOW frame budget is 250 bytes total. After the 11-byte header
-    // and 32-byte HMAC, the maximum CBOR payload is 207 bytes. The CBOR
-    // overhead for { 1: bstr(N) } is ~4 bytes, so encrypted_payload must be
-    // at most ~203 bytes. Check before allocating the CBOR buffer.
-    if encrypted_payload.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+    // and 32-byte HMAC, 207 bytes remain for CBOR payload. The CBOR framing
+    // for { 1: bstr(N) } uses ~5 bytes, so encrypted_payload must be at most
+    // 202 bytes. See ble-pairing-protocol.md §11.1.
+    if encrypted_payload.len() > MAX_ENCRYPTED_PAYLOAD {
         return Err(NodeError::MalformedPayload(
-            "encrypted_payload exceeds ESP-NOW frame budget",
+            "encrypted_payload exceeds ESP-NOW frame budget (max 202 bytes)",
         ));
     }
 

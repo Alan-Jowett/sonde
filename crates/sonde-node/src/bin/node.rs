@@ -21,7 +21,7 @@ fn main() {
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::log::EspLogger;
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
-    use log::info;
+    use log::{info, warn};
 
     use sonde_node::crypto::{EspRng, SoftwareHmac, SoftwareSha256};
     use sonde_node::esp_ble_pairing::run_ble_pairing_mode;
@@ -122,9 +122,18 @@ fn main() {
             storage.read_key().is_none(),
             button_held
         );
-        run_ble_pairing_mode(&mut storage, &mut map_storage, button_held);
-        info!("BLE pairing mode exited — rebooting");
-        sleep_ctrl.reboot();
+        match run_ble_pairing_mode(&mut storage, &mut map_storage, button_held) {
+            Ok(()) => {
+                info!("BLE pairing mode exited — rebooting");
+                sleep_ctrl.reboot();
+            }
+            Err(e) => {
+                // BLE GATT server not yet implemented — deep sleep to conserve
+                // battery until firmware is updated with BLE support.
+                warn!("BLE pairing mode failed: {} — entering deep sleep", e);
+                sleep_ctrl.enter_deep_sleep(60);
+            }
+        }
     }
 
     // (3) + (4) PSK is present. reg_complete flag determines whether we

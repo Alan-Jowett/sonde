@@ -21,6 +21,7 @@
 //! This module is only compiled with the `esp` feature because it depends
 //! directly on `esp-idf-svc` BLE APIs.
 
+use crate::error::{NodeError, NodeResult};
 use log::warn;
 
 use crate::ble_pairing::{
@@ -44,13 +45,14 @@ use crate::traits::PlatformStorage;
 /// NODE_PROVISION triggers a factory reset before writing new credentials
 /// (ND-0917).
 ///
-/// Returns when the BLE connection is terminated.  The caller should reboot
-/// immediately afterwards per ND-0907.
+/// Returns `Ok(())` when the BLE connection is terminated (the caller should
+/// reboot per ND-0907), or `Err` if the BLE stack is not yet implemented
+/// so the caller can fall back to deep sleep.
 pub fn run_ble_pairing_mode<S: PlatformStorage>(
     _storage: &mut S,
     _map_storage: &mut MapStorage,
     _button_held: bool,
-) {
+) -> NodeResult<()> {
     // TODO(ND-0902–ND-0904): Initialize BLE stack and register GATT service.
     //
     // Implementation outline:
@@ -79,7 +81,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     //
     // For now, log a warning so the boot sequence can be exercised in QEMU
     // and on hardware without a host BLE controller.
-    warn!("BLE pairing mode: BLE GATT server not yet implemented; stub blocks forever");
+    warn!("BLE pairing mode: BLE GATT server not yet implemented; returning error");
 
     // Suppress unused-import warnings while the stub is in place.
     let _ = (
@@ -91,12 +93,11 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         NODE_ACK_STORAGE_ERROR,
     );
 
-    // Block indefinitely until the real BLE GATT server is implemented.
-    // This prevents the caller from rebooting immediately and creating a
-    // battery-draining reboot loop on unpaired nodes.  Once the real GATT
-    // loop replaces this stub, it will return on BLE disconnect and the
-    // caller will deep-sleep/reboot per ND-0907.
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-    }
+    // Return an error so the caller can fall back to deep sleep instead of
+    // blocking forever or rebooting in a tight loop.  Once the real GATT
+    // server is implemented, this stub will be replaced with the event-driven
+    // BLE loop that returns Ok(()) on BLE disconnect per ND-0907.
+    Err(NodeError::StorageError(
+        "BLE GATT server not yet implemented",
+    ))
 }

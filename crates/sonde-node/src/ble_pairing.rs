@@ -77,7 +77,8 @@ pub struct NodeProvision {
 /// Parse a BLE message envelope.
 ///
 /// Returns `(msg_type, body_slice)` on success, or `None` if the buffer is
-/// shorter than the 3-byte header or shorter than `3 + LEN`.
+/// shorter than the 3-byte header, shorter than `3 + LEN`, or contains
+/// trailing bytes after the envelope.
 ///
 /// ```text
 /// ┌──────────┬──────────┬────────────────────────────┐
@@ -90,7 +91,7 @@ pub fn parse_ble_envelope(data: &[u8]) -> Option<(u8, &[u8])> {
     }
     let msg_type = data[0];
     let body_len = u16::from_be_bytes([data[1], data[2]]) as usize;
-    if data.len() < 3 + body_len {
+    if data.len() != 3 + body_len {
         return None;
     }
     Some((msg_type, &data[3..3 + body_len]))
@@ -409,6 +410,13 @@ mod tests {
     fn parse_ble_envelope_body_truncated() {
         // LEN=4 but only 2 bytes follow
         let data = vec![0x01, 0x00, 0x04, 0xAA, 0xBB];
+        assert!(parse_ble_envelope(&data).is_none());
+    }
+
+    #[test]
+    fn parse_ble_envelope_trailing_bytes_rejected() {
+        // LEN=2, 2 body bytes, plus 1 trailing byte
+        let data = vec![0x01, 0x00, 0x02, 0xAA, 0xBB, 0xCC];
         assert!(parse_ble_envelope(&data).is_none());
     }
 

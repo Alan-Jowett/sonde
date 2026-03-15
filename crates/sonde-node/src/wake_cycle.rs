@@ -98,6 +98,11 @@ where
     //     If PSK is stored but reg_complete is not set, the node has been
     //     BLE-provisioned but not yet acknowledged by the gateway.  Run the
     //     PEER_REQUEST exchange before proceeding to the normal WAKE cycle.
+    //
+    //     If reg_complete is false but peer_payload is absent, the node was
+    //     either USB-paired (no payload) or the payload was erased after a
+    //     permanent error.  In both cases we fall through to the normal WAKE
+    //     cycle — the gateway will accept the WAKE regardless.
     if !storage.read_reg_complete() {
         if let Some(encrypted_payload) = storage.read_peer_payload() {
             match peer_request_exchange(
@@ -161,12 +166,11 @@ where
 
     let (starting_seq, timestamp_ms, command_payload) = match command_result {
         Ok(cmd) => {
-            // WAKE/COMMAND succeeded — erase peer_payload (ND-0914).
-            // erase_peer_payload is idempotent (returns Ok when key absent),
-            // so we call it unconditionally to avoid the allocation cost of
-            // read_peer_payload().is_some().
-            if let Err(e) = storage.erase_peer_payload() {
-                log::warn!("failed to erase peer_payload after WAKE success: {}", e);
+            // WAKE/COMMAND succeeded — erase peer_payload if still present (ND-0914).
+            if storage.has_peer_payload() {
+                if let Err(e) = storage.erase_peer_payload() {
+                    log::warn!("failed to erase peer_payload after WAKE success: {}", e);
+                }
             }
             cmd
         }

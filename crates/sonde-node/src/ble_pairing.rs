@@ -91,24 +91,19 @@ pub fn parse_ble_envelope(data: &[u8]) -> Option<(u8, &[u8])> {
 
 /// Encode a BLE message envelope.
 ///
-/// # Panics (debug) / truncates (release)
-///
-/// `body.len()` must not exceed `u16::MAX` (65535 bytes). This invariant is
-/// enforced with a `debug_assert!`; production callers must never pass a body
-/// larger than the BLE MTU allows (≤ 65532 bytes after the 3-byte header).
-pub fn encode_ble_envelope(msg_type: u8, body: &[u8]) -> Vec<u8> {
-    debug_assert!(
-        body.len() <= u16::MAX as usize,
-        "BLE envelope body too large ({} bytes, max {})",
-        body.len(),
-        u16::MAX,
-    );
-    let len = body.len().min(u16::MAX as usize) as u16;
+/// Returns `None` if `body.len()` exceeds `u16::MAX` (65535 bytes), since the
+/// 2-byte LEN field cannot represent larger sizes and silently truncating would
+/// produce frames that fail round-trip parsing.
+pub fn encode_ble_envelope(msg_type: u8, body: &[u8]) -> Option<Vec<u8>> {
+    if body.len() > u16::MAX as usize {
+        return None;
+    }
+    let len = body.len() as u16;
     let mut out = Vec::with_capacity(3 + body.len());
     out.push(msg_type);
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(body);
-    out
+    Some(out)
 }
 
 /// Parse a NODE_PROVISION body (already unwrapped from the BLE envelope).
@@ -140,20 +135,26 @@ pub fn parse_node_provision(body: &[u8]) -> Result<NodeProvision, &'static str> 
 }
 
 /// Encode a NODE_ACK BLE envelope for the given status byte.
+///
+/// A 1-byte body always fits in `u16`, so this never returns `None`.
 pub fn encode_node_ack(status: u8) -> Vec<u8> {
     encode_ble_envelope(BLE_MSG_NODE_ACK, &[status])
+        .expect("NODE_ACK body (1 byte) always fits in u16 LEN")
 }
 
 /// Handle a parsed NODE_PROVISION:
 ///
-/// 1. If `button_held` is true, perform a factory reset before writing new
+/// 1. If the node is already paired and `button_held` is false, return
+///    `NODE_ACK_ALREADY_PAIRED` (defense-in-depth — ND-0905 note).
+/// 2. If `button_held` is true, perform a factory reset before writing new
 ///    credentials (ND-0917).
-/// 2. Erase any pre-existing PSK to allow same-session re-provision (ND-0907).
-/// 3. Write PSK, key_hint, RF channel, and `encrypted_payload` to storage.
-/// 4. Clear the `reg_complete` flag (ND-0906).
+/// 3. Erase any pre-existing PSK to allow same-session re-provision (ND-0907).
+/// 4. Write PSK, key_hint, RF channel, and `encrypted_payload` to storage.
+/// 5. Clear the `reg_complete` flag (ND-0906).
 ///
 /// Returns a `NODE_ACK` status byte:
 /// - `NODE_ACK_SUCCESS` (0x00) on success.
+/// - `NODE_ACK_ALREADY_PAIRED` (0x01) if already paired without button override.
 /// - `NODE_ACK_STORAGE_ERROR` (0x02) on any NVS write failure.
 pub fn handle_node_provision<S: PlatformStorage>(
     provision: &NodeProvision,
@@ -161,6 +162,12 @@ pub fn handle_node_provision<S: PlatformStorage>(
     map_storage: &mut MapStorage,
     button_held: bool,
 ) -> u8 {
+    // Defense-in-depth: reject provisioning if the node already has a PSK
+    // and the pairing button was not held (ND-0905 note).
+    if !button_held && storage.read_key().is_some() {
+        return NODE_ACK_ALREADY_PAIRED;
+    }
+
     // If the pairing button was held at boot, factory-reset all persistent
     // state before accepting new credentials (ND-0917).
     if button_held {
@@ -380,10 +387,24 @@ mod tests {
     #[test]
     fn encode_ble_envelope_round_trip() {
         let body = [0x42u8; 10];
-        let encoded = encode_ble_envelope(0x01, &body);
+        let encoded = encode_ble_envelope(0x01, &body).unwrap();
         let (msg_type, decoded_body) = parse_ble_envelope(&encoded).unwrap();
         assert_eq!(msg_type, 0x01);
         assert_eq!(decoded_body, &body);
+    }
+
+    #[test]
+    fn encode_ble_envelope_rejects_oversize_body() {
+        // A body larger than u16::MAX must return None.
+        let big_body = vec![0xAAu8; u16::MAX as usize + 1];
+        assert!(encode_ble_envelope(0x01, &big_body).is_none());
+    }
+
+    #[test]
+    fn encode_ble_envelope_accepts_max_body() {
+        // Exactly u16::MAX bytes must succeed.
+        let max_body = vec![0xBBu8; u16::MAX as usize];
+        assert!(encode_ble_envelope(0x01, &max_body).is_some());
     }
 
     // --- NODE_PROVISION parsing ---
@@ -512,13 +533,14 @@ mod tests {
 
     // --- handle_node_provision: T-N905 same-session re-provision ---
 
-    /// T-N905: Second NODE_PROVISION on same connection overwrites credentials.
+    /// T-N905: Second NODE_PROVISION on same connection without button_held returns
+    /// NODE_ACK_ALREADY_PAIRED (defense-in-depth). Re-provision requires button_held.
     #[test]
-    fn t_n905_same_session_reprovision() {
+    fn t_n905_same_session_reprovision_requires_button() {
         let mut storage = MockStorage::new();
         let mut maps = MapStorage::new(1024);
 
-        // First provision
+        // First provision (unpaired) — succeeds
         let psk_a = [0x11u8; 32];
         let payload_a = vec![0x01, 0x02];
         let provision_a = make_provision(0x0001, psk_a, 3, &payload_a);
@@ -526,12 +548,41 @@ mod tests {
         assert_eq!(status_a, NODE_ACK_SUCCESS);
         assert_eq!(storage.read_key().unwrap().1, psk_a);
 
-        // Second provision (same session, different credentials)
+        // Second provision without button held → rejected (already paired)
         let psk_b = [0x22u8; 32];
         let payload_b = vec![0x03, 0x04, 0x05];
         let provision_b = make_provision(0x0002, psk_b, 11, &payload_b);
         let status_b = handle_node_provision(&provision_b, &mut storage, &mut maps, false);
-        assert_eq!(status_b, NODE_ACK_SUCCESS, "re-provision must succeed");
+        assert_eq!(
+            status_b, NODE_ACK_ALREADY_PAIRED,
+            "re-provision without button must be rejected"
+        );
+
+        // NVS still contains credentials A (unchanged)
+        let key = storage.read_key().expect("key should still be stored");
+        assert_eq!(key.0, 0x0001);
+        assert_eq!(key.1, psk_a);
+        assert_eq!(storage.read_channel(), Some(3));
+    }
+
+    /// T-N905 variant: Re-provision with button_held overwrites credentials.
+    #[test]
+    fn t_n905_same_session_reprovision_with_button() {
+        let mut storage = MockStorage::new();
+        let mut maps = MapStorage::new(1024);
+
+        // First provision
+        let psk_a = [0x11u8; 32];
+        let provision_a = make_provision(0x0001, psk_a, 3, &[0x01, 0x02]);
+        let status_a = handle_node_provision(&provision_a, &mut storage, &mut maps, false);
+        assert_eq!(status_a, NODE_ACK_SUCCESS);
+
+        // Second provision with button_held → factory-resets then writes new creds
+        let psk_b = [0x22u8; 32];
+        let payload_b = vec![0x03, 0x04, 0x05];
+        let provision_b = make_provision(0x0002, psk_b, 11, &payload_b);
+        let status_b = handle_node_provision(&provision_b, &mut storage, &mut maps, true);
+        assert_eq!(status_b, NODE_ACK_SUCCESS, "re-provision with button must succeed");
 
         // NVS now contains credentials B
         let key = storage
@@ -544,6 +595,22 @@ mod tests {
             storage.read_peer_payload().as_deref(),
             Some(payload_b.as_slice())
         );
+    }
+
+    /// Already-paired node without button held returns NODE_ACK_ALREADY_PAIRED.
+    #[test]
+    fn handle_node_provision_already_paired_no_button() {
+        let mut storage = MockStorage::with_key(0x0099, [0x55u8; 32]);
+        let mut maps = MapStorage::new(1024);
+
+        let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        assert_eq!(status, NODE_ACK_ALREADY_PAIRED);
+
+        // Original key is unchanged
+        let key = storage.read_key().unwrap();
+        assert_eq!(key.0, 0x0099);
+        assert_eq!(key.1, [0x55u8; 32]);
     }
 
     // --- handle_node_provision: T-N906 factory reset on button hold ---
@@ -645,7 +712,7 @@ mod tests {
         body[36] = payload.len() as u8;
         body[37..].copy_from_slice(&payload);
 
-        let gatt_write = encode_ble_envelope(BLE_MSG_NODE_PROVISION, &body);
+        let gatt_write = encode_ble_envelope(BLE_MSG_NODE_PROVISION, &body).unwrap();
 
         // Parse envelope
         let (msg_type, body_slice) = parse_ble_envelope(&gatt_write).unwrap();

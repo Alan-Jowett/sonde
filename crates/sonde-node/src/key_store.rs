@@ -61,8 +61,7 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         self.storage.write_channel(1)?;
         // Clear BLE pairing artifacts (ND-0917): peer_payload may or may not
         // exist depending on whether BLE provisioning was previously done.
-        // Ignore the erase error — it is expected when the key is absent.
-        let _ = self.storage.erase_peer_payload();
+        self.storage.erase_peer_payload()?;
         // Always reset the reg_complete flag so the next boot does not skip
         // the PEER_REQUEST phase.
         self.storage.write_reg_complete(false)?;

@@ -21,7 +21,7 @@
 //! This module is only compiled with the `esp` feature because it depends
 //! directly on `esp-idf-svc` BLE APIs.
 
-use log::{info, warn};
+use log::warn;
 
 use crate::ble_pairing::{
     encode_node_ack, handle_node_provision, parse_ble_envelope, parse_node_provision,
@@ -79,7 +79,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     //
     // For now, log a warning so the boot sequence can be exercised in QEMU
     // and on hardware without a host BLE controller.
-    warn!("BLE pairing mode: BLE GATT server not yet implemented; rebooting");
+    warn!("BLE pairing mode: BLE GATT server not yet implemented; blocking until implemented");
 
     // Suppress unused-import warnings while the stub is in place.
     let _ = (
@@ -91,5 +91,10 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         NODE_ACK_STORAGE_ERROR,
     );
 
-    info!("BLE pairing mode exited");
+    // Block indefinitely so the caller does not immediately reboot and create
+    // a tight reboot loop.  Once the real BLE GATT server is implemented this
+    // sleep will be replaced by the event-driven GATT loop.
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
 }

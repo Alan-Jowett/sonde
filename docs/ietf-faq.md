@@ -6,7 +6,7 @@ This project deliberately **does not** use several well‑known IETF IoT securit
 
 This document answers the most common “why didn’t you just use X?” questions.
 
-***
+---
 
 ## Why not **EDHOC** (RFC 9528 / LAKE WG)?
 
@@ -30,7 +30,7 @@ This document answers the most common “why didn’t you just use X?” questio
 
 **Bottom line:** EDHOC could replace *some cryptographic plumbing*, but it does **not** solve the hard part of this system: **secure human‑mediated onboarding of anonymous devices**.
 
-***
+---
 
 ## Why not **OSCORE** (RFC 8613)?
 
@@ -53,7 +53,7 @@ This document answers the most common “why didn’t you just use X?” questio
 
 **Bottom line:** OSCORE is useful *after* onboarding. Our problem is onboarding. And even post‑onboarding, OSCORE assumes CoAP semantics (request/response with tokens and options) that do not map onto our fire‑and‑forget ESP‑NOW frame model. Our post‑pairing protocol is intentionally integrity‑only (HMAC, no encryption) because sensor telemetry is not confidential — see [security.md §1.3](security.md#13--out-of-scope-threats) for the explicit confidentiality non‑goal.
 
-***
+---
 
 ## Why not **DTLS / TLS**?
 
@@ -69,7 +69,7 @@ This document answers the most common “why didn’t you just use X?” questio
 
 **Bottom line:** DTLS/TLS solve transport security, not physical‑world device pairing.
 
-***
+---
 
 ## Why not **BLE Security / SMP / LESC**?
 
@@ -98,7 +98,7 @@ It does **not** prove:
 
 **Bottom line:** BLE is treated as an *untrusted transport* for identity. Higher‑level protocol logic is still required.
 
-***
+---
 
 ## Why not **CoAP over GATT** (draft‑amsuess‑core‑coap‑over‑gatt)?
 
@@ -115,7 +115,7 @@ It does **not** prove:
 
 **Bottom line:** Transport ≠ trust.
 
-***
+---
 
 ## Why not **manufacturer certificates / PKI / vouchers**?
 
@@ -130,7 +130,7 @@ It does **not** prove:
 
 **Bottom line:** We intentionally use **late binding** at the gateway, not factory trust. See the BRSKI section below for why the IETF's specific protocol for voucher‑based onboarding (RFC 8995) also does not fit.
 
-***
+---
 
 ## Why not **BRSKI** (RFC 8995 / ANIMA WG)?
 
@@ -152,7 +152,7 @@ It does **not** prove:
 
 **Bottom line:** BRSKI is excellent for enterprise/industrial deployments with supply‑chain identity. We have anonymous, certificate‑free devices and need explicit human‑mediated pairing. The trust anchors are fundamentally different.
 
-***
+---
 
 ## Why not **ACE‑OAuth** (RFC 9200)?
 
@@ -173,7 +173,7 @@ It does **not** prove:
 
 **Bottom line:** ACE solves "should this already‑known client access this resource?" We solve "who is this device and should the gateway trust it at all?"
 
-***
+---
 
 ## Why not **COSE** (RFC 9052) instead of raw HMAC?
 
@@ -194,7 +194,7 @@ It does **not** prove:
 
 **Bottom line:** COSE is the right choice for multi‑vendor ecosystems. For a closed, single‑algorithm, frame‑constrained system, raw HMAC is smaller, simpler, and equally secure.
 
-***
+---
 
 ## Why not **SUIT** (RFC 9019 / RFC 9124) for program distribution?
 
@@ -215,7 +215,7 @@ It does **not** prove:
 
 **Bottom line:** SUIT solves a real problem, but for payloads 100–1000× larger than ours, on devices with richer storage semantics. We use a simpler hash‑verified push model that fits the constraint.
 
-***
+---
 
 ## So what *are* we doing instead?
 
@@ -229,7 +229,7 @@ We use a **system‑level onboarding protocol** with explicit trust boundaries:
 
 This is a **composition** of well‑understood primitives (ECDH, AEAD, HMAC, CBOR), not a reinvention of cryptography. The threat model and security assumptions are documented explicitly in [security.md](security.md), including what is *not* protected (confidentiality of telemetry, physical jamming, gateway compromise). This is not a substitute for formal analysis, but it is an honest and auditable starting point.
 
-***
+---
 
 ## Is this ideal?
 
@@ -243,7 +243,7 @@ Also no.
 
 Yes.
 
-***
+---
 
 ## TL;DR
 
@@ -263,7 +263,7 @@ That protocol does **not** exist in the IETF.
 
 So we built one — carefully.
 
-***
+---
 
 ## When would we adopt IETF standards?
 
@@ -278,7 +278,7 @@ Realistic adoption paths:
 *   **BRSKI** — If we ever manufacture devices with factory‑provisioned identities and need automated fleet onboarding, BRSKI would be the natural fit. Our current model (anonymous devices, human‑mediated pairing) is a deliberate design choice, not a cost shortcut.
 *   **ACE** — If the gateway exposes a richer resource model (e.g., CoAP endpoints for node management), ACE tokens could replace the current PSK‑only authorization.
 
-***
+---
 
 ## References
 

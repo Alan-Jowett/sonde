@@ -32,7 +32,7 @@ use esp32_nimble::{
 };
 use log::{info, warn};
 use sonde_protocol::modem::BLE_MIN_MTU;
-use sonde_protocol::modem::{BleConnected, BleDisconnected, BlePairingConfirm, MAC_SIZE};
+use sonde_protocol::modem::MAC_SIZE;
 
 use crate::bridge::{Ble, BleEvent};
 
@@ -211,10 +211,22 @@ impl EspBleDriver {
         ble_server.on_authentication_complete(move |desc, result| {
             if result.is_ok() {
                 let peer_addr: [u8; MAC_SIZE] = desc.address().val;
-                let mtu = { state_auth.lock().map(|s| s.mtu).unwrap_or(BLE_MIN_MTU) };
-                info!("BLE: LESC pairing complete — sending BLE_CONNECTED (MD-0410)");
                 if let Ok(mut s) = state_auth.lock() {
-                    s.events.push_back(BleEvent::Connected { peer_addr, mtu });
+                    // MD-0402/MD-0410: Only emit Connected when MTU is accepted.
+                    // Low-MTU connections are pending disconnect and must not
+                    // produce a spurious BLE_CONNECTED event.
+                    if s.mtu_too_low || s.mtu < BLE_MIN_MTU {
+                        warn!(
+                            "BLE: pairing complete but MTU too low ({}); suppressing BLE_CONNECTED",
+                            s.mtu
+                        );
+                        return;
+                    }
+                    info!("BLE: LESC pairing complete — sending BLE_CONNECTED (MD-0410)");
+                    s.events.push_back(BleEvent::Connected {
+                        peer_addr,
+                        mtu: s.mtu,
+                    });
                 }
             } else {
                 warn!("BLE: pairing failed: {:?}", result);
@@ -396,28 +408,39 @@ impl EspBleDriver {
         let ble_device = BLEDevice::take();
         let ble_server = ble_device.get_server();
         let service = ble_server.get_service(GATEWAY_SERVICE_UUID);
-        if let Some(svc) = service {
-            let char = svc.lock().get_characteristic(GATEWAY_COMMAND_UUID);
-            if let Some(ch) = char {
-                let notify_result = ch.lock().set_value(&chunk).indicate();
-                // In esp32-nimble v0.11, `indicate()` blocks until the ATT
-                // Handle Value Confirmation is received from the peer (or
-                // returns an error on timeout/disconnect). Clearing
-                // awaiting_confirm immediately is correct because the
-                // confirmation has already been received before `Ok(())` is
-                // returned.
-                match notify_result {
-                    Ok(()) => {
-                        if let Ok(mut s) = self.state.lock() {
-                            s.awaiting_confirm = false;
-                        }
-                    }
-                    Err(e) => {
-                        warn!("BLE: indication failed: {:?}", e);
-                        if let Ok(mut s) = self.state.lock() {
-                            s.awaiting_confirm = false;
-                        }
-                    }
+        let Some(svc) = service else {
+            warn!("BLE: GATT service not found; discarding indication chunk");
+            if let Ok(mut s) = self.state.lock() {
+                s.awaiting_confirm = false;
+            }
+            return;
+        };
+        let char = svc.lock().get_characteristic(GATEWAY_COMMAND_UUID);
+        let Some(ch) = char else {
+            warn!("BLE: GATT characteristic not found; discarding indication chunk");
+            if let Ok(mut s) = self.state.lock() {
+                s.awaiting_confirm = false;
+            }
+            return;
+        };
+
+        let notify_result = ch.lock().set_value(&chunk).indicate();
+        // In esp32-nimble v0.11, `indicate()` blocks until the ATT
+        // Handle Value Confirmation is received from the peer (or
+        // returns an error on timeout/disconnect). Clearing
+        // awaiting_confirm immediately is correct because the
+        // confirmation has already been received before `Ok(())` is
+        // returned.
+        match notify_result {
+            Ok(()) => {
+                if let Ok(mut s) = self.state.lock() {
+                    s.awaiting_confirm = false;
+                }
+            }
+            Err(e) => {
+                warn!("BLE: indication failed: {:?}", e);
+                if let Ok(mut s) = self.state.lock() {
+                    s.awaiting_confirm = false;
                 }
             }
         }

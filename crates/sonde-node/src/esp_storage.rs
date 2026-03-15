@@ -11,6 +11,7 @@
 //! - Schedule: `"interval"` (u32), `"active_p"` (u32, 0 or 1)
 //! - Programs: `"prog_a"` (blob, ≤4096 B), `"prog_b"` (blob, ≤4096 B)
 //! - WiFi channel: `"channel"` (u32, 1–13)
+//! - BLE pairing (ND-0916): `"peer_payload"` (blob, variable), `"reg_complete"` (u32, 0 or 1)
 //!
 //! The early-wake flag is stored in RTC slow SRAM (`.rtc.data` section)
 //! rather than NVS, so it survives deep sleep without incurring flash wear.
@@ -227,5 +228,49 @@ impl crate::traits::PlatformStorage for NvsStorage {
         self.nvs
             .set_u32("channel", channel as u32)
             .map_err(|_| NodeError::StorageError("channel write failed"))
+    }
+
+    // --- BLE pairing artifacts (ND-0916) ---
+
+    fn read_peer_payload(&self) -> Option<Vec<u8>> {
+        // ESP-IDF NVS blob reads require a caller-supplied buffer sized to the
+        // stored blob.  We use a 512-byte buffer which is sufficient for the
+        // AES-256-GCM encrypted pairing payload (44 + ≤ ~256 bytes of CBOR).
+        let mut buf = vec![0u8; 512];
+        match self.nvs.get_blob("peer_payload", &mut buf) {
+            Ok(Some(slice)) => {
+                let len = slice.len();
+                buf.truncate(len);
+                Some(buf)
+            }
+            _ => None,
+        }
+    }
+
+    fn write_peer_payload(&mut self, payload: &[u8]) -> NodeResult<()> {
+        self.nvs
+            .set_blob("peer_payload", payload)
+            .map_err(|_| NodeError::StorageError("peer_payload write failed"))
+    }
+
+    fn erase_peer_payload(&mut self) -> NodeResult<()> {
+        self.nvs
+            .remove("peer_payload")
+            .map_err(|_| NodeError::StorageError("peer_payload erase failed"))
+    }
+
+    fn read_reg_complete(&self) -> bool {
+        self.nvs
+            .get_u32("reg_complete")
+            .ok()
+            .flatten()
+            .map(|v| v != 0)
+            .unwrap_or(false)
+    }
+
+    fn write_reg_complete(&mut self, complete: bool) -> NodeResult<()> {
+        self.nvs
+            .set_u32("reg_complete", if complete { 1 } else { 0 })
+            .map_err(|_| NodeError::StorageError("reg_complete write failed"))
     }
 }

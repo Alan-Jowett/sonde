@@ -47,8 +47,9 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
     /// 3. All map data in sleep-persistent memory (zeroed)
     /// 4. Schedule partition (reset to default interval)
     /// 5. Stored WiFi channel (reset to default)
+    /// 6. BLE pairing artifacts: peer_payload erased, reg_complete cleared (ND-0917)
     ///
-    /// After this, the node is inert until re-paired via USB.
+    /// After this, the node is inert until re-paired via USB or BLE.
     pub fn factory_reset(&mut self, map_storage: &mut MapStorage) -> NodeResult<()> {
         self.storage.erase_key()?;
         self.storage.erase_program(0)?;
@@ -58,6 +59,13 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
         // Clear stored WiFi channel so re-pairing with a different gateway
         // on a different channel is not broken by a stale channel value.
         self.storage.write_channel(1)?;
+        // Clear BLE pairing artifacts (ND-0917): peer_payload may or may not
+        // exist depending on whether BLE provisioning was previously done.
+        // Ignore the erase error — it is expected when the key is absent.
+        let _ = self.storage.erase_peer_payload();
+        // Always reset the reg_complete flag so the next boot does not skip
+        // the PEER_REQUEST phase.
+        self.storage.write_reg_complete(false)?;
         Ok(())
     }
 }
@@ -75,6 +83,8 @@ mod tests {
         programs: [Option<Vec<u8>>; 2],
         early_wake_flag: bool,
         channel: Option<u8>,
+        peer_payload: Option<Vec<u8>>,
+        reg_complete: bool,
     }
 
     impl MockStorage {
@@ -86,6 +96,8 @@ mod tests {
                 programs: [None, None],
                 early_wake_flag: false,
                 channel: None,
+                peer_payload: None,
+                reg_complete: false,
             }
         }
     }
@@ -161,6 +173,29 @@ mod tests {
             self.channel = Some(channel);
             Ok(())
         }
+
+        fn read_peer_payload(&self) -> Option<Vec<u8>> {
+            self.peer_payload.clone()
+        }
+
+        fn write_peer_payload(&mut self, payload: &[u8]) -> NodeResult<()> {
+            self.peer_payload = Some(payload.to_vec());
+            Ok(())
+        }
+
+        fn erase_peer_payload(&mut self) -> NodeResult<()> {
+            self.peer_payload = None;
+            Ok(())
+        }
+
+        fn read_reg_complete(&self) -> bool {
+            self.reg_complete
+        }
+
+        fn write_reg_complete(&mut self, complete: bool) -> NodeResult<()> {
+            self.reg_complete = complete;
+            Ok(())
+        }
     }
 
     #[test]
@@ -207,6 +242,8 @@ mod tests {
         storage.schedule_interval = 300;
         storage.active_partition = 1;
         storage.channel = Some(6);
+        storage.peer_payload = Some(vec![0xAB; 64]);
+        storage.reg_complete = true;
 
         let mut map_storage = MapStorage::new(4096);
         // Allocate some maps to verify they get cleared
@@ -236,7 +273,10 @@ mod tests {
         assert_eq!(storage.schedule_interval, 60); // reset to default
         assert_eq!(storage.active_partition, 0); // reset to default
         assert_eq!(storage.channel, Some(1)); // reset to default channel
-                                              // Map data should be zeroed
+        // BLE pairing artifacts must be cleared (ND-0917)
+        assert!(storage.peer_payload.is_none());
+        assert!(!storage.reg_complete);
+        // Map data should be zeroed
         assert_eq!(
             map_storage.get(0).unwrap().lookup(0).unwrap(),
             &[0, 0, 0, 0]

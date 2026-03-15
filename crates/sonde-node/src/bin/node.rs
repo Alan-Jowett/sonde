@@ -16,6 +16,7 @@ fn main() {
 
 #[cfg(feature = "esp")]
 fn main() {
+    use esp_idf_hal::gpio::{Input, PinDriver};
     use esp_idf_hal::peripherals::Peripherals;
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::log::EspLogger;
@@ -23,6 +24,7 @@ fn main() {
     use log::info;
 
     use sonde_node::crypto::{EspRng, SoftwareHmac, SoftwareSha256};
+    use sonde_node::esp_ble_pairing::run_ble_pairing_mode;
     use sonde_node::esp_hal::{EspBatteryReader, EspClock, EspHal};
     use sonde_node::esp_pairing_serial::EspUsbSerialJtag;
     use sonde_node::esp_sleep::EspSleepController;
@@ -61,23 +63,71 @@ fn main() {
     let mut map_storage =
         MapStorage::from_rtc(MAP_BUDGET).unwrap_or_else(|| MapStorage::new(MAP_BUDGET));
 
-    // --- Check pairing status BEFORE initializing the radio ---
-    // Per pairing-protocol.md §11: when unpaired, the node enters
-    // pairing mode on USB Serial/JTAG without starting ESP-NOW.
-    if storage.read_key().is_none() {
-        info!("node is unpaired — entering pairing mode");
-        match EspUsbSerialJtag::new() {
-            Ok(mut usb_serial) => {
-                run_pairing_mode(&mut usb_serial, &mut storage, &mut map_storage);
-                drop(usb_serial);
-                info!("pairing mode exited (USB disconnect) — rebooting");
-            }
-            Err(e) => {
-                info!("failed to initialize USB serial: {:?} — rebooting", e);
-            }
-        }
+    // ---------------------------------------------------------------------------
+    // Boot priority (ND-0900)
+    //
+    // Check in order:
+    //   1. USB-CDC connected → USB pairing mode
+    //   2. No PSK OR pairing button held ≥ 500 ms → BLE pairing mode
+    //   3. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
+    //   4. PSK stored, reg_complete set → normal WAKE cycle
+    // ---------------------------------------------------------------------------
+
+    // (1) USB-CDC: try to open the USB Serial/JTAG port.  If it succeeds, a
+    //     host is connected and we enter USB pairing mode.
+    if let Ok(mut usb_serial) = EspUsbSerialJtag::new() {
+        info!("USB-CDC detected — entering USB pairing mode");
+        run_pairing_mode(&mut usb_serial, &mut storage, &mut map_storage);
+        drop(usb_serial);
+        info!("USB pairing mode exited — rebooting");
         sleep_ctrl.reboot();
     }
+
+    // (2) No PSK, or pairing button held ≥ 500 ms → BLE pairing mode.
+    //
+    // Pairing button is GPIO 9 on the ESP32-C3 DevKitM-1 (active LOW).
+    // We sample it for 500 ms immediately after boot.  If the pin is
+    // held LOW for the entire sampling window, button_held = true, which
+    // triggers a factory reset before accepting new BLE credentials (ND-0917).
+    let button_held = {
+        // GPIO 9 is the BOOT button on most ESP32-C3 boards.
+        // Configure as input with internal pull-up (active LOW).
+        let button_pin = peripherals.pins.gpio9;
+        let button = PinDriver::input(button_pin).expect("failed to configure pairing button GPIO");
+
+        const SAMPLE_INTERVAL_MS: u32 = 10;
+        const SAMPLE_COUNT: u32 = 500 / SAMPLE_INTERVAL_MS; // 50 samples over 500 ms
+        let mut held_count: u32 = 0;
+        for _ in 0..SAMPLE_COUNT {
+            if button.is_low() {
+                held_count += 1;
+            }
+            // Busy-wait 10 ms between samples
+            unsafe {
+                esp_idf_svc::sys::vTaskDelay(
+                    (SAMPLE_INTERVAL_MS * esp_idf_svc::sys::CONFIG_FREERTOS_HZ) / 1000,
+                );
+            }
+        }
+        let held = held_count == SAMPLE_COUNT;
+        if held {
+            info!("pairing button held ≥ 500 ms — will factory reset on BLE provision");
+        }
+        held
+    };
+
+    if storage.read_key().is_none() || button_held {
+        info!("entering BLE pairing mode (no PSK={}, button_held={})",
+            storage.read_key().is_none(), button_held);
+        run_ble_pairing_mode(&mut storage, &mut map_storage, button_held);
+        info!("BLE pairing mode exited — rebooting");
+        sleep_ctrl.reboot();
+    }
+
+    // (3) + (4) PSK is present. reg_complete flag determines whether we
+    //     send PEER_REQUEST (flag absent/cleared) or run a normal WAKE cycle
+    //     (flag set).  Both paths use the same wake cycle engine — the engine
+    //     will check reg_complete internally via the storage trait.
 
     // --- Node is paired — initialize radio and run wake cycle ---
     let hmac = SoftwareHmac;

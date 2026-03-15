@@ -1,0 +1,647 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
+//! BLE pairing handler for the node firmware.
+//!
+//! Implements the platform-independent portion of BLE pairing mode:
+//! - NODE_PROVISION message parsing (ble-pairing-protocol.md §6.6)
+//! - NVS persistence of PSK, key_hint, channel, peer_payload, reg_complete
+//! - NODE_ACK response encoding (ble-pairing-protocol.md §6.7)
+//! - Factory-reset-before-provision when the pairing button was held at boot
+//!
+//! The BLE transport layer (GATT server, advertising, MTU negotiation, LESC
+//! pairing) is in `esp_ble_pairing.rs` and is only compiled with the `esp`
+//! feature.
+
+use crate::key_store::KeyStore;
+use crate::map_storage::MapStorage;
+use crate::traits::PlatformStorage;
+
+// ---------------------------------------------------------------------------
+// BLE message envelope constants (ble-pairing-protocol.md §4)
+// ---------------------------------------------------------------------------
+
+/// BLE envelope TYPE byte for NODE_PROVISION (Phone → Node).
+pub const BLE_MSG_NODE_PROVISION: u8 = 0x01;
+
+/// BLE envelope TYPE byte for NODE_ACK (Node → Phone).
+pub const BLE_MSG_NODE_ACK: u8 = 0x81;
+
+// ---------------------------------------------------------------------------
+// NODE_ACK status codes (ble-pairing-protocol.md §6.7)
+// ---------------------------------------------------------------------------
+
+/// Credentials stored successfully.
+pub const NODE_ACK_SUCCESS: u8 = 0x00;
+
+/// Already paired and pairing button was not held (defense-in-depth).
+/// Not reachable via the current boot path (ND-0905 note).
+pub const NODE_ACK_ALREADY_PAIRED: u8 = 0x01;
+
+/// NVS write failure.
+pub const NODE_ACK_STORAGE_ERROR: u8 = 0x02;
+
+// ---------------------------------------------------------------------------
+// NODE_PROVISION body layout (ble-pairing-protocol.md §6.6)
+//   Offset  Size         Field
+//   0       2            node_key_hint  BE u16
+//   2       32           node_psk       256-bit PSK
+//   34      1            rf_channel     WiFi channel (1–13)
+//   35      2            payload_len    BE u16
+//   37      payload_len  encrypted_payload
+// ---------------------------------------------------------------------------
+
+/// Minimum body length for a NODE_PROVISION with an empty encrypted_payload.
+const NODE_PROVISION_MIN_LEN: usize = 37;
+
+/// Parsed NODE_PROVISION body.
+#[derive(Debug)]
+pub struct NodeProvision {
+    /// Key hint derived from the node PSK (SHA256(psk)[30..32], BE u16).
+    pub key_hint: u16,
+    /// Node pre-shared key (256 bits).
+    pub psk: [u8; 32],
+    /// WiFi / ESP-NOW RF channel (1–13).
+    pub rf_channel: u8,
+    /// Opaque encrypted payload for the gateway (ble-pairing-protocol.md §6.4).
+    pub encrypted_payload: Vec<u8>,
+}
+
+/// Parse a BLE message envelope.
+///
+/// Returns `(msg_type, body_slice)` on success, or `None` if the buffer is
+/// shorter than the 3-byte header or shorter than `3 + LEN`.
+///
+/// ```text
+/// ┌──────────┬──────────┬────────────────────────────┐
+/// │ TYPE (1) │ LEN (2B) │ BODY (LEN bytes)            │
+/// └──────────┴──────────┴────────────────────────────┘
+/// ```
+pub fn parse_ble_envelope(data: &[u8]) -> Option<(u8, &[u8])> {
+    if data.len() < 3 {
+        return None;
+    }
+    let msg_type = data[0];
+    let body_len = u16::from_be_bytes([data[1], data[2]]) as usize;
+    if data.len() < 3 + body_len {
+        return None;
+    }
+    Some((msg_type, &data[3..3 + body_len]))
+}
+
+/// Encode a BLE message envelope.
+pub fn encode_ble_envelope(msg_type: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(3 + body.len());
+    out.push(msg_type);
+    let len = body.len() as u16;
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(body);
+    out
+}
+
+/// Parse a NODE_PROVISION body (already unwrapped from the BLE envelope).
+///
+/// Returns `Err(&'static str)` if the body is malformed, truncated, or
+/// contains an out-of-range channel value.
+pub fn parse_node_provision(body: &[u8]) -> Result<NodeProvision, &'static str> {
+    if body.len() < NODE_PROVISION_MIN_LEN {
+        return Err("body too short");
+    }
+    let key_hint = u16::from_be_bytes([body[0], body[1]]);
+    let mut psk = [0u8; 32];
+    psk.copy_from_slice(&body[2..34]);
+    let rf_channel = body[34];
+    if !(1..=13).contains(&rf_channel) {
+        return Err("rf_channel out of range (must be 1–13)");
+    }
+    let payload_len = u16::from_be_bytes([body[35], body[36]]) as usize;
+    if body.len() < NODE_PROVISION_MIN_LEN + payload_len {
+        return Err("encrypted_payload truncated");
+    }
+    let encrypted_payload = body[37..37 + payload_len].to_vec();
+    Ok(NodeProvision {
+        key_hint,
+        psk,
+        rf_channel,
+        encrypted_payload,
+    })
+}
+
+/// Encode a NODE_ACK BLE envelope for the given status byte.
+pub fn encode_node_ack(status: u8) -> Vec<u8> {
+    encode_ble_envelope(BLE_MSG_NODE_ACK, &[status])
+}
+
+/// Handle a parsed NODE_PROVISION:
+///
+/// 1. If `button_held` is true, perform a factory reset before writing new
+///    credentials (ND-0917).
+/// 2. Erase any pre-existing PSK to allow same-session re-provision (ND-0907).
+/// 3. Write PSK, key_hint, RF channel, and `encrypted_payload` to storage.
+/// 4. Clear the `reg_complete` flag (ND-0906).
+///
+/// Returns a `NODE_ACK` status byte:
+/// - `NODE_ACK_SUCCESS` (0x00) on success.
+/// - `NODE_ACK_STORAGE_ERROR` (0x02) on any NVS write failure.
+pub fn handle_node_provision<S: PlatformStorage>(
+    provision: &NodeProvision,
+    storage: &mut S,
+    map_storage: &mut MapStorage,
+    button_held: bool,
+) -> u8 {
+    // If the pairing button was held at boot, factory-reset all persistent
+    // state before accepting new credentials (ND-0917).
+    if button_held {
+        let mut ks = KeyStore::new(storage);
+        if ks.factory_reset(map_storage).is_err() {
+            return NODE_ACK_STORAGE_ERROR;
+        }
+    }
+
+    // Erase any pre-existing PSK to allow same-session re-provision (ND-0907).
+    // Ignore errors: on a fresh unpaired node the key may not exist in NVS
+    // ("not found" is expected), and after a factory reset above it is already
+    // gone.  If the erase genuinely fails for another reason, the subsequent
+    // write_key() will return an error and we propagate NODE_ACK_STORAGE_ERROR.
+    let _ = storage.erase_key();
+
+    // Write PSK + key_hint (includes magic sentinel).
+    if storage
+        .write_key(provision.key_hint, &provision.psk)
+        .is_err()
+    {
+        return NODE_ACK_STORAGE_ERROR;
+    }
+
+    // Persist the RF channel.
+    if storage.write_channel(provision.rf_channel).is_err() {
+        return NODE_ACK_STORAGE_ERROR;
+    }
+
+    // Persist the opaque encrypted payload for PEER_REQUEST (ND-0916).
+    if storage
+        .write_peer_payload(&provision.encrypted_payload)
+        .is_err()
+    {
+        return NODE_ACK_STORAGE_ERROR;
+    }
+
+    // Clear the registration-complete flag so the next boot enters the
+    // PEER_REQUEST path instead of the normal WAKE cycle (ND-0906).
+    if storage.write_reg_complete(false).is_err() {
+        return NODE_ACK_STORAGE_ERROR;
+    }
+
+    NODE_ACK_SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::{NodeError, NodeResult};
+    use crate::traits::PlatformStorage;
+
+    // --- Minimal mock storage for BLE pairing tests ---
+
+    struct MockStorage {
+        key: Option<(u16, [u8; 32])>,
+        channel: Option<u8>,
+        peer_payload: Option<Vec<u8>>,
+        reg_complete: bool,
+        fail_write_key: bool,
+        fail_write_channel: bool,
+        fail_write_peer_payload: bool,
+        fail_write_reg_complete: bool,
+    }
+
+    impl MockStorage {
+        fn new() -> Self {
+            Self {
+                key: None,
+                channel: None,
+                peer_payload: None,
+                reg_complete: false,
+                fail_write_key: false,
+                fail_write_channel: false,
+                fail_write_peer_payload: false,
+                fail_write_reg_complete: false,
+            }
+        }
+
+        fn with_key(key_hint: u16, psk: [u8; 32]) -> Self {
+            let mut s = Self::new();
+            s.key = Some((key_hint, psk));
+            s
+        }
+    }
+
+    impl PlatformStorage for MockStorage {
+        fn read_key(&self) -> Option<(u16, [u8; 32])> {
+            self.key
+        }
+        fn write_key(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
+            if self.fail_write_key {
+                return Err(NodeError::StorageError("injected write_key failure"));
+            }
+            if self.key.is_some() {
+                return Err(NodeError::StorageError("already paired"));
+            }
+            self.key = Some((key_hint, *psk));
+            Ok(())
+        }
+        fn erase_key(&mut self) -> NodeResult<()> {
+            self.key = None;
+            Ok(())
+        }
+        fn read_schedule(&self) -> (u32, u8) {
+            (60, 0)
+        }
+        fn write_schedule_interval(&mut self, _: u32) -> NodeResult<()> {
+            Ok(())
+        }
+        fn write_active_partition(&mut self, _: u8) -> NodeResult<()> {
+            Ok(())
+        }
+        fn reset_schedule(&mut self) -> NodeResult<()> {
+            Ok(())
+        }
+        fn read_program(&self, _: u8) -> Option<Vec<u8>> {
+            None
+        }
+        fn write_program(&mut self, _: u8, _: &[u8]) -> NodeResult<()> {
+            Ok(())
+        }
+        fn erase_program(&mut self, _: u8) -> NodeResult<()> {
+            Ok(())
+        }
+        fn take_early_wake_flag(&mut self) -> bool {
+            false
+        }
+        fn set_early_wake_flag(&mut self) -> NodeResult<()> {
+            Ok(())
+        }
+        fn read_channel(&self) -> Option<u8> {
+            self.channel
+        }
+        fn write_channel(&mut self, channel: u8) -> NodeResult<()> {
+            if self.fail_write_channel {
+                return Err(NodeError::StorageError("injected write_channel failure"));
+            }
+            self.channel = Some(channel);
+            Ok(())
+        }
+        fn read_peer_payload(&self) -> Option<Vec<u8>> {
+            self.peer_payload.clone()
+        }
+        fn write_peer_payload(&mut self, payload: &[u8]) -> NodeResult<()> {
+            if self.fail_write_peer_payload {
+                return Err(NodeError::StorageError("injected write_peer_payload failure"));
+            }
+            self.peer_payload = Some(payload.to_vec());
+            Ok(())
+        }
+        fn erase_peer_payload(&mut self) -> NodeResult<()> {
+            self.peer_payload = None;
+            Ok(())
+        }
+        fn read_reg_complete(&self) -> bool {
+            self.reg_complete
+        }
+        fn write_reg_complete(&mut self, complete: bool) -> NodeResult<()> {
+            if self.fail_write_reg_complete {
+                return Err(NodeError::StorageError("injected write_reg_complete failure"));
+            }
+            self.reg_complete = complete;
+            Ok(())
+        }
+    }
+
+    // --- Helper ---
+
+    fn make_provision(key_hint: u16, psk: [u8; 32], channel: u8, payload: &[u8]) -> NodeProvision {
+        NodeProvision {
+            key_hint,
+            psk,
+            rf_channel: channel,
+            encrypted_payload: payload.to_vec(),
+        }
+    }
+
+    // --- BLE envelope parsing ---
+
+    #[test]
+    fn parse_ble_envelope_ok() {
+        let data = vec![0x01, 0x00, 0x03, 0xAA, 0xBB, 0xCC];
+        let (msg_type, body) = parse_ble_envelope(&data).unwrap();
+        assert_eq!(msg_type, 0x01);
+        assert_eq!(body, &[0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn parse_ble_envelope_empty_body() {
+        let data = vec![0x81, 0x00, 0x00];
+        let (msg_type, body) = parse_ble_envelope(&data).unwrap();
+        assert_eq!(msg_type, 0x81);
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn parse_ble_envelope_too_short() {
+        assert!(parse_ble_envelope(&[0x01, 0x00]).is_none());
+    }
+
+    #[test]
+    fn parse_ble_envelope_body_truncated() {
+        // LEN=4 but only 2 bytes follow
+        let data = vec![0x01, 0x00, 0x04, 0xAA, 0xBB];
+        assert!(parse_ble_envelope(&data).is_none());
+    }
+
+    #[test]
+    fn encode_ble_envelope_round_trip() {
+        let body = [0x42u8; 10];
+        let encoded = encode_ble_envelope(0x01, &body);
+        let (msg_type, decoded_body) = parse_ble_envelope(&encoded).unwrap();
+        assert_eq!(msg_type, 0x01);
+        assert_eq!(decoded_body, &body);
+    }
+
+    // --- NODE_PROVISION parsing ---
+
+    #[test]
+    fn parse_node_provision_ok() {
+        let mut body = vec![0u8; 37 + 16];
+        // key_hint = 0x1234 BE
+        body[0] = 0x12;
+        body[1] = 0x34;
+        // psk: 32 bytes of 0x42
+        for b in &mut body[2..34] {
+            *b = 0x42;
+        }
+        // rf_channel = 6
+        body[34] = 6;
+        // payload_len = 16 BE
+        body[35] = 0x00;
+        body[36] = 0x10;
+        // payload: 16 bytes of 0xAB
+        for b in &mut body[37..53] {
+            *b = 0xAB;
+        }
+
+        let p = parse_node_provision(&body).unwrap();
+        assert_eq!(p.key_hint, 0x1234);
+        assert_eq!(p.psk, [0x42u8; 32]);
+        assert_eq!(p.rf_channel, 6);
+        assert_eq!(p.encrypted_payload, vec![0xABu8; 16]);
+    }
+
+    #[test]
+    fn parse_node_provision_empty_payload() {
+        let mut body = vec![0u8; 37];
+        body[0] = 0x00;
+        body[1] = 0x01; // key_hint = 1
+        for b in &mut body[2..34] {
+            *b = 0x42;
+        }
+        body[34] = 1; // channel 1
+        body[35] = 0x00;
+        body[36] = 0x00; // payload_len = 0
+
+        let p = parse_node_provision(&body).unwrap();
+        assert_eq!(p.key_hint, 1);
+        assert!(p.encrypted_payload.is_empty());
+    }
+
+    #[test]
+    fn parse_node_provision_too_short() {
+        assert!(parse_node_provision(&[0u8; 36]).is_err());
+    }
+
+    #[test]
+    fn parse_node_provision_payload_truncated() {
+        let mut body = vec![0u8; 39]; // claims 4-byte payload but only 2 bytes follow
+        body[35] = 0x00;
+        body[36] = 0x04; // payload_len = 4
+        // Only 2 bytes after offset 37 (body is 39 bytes = 37 + 2)
+        assert!(parse_node_provision(&body).is_err());
+    }
+
+    #[test]
+    fn parse_node_provision_invalid_channel_zero() {
+        let mut body = vec![0u8; 37];
+        body[34] = 0; // channel 0 — invalid
+        assert!(parse_node_provision(&body).is_err());
+    }
+
+    #[test]
+    fn parse_node_provision_invalid_channel_14() {
+        let mut body = vec![0u8; 37];
+        body[34] = 14; // channel 14 — out of range
+        assert!(parse_node_provision(&body).is_err());
+    }
+
+    // --- NODE_ACK encoding ---
+
+    #[test]
+    fn encode_node_ack_success() {
+        let frame = encode_node_ack(NODE_ACK_SUCCESS);
+        let (msg_type, body) = parse_ble_envelope(&frame).unwrap();
+        assert_eq!(msg_type, BLE_MSG_NODE_ACK);
+        assert_eq!(body, &[NODE_ACK_SUCCESS]);
+    }
+
+    #[test]
+    fn encode_node_ack_storage_error() {
+        let frame = encode_node_ack(NODE_ACK_STORAGE_ERROR);
+        let (msg_type, body) = parse_ble_envelope(&frame).unwrap();
+        assert_eq!(msg_type, BLE_MSG_NODE_ACK);
+        assert_eq!(body, &[NODE_ACK_STORAGE_ERROR]);
+    }
+
+    // --- handle_node_provision: T-N904 happy path ---
+
+    /// T-N904: NODE_PROVISION on unpaired node → NODE_ACK(0x00), all NVS fields written.
+    #[test]
+    fn t_n904_happy_path() {
+        let mut storage = MockStorage::new();
+        let mut maps = MapStorage::new(1024);
+        let psk = [0x42u8; 32];
+        let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let provision = make_provision(0xABCD, psk, 6, &payload);
+
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        assert_eq!(status, NODE_ACK_SUCCESS);
+
+        // PSK and key_hint stored
+        let key = storage.read_key().expect("key should be stored");
+        assert_eq!(key.0, 0xABCD);
+        assert_eq!(key.1, psk);
+
+        // Channel stored
+        assert_eq!(storage.read_channel(), Some(6));
+
+        // Encrypted payload stored
+        assert_eq!(storage.read_peer_payload().as_deref(), Some(payload.as_slice()));
+
+        // reg_complete cleared
+        assert!(!storage.read_reg_complete());
+    }
+
+    // --- handle_node_provision: T-N905 same-session re-provision ---
+
+    /// T-N905: Second NODE_PROVISION on same connection overwrites credentials.
+    #[test]
+    fn t_n905_same_session_reprovision() {
+        let mut storage = MockStorage::new();
+        let mut maps = MapStorage::new(1024);
+
+        // First provision
+        let psk_a = [0x11u8; 32];
+        let payload_a = vec![0x01, 0x02];
+        let provision_a = make_provision(0x0001, psk_a, 3, &payload_a);
+        let status_a = handle_node_provision(&provision_a, &mut storage, &mut maps, false);
+        assert_eq!(status_a, NODE_ACK_SUCCESS);
+        assert_eq!(storage.read_key().unwrap().1, psk_a);
+
+        // Second provision (same session, different credentials)
+        let psk_b = [0x22u8; 32];
+        let payload_b = vec![0x03, 0x04, 0x05];
+        let provision_b = make_provision(0x0002, psk_b, 11, &payload_b);
+        let status_b = handle_node_provision(&provision_b, &mut storage, &mut maps, false);
+        assert_eq!(status_b, NODE_ACK_SUCCESS, "re-provision must succeed");
+
+        // NVS now contains credentials B
+        let key = storage.read_key().expect("key should be stored after re-provision");
+        assert_eq!(key.0, 0x0002);
+        assert_eq!(key.1, psk_b);
+        assert_eq!(storage.read_channel(), Some(11));
+        assert_eq!(storage.read_peer_payload().as_deref(), Some(payload_b.as_slice()));
+    }
+
+    // --- handle_node_provision: T-N906 factory reset on button hold ---
+
+    /// T-N906: Pairing button held → factory reset before writing new credentials.
+    #[test]
+    fn t_n906_factory_reset_on_button_hold() {
+        // Node already has credentials and a stored payload.
+        let mut storage = MockStorage::with_key(0x0099, [0x55u8; 32]);
+        storage.peer_payload = Some(vec![0xFF; 10]);
+        storage.reg_complete = true;
+        let mut maps = MapStorage::new(1024);
+
+        let psk_new = [0x77u8; 32];
+        let payload_new = vec![0x12, 0x34];
+        let provision = make_provision(0x00AA, psk_new, 7, &payload_new);
+
+        // button_held = true triggers factory reset
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, true);
+        assert_eq!(status, NODE_ACK_SUCCESS);
+
+        // New credentials written
+        let key = storage.read_key().expect("new key must be stored");
+        assert_eq!(key.0, 0x00AA);
+        assert_eq!(key.1, psk_new);
+        assert_eq!(storage.read_channel(), Some(7));
+        assert_eq!(storage.read_peer_payload().as_deref(), Some(payload_new.as_slice()));
+        // reg_complete cleared by factory reset + provision
+        assert!(!storage.read_reg_complete());
+    }
+
+    // --- handle_node_provision: T-N907 NVS write failure ---
+
+    /// T-N907: write_key failure → NODE_ACK(0x02).
+    #[test]
+    fn t_n907_nvs_write_key_failure() {
+        let mut storage = MockStorage::new();
+        storage.fail_write_key = true;
+        let mut maps = MapStorage::new(1024);
+        let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
+
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        assert_eq!(status, NODE_ACK_STORAGE_ERROR);
+    }
+
+    /// T-N907 variant: write_channel failure → NODE_ACK(0x02).
+    #[test]
+    fn t_n907_nvs_write_channel_failure() {
+        let mut storage = MockStorage::new();
+        storage.fail_write_channel = true;
+        let mut maps = MapStorage::new(1024);
+        let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
+
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        assert_eq!(status, NODE_ACK_STORAGE_ERROR);
+    }
+
+    /// T-N907 variant: write_peer_payload failure → NODE_ACK(0x02).
+    #[test]
+    fn t_n907_nvs_write_peer_payload_failure() {
+        let mut storage = MockStorage::new();
+        storage.fail_write_peer_payload = true;
+        let mut maps = MapStorage::new(1024);
+        let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
+
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        assert_eq!(status, NODE_ACK_STORAGE_ERROR);
+    }
+
+    /// T-N907 variant: write_reg_complete failure → NODE_ACK(0x02).
+    #[test]
+    fn t_n907_nvs_write_reg_complete_failure() {
+        let mut storage = MockStorage::new();
+        storage.fail_write_reg_complete = true;
+        let mut maps = MapStorage::new(1024);
+        let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
+
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+        assert_eq!(status, NODE_ACK_STORAGE_ERROR);
+    }
+
+    // --- Full round-trip: parse envelope → handle → encode ACK ---
+
+    #[test]
+    fn full_roundtrip_from_ble_write() {
+        // Build a raw BLE GATT write as it would arrive from the phone
+        let psk = [0x42u8; 32];
+        let payload = vec![0xDE, 0xAD];
+
+        let mut body = vec![0u8; 37 + payload.len()];
+        body[0] = 0x00;
+        body[1] = 0x01; // key_hint = 1
+        body[2..34].copy_from_slice(&psk);
+        body[34] = 6; // channel
+        body[35] = 0x00;
+        body[36] = payload.len() as u8;
+        body[37..].copy_from_slice(&payload);
+
+        let gatt_write = encode_ble_envelope(BLE_MSG_NODE_PROVISION, &body);
+
+        // Parse envelope
+        let (msg_type, body_slice) = parse_ble_envelope(&gatt_write).unwrap();
+        assert_eq!(msg_type, BLE_MSG_NODE_PROVISION);
+
+        // Parse provision
+        let provision = parse_node_provision(body_slice).unwrap();
+
+        // Handle
+        let mut storage = MockStorage::new();
+        let mut maps = MapStorage::new(1024);
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false);
+
+        // Encode ACK
+        let ack = encode_node_ack(status);
+        let (ack_type, ack_body) = parse_ble_envelope(&ack).unwrap();
+        assert_eq!(ack_type, BLE_MSG_NODE_ACK);
+        assert_eq!(ack_body, &[NODE_ACK_SUCCESS]);
+
+        // Verify NVS
+        assert_eq!(storage.read_key().unwrap().1, psk);
+        assert_eq!(storage.read_channel(), Some(6));
+        assert_eq!(storage.read_peer_payload().as_deref(), Some(payload.as_slice()));
+        assert!(!storage.read_reg_complete());
+    }
+}

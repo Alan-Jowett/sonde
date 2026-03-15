@@ -1,0 +1,41 @@
+name: IETF Draft
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rfcxml/**'
+      - '.github/workflows/ietf-draft.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'rfcxml/**'
+      - '.github/workflows/ietf-draft.yml'
+
+jobs:
+  build:
+    name: Build I-D
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install xml2rfc
+        run: pip install xml2rfc
+
+      - name: Build drafts
+        run: |
+          mkdir -p output
+          for xml in rfcxml/*.xml; do
+            base="$(basename "${xml%.xml}")"
+            xml2rfc "$xml" --text --out "output/${base}.txt"
+            xml2rfc "$xml" --html --out "output/${base}.html"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ietf-drafts
+          path: output/

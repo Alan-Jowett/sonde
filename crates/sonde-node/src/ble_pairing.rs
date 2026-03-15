@@ -90,10 +90,22 @@ pub fn parse_ble_envelope(data: &[u8]) -> Option<(u8, &[u8])> {
 }
 
 /// Encode a BLE message envelope.
+///
+/// # Panics (debug) / truncates (release)
+///
+/// `body.len()` must not exceed `u16::MAX` (65535 bytes). This invariant is
+/// enforced with a `debug_assert!`; production callers must never pass a body
+/// larger than the BLE MTU allows (≤ 65532 bytes after the 3-byte header).
 pub fn encode_ble_envelope(msg_type: u8, body: &[u8]) -> Vec<u8> {
+    debug_assert!(
+        body.len() <= u16::MAX as usize,
+        "BLE envelope body too large ({} bytes, max {})",
+        body.len(),
+        u16::MAX,
+    );
+    let len = body.len().min(u16::MAX as usize) as u16;
     let mut out = Vec::with_capacity(3 + body.len());
     out.push(msg_type);
-    let len = body.len() as u16;
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(body);
     out
@@ -299,7 +311,9 @@ mod tests {
         }
         fn write_peer_payload(&mut self, payload: &[u8]) -> NodeResult<()> {
             if self.fail_write_peer_payload {
-                return Err(NodeError::StorageError("injected write_peer_payload failure"));
+                return Err(NodeError::StorageError(
+                    "injected write_peer_payload failure",
+                ));
             }
             self.peer_payload = Some(payload.to_vec());
             Ok(())
@@ -313,7 +327,9 @@ mod tests {
         }
         fn write_reg_complete(&mut self, complete: bool) -> NodeResult<()> {
             if self.fail_write_reg_complete {
-                return Err(NodeError::StorageError("injected write_reg_complete failure"));
+                return Err(NodeError::StorageError(
+                    "injected write_reg_complete failure",
+                ));
             }
             self.reg_complete = complete;
             Ok(())
@@ -426,7 +442,7 @@ mod tests {
         let mut body = vec![0u8; 39]; // claims 4-byte payload but only 2 bytes follow
         body[35] = 0x00;
         body[36] = 0x04; // payload_len = 4
-        // Only 2 bytes after offset 37 (body is 39 bytes = 37 + 2)
+                         // Only 2 bytes after offset 37 (body is 39 bytes = 37 + 2)
         assert!(parse_node_provision(&body).is_err());
     }
 
@@ -485,7 +501,10 @@ mod tests {
         assert_eq!(storage.read_channel(), Some(6));
 
         // Encrypted payload stored
-        assert_eq!(storage.read_peer_payload().as_deref(), Some(payload.as_slice()));
+        assert_eq!(
+            storage.read_peer_payload().as_deref(),
+            Some(payload.as_slice())
+        );
 
         // reg_complete cleared
         assert!(!storage.read_reg_complete());
@@ -515,11 +534,16 @@ mod tests {
         assert_eq!(status_b, NODE_ACK_SUCCESS, "re-provision must succeed");
 
         // NVS now contains credentials B
-        let key = storage.read_key().expect("key should be stored after re-provision");
+        let key = storage
+            .read_key()
+            .expect("key should be stored after re-provision");
         assert_eq!(key.0, 0x0002);
         assert_eq!(key.1, psk_b);
         assert_eq!(storage.read_channel(), Some(11));
-        assert_eq!(storage.read_peer_payload().as_deref(), Some(payload_b.as_slice()));
+        assert_eq!(
+            storage.read_peer_payload().as_deref(),
+            Some(payload_b.as_slice())
+        );
     }
 
     // --- handle_node_provision: T-N906 factory reset on button hold ---
@@ -546,7 +570,10 @@ mod tests {
         assert_eq!(key.0, 0x00AA);
         assert_eq!(key.1, psk_new);
         assert_eq!(storage.read_channel(), Some(7));
-        assert_eq!(storage.read_peer_payload().as_deref(), Some(payload_new.as_slice()));
+        assert_eq!(
+            storage.read_peer_payload().as_deref(),
+            Some(payload_new.as_slice())
+        );
         // reg_complete cleared by factory reset + provision
         assert!(!storage.read_reg_complete());
     }
@@ -641,7 +668,10 @@ mod tests {
         // Verify NVS
         assert_eq!(storage.read_key().unwrap().1, psk);
         assert_eq!(storage.read_channel(), Some(6));
-        assert_eq!(storage.read_peer_payload().as_deref(), Some(payload.as_slice()));
+        assert_eq!(
+            storage.read_peer_payload().as_deref(),
+            Some(payload.as_slice())
+        );
         assert!(!storage.read_reg_complete());
     }
 }

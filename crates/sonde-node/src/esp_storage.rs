@@ -248,6 +248,14 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn write_peer_payload(&mut self, payload: &[u8]) -> NodeResult<()> {
+        // Mirror the read buffer size so a stored payload can always be read
+        // back.  The AES-256-GCM encrypted pairing payload is 44 + ≤ ~256
+        // bytes of CBOR, so 512 bytes is a comfortable upper bound.
+        if payload.len() > 512 {
+            return Err(NodeError::StorageError(
+                "peer_payload too large (max 512 bytes)",
+            ));
+        }
         self.nvs
             .set_blob("peer_payload", payload)
             .map_err(|_| NodeError::StorageError("peer_payload write failed"))
@@ -256,6 +264,7 @@ impl crate::traits::PlatformStorage for NvsStorage {
     fn erase_peer_payload(&mut self) -> NodeResult<()> {
         self.nvs
             .remove("peer_payload")
+            .map(|_| ())
             .map_err(|_| NodeError::StorageError("peer_payload erase failed"))
     }
 

@@ -117,8 +117,11 @@ fn main() {
     };
 
     if storage.read_key().is_none() || button_held {
-        info!("entering BLE pairing mode (no PSK={}, button_held={})",
-            storage.read_key().is_none(), button_held);
+        info!(
+            "entering BLE pairing mode (no PSK={}, button_held={})",
+            storage.read_key().is_none(),
+            button_held
+        );
         run_ble_pairing_mode(&mut storage, &mut map_storage, button_held);
         info!("BLE pairing mode exited — rebooting");
         sleep_ctrl.reboot();

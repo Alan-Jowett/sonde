@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(storage.schedule_interval, 60); // reset to default
         assert_eq!(storage.active_partition, 0); // reset to default
         assert_eq!(storage.channel, Some(1)); // reset to default channel
-        // BLE pairing artifacts must be cleared (ND-0917)
+                                              // BLE pairing artifacts must be cleared (ND-0917)
         assert!(storage.peer_payload.is_none());
         assert!(!storage.reg_complete);
         // Map data should be zeroed

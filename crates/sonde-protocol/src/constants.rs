@@ -54,9 +54,9 @@ pub const KEY_TIMESTAMP_MS: u64 = 14;
 // is unrelated to key 1 in WAKE (firmware_abi_version).
 // PEER_REQUEST: { 1: encrypted_payload }
 // PEER_ACK:     { 1: status, 2: registration_proof }
-pub const PEER_KEY_PAYLOAD: u64 = 1;
-pub const PEER_KEY_STATUS: u64 = 1;
-pub const PEER_KEY_PROOF: u64 = 2;
+pub const PEER_REQ_KEY_PAYLOAD: u64 = 1;
+pub const PEER_ACK_KEY_STATUS: u64 = 1;
+pub const PEER_ACK_KEY_PROOF: u64 = 2;
 
 // CBOR integer keys (program image -- separate keyspace)
 pub const IMG_KEY_BYTECODE: u64 = 1;

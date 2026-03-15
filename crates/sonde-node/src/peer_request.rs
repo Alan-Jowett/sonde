@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 
 use sonde_protocol::{
     decode_frame, encode_frame, verify_frame, FrameHeader, HmacProvider, MSG_PEER_ACK,
-    MSG_PEER_REQUEST, PEER_KEY_PAYLOAD, PEER_KEY_PROOF, PEER_KEY_STATUS,
+    MSG_PEER_REQUEST, PEER_ACK_KEY_PROOF, PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
 };
 
 use crate::error::{NodeError, NodeResult};
@@ -82,7 +82,7 @@ pub fn build_peer_request_frame(
 
     // Encode CBOR: { 1: bstr(encrypted_payload) }
     let cbor_map = ciborium::Value::Map(alloc::vec![(
-        ciborium::Value::Integer(PEER_KEY_PAYLOAD.into()),
+        ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
         ciborium::Value::Bytes(encrypted_payload.to_vec()),
     )]);
     let mut cbor_buf = Vec::new();
@@ -151,10 +151,10 @@ pub fn verify_peer_ack(
             .and_then(|i| u64::try_from(i).ok())
             .ok_or(NodeError::MalformedPayload("PEER_ACK non-integer key"))?;
         match key {
-            PEER_KEY_STATUS => {
+            PEER_ACK_KEY_STATUS => {
                 status = v.as_integer().and_then(|i| u64::try_from(i).ok());
             }
-            PEER_KEY_PROOF => {
+            PEER_ACK_KEY_PROOF => {
                 proof = v.as_bytes().map(|v| &**v);
             }
             _ => {} // ignore unknown keys
@@ -466,11 +466,11 @@ mod tests {
         // Encode CBOR: { 1: 0, 2: proof }
         let cbor_map = ciborium::Value::Map(vec![
             (
-                ciborium::Value::Integer(PEER_KEY_STATUS.into()),
+                ciborium::Value::Integer(PEER_ACK_KEY_STATUS.into()),
                 ciborium::Value::Integer(0.into()),
             ),
             (
-                ciborium::Value::Integer(PEER_KEY_PROOF.into()),
+                ciborium::Value::Integer(PEER_ACK_KEY_PROOF.into()),
                 ciborium::Value::Bytes(proof.to_vec()),
             ),
         ]);
@@ -611,11 +611,11 @@ mod tests {
 
         let cbor_map = ciborium::Value::Map(vec![
             (
-                ciborium::Value::Integer(PEER_KEY_STATUS.into()),
+                ciborium::Value::Integer(PEER_ACK_KEY_STATUS.into()),
                 ciborium::Value::Integer(0.into()),
             ),
             (
-                ciborium::Value::Integer(PEER_KEY_PROOF.into()),
+                ciborium::Value::Integer(PEER_ACK_KEY_PROOF.into()),
                 ciborium::Value::Bytes(proof.to_vec()),
             ),
         ]);

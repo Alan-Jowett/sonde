@@ -248,12 +248,11 @@ impl crate::traits::PlatformStorage for NvsStorage {
     }
 
     fn write_peer_payload(&mut self, payload: &[u8]) -> NodeResult<()> {
-        // Mirror the read buffer size so a stored payload can always be read
-        // back.  The AES-256-GCM encrypted pairing payload is 44 + ≤ ~256
-        // bytes of CBOR, so 512 bytes is a comfortable upper bound.
-        if payload.len() > 512 {
+        // Cap at the PEER_REQUEST wire limit (202 bytes) so a stored payload
+        // always fits in a single ESP-NOW frame.  See ble_pairing::PEER_PAYLOAD_MAX_LEN.
+        if payload.len() > crate::ble_pairing::PEER_PAYLOAD_MAX_LEN {
             return Err(NodeError::StorageError(
-                "peer_payload too large (max 512 bytes)",
+                "peer_payload too large for PEER_REQUEST frame",
             ));
         }
         self.nvs

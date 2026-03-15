@@ -118,8 +118,15 @@ where
                         seconds: sleep_mgr.effective_sleep_s(),
                     };
                 }
-                Err(_) => {
-                    // Transport or storage error — sleep and retry.
+                Err(e) => {
+                    // Distinguish permanent errors (malformed payload, oversize)
+                    // from transient ones (transport timeout, storage I/O).
+                    // MalformedPayload errors are non-recoverable — the stored
+                    // payload will never succeed, so erase it to break the loop.
+                    if matches!(e, NodeError::MalformedPayload(_)) {
+                        log::warn!("PEER_REQUEST permanent error: {} — erasing peer_payload", e);
+                        let _ = storage.erase_peer_payload();
+                    }
                     return WakeCycleOutcome::Sleep {
                         seconds: sleep_mgr.effective_sleep_s(),
                     };
@@ -171,7 +178,7 @@ where
             // Once peer_payload has been erased (after a prior successful
             // WAKE/COMMAND), transient WAKE failures should NOT revert to
             // PEER_REQUEST since there is no payload to re-send.
-            if storage.read_reg_complete() && storage.read_peer_payload().is_some() {
+            if storage.read_reg_complete() && storage.has_peer_payload() {
                 if let Err(e) = storage.write_reg_complete(false) {
                     log::warn!("failed to clear reg_complete after WAKE failure: {}", e);
                 }
@@ -3132,7 +3139,7 @@ mod tests {
         echo_nonce: u64,
         encrypted_payload: &[u8],
     ) -> Vec<u8> {
-        use sonde_protocol::MSG_PEER_ACK;
+        use sonde_protocol::{MSG_PEER_ACK, PEER_ACK_KEY_PROOF, PEER_ACK_KEY_STATUS};
 
         // registration_proof = HMAC-SHA256(psk, "sonde-peer-ack-v1" || payload)
         let mut proof_input = Vec::new();
@@ -3142,11 +3149,11 @@ mod tests {
 
         let cbor_map = ciborium::Value::Map(vec![
             (
-                ciborium::Value::Integer(1.into()),
+                ciborium::Value::Integer(PEER_ACK_KEY_STATUS.into()),
                 ciborium::Value::Integer(0.into()),
             ),
             (
-                ciborium::Value::Integer(2.into()),
+                ciborium::Value::Integer(PEER_ACK_KEY_PROOF.into()),
                 ciborium::Value::Bytes(proof.to_vec()),
             ),
         ]);

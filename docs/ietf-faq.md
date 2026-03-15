@@ -51,7 +51,7 @@ This document answers the most common “why didn’t you just use X?” questio
     *   Device identity
     *   Trust bootstrap
 
-**Bottom line:** OSCORE is useful *after* onboarding. Our problem is onboarding. And even post‑onboarding, OSCORE assumes CoAP semantics (request/response with tokens and options) that do not map onto our fire‑and‑forget ESP‑NOW frame model. Our post‑pairing protocol is intentionally integrity‑only (HMAC, no encryption) because sensor telemetry is not confidential — see `security.md` §1.3 for the explicit confidentiality non‑goal.
+**Bottom line:** OSCORE is useful *after* onboarding. Our problem is onboarding. And even post‑onboarding, OSCORE assumes CoAP semantics (request/response with tokens and options) that do not map onto our fire‑and‑forget ESP‑NOW frame model. Our post‑pairing protocol is intentionally integrity‑only (HMAC, no encryption) because sensor telemetry is not confidential — see [security.md §1.3](security.md#13--out-of-scope-threats) for the explicit confidentiality non‑goal.
 
 ***
 
@@ -100,7 +100,7 @@ It does **not** prove:
 
 ***
 
-## Why not **CoAP over GATT** (IETF draft)?
+## Why not **CoAP over GATT** (draft‑amsuess‑core‑coap‑over‑gatt)?
 
 **Short answer:** It’s a transport mapping, not a security or onboarding solution.
 
@@ -227,7 +227,7 @@ We use a **system‑level onboarding protocol** with explicit trust boundaries:
 *   **BLE is treated as an untrusted transport**
 *   **All real trust decisions happen at the gateway**
 
-This is a **composition** of well‑understood primitives (ECDH, AEAD, HMAC, CBOR), not a reinvention of cryptography. The threat model and security assumptions are documented explicitly in `security.md`, including what is *not* protected (confidentiality of telemetry, physical jamming, gateway compromise). This is not a substitute for formal analysis, but it is an honest and auditable starting point.
+This is a **composition** of well‑understood primitives (ECDH, AEAD, HMAC, CBOR), not a reinvention of cryptography. The threat model and security assumptions are documented explicitly in [security.md](security.md), including what is *not* protected (confidentiality of telemetry, physical jamming, gateway compromise). This is not a substitute for formal analysis, but it is an honest and auditable starting point.
 
 ***
 
@@ -294,4 +294,5 @@ Realistic adoption paths:
 | COSE | RFC 9052, RFC 9053 | COSE |
 | SUIT | RFC 9019, RFC 9124 | SUIT |
 | CBOR | RFC 8949 | CBOR |
+| CoAP over GATT | draft‑amsuess‑core‑coap‑over‑gatt | CoRE |
 | HMAC | RFC 2104 | — |

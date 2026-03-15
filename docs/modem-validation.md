@@ -359,15 +359,18 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0600  Gateway Pairing Service advertisement
 
-**Validates:** MD-0407
+**Validates:** MD-0407, MD-0412, MD-0413
 
 **Procedure:**
-1. Power on modem with gateway connected via USB-CDC.
+1. Power on modem with gateway connected via USB-CDC. Do NOT send `BLE_ENABLE`.
 2. Scan for BLE advertisements from the modem.
-3. Assert: Gateway Pairing Service UUID `0000FE60-0000-1000-8000-00805F9B34FB` is advertised.
-4. Connect a BLE client to the modem, then disconnect.
-5. Scan for BLE advertisements again.
-6. Assert: Gateway Pairing Service UUID is advertised again after disconnect.
+3. Assert: no Gateway Pairing Service UUID advertised (BLE advertising is off by default).
+4. Send `BLE_ENABLE` to modem.
+5. Scan for BLE advertisements from the modem.
+6. Assert: Gateway Pairing Service UUID `0000FE60-0000-1000-8000-00805F9B34FB` is advertised.
+7. Connect a BLE client to the modem, then disconnect.
+8. Scan for BLE advertisements again.
+9. Assert: Gateway Pairing Service UUID is advertised again after disconnect (BLE still enabled).
 
 ---
 
@@ -449,11 +452,14 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0607  BLE LESC pairing
 
-**Validates:** MD-0404
+**Validates:** MD-0404, MD-0414
 
 **Procedure:**
-1. Connect to modem via BLE and initiate LESC Just Works pairing.
-2. Assert: pairing succeeds and the link is encrypted.
+1. Send `BLE_ENABLE`. Connect to modem via BLE and initiate LESC Numeric Comparison pairing.
+2. Assert: `BLE_PAIRING_CONFIRM` received on gateway side with a 6-digit passkey.
+3. Send `BLE_PAIRING_CONFIRM_REPLY(0x01)` (accept).
+4. Assert: pairing succeeds and the link is encrypted.
+5. Assert: `BLE_CONNECTED` received on gateway side.
 
 ---
 
@@ -570,6 +576,76 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0617  BLE advertising off by default
+
+**Validates:** MD-0412
+
+**Procedure:**
+1. Power on modem. Do NOT send `BLE_ENABLE`.
+2. Scan for BLE advertisements.
+3. Assert: no Gateway Pairing Service UUID advertised.
+
+---
+
+### T-0618  BLE_ENABLE starts advertising
+
+**Validates:** MD-0413
+
+**Procedure:**
+1. Send `BLE_ENABLE` to modem.
+2. Scan for BLE advertisements.
+3. Assert: Gateway Pairing Service UUID is advertised.
+
+---
+
+### T-0619  BLE_DISABLE stops advertising and disconnects
+
+**Validates:** MD-0413
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect a phone via BLE.
+2. Send `BLE_DISABLE`.
+3. Assert: phone is disconnected. `BLE_DISCONNECTED` received.
+4. Scan for BLE advertisements. Assert: no advertising.
+
+---
+
+### T-0620  Numeric Comparison pin relay
+
+**Validates:** MD-0414
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect phone with Numeric Comparison pairing.
+2. Assert: `BLE_PAIRING_CONFIRM` received with a 6-digit passkey.
+3. Send `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
+4. Assert: pairing completes. `BLE_CONNECTED` received.
+
+---
+
+### T-0621  Numeric Comparison rejected
+
+**Validates:** MD-0414
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect phone with Numeric Comparison pairing.
+2. Assert: `BLE_PAIRING_CONFIRM` received.
+3. Send `BLE_PAIRING_CONFIRM_REPLY(0x00)`.
+4. Assert: pairing rejected. No `BLE_CONNECTED` received.
+
+---
+
+### T-0622  Numeric Comparison timeout
+
+**Validates:** MD-0414
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect phone with Numeric Comparison pairing.
+2. Assert: `BLE_PAIRING_CONFIRM` received.
+3. Do not send a reply. Wait 30 s.
+4. Assert: pairing rejected.
+
+---
+
 ## Appendix A  Test index
 
 | ID | Title | Validates |
@@ -595,7 +671,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0401 | SET_CHANNEL with invalid channel | modem-protocol.md §6.1 |
 | T-0402 | Framing error recovery | MD-0102 |
 | T-0500 | Modem does not interpret frame contents | §6 Non-requirements |
-| T-0600 | Gateway Pairing Service advertisement | MD-0407 |
+| T-0600 | Gateway Pairing Service advertisement | MD-0407, MD-0412, MD-0413 |
 | T-0601 | BLE GATT characteristic setup | MD-0400 |
 | T-0602 | MTU negotiation ≥ 247 | MD-0402 |
 | T-0602a | MTU negotiation below minimum rejected | MD-0402 |
@@ -603,7 +679,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0604 | USB-CDC → BLE indication relay | MD-0401 |
 | T-0605 | Indication fragmentation | MD-0403 |
 | T-0606 | Opaque relay (no content inspection) | MD-0401 |
-| T-0607 | BLE LESC pairing | MD-0404 |
+| T-0607 | BLE LESC pairing | MD-0404, MD-0414 |
 | T-0608 | BLE disconnect cleanup | MD-0405 |
 | T-0609 | BLE and ESP-NOW concurrent operation | MD-0405 |
 | T-0609a | Second BLE connection rejected while one is active | MD-0405 |
@@ -614,3 +690,9 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0614 | BLE_CONNECTED notification | MD-0410 |
 | T-0615 | BLE_DISCONNECTED notification | MD-0411 |
 | T-0616 | BLE relay round-trip | MD-0408, MD-0409 |
+| T-0617 | BLE advertising off by default | MD-0412 |
+| T-0618 | BLE_ENABLE starts advertising | MD-0413 |
+| T-0619 | BLE_DISABLE stops advertising and disconnects | MD-0413 |
+| T-0620 | Numeric Comparison pin relay | MD-0414 |
+| T-0621 | Numeric Comparison rejected | MD-0414 |
+| T-0622 | Numeric Comparison timeout | MD-0414 |

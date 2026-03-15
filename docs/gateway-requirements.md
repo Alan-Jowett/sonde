@@ -1042,10 +1042,10 @@ The gateway MUST reject `REGISTER_PHONE` commands when the registration window i
 ### GW-1208  Registration window activation
 
 **Priority:** Must  
-**Source:** ble-pairing-protocol.md §5.4.1
+**Source:** ble-pairing-protocol.md §5.4.1, modem-protocol.md §4.13
 
 **Description:**  
-The gateway MUST open the registration window via a physical button hold (≥2 s) or the admin API and auto-close it after a configurable duration (default 120 s).
+The gateway MUST open the registration window via a physical button hold (≥2 s) or the admin API and auto-close it after a configurable duration (default 120 s). When the registration window is opened via admin API, the gateway MUST also send `BLE_ENABLE` to the modem. When the window closes (auto-close or explicit close), the gateway MUST send `BLE_DISABLE` to the modem.
 
 **Acceptance criteria:**
 
@@ -1053,6 +1053,8 @@ The gateway MUST open the registration window via a physical button hold (≥2 s
 2. The admin API can open the registration window.
 3. The window auto-closes after the configured duration.
 4. The default duration is 120 s.
+5. Opening the window sends `BLE_ENABLE` to the modem.
+6. Closing the window (auto-close or explicit) sends `BLE_DISABLE` to the modem.
 
 ---
 
@@ -1259,6 +1261,24 @@ The gateway MUST NOT apply sequence-number anti-replay checks to `msg_type` `0x0
 
 ---
 
+### GW-1222  Admin API — BLE pairing session
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §5.4.1, modem-protocol.md §4.13
+
+**Description:**  
+The admin API MUST expose an `OpenBlePairing` RPC (and corresponding `sonde-admin pairing start` CLI command) that opens the phone registration window AND sends `BLE_ENABLE` to the modem. A corresponding `CloseBlePairing` RPC (`sonde-admin pairing stop`) MUST close the window and send `BLE_DISABLE`. The admin CLI MUST display any Numeric Comparison passkey relayed from the modem via `BLE_PAIRING_CONFIRM` and prompt the operator to confirm.
+
+**Acceptance criteria:**
+
+1. `sonde-admin pairing start` opens the registration window and enables BLE advertising.
+2. `sonde-admin pairing stop` closes the window and disables BLE advertising.
+3. Numeric Comparison passkey is displayed to the operator.
+4. Operator can accept or reject the passkey.
+5. Registration window auto-close also sends `BLE_DISABLE`.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1338,3 +1358,4 @@ The gateway MUST NOT apply sequence-number anti-replay checks to `msg_type` `0x0
 | GW-1219 | PEER_ACK generation | Must |
 | GW-1220 | Silent-discard error model for PEER_REQUEST | Must |
 | GW-1221 | Random nonces for PEER_REQUEST/PEER_ACK | Must |
+| GW-1222 | Admin API — BLE pairing session | Must |

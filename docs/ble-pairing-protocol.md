@@ -100,6 +100,8 @@ Two GATT services are defined — one on the gateway (or its BLE-connected modem
 | Gateway Pairing Service | `0000FE60-0000-1000-8000-00805F9B34FB` | Gateway |
 | Node Provisioning Service | `0000FE50-0000-1000-8000-00805F9B34FB` | Node (in pairing mode) |
 
+> **Note:** When the gateway uses the ESP32-S3 modem for BLE, the Gateway Pairing Service is hosted on the modem but BLE advertising is **OFF by default** after boot.  The gateway (via admin CLI or API) must send `BLE_ENABLE` to the modem before a phone can discover it.  See [modem-protocol.md §4.13](modem-protocol.md) for details.
+
 ### 3.2  Gateway Pairing Service characteristics
 
 | Characteristic | UUID | Properties | Description |
@@ -260,6 +262,8 @@ The gateway MUST reject `REGISTER_PHONE` requests unless a **registration window
 - **Admin API call** (planned `OpenPhoneRegistration` gRPC — not yet defined in `admin.proto`; will be added in a future PR).
 
 The registration window remains open for a configurable duration (default: 120 seconds) and closes automatically.  While closed, `REGISTER_PHONE` receives an `ERROR` response (type `0xFF`) with status `0x02` ("Registration window closed", per §4.1.1).
+
+When the registration window is opened, the gateway also sends `BLE_ENABLE` to the modem to start BLE advertising.  When the window closes, the gateway sends `BLE_DISABLE` to stop advertising.  See [modem-protocol.md §4.13](modem-protocol.md) and GW-1222.
 
 This prevents an unauthorized device from silently registering as a pairing agent by simply connecting to the gateway's BLE service.
 
@@ -668,8 +672,8 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 | Unauthorized phone registration | Registration window must be opened by operator action; gateway rejects `REGISTER_PHONE` when closed (§5.4.1). |
 | Rogue phone registers a node | Phone HMAC verification (step 6 in §7.3).  Attacker needs a valid phone PSK. |
 | Compromised phone PSK | Gateway operator revokes the phone PSK.  Previously registered nodes remain valid. |
-| BLE eavesdrop / MITM captures node PSK | `NODE_PROVISION` sends both `node_psk` and `encrypted_payload` over BLE.  Passive eavesdropping cannot recover this data when LESC encryption is active; an **active MITM** (defeating Just Works) is required.  Mitigated by one-time-use of the encrypted payload (`node_id` uniqueness, step 10 in §7.3), timestamp tolerance (±86400 s, step 9), and using Passkey Entry or Numeric Comparison for high-assurance deployments. |
-| BLE active MITM captures node PSK | Same as above.  For high-assurance deployments, use BLE Passkey Entry or Numeric Comparison pairing to prevent MITM.  Just Works is acceptable for low-threat environments. |
+| BLE eavesdrop / MITM captures node PSK | `NODE_PROVISION` sends both `node_psk` and `encrypted_payload` over BLE.  Passive eavesdropping cannot recover this data when LESC encryption is active; an **active MITM** (defeating Just Works) is required.  Mitigated by one-time-use of the encrypted payload (`node_id` uniqueness, step 10 in §7.3), timestamp tolerance (±86400 s, step 9), and using Numeric Comparison (default) to prevent MITM. |
+| BLE active MITM captures node PSK | Same as above.  Numeric Comparison (the default pairing method) prevents active MITM by requiring operator verification of a 6-digit passkey.  Just Works is acceptable as a fallback for low-threat environments without operator presence. |
 | Forged PEER_ACK | `registration_proof` = HMAC over encrypted payload (§7.2) raises the bar.  Deferred payload erasure (§8.3.1) ensures the node self-heals if a forged ACK is accepted — it reverts to PEER_REQUEST if the subsequent WAKE fails. |
 | Replay of PEER_REQUEST | Timestamp check (±24h) + node_id uniqueness (step 9–10 in §7.3). |
 | Phone A reads Phone B's pairing requests | Impossible — each encrypted with gateway public key, authenticated with different phone PSK. |
@@ -677,9 +681,11 @@ If the WAKE fails (no response or HMAC failure), the node clears the registratio
 
 ### 9.2  BLE link security
 
-BLE LESC Just Works provides AES-CCM encrypted transport.  This is the **only** protection for the node PSK in transit (phone → node).  An active MITM can defeat Just Works and capture both the `node_psk` and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The primary mitigations are the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations, step 10 in §7.3) and the PairingRequest timestamp tolerance (±86400 s, step 9 in §7.3).  The 120 s registration window applies only to Phase 1 phone registration (`REGISTER_PHONE` §5.4.1), not to Phase 2 node registration.
+BLE LESC Numeric Comparison is the **default** pairing method.  The modem relays the 6-digit passkey to the gateway via `BLE_PAIRING_CONFIRM` (modem-protocol.md §4.15), and the gateway displays it to the operator via the admin CLI.  The operator verifies that the pin matches the phone's display and confirms via `BLE_PAIRING_CONFIRM_REPLY`.  This provides MITM protection for the BLE link.
 
-For higher-security deployments, BLE Passkey Entry or Numeric Comparison could be used instead of Just Works (the protocol is agnostic to the BLE pairing method).
+Just Works remains available as a fallback for environments without operator presence, but does not provide MITM protection.  When using Just Works, an active MITM can defeat the pairing and capture both the `node_psk` and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The primary mitigations are the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations, step 10 in §7.3) and the PairingRequest timestamp tolerance (±86400 s, step 9 in §7.3).  The 120 s registration window applies only to Phase 1 phone registration (`REGISTER_PHONE` §5.4.1), not to Phase 2 node registration.
+
+For even higher assurance, BLE Passkey Entry can be used in place of Numeric Comparison — the protocol is agnostic to the specific LESC pairing method.
 
 ---
 
@@ -779,6 +785,22 @@ The modem does not inspect, validate, or modify BLE envelope contents.  All cryp
 ### 12.3  Concurrency
 
 BLE pairing relay operates concurrently with ESP-NOW frame relay.  The modem MUST NOT block ESP-NOW operations while a BLE client is connected.  Both radio subsystems (BLE and ESP-NOW) run independently on the ESP32-S3.
+
+### 12.4  BLE advertising control and Numeric Comparison relay
+
+BLE advertising is OFF by default after modem boot/RESET to prevent continuous BLE advertising from disrupting ESP-NOW traffic.  The gateway controls advertising via `BLE_ENABLE` (modem-protocol.md §4.13) and `BLE_DISABLE` (modem-protocol.md §4.14).
+
+The typical flow is:
+
+1. The operator runs `sonde-admin pairing start`, which calls the `OpenBlePairing` admin API RPC.
+2. The gateway opens the registration window and sends `BLE_ENABLE` to the modem.
+3. The modem starts BLE advertising.  A phone can now discover and connect.
+4. During LESC Numeric Comparison pairing, the modem sends `BLE_PAIRING_CONFIRM` (modem-protocol.md §4.15) with the 6-digit passkey to the gateway.
+5. The gateway (via admin CLI) displays the passkey to the operator.  The operator verifies it matches the phone's display.
+6. The gateway sends `BLE_PAIRING_CONFIRM_REPLY` (modem-protocol.md §4.16) to accept or reject the pairing.
+7. After the pairing window closes (auto-close or `sonde-admin pairing stop`), the gateway sends `BLE_DISABLE` to the modem.
+
+This ensures BLE and ESP-NOW do not interfere with each other during normal sensor data collection, and that BLE pairing is an explicit operator-initiated action with MITM protection via Numeric Comparison.
 
 ---
 

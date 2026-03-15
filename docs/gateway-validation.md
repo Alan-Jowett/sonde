@@ -1278,6 +1278,32 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1221  Admin BLE pairing session
+
+**Validates:** GW-1222
+
+**Procedure:**
+1. Call `OpenBlePairing` via admin API.
+2. Assert: registration window is open.
+3. Assert: `BLE_ENABLE` sent to modem.
+4. Wait for window timeout.
+5. Assert: `BLE_DISABLE` sent to modem.
+6. Assert: registration window is closed.
+
+---
+
+### T-1222  Numeric Comparison passkey display
+
+**Validates:** GW-1222
+
+**Procedure:**
+1. Start a BLE pairing session.
+2. Connect phone. Modem sends `BLE_PAIRING_CONFIRM(passkey=123456)`.
+3. Assert: admin CLI displays "Confirm BLE pairing PIN: 123456".
+4. Operator accepts. Assert: gateway sends `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -1357,3 +1383,4 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1219 | T-1219 |
 | GW-1220 | T-1211, T-1213, T-1214, T-1215, T-1216, T-1217 |
 | GW-1221 | T-1220 |
+| GW-1222 | T-1221, T-1222 |

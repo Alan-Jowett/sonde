@@ -382,15 +382,16 @@ When sending indications larger than (MTU − 3) bytes, the modem MUST fragment 
 ### MD-0404  BLE LESC pairing
 
 **Priority:** Must
-**Source:** ble-pairing-protocol.md §8.2
+**Source:** ble-pairing-protocol.md §8.2, §9.2
 
 **Description:**
-The modem MUST support BLE LESC Just Works pairing to establish an encrypted link with the connecting phone.
+The modem MUST support BLE LESC Numeric Comparison pairing as the default method to establish an encrypted link with the connecting phone. During Numeric Comparison, the modem relays the 6-digit passkey to the gateway via `BLE_PAIRING_CONFIRM` and waits for `BLE_PAIRING_CONFIRM_REPLY` before accepting or rejecting the pairing. Just Works remains available as a fallback for environments without operator presence.
 
 **Acceptance criteria:**
 
-1. LESC Just Works pairing completes successfully with a connecting phone.
+1. LESC Numeric Comparison pairing completes successfully with a connecting phone.
 2. The resulting BLE link is encrypted.
+3. The 6-digit passkey is relayed to the gateway via `BLE_PAIRING_CONFIRM`.
 
 ---
 
@@ -428,16 +429,18 @@ The modem SHOULD notify the gateway over USB-CDC when a BLE client connects or d
 ### MD-0407  BLE advertising
 
 **Priority:** Must
-**Source:** ble-pairing-protocol.md §3.1
+**Source:** ble-pairing-protocol.md §3.1, modem-protocol.md §4.13, §4.14
 
 **Description:**
-When no BLE client is connected, the modem MUST advertise the Gateway Pairing Service UUID so that phones can discover the gateway for pairing.
+BLE advertising is OFF by default after boot and after `RESET`. The modem MUST start advertising the Gateway Pairing Service UUID only after receiving a `BLE_ENABLE` command from the gateway. The modem MUST stop advertising and disconnect any active BLE client on `BLE_DISABLE`. When no BLE client is connected and BLE is enabled, the modem MUST advertise so that phones can discover the gateway for pairing.
 
 **Acceptance criteria:**
 
-1. The Gateway Pairing Service UUID is present in BLE advertisements.
-2. A phone scanning for BLE devices can discover the modem by the service UUID.
-3. Advertising resumes after a BLE client disconnects.
+1. After boot/RESET, no BLE advertisements are emitted.
+2. After `BLE_ENABLE`, the Gateway Pairing Service UUID is present in BLE advertisements.
+3. A phone scanning for BLE devices can discover the modem by the service UUID.
+4. `BLE_DISABLE` stops advertising and disconnects any active BLE client.
+5. Advertising resumes after a BLE client disconnects (if BLE is still enabled).
 
 ---
 
@@ -504,6 +507,55 @@ When the BLE client disconnects, the modem MUST send a `BLE_DISCONNECTED` (0xA2)
 
 ---
 
+### MD-0412  BLE advertising default off
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.13
+
+**Description:**
+BLE advertising MUST be disabled by default after boot and after `RESET`. The modem MUST NOT advertise BLE services until it receives a `BLE_ENABLE` command from the gateway. This prevents BLE from interfering with ESP-NOW radio operations during normal sensor data collection.
+
+**Acceptance criteria:**
+
+1. After boot/RESET, no BLE advertisements are emitted.
+2. BLE advertising begins only after receiving `BLE_ENABLE`.
+
+---
+
+### MD-0413  BLE_ENABLE / BLE_DISABLE commands
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.13, §4.14
+
+**Description:**
+The modem MUST start BLE advertising on `BLE_ENABLE` and stop advertising + disconnect any active BLE client on `BLE_DISABLE`. Both commands are idempotent.
+
+**Acceptance criteria:**
+
+1. `BLE_ENABLE` starts advertising; `BLE_DISABLE` stops it.
+2. `BLE_DISABLE` disconnects any active BLE client (triggering `BLE_DISCONNECTED`).
+3. Sending `BLE_ENABLE` when already enabled is a no-op.
+4. Sending `BLE_DISABLE` when already disabled is a no-op.
+
+---
+
+### MD-0414  Numeric Comparison pin relay
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.15, §4.16
+
+**Description:**
+During BLE LESC Numeric Comparison pairing, the modem MUST send `BLE_PAIRING_CONFIRM` with the 6-digit passkey to the gateway and wait for `BLE_PAIRING_CONFIRM_REPLY` before accepting or rejecting the pairing. If no reply is received within 30 seconds, the modem MUST reject the pairing.
+
+**Acceptance criteria:**
+
+1. `BLE_PAIRING_CONFIRM` contains the correct 6-digit passkey.
+2. `BLE_PAIRING_CONFIRM_REPLY(0x01)` accepts the pairing.
+3. `BLE_PAIRING_CONFIRM_REPLY(0x00)` rejects the pairing.
+4. No reply within 30 s → pairing rejected.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -537,3 +589,6 @@ When the BLE client disconnects, the modem MUST send a `BLE_DISCONNECTED` (0xA2)
 | MD-0409 | BLE_RECV forwarding | Must |
 | MD-0410 | BLE_CONNECTED notification | Must |
 | MD-0411 | BLE_DISCONNECTED notification | Must |
+| MD-0412 | BLE advertising default off | Must |
+| MD-0413 | BLE_ENABLE / BLE_DISABLE commands | Must |
+| MD-0414 | Numeric Comparison pin relay | Must |

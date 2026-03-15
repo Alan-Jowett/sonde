@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MIT
   Copyright (c) 2026 sonde contributors -->
-# Why Aren’t We Using $FAMOUS\_IETF\_PROTOCOL?
+# Why Aren’t We Using `$FAMOUS_IETF_PROTOCOL`?
 
 This project deliberately **does not** use several well‑known IETF IoT security protocols. This is not because we are unaware of them. It is because **they do not solve the actual problem we have**.
 
@@ -64,7 +64,7 @@ This document answers the most common “why didn’t you just use X?” questio
 *   Handshake sizes are large relative to ESP‑NOW (250 B max frame) and BLE MTUs
 *   Requires maintaining session state on constrained nodes that sleep between every exchange
 *   Assumes stable, bidirectional, IP‑style connectivity — ESP‑NOW is a raw Layer 2 broadcast protocol with no IP stack
-*   DTLS 1.3 Connection ID (RFC 9146/9147) helps with NAT rebinding and sleep/wake, but still requires a full TLS record layer and handshake machinery that exceeds our frame budget
+*   DTLS 1.3 (RFC 9147) with Connection ID (RFC 9146) helps with NAT rebinding and sleep/wake, but still requires a full TLS record layer and handshake machinery that exceeds our frame budget
 *   Adds complexity without solving identity or user‑intent problems
 
 **Bottom line:** DTLS/TLS solve transport security, not physical‑world device pairing.

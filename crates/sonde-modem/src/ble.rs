@@ -92,6 +92,14 @@ impl BleState {
 // ---------------------------------------------------------------------------
 
 /// NimBLE GATT server driver implementing the Gateway Pairing Service.
+///
+/// # Singleton pattern
+///
+/// `esp32-nimble` manages `BLEDevice` as a static singleton.  `BLEDevice::take()`
+/// returns the same static `&'static mut BLEDevice` reference every time it is
+/// called --- it does not consume or move the device.  All methods in this struct
+/// call `BLEDevice::take()` independently, which is safe and idiomatic for the
+/// esp32-nimble v0.11 API.
 pub struct EspBleDriver {
     state: Arc<Mutex<BleState>>,
 }
@@ -169,22 +177,33 @@ impl EspBleDriver {
             }
         });
 
-        // --- Numeric Comparison passkey handler ---
-        let state_passkey = Arc::clone(&state);
+        // --- Passkey request handler ---
+        // This callback fires for PasskeyDisplay and PasskeyInput IO capabilities.
+        // For DisplayYesNo (Numeric Comparison), this callback is not invoked by
+        // NimBLE --- the passkey arrives via on_confirm_pin instead.
         ble_server.on_passkey_request(move || {
-            // This callback is used for passkey display mode. For Numeric
-            // Comparison, we display the passkey via BleEvent::PairingConfirm.
-            0u32 // Return 0; the actual passkey is shown via on_confirm_pin
+            0u32 // Not used for Numeric Comparison; return 0 as a no-op.
         });
 
+        // --- Numeric Comparison passkey relay (MD-0414) ---
+        //
+        // NimBLE calls on_confirm_pin synchronously during the SMP exchange and
+        // requires an immediate yes/no decision.  Because our confirmation is an
+        // asynchronous round-trip (Modem -> Gateway -> Modem), we return `true` to
+        // let the pairing proceed, then relay the passkey to the gateway for
+        // operator verification.  If the gateway responds with accept=false, we
+        // call `pairing_confirm_reply(false)` which disconnects the client; this
+        // is best-effort --- the BLE link may already have completed LESC key
+        // exchange by then, but the gateway will not accept the session.
         let state_confirm = Arc::clone(&state);
         ble_server.on_confirm_pin(move |passkey| {
-            // Relay the Numeric Comparison passkey to the gateway (MD-0414).
             info!("BLE: Numeric Comparison passkey = {:06}", passkey);
             if let Ok(mut s) = state_confirm.lock() {
                 s.events.push_back(BleEvent::PairingConfirm { passkey });
             }
-            true // Accept by default; gateway can reject via pairing_confirm_reply(false)
+            // Return true to allow pairing to proceed; operator confirmation is
+            // handled asynchronously via pairing_confirm_reply() (MD-0414).
+            true
         });
 
         // --- Pairing complete handler ---
@@ -211,16 +230,21 @@ impl EspBleDriver {
         );
 
         // GATT write handler: forward to gateway as BLE_RECV (MD-0409).
+        // The on_connect handler enforces single-connection (MD-0405) so any
+        // write arriving here is from the one accepted client.
         let state_write = Arc::clone(&state);
         gateway_cmd_char.lock().on_write(move |args| {
             let value = args.recv_data();
             if value.is_empty() {
-                return; // Empty writes discarded.
+                return; // Empty writes discarded (MD-0409).
             }
-            info!("BLE: GATT write {} bytes", value.len());
-            // Validate against accepted connection (MD-0405).
+            // Only forward writes when a connection is active (mtu > 0 means
+            // a client is connected and MTU was accepted).
             if let Ok(mut s) = state_write.lock() {
-                s.events.push_back(BleEvent::Recv(value.to_vec()));
+                if s.mtu > 0 {
+                    info!("BLE: GATT write {} bytes", value.len());
+                    s.events.push_back(BleEvent::Recv(value.to_vec()));
+                }
             }
         });
 
@@ -376,15 +400,14 @@ impl EspBleDriver {
             let char = svc.lock().get_characteristic(GATEWAY_COMMAND_UUID);
             if let Some(ch) = char {
                 let notify_result = ch.lock().set_value(&chunk).indicate();
-                // indicate() is non-blocking; confirmation arrives asynchronously
-                // via the GATT indicate confirmation callback. Clear awaiting on
-                // the next drain_event() call after confirmation.
+                // In esp32-nimble v0.11, `indicate()` blocks until the ATT
+                // Handle Value Confirmation is received from the peer (or
+                // returns an error on timeout/disconnect). Clearing
+                // awaiting_confirm immediately is correct because the
+                // confirmation has already been received before `Ok(())` is
+                // returned.
                 match notify_result {
                     Ok(()) => {
-                        // awaiting_confirm remains true until stack confirms.
-                        // For NimBLE, indication confirmation is handled internally;
-                        // we clear the awaiting flag after a short delay or on next poll.
-                        // Clear immediately for simplicity — this sends all chunks.
                         if let Ok(mut s) = self.state.lock() {
                             s.awaiting_confirm = false;
                         }

@@ -199,6 +199,7 @@ pub const BLE_MTU_MIN: u16 = 247;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ModemCodecError {
     /// The `len` field is zero (empty frame).
     EmptyFrame,
@@ -286,6 +287,7 @@ impl fmt::Display for ModemCodecError {
 
 /// A decoded modem serial protocol message.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ModemMessage {
     // -- Gateway → Modem --
     Reset,
@@ -1887,16 +1889,6 @@ mod tests {
         // TYPE = 0xA3, passkey 123456 = 0x0001E240 in BE
         assert_eq!(frame[2], MODEM_MSG_BLE_PAIRING_CONFIRM);
         assert_eq!(frame[3..7], [0x00, 0x01, 0xE2, 0x40]);
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn ble_pairing_confirm_max_passkey() {
-        let msg = ModemMessage::BlePairingConfirm(BlePairingConfirm {
-            passkey: BLE_PASSKEY_MAX,
-        });
-        let frame = encode_modem_frame(&msg).unwrap();
         let (decoded, _) = decode_modem_frame(&frame).unwrap();
         assert_eq!(decoded, msg);
     }

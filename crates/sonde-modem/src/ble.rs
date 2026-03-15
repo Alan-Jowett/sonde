@@ -279,10 +279,11 @@ impl EspBleDriver {
                     } else {
                         info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
                         s.authenticated = true;
+                        let mtu = s.mtu;
                         if s.events.len() < MAX_BLE_EVENT_QUEUE {
                             s.events.push_back(BleEvent::Connected {
                                 peer_addr,
-                                mtu: s.mtu,
+                                mtu,
                             });
                         }
                         false

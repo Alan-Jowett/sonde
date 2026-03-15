@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-The Sonde codebase is a Rust workspace containing six crates (plus a planned E2E test crate). This document defines the target workspace layout and the order in which crates and modules should be implemented and tested.
+The Sonde codebase is a Rust workspace containing seven crates. This document defines the target workspace layout and the order in which crates and modules should be implemented and tested.
 
 **Key principle:** Each phase produces a working, tested artifact before the next phase begins. An LLM agent should complete one phase (including passing all validation tests for that phase) before moving to the next.
 
@@ -68,7 +68,7 @@ sonde/
 │   │       ├── sleep.rs           # sleep manager, wake reason
 │   │       ├── crypto.rs          # software HMAC/SHA256; ESP hardware (feature: esp)
 │   │       ├── pairing.rs         # USB pairing protocol handler
-│   │       ├── rbpf_adapter.rs    # BpfInterpreter impl for rbpf backend
+│   │       ├── sonde_bpf_adapter.rs   # BpfInterpreter impl for sonde-bpf backend
 │   │       ├── traits.rs          # Transport, Rng, Clock, SleepController, PlatformStorage
 │   │       ├── error.rs           # NodeError enum
 │   │       ├── esp_hal.rs         # ESP32 I2C/GPIO/ADC (feature: esp)
@@ -95,18 +95,28 @@ sonde/
 │   │       ├── peer_table.rs     # auto-registration, LRU eviction
 │   │       └── status.rs         # counters, uptime, STATUS response
 │   │
-│   └── sonde-admin/              # CLI admin tool (Phase 4)
+│   ├── sonde-admin/              # CLI admin tool (Phase 4)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs            # module declarations
+│   │       ├── main.rs           # CLI argument parsing (clap)
+│   │       ├── grpc_client.rs    # gRPC client for gateway admin API
+│   │       └── usb.rs            # USB serial pairing/reset
+│   │
+│   └── sonde-e2e/                # end-to-end test harness (Phase 7)
 │       ├── Cargo.toml
-│       └── src/
-│           ├── lib.rs            # module declarations
-│           ├── main.rs           # CLI argument parsing (clap)
-│           ├── grpc_client.rs    # gRPC client for gateway admin API
-│           └── usb.rs            # USB serial pairing/reset
+│       ├── src/
+│       │   ├── lib.rs
+│       │   ├── harness.rs        # BridgeTransport, ChannelTransport, ChannelRadio, PipeSerial, ModemTestEnv
+│       │   └── bin/
+│       │       └── stub_handler.rs  # minimal handler subprocess for E2E tests
+│       └── tests/
+│           └── e2e_tests.rs      # 19 integration tests (T-E2E-001 through T-E2E-060)
 │
 ├── proto/
 │   └── admin.proto               # gRPC service definition
 │
-└── test-programs/                # pre-compiled BPF test program sources
+└── test-programs/                # BPF C source files for integration tests
     ├── nop.c
     ├── send.c
     ├── send_recv.c
@@ -114,7 +124,8 @@ sonde/
     ├── early_wake.c
     ├── oversized_map.c
     ├── deep_call.c
-    └── budget_exceeded.c
+    ├── budget_exceeded.c
+    └── i2c_sensor.c
 ```
 
 ### 2.1  Workspace Cargo.toml
@@ -129,6 +140,7 @@ members = [
     "crates/sonde-node",
     "crates/sonde-admin",
     "crates/sonde-bpf",
+    "crates/sonde-e2e",
 ]
 ```
 
@@ -139,16 +151,18 @@ sonde-protocol  (no_std + alloc, no platform deps)
        │
        ├──── sonde-gateway  (std, tokio, tonic, prevail, RustCrypto, tokio-serial)
        │
-       ├──── sonde-node     (std via ESP-IDF, esp-idf-hal, esp-idf-svc, rbpf)
+       ├──── sonde-node     (std via ESP-IDF, esp-idf-hal, esp-idf-svc, sonde-bpf)
        │
        ├──── sonde-modem    (std via ESP-IDF, esp-idf-hal, esp-idf-svc)
        │
        ├──── sonde-admin    (std, tonic, clap, serialport)
        │
-       └──── sonde-bpf      (no_std-compatible, zero-alloc BPF interpreter)
+       ├──── sonde-bpf      (no_std-compatible, zero-alloc BPF interpreter)
+       │
+       └──── sonde-e2e      (std, tokio — depends on sonde-gateway, sonde-node, sonde-modem, sonde-protocol)
 ```
 
-`sonde-protocol` is the only shared dependency. The other crates do not depend on each other. `sonde-bpf` is a standalone interpreter crate that can be integrated into `sonde-node` as an alternative to `rbpf`.
+`sonde-protocol` is the only shared dependency between the core crates. `sonde-bpf` is a standalone interpreter that is integrated into `sonde-node` via `sonde_bpf_adapter.rs`. `sonde-e2e` depends on the gateway, node, and modem crates to exercise the full stack in a single process.
 
 ---
 
@@ -287,11 +301,9 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 **Design doc:** [node-design.md](node-design.md)  
 **Validation:** [node-validation.md](node-validation.md)  
-**Key dependencies:** `sonde-protocol`, `rbpf`, `ciborium`, `hmac`, `sha2`, `log`. ESP-IDF dependencies (`esp-idf-hal`, `esp-idf-svc`) are behind the `esp` feature. See `crates/sonde-node/Cargo.toml` for the full list.
+**Key dependencies:** `sonde-protocol`, `sonde-bpf`, `ciborium`, `hmac`, `sha2`, `log`. ESP-IDF dependencies (`esp-idf-hal`, `esp-idf-svc`) are behind the `esp` feature. See `crates/sonde-node/Cargo.toml` for the full list.
 
-**Status:** Mostly complete. 101 tests pass covering all validation test cases (T-N100 through T-N802). All 19 modules implemented including ESP-specific platform adapters. Modules added beyond original plan: `bpf_dispatch.rs` (helper dispatch), `pairing.rs` (USB pairing handler), `rbpf_adapter.rs` (BpfInterpreter impl for rbpf), `traits.rs` (platform abstractions), `error.rs` (error types), and four ESP-specific modules (`esp_hal.rs`, `esp_sleep.rs`, `esp_storage.rs`, `esp_transport.rs`).
-
-**Known gap:** The `rbpf` backend does not enforce `instruction_budget` (documented in `rbpf_adapter.rs`). The `sonde-bpf` crate was added to address this — see Phase 6.
+**Status:** Mostly complete. 101 tests pass covering all validation test cases (T-N100 through T-N802). All 19 modules implemented including ESP-specific platform adapters. Modules added beyond original plan: `bpf_dispatch.rs` (helper dispatch), `pairing.rs` (USB pairing handler), `sonde_bpf_adapter.rs` (BpfInterpreter impl for sonde-bpf), `traits.rs` (platform abstractions), `error.rs` (error types), and four ESP-specific modules (`esp_hal.rs`, `esp_sleep.rs`, `esp_storage.rs`, `esp_transport.rs`).
 
 **Module order:**
 
@@ -374,49 +386,48 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 
 ---
 
-### Phase 6: `sonde-bpf` crate — ⏳ IN PROGRESS
+### Phase 6: `sonde-bpf` crate — ✅ DONE
 
-**Goal:** A zero-allocation, `no_std`-compatible BPF interpreter based on RFC 9669 that can replace `rbpf` as the node's execution backend. The crate defaults to `std` but supports `no_std` when the default `std` feature is disabled.
+**Goal:** A zero-allocation, `no_std`-compatible BPF interpreter based on RFC 9669 that replaces `rbpf` as the node's execution backend. The crate defaults to `std` but supports `no_std` when the default `std` feature is disabled.
 
 **Dependencies:** None (standalone, zero external dependencies). Build with `--no-default-features` for `no_std`.
 
-**Status:** Core interpreter is complete with 38 tests and a `bpf_conformance` plugin binary. **Not yet integrated into `sonde-node`** — the node still uses `rbpf` via `rbpf_adapter.rs`.
+**Status:** Complete. Full RFC 9669 interpreter with 38+ tests and a `bpf_conformance` plugin binary. Integrated into `sonde-node` via `sonde_bpf_adapter.rs` — `rbpf` has been fully replaced.
 
 | Step | What to build | Status |
 |---|---|---|
-| 6.1 | Core interpreter (`interpreter.rs`, `ebpf.rs`) | ✅ Done (38 tests) |
+| 6.1 | Core interpreter (`interpreter.rs`, `ebpf.rs`) | ✅ Done (38+ tests) |
 | 6.2 | `bpf_conformance` plugin (`sonde_bpf_plugin`) | ✅ Done |
-| 6.3 | Add instruction budget enforcement to `execute_program()` | ❌ Not started |
-| 6.4 | Implement `BpfInterpreter` trait adapter in `sonde-node` | ❌ Not started |
+| 6.3 | Add instruction budget enforcement to `execute_program()` | ✅ Done (budget param, LD_DW_IMM double-slot charging, 3 tests) |
+| 6.4 | Implement `BpfInterpreter` trait adapter in `sonde-node` (`sonde_bpf_adapter.rs`) | ✅ Done |
 | 6.5 | Run `bpf_conformance` test suite against the plugin | ✅ Done (CI job runs it with one known exclusion: `mem-len`) |
 
-**Known gap:** Neither `rbpf` nor `sonde-bpf` currently enforce the instruction budget required by ND-0605. Step 6.3 addresses this.
-
-**Exit criteria:** `sonde-bpf` passes the `bpf_conformance` test suite. `sonde-node` can use `sonde-bpf` as its interpreter backend with instruction budget enforcement. All existing node tests still pass.
+**Exit criteria:** `sonde-bpf` passes the `bpf_conformance` test suite. `sonde-node` uses `sonde-bpf` as its interpreter backend with instruction budget enforcement. All existing node tests still pass. ✅
 
 ---
 
-### Phase 7: `sonde-e2e` crate — ❌ NOT STARTED
+### Phase 7: `sonde-e2e` crate — ⚠️ MOSTLY DONE
 
 **Goal:** End-to-end integration tests exercising the full stack (node + gateway + modem) in a single process.
 
-**Validation:** [e2e-validation.md](e2e-validation.md) (14 test cases, T-E2E-001 through T-E2E-051)
+**Validation:** [e2e-validation.md](e2e-validation.md) (14 specified test cases, T-E2E-001 through T-E2E-051)
 **Dependencies:** `sonde-gateway`, `sonde-node`, `sonde-modem`, `sonde-protocol`, `tokio`.
 
-**Status:** Specification is complete. No code exists.
+**Status:** E2E harness implemented with 19 tests — the 14 cases from the validation spec plus 5 additional tests (T-E2E-002b, T-E2E-052 through T-E2E-054, T-E2E-060) covering consecutive wake cycles, extended modem-bridge scenarios, and the full boot-pair-run lifecycle. All modem-bridge tests currently use in-memory adapters (`PipeSerial` over tokio duplex, `ChannelRadio` over mpsc); testing with a real hardware modem over a physical serial port is not yet implemented (tracked in issue #115).
 
 | Step | What to build | Status |
 |---|---|---|
-| 7.1 | Crate scaffold (`Cargo.toml`, `src/lib.rs`) | ❌ Not started |
-| 7.2 | Test harness (`ChannelRadio`, `ChannelTransport`, `PipeSerial`, `E2eNode`) | ❌ Not started |
-| 7.3 | Protocol compatibility tests (T-E2E-001 to T-E2E-003) | ❌ Not started |
-| 7.4 | Program distribution tests (T-E2E-010 to T-E2E-011) | ❌ Not started |
-| 7.5 | Command dispatch tests (T-E2E-020 to T-E2E-022) | ❌ Not started |
-| 7.6 | Application data tests (T-E2E-030 to T-E2E-031) | ❌ Not started |
-| 7.7 | Error handling tests (T-E2E-040 to T-E2E-041) | ❌ Not started |
-| 7.8 | Modem bridge tests (T-E2E-050 to T-E2E-051) | ❌ Not started |
+| 7.1 | Crate scaffold (`Cargo.toml`, `src/lib.rs`) | ✅ Done |
+| 7.2 | Test harness (`ChannelRadio`, `ChannelTransport`, `PipeSerial`, `ModemTestEnv`, `BridgeTransport`) | ✅ Done |
+| 7.3 | Protocol compatibility tests (T-E2E-001 to T-E2E-003) | ✅ Done |
+| 7.4 | Program distribution tests (T-E2E-010 to T-E2E-011) | ✅ Done |
+| 7.5 | Command dispatch tests (T-E2E-020 to T-E2E-022) | ✅ Done |
+| 7.6 | Application data tests (T-E2E-030 to T-E2E-031) | ✅ Done |
+| 7.7 | Error handling tests (T-E2E-040 to T-E2E-041) | ✅ Done |
+| 7.8 | Modem bridge tests (T-E2E-050 to T-E2E-054, T-E2E-060) | ✅ Done (in-process bridge via `ChannelRadio`/`ChannelTransport`) |
+| 7.9 | Modem-in-loop integration (real hardware modem over physical serial port) | ❌ Not started (tracked in issue #115) |
 
-**Exit criteria:** All 14 E2E test cases pass.
+**Exit criteria:** All E2E test cases pass (`cargo test -p sonde-e2e`).
 
 ---
 
@@ -435,6 +446,7 @@ cargo test -p sonde-gateway
 cargo test -p sonde-node
 cargo test -p sonde-bpf
 cargo test -p sonde-modem
+cargo test -p sonde-e2e
 
 # Build node firmware for ESP32-C3
 cargo build -p sonde-node --target riscv32imc-esp-espidf

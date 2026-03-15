@@ -756,7 +756,33 @@ A minimal PairingRequest (20-char node_id, no sensors) is ~80 bytes CBOR.  This 
 
 ---
 
-## 12  Future extensions
+## 12  Modem relay transport
+
+When the gateway does not have a local BLE radio, BLE GATT services are hosted on the ESP32-S3 modem and relayed to the gateway over the USB-CDC serial protocol defined in [modem-protocol.md](modem-protocol.md).
+
+### 12.1  Architecture
+
+```
+Phone ←(BLE)→ Modem ←(USB-CDC)→ Gateway
+```
+
+The modem hosts the Gateway Pairing Service (§3.2) and relays messages opaquely:
+
+- **Phone → Gateway:** The phone writes a BLE envelope (§4) to the Gateway Command characteristic. The modem forwards the raw bytes to the gateway as a `BLE_RECV` serial message (modem-protocol.md §4.10).
+- **Gateway → Phone:** The gateway sends a `BLE_INDICATE` serial message (modem-protocol.md §4.9) containing the BLE envelope. The modem delivers it as a GATT indication on the Gateway Command characteristic, handling fragmentation per §3.4.
+- **Connection events:** The modem sends `BLE_CONNECTED` (modem-protocol.md §4.11) and `BLE_DISCONNECTED` (modem-protocol.md §4.12) so the gateway can manage pairing session state.
+
+### 12.2  Transparency
+
+The modem does not inspect, validate, or modify BLE envelope contents.  All cryptographic operations (Ed25519 signatures, ECDH key agreement, AES-GCM encryption) are performed by the gateway.  The modem is a transparent BLE-to-serial bridge for pairing messages, analogous to its role as a transparent ESP-NOW-to-serial bridge for radio frames.
+
+### 12.3  Concurrency
+
+BLE pairing relay operates concurrently with ESP-NOW frame relay.  The modem MUST NOT block ESP-NOW operations while a BLE client is connected.  Both radio subsystems (BLE and ESP-NOW) run independently on the ESP32-S3.
+
+---
+
+## 13  Future extensions
 
 | Extension | Approach |
 |-----------|----------|

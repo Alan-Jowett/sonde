@@ -685,6 +685,288 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 
 ---
 
+## 11  BLE pairing and registration
+
+### ND-0900  Boot priority and mode selection
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.1
+
+**Description:**  
+On boot the node MUST check, in order: (1) USB-CDC connected → enter USB pairing mode, (2) no PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode, (3) PSK stored and `reg-complete` NOT set → send PEER_REQUEST, (4) PSK stored and `reg-complete` set → normal WAKE cycle.
+
+**Acceptance criteria:**
+
+1. USB-CDC detection takes highest priority.
+2. BLE pairing mode is entered when no PSK exists or the pairing button is held.
+3. PEER_REQUEST path is taken when PSK is stored but registration is incomplete.
+4. Normal WAKE cycle is entered only when PSK is stored and registration is complete.
+
+---
+
+### ND-0901  Pairing button detection
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.1, §11
+
+**Description:**  
+The node MUST sample the pairing button GPIO (active LOW) for at least 500 ms after reset to detect a button hold.
+
+**Acceptance criteria:**
+
+1. A GPIO LOW state sustained for ≥ 500 ms is detected as a button hold.
+2. A GPIO LOW state shorter than 500 ms is not treated as a button hold.
+
+---
+
+### ND-0902  BLE GATT service registration
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §3.1, §3.3, §8.2
+
+**Description:**  
+In BLE pairing mode the node MUST start the BLE stack and register the Node Provisioning Service (UUID `0000FE50-...`) with a Node Command characteristic (UUID `0000FE51-...`, Write+Indicate).
+
+**Acceptance criteria:**
+
+1. The Node Provisioning Service is discoverable via GATT service discovery.
+2. The Node Command characteristic supports Write and Indicate properties.
+
+---
+
+### ND-0903  BLE advertising name
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.2
+
+**Description:**  
+The node MUST advertise with the Node Provisioning Service UUID. The advertising name MUST be `sonde-XXXX` where `XXXX` is the last 4 hex digits of the BLE MAC address.
+
+**Acceptance criteria:**
+
+1. The advertisement includes the Node Provisioning Service UUID.
+2. The device name matches the pattern `sonde-XXXX` derived from the BLE MAC.
+
+---
+
+### ND-0904  ATT MTU negotiation and LESC pairing
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §3.4, §8.2
+
+**Description:**  
+The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LESC Just Works pairing.
+
+**Acceptance criteria:**
+
+1. The negotiated ATT MTU is ≥ 247.
+2. LESC Just Works pairing completes successfully.
+
+---
+
+### ND-0905  NODE_PROVISION handling
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.2, steps 4a–4c
+
+**Description:**  
+On a NODE_PROVISION write the node MUST parse the fields `node_key_hint`, `node_psk`, `rf_channel`, and `encrypted_payload`. If the node is already paired and the pairing button is NOT held, the node MUST respond with NODE_ACK(0x01). If the pairing button is held, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials.
+
+**Acceptance criteria:**
+
+1. All four fields are parsed from the NODE_PROVISION payload.
+2. An already-paired node without button hold responds NODE_ACK(0x01).
+3. An already-paired node with button hold erases existing credentials before proceeding.
+
+---
+
+### ND-0906  NODE_PROVISION NVS persistence
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.2, steps 4d–4f
+
+**Description:**  
+On a valid NODE_PROVISION the node MUST write `node_psk`, `node_key_hint`, `rf_channel`, and `encrypted_payload` to NVS, clear the `registration-complete` flag, and respond with NODE_ACK(0x00).
+
+**Acceptance criteria:**
+
+1. All four values are persisted in NVS.
+2. The `registration-complete` flag is cleared.
+3. The node responds with NODE_ACK(0x00).
+
+---
+
+### ND-0907  BLE mode persistence after provisioning
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.2, steps 5–6
+
+**Description:**  
+The node MUST remain in BLE pairing mode after a successful NODE_PROVISION (allowing re-provision on error) and MUST reboot when the BLE connection disconnects.
+
+**Acceptance criteria:**
+
+1. A second NODE_PROVISION can be sent on the same BLE connection after a successful first provision.
+2. The node reboots when the BLE connection is terminated.
+
+---
+
+### ND-0908  NODE_PROVISION NVS write failure
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §6.7
+
+**Description:**  
+If writing to NVS fails during NODE_PROVISION processing, the node MUST respond with NODE_ACK(0x02).
+
+**Acceptance criteria:**
+
+1. An NVS write error causes a NODE_ACK(0x02) response.
+2. No partial credentials remain in NVS after a write failure.
+
+---
+
+### ND-0909  PEER_REQUEST frame construction
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.1, §8.3
+
+**Description:**  
+In the post-provision boot path (PSK stored, `reg-complete` NOT set) the node MUST initialise ESP-NOW on the stored `rf_channel`, load `encrypted_payload` from NVS, and build a PEER_REQUEST frame (`msg_type` = 0x05, random 8-byte nonce, CBOR `{1: encrypted_payload}`, HMAC with `node_psk`).
+
+**Acceptance criteria:**
+
+1. ESP-NOW is initialised on the channel stored during provisioning.
+2. The frame uses `msg_type` 0x05 and a random 8-byte nonce.
+3. The CBOR payload contains key 1 mapped to `encrypted_payload`.
+4. The HMAC is computed with `node_psk` over header and payload.
+
+---
+
+### ND-0910  PEER_REQUEST retransmission
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.3
+
+**Description:**  
+The node MUST transmit PEER_REQUEST on each boot until it receives a valid PEER_ACK(0x00). The retransmission interval follows the normal wake cycle schedule (default 60 s).
+
+**Acceptance criteria:**
+
+1. Each wake cycle re-sends PEER_REQUEST when `reg-complete` is not set.
+2. The interval between retransmissions matches the configured wake interval.
+
+---
+
+### ND-0911  PEER_ACK listen timeout
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.3
+
+**Description:**  
+After transmitting a PEER_REQUEST the node MUST listen for a PEER_ACK for 10 seconds. On timeout the node MUST enter deep sleep and retry on the next wake.
+
+**Acceptance criteria:**
+
+1. The node listens for exactly 10 seconds after sending PEER_REQUEST.
+2. If no PEER_ACK arrives within 10 seconds the node enters deep sleep.
+
+---
+
+### ND-0912  PEER_ACK verification
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.2
+
+**Description:**  
+The node MUST verify the PEER_ACK frame HMAC using `node_psk`, verify that the nonce matches the nonce sent in the corresponding PEER_REQUEST, and compute the expected `registration_proof` as `HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)`. The frame MUST be discarded if the proof does not match.
+
+**Acceptance criteria:**
+
+1. A PEER_ACK with an invalid HMAC is discarded.
+2. A PEER_ACK with a nonce not matching the sent PEER_REQUEST nonce is discarded.
+3. A PEER_ACK with a mismatched `registration_proof` is discarded.
+4. A PEER_ACK passing all checks is accepted.
+
+---
+
+### ND-0913  Registration completion
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §7.2, §8.3
+
+**Description:**  
+On receiving a valid PEER_ACK the node MUST set the `registration-complete` flag in NVS. The `encrypted_payload` MUST be retained in NVS until the first successful WAKE/COMMAND exchange.
+
+**Acceptance criteria:**
+
+1. The `registration-complete` flag is set in NVS after a valid PEER_ACK.
+2. The `encrypted_payload` remains in NVS until the first WAKE/COMMAND cycle succeeds.
+
+---
+
+### ND-0914  Deferred payload erasure
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.3.1
+
+**Description:**  
+After the first successful WAKE/COMMAND exchange (the gateway responds with a valid COMMAND) the node MUST erase `encrypted_payload` from NVS.
+
+**Acceptance criteria:**
+
+1. After a successful WAKE/COMMAND cycle, `encrypted_payload` is no longer present in NVS.
+
+---
+
+### ND-0915  Self-healing on WAKE failure
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.3.1
+
+**Description:**  
+If WAKE fails (no response or HMAC verification failure) after `registration-complete` is set, the node MUST clear the `registration-complete` flag and revert to sending PEER_REQUEST on the next boot.
+
+**Acceptance criteria:**
+
+1. A WAKE failure when `registration-complete` is set clears the flag.
+2. The next boot enters the PEER_REQUEST path instead of the normal WAKE cycle.
+
+---
+
+### ND-0916  NVS layout for BLE pairing artifacts
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.4
+
+**Description:**  
+The node MUST store BLE pairing artifacts in NVS: `peer_payload` (variable-length blob for `encrypted_payload`) and `reg_complete` (`u32` flag, 1 = registered). These extend the existing NVS layout (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p`, `prog_a`, `prog_b`).
+
+**Acceptance criteria:**
+
+1. `peer_payload` is stored as a variable-length blob in NVS.
+2. `reg_complete` is stored as a `u32` flag in NVS.
+3. The existing NVS keys are not affected by the new fields.
+
+---
+
+### ND-0917  Factory reset via BLE
+
+**Priority:** Must  
+**Source:** ble-pairing-protocol.md §8.2.1, security.md §2.6
+
+**Description:**  
+Factory reset via BLE is triggered by holding the pairing button during boot, then sending NODE_PROVISION. The node MUST erase the existing PSK, all persistent map data, and the resident BPF program before writing new credentials.
+
+**Acceptance criteria:**
+
+1. The existing PSK is erased before new credentials are written.
+2. All persistent map data is erased.
+3. The resident BPF program is erased.
+4. New credentials from NODE_PROVISION are written after the erase.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -728,3 +1010,21 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 | ND-0800 | Malformed CBOR handling | Must |
 | ND-0801 | Unexpected message type handling | Must |
 | ND-0802 | Chunk index validation | Must |
+| ND-0900 | Boot priority and mode selection | Must |
+| ND-0901 | Pairing button detection | Must |
+| ND-0902 | BLE GATT service registration | Must |
+| ND-0903 | BLE advertising name | Must |
+| ND-0904 | ATT MTU negotiation and LESC pairing | Must |
+| ND-0905 | NODE_PROVISION handling | Must |
+| ND-0906 | NODE_PROVISION NVS persistence | Must |
+| ND-0907 | BLE mode persistence after provisioning | Must |
+| ND-0908 | NODE_PROVISION NVS write failure | Must |
+| ND-0909 | PEER_REQUEST frame construction | Must |
+| ND-0910 | PEER_REQUEST retransmission | Must |
+| ND-0911 | PEER_ACK listen timeout | Must |
+| ND-0912 | PEER_ACK verification | Must |
+| ND-0913 | Registration completion | Must |
+| ND-0914 | Deferred payload erasure | Must |
+| ND-0915 | Self-healing on WAKE failure | Must |
+| ND-0916 | NVS layout for BLE pairing artifacts | Must |
+| ND-0917 | Factory reset via BLE | Must |

@@ -311,6 +311,199 @@ The modem firmware:
 
 ---
 
+## 7  BLE pairing relay
+
+### MD-0400  Gateway Pairing Service
+
+**Priority:** Must
+**Source:** ble-pairing-protocol.md §3.1, §3.2
+
+**Description:**
+The modem MUST host the BLE GATT Gateway Pairing Service (UUID `0000FE60-0000-1000-8000-00805F9B34FB`) with a Gateway Command characteristic (UUID `0000FE61-0000-1000-8000-00805F9B34FB`, Write + Indicate). Writes received on this characteristic MUST be forwarded to the gateway over USB-CDC. Indications from the gateway MUST be forwarded to the connected BLE client.
+
+**Acceptance criteria:**
+
+1. The Gateway Pairing Service is discoverable via GATT service discovery.
+2. The Gateway Command characteristic supports Write and Indicate properties.
+3. A write to the characteristic produces a corresponding serial message on USB-CDC.
+4. An indication sent from the gateway via USB-CDC is delivered to the BLE client.
+
+---
+
+### MD-0401  BLE ↔ USB-CDC message relay
+
+**Priority:** Must
+**Source:** ble-pairing-protocol.md §4
+
+**Description:**
+The modem MUST relay BLE pairing messages between the BLE GATT characteristic and the USB-CDC serial link transparently. The modem MUST NOT interpret, validate, or modify the BLE message envelope contents — it is an opaque transport. The relay MUST preserve message boundaries (each GATT write maps to one serial message and vice versa).
+
+**Acceptance criteria:**
+
+1. Bytes written to the GATT characteristic arrive on USB-CDC unmodified.
+2. Bytes sent from the gateway via USB-CDC arrive as a BLE indication unmodified.
+3. Each GATT write produces exactly one serial message; each serial message produces exactly one indication.
+4. Invalid or garbage payloads are relayed without error or modification.
+
+---
+
+### MD-0402  ATT MTU negotiation
+
+**Priority:** Must
+**Source:** ble-pairing-protocol.md §3.4
+
+**Description:**
+The modem MUST negotiate ATT MTU ≥ 247 bytes with the connecting BLE client. If the negotiated MTU is < 247, the modem MUST reject the connection.
+
+**Acceptance criteria:**
+
+1. A BLE client requesting MTU = 512 negotiates an MTU ≥ 247.
+2. A BLE client that cannot negotiate MTU ≥ 247 is disconnected by the modem.
+
+---
+
+### MD-0403  Indication fragmentation
+
+**Priority:** Must
+**Source:** ble-pairing-protocol.md §3.4
+
+**Description:**
+When sending indications larger than (MTU − 3) bytes, the modem MUST fragment the message into chunks of at most (MTU − 3) bytes, send each chunk as a separate indication, and wait for ATT Handle Value Confirmation before sending the next chunk. Messages MUST NOT be interleaved.
+
+**Acceptance criteria:**
+
+1. A message larger than (MTU − 3) bytes is split into multiple indications.
+2. Each indication payload is ≤ (MTU − 3) bytes.
+3. The modem waits for ATT Handle Value Confirmation between chunks.
+4. The reassembled message on the client matches the original.
+
+---
+
+### MD-0404  BLE LESC pairing
+
+**Priority:** Must
+**Source:** ble-pairing-protocol.md §8.2
+
+**Description:**
+The modem MUST support BLE LESC Just Works pairing to establish an encrypted link with the connecting phone.
+
+**Acceptance criteria:**
+
+1. LESC Just Works pairing completes successfully with a connecting phone.
+2. The resulting BLE link is encrypted.
+
+---
+
+### MD-0405  BLE connection lifecycle
+
+**Priority:** Must
+**Source:** ble-pairing-protocol.md §3
+
+**Description:**
+The modem MUST support one BLE connection at a time for the Gateway Pairing Service. When a BLE client disconnects, the modem MUST clean up all GATT state and be ready to accept a new connection. BLE pairing operations MUST NOT interfere with concurrent ESP-NOW radio operations.
+
+**Acceptance criteria:**
+
+1. Only one BLE client can be connected at a time.
+2. After a BLE client disconnects, a new client can connect and use the service without stale state.
+3. Concurrent BLE and ESP-NOW operations do not interfere with each other.
+
+---
+
+### MD-0406  BLE connection notification to gateway
+
+**Priority:** Should
+**Source:** ble-pairing-protocol.md §3
+
+**Description:**
+The modem SHOULD notify the gateway over USB-CDC when a BLE client connects or disconnects, so the gateway can manage pairing session state.
+
+**Acceptance criteria:**
+
+1. A connection notification is sent to the gateway when a BLE client connects.
+2. A disconnection notification is sent when the BLE client disconnects.
+
+---
+
+### MD-0407  BLE advertising
+
+**Priority:** Must
+**Source:** ble-pairing-protocol.md §3.1
+
+**Description:**
+When no BLE client is connected, the modem MUST advertise the Gateway Pairing Service UUID so that phones can discover the gateway for pairing.
+
+**Acceptance criteria:**
+
+1. The Gateway Pairing Service UUID is present in BLE advertisements.
+2. A phone scanning for BLE devices can discover the modem by the service UUID.
+3. Advertising resumes after a BLE client disconnects.
+
+---
+
+### MD-0408  BLE_INDICATE relay
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.9
+
+**Description:**
+On receiving a `BLE_INDICATE` (0x20) serial message from the gateway, the modem MUST deliver the `ble_data` as a GATT indication on the Gateway Command characteristic. If no BLE client is connected, the modem MUST silently discard the message. The modem MUST handle indication fragmentation per ble-pairing-protocol.md §3.4.
+
+**Acceptance criteria:**
+
+1. `BLE_INDICATE` data is delivered as a GATT indication to the connected phone.
+2. If no BLE client is connected, the message is silently discarded.
+3. Messages larger than (MTU − 3) bytes are fragmented into multiple indications.
+
+---
+
+### MD-0409  BLE_RECV forwarding
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.10
+
+**Description:**
+When a phone writes to the Gateway Command characteristic, the modem MUST forward the complete reassembled write payload to the gateway as a `BLE_RECV` (0xA0) serial message. The modem MUST NOT inspect or modify the payload.
+
+**Acceptance criteria:**
+
+1. GATT writes are forwarded as `BLE_RECV` serial messages.
+2. Write Long payloads are reassembled before forwarding.
+3. The payload is forwarded unmodified.
+
+---
+
+### MD-0410  BLE_CONNECTED notification
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.11
+
+**Description:**
+When a BLE client connects and completes LESC pairing, the modem MUST send a `BLE_CONNECTED` (0xA1) serial message containing the peer BLE address and negotiated ATT MTU.
+
+**Acceptance criteria:**
+
+1. `BLE_CONNECTED` is sent after successful LESC pairing.
+2. The message includes the correct peer address and MTU.
+3. MTU reported is always ≥ 247.
+
+---
+
+### MD-0411  BLE_DISCONNECTED notification
+
+**Priority:** Must
+**Source:** modem-protocol.md §4.12
+
+**Description:**
+When the BLE client disconnects, the modem MUST send a `BLE_DISCONNECTED` (0xA2) serial message containing the peer BLE address and HCI disconnect reason code.
+
+**Acceptance criteria:**
+
+1. `BLE_DISCONNECTED` is sent on every BLE disconnect.
+2. The message includes the peer address and reason code.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -332,3 +525,15 @@ The modem firmware:
 | MD-0301 | USB disconnection handling | Must |
 | MD-0302 | Watchdog timer | Should |
 | MD-0303 | Status reporting | Must |
+| MD-0400 | Gateway Pairing Service | Must |
+| MD-0401 | BLE ↔ USB-CDC message relay | Must |
+| MD-0402 | ATT MTU negotiation | Must |
+| MD-0403 | Indication fragmentation | Must |
+| MD-0404 | BLE LESC pairing | Must |
+| MD-0405 | BLE connection lifecycle | Must |
+| MD-0406 | BLE connection notification to gateway | Should |
+| MD-0407 | BLE advertising | Must |
+| MD-0408 | BLE_INDICATE relay | Must |
+| MD-0409 | BLE_RECV forwarding | Must |
+| MD-0410 | BLE_CONNECTED notification | Must |
+| MD-0411 | BLE_DISCONNECTED notification | Must |

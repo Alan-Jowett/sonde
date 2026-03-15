@@ -1017,6 +1017,267 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 12  BLE pairing tests
+
+### T-1200  Ed25519 keypair generation on first startup
+
+**Validates:** GW-1200
+
+**Procedure:**
+1. Start the gateway with an empty key store.
+2. Assert: an Ed25519 keypair is generated and persisted.
+3. Restart the gateway.
+4. Assert: the same public key is loaded (no new keypair generated).
+5. Assert: the stored seed is encrypted at rest.
+
+---
+
+### T-1201  Gateway ID generation and persistence
+
+**Validates:** GW-1201
+
+**Procedure:**
+1. Start the gateway with an empty key store.
+2. Assert: a 16-byte `gateway_id` is generated and persisted.
+3. Restart the gateway.
+4. Assert: the same `gateway_id` is loaded.
+
+---
+
+### T-1202  Ed25519 to X25519 conversion and low-order rejection
+
+**Validates:** GW-1202
+
+**Procedure:**
+1. Generate an Ed25519 keypair.
+2. Convert to X25519 using the gateway's conversion function.
+3. Assert: the resulting X25519 key matches the expected output for a known test vector.
+4. Supply a low-order point as input.
+5. Assert: the conversion is rejected with an error.
+
+---
+
+### T-1203  REQUEST_GW_INFO happy path
+
+**Validates:** GW-1206
+
+**Procedure:**
+1. Send `REQUEST_GW_INFO` with a random 32-byte `challenge`.
+2. Assert: response contains `gw_public_key`, `gateway_id`, and `signature`.
+3. Verify the signature over (`challenge` ‖ `gateway_id`) using `gw_public_key`.
+4. Assert: signature verification succeeds.
+
+---
+
+### T-1204  GW_INFO_RESPONSE signature fails with wrong challenge
+
+**Validates:** GW-1206
+
+**Procedure:**
+1. Send `REQUEST_GW_INFO` with challenge A; record the returned signature.
+2. Verify the signature against a different challenge B ‖ `gateway_id`.
+3. Assert: signature verification fails.
+
+---
+
+### T-1205  REGISTER_PHONE rejected when window closed
+
+**Validates:** GW-1207
+
+**Procedure:**
+1. Ensure the registration window is closed.
+2. Send `REGISTER_PHONE`.
+3. Assert: response is `ERROR` with code `0x02`.
+
+---
+
+### T-1206  Registration window open and auto-close
+
+**Validates:** GW-1208
+
+**Procedure:**
+1. Open the registration window via the admin API with a short timeout (e.g., 2 s).
+2. Assert: `REGISTER_PHONE` is accepted while the window is open.
+3. Wait for the timeout to expire.
+4. Assert: `REGISTER_PHONE` now returns `ERROR(0x02)`.
+
+---
+
+### T-1207  REGISTER_PHONE happy path
+
+**Validates:** GW-1209
+
+**Procedure:**
+1. Open the registration window.
+2. Generate an ephemeral X25519 keypair on the test client.
+3. Send `REGISTER_PHONE` with the ephemeral public key.
+4. Assert: response is an AES-256-GCM encrypted payload.
+5. Derive the AES key via ECDH + HKDF-SHA256 (salt=`gateway_id`, info=`"sonde-phone-reg-v1"`).
+6. Decrypt the response (AAD=`gateway_id`).
+7. Assert: decrypted payload contains a 256-bit phone PSK and `phone_key_hint` matching `SHA-256(psk)[30..32]`.
+
+---
+
+### T-1208  Phone PSK storage, labelling, and revocation
+
+**Validates:** GW-1210
+
+**Procedure:**
+1. Register a phone and record the issued PSK.
+2. Assert: the PSK is stored with a label, issuance timestamp, and active status.
+3. Revoke the phone PSK via operator action.
+4. Assert: the PSK status is revoked.
+5. Submit a `PEER_REQUEST` signed with the revoked PSK.
+6. Assert: the request is silently discarded.
+
+---
+
+### T-1209  PEER_REQUEST bypasses key-hint fast-path
+
+**Validates:** GW-1211
+
+**Procedure:**
+1. Construct a valid `PEER_REQUEST` frame (`msg_type` `0x05`) with a `key_hint` not in the node registry.
+2. Submit the frame to the gateway.
+3. Assert: the gateway does not reject the frame at the key-hint lookup stage.
+4. Assert: the gateway proceeds to CBOR parsing and decryption.
+
+---
+
+### T-1210  PEER_REQUEST decryption happy path
+
+**Validates:** GW-1212
+
+**Procedure:**
+1. Construct a `PEER_REQUEST` with a correctly encrypted `encrypted_payload` (ECDH + HKDF-SHA256 + AES-256-GCM).
+2. Submit the frame.
+3. Assert: the gateway successfully decrypts the payload and proceeds to verification steps.
+
+---
+
+### T-1211  PEER_REQUEST with bad GCM tag
+
+**Validates:** GW-1212
+
+**Procedure:**
+1. Construct a `PEER_REQUEST` with a valid ciphertext but a corrupted GCM authentication tag.
+2. Submit the frame.
+3. Assert: the gateway silently discards the frame (no response sent).
+
+---
+
+### T-1212  Phone HMAC with multiple candidates
+
+**Validates:** GW-1213
+
+**Procedure:**
+1. Register two phones whose PSKs produce the same `phone_key_hint`.
+2. Construct a `PEER_REQUEST` with a phone HMAC computed using the second phone's PSK.
+3. Submit the frame.
+4. Assert: the gateway tries both candidate PSKs and accepts the valid one.
+
+---
+
+### T-1213  Phone HMAC with revoked PSK
+
+**Validates:** GW-1213
+
+**Procedure:**
+1. Register a phone and then revoke its PSK.
+2. Construct a `PEER_REQUEST` with a phone HMAC computed using the revoked PSK.
+3. Submit the frame.
+4. Assert: the gateway silently discards the frame (revoked PSK not tried).
+
+---
+
+### T-1214  PEER_REQUEST frame HMAC verification
+
+**Validates:** GW-1214
+
+**Procedure:**
+1. Construct a valid `PEER_REQUEST` with correct frame HMAC (keyed with `node_psk`).
+2. Submit the frame.
+3. Assert: HMAC verification passes and processing continues.
+4. Corrupt the frame HMAC.
+5. Resubmit.
+6. Assert: the gateway silently discards the frame.
+
+---
+
+### T-1215  Timestamp outside ±86 400 s range
+
+**Validates:** GW-1215
+
+**Procedure:**
+1. Construct a `PEER_REQUEST` with a timestamp 86 401 s in the past.
+2. Submit the frame.
+3. Assert: the gateway silently discards the frame.
+4. Repeat with a timestamp 86 401 s in the future.
+5. Assert: the gateway silently discards the frame.
+6. Submit with a timestamp within ±86 400 s.
+7. Assert: processing continues.
+
+---
+
+### T-1216  Duplicate node_id rejected
+
+**Validates:** GW-1216
+
+**Procedure:**
+1. Successfully pair a node with `node_id` X.
+2. Construct a new `PEER_REQUEST` with the same `node_id` X.
+3. Submit the frame.
+4. Assert: the gateway silently discards the frame (duplicate node).
+
+---
+
+### T-1217  Key hint mismatch rejected
+
+**Validates:** GW-1217
+
+**Procedure:**
+1. Construct a `PEER_REQUEST` where the frame header `key_hint` differs from the `node_key_hint` in the CBOR payload.
+2. Submit the frame.
+3. Assert: the gateway silently discards the frame.
+
+---
+
+### T-1218  Node registration stores correct fields
+
+**Validates:** GW-1218
+
+**Procedure:**
+1. Successfully process a `PEER_REQUEST` from a known phone.
+2. Query the node registry for the new node.
+3. Assert: the record contains `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` set to the phone's stable identifier (not `phone_key_hint`).
+
+---
+
+### T-1219  PEER_ACK happy path
+
+**Validates:** GW-1219
+
+**Procedure:**
+1. Submit a valid `PEER_REQUEST` with nonce N.
+2. Receive the `PEER_ACK` response.
+3. Assert: the `PEER_ACK` CBOR is `{1: 0, 2: registration_proof}`.
+4. Verify `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1"` ‖ `encrypted_payload`).
+5. Assert: the frame HMAC is valid under `node_psk`.
+6. Assert: the `nonce` in the `PEER_ACK` header equals N.
+
+---
+
+### T-1220  PEER_REQUEST/PEER_ACK use random nonces
+
+**Validates:** GW-1221
+
+**Procedure:**
+1. Submit a `PEER_REQUEST` with a random nonce (not a sequential number).
+2. Assert: the gateway does not reject the frame for sequence-number violations.
+3. Assert: the `PEER_ACK` echoes the random nonce, not a gateway-assigned sequence number.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -1074,3 +1335,25 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1101 | T-1103, T-1104, T-1108 |
 | GW-1102 | T-1105, T-1106 |
 | GW-1103 | T-1107 |
+| GW-1200 | T-1200 |
+| GW-1201 | T-1201 |
+| GW-1202 | T-1202 |
+| GW-1203 | *(validated by seed export/import integration tests)* |
+| GW-1204 | *(validated by BLE integration tests against physical hardware)* |
+| GW-1205 | *(validated by BLE integration tests against physical hardware)* |
+| GW-1206 | T-1203, T-1204 |
+| GW-1207 | T-1205 |
+| GW-1208 | T-1206 |
+| GW-1209 | T-1207 |
+| GW-1210 | T-1208 |
+| GW-1211 | T-1209 |
+| GW-1212 | T-1210, T-1211 |
+| GW-1213 | T-1212, T-1213 |
+| GW-1214 | T-1214 |
+| GW-1215 | T-1215 |
+| GW-1216 | T-1216 |
+| GW-1217 | T-1217 |
+| GW-1218 | T-1218 |
+| GW-1219 | T-1219 |
+| GW-1220 | T-1211, T-1213, T-1214, T-1215, T-1216, T-1217 |
+| GW-1221 | T-1220 |

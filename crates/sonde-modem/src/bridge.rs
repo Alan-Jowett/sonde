@@ -338,10 +338,6 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn handle_ble_indicate(&mut self, data: Vec<u8>) {
-        // Empty body: silently discard per MD-0408 / modem-protocol.md §4.9.
-        if data.is_empty() {
-            return;
-        }
         self.ble.indicate(&data);
     }
 

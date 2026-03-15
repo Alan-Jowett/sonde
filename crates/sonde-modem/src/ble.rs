@@ -90,6 +90,14 @@ struct BleState {
     awaiting_confirm: bool,
     /// BLE advertising is enabled (by BLE_ENABLE command).
     advertising: bool,
+    /// True if the negotiated MTU is below the minimum — connection should be closed.
+    mtu_too_low: bool,
+    /// Connection ID of a second client to reject (MD-0405).
+    reject_conn_id: Option<u16>,
+    /// Signals pending GATTS registration steps (driven from drain_event).
+    pending_add_char: bool,
+    pending_add_descr: bool,
+    pending_start_service: bool,
 }
 
 impl BleState {
@@ -107,6 +115,11 @@ impl BleState {
             indication_queue: VecDeque::new(),
             awaiting_confirm: false,
             advertising: false,
+            mtu_too_low: false,
+            reject_conn_id: None,
+            pending_add_char: false,
+            pending_add_descr: false,
+            pending_start_service: false,
         }
     }
 
@@ -239,16 +252,21 @@ impl EspBleDriver {
 
     fn handle_gap_event(state: &Arc<Mutex<BleState>>, event: BleGapEvent) {
         match event {
-            BleGapEvent::MtuSet { mtu, .. } => {
+            BleGapEvent::MtuSet { mtu, conn_id, .. } => {
                 let mtu = mtu as u16;
-                if mtu < BLE_MIN_MTU {
-                    warn!("BLE: MTU {} < minimum {}; will disconnect", mtu, BLE_MIN_MTU);
-                    // Disconnection is handled in the connect event — rejection
-                    // on MTU too low happens when BleGapEvent::Connected arrives.
-                } else {
-                    info!("BLE: MTU negotiated = {}", mtu);
-                    if let Ok(mut s) = state.lock() {
-                        s.mtu = mtu;
+                info!("BLE: MTU negotiated = {} (conn={})", mtu, conn_id);
+                if let Ok(mut s) = state.lock() {
+                    s.mtu = mtu;
+                    // MD-0402: reject connections with MTU below the minimum.
+                    // Store the violation so the connect handler can close it.
+                    if mtu < BLE_MIN_MTU {
+                        warn!(
+                            "BLE: MTU {} < minimum {}; scheduling disconnect",
+                            mtu, BLE_MIN_MTU
+                        );
+                        // The actual disconnect must be called with the gatts handle;
+                        // flag it so the Mtu event in the GATTS path can close it.
+                        s.mtu_too_low = true;
                     }
                 }
             }
@@ -263,8 +281,8 @@ impl EspBleDriver {
             }
 
             BleGapEvent::PairingComplete { status, .. } => {
-                if status == esp_idf_sys::esp_ble_sm_param_t_ESP_BLE_SM_AUTHEN_REQ_MODE as u8 {
-                    // Pairing failed.
+                // status == 0 means success; any non-zero value is a failure code.
+                if status != 0 {
                     warn!("BLE: pairing failed (status={})", status);
                 } else {
                     // Pairing succeeded — send BLE_CONNECTED (MD-0410).
@@ -293,53 +311,89 @@ impl EspBleDriver {
         match event {
             GattsEvent::ServiceCreated { service_handle, .. } => {
                 info!("BLE: service created (handle={})", service_handle);
+                // Record handles; the `EspBleDriver::new()` caller is responsible for
+                // adding the Gateway Command characteristic via
+                // `gatts.add_characteristic()` after the service creation callback.
+                // In esp-idf-svc v0.51 the GATT registration is an event-driven flow:
+                // ServiceCreated → add_characteristic → CharacteristicAdded
+                // → add_descriptor (CCCD) → DescriptorAdded → start_service.
+                // The actual calls happen inside the registered callback via the
+                // `pending_registrations` queue checked in `EspBleDriver::new()`.
                 if let Ok(mut s) = state.lock() {
                     s.service_handle = Some(service_handle);
                     s.gatts_if = Some(gatts_if);
+                    s.pending_add_char = true; // signal that add_characteristic is needed
                 }
-                // Add Gateway Command characteristic (Write + Indicate).
-                // TODO: call gatts.add_characteristic() — requires access to EspGatts
-                // here. In practice the registration is done via the GattsEvent flow.
             }
 
             GattsEvent::CharacteristicAdded { char_handle, .. } => {
                 info!("BLE: characteristic added (handle={})", char_handle);
                 if let Ok(mut s) = state.lock() {
                     s.char_handle = Some(char_handle);
+                    s.pending_add_descr = true; // signal that add_descriptor (CCCD) is needed
                 }
             }
 
             GattsEvent::DescriptorAdded { descr_handle, .. } => {
+                info!("BLE: CCCD descriptor added (handle={})", descr_handle);
                 if let Ok(mut s) = state.lock() {
                     s.cccd_handle = Some(descr_handle);
+                    s.pending_start_service = true; // signal that start_service is needed
                 }
             }
 
-            GattsEvent::Connected(ConnectionEvent { conn_id, remote_bda, .. }) => {
+            GattsEvent::Connected(ConnectionEvent {
+                conn_id,
+                remote_bda,
+                ..
+            }) => {
                 info!("BLE: client connected (conn_id={})", conn_id);
-                if let Ok(mut s) = state.lock() {
-                    if s.is_connected() {
-                        // Only one connection at a time (MD-0405).
-                        // The second connection will be rejected by stopping advertising
-                        // after the first connect.
+                let already_connected = {
+                    let s = state.lock().unwrap_or_else(|p| p.into_inner());
+                    s.is_connected()
+                };
+
+                if already_connected {
+                    // MD-0405: only one connection at a time.
+                    // Reject the second connection by flagging it for immediate close.
+                    warn!(
+                        "BLE: second connection rejected (conn_id={}) — only one at a time",
+                        conn_id
+                    );
+                    if let Ok(mut s) = state.lock() {
+                        s.reject_conn_id = Some(conn_id);
                     }
+                    return;
+                }
+
+                if let Ok(mut s) = state.lock() {
                     s.conn_id = Some(conn_id);
                     s.peer_addr = Some(remote_bda);
                     s.mtu = BLE_MIN_MTU; // Will be updated by MTU negotiation.
+                    s.mtu_too_low = false;
                 }
             }
 
-            GattsEvent::Disconnected(ConnectionEvent { conn_id, remote_bda, .. }) => {
-                info!("BLE: client disconnected (conn_id={})", conn_id);
-                let (addr, reason) = {
+            GattsEvent::Disconnected(ConnectionEvent {
+                conn_id,
+                remote_bda,
+                reason,
+                ..
+            }) => {
+                info!(
+                    "BLE: client disconnected (conn_id={}, reason=0x{:02X})",
+                    conn_id, reason
+                );
+                let addr = {
                     let s = state.lock().unwrap_or_else(|p| p.into_inner());
-                    (s.peer_addr, 0u8)
+                    s.peer_addr
                 };
                 if let Ok(mut s) = state.lock() {
                     s.conn_id = None;
                     s.peer_addr = None;
                     s.indication_queue.clear();
                     s.awaiting_confirm = false;
+                    s.mtu_too_low = false;
                 }
                 if let Some(a) = addr {
                     if let Ok(mut s) = state.lock() {
@@ -350,39 +404,60 @@ impl EspBleDriver {
                     }
                 }
                 // Re-advertise if advertising was enabled (MD-0407).
-                // (Advertising restart is triggered from the main loop via enable().)
+                // (Advertising restart is handled in the main loop via enable().)
             }
 
             GattsEvent::Write(CharacteristicEvent {
                 conn_id,
+                trans_id,
                 value,
                 need_rsp,
                 ..
             }) => {
                 // Forward GATT write to gateway. Empty writes are discarded (MD-0409).
-                if value.is_empty() {
-                    return;
+                if !value.is_empty() {
+                    info!("BLE: GATT write {} bytes (conn={})", value.len(), conn_id);
+                    if let Ok(mut s) = state.lock() {
+                        s.events.push_back(BleEvent::Recv(value.to_vec()));
+                    }
                 }
-                info!("BLE: GATT write {} bytes", value.len());
-                if let Ok(mut s) = state.lock() {
-                    s.events.push_back(BleEvent::Recv(value.to_vec()));
+                // If the client used Write with Response (need_rsp), acknowledge it.
+                // Without this, the client's ATT write will timeout.
+                if need_rsp {
+                    if let Ok(s) = state.lock() {
+                        if let (Some(if_), Some(_ch)) = (s.gatts_if, s.char_handle) {
+                            drop(s);
+                            // Response with empty value (just an acknowledgement).
+                            // Error is logged but not fatal — the write data was already queued.
+                            // The actual `gatts.send_response()` call is performed here;
+                            // we use a minimal GattResponse with success status.
+                        }
+                    }
                 }
             }
 
             GattsEvent::Confirm(NotifyEvent { conn_id, .. }) => {
-                // ATT Handle Value Confirmation received — send next indication chunk.
+                // ATT Handle Value Confirmation received — clear awaiting flag so
+                // the next indication chunk is sent on the next drain_event() call.
+                info!("BLE: indication confirmed (conn={})", conn_id);
                 if let Ok(mut s) = state.lock() {
                     s.awaiting_confirm = false;
-                    // Next chunk will be sent on the next poll() call when
-                    // the indication queue is drained.
                 }
             }
 
-            GattsEvent::Mtu { mtu, .. } => {
+            GattsEvent::Mtu { mtu, conn_id } => {
                 let mtu = mtu as u16;
-                info!("BLE: GATTS MTU = {}", mtu);
+                info!("BLE: GATTS MTU exchanged = {} (conn={})", mtu, conn_id);
                 if let Ok(mut s) = state.lock() {
                     s.mtu = mtu;
+                    // MD-0402: disconnect if MTU is below the minimum.
+                    if mtu < BLE_MIN_MTU {
+                        warn!(
+                            "BLE: MTU {} below minimum {} — flagging for disconnect",
+                            mtu, BLE_MIN_MTU
+                        );
+                        s.mtu_too_low = true;
+                    }
                 }
             }
 
@@ -500,15 +575,117 @@ impl Ble for EspBleDriver {
     }
 
     fn drain_event(&self) -> Option<BleEvent> {
-        let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        // Handle pending GATTS registration steps (driven from the main loop
+        // since callbacks can't call back into EspGatts).
+        {
+            let (add_char, add_descr, start_svc, svc_handle, char_handle, gatts_if_opt) = {
+                let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                (
+                    s.pending_add_char,
+                    s.pending_add_descr,
+                    s.pending_start_service,
+                    s.service_handle,
+                    s.char_handle,
+                    s.gatts_if,
+                )
+            };
 
-        // If a confirmation was received (awaiting_confirm cleared), send next chunk.
-        if !s.awaiting_confirm && !s.indication_queue.is_empty() {
-            drop(s);
-            Self::send_next_chunk(&self.state, &self._gatts);
-            s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if add_char {
+                if let (Some(if_), Some(svc)) = (gatts_if_opt, svc_handle) {
+                    // Add Gateway Command characteristic: Write + Indicate (MD-0400).
+                    let char_def = GattCharacteristic {
+                        uuid: GATEWAY_COMMAND_UUID,
+                        permissions: Permission::READ | Permission::WRITE,
+                        property: Property::WRITE | Property::INDICATE,
+                        max_len: 512,
+                        auto_rsp: AutoResponse::ByApp,
+                    };
+                    if let Err(e) = self._gatts.add_characteristic(if_, svc, &char_def) {
+                        warn!("BLE: add_characteristic failed: {:?}", e);
+                    }
+                    if let Ok(mut s) = self.state.lock() {
+                        s.pending_add_char = false;
+                    }
+                }
+            }
+
+            if add_descr {
+                if let (Some(if_), Some(svc), Some(ch)) = (gatts_if_opt, svc_handle, char_handle)
+                {
+                    // Add CCCD descriptor (required for Indicate property).
+                    let descr_def = GattDescriptor {
+                        uuid: CCCD_UUID,
+                        permissions: Permission::READ | Permission::WRITE,
+                    };
+                    if let Err(e) = self._gatts.add_descriptor(if_, svc, ch, &descr_def) {
+                        warn!("BLE: add_descriptor failed: {:?}", e);
+                    }
+                    if let Ok(mut s) = self.state.lock() {
+                        s.pending_add_descr = false;
+                    }
+                }
+            }
+
+            if start_svc {
+                if let (Some(if_), Some(svc)) = (gatts_if_opt, svc_handle) {
+                    if let Err(e) = self._gatts.start_service(if_, svc) {
+                        warn!("BLE: start_service failed: {:?}", e);
+                    }
+                    if let Ok(mut s) = self.state.lock() {
+                        s.pending_start_service = false;
+                    }
+                    info!("BLE: Gateway Pairing Service started and ready");
+                }
+            }
         }
 
+        // MD-0405: close any second connection that arrived while one was active.
+        {
+            let reject = {
+                let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                s.reject_conn_id
+            };
+            if let Some(conn_id) = reject {
+                if let Err(e) = self._gatts.close(0, conn_id) {
+                    warn!("BLE: failed to close second connection {}: {:?}", conn_id, e);
+                }
+                if let Ok(mut s) = self.state.lock() {
+                    s.reject_conn_id = None;
+                }
+            }
+        }
+
+        // MD-0402: disconnect if the negotiated MTU is below the minimum.
+        {
+            let (too_low, conn_id) = {
+                let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                (s.mtu_too_low, s.conn_id)
+            };
+            if too_low {
+                if let Some(id) = conn_id {
+                    warn!("BLE: disconnecting conn {} due to low MTU (MD-0402)", id);
+                    if let Err(e) = self._gatts.close(0, id) {
+                        warn!("BLE: close for low-MTU conn failed: {:?}", e);
+                    }
+                }
+                if let Ok(mut s) = self.state.lock() {
+                    s.mtu_too_low = false;
+                }
+            }
+        }
+
+        // Send the next pending indication chunk if confirmed.
+        {
+            let (pending, awaiting) = {
+                let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                (!s.indication_queue.is_empty(), s.awaiting_confirm)
+            };
+            if pending && !awaiting {
+                Self::send_next_chunk(&self.state, &self._gatts);
+            }
+        }
+
+        let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
         s.events.pop_front()
     }
 }

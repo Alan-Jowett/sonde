@@ -1030,7 +1030,10 @@ mod tests {
         let prog = make_program(0xCC);
 
         store
-            .replace_state(&[node_a.clone(), node_b.clone()], std::slice::from_ref(&prog))
+            .replace_state(
+                &[node_a.clone(), node_b.clone()],
+                std::slice::from_ref(&prog),
+            )
             .await
             .unwrap();
 

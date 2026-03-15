@@ -187,7 +187,7 @@ Phone                              Gateway
   │                                   │
   │── [BLE connect] ─────────────────►│
   │── [MTU exchange, ≥247] ──────────►│
-  │── [LESC Just Works pairing] ─────►│
+  │── [LESC Numeric Comparison pairing] ►│
   │                                   │
   │── REQUEST_GW_INFO ───────────────►│  (write to Gateway Command)
   │            ◄── GW_INFO_RESPONSE ──│  (indication: pubkey + id + signed challenge)

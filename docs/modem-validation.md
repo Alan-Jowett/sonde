@@ -498,15 +498,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
-### T-0610  BLE connection notification (if implemented)
-
-**Validates:** MD-0406
-
-**Procedure:**
-1. Connect via BLE.
-2. Read USB-CDC serial output on the gateway side.
-3. Assert: a connection notification is sent to the gateway (if SHOULD requirement is implemented).
-4. Disconnect. Assert: a disconnection notification is sent.
+### T-0610  *(Removed — superseded by T-0614 and T-0615)*
 
 ---
 
@@ -705,7 +697,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0608 | BLE disconnect cleanup | MD-0405 |
 | T-0609 | BLE and ESP-NOW concurrent operation | MD-0405 |
 | T-0609a | Second BLE connection rejected while one is active | MD-0405 |
-| T-0610 | BLE connection notification (if implemented) | MD-0406 |
+| T-0610 | *(Removed — superseded by T-0614/T-0615)* | — |
 | T-0611 | BLE_INDICATE relay to phone | MD-0408 |
 | T-0612 | BLE_INDICATE with no BLE client | MD-0408 |
 | T-0613 | BLE_RECV forwarding | MD-0409 |

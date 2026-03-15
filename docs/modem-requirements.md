@@ -411,18 +411,9 @@ The modem MUST support one BLE connection at a time for the Gateway Pairing Serv
 
 ---
 
-### MD-0406  BLE connection lifecycle events (superseded)
+### MD-0406  *(Superseded — see MD-0410 and MD-0411)*
 
-**Priority:** *(Superseded by MD-0410 and MD-0411)*
-**Source:** ble-pairing-protocol.md §3
-
-**Description:**
-This requirement is superseded by MD-0410 (`BLE_CONNECTED`) and MD-0411 (`BLE_DISCONNECTED`), which make connection/disconnection notifications mandatory with defined serial message types. No additional notification mechanism is needed.
-
-**Acceptance criteria:**
-
-1. A connection notification is sent to the gateway when a BLE client connects.
-2. A disconnection notification is sent when the BLE client disconnects.
+> This requirement is superseded by MD-0410 (`BLE_CONNECTED`) and MD-0411 (`BLE_DISCONNECTED`), which provide mandatory connection lifecycle notifications with defined serial message types.
 
 ---
 
@@ -585,7 +576,7 @@ During BLE LESC Numeric Comparison pairing, the modem MUST send `BLE_PAIRING_CON
 | MD-0403 | Indication fragmentation | Must |
 | MD-0404 | BLE LESC pairing | Must |
 | MD-0405 | BLE connection lifecycle | Must |
-| MD-0406 | BLE connection notification to gateway | Should |
+| MD-0406 | *(Superseded by MD-0410/MD-0411)* | — |
 | MD-0407 | BLE advertising | Must |
 | MD-0408 | BLE_INDICATE relay | Must |
 | MD-0409 | BLE_RECV forwarding | Must |

@@ -177,7 +177,7 @@ The operator MUST be able to start and stop scanning. Scanning MUST time out aft
 **Source:** ble-pairing-protocol.md §3.4
 
 **Description:**  
-On operator selection of a gateway device, the tool MUST connect to the BLE peripheral, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing (Just Works by default). If the negotiated MTU is < 247, the tool MUST disconnect and report an error.
+On operator selection of a gateway device, the tool MUST connect to the BLE peripheral, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing.  Numeric Comparison is the default method for the gateway pairing service (the tool displays or relays the 6-digit passkey for operator verification).  Just Works is available as a fallback when no operator is present.  If the negotiated MTU is < 247, the tool MUST disconnect and report an error.
 
 **Acceptance criteria:**
 

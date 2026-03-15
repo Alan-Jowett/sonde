@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use esp32_nimble::utilities::BleUuid;
 use esp32_nimble::{
     enums::{AuthReq, SecurityIOCap},
-    BLEAdvertisementData, BLEDevice, NimbleProperties,
+    BLEAdvertisementData, BLECharacteristic, BLEDevice, NimbleProperties,
 };
 use log::{info, warn};
 use sonde_protocol::modem::BLE_MTU_MIN;
@@ -81,6 +81,8 @@ struct BleState {
     /// `on_authentication_complete` from the connection descriptor, which
     /// reflects the post-MTU-exchange value.
     mtu: u16,
+    /// Connection handle for the current client (0 = not connected).
+    conn_handle: u16,
     /// Numeric Comparison passkey relayed to gateway; operator decision pending.
     /// `BleEvent::Connected` is deferred until the operator accepts (MD-0414).
     pairing_pending: bool,
@@ -90,13 +92,6 @@ struct BleState {
     /// Comparison was used).  GATT writes are only forwarded once this is set,
     /// preventing data relay before the session is fully approved (MD-0414).
     authenticated: bool,
-    /// Gateway has requested BLE via `enable()`.  When true, advertising
-    /// restarts automatically after a client disconnects (MD-0407).
-    ble_enabled: bool,
-    /// Set in `on_disconnect` when `ble_enabled` is true; processed in
-    /// `drain_event()` to restart advertising on the main task (avoids
-    /// calling BLE APIs from within NimBLE callbacks).
-    needs_readvertise: bool,
 }
 
 impl BleState {
@@ -107,11 +102,10 @@ impl BleState {
             awaiting_confirm: false,
             advertising: false,
             mtu: 0,
+            conn_handle: 0,
             pairing_pending: false,
             deferred_connected: None,
             authenticated: false,
-            ble_enabled: false,
-            needs_readvertise: false,
         }
     }
 }
@@ -131,6 +125,9 @@ impl BleState {
 /// esp32-nimble v0.11 API.
 pub struct EspBleDriver {
     state: Arc<Mutex<BleState>>,
+    /// Cached reference to the Gateway Command characteristic, avoiding
+    /// async `get_service()` lookups in sync indication paths.
+    gateway_cmd_char: Arc<Mutex<BLECharacteristic>>,
 }
 
 impl EspBleDriver {
@@ -149,26 +146,26 @@ impl EspBleDriver {
 
         let ble_server = ble_device.get_server();
 
+        // Use NimBLE's built-in auto re-advertise after disconnect (MD-0407).
+        ble_server.advertise_on_disconnect(true);
+
         // --- Connection event handler ---
         //
-        // The initial `desc.conn_params.mtu` may report the default ATT MTU
-        // (23 bytes) before the ATT MTU Exchange has completed.  We store it
-        // but defer MTU enforcement to `on_authentication_complete`, by which
-        // time the exchange should have occurred (MD-0402).
+        // The initial `desc.mtu()` may report the default ATT MTU (23 bytes)
+        // before the ATT MTU Exchange has completed.  We store it but defer
+        // MTU enforcement to `on_authentication_complete`, by which time the
+        // exchange should have occurred (MD-0402).
         let state_connect = Arc::clone(&state);
         ble_server.on_connect(move |server, desc| {
-            let peer_addr: [u8; MAC_SIZE] = desc.address().val;
-            let mtu = desc.conn_params.mtu as u16;
+            let peer_addr: [u8; MAC_SIZE] = desc.address().as_le_bytes();
+            let mtu = desc.mtu();
             info!("BLE: client connected addr={:?} mtu={}", peer_addr, mtu);
 
             // MD-0405: Only one connection at a time.
             // If a second client connects, disconnect immediately.
             if server.connected_count() > 1 {
                 warn!("BLE: second connection rejected (MD-0405)");
-                let _ = server.disconnect_with_code(
-                    desc.conn_handle,
-                    esp32_nimble::enums::DisconnReason::ConnTermByLocalHost,
-                );
+                let _ = server.disconnect_with_reason(desc.conn_handle(), 0x13);
                 return;
             }
 
@@ -178,20 +175,22 @@ impl EspBleDriver {
                 // after this connection ends (MD-0407).
                 s.advertising = false;
                 s.mtu = mtu;
+                s.conn_handle = desc.conn_handle();
             }
         });
 
         // --- Disconnect event handler ---
         let state_disconnect = Arc::clone(&state);
         ble_server.on_disconnect(move |desc, reason| {
-            let peer_addr: [u8; MAC_SIZE] = desc.address().val;
+            let peer_addr: [u8; MAC_SIZE] = desc.address().as_le_bytes();
+            let reason_code: u8 = if reason.is_ok() { 0x16 } else { 0x13 };
             info!(
                 "BLE: client disconnected addr={:?} reason={:?}",
                 peer_addr, reason
             );
             if let Ok(mut s) = state_disconnect.lock() {
-                let was_enabled = s.ble_enabled;
                 s.mtu = 0;
+                s.conn_handle = 0;
                 s.indication_queue.clear();
                 s.awaiting_confirm = false;
                 s.pairing_pending = false;
@@ -199,13 +198,8 @@ impl EspBleDriver {
                 s.authenticated = false;
                 s.events.push_back(BleEvent::Disconnected {
                     peer_addr,
-                    reason: reason as u8,
+                    reason: reason_code,
                 });
-                // MD-0407: If BLE was enabled by the gateway, schedule
-                // re-advertising on the next drain_event() poll.
-                if was_enabled {
-                    s.needs_readvertise = true;
-                }
             }
         });
 
@@ -247,10 +241,11 @@ impl EspBleDriver {
 
         // --- Pairing complete handler ---
         let state_auth = Arc::clone(&state);
-        ble_server.on_authentication_complete(move |desc, result| {
+        ble_server.on_authentication_complete(move |server, desc, result| {
             if result.is_ok() {
-                let peer_addr: [u8; MAC_SIZE] = desc.address().val;
-                let current_mtu = desc.conn_params.mtu as u16;
+                let peer_addr: [u8; MAC_SIZE] = desc.address().as_le_bytes();
+                let current_mtu = desc.mtu();
+                let conn_handle = desc.conn_handle();
                 // Compute the action while holding the lock, then drop it
                 // before calling NimBLE APIs to avoid deadlock if NimBLE
                 // invokes on_disconnect synchronously.
@@ -282,8 +277,7 @@ impl EspBleDriver {
                 };
                 // Lock is dropped — safe to call NimBLE.
                 if should_disconnect {
-                    let ble_device = BLEDevice::take();
-                    ble_device.get_server().disconnect_all();
+                    let _ = server.disconnect(conn_handle);
                 }
             } else {
                 warn!("BLE: pairing failed: {:?}", result);
@@ -320,7 +314,10 @@ impl EspBleDriver {
 
         info!("BLE GATT Gateway Pairing Service registered (UUID 0xFE60)");
 
-        Self { state }
+        Self {
+            state,
+            gateway_cmd_char,
+        }
     }
 }
 
@@ -351,7 +348,6 @@ impl Ble for EspBleDriver {
 
         if let Ok(mut s) = self.state.lock() {
             s.advertising = true;
-            s.ble_enabled = true;
         }
         info!("BLE advertising started (MD-0407)");
     }
@@ -365,18 +361,22 @@ impl Ble for EspBleDriver {
         }
 
         // Disconnect any active client.
-        let ble_server = ble_device.get_server();
-        ble_server.disconnect_all();
+        let conn_handle = {
+            let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            s.conn_handle
+        };
+        if conn_handle != 0 {
+            let _ = ble_device.get_server().disconnect(conn_handle);
+        }
 
         if let Ok(mut s) = self.state.lock() {
             s.advertising = false;
+            s.conn_handle = 0;
             s.indication_queue.clear();
             s.awaiting_confirm = false;
             s.pairing_pending = false;
             s.deferred_connected = None;
             s.authenticated = false;
-            s.ble_enabled = false;
-            s.needs_readvertise = false;
         }
         info!("BLE advertising stopped (MD-0407)");
     }
@@ -425,43 +425,22 @@ impl Ble for EspBleDriver {
             }
         } else {
             warn!("BLE: Numeric Comparison rejected by operator — disconnecting");
-            if let Ok(mut s) = self.state.lock() {
-                s.pairing_pending = false;
-                s.deferred_connected = None;
+            let conn_handle = {
+                if let Ok(mut s) = self.state.lock() {
+                    s.pairing_pending = false;
+                    s.deferred_connected = None;
+                    s.conn_handle
+                } else {
+                    0
+                }
+            };
+            if conn_handle != 0 {
+                let _ = BLEDevice::take().get_server().disconnect(conn_handle);
             }
-            let ble_device = BLEDevice::take();
-            let ble_server = ble_device.get_server();
-            ble_server.disconnect_all();
         }
     }
 
     fn drain_event(&self) -> Option<BleEvent> {
-        // MD-0407: Restart advertising after disconnect if BLE is enabled.
-        // Handled here (on the main task) rather than in on_disconnect to
-        // avoid calling BLE APIs from within NimBLE callbacks.
-        {
-            let needs = {
-                let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-                s.needs_readvertise
-            };
-            if needs {
-                let ble_device = BLEDevice::take();
-                let ble_advertising = ble_device.get_advertising();
-                let mut adv_data = BLEAdvertisementData::new();
-                adv_data.name("sonde-modem");
-                adv_data.add_service_uuid(GATEWAY_SERVICE_UUID);
-                let ok = ble_advertising.lock().set_data(&mut adv_data).is_ok()
-                    && ble_advertising.lock().start().is_ok();
-                if let Ok(mut s) = self.state.lock() {
-                    s.needs_readvertise = false;
-                    if ok {
-                        s.advertising = true;
-                        info!("BLE: re-advertising after disconnect (MD-0407)");
-                    }
-                }
-            }
-        }
-
         // Send the next pending indication chunk if confirmed.
         {
             let (pending, awaiting) = {
@@ -505,26 +484,7 @@ impl EspBleDriver {
             chunk
         };
 
-        let ble_device = BLEDevice::take();
-        let ble_server = ble_device.get_server();
-        let service = ble_server.get_service(GATEWAY_SERVICE_UUID);
-        let Some(svc) = service else {
-            warn!("BLE: GATT service not found; discarding indication chunk");
-            if let Ok(mut s) = self.state.lock() {
-                s.awaiting_confirm = false;
-            }
-            return;
-        };
-        let characteristic = svc.lock().get_characteristic(GATEWAY_COMMAND_UUID);
-        let Some(chr) = characteristic else {
-            warn!("BLE: GATT characteristic not found; discarding indication chunk");
-            if let Ok(mut s) = self.state.lock() {
-                s.awaiting_confirm = false;
-            }
-            return;
-        };
-
-        let notify_result = chr.lock().set_value(&chunk).indicate();
+        let notify_result = self.gateway_cmd_char.lock().set_value(&chunk).indicate();
         // In esp32-nimble v0.11, `indicate()` blocks until the ATT
         // Handle Value Confirmation is received from the peer (or
         // returns an error on timeout/disconnect). Clearing

@@ -9,30 +9,40 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
-  check:
-    name: Check, lint, and test
+  fmt:
+    name: Check formatting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check --all
+
+  check:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libudev-dev
 
-      - name: Check formatting
-        run: cargo fmt --check --all
-
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
-
-      - name: Build
-        run: cargo build --workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --workspace
@@ -63,8 +73,16 @@ jobs:
             --exclude_regex "${{ env.KNOWN_FAILURES }}"
 
   fuzz:
-    name: Fuzz test (protocol crate)
+    name: Fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_decode_frame
+          - fuzz_node_message
+          - fuzz_gateway_message
+          - fuzz_program_image
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -73,18 +91,18 @@ jobs:
           toolchain: nightly
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          key: fuzz-${{ matrix.target }}
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: crates/sonde-protocol/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
-      - name: Fuzz decode_frame
-        run: cd crates/sonde-protocol && cargo fuzz run fuzz_decode_frame -- -max_total_time=30
-
-      - name: Fuzz node_message
-        run: cd crates/sonde-protocol && cargo fuzz run fuzz_node_message -- -max_total_time=30
-
-      - name: Fuzz gateway_message
-        run: cd crates/sonde-protocol && cargo fuzz run fuzz_gateway_message -- -max_total_time=30
-
-      - name: Fuzz program_image
-        run: cd crates/sonde-protocol && cargo fuzz run fuzz_program_image -- -max_total_time=30
+      - name: Fuzz ${{ matrix.target }}
+        run: cd crates/sonde-protocol && cargo fuzz run ${{ matrix.target }} -- -max_total_time=30

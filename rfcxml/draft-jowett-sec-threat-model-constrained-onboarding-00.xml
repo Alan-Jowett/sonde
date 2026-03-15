@@ -14,13 +14,13 @@
 over Unauthenticated Local Transports</title>
 
     <author initials="A." surname="Jowett" fullname="Alan Jowett">
-      <organization/>
+      <organization>Independent</organization>
       <address>
-        <email>TBD</email>
+        <email>alan@example.com</email>
       </address>
     </author>
 
-    <date/>
+    <date month="March" year="2026"/>
 
     <area>Security</area>
 
@@ -143,10 +143,12 @@ over Unauthenticated Local Transports</title>
         <dd>
           The entity that serves as the root of trust for a deployment.
           It stores device credentials, validates enrollment requests,
-          and enforces policy.  Examples include a local gateway, a
-          network controller, or a cloud service.  This is a logical
-          role and does not necessarily correspond to an ACE
-          Authorization Server <xref target="RFC9200"/>.
+          and enforces policy.  This is a logical role, broader than
+          any single standards-defined entity such as an ACE
+          Authorization Server <xref target="RFC9200"/>; it may be
+          implemented by a local gateway, a network controller, a
+          cloud service, or an offline system with no OAuth or ACE
+          relationship to the device.
         </dd>
 
         <dt>Constrained Device:</dt>
@@ -477,7 +479,10 @@ over Unauthenticated Local Transports</title>
           A critical design principle is that the authorization authority
           <bcp14>MUST NOT</bcp14> delegate its validation responsibilities
           to the mobile agent.  The agent initiates enrollment; the
-          authority decides whether to accept it.
+          authority decides whether to accept it.  Device credentials
+          proposed by an agent are treated as provisional until
+          independently validated by the authority; the agent can relay
+          trust but cannot mint it.
         </t>
       </section>
 
@@ -964,8 +969,9 @@ over Unauthenticated Local Transports</title>
             administrative command).
           </li>
           <li>
-            The window closes automatically after a configurable
-            duration (e.g., 120 seconds).
+            The window closes automatically after a configurable,
+            deployment-specific duration (e.g., on the order of
+            minutes).
           </li>
         </ul>
 
@@ -1291,9 +1297,10 @@ over Unauthenticated Local Transports</title>
       <name>Security Considerations</name>
 
       <t>
-        This entire document is about security considerations for
-        constrained-device onboarding.  This section highlights
-        three cross-cutting concerns.
+        This entire document is security-motivated; every section
+        addresses aspects of securely onboarding constrained devices.
+        This section summarizes three cross-cutting concerns that
+        apply broadly across the patterns described above.
       </t>
 
       <section anchor="silent-discard">

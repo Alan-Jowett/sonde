@@ -131,4 +131,38 @@ pub trait PlatformStorage {
     fn write_channel(&mut self, _channel: u8) -> NodeResult<()> {
         Ok(())
     }
+
+    // --- BLE pairing artifacts (ND-0916) ---
+
+    /// Read the encrypted peer payload stored during BLE provisioning.
+    /// Returns `None` if no payload is stored (node not yet BLE-provisioned).
+    fn read_peer_payload(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Persist the encrypted peer payload received in NODE_PROVISION.
+    fn write_peer_payload(&mut self, _payload: &[u8]) -> NodeResult<()> {
+        Ok(())
+    }
+
+    /// Erase the encrypted peer payload from storage.
+    /// Called after the first successful WAKE/COMMAND exchange (ND-0914)
+    /// and during factory reset (ND-0917).
+    fn erase_peer_payload(&mut self) -> NodeResult<()> {
+        Ok(())
+    }
+
+    /// Read the registration-complete flag.
+    /// Returns `true` if the node has been acknowledged by the gateway
+    /// (PEER_ACK received and validated).
+    fn read_reg_complete(&self) -> bool {
+        false
+    }
+
+    /// Persist the registration-complete flag.
+    /// Set to `true` on valid PEER_ACK (ND-0913); cleared to `false`
+    /// on NODE_PROVISION (ND-0906).
+    fn write_reg_complete(&mut self, _complete: bool) -> NodeResult<()> {
+        Ok(())
+    }
 }

@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+pub mod ble_pairing;
 pub mod bpf_dispatch;
 pub mod bpf_helpers;
 pub mod bpf_runtime;
 pub mod crypto;
 pub mod error;
+#[cfg(feature = "esp")]
+pub mod esp_ble_pairing;
 #[cfg(feature = "esp")]
 pub mod esp_hal;
 #[cfg(feature = "esp")]

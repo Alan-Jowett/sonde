@@ -814,10 +814,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Boot node into BLE pairing mode.
 2. Scan for BLE advertisements from a test central.
-3. Assert: advertisement contains Node Provisioning Service UUID `0000FE50-...`.
+3. Assert: advertisement contains Node Provisioning Service UUID `0000FE50-0000-1000-8000-00805F9B34FB`.
 4. Assert: device name matches `sonde-XXXX` where XXXX = last 4 hex digits of BLE MAC.
 5. Connect and discover services.
-6. Assert: Node Command characteristic `0000FE51-...` is present with Write+Indicate properties.
+6. Assert: Node Command characteristic `0000FE51-0000-1000-8000-00805F9B34FB` is present with Write+Indicate properties.
 
 ---
 
@@ -852,7 +852,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0905
 
 **Procedure:**
-1. Boot a previously-paired node into BLE pairing mode (pairing button NOT held).
+1. Boot a previously-paired node (hold pairing button to enter BLE pairing mode, then release before sending NODE_PROVISION — or alternatively, send NODE_PROVISION on a node that was provisioned in the current BLE session without rebooting, per ND-0907).
 2. Write NODE_PROVISION with new credentials.
 3. Assert: node responds NODE_ACK(0x01).
 4. Assert: existing NVS credentials are unchanged.
@@ -908,7 +908,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Provision node via BLE, reboot (PSK stored, `reg_complete` not set).
 2. Capture the transmitted PEER_REQUEST frame.
 3. Assert: `msg_type` = 0x05.
-4. Assert: nonce is 8 random bytes (non-zero, differs across reboots).
+4. Assert: nonce is 8 bytes and differs across reboots (use a mock RNG to verify the nonce source; all-zero is theoretically valid but should not appear with a functioning CSPRNG).
 5. Assert: CBOR payload decodes to `{1: encrypted_payload}` matching NVS value.
 6. Assert: HMAC-SHA256 over header+payload verifies with `node_psk`.
 7. Assert: ESP-NOW channel matches stored `rf_channel`.

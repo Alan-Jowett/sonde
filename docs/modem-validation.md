@@ -417,7 +417,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 **Procedure:**
 1. Connect via BLE, subscribe to indications on Gateway Command characteristic.
-2. Send a test envelope from the gateway side via USB-CDC.
+2. Send a `BLE_INDICATE` (0x20) serial message from the gateway side containing a test BLE envelope.
 3. Assert: the exact bytes arrive as a BLE indication on the phone side.
 
 ---

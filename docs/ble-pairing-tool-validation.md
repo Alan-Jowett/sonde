@@ -255,6 +255,20 @@ TestNode {
 
 ---
 
+### T-PT-208a  Phone label validation
+
+**Validates:** PT-0303
+
+**Procedure:**
+1. Attempt REGISTER_PHONE with a label of exactly 64 bytes UTF-8.
+2. Assert: the label is accepted and included in the GATT write.
+3. Attempt REGISTER_PHONE with a label of 65 bytes UTF-8.
+4. Assert: the tool rejects the label before BLE transmission with an error.
+5. Attempt REGISTER_PHONE with an empty label (0 bytes).
+6. Assert: the empty label is accepted.
+
+---
+
 ### T-PT-209  ERROR(0x02) — registration window closed
 
 **Validates:** PT-0303
@@ -350,7 +364,7 @@ TestNode {
 1. Initiate Phase 2 with valid Phase 1 artifacts.
 2. Capture the generated `node_psk`.
 3. Assert: `node_psk` is exactly 32 bytes.
-4. Assert: `node_psk` is generated via `getrandom::fill()` (verified structurally via code inspection or by confirming non-determinism across runs).
+4. Assert: `node_psk` is generated via `getrandom::fill()` (verified by injecting a mock RNG provider in tests or by asserting `getrandom` is the sole randomness source via code inspection).
 
 ---
 

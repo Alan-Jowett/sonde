@@ -342,7 +342,7 @@ The modem MUST relay BLE pairing messages between the BLE GATT characteristic an
 
 1. Bytes written to the GATT characteristic arrive on USB-CDC unmodified.
 2. Bytes sent from the gateway via USB-CDC arrive as a BLE indication unmodified.
-3. Each GATT write produces exactly one serial message; each serial message produces exactly one indication.
+3. Each GATT write produces exactly one `BLE_RECV` serial message; each `BLE_INDICATE` serial message produces one logical BLE indication (which the modem MAY fragment into multiple ATT indications per MD-0403).
 4. Invalid or garbage payloads are relayed without error or modification.
 
 ---

@@ -725,7 +725,7 @@ The node MUST sample the pairing button GPIO (active LOW) for at least 500 ms af
 **Source:** ble-pairing-protocol.md §3.1, §3.3, §8.2
 
 **Description:**  
-In BLE pairing mode the node MUST start the BLE stack and register the Node Provisioning Service (UUID `0000FE50-...`) with a Node Command characteristic (UUID `0000FE51-...`, Write+Indicate).
+In BLE pairing mode the node MUST start the BLE stack and register the Node Provisioning Service (UUID `0000FE50-0000-1000-8000-00805F9B34FB`) with a Node Command characteristic (UUID `0000FE51-0000-1000-8000-00805F9B34FB`, Write+Indicate).
 
 **Acceptance criteria:**
 
@@ -770,7 +770,7 @@ The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LES
 **Source:** ble-pairing-protocol.md §8.2, steps 4a–4c
 
 **Description:**  
-On a NODE_PROVISION write the node MUST parse the fields `node_key_hint`, `node_psk`, `rf_channel`, and `encrypted_payload`. If the node is already paired and the pairing button is NOT held, the node MUST respond with NODE_ACK(0x01). If the pairing button is held, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials.
+On a NODE_PROVISION write the node MUST parse the fields `node_key_hint`, `node_psk`, `rf_channel`, and `encrypted_payload`. If the node is already paired (PSK exists in NVS from a previous boot) and the pairing button is NOT held, the node MUST respond with NODE_ACK(0x01). If the pairing button is held, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials. A second NODE_PROVISION on the same BLE session after a successful provision (per ND-0907) is treated as a new provision attempt — the node has credentials from the current session, so it responds NODE_ACK(0x01) unless the button was held at boot.
 
 **Acceptance criteria:**
 

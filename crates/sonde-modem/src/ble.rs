@@ -15,7 +15,7 @@
 //! - LESC Numeric Comparison pairing: passkey relayed to gateway via `BleEvent::PairingConfirm`;
 //!   gateway replies via `pairing_confirm_reply()` (MD-0404/MD-0414).
 //! - ATT MTU negotiation ≥ 247 bytes; connections whose MTU remains below
-//!   `BLE_MIN_MTU` after the ATT MTU Exchange are rejected at authentication
+//!   `BLE_MTU_MIN` after the ATT MTU Exchange are rejected at authentication
 //!   complete time (MD-0402).
 //! - Indication fragmentation: payloads larger than (MTU − 3) bytes are split into
 //!   multiple indications with confirmation between chunks (MD-0403).
@@ -33,7 +33,7 @@ use esp32_nimble::{
     BLEAdvertisementData, BLEDevice, NimbleProperties,
 };
 use log::{info, warn};
-use sonde_protocol::modem::BLE_MIN_MTU;
+use sonde_protocol::modem::BLE_MTU_MIN;
 use sonde_protocol::modem::MAC_SIZE;
 
 use crate::bridge::{Ble, BleEvent};
@@ -71,15 +71,19 @@ struct BleState {
     /// BLE advertising is currently active.
     advertising: bool,
     /// Negotiated ATT MTU for the current connection (0 = not connected).
-    /// Updated in `on_connect` with the initial connection MTU; by the time
-    /// `on_authentication_complete` fires, the ATT MTU Exchange should have
-    /// completed and the value should reflect the negotiated MTU.
+    /// Set in `on_connect` with the initial value and updated in
+    /// `on_authentication_complete` from the connection descriptor, which
+    /// reflects the post-MTU-exchange value.
     mtu: u16,
     /// Numeric Comparison passkey relayed to gateway; operator decision pending.
     /// `BleEvent::Connected` is deferred until the operator accepts (MD-0414).
     pairing_pending: bool,
     /// Deferred Connected event stored while awaiting operator confirmation.
     deferred_connected: Option<([u8; MAC_SIZE], u16)>,
+    /// True after LESC pairing completes AND operator accepts (if Numeric
+    /// Comparison was used).  GATT writes are only forwarded once this is set,
+    /// preventing data relay before the session is fully approved (MD-0414).
+    authenticated: bool,
 }
 
 impl BleState {
@@ -92,6 +96,7 @@ impl BleState {
             mtu: 0,
             pairing_pending: false,
             deferred_connected: None,
+            authenticated: false,
         }
     }
 }
@@ -175,6 +180,7 @@ impl EspBleDriver {
                 s.awaiting_confirm = false;
                 s.pairing_pending = false;
                 s.deferred_connected = None;
+                s.authenticated = false;
                 s.events.push_back(BleEvent::Disconnected {
                     peer_addr,
                     reason: reason as u8,
@@ -217,17 +223,21 @@ impl EspBleDriver {
         ble_server.on_authentication_complete(move |desc, result| {
             if result.is_ok() {
                 let peer_addr: [u8; MAC_SIZE] = desc.address().val;
+                // Re-read MTU from the connection descriptor, which reflects
+                // the post-MTU-exchange value (more accurate than the initial
+                // value captured in on_connect).
+                let current_mtu = desc.conn_params.mtu as u16;
                 if let Ok(mut s) = state_auth.lock() {
+                    if current_mtu > 0 {
+                        s.mtu = current_mtu;
+                    }
                     // MD-0402: Reject connections whose MTU is still below the
-                    // minimum after authentication completes.  By this point the
-                    // ATT MTU Exchange should have finished; if the peer doesn't
-                    // support the required MTU, we disconnect.
-                    if s.mtu < BLE_MIN_MTU {
+                    // minimum after authentication completes.
+                    if s.mtu < BLE_MTU_MIN {
                         warn!(
                             "BLE: pairing complete but MTU too low ({}); disconnecting (MD-0402)",
                             s.mtu
                         );
-                        // Queue a disconnect; on_disconnect will emit Disconnected.
                         let ble_device = BLEDevice::take();
                         ble_device.get_server().disconnect_all();
                         return;
@@ -239,6 +249,7 @@ impl EspBleDriver {
                         s.deferred_connected = Some((peer_addr, s.mtu));
                     } else {
                         info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
+                        s.authenticated = true;
                         s.events.push_back(BleEvent::Connected {
                             peer_addr,
                             mtu: s.mtu,
@@ -259,18 +270,17 @@ impl EspBleDriver {
         );
 
         // GATT write handler: forward to gateway as BLE_RECV (MD-0409).
-        // The on_connect handler enforces single-connection (MD-0405) so any
-        // write arriving here is from the one accepted client.
+        // Writes are only relayed after authentication completes and the
+        // operator has approved (if Numeric Comparison was used), preventing
+        // data relay before the session is fully established (MD-0414).
         let state_write = Arc::clone(&state);
         gateway_cmd_char.lock().on_write(move |args| {
             let value = args.recv_data();
             if value.is_empty() {
                 return; // Empty writes discarded (MD-0409).
             }
-            // Only forward writes when a connection is active (mtu > 0 means
-            // a client is connected and MTU was accepted).
             if let Ok(mut s) = state_write.lock() {
-                if s.mtu > 0 {
+                if s.authenticated {
                     info!("BLE: GATT write {} bytes", value.len());
                     s.events.push_back(BleEvent::Recv(value.to_vec()));
                 }
@@ -332,6 +342,7 @@ impl Ble for EspBleDriver {
             s.awaiting_confirm = false;
             s.pairing_pending = false;
             s.deferred_connected = None;
+            s.authenticated = false;
         }
         info!("BLE advertising stopped (MD-0407)");
     }
@@ -367,6 +378,7 @@ impl Ble for EspBleDriver {
             info!("BLE: Numeric Comparison accepted by operator");
             if let Ok(mut s) = self.state.lock() {
                 s.pairing_pending = false;
+                s.authenticated = true;
                 if let Some((peer_addr, mtu)) = s.deferred_connected.take() {
                     s.events.push_back(BleEvent::Connected { peer_addr, mtu });
                 }

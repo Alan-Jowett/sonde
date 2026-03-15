@@ -248,7 +248,7 @@ Gateway sends a BLE indication payload to the connected phone via the Gateway Co
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| `ble_data` | Bytes | 3 .. 511 bytes | BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4). The modem does not inspect or modify this data. |
+| `ble_data` | Bytes | 1 .. 511 bytes | Opaque payload relayed to the BLE client. Typically a BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4), but the modem does not inspect or validate the contents. |
 
 ### 4.10  BLE_RECV (Modem → Gateway)
 
@@ -262,7 +262,7 @@ A BLE GATT write was received on the Gateway Command characteristic from the con
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| `ble_data` | Bytes | 3 .. 511 bytes | BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4). The modem does not inspect or modify this data. |
+| `ble_data` | Bytes | 1 .. 511 bytes | Opaque payload received from the BLE client. Typically a BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4), but the modem does not inspect or validate the contents. |
 
 ### 4.11  BLE_CONNECTED (Modem → Gateway)
 

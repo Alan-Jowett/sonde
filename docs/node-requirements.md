@@ -770,14 +770,16 @@ The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LES
 **Source:** ble-pairing-protocol.md §8.2, steps 4a–4c
 
 **Description:**  
-On a NODE_PROVISION write the node MUST parse the fields `node_key_hint`, `node_psk`, `rf_channel`, and `encrypted_payload`. If the node has credentials from a **previous boot** (PSK exists in NVS before entering BLE pairing mode) and the pairing button was NOT held at boot, the node MUST respond with NODE_ACK(0x01) and leave existing credentials unchanged. If the pairing button was held at boot, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials. A second NODE_PROVISION within the **same BLE session** after a successful provision (per ND-0907) is permitted — the node overwrites the current-session credentials and responds NODE_ACK(0x00), because the "already paired" guard only protects credentials that survived a reboot.
+On a NODE_PROVISION write the node MUST parse the fields `node_key_hint` (2B), `node_psk` (32B), `rf_channel` (1B), `payload_len` (2B BE), and `encrypted_payload` (`payload_len` bytes).  The node MUST validate `payload_len` before reading `encrypted_payload`.  If the pairing button was held at boot, the node MUST erase the existing PSK and all persistent state first (factory reset) before accepting the new credentials.
+
+> **Note:** Under the current boot priority (ND-0900), BLE pairing mode is only entered when no PSK exists or the pairing button is held.  The protocol specification (ble-pairing-protocol.md §8.2 step 4b) additionally defines a NODE_ACK(0x01) "already paired" response for defence-in-depth, but this state is not reachable through the current boot path.  If future requirements add alternative entry paths to BLE pairing mode (e.g., a management command), the node MUST respond NODE_ACK(0x01) when pre-existing credentials are present and the pairing button was not held.
 
 **Acceptance criteria:**
 
-1. All four fields are parsed from the NODE_PROVISION payload.
-2. A node with pre-existing credentials (from a prior boot) and no button hold responds NODE_ACK(0x01).
-3. A node with pre-existing credentials and button hold erases credentials before proceeding.
-4. A same-session re-provision overwrites current credentials and responds NODE_ACK(0x00).
+1. All five fields (including `payload_len`) are parsed from the NODE_PROVISION payload.
+2. `payload_len` is validated before reading `encrypted_payload`.
+3. A node with button hold erases existing credentials before proceeding.
+4. A same-session re-provision (per ND-0907) overwrites current credentials and responds NODE_ACK(0x00).
 
 ---
 

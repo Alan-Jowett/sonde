@@ -248,7 +248,7 @@ Gateway sends a BLE indication payload to the connected phone via the Gateway Co
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| `ble_data` | Bytes | 1 .. 511 bytes | Opaque payload relayed to the BLE client. Typically a BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4), but the modem does not inspect or validate the contents. A `BLE_INDICATE` with an empty body (len = 1, i.e. type byte only, no `ble_data`) is invalid and MUST be silently discarded by the modem. |
+| `ble_data` | Bytes | 1 .. 511 bytes | Opaque payload relayed to the BLE client. Typically a BLE message envelope (TYPE + LEN + BODY per ble-pairing-protocol.md §4), but the modem does not inspect or validate the contents. A `BLE_INDICATE` serial frame whose BODY length is 0 (i.e., the serial envelope contains only the type byte and no `ble_data`) is invalid and MUST be silently discarded by the modem. |
 
 ### 4.10  BLE_RECV (Modem → Gateway)
 

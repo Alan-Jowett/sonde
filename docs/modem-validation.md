@@ -365,6 +365,9 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 1. Power on modem with gateway connected via USB-CDC.
 2. Scan for BLE advertisements from the modem.
 3. Assert: Gateway Pairing Service UUID `0000FE60-0000-1000-8000-00805F9B34FB` is advertised.
+4. Connect a BLE client to the modem, then disconnect.
+5. Scan for BLE advertisements again.
+6. Assert: Gateway Pairing Service UUID is advertised again after disconnect.
 
 ---
 

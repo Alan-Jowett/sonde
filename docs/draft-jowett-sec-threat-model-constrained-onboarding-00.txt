@@ -1,0 +1,1083 @@
+Internet-Draft                                              A. Jowett
+Intended status: Informational                              Individual
+Expires: <TBD>                                              <TBD>
+
+
+      Security Patterns for Constrained Device Onboarding
+      over Unauthenticated Local Transports
+
+Abstract
+
+   Constrained devices are frequently onboarded using local
+   transports that provide confidentiality but limited or no peer
+   authentication, such as Bluetooth Low Energy (BLE) "Just Works"
+   pairing or proprietary short-range radios.  While these
+   transports are often described as "secure", they do not provide
+   device identity guarantees, and naive onboarding designs
+   frequently conflate encrypted channels with authenticated peers.
+
+   This document describes common failure modes, threat models, and
+   design patterns for bootstrapping trust in constrained devices
+   over encrypted but unauthenticated local transports.  It does
+   not define a new protocol.  Instead, it documents design
+   patterns identified through analysis of constrained-device
+   onboarding requirements, including delegation of onboarding
+   authority, handling of unavoidable race conditions, bootstrap
+   message semantics, and transition to steady-state secure
+   communication.  The goal is to provide guidance to designers of
+   constrained device onboarding systems and to clarify the
+   security properties such systems can and cannot achieve.
+
+Status of This Memo
+
+   This Internet-Draft is submitted in full conformance with the
+   provisions of BCP 78 and BCP 79.
+
+   Internet-Drafts are working documents of the Internet Engineering
+   Task Force (IETF).  Note that other groups may also distribute
+   working documents as Internet-Drafts.  The list of current
+   Internet-Drafts is at
+   https://datatracker.ietf.org/drafts/current/.
+
+   Internet-Drafts are draft documents valid for a maximum of six
+   months and may be updated, replaced, or obsoleted by other
+   documents at any time.  It is inappropriate to use Internet-
+   Drafts as reference material or to cite them other than as
+   "work in progress".
+
+Copyright Notice
+
+   Copyright (c) <TBD> IETF Trust and the persons identified as
+   the document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (https://trustee.ietf.org/license-info) in effect on the date
+   of publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with
+   respect to this document.
+
+
+Table of Contents
+
+   1.  Introduction
+   2.  Terminology
+   3.  Scope and Non-Goals
+     3.1.  Scope
+     3.2.  Non-Goals
+     3.3.  Relationship to Existing Standards
+   4.  Common Failure Modes
+     4.1.  Conflating Encryption with Authentication
+     4.2.  Trusting the Agent to Validate
+     4.3.  Permanent State from Unverified Bootstraps
+   5.  Threat Model Framework
+     5.1.  Trust Boundaries
+     5.2.  Core Assumptions
+     5.3.  Documenting Explicit Non-Goals
+   6.  Bootstrap Versus Steady-State Security
+     6.1.  The Bootstrap Problem
+     6.2.  Dual-Transport Architectures
+     6.3.  Session Lifecycle: A Reference Pattern
+     6.4.  Replay Protection Without Persistent State
+     6.5.  Why Session-Initiation Replay Is Tolerable
+   7.  Delegated Onboarding Authorities
+     7.1.  The Mobile Agent Pattern
+     7.2.  Agent Credential Lifecycle
+     7.3.  Trust Properties of Delegation
+     7.4.  Registration Windows
+     7.5.  Trust-On-First-Use for Authority Identity
+   8.  Handling Unavoidable Races
+     8.1.  The Transport-Layer MITM Race
+     8.2.  One-Time-Use Registration Payloads
+     8.3.  Timestamp-Bounded Replay Windows
+     8.4.  Binding Acknowledgements to Requests
+     8.5.  Self-Healing from Forged Acknowledgements
+   9.  Identity Destruction and Re-Creation
+   10. Security Considerations
+     10.1. Silent Discard
+     10.2. Key Compromise Containment
+     10.3. Residual Risks
+   11. IANA Considerations
+   12. References
+     12.1. Informative References
+   Author's Address
+
+
+1.  Introduction
+
+   Constrained devices such as sensors, actuators, and embedded
+   controllers are commonly onboarded into a larger system using
+   short-range local transports.  These transports are attractive
+   because they are widely available, energy-efficient, and often
+   supported by commodity user devices such as smartphones.
+
+   In practice, many such transports provide confidentiality and
+   integrity for messages exchanged between two endpoints, but do
+   not provide strong guarantees about the identity of the peer
+   during initial contact.  Bluetooth Low Energy (BLE) pairing
+   using the "Just Works" association model is a common example:
+   the resulting link is encrypted, but is vulnerable to active
+   man-in-the-middle attacks during pairing and does not provide
+   meaningful peer authentication.
+
+   A recurring design error in onboarding systems is the assumption
+   that an encrypted local channel implies that the communicating
+   peer is the intended device.  This assumption leads to protocols
+   that implicitly rely on properties the transport does not
+   provide, resulting in race conditions, identity confusion, or
+   brittle security checks layered on top of the channel.
+
+   At the same time, many real-world systems intentionally accept
+   these limitations in exchange for usability, cost, or power-
+   consumption constraints.  Rather than attempting to eliminate
+   all attacks -- which is often infeasible -- such systems instead
+   aim to bound the impact of attacks, ensure recoverability, and
+   concentrate trust decisions in components capable of enforcing
+   policy.
+
+   This document captures design patterns and common failure modes
+   for constrained-device onboarding systems that operate over
+   encrypted but unauthenticated local transports.  It focuses on
+   threat-model-first reasoning, explicit separation of bootstrap
+   and steady-state security properties, and the use of delegated
+   authorities during onboarding.  The document does not propose
+   new cryptographic mechanisms or replace existing standards such
+   as EDHOC [RFC9528], OSCORE [RFC8613], or Bluetooth Security
+   Manager Protocol (SMP) [BT-CORE]; instead, it complements them
+   by clarifying the assumptions required for safe composition.
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL
+   NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED",
+   "MAY", and "OPTIONAL" in this document are to be interpreted as
+   described in BCP 14 [RFC2119] [RFC8174] when, and only when,
+   they appear in all capitals, as shown here.
+
+
+2.  Terminology
+
+   This document uses the following terms:
+
+   Authorization Authority:  The entity that serves as the root of
+      trust for a deployment.  It stores device credentials,
+      validates enrollment requests, and enforces policy.
+      Examples include a local gateway, a network controller, or
+      a cloud service.
+
+   Constrained Device:  A device with limited processing, memory,
+      power, or connectivity resources [RFC7228] that is the
+      subject of onboarding.  Before onboarding, the device has
+      no pre-existing identity or credentials.
+
+   Mobile Agent:  A user-operated device (typically a smartphone)
+      that mediates onboarding on behalf of the authorization
+      authority.  The mobile agent holds a revocable credential
+      issued by the authority.
+
+   Local Transport:  The communication channel used between the
+      mobile agent and the constrained device during onboarding
+      (e.g., BLE, NFC, proprietary short-range radio).
+
+   Steady-State Transport:  The communication channel used between
+      the constrained device and the authorization authority after
+      onboarding (e.g., a low-power radio protocol, Wi-Fi, or
+      cellular).  This may be the same as or different from the
+      local transport.
+
+   Enrollment:  The process by which a constrained device is
+      registered with the authorization authority and provisioned
+      with credentials for steady-state communication.
+
+   Bootstrap:  The initial phase of enrollment during which no
+      shared credentials exist between the device and the
+      authority.
+
+   Steady-State:  The operational phase after enrollment, during
+      which the device and authority share a symmetric key and
+      can communicate with mutual authentication.
+
+
+3.  Scope and Non-Goals
+
+3.1.  Scope
+
+   This document addresses the design space of onboarding
+   protocols for constrained devices that meet ALL of the
+   following criteria:
+
+   o  The device has no factory-provisioned identity (no IDevID,
+      no manufacturer certificate, no pre-installed keys).
+
+   o  The local transport provides confidentiality (encryption)
+      but does not reliably authenticate the peer during initial
+      contact.
+
+   o  A human operator is involved in the onboarding decision,
+      either directly (pressing a button, scanning a code) or
+      through a delegated mobile agent.
+
+   o  The device is too constrained -- in power, memory, or
+      connectivity -- to perform multi-round key exchange
+      protocols or maintain persistent TLS/DTLS sessions.
+
+   o  An authorization authority serves as the root of trust for
+      the deployment and makes all final enrollment decisions.
+
+   The guidance in this document is transport-agnostic.  While
+   examples reference BLE and short-range radio protocols, the
+   patterns apply to any local transport where encryption does
+   not imply authentication.
+
+3.2.  Non-Goals
+
+   This document does NOT:
+
+   o  Define a new protocol, message format, or wire encoding.
+
+   o  Replace or compete with EDHOC [RFC9528], OSCORE [RFC8613],
+      BRSKI [RFC8995], ACE-OAuth [RFC9200], or any other IETF
+      standard.
+
+   o  Provide a formal security proof or verification.  The
+      patterns described are based on analysis of onboarding
+      requirements and informal threat modeling.
+
+   o  Address firmware update security (see SUIT [RFC9019]).
+
+   o  Address post-onboarding application-layer encryption or
+      access control.
+
+3.3.  Relationship to Existing Standards
+
+   Several IETF standards address aspects of constrained-device
+   security.  This document addresses a gap that none of them
+   individually fill:
+
+   BRSKI [RFC8995]:  BRSKI provides automated, voucher-based
+      onboarding but requires factory-provisioned X.509 identity
+      certificates (IDevID) and a Manufacturer Authorized Signing
+      Authority (MASA).  This document addresses systems where
+      devices have no factory-provisioned identity and no
+      manufacturer is in the trust chain.
+
+   EDHOC [RFC9528]:  EDHOC provides a compact, formally analyzed
+      authenticated key exchange.  However, it assumes the
+      communicating parties already have a basis for mutual
+      identification (e.g., pre-provisioned credentials or
+      certificates).  This document addresses the prior step:
+      how to establish that basis when the device is anonymous.
+
+   ACE-OAuth [RFC9200]:  ACE provides authorization for
+      constrained environments using OAuth 2.0 semantics.  It
+      assumes the authorization server already knows which
+      clients and resource servers exist.  This document
+      addresses the bootstrap of that knowledge.
+
+   OSCORE [RFC8613]:  OSCORE provides end-to-end object security
+      for CoAP.  It assumes keys already exist (from EDHOC,
+      DTLS, or out-of-band provisioning).  The patterns in this
+      document are complementary: they describe how to establish
+      keys that OSCORE (or similar protocols) can subsequently
+      use.
+
+   The patterns in this document compose well-understood
+   cryptographic primitives and are designed to be compatible
+   with adoption of the above standards when the system's
+   constraints permit.
+
+
+4.  Common Failure Modes
+
+   This section describes design errors that commonly arise in
+   constrained-device onboarding systems that operate over
+   encrypted but unauthenticated local transports.
+
+4.1.  Conflating Encryption with Authentication
+
+   The most common failure mode is treating an encrypted channel
+   as proof of peer identity.  When a BLE "Just Works" connection
+   is established, the link is encrypted and integrity-protected,
+   but the pairing process does not verify which device is at the
+   other end.
+
+   Systems that rely on the encrypted channel for identity make
+   an implicit assumption: "because this channel is encrypted,
+   the device I am communicating with is the one I intend."  This
+   assumption is violated by any active attacker who can initiate
+   or intercept a pairing session.
+
+   The consequence is that credential material transmitted over
+   the channel (such as a device key or enrollment payload) may
+   be delivered to an attacker rather than the intended device.
+   The system has no mechanism to detect this substitution.
+
+   Mitigation: treat all local transport channels as untrusted
+   for identity purposes.  Authenticate at the application layer,
+   not the transport layer.
+
+4.2.  Trusting the Agent to Validate
+
+   A second failure mode occurs when the authorization authority
+   delegates validation to the mobile agent.  If the authority
+   accepts an enrollment request solely because the agent
+   submitted it -- without independently verifying the agent's
+   credential or the request's integrity -- then a compromised
+   or rogue agent can enroll arbitrary devices.
+
+   Mitigation: the authorization authority MUST independently
+   validate every enrollment request, including verification of
+   the agent's credential and any integrity checks on the
+   enrollment payload.
+
+4.3.  Permanent State from Unverified Bootstraps
+
+   A third failure mode occurs when a device commits to permanent
+   state changes (e.g., erasing a one-time enrollment payload)
+   based on an unverified response.  If an attacker can forge an
+   enrollment acknowledgement, the device may believe it is
+   enrolled when the authority has no record of it.  If the device
+   has already erased its enrollment payload, it cannot retry and
+   is permanently stranded.
+
+   Mitigation: defer irreversible state changes until the device
+   has independently verified enrollment through normal
+   authenticated communication with the authority (see
+   Section 8.5).
+
+
+5.  Threat Model Framework
+
+   Onboarding protocols that operate over encrypted but
+   unauthenticated transports face a specific set of threats that
+   differ from those addressed by transport-layer security
+   protocols.  This section establishes a framework for
+   documenting trust boundaries, assumptions, and explicit
+   limitations.
+
+5.1.  Trust Boundaries
+
+   Systems in this design space typically involve four classes of
+   entity, each with distinct trust properties:
+
+   Authorization Authority:  Root of trust for the deployment.
+      Stores all device credentials, validates all enrollment
+      requests, and enforces policy.  Assumed to operate in a
+      controlled environment with a protected key store.
+
+   Constrained Device:  Initially has no identity or credentials.
+      After onboarding, authenticated via a unique per-device
+      symmetric key.  Trusted for its own data once enrolled, but
+      has no authority over other devices.
+
+   Mobile Agent:  Holds a revocable credential issued by the
+      authorization authority.  Trusted to initiate enrollment,
+      but the authority independently validates every request the
+      agent submits.
+
+   Local Transport:  Provides confidentiality but NOT peer
+      authentication during initial contact.  Treated as untrusted
+      for identity purposes.
+
+   A critical design principle is that the authorization authority
+   MUST NOT delegate its validation responsibilities to the mobile
+   agent.  The agent initiates enrollment; the authority decides
+   whether to accept it.
+
+5.2.  Core Assumptions
+
+   The following assumptions underlie the design patterns in this
+   document:
+
+   o  The authorization authority is operated in a controlled
+      environment with a protected key store.
+
+   o  Device identity is bound to an embedded symmetric key.
+      Physical access to the device is equivalent to key
+      compromise.
+
+   o  The authority has no persistent outbound connection to
+      devices.  Communication is always device-initiated.
+
+   o  The mobile agent's authority derives from a credential
+      issued by the authorization authority.  The agent generates
+      per-device keys and submits enrollment requests, but the
+      authority independently validates every request.
+
+   o  Compromise of a mobile agent's credential enables
+      unauthorized enrollment of new devices, but does not
+      affect devices already enrolled (each has an independent
+      key).
+
+5.3.  Documenting Explicit Non-Goals
+
+   Systems operating in this design space SHOULD explicitly
+   document which threats they do NOT address.  Common examples
+   include:
+
+   Confidentiality of Device Data:  Many constrained-device
+      protocols authenticate messages (via MAC or signature) but
+      do not encrypt payloads.  If the application requires
+      confidentiality, it MUST be provided at a higher layer.
+
+   Authorization Authority Compromise:  If the authority's key
+      store is compromised, all device keys are exposed.  This
+      is an operational security problem, not a protocol problem.
+
+   Physical-Layer Denial of Service:  Radio jamming, BLE
+      interference, and similar physical-layer attacks are
+      outside the scope of application-layer onboarding
+      protocols.
+
+   The value of explicitly documenting non-goals is that
+   reviewers and auditors can evaluate the system against its
+   stated threat model rather than against an implicit (and often
+   unrealistic) assumption of universal security.
+
+
+6.  Bootstrap Versus Steady-State Security
+
+   A common source of confusion in constrained-device protocols
+   is the failure to distinguish between bootstrap security (the
+   properties available during initial onboarding) and steady-
+   state security (the properties available after credentials
+   have been established).
+
+6.1.  The Bootstrap Problem
+
+   During bootstrap, the constrained device has no pre-existing
+   credentials.  The onboarding protocol must establish a shared
+   secret between the device and the authorization authority,
+   using only a local transport that does not authenticate peers.
+
+   This creates a fundamental asymmetry: the authorization
+   authority can verify the mobile agent's identity (via the
+   agent's credential), but neither the authority nor the agent
+   can cryptographically verify the identity of the constrained
+   device during first contact.  The device is, by definition,
+   anonymous until onboarding completes.
+
+   Protocols that attempt to solve this problem by layering
+   additional key exchanges on top of the unauthenticated
+   transport are solving a different problem.  The core issue is
+   not the absence of a key exchange mechanism; it is the absence
+   of any prior basis for knowing WHICH device is being
+   communicated with.
+
+   Effective bootstrap designs therefore focus on:
+
+   o  Concentrating trust decisions in the authorization
+      authority.
+
+   o  Ensuring that the consequences of a compromised bootstrap
+      are bounded and recoverable.
+
+   o  Making the human operator's intent (pairing THIS device)
+      as explicit as the transport allows.
+
+6.2.  Dual-Transport Architectures
+
+   In many constrained-device systems, the local transport used
+   for onboarding (e.g., BLE) differs from the steady-state
+   transport used for ongoing communication (e.g., a low-power
+   radio protocol).  This dual-transport architecture arises
+   naturally when:
+
+   o  The constrained device lacks the resources to maintain a
+      persistent BLE connection but can transmit short radio
+      frames.
+
+   o  The authorization authority is reachable over the steady-
+      state transport but not over the local transport.
+
+   o  The mobile agent bridges the two transports during
+      onboarding but is not involved in steady-state operation.
+
+   In such architectures, the constrained device relays an
+   opaque enrollment payload from the local transport to the
+   authorization authority over the steady-state transport.  The
+   device does not interpret the payload and cannot forge one.
+
+   The design patterns in Sections 7 and 8 accommodate both
+   single-transport and dual-transport architectures.
+
+6.3.  Session Lifecycle: A Reference Pattern
+
+   This section describes one pattern for session management that
+   is well-suited to sleep-based constrained devices.  Other
+   patterns exist (e.g., persistent counters with flash wear-
+   leveling, epoch-based schemes, or challenge-response per
+   message).  The pattern described here optimizes for zero
+   persistent state on the device.
+
+   1. The device wakes from deep sleep and transmits a session-
+      initiation message containing a fresh random nonce
+      generated by a hardware random number generator.
+
+   2. The authorization authority responds with an authenticated
+      message that includes a random starting sequence number,
+      binding the response to the device's nonce.
+
+   3. All subsequent messages in the session use incrementing
+      sequence numbers derived from the authority-assigned
+      starting value.
+
+   4. The device completes its work and enters deep sleep.
+      Neither the device nor the authority persists any replay-
+      protection state across sleep cycles.
+
+   This pattern has two important properties: it requires no
+   persistent sequence counters (avoiding flash-wear on
+   constrained devices), and it binds each session to a fresh
+   random nonce (preventing cross-session replay).
+
+   Alternative patterns include:
+
+   o  Persistent monotonic counters stored in flash with wear-
+      leveling.  Suitable for devices with sufficient flash
+      write budget.
+
+   o  Epoch-based schemes where the authority maintains a
+      coarse-grained epoch counter and rejects messages from
+      previous epochs.
+
+   o  Per-message challenge-response, where each message
+      includes a fresh challenge.  Suitable for low-frequency
+      communication but doubles message count.
+
+6.4.  Replay Protection Without Persistent State
+
+   Traditional replay protection requires at least one party to
+   maintain a monotonically increasing counter across sessions.
+   This is impractical for devices that deep-sleep between every
+   communication cycle and have limited flash-write budgets.
+
+   The reference pattern described in Section 6.3 achieves
+   replay protection through a combination of:
+
+   o  A fresh random nonce per session (generated by the
+      device).
+
+   o  A random starting sequence number per session (assigned
+      by the authority in an authenticated response).
+
+   o  Strictly incrementing sequence numbers within a session.
+
+   An attacker who replays a captured session-initiation message
+   causes the authority to create a new session with a DIFFERENT
+   random starting sequence.  The attacker cannot generate valid
+   follow-up messages because they lack the device's symmetric
+   key to compute the message authentication code.  Replayed
+   post-initiation messages from a previous session carry stale
+   sequence numbers and are rejected.
+
+6.5.  Why Session-Initiation Replay Is Tolerable
+
+   Session-initiation messages can themselves be replayed by an
+   attacker.  This is tolerable because:
+
+   o  The attacker cannot forge authenticated follow-up messages
+      without the device's symmetric key.
+
+   o  The authority creates a new session that simply times out
+      with no further activity.  No state is corrupted.
+
+   o  The real device's next wake cycle creates an independent
+      session unaffected by the phantom.
+
+   The operational cost is limited to a spurious log entry and
+   possibly a wasted command to a device that is not listening.
+   Both are self-correcting.
+
+
+7.  Delegated Onboarding Authorities
+
+7.1.  The Mobile Agent Pattern
+
+   In many deployments, the authorization authority is not
+   directly accessible to the constrained device during
+   onboarding.  A mobile agent bridges this gap.
+
+   The mobile agent pattern involves three phases:
+
+   Phase 1 - Agent Registration:  The mobile agent registers
+      with the authorization authority and receives a unique
+      agent credential (e.g., a 256-bit pre-shared key).  This
+      is a one-time operation per agent.
+
+   Phase 2 - Device Provisioning:  The mobile agent generates a
+      unique per-device credential, constructs an enrollment
+      request authenticated with its agent credential, encrypts
+      the request with the authority's public key, and transmits
+      both the device credential and the encrypted enrollment
+      request to the constrained device over the local transport.
+
+   Phase 3 - Authority Validation:  The constrained device
+      relays the encrypted enrollment request to the
+      authorization authority over the steady-state transport
+      (see Section 6.2).  The authority decrypts the request,
+      verifies the agent's authentication, extracts the device
+      credential, and registers the device.
+
+   The following diagram illustrates the message flow:
+
+     Mobile        Constrained    Authorization
+     Agent           Device        Authority
+       |                |              |
+       |  Phase 1: Agent Registration  |
+       |------------------------------>|
+       |    agent credential issued    |
+       |<------------------------------|
+       |                |              |
+       |  Phase 2: Device Provisioning |
+       |  device_cred + encrypted_req  |
+       |--------------->|              |
+       |                |              |
+       |  Phase 3: Authority Validation|
+       |                | relay(enc_req)|
+       |                |------------->|
+       |                |  enroll_ack  |
+       |                |<-------------|
+       |                |              |
+
+   The constrained device acts as a relay for an opaque,
+   encrypted payload.  It does not interpret the enrollment
+   request and cannot forge one.
+
+7.2.  Agent Credential Lifecycle
+
+   Agent credentials SHOULD support the following operations:
+
+   Issuance:  The authority generates a unique credential and
+      transmits it to the agent over a secured channel.
+
+   Usage:  The agent authenticates every enrollment request
+      with its credential.  The authority verifies the
+      credential before accepting any request.
+
+   Revocation:  The authority operator can revoke an agent
+      credential at any time.  Revoked credentials are retained
+      for audit purposes, but all future requests authenticated
+      with the revoked credential are rejected.
+
+7.3.  Trust Properties of Delegation
+
+   A well-designed delegation model provides the following
+   properties:
+
+   Authorization:  Only agents holding a valid (non-revoked)
+      credential can enroll new devices.
+
+   Isolation:  Each agent has a unique credential.  One agent
+      cannot forge requests as another.
+
+   Auditability:  The authority records which agent credential
+      was used to enroll each device.
+
+   Revocability:  Revoking an agent credential immediately
+      disables that agent's enrollment authority.
+
+   No Authority Key Exposure:  The agent credential is a
+      symmetric pairing credential.  It does not grant access
+      to the authority's private key, device key database, or
+      other authority state.
+
+7.4.  Registration Windows
+
+   To prevent unauthorized agents from silently enrolling by
+   connecting to the authority's local interface, the authority
+   SHOULD implement a registration window:
+
+   o  Agent registration requests are rejected unless a
+      registration window is currently open.
+
+   o  The window is opened only by explicit operator action
+      (e.g., a physical button press or an authenticated
+      administrative command).
+
+   o  The window closes automatically after a configurable
+      duration (e.g., 120 seconds).
+
+   This ensures that agent registration requires both possession
+   of a valid local transport connection AND contemporaneous
+   operator intent.
+
+7.5.  Trust-On-First-Use for Authority Identity
+
+   When a mobile agent connects to an authorization authority
+   for the first time, there is typically no pre-existing trust
+   anchor.  An attacker could present their own keypair and
+   produce a valid response.
+
+   The recommended approach is Trust-On-First-Use (TOFU) with
+   key pinning:
+
+   1. The agent establishes that the authority holds a specific
+      public key (e.g., via a challenge-response signature, a
+      displayed fingerprint, or a QR code).
+
+   2. The agent persists the authority's public key and a stable
+      authority identifier (pin-on-first-use).
+
+   3. Subsequent connections reject any authority presenting a
+      different public key.
+
+   Specific mechanisms for establishing the initial binding
+   include:
+
+   o  Challenge-response: the agent sends a random challenge;
+      the authority signs the challenge and its identifier with
+      its private key; the agent verifies the signature.
+
+   o  Manual verification: the operator compares a fingerprint
+      of the authority's public key displayed on both devices.
+
+   o  Out-of-band channel: the authority's public key is
+      transferred via QR code, NFC tap, or USB.
+
+   For environments requiring stronger assurance than TOFU, the
+   operator SHOULD verify the authority's public key fingerprint
+   out-of-band before relying on the pinned key.
+
+   When using challenge-response, including the authority
+   identifier in the signed payload binds the signature to a
+   specific authority instance, preventing replay of a signature
+   obtained from a different authority.
+
+
+8.  Handling Unavoidable Races
+
+   When the local transport does not authenticate peers, certain
+   race conditions are inherent and cannot be eliminated by
+   protocol design alone.  The goal is to detect, bound, and
+   recover from these races rather than pretend they do not
+   exist.
+
+8.1.  The Transport-Layer MITM Race
+
+   If the local transport uses an unauthenticated pairing model
+   (e.g., BLE "Just Works"), an active man-in-the-middle
+   attacker can intercept the device credential during
+   provisioning.  The attacker can then race the legitimate
+   device to submit an enrollment request to the authorization
+   authority.
+
+   This race is INHERENT to the transport model and cannot be
+   eliminated without upgrading to an authenticated pairing
+   method (e.g., BLE Passkey Entry or Numeric Comparison).
+
+   Systems that accept this risk SHOULD implement the
+   mitigations described in Sections 8.2 through 8.5 to bound
+   the impact.
+
+8.2.  One-Time-Use Registration Payloads
+
+   The authorization authority SHOULD enforce that each device
+   identifier can be registered at most once.  If an attacker
+   wins the race and registers first using the intercepted
+   credential, the duplicate registration attempt from the
+   legitimate device is rejected.
+
+   This does not prevent the attack, but it ensures that:
+
+   o  The attacker's registration "burns" the device
+      identifier.  The attacker cannot register additional
+      devices with the same payload.
+
+   o  The operator can detect the conflict (two parties
+      claiming the same identifier) and investigate.
+
+   o  The legitimate device can be factory-reset and
+      re-provisioned with a new identifier and credential.
+
+8.3.  Timestamp-Bounded Replay Windows
+
+   Enrollment requests SHOULD include a timestamp set by the
+   mobile agent.  The authorization authority SHOULD reject
+   requests whose timestamps fall outside a tolerance window
+   (e.g., +/-24 hours).
+
+   This limits the window during which a captured enrollment
+   request can be replayed, but does not prevent same-day
+   attacks.  It is a defense-in-depth measure, not a primary
+   mitigation.
+
+8.4.  Binding Acknowledgements to Requests
+
+   When the authorization authority acknowledges a successful
+   enrollment, the acknowledgement SHOULD be cryptographically
+   bound to the specific enrollment request.  An example
+   pattern is:
+
+      registration_proof = MAC(device_key,
+         context_string || enrollment_payload)
+
+   where:
+
+   o  device_key is the newly provisioned per-device key.
+
+   o  context_string is a fixed, protocol-specific string that
+      prevents cross-protocol confusion.
+
+   o  enrollment_payload is the exact bytes of the encrypted
+      enrollment request that was relayed by the device.
+
+   The device verifies the registration_proof before accepting
+   the acknowledgement.  This prevents an attacker who
+   intercepted the device credential from forging a substitute
+   acknowledgement for a different enrollment.
+
+   Other binding mechanisms (e.g., a signature over a hash of
+   the enrollment payload) are equally valid.  The essential
+   property is that the acknowledgement is tied to the specific
+   enrollment request the device relayed.
+
+8.5.  Self-Healing from Forged Acknowledgements
+
+   Even with bound acknowledgements (Section 8.4), an attacker
+   who intercepted the device credential over the local
+   transport has all the material needed to compute a valid
+   registration_proof.
+
+   To handle this case, the device SHOULD implement deferred
+   payload erasure:
+
+   1. After accepting a registration_proof, the device sets a
+      "registration complete" flag but does NOT immediately
+      erase the enrollment payload.
+
+   2. On its next wake cycle, the device attempts normal
+      authenticated communication with the authorization
+      authority.
+
+   3. If the authority responds with a valid authenticated
+      message (proving it knows the device's key and has the
+      device in its registry), the device erases the
+      enrollment payload permanently.
+
+   4. If the authority does not respond or responds with an
+      authentication failure, the device clears the
+      "registration complete" flag and reverts to enrollment
+      mode on its next wake cycle.
+
+   This self-healing behavior ensures that a forged
+   acknowledgement does not permanently strand the device in
+   a state where it believes it is enrolled but the authority
+   has no record of it.
+
+
+9.  Identity Destruction and Re-Creation
+
+   In many constrained-device systems, the appropriate response
+   to key compromise is not key rotation but identity
+   destruction.  This is a deliberate design choice, not a
+   limitation.
+
+   When a device's symmetric key is compromised:
+
+   1. The authorization authority removes the compromised
+      device from its registry.
+
+   2. The device is factory-reset, which erases: the
+      symmetric key (identity), any persistent application
+      state, and any resident program or configuration.
+
+   3. After reset, the device is inert -- it cannot
+      authenticate with any authority and will not execute
+      application logic.
+
+   4. The operator re-provisions the device via the normal
+      onboarding flow, establishing a new key and a new
+      identity.
+
+   This destroy-and-recreate model has several advantages over
+   in-place key rotation:
+
+   o  Simplicity: no key-rotation protocol is needed on the
+      constrained device.
+
+   o  Clean state: any application state that may have been
+      influenced by the attacker is also erased.
+
+   o  Auditability: the new identity is a distinct entry in
+      the authority's registry, making it clear that a
+      re-provisioning event occurred.
+
+   The cost is operational: an operator must physically
+   interact with the device (or be in BLE range) to re-
+   provision it.  For systems where this is acceptable, it is
+   a simpler and more robust approach than managing key
+   rotation on a constrained device.
+
+
+10. Security Considerations
+
+   This entire document is about security considerations for
+   constrained-device onboarding.  This section highlights
+   three cross-cutting concerns.
+
+10.1.  Silent Discard
+
+   Protocols operating over unauthenticated transports SHOULD
+   handle all authentication and integrity failures by silent
+   discard.  No error response should be sent to the sender.
+
+   Silent discard prevents information leakage that could
+   assist an attacker:
+
+   o  No indication of whether a key-lookup hint matched any
+      known device.
+
+   o  No indication of whether a message authentication code
+      was close to valid.
+
+   o  No indication of whether the authority has an active
+      session for the claimed device.
+
+   o  No indication of whether the message was syntactically
+      well-formed.
+
+   Constrained devices operating in sleep-based architectures
+   already expect message loss due to radio unreliability.
+   Silent discard is therefore compatible with existing retry
+   logic (await response or timeout, then retry or sleep).
+
+10.2.  Key Compromise Containment
+
+   The per-device, per-agent keying model described in this
+   document provides natural compromise containment:
+
+   Device Key Compromise:  Limited to the compromised device.
+      Other devices are unaffected.  The authority removes the
+      compromised device from its registry.  The device can be
+      factory-reset and re-provisioned with a new key (see
+      Section 9).
+
+   Agent Credential Compromise:  Enables the attacker to forge
+      enrollment requests for new devices, but does NOT affect
+      devices already enrolled (each has an independent key).
+      The operator revokes the compromised credential; all
+      future requests authenticated with it are rejected.
+      Devices enrolled before revocation remain valid unless
+      individually removed.
+
+   These properties depend on each device and each agent
+   having a unique, independent key.  Shared or derived keys
+   weaken containment.
+
+10.3.  Residual Risks
+
+   The patterns in this document reduce but do not eliminate
+   risk.  Designers SHOULD acknowledge the following residual
+   risks in their threat models:
+
+   o  TOFU (Section 7.5) is vulnerable to an active attacker
+      during first contact between the mobile agent and the
+      authorization authority.  Out-of-band verification of
+      the authority's public key fingerprint mitigates this
+      risk.
+
+   o  BLE "Just Works" pairing (or equivalent unauthenticated
+      transport pairing) permits active MITM interception of
+      device credentials.  For high-threat environments, an
+      authenticated pairing method (Passkey Entry, Numeric
+      Comparison, or OOB) is required.
+
+   o  The authorization authority is a single point of
+      compromise.  If its key store is breached, all device
+      keys are exposed.  Operational security measures
+      (encrypted storage, access control, backup) are
+      essential but outside the scope of protocol design.
+
+   o  The patterns in this document compose well-understood
+      cryptographic primitives (ECDH, AEAD, HMAC, CBOR) but
+      have not been subjected to formal verification.
+      Designers who require provable security guarantees
+      should consider formally analyzed protocols such as
+      EDHOC [RFC9528] for the key-exchange component, while
+      recognizing that such protocols do not address the full
+      onboarding problem described here.
+
+
+11. IANA Considerations
+
+   This document has no IANA actions.
+
+
+12. References
+
+12.1.  Informative References
+
+   [RFC2104]  Krawczyk, H., Bellare, M., and R. Canetti,
+              "HMAC: Keyed-Hashing for Message
+              Authentication", RFC 2104,
+              DOI 10.17487/RFC2104, February 1997,
+              <https://www.rfc-editor.org/info/rfc2104>.
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to
+              Indicate Requirement Levels", BCP 14,
+              RFC 2119, DOI 10.17487/RFC2119, March 1997,
+              <https://www.rfc-editor.org/info/rfc2119>.
+
+   [RFC8174]  Leiba, B., "Ambiguity of Uppercase vs Lowercase
+              in RFC 2119 Key Words", BCP 14, RFC 8174,
+              DOI 10.17487/RFC8174, May 2017,
+              <https://www.rfc-editor.org/info/rfc8174>.
+
+   [RFC7228]  Bormann, C., Ersue, M., and A. Keranen,
+              "Terminology for Constrained-Node Networks",
+              RFC 7228, DOI 10.17487/RFC7228, May 2014,
+              <https://www.rfc-editor.org/info/rfc7228>.
+
+   [RFC8613]  Selander, G., Mattsson, J., Palombini, F., and
+              L. Seitz, "Object Security for Constrained
+              RESTful Environments (OSCORE)", RFC 8613,
+              DOI 10.17487/RFC8613, July 2019,
+              <https://www.rfc-editor.org/info/rfc8613>.
+
+   [RFC8949]  Bormann, C. and P. Hoffman, "Concise Binary
+              Object Representation (CBOR)", STD 94,
+              RFC 8949, DOI 10.17487/RFC8949,
+              December 2020,
+              <https://www.rfc-editor.org/info/rfc8949>.
+
+   [RFC8995]  Pritikin, M., Richardson, M., Eckert, T.,
+              Behringer, M., and K. Watsen, "Bootstrapping
+              Remote Secure Key Infrastructure (BRSKI)",
+              RFC 8995, DOI 10.17487/RFC8995, May 2021,
+              <https://www.rfc-editor.org/info/rfc8995>.
+
+   [RFC9019]  Moran, B., Tschofenig, H., Brown, D., and
+              M. Meriac, "A Firmware Update Architecture
+              for Internet of Things", RFC 9019,
+              DOI 10.17487/RFC9019, April 2021,
+              <https://www.rfc-editor.org/info/rfc9019>.
+
+   [RFC9052]  Schaad, J., "CBOR Object Signing and
+              Encryption (COSE): Structures and Process",
+              STD 96, RFC 9052, DOI 10.17487/RFC9052,
+              August 2022,
+              <https://www.rfc-editor.org/info/rfc9052>.
+
+   [RFC9200]  Seitz, L., Selander, G., Wahlstroem, E.,
+              Erdtman, S., and H. Tschofenig,
+              "Authentication and Authorization for
+              Constrained Environments Using the OAuth 2.0
+              Framework (ACE-OAuth)", RFC 9200,
+              DOI 10.17487/RFC9200, August 2022,
+              <https://www.rfc-editor.org/info/rfc9200>.
+
+   [RFC9528]  Selander, G., Mattsson, J., and
+              F. Palombini, "Ephemeral Diffie-Hellman Over
+              COSE (EDHOC)", RFC 9528,
+              DOI 10.17487/RFC9528, March 2024,
+              <https://www.rfc-editor.org/info/rfc9528>.
+
+   [BT-CORE] Bluetooth SIG, "Bluetooth Core Specification",
+              Version 5.4, February 2023,
+              <https://www.bluetooth.com/specifications/
+              specs/core-specification-5-4/>.
+
+
+Author's Address
+
+   Alan Jowett
+   <email TBD>

@@ -1316,7 +1316,7 @@ pub async fn simulate_phone_registration(
     use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
     use sonde_pair::crypto::{
         aes256gcm_decrypt, ed25519_to_x25519_public, generate_x25519_keypair, hkdf_sha256,
-        x25519_ecdh,
+        verify_ed25519_signature, x25519_ecdh,
     };
     use sonde_pair::envelope::{
         build_envelope, parse_envelope, parse_gw_info_response, parse_phone_registered,
@@ -1348,6 +1348,24 @@ pub async fn simulate_phone_registration(
     assert_eq!(msg_type, types::GW_INFO_RESPONSE);
     let gw_info = parse_gw_info_response(body).unwrap();
 
+    // Verify Ed25519 signature over (challenge ‖ gateway_id) and assert
+    // the response fields match the expected gateway identity.
+    let mut signed_data = Vec::with_capacity(32 + 16);
+    signed_data.extend_from_slice(&challenge);
+    signed_data.extend_from_slice(&gw_info.gateway_id);
+    verify_ed25519_signature(&gw_info.gw_public_key, &signed_data, &gw_info.signature)
+        .expect("GW_INFO_RESPONSE Ed25519 signature must be valid");
+    assert_eq!(
+        gw_info.gw_public_key,
+        *identity.public_key(),
+        "response public key must match gateway identity"
+    );
+    assert_eq!(
+        gw_info.gateway_id,
+        *identity.gateway_id(),
+        "response gateway_id must match gateway identity"
+    );
+
     // Phase 1b: REGISTER_PHONE
     let (eph_secret, eph_public) = generate_x25519_keypair(&rng).unwrap();
     let label = b"e2e-test-phone";
@@ -1373,14 +1391,16 @@ pub async fn simulate_phone_registration(
     assert_eq!(msg_type, types::PHONE_REGISTERED);
     let registered = parse_phone_registered(body).unwrap();
 
+    // Decrypt using fields from the GW_INFO_RESPONSE (not the caller's
+    // identity) so the helper validates the response like a real phone.
     let gw_x25519 = ed25519_to_x25519_public(&gw_info.gw_public_key).unwrap();
     let shared_secret = x25519_ecdh(&eph_secret, &gw_x25519);
-    let aes_key = hkdf_sha256(&shared_secret, identity.gateway_id(), b"sonde-phone-reg-v1");
+    let aes_key = hkdf_sha256(&shared_secret, &gw_info.gateway_id, b"sonde-phone-reg-v1");
     let plaintext = aes256gcm_decrypt(
         &aes_key,
         &registered.nonce,
         &registered.ciphertext,
-        identity.gateway_id(),
+        &gw_info.gateway_id,
     )
     .unwrap();
 
@@ -1423,7 +1443,7 @@ pub fn build_encrypted_payload(
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64;
 
     // Step 1: Encode PairingRequest as CBOR

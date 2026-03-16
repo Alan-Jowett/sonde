@@ -391,16 +391,11 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
                                     Value::Integer(1.into()),
                                     Value::Integer(s.sensor_type.into()),
                                 ),
-                                (
-                                    Value::Integer(2.into()),
-                                    Value::Integer(s.sensor_id.into()),
-                                ),
+                                (Value::Integer(2.into()), Value::Integer(s.sensor_id.into())),
                             ];
                             if let Some(ref label) = s.label {
-                                entries.push((
-                                    Value::Integer(3.into()),
-                                    Value::Text(label.clone()),
-                                ));
+                                entries
+                                    .push((Value::Integer(3.into()), Value::Text(label.clone())));
                             }
                             Value::Map(entries)
                         })

@@ -68,11 +68,7 @@ impl TestEnv {
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
         let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let gateway = Gateway::new_with_pending(
-            storage.clone(),
-            pending_commands,
-            session_manager,
-        );
+        let gateway = Gateway::new_with_pending(storage.clone(), pending_commands, session_manager);
 
         Self {
             storage,
@@ -103,7 +99,10 @@ fn build_pairing_cbor(
 
     let mut entries = vec![
         (Value::Integer(1.into()), Value::Text(node_id.to_string())),
-        (Value::Integer(2.into()), Value::Integer(node_key_hint.into())),
+        (
+            Value::Integer(2.into()),
+            Value::Integer(node_key_hint.into()),
+        ),
         (Value::Integer(3.into()), Value::Bytes(node_psk.to_vec())),
         (Value::Integer(4.into()), Value::Integer(rf_channel.into())),
         (Value::Integer(6.into()), Value::Integer(timestamp.into())),
@@ -136,10 +135,7 @@ fn build_authenticated_request(cbor_bytes: &[u8], phone_psk: &[u8; 32]) -> Vec<u
 
 /// ECDH encrypt a payload for the gateway.
 /// Returns: eph_public(32) + gcm_nonce(12) + ciphertext(N+16)
-fn ecdh_encrypt(
-    identity: &GatewayIdentity,
-    plaintext: &[u8],
-) -> Vec<u8> {
+fn ecdh_encrypt(identity: &GatewayIdentity, plaintext: &[u8]) -> Vec<u8> {
     let mut eph_scalar = [0u8; 32];
     getrandom::fill(&mut eph_scalar).unwrap();
     let eph_secret = x25519_dalek::StaticSecret::from(eph_scalar);
@@ -243,7 +239,10 @@ async fn peer_request_happy_path() {
     );
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_some(), "valid PEER_REQUEST must produce a response");
+    assert!(
+        response.is_some(),
+        "valid PEER_REQUEST must produce a response"
+    );
 
     let raw = response.unwrap();
     let decoded = decode_frame(&raw).unwrap();
@@ -269,7 +268,11 @@ async fn peer_request_happy_path() {
     }
     assert_eq!(status, Some(0), "PEER_ACK status must be 0 (success)");
     assert!(proof.is_some(), "PEER_ACK must contain registration_proof");
-    assert_eq!(proof.unwrap().len(), 32, "registration_proof must be 32 bytes");
+    assert_eq!(
+        proof.unwrap().len(),
+        32,
+        "registration_proof must be 32 bytes"
+    );
 
     // Verify node was registered.
     let node = env.storage.get_node("node-test-1").await.unwrap();
@@ -291,7 +294,10 @@ async fn peer_request_with_sensors() {
         Value::Map(vec![
             (Value::Integer(1.into()), Value::Integer(1.into())), // I2C
             (Value::Integer(2.into()), Value::Integer(0x48.into())), // addr
-            (Value::Integer(3.into()), Value::Text("temperature".to_string())),
+            (
+                Value::Integer(3.into()),
+                Value::Text("temperature".to_string()),
+            ),
         ]),
         Value::Map(vec![
             (Value::Integer(1.into()), Value::Integer(2.into())), // ADC
@@ -343,7 +349,10 @@ async fn peer_request_bad_gcm_tag() {
     }
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "tampered frame must be silently discarded");
+    assert!(
+        response.is_none(),
+        "tampered frame must be silently discarded"
+    );
 }
 
 /// GW-1213: Revoked phone PSK → silent discard.
@@ -365,7 +374,10 @@ async fn peer_request_revoked_phone() {
     );
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "revoked phone must cause silent discard");
+    assert!(
+        response.is_none(),
+        "revoked phone must cause silent discard"
+    );
 }
 
 /// GW-1213: Wrong phone HMAC → silent discard.
@@ -385,7 +397,10 @@ async fn peer_request_bad_phone_hmac() {
     );
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "wrong phone HMAC must cause silent discard");
+    assert!(
+        response.is_none(),
+        "wrong phone HMAC must cause silent discard"
+    );
 }
 
 /// GW-1214: Bad frame HMAC (wrong node PSK in frame) → silent discard.
@@ -395,7 +410,8 @@ async fn peer_request_bad_frame_hmac() {
 
     let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
     let ts = current_timestamp();
-    let cbor_bytes = build_pairing_cbor("node-bad-hmac", node_key_hint, &TEST_NODE_PSK, 7, ts, None);
+    let cbor_bytes =
+        build_pairing_cbor("node-bad-hmac", node_key_hint, &TEST_NODE_PSK, 7, ts, None);
     let authenticated_request = build_authenticated_request(&cbor_bytes, &TEST_PHONE_PSK);
     let encrypted_payload = ecdh_encrypt(&env.identity, &authenticated_request);
 
@@ -417,7 +433,10 @@ async fn peer_request_bad_frame_hmac() {
     let frame = encode_frame(&header, &outer_buf, &wrong_psk, &RustCryptoHmac).unwrap();
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "bad frame HMAC must cause silent discard");
+    assert!(
+        response.is_none(),
+        "bad frame HMAC must cause silent discard"
+    );
 }
 
 /// GW-1215: Timestamp too far in the past → silent discard.
@@ -437,7 +456,10 @@ async fn peer_request_timestamp_drift_past() {
     );
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "old timestamp must cause silent discard");
+    assert!(
+        response.is_none(),
+        "old timestamp must cause silent discard"
+    );
 }
 
 /// GW-1215: Timestamp too far in the future → silent discard.
@@ -457,7 +479,10 @@ async fn peer_request_timestamp_drift_future() {
     );
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "future timestamp must cause silent discard");
+    assert!(
+        response.is_none(),
+        "future timestamp must cause silent discard"
+    );
 }
 
 /// GW-1216: Duplicate node_id → silent discard.
@@ -489,7 +514,10 @@ async fn peer_request_duplicate_node_id() {
         None,
     );
     let response2 = env.gateway.process_frame(&frame2, peer()).await;
-    assert!(response2.is_none(), "duplicate node_id must cause silent discard");
+    assert!(
+        response2.is_none(),
+        "duplicate node_id must cause silent discard"
+    );
 }
 
 /// GW-1217: key_hint mismatch (frame key_hint ≠ pairing key_hint) → silent discard.
@@ -499,7 +527,14 @@ async fn peer_request_key_hint_mismatch() {
 
     let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
     let ts = current_timestamp();
-    let cbor_bytes = build_pairing_cbor("node-kh-mismatch", node_key_hint, &TEST_NODE_PSK, 7, ts, None);
+    let cbor_bytes = build_pairing_cbor(
+        "node-kh-mismatch",
+        node_key_hint,
+        &TEST_NODE_PSK,
+        7,
+        ts,
+        None,
+    );
     let authenticated_request = build_authenticated_request(&cbor_bytes, &TEST_PHONE_PSK);
     let encrypted_payload = ecdh_encrypt(&env.identity, &authenticated_request);
 
@@ -521,7 +556,10 @@ async fn peer_request_key_hint_mismatch() {
     let frame = encode_frame(&header, &outer_buf, &TEST_NODE_PSK, &RustCryptoHmac).unwrap();
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "key_hint mismatch must cause silent discard");
+    assert!(
+        response.is_none(),
+        "key_hint mismatch must cause silent discard"
+    );
 }
 
 /// rf_channel = 0 → silent discard.
@@ -559,7 +597,10 @@ async fn peer_request_rf_channel_14() {
     );
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "rf_channel=14 must cause silent discard");
+    assert!(
+        response.is_none(),
+        "rf_channel=14 must cause silent discard"
+    );
 }
 
 /// rf_channel = 13 → accepted (boundary).
@@ -644,7 +685,10 @@ async fn peer_request_empty_node_id() {
     );
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "empty node_id must cause silent discard");
+    assert!(
+        response.is_none(),
+        "empty node_id must cause silent discard"
+    );
 }
 
 /// Timestamp exactly at +86400s boundary → accepted.

@@ -698,7 +698,10 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         )
     })?;
     let last_seen_epoch: Option<i64> = row.get(8)?;
-    let rf_channel: Option<u8> = row.get(9).ok().and_then(|v: Option<u32>| v.and_then(|c| u8::try_from(c).ok()));
+    let rf_channel: Option<u8> = row
+        .get(9)
+        .ok()
+        .and_then(|v: Option<u32>| v.and_then(|c| u8::try_from(c).ok()));
     let sensors_json: Option<String> = row.get(10)?;
     let registered_by_phone_id: Option<u32> = row.get(11)?;
     Ok(NodeRecord {
@@ -721,7 +724,9 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         last_battery_mv: row.get(7)?,
         last_seen: last_seen_epoch.map(epoch_s_to_system_time),
         rf_channel,
-        sensors: sensors_json.map(|j| sensors_from_json(&j)).unwrap_or_default(),
+        sensors: sensors_json
+            .map(|j| sensors_from_json(&j))
+            .unwrap_or_default(),
         registered_by_phone_id,
     })
 }

@@ -337,8 +337,7 @@ impl Gateway {
                                 let mut sensor_id: Option<u8> = None;
                                 let mut label: Option<String> = None;
                                 for (sk, sv) in sensor_map {
-                                    let skey =
-                                        sk.as_integer().and_then(|i| u64::try_from(i).ok());
+                                    let skey = sk.as_integer().and_then(|i| u64::try_from(i).ok());
                                     match skey {
                                         Some(1) => {
                                             sensor_type = sv

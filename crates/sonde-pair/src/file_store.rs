@@ -107,22 +107,29 @@ impl FilePairingStore {
 
         // Atomic write: temp file → fsync → rename.
         let temp_path = self.path.with_extension("json.tmp");
+
+        // On Unix, create with restrictive permissions from the start so the
+        // file is never world-readable, even briefly.
+        #[cfg(unix)]
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&temp_path)
+                .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?
+        };
+        #[cfg(not(unix))]
         let mut file = fs::File::create(&temp_path)
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+
         file.write_all(json.as_bytes())
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
         file.sync_all()
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
         drop(file);
-
-        // Set restrictive permissions *before* rename so the file is never
-        // world-readable, even briefly.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))
-                .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
-        }
 
         fs::rename(&temp_path, &self.path)
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
@@ -280,14 +287,14 @@ fn artifacts_from_stored(s: &StoredArtifacts) -> Result<PairingArtifacts, Pairin
 #[cfg(target_os = "windows")]
 fn default_path() -> Result<PathBuf, PairingError> {
     let appdata = std::env::var("APPDATA")
-        .map_err(|_| PairingError::StoreCorrupted("%APPDATA% not set".into()))?;
+        .map_err(|_| PairingError::StoreLoadFailed("%APPDATA% not set".into()))?;
     Ok(PathBuf::from(appdata).join("sonde").join("pairing.json"))
 }
 
 #[cfg(not(target_os = "windows"))]
 fn default_path() -> Result<PathBuf, PairingError> {
     let home =
-        std::env::var("HOME").map_err(|_| PairingError::StoreCorrupted("$HOME not set".into()))?;
+        std::env::var("HOME").map_err(|_| PairingError::StoreLoadFailed("$HOME not set".into()))?;
     Ok(PathBuf::from(home)
         .join(".config")
         .join("sonde")

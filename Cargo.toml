@@ -9,6 +9,7 @@ members = [
     "crates/sonde-bpf",
     "crates/sonde-e2e",
     "crates/sonde-pair",
+    "crates/sonde-pair-ui/src-tauri",
 ]
 default-members = [
     "crates/sonde-protocol",

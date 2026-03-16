@@ -1,0 +1,19 @@
+[package]
+name = "sonde-pair-ui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tauri v2 BLE pairing tool for sonde sensor nodes"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+sonde-pair = { path = "../../sonde-pair", features = ["btleplug", "file-store"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

@@ -119,10 +119,10 @@ async fn do_provision_node(
     // Step 12: Build NODE_PROVISION payload
     let total_encrypted_len = eph_public.len() + nonce.len() + ciphertext.len();
     if total_encrypted_len > PEER_PAYLOAD_MAX_LEN {
-        return Err(PairingError::PayloadTooLarge(total_encrypted_len));
-    }
-    if total_encrypted_len > u16::MAX as usize {
-        return Err(PairingError::PayloadTooLarge(total_encrypted_len));
+        return Err(PairingError::PayloadTooLarge {
+            size: total_encrypted_len,
+            max: PEER_PAYLOAD_MAX_LEN,
+        });
     }
     let payload_len = total_encrypted_len as u16;
     let mut provision_payload = Vec::with_capacity(2 + 32 + 1 + 2 + 32 + 12 + ciphertext.len());
@@ -134,8 +134,12 @@ async fn do_provision_node(
     provision_payload.extend_from_slice(nonce);
     provision_payload.extend_from_slice(ciphertext);
 
-    let message = build_envelope(NODE_PROVISION, &provision_payload)
-        .ok_or(PairingError::PayloadTooLarge(provision_payload.len()))?;
+    let message = build_envelope(NODE_PROVISION, &provision_payload).ok_or(
+        PairingError::PayloadTooLarge {
+            size: provision_payload.len(),
+            max: u16::MAX as usize,
+        },
+    )?;
 
     // Step 13: Write to NODE_COMMAND_UUID
     transport
@@ -482,7 +486,7 @@ mod tests {
             .await;
 
             assert!(
-                matches!(result, Err(PairingError::PayloadTooLarge(_))),
+                matches!(result, Err(PairingError::PayloadTooLarge { .. })),
                 "expected PayloadTooLarge, got {result:?}"
             );
             // No BLE write should have occurred

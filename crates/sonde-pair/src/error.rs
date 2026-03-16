@@ -78,8 +78,8 @@ pub enum PairingError {
     #[error("already paired with this gateway")]
     GatewayAlreadyPaired,
 
-    #[error("payload too large for BLE envelope: {0} bytes exceeds u16 max")]
-    PayloadTooLarge(usize),
+    #[error("payload too large: {size} bytes exceeds {max}-byte limit")]
+    PayloadTooLarge { size: usize, max: usize },
 
     #[error("invalid phone label: {0}")]
     InvalidPhoneLabel(String),

@@ -67,8 +67,11 @@ async fn do_pair_with_gateway(
     debug!("generated challenge");
 
     // Step 3: Write REQUEST_GW_INFO
-    let request = build_envelope(REQUEST_GW_INFO, &challenge)
-        .ok_or(PairingError::PayloadTooLarge(challenge.len()))?;
+    let request =
+        build_envelope(REQUEST_GW_INFO, &challenge).ok_or(PairingError::PayloadTooLarge {
+            size: challenge.len(),
+            max: u16::MAX as usize,
+        })?;
     transport
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &request)
         .await?;
@@ -130,8 +133,11 @@ async fn do_pair_with_gateway(
     register_body.extend_from_slice(&eph_public);
     register_body.push(phone_label.len() as u8);
     register_body.extend_from_slice(phone_label.as_bytes());
-    let register = build_envelope(REGISTER_PHONE, &register_body)
-        .ok_or(PairingError::PayloadTooLarge(register_body.len()))?;
+    let register =
+        build_envelope(REGISTER_PHONE, &register_body).ok_or(PairingError::PayloadTooLarge {
+            size: register_body.len(),
+            max: u16::MAX as usize,
+        })?;
     transport
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &register)
         .await?;
@@ -203,6 +209,12 @@ async fn do_pair_with_gateway(
 
     // Validate rf_channel (spec: 1–13)
     validate_rf_channel(rf_channel)?;
+
+    // Verify phone_key_hint matches the PSK
+    let expected_hint = crate::validation::compute_key_hint(&phone_psk);
+    if phone_key_hint != expected_hint {
+        return Err(PairingError::InvalidKeyHint);
+    }
 
     // Step 12: Build and save artifacts
     let artifacts = PairingArtifacts {

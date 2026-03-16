@@ -23,6 +23,7 @@ fn main() {
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
     use log::{error, info};
 
+    use sonde_modem::ble::EspBleDriver;
     use sonde_modem::bridge::Bridge;
     use sonde_modem::status::ModemCounters;
 
@@ -50,6 +51,14 @@ fn main() {
     // Share the USB connected flag with the ESP-NOW receive callback
     // so it can discard frames when USB is disconnected (MD-0301).
     let usb_connected = usb.connected();
+
+    // Initialize BLE GATT server (MD-0400).
+    // esp32-nimble manages the NimBLE stack internally; no Modem peripheral
+    // token is needed here. WiFi/ESP-NOW and NimBLE share the radio via
+    // ESP-IDF coexistence management (CONFIG_ESP32_WIFI_BT_COEX).
+    let ble = EspBleDriver::new();
+    info!("BLE GATT server initialized (advertising off by default — MD-0412)");
+
     let espnow = sonde_modem::espnow::EspNowDriver::new(
         peripherals.modem,
         sysloop,
@@ -62,7 +71,7 @@ fn main() {
         panic!("fatal: ESP-NOW init failed");
     });
 
-    let mut bridge = Bridge::new(usb, espnow, counters);
+    let mut bridge = Bridge::with_ble(usb, espnow, ble, counters);
 
     // Initialize the task watchdog with a 10-second timeout (MD-0302).
     unsafe {

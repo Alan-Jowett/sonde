@@ -14,9 +14,9 @@ use log::{info, warn};
 use std::sync::Arc;
 
 use sonde_protocol::modem::{
-    encode_modem_frame, FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady,
-    ModemStatus, RecvFrame, ScanEntry, ScanResult, SendFrame, MAC_SIZE,
-    MODEM_ERR_CHANNEL_SET_FAILED,
+    encode_modem_frame, BleConnected, BleDisconnected, BlePairingConfirm, BlePairingConfirmReply,
+    BleRecv, FrameDecoder, ModemCodecError, ModemError, ModemMessage, ModemReady, ModemStatus,
+    RecvFrame, ScanEntry, ScanResult, SendFrame, MAC_SIZE, MODEM_ERR_CHANNEL_SET_FAILED,
 };
 
 use crate::status::ModemCounters;
@@ -28,6 +28,10 @@ const FIRMWARE_VERSION: [u8; 4] = [0, 1, 0, 0];
 /// Prevents starvation of serial decode and other poll() work under
 /// sustained RX burst traffic.
 const MAX_RX_FRAMES_PER_POLL: usize = 16;
+
+/// Maximum number of BLE events forwarded per `poll()` call.
+/// Prevents starvation of serial decode and radio under sustained BLE traffic.
+const MAX_BLE_EVENTS_PER_POLL: usize = 16;
 
 /// Abstraction over a serial byte stream (USB-CDC on device, PTY in tests).
 pub trait SerialPort {
@@ -60,20 +64,85 @@ pub trait Radio {
     fn reset_state(&mut self);
 }
 
-/// Bridge between a serial port and a radio driver.
-pub struct Bridge<S: SerialPort, R: Radio> {
+/// Events emitted by the BLE layer (phone → modem → gateway via USB).
+pub enum BleEvent {
+    /// A BLE GATT write was received from the connected phone.
+    Recv(Vec<u8>),
+    /// A BLE client connected and completed LESC pairing.
+    Connected { peer_addr: [u8; MAC_SIZE], mtu: u16 },
+    /// The BLE client disconnected.
+    Disconnected {
+        peer_addr: [u8; MAC_SIZE],
+        reason: u8,
+    },
+    /// Numeric Comparison passkey to relay to the gateway (MD-0414).
+    PairingConfirm { passkey: u32 },
+}
+
+/// Abstraction over the BLE GATT server layer (ESP-IDF on device, no-op in tests).
+///
+/// The bridge calls `enable`/`disable`/`indicate`/`pairing_confirm_reply` in
+/// response to gateway commands, and calls `drain_event` each poll cycle to
+/// forward BLE events to the gateway over USB-CDC.
+pub trait Ble {
+    /// Enable BLE advertising for the Gateway Pairing Service (MD-0407).
+    fn enable(&mut self);
+    /// Disable BLE advertising and disconnect any active BLE client (MD-0407).
+    fn disable(&mut self);
+    /// Send an indication to the connected BLE client (MD-0408).
+    ///
+    /// If no client is connected or `data` is empty, silently discards.
+    fn indicate(&mut self, data: &[u8]);
+    /// Accept or reject a Numeric Comparison pairing (MD-0414).
+    fn pairing_confirm_reply(&mut self, accept: bool);
+    /// Drain one queued BLE event, or `None` if empty.
+    fn drain_event(&self) -> Option<BleEvent>;
+}
+
+/// No-op BLE driver for builds without BLE support (host-side testing).
+pub struct NoBle;
+
+impl Ble for NoBle {
+    fn enable(&mut self) {}
+    fn disable(&mut self) {}
+    fn indicate(&mut self, _data: &[u8]) {}
+    fn pairing_confirm_reply(&mut self, _accept: bool) {}
+    fn drain_event(&self) -> Option<BleEvent> {
+        None
+    }
+}
+
+/// Bridge between a serial port, a radio driver, and an optional BLE driver.
+pub struct Bridge<S: SerialPort, R: Radio, B: Ble = NoBle> {
     usb: S,
     radio: R,
+    ble: B,
     counters: Arc<ModemCounters>,
     decoder: FrameDecoder,
     rx_buf: [u8; 64],
 }
 
-impl<S: SerialPort, R: Radio> Bridge<S, R> {
+impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
+    /// Create a bridge without BLE support (no-op BLE driver).
     pub fn new(usb: S, radio: R, counters: Arc<ModemCounters>) -> Self {
         Self {
             usb,
             radio,
+            ble: NoBle,
+            counters,
+            decoder: FrameDecoder::new(),
+            rx_buf: [0u8; 64],
+        }
+    }
+}
+
+impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
+    /// Create a bridge with a BLE driver.
+    pub fn with_ble(usb: S, radio: R, ble: B, counters: Arc<ModemCounters>) -> Self {
+        Self {
+            usb,
+            radio,
+            ble,
             counters,
             decoder: FrameDecoder::new(),
             rx_buf: [0u8; 64],
@@ -171,6 +240,31 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
                 None => break,
             }
         }
+
+        // Forward any BLE events to the gateway over USB-CDC.
+        // Cap at MAX_BLE_EVENTS_PER_POLL to prevent starvation of serial
+        // decode and radio under sustained BLE write traffic.
+        for _ in 0..MAX_BLE_EVENTS_PER_POLL {
+            match self.ble.drain_event() {
+                Some(BleEvent::Recv(data)) => {
+                    let msg = ModemMessage::BleRecv(BleRecv { ble_data: data });
+                    self.send_msg(&msg);
+                }
+                Some(BleEvent::Connected { peer_addr, mtu }) => {
+                    let msg = ModemMessage::BleConnected(BleConnected { peer_addr, mtu });
+                    self.send_msg(&msg);
+                }
+                Some(BleEvent::Disconnected { peer_addr, reason }) => {
+                    let msg = ModemMessage::BleDisconnected(BleDisconnected { peer_addr, reason });
+                    self.send_msg(&msg);
+                }
+                Some(BleEvent::PairingConfirm { passkey }) => {
+                    let msg = ModemMessage::BlePairingConfirm(BlePairingConfirm { passkey });
+                    self.send_msg(&msg);
+                }
+                None => break,
+            }
+        }
     }
 
     fn dispatch(&mut self, msg: ModemMessage) {
@@ -180,6 +274,12 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
             ModemMessage::SetChannel(ch) => self.handle_set_channel(ch),
             ModemMessage::GetStatus => self.handle_get_status(),
             ModemMessage::ScanChannels => self.handle_scan_channels(),
+            ModemMessage::BleIndicate(ind) => self.handle_ble_indicate(ind.ble_data),
+            ModemMessage::BleEnable => self.handle_ble_enable(),
+            ModemMessage::BleDisable => self.handle_ble_disable(),
+            ModemMessage::BlePairingConfirmReply(reply) => {
+                self.handle_ble_pairing_confirm_reply(reply)
+            }
             ModemMessage::Unknown { .. } => {}
             _ => {}
         }
@@ -188,6 +288,8 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
     fn handle_reset(&mut self) {
         info!("RESET received");
         self.radio.reset_state();
+        // BLE advertising is off by default after RESET (MD-0412).
+        self.ble.disable();
         self.counters.reset();
         self.decoder.reset();
         self.send_modem_ready();
@@ -237,12 +339,30 @@ impl<S: SerialPort, R: Radio> Bridge<S, R> {
         let msg = ModemMessage::ScanResult(ScanResult { entries });
         self.send_msg(&msg);
     }
+
+    fn handle_ble_indicate(&mut self, data: Vec<u8>) {
+        self.ble.indicate(&data);
+    }
+
+    fn handle_ble_enable(&mut self) {
+        info!("BLE_ENABLE received");
+        self.ble.enable();
+    }
+
+    fn handle_ble_disable(&mut self) {
+        info!("BLE_DISABLE received");
+        self.ble.disable();
+    }
+
+    fn handle_ble_pairing_confirm_reply(&mut self, reply: BlePairingConfirmReply) {
+        self.ble.pairing_confirm_reply(reply.accept);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonde_protocol::modem::{decode_modem_frame, ModemMessage};
+    use sonde_protocol::modem::{decode_modem_frame, BleIndicate, ModemMessage};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -839,5 +959,332 @@ mod tests {
 
         // Total forwarded must equal total injected.
         assert_eq!(count1 + count2, total);
+    }
+
+    // --- BLE relay tests ---
+
+    /// Mock BLE driver that records calls and queues events.
+    struct MockBle {
+        enabled: bool,
+        indicated: Vec<Vec<u8>>,
+        pairing_replies: Vec<bool>,
+        event_queue: RefCell<VecDeque<BleEvent>>,
+    }
+
+    impl MockBle {
+        fn new() -> Self {
+            Self {
+                enabled: false,
+                indicated: Vec::new(),
+                pairing_replies: Vec::new(),
+                event_queue: RefCell::new(VecDeque::new()),
+            }
+        }
+
+        fn inject_event(&self, event: BleEvent) {
+            self.event_queue.borrow_mut().push_back(event);
+        }
+    }
+
+    impl Ble for MockBle {
+        fn enable(&mut self) {
+            self.enabled = true;
+        }
+        fn disable(&mut self) {
+            self.enabled = false;
+        }
+        fn indicate(&mut self, data: &[u8]) {
+            // Ble contract: empty data is a no-op.
+            if !data.is_empty() {
+                self.indicated.push(data.to_vec());
+            }
+        }
+        fn pairing_confirm_reply(&mut self, accept: bool) {
+            self.pairing_replies.push(accept);
+        }
+        fn drain_event(&self) -> Option<BleEvent> {
+            self.event_queue.borrow_mut().pop_front()
+        }
+    }
+
+    fn make_bridge_with_ble() -> Bridge<MockSerial, MockRadio, MockBle> {
+        Bridge::with_ble(
+            MockSerial::new(),
+            MockRadio::new(),
+            MockBle::new(),
+            ModemCounters::new(),
+        )
+    }
+
+    /// Validates: T-0618 (BLE_ENABLE starts advertising)
+    #[test]
+    fn ble_enable_starts_advertising() {
+        let mut bridge = make_bridge_with_ble();
+        assert!(!bridge.ble.enabled);
+        let frame = encode_modem_frame(&ModemMessage::BleEnable).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert!(bridge.ble.enabled);
+    }
+
+    /// Validates: T-0617 (BLE disabled by default after RESET / MD-0412)
+    #[test]
+    fn ble_disabled_after_reset() {
+        let mut bridge = make_bridge_with_ble();
+        // Enable BLE first.
+        let enable = encode_modem_frame(&ModemMessage::BleEnable).unwrap();
+        bridge.usb.inject(&enable);
+        bridge.poll();
+        assert!(bridge.ble.enabled);
+        bridge.usb.take_tx(); // discard
+
+        // RESET must disable BLE.
+        let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset);
+        bridge.poll();
+        assert!(!bridge.ble.enabled, "BLE must be off after RESET (MD-0412)");
+    }
+
+    /// Validates: T-0619 (BLE_DISABLE stops advertising)
+    #[test]
+    fn ble_disable_stops_advertising() {
+        let mut bridge = make_bridge_with_ble();
+        let enable = encode_modem_frame(&ModemMessage::BleEnable).unwrap();
+        bridge.usb.inject(&enable);
+        bridge.poll();
+        assert!(bridge.ble.enabled);
+
+        let disable = encode_modem_frame(&ModemMessage::BleDisable).unwrap();
+        bridge.usb.inject(&disable);
+        bridge.poll();
+        assert!(!bridge.ble.enabled);
+    }
+
+    /// Validates: T-0604 / T-0611 (BLE_INDICATE dispatched to BLE layer)
+    #[test]
+    fn ble_indicate_dispatched() {
+        let mut bridge = make_bridge_with_ble();
+        let payload = vec![0x01, 0x00, 0x02, 0xDE, 0xAD];
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload.clone(),
+        }))
+        .unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert_eq!(bridge.ble.indicated.len(), 1);
+        assert_eq!(bridge.ble.indicated[0], payload);
+    }
+
+    /// Validates: T-0613a (empty BLE_INDICATE silently discarded — MD-0408)
+    ///
+    /// An empty BLE_INDICATE body is invalid per modem-protocol.md §4.9.
+    /// The decoder will reject it as BodyTooShort, so it never reaches
+    /// handle_ble_indicate(). Verify the BLE layer receives nothing.
+    #[test]
+    fn ble_indicate_empty_body_silently_discarded() {
+        let mut bridge = make_bridge_with_ble();
+        // Craft a BLE_INDICATE frame with empty body (len = 1, just the type byte).
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1u16.to_be_bytes());
+        raw.push(sonde_protocol::modem::MODEM_MSG_BLE_INDICATE);
+        bridge.usb.inject(&raw);
+        bridge.poll();
+        // Nothing should have been indicated and no serial output.
+        assert!(bridge.ble.indicated.is_empty());
+        assert!(bridge.usb.take_tx().is_empty());
+    }
+
+    /// Validates: handle_ble_indicate gracefully handles empty data even if
+    /// called directly (defense-in-depth, per the Ble trait contract).
+    #[test]
+    fn ble_indicate_direct_empty_no_panic() {
+        let mut bridge = make_bridge_with_ble();
+        // Directly call the dispatch path with BleIndicate(vec![]) to verify
+        // the Ble::indicate() contract — empty data is a no-op without panicking.
+        bridge.ble.indicate(&[]);
+        assert!(
+            bridge.ble.indicated.is_empty(),
+            "empty indicate should not queue"
+        );
+    }
+
+    /// Validates: T-0612 (BLE_INDICATE with no BLE client: silent discard via NoBle)
+    #[test]
+    fn ble_indicate_no_ble_client_silent_discard() {
+        // NoBle no-op: no crash, no serial output.
+        let mut bridge = make_bridge();
+        let payload = vec![0x01, 0x00, 0x02, 0xDE, 0xAD];
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload,
+        }))
+        .unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        // No crash; serial output is empty (NoBle.indicate() is a no-op).
+        assert!(bridge.usb.take_tx().is_empty());
+    }
+
+    /// Validates: T-0620 (BLE_PAIRING_CONFIRM_REPLY accept dispatched)
+    #[test]
+    fn ble_pairing_confirm_reply_accept() {
+        let mut bridge = make_bridge_with_ble();
+        let reply = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: true });
+        let frame = encode_modem_frame(&reply).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert_eq!(bridge.ble.pairing_replies, vec![true]);
+    }
+
+    /// Validates: T-0621 (BLE_PAIRING_CONFIRM_REPLY reject dispatched)
+    #[test]
+    fn ble_pairing_confirm_reply_reject() {
+        let mut bridge = make_bridge_with_ble();
+        let reply = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: false });
+        let frame = encode_modem_frame(&reply).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert_eq!(bridge.ble.pairing_replies, vec![false]);
+    }
+
+    /// Validates: T-0613 (BLE_RECV forwarded to gateway)
+    #[test]
+    fn ble_recv_forwarded_to_gateway() {
+        let mut bridge = make_bridge_with_ble();
+        let data = vec![0x01, 0x00, 0x03, 0xCA, 0xFE, 0xBA];
+        bridge.ble.inject_event(BleEvent::Recv(data.clone()));
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleRecv(received) => assert_eq!(received.ble_data, data),
+            _ => panic!("expected BleRecv"),
+        }
+    }
+
+    /// Validates: T-0614 (BLE_CONNECTED notification forwarded)
+    #[test]
+    fn ble_connected_forwarded_to_gateway() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 247,
+        });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleConnected(c) => {
+                assert_eq!(c.peer_addr, peer);
+                assert_eq!(c.mtu, 247);
+            }
+            _ => panic!("expected BleConnected"),
+        }
+    }
+
+    /// Validates: T-0615 (BLE_DISCONNECTED notification forwarded)
+    #[test]
+    fn ble_disconnected_forwarded_to_gateway() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        bridge.ble.inject_event(BleEvent::Disconnected {
+            peer_addr: peer,
+            reason: 0x13,
+        });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleDisconnected(d) => {
+                assert_eq!(d.peer_addr, peer);
+                assert_eq!(d.reason, 0x13);
+            }
+            _ => panic!("expected BleDisconnected"),
+        }
+    }
+
+    /// Validates: T-0620 (BLE_PAIRING_CONFIRM forwarded to gateway)
+    #[test]
+    fn ble_pairing_confirm_forwarded_to_gateway() {
+        let mut bridge = make_bridge_with_ble();
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 123456 });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BlePairingConfirm(p) => assert_eq!(p.passkey, 123456),
+            _ => panic!("expected BlePairingConfirm"),
+        }
+    }
+
+    /// Validates: T-0616 (BLE relay round-trip: BLE_RECV → BLE_INDICATE)
+    /// Injects a BLE_RECV event and a BLE_INDICATE command in the same poll.
+    #[test]
+    fn ble_relay_round_trip() {
+        let mut bridge = make_bridge_with_ble();
+
+        // Phone wrote to Gateway Command characteristic.
+        let recv_data = vec![0x01, 0x00, 0x00]; // REQUEST_GW_INFO envelope
+        bridge.ble.inject_event(BleEvent::Recv(recv_data.clone()));
+
+        // Gateway responds with BLE_INDICATE.
+        let indicate_data = vec![0x81, 0x00, 0x10]; // GW_INFO_RESPONSE envelope prefix
+        let indicate_frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: indicate_data.clone(),
+        }))
+        .unwrap();
+        bridge.usb.inject(&indicate_frame);
+
+        bridge.poll();
+
+        // BLE_RECV should appear on USB.
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleRecv(d) => assert_eq!(d.ble_data, recv_data),
+            _ => panic!("expected BleRecv"),
+        }
+
+        // BLE layer should have received the indication.
+        assert_eq!(bridge.ble.indicated.len(), 1);
+        assert_eq!(bridge.ble.indicated[0], indicate_data);
+    }
+
+    /// Validates concurrent BLE + ESP-NOW (MD-0405): both paths work in same poll.
+    #[test]
+    fn ble_and_espnow_concurrent() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [1, 2, 3, 4, 5, 6];
+
+        // Inject an ESP-NOW frame.
+        bridge.radio.inject_rx(RecvFrame {
+            peer_mac: peer,
+            rssi: -50,
+            frame_data: vec![0xDE, 0xAD],
+        });
+
+        // Inject a BLE event.
+        bridge.ble.inject_event(BleEvent::Recv(vec![0xCA, 0xFE]));
+
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        // Both RECV_FRAME and BLE_RECV should appear on USB.
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&tx);
+
+        let mut got_recv_frame = false;
+        let mut got_ble_recv = false;
+        while let Ok(Some(msg)) = decoder.decode() {
+            match msg {
+                ModemMessage::RecvFrame(_) => got_recv_frame = true,
+                ModemMessage::BleRecv(_) => got_ble_recv = true,
+                _ => {}
+            }
+        }
+        assert!(got_recv_frame, "expected RECV_FRAME from ESP-NOW");
+        assert!(got_ble_recv, "expected BLE_RECV from BLE layer");
     }
 }

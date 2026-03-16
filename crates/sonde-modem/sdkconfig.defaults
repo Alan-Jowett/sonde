@@ -10,6 +10,11 @@
 # On a typical ESP32-S3-DevKitC-1:
 #   UART port  → diagnostic logs (idf.py monitor / 115200 baud)
 #   USB port   → modem protocol (gateway serial link)
+#
+# NOTE: Bluetooth / NimBLE settings live in the workspace-root
+# sdkconfig.defaults.esp32s3 (chip-specific suffix).  esp-idf-sys
+# resolves sdkconfig paths relative to the workspace root, so settings
+# placed here are NOT picked up by the build — keep BT config there.
 
 # --- Console ---
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
@@ -18,7 +23,7 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 
 # --- Watchdog (MD-0302) ---
 CONFIG_ESP_TASK_WDT_EN=y
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=35
 CONFIG_ESP_TASK_WDT_PANIC=y
 
 # --- Logging ---

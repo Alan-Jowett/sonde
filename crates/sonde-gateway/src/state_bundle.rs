@@ -703,11 +703,19 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                 Some(NODE_KEY_LAST_SEEN) => {
                     last_seen_epoch_s = Some(opt_i64_from_cbor(v, "last_seen_epoch_s")?);
                 }
-                Some(NODE_KEY_RF_CHANNEL) => {
-                    if let Value::Integer(i) = v {
-                        rf_channel = u8::try_from(i).ok();
+                Some(NODE_KEY_RF_CHANNEL) => match v {
+                    Value::Null => {}
+                    Value::Integer(i) => {
+                        rf_channel = Some(u8::try_from(i).map_err(|_| {
+                            BundleError::Decode("rf_channel out of u8 range".into())
+                        })?);
                     }
-                }
+                    _ => {
+                        return Err(BundleError::Decode(
+                            "rf_channel must be integer or null".into(),
+                        ))
+                    }
+                },
                 Some(NODE_KEY_SENSORS) => {
                     if let Value::Array(arr) = v {
                         for item in arr {
@@ -748,11 +756,19 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                         }
                     }
                 }
-                Some(NODE_KEY_REGISTERED_BY) => {
-                    if let Value::Integer(i) = v {
-                        registered_by_phone_id = u32::try_from(i).ok();
+                Some(NODE_KEY_REGISTERED_BY) => match v {
+                    Value::Null => {}
+                    Value::Integer(i) => {
+                        registered_by_phone_id = Some(u32::try_from(i).map_err(|_| {
+                            BundleError::Decode("registered_by_phone_id out of u32 range".into())
+                        })?);
                     }
-                }
+                    _ => {
+                        return Err(BundleError::Decode(
+                            "registered_by_phone_id must be integer or null".into(),
+                        ))
+                    }
+                },
                 _ => {} // ignore unknown fields for forward compatibility
             }
         }

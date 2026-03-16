@@ -352,20 +352,21 @@ impl Gateway {
                                                 .and_then(|v| u8::try_from(v).ok())
                                         }
                                         Some(3) => {
-                                            label = sv.as_text().map(|s| {
-                                                let bytes = s.as_bytes();
-                                                if bytes.len() > 64 {
-                                                    String::from_utf8_lossy(&bytes[..64])
-                                                        .into_owned()
-                                                } else {
-                                                    s.to_owned()
+                                            if let Some(s) = sv.as_text() {
+                                                if s.len() > 64 {
+                                                    return None; // label exceeds 64-byte limit
                                                 }
-                                            })
+                                                label = Some(s.to_owned());
+                                            }
                                         }
                                         _ => {}
                                     }
                                 }
                                 if let (Some(st), Some(si)) = (sensor_type, sensor_id) {
+                                    // Validate sensor_type: 1=I2C, 2=ADC, 3=GPIO, 4=SPI.
+                                    if !(1..=4).contains(&st) {
+                                        return None;
+                                    }
                                     sensors.push(SensorDescriptor {
                                         sensor_type: st,
                                         sensor_id: si,

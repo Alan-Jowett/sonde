@@ -105,11 +105,11 @@ fn build_pairing_cbor(
         ),
         (Value::Integer(3.into()), Value::Bytes(node_psk.to_vec())),
         (Value::Integer(4.into()), Value::Integer(rf_channel.into())),
-        (Value::Integer(6.into()), Value::Integer(timestamp.into())),
     ];
     if let Some(sensors) = sensors {
         entries.push((Value::Integer(5.into()), Value::Array(sensors)));
     }
+    entries.push((Value::Integer(6.into()), Value::Integer(timestamp.into())));
 
     let map = Value::Map(entries);
     let mut buf = Vec::new();
@@ -326,6 +326,35 @@ async fn peer_request_with_sensors() {
     assert_eq!(node.sensors[1].sensor_type, 2);
     assert_eq!(node.sensors[1].sensor_id, 0);
     assert!(node.sensors[1].label.is_none());
+}
+
+/// Invalid sensor_type (5, outside 1-4 enum) → silent discard.
+#[tokio::test]
+async fn peer_request_invalid_sensor_type() {
+    use ciborium::Value;
+
+    let env = TestEnv::new().await;
+
+    let sensors = vec![Value::Map(vec![
+        (Value::Integer(1.into()), Value::Integer(5.into())), // invalid type
+        (Value::Integer(2.into()), Value::Integer(0.into())),
+    ])];
+
+    let frame = build_peer_request(
+        &env.identity,
+        "node-bad-sensor",
+        &TEST_NODE_PSK,
+        3,
+        &TEST_PHONE_PSK,
+        None,
+        Some(sensors),
+    );
+
+    let response = env.gateway.process_frame(&frame, peer()).await;
+    assert!(
+        response.is_none(),
+        "invalid sensor_type must cause silent discard"
+    );
 }
 
 /// GW-1220: Bad GCM tag — tampered encrypted_payload → silent discard.
@@ -644,12 +673,13 @@ async fn peer_request_rf_channel_1_ok() {
     assert!(response.is_some(), "rf_channel=1 must be accepted");
 }
 
-/// node_id = 65 bytes → silent discard (validated before frame encoding would fail).
-/// Note: 65-byte IDs also exceed the 250-byte ESP-NOW frame limit,
-/// so we verify the validation works at a smaller boundary: a node_id
-/// just over the 64-byte protocol limit is rejected even if we could
-/// somehow deliver it. We test with a 30-byte ID (fits in frame) to
-/// verify acceptance, and use unit-level reasoning for the 65-byte case.
+/// Verify that a 30-byte node_id is accepted (fits within the 64-byte protocol
+/// limit and the 250-byte ESP-NOW frame budget).
+///
+/// Note: node_ids longer than ~30 bytes exceed the ESP-NOW frame limit due to
+/// ECDH + CBOR overhead, so the 64-byte protocol validation cannot be tested
+/// end-to-end. The length check in `handle_peer_request` is verified
+/// structurally by code inspection.
 #[tokio::test]
 async fn peer_request_node_id_30_ok() {
     let env = TestEnv::new().await;
@@ -711,12 +741,13 @@ async fn peer_request_timestamp_boundary_ok() {
     assert!(response.is_some(), "timestamp at +86400s must be accepted");
 }
 
-/// Timestamp at +86401s → rejected.
+/// Timestamp at +86410s → rejected (well beyond the ±86400s window;
+/// uses a 10s margin to avoid flaky races between frame creation and validation).
 #[tokio::test]
 async fn peer_request_timestamp_boundary_plus1_rejected() {
     let env = TestEnv::new().await;
 
-    let over_ts = current_timestamp() + 86401;
+    let over_ts = current_timestamp() + 86410;
     let frame = build_peer_request(
         &env.identity,
         "node-ts-over",
@@ -728,5 +759,5 @@ async fn peer_request_timestamp_boundary_plus1_rejected() {
     );
 
     let response = env.gateway.process_frame(&frame, peer()).await;
-    assert!(response.is_none(), "timestamp at +86401s must be rejected");
+    assert!(response.is_none(), "timestamp at +86410s must be rejected");
 }

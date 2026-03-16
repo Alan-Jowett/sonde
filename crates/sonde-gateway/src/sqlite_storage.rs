@@ -377,7 +377,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     schedule_interval_s INTEGER NOT NULL DEFAULT 60,
     firmware_abi_version INTEGER,
     last_battery_mv INTEGER,
-    last_seen_epoch_s INTEGER
+    last_seen_epoch_s INTEGER,
+    rf_channel INTEGER,
+    sensors_json TEXT,
+    registered_by_phone_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_key_hint ON nodes(key_hint);
 
@@ -457,18 +460,24 @@ impl SqliteStorage {
                 .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
         }
         // Migration: add BLE pairing columns to nodes table if they don't exist.
+        // Each column is checked and added independently to handle partial migrations.
         {
             let node_cols: Vec<String> = conn
                 .prepare("PRAGMA table_info(nodes)")
                 .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
                 .map_err(|e| StorageError::Internal(format!("migration check: {e}")))?;
-            if !node_cols.iter().any(|n| n == "rf_channel") {
-                conn.execute_batch(
-                    "ALTER TABLE nodes ADD COLUMN rf_channel INTEGER;\
-                     ALTER TABLE nodes ADD COLUMN sensors_json TEXT;\
-                     ALTER TABLE nodes ADD COLUMN registered_by_phone_id INTEGER;",
-                )
-                .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+            let has_col = |name: &str| node_cols.iter().any(|n| n == name);
+            if !has_col("rf_channel") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN rf_channel INTEGER")
+                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+            }
+            if !has_col("sensors_json") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN sensors_json TEXT")
+                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+            }
+            if !has_col("registered_by_phone_id") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN registered_by_phone_id INTEGER")
+                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
             }
         }
         // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted
@@ -565,121 +574,17 @@ fn profile_to_str(p: &VerificationProfile) -> &'static str {
     }
 }
 
-/// Serialize sensor descriptors to a compact JSON array for SQLite storage.
+/// Serialize sensor descriptors to JSON for SQLite storage.
 fn sensors_to_json(sensors: &[SensorDescriptor]) -> Option<String> {
     if sensors.is_empty() {
         return None;
     }
-    // Manual JSON to avoid adding serde_json dependency.
-    let mut out = String::from("[");
-    for (i, s) in sensors.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        match &s.label {
-            Some(label) => {
-                // Escape JSON string: backslash and double-quote.
-                let escaped: String = label
-                    .chars()
-                    .flat_map(|c| match c {
-                        '"' => vec!['\\', '"'],
-                        '\\' => vec!['\\', '\\'],
-                        c => vec![c],
-                    })
-                    .collect();
-                out.push_str(&format!(
-                    "{{\"t\":{},\"i\":{},\"l\":\"{}\"}}",
-                    s.sensor_type, s.sensor_id, escaped
-                ));
-            }
-            None => {
-                out.push_str(&format!(
-                    "{{\"t\":{},\"i\":{}}}",
-                    s.sensor_type, s.sensor_id
-                ));
-            }
-        }
-    }
-    out.push(']');
-    Some(out)
+    serde_json::to_string(sensors).ok()
 }
 
 /// Parse sensor descriptors from JSON stored in SQLite.
 fn sensors_from_json(json: &str) -> Vec<SensorDescriptor> {
-    // Minimal JSON array parser for our known format.
-    let mut sensors = Vec::new();
-    let trimmed = json.trim();
-    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-        return sensors;
-    }
-    let inner = &trimmed[1..trimmed.len() - 1];
-    if inner.trim().is_empty() {
-        return sensors;
-    }
-    // Split on '},{' to separate objects.
-    for obj_str in split_json_objects(inner) {
-        let mut sensor_type: Option<u8> = None;
-        let mut sensor_id: Option<u8> = None;
-        let mut label: Option<String> = None;
-        // Parse key-value pairs from the object string.
-        let obj = obj_str.trim();
-        let obj = obj.strip_prefix('{').unwrap_or(obj);
-        let obj = obj.strip_suffix('}').unwrap_or(obj);
-        for part in obj.split(',') {
-            let part = part.trim();
-            if let Some((key, val)) = part.split_once(':') {
-                let key = key.trim().trim_matches('"');
-                let val = val.trim();
-                match key {
-                    "t" => sensor_type = val.parse().ok(),
-                    "i" => sensor_id = val.parse().ok(),
-                    "l" => {
-                        let s = val.trim_matches('"');
-                        label = Some(s.replace("\\\"", "\"").replace("\\\\", "\\"));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if let (Some(st), Some(si)) = (sensor_type, sensor_id) {
-            sensors.push(SensorDescriptor {
-                sensor_type: st,
-                sensor_id: si,
-                label,
-            });
-        }
-    }
-    sensors
-}
-
-/// Split a JSON array interior into individual object strings.
-fn split_json_objects(s: &str) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-    for (i, c) in s.char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    result.push(&s[start..=i]);
-                    start = i + 1;
-                    // Skip comma after '}'
-                    // start will be adjusted on next '{' detection
-                }
-            }
-            _ => {
-                if depth == 0 && c == '{' {
-                    // This shouldn't happen due to the '{' arm, but safety.
-                }
-            }
-        }
-        if depth == 0 && c != '}' && c != ',' && c != ' ' {
-            // skip whitespace/commas between objects
-        }
-    }
-    result
+    serde_json::from_str(json).unwrap_or_default()
 }
 
 /// Read a `NodeRecord` from the current row of a rusqlite statement,
@@ -698,10 +603,19 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         )
     })?;
     let last_seen_epoch: Option<i64> = row.get(8)?;
-    let rf_channel: Option<u8> = row
-        .get(9)
-        .ok()
-        .and_then(|v: Option<u32>| v.and_then(|c| u8::try_from(c).ok()));
+    let rf_channel: Option<u8> = {
+        let v: Option<u32> = row.get(9)?;
+        v.map(|c| {
+            u8::try_from(c).map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Integer,
+                    format!("rf_channel {c} out of u8 range").into(),
+                )
+            })
+        })
+        .transpose()?
+    };
     let sensors_json: Option<String> = row.get(10)?;
     let registered_by_phone_id: Option<u32> = row.get(11)?;
     Ok(NodeRecord {

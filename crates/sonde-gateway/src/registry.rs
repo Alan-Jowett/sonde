@@ -4,13 +4,16 @@
 use std::time::SystemTime;
 
 /// Sensor descriptor for a node's attached peripherals.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SensorDescriptor {
     /// Sensor bus type: 1=I2C, 2=ADC, 3=GPIO, 4=SPI.
+    #[serde(rename = "t")]
     pub sensor_type: u8,
     /// Bus-specific address or channel (e.g., I2C address, ADC channel).
+    #[serde(rename = "i")]
     pub sensor_id: u8,
     /// Optional human-readable label (max 64 bytes UTF-8).
+    #[serde(rename = "l", skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 

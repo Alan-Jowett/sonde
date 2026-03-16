@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sonde Pairing Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Sonde Pairing Tool</h1>
+    <div id="phase-bar" class="phase idle">Idle</div>
+  </header>
+
+  <main>
+    <!-- Scan controls -->
+    <section class="card">
+      <h2>Device Scan</h2>
+      <div class="btn-row">
+        <button id="btn-scan-start">Start Scan</button>
+        <button id="btn-scan-stop" disabled>Stop Scan</button>
+      </div>
+      <ul id="device-list" class="device-list">
+        <li class="placeholder">No devices found</li>
+      </ul>
+    </section>
+
+    <!-- Phase 1: Gateway Pairing -->
+    <section class="card">
+      <h2>Phase 1 &mdash; Gateway Pairing</h2>
+      <label for="phone-label">Phone Label</label>
+      <input id="phone-label" type="text" placeholder="my-phone" maxlength="64" />
+      <button id="btn-pair" disabled>Pair with Gateway</button>
+    </section>
+
+    <!-- Phase 2: Node Provisioning -->
+    <section class="card">
+      <h2>Phase 2 &mdash; Node Provisioning</h2>
+      <label for="node-id">Node ID</label>
+      <input id="node-id" type="text" placeholder="sensor-01" maxlength="64" />
+      <button id="btn-provision" disabled>Provision Node</button>
+    </section>
+
+    <!-- Status -->
+    <section class="card">
+      <h2>Pairing Status</h2>
+      <div id="pairing-status">Checking&hellip;</div>
+      <button id="btn-clear" class="btn-danger">Clear Pairing</button>
+    </section>
+
+    <!-- Error display -->
+    <div id="error-bar" class="error-bar hidden"></div>
+
+    <!-- Verbose diagnostic mode -->
+    <section class="card">
+      <label class="toggle">
+        <input id="verbose-toggle" type="checkbox" />
+        Verbose Diagnostic Mode
+      </label>
+      <pre id="log-panel" class="log-panel hidden"></pre>
+    </section>
+  </main>
+
+  <script src="main.js"></script>
+</body>
+</html>

@@ -17,7 +17,7 @@ fn main() {
 
 #[cfg(feature = "esp")]
 fn main() {
-    use esp_idf_hal::prelude::Peripherals;
+    use esp_idf_hal::peripherals::Peripherals;
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::log::EspLogger;
     use esp_idf_svc::nvs::EspDefaultNvsPartition;

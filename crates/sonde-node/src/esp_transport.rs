@@ -179,7 +179,7 @@ impl EspNowTransport {
     /// Must only be called once per process (the global `RECV_STATE` is
     /// a `OnceLock`).
     pub fn new(
-        modem: Modem,
+        modem: Modem<'static>,
         sysloop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
         channel: u8,

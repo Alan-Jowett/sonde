@@ -91,6 +91,9 @@ pub enum PairingError {
     #[error("failed to load pairing artifacts: {0}")]
     StoreLoadFailed(String),
 
+    #[error("pairing store corrupted: {0}")]
+    StoreCorrupted(String),
+
     // Validation errors
     #[error("invalid node ID: {0}")]
     InvalidNodeId(String),

@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+file-store = ["dep:serde", "dep:serde_json", "dep:hex"]
+
 [dependencies]
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 curve25519-dalek = { version = "4", features = ["zeroize"] }
@@ -17,8 +20,12 @@ zeroize = { version = "1", features = ["derive"] }
 ciborium = "0.2"
 tracing = "0.1"
 thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+hex = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }
+tempfile = "3"

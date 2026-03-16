@@ -8,6 +8,7 @@ license = "MIT"
 default = []
 btleplug = ["dep:btleplug", "dep:uuid", "dep:tokio", "dep:futures"]
 file-store = ["dep:serde", "dep:serde_json"]
+android = ["dep:jni", "dep:tokio"]
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["zeroize"] }
@@ -30,6 +31,9 @@ btleplug = { version = "0.11", optional = true }
 uuid = { version = "1", optional = true }
 tokio = { version = "1", features = ["time", "rt"], optional = true }
 futures = { version = "0.3", optional = true }
+
+# Optional — Android BLE transport and persistent store (aarch64-linux-android)
+jni = { version = "0.21", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }

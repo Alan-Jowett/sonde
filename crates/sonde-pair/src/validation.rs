@@ -4,19 +4,21 @@
 use crate::error::PairingError;
 use sha2::{Digest, Sha256};
 
-/// Validate a node ID: must be 1-64 bytes of UTF-8, non-empty (after trimming).
+/// Validate a node ID: must be 1–64 bytes of UTF-8, non-empty after trimming.
+///
+/// Both emptiness and length checks apply to the trimmed value.
 pub fn validate_node_id(id: &str) -> Result<(), PairingError> {
-    if id.len() > 64 {
-        return Err(PairingError::InvalidNodeId(format!(
-            "node ID must be at most 64 bytes, got {}",
-            id.len()
-        )));
-    }
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return Err(PairingError::InvalidNodeId(
             "node ID must not be empty".into(),
         ));
+    }
+    if trimmed.len() > 64 {
+        return Err(PairingError::InvalidNodeId(format!(
+            "node ID must be at most 64 bytes, got {}",
+            trimmed.len()
+        )));
     }
     Ok(())
 }

@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-sonde-protocol = { path = "../sonde-protocol" }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 curve25519-dalek = { version = "4", features = ["zeroize"] }
 x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }
@@ -19,7 +18,6 @@ tracing = "0.1"
 thiserror = "2"
 
 [dev-dependencies]
-hex-literal = "0.4"
 tokio = { version = "1", features = ["rt", "macros"] }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }

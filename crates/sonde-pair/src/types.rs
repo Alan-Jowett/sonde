@@ -21,13 +21,11 @@ pub const NODE_COMMAND_UUID: u128 = 0x0000FE51_0000_1000_8000_00805F9B34FB;
 /// Minimum BLE MTU required for pairing messages.
 pub const BLE_MTU_MIN: u16 = 247;
 
-/// Maximum encrypted payload length for the NODE_PROVISION peer message.
+/// Maximum encrypted payload length for NODE_PROVISION peer messages.
 ///
-/// Derived from `BLE_MTU_MIN` minus envelope overhead (3 B header) and
-/// fixed NODE_PROVISION fields (key_hint 2 + PSK 32 + rf_channel 1 +
-/// len 2 = 37 B + 3 B envelope + 2 B ATT header = 42 B overhead),
-/// leaving 247 − 42 − 3 = 202 bytes for the
-/// `eph_public‖nonce‖ciphertext` blob.
+/// Constrained by the 250-byte ESP-NOW frame budget on the node side.
+/// The node firmware enforces this as `PEER_PAYLOAD_MAX_LEN`.
+/// See `ble-pairing-protocol.md §11.1` for the full byte-budget derivation.
 pub const PEER_PAYLOAD_MAX_LEN: usize = 202;
 
 // BLE message type constants

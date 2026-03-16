@@ -445,4 +445,51 @@ mod tests {
             }
         });
     }
+
+    #[test]
+    fn t_pt_307_payload_too_large() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            // Queue a response that should never be read
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x00]).unwrap()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+
+            // Build a sensors list large enough to push encrypted payload > 202 bytes.
+            // Each sensor with a 64-byte label adds ~70 bytes of CBOR.
+            let big_sensors: Vec<SensorDescriptor> = (0..10)
+                .map(|i| SensorDescriptor {
+                    sensor_type: 1,
+                    sensor_id: i,
+                    label: Some("a]".repeat(32)),
+                })
+                .collect();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &big_sensors,
+            )
+            .await;
+
+            assert!(
+                matches!(result, Err(PairingError::PayloadTooLarge(_))),
+                "expected PayloadTooLarge, got {result:?}"
+            );
+            // No BLE write should have occurred
+            assert!(
+                transport.written.is_empty(),
+                "no BLE write should occur when payload exceeds limit"
+            );
+        });
+    }
 }

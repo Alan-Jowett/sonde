@@ -49,6 +49,14 @@ RUN cargo install espup@0.16.0 --locked && \
 # ── ldproxy (ESP-IDF linker proxy) ───────────────────────────────────────────
 RUN cargo install ldproxy@0.3.4 --locked
 
+# ── Pin idf-component-manager <2 ─────────────────────────────────────────────
+# idf-component-manager 2.0 dropped --interface_version 2, which ESP-IDF
+# v5.3.2's cmake scripts still pass. Use PIP_CONSTRAINT so that every pip
+# install (including the venv embuild creates at build time) respects the pin.
+# Remove this pin when the base image is upgraded to ESP-IDF >= 5.4.
+RUN echo 'idf-component-manager<2' > /opt/esp/pip-constraints.txt
+ENV PIP_CONSTRAINT=/opt/esp/pip-constraints.txt
+
 # ── Use bash for remaining RUN steps (export.sh may use bash features) ───────
 SHELL ["/bin/bash", "-c"]
 

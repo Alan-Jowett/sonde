@@ -3,6 +3,9 @@
 
 use zeroize::Zeroizing;
 
+// TODO: These 0xFE** short UUIDs are provisional placeholders (see ble-pairing-protocol.md §3.1).
+// They MUST be replaced with randomly-generated vendor-specific 128-bit UUIDs before v1.0 release.
+
 /// BLE service UUID advertised by gateways in pairing mode.
 pub const GATEWAY_SERVICE_UUID: u128 = 0x0000FE60_0000_1000_8000_00805F9B34FB;
 
@@ -23,9 +26,9 @@ pub const REQUEST_GW_INFO: u8 = 0x01;
 pub const GW_INFO_RESPONSE: u8 = 0x81;
 pub const REGISTER_PHONE: u8 = 0x02;
 pub const PHONE_REGISTERED: u8 = 0x82;
-pub const NODE_PROVISION: u8 = 0x03;
-pub const NODE_ACK: u8 = 0x83;
-pub const MSG_ERROR: u8 = 0xFE;
+pub const NODE_PROVISION: u8 = 0x01;
+pub const NODE_ACK: u8 = 0x81;
+pub const MSG_ERROR: u8 = 0xFF;
 
 /// A BLE device discovered during scanning.
 #[derive(Debug, Clone)]
@@ -107,4 +110,17 @@ impl std::fmt::Display for NodeAckStatus {
             Self::Unknown(b) => write!(f, "unknown status (0x{b:02x})"),
         }
     }
+}
+
+/// Descriptor for a sensor attached to a node.
+///
+/// Encoded as a CBOR map: `{1: sensor_type, 2: sensor_id, 3: label?}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SensorDescriptor {
+    /// Sensor bus type: 1=I²C, 2=ADC, 3=GPIO, 4=SPI.
+    pub sensor_type: u8,
+    /// Bus address or pin number (0–255).
+    pub sensor_id: u8,
+    /// Optional human-readable label (max 64 bytes UTF-8).
+    pub label: Option<String>,
 }

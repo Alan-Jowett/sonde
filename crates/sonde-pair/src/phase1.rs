@@ -3,14 +3,15 @@
 
 use crate::crypto;
 use crate::envelope::{
-    build_envelope, parse_envelope, parse_gw_info_response, parse_phone_registered,
+    build_envelope, parse_envelope, parse_error_body, parse_gw_info_response,
+    parse_phone_registered,
 };
 use crate::error::PairingError;
 use crate::rng::RngProvider;
 use crate::store::PairingStore;
 use crate::transport::BleTransport;
 use crate::types::*;
-use crate::validation::compute_key_hint;
+use crate::validation::validate_rf_channel;
 use tracing::{debug, info};
 use zeroize::Zeroizing;
 
@@ -23,7 +24,16 @@ pub async fn pair_with_gateway(
     store: &mut dyn PairingStore,
     rng: &dyn RngProvider,
     device_address: &[u8; 6],
+    phone_label: &str,
 ) -> Result<PairingArtifacts, PairingError> {
+    // Validate phone label length (spec §5.4: 0–64 bytes)
+    if phone_label.len() > 64 {
+        return Err(PairingError::InvalidPhoneLabel(format!(
+            "phone label must be at most 64 bytes, got {}",
+            phone_label.len()
+        )));
+    }
+
     // Step 1: Connect and check MTU
     info!("connecting to gateway");
     let mtu = transport.connect(device_address).await?;
@@ -37,7 +47,7 @@ pub async fn pair_with_gateway(
     debug!(mtu, "connected to gateway");
 
     // Use a closure-like scope to ensure cleanup on error
-    let result = do_pair_with_gateway(transport, store, rng).await;
+    let result = do_pair_with_gateway(transport, store, rng, phone_label).await;
 
     // Step 14: Always disconnect
     transport.disconnect().await.ok();
@@ -49,6 +59,7 @@ async fn do_pair_with_gateway(
     transport: &mut dyn BleTransport,
     store: &mut dyn PairingStore,
     rng: &dyn RngProvider,
+    phone_label: &str,
 ) -> Result<PairingArtifacts, PairingError> {
     // Step 2: Generate 32-byte challenge
     let mut challenge = [0u8; 32];
@@ -69,9 +80,13 @@ async fn do_pair_with_gateway(
 
     // Check for error response
     if msg_type == MSG_ERROR {
-        return Err(PairingError::GatewayAuthFailed(
-            "gateway returned error".into(),
-        ));
+        let (status, diagnostic) = parse_error_body(payload);
+        let reason = if diagnostic.is_empty() {
+            format!("gateway error code 0x{status:02x}")
+        } else {
+            format!("gateway error code 0x{status:02x}: {diagnostic}")
+        };
+        return Err(PairingError::GatewayAuthFailed(reason));
     }
     if msg_type != GW_INFO_RESPONSE {
         return Err(PairingError::InvalidResponse {
@@ -82,8 +97,11 @@ async fn do_pair_with_gateway(
 
     let gw_info = parse_gw_info_response(payload)?;
 
-    // Step 5: Verify Ed25519 signature over challenge
-    crypto::verify_ed25519_signature(&gw_info.gw_public_key, &challenge, &gw_info.signature)?;
+    // Step 5: Verify Ed25519 signature over (challenge || gateway_id)
+    let mut signed_message = Vec::with_capacity(48);
+    signed_message.extend_from_slice(&challenge);
+    signed_message.extend_from_slice(&gw_info.gateway_id);
+    crypto::verify_ed25519_signature(&gw_info.gw_public_key, &signed_message, &gw_info.signature)?;
     info!("gateway signature verified");
 
     // Step 6: TOFU — check stored identity
@@ -99,8 +117,12 @@ async fn do_pair_with_gateway(
     // Step 7: Generate ephemeral X25519 keypair
     let (eph_secret, eph_public) = crypto::generate_x25519_keypair(rng)?;
 
-    // Step 8: Write REGISTER_PHONE
-    let register = build_envelope(REGISTER_PHONE, &eph_public);
+    // Step 8: Write REGISTER_PHONE (ephemeral_pubkey || label_len || label)
+    let mut register_body = Vec::with_capacity(32 + 1 + phone_label.len());
+    register_body.extend_from_slice(&eph_public);
+    register_body.push(phone_label.len() as u8);
+    register_body.extend_from_slice(phone_label.as_bytes());
+    let register = build_envelope(REGISTER_PHONE, &register_body);
     transport
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &register)
         .await?;
@@ -112,15 +134,19 @@ async fn do_pair_with_gateway(
     let (msg_type2, payload2) = parse_envelope(&response2)?;
 
     if msg_type2 == MSG_ERROR {
-        let reason = if !payload2.is_empty() {
-            match payload2[0] {
-                0x02 => return Err(PairingError::RegistrationWindowClosed),
-                code => format!("gateway error code 0x{code:02x}"),
+        let (status, diagnostic) = parse_error_body(payload2);
+        return match status {
+            0x02 => Err(PairingError::RegistrationWindowClosed),
+            0x03 => Err(PairingError::GatewayAlreadyPaired),
+            code => {
+                let reason = if diagnostic.is_empty() {
+                    format!("gateway error code 0x{code:02x}")
+                } else {
+                    format!("gateway error code 0x{code:02x}: {diagnostic}")
+                };
+                Err(PairingError::GatewayAuthFailed(reason))
             }
-        } else {
-            "gateway error (no details)".into()
         };
-        return Err(PairingError::GatewayAuthFailed(reason));
     }
     if msg_type2 != PHONE_REGISTERED {
         return Err(PairingError::InvalidResponse {
@@ -131,38 +157,45 @@ async fn do_pair_with_gateway(
 
     let phone_reg = parse_phone_registered(payload2)?;
 
-    // Step 10: Convert gw Ed25519 public → X25519, ECDH, HKDF, decrypt
+    // Step 10: Convert gw Ed25519 public → X25519, ECDH with gateway static key, HKDF, decrypt
     let gw_x25519 = crypto::ed25519_to_x25519_public(&gw_info.gw_public_key)?;
-    // ECDH with the gateway's ephemeral X25519 public key
-    let shared_secret = crypto::x25519_ecdh(&eph_secret, &phone_reg.gw_ephemeral_public_key);
-    let aes_key = crypto::hkdf_sha256(&shared_secret, &gw_info.gateway_id, b"sonde-phone-pair-v1");
+    let shared_secret = crypto::x25519_ecdh(&eph_secret, &gw_x25519);
+    let aes_key = crypto::hkdf_sha256(&shared_secret, &gw_info.gateway_id, b"sonde-phone-reg-v1");
 
     let decrypted = crypto::aes256gcm_decrypt(
         &aes_key,
         &phone_reg.nonce,
         &phone_reg.ciphertext,
-        &gw_x25519,
+        &gw_info.gateway_id,
     )?;
 
-    // Step 11: Parse decrypted: phone_psk [32] + rf_channel [1]
-    if decrypted.len() != 33 {
+    // Step 11: Parse decrypted inner: status[1] + phone_psk[32] + phone_key_hint[2] + rf_channel[1] = 36 bytes
+    if decrypted.len() != 36 {
         return Err(PairingError::InvalidResponse {
             msg_type: PHONE_REGISTERED,
             reason: format!(
-                "expected 33 bytes in decrypted payload, got {}",
+                "expected 36 bytes in decrypted payload, got {}",
                 decrypted.len()
             ),
         });
     }
 
+    let status = decrypted[0];
+    if status != 0x00 {
+        return Err(PairingError::GatewayAuthFailed(format!(
+            "PHONE_REGISTERED inner status: 0x{status:02x}"
+        )));
+    }
+
     let mut phone_psk = Zeroizing::new([0u8; 32]);
-    phone_psk.copy_from_slice(&decrypted[..32]);
-    let rf_channel = decrypted[32];
+    phone_psk.copy_from_slice(&decrypted[1..33]);
+    let phone_key_hint = u16::from_be_bytes([decrypted[33], decrypted[34]]);
+    let rf_channel = decrypted[35];
 
-    // Step 12: Compute phone_key_hint
-    let phone_key_hint = compute_key_hint(&phone_psk);
+    // Validate rf_channel (spec: 1–13)
+    validate_rf_channel(rf_channel)?;
 
-    // Step 13: Build and save artifacts
+    // Step 12: Build and save artifacts
     let artifacts = PairingArtifacts {
         gateway_identity: GatewayIdentity {
             public_key: gw_info.gw_public_key,
@@ -189,7 +222,17 @@ mod tests {
     use crate::rng::MockRng;
     use crate::store::MemoryPairingStore;
     use crate::transport::MockBleTransport;
+    use crate::validation::compute_key_hint;
     use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha512};
+
+    /// Convert an Ed25519 signing key seed to an X25519 static secret.
+    fn ed25519_seed_to_x25519_secret(seed: &[u8; 32]) -> x25519_dalek::StaticSecret {
+        let hash = Sha512::digest(seed);
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&hash[..32]);
+        x25519_dalek::StaticSecret::from(key)
+    }
 
     /// Build a valid mock GW_INFO_RESPONSE for testing.
     fn build_gw_info_response(
@@ -198,14 +241,17 @@ mod tests {
         challenge: &[u8; 32],
     ) -> Vec<u8> {
         let vk = signing_key.verifying_key();
-        let sig = signing_key.sign(challenge);
+        // Sign (challenge || gateway_id) per spec §5.3
+        let mut message = Vec::with_capacity(48);
+        message.extend_from_slice(challenge);
+        message.extend_from_slice(gateway_id);
+        let sig = signing_key.sign(&message);
 
-        let mut response = Vec::new();
-        response.push(GW_INFO_RESPONSE);
-        response.extend_from_slice(&vk.to_bytes());
-        response.extend_from_slice(gateway_id);
-        response.extend_from_slice(&sig.to_bytes());
-        response
+        let mut body = Vec::with_capacity(112);
+        body.extend_from_slice(&vk.to_bytes());
+        body.extend_from_slice(gateway_id);
+        body.extend_from_slice(&sig.to_bytes());
+        build_envelope(GW_INFO_RESPONSE, &body)
     }
 
     /// Build a valid mock PHONE_REGISTERED response for testing.
@@ -216,35 +262,35 @@ mod tests {
         phone_psk: &[u8; 32],
         rf_channel: u8,
     ) -> Vec<u8> {
-        // Gateway generates its own ephemeral keypair
-        let gw_eph_secret = x25519_dalek::StaticSecret::from([0x44u8; 32]);
-        let gw_eph_public = x25519_dalek::PublicKey::from(&gw_eph_secret);
+        // Convert Ed25519 private → X25519 private (SHA-512(seed)[0..32])
+        let gw_x25519_secret = ed25519_seed_to_x25519_secret(&gw_signing_key.to_bytes());
 
-        // Derive the shared secret and AES key
+        // ECDH with phone's ephemeral public key
         let shared =
-            gw_eph_secret.diffie_hellman(&x25519_dalek::PublicKey::from(*phone_eph_public));
+            gw_x25519_secret.diffie_hellman(&x25519_dalek::PublicKey::from(*phone_eph_public));
 
-        let aes_key = crypto::hkdf_sha256(&shared.to_bytes(), gateway_id, b"sonde-phone-pair-v1");
+        // HKDF with spec info string
+        let aes_key = crypto::hkdf_sha256(&shared.to_bytes(), gateway_id, b"sonde-phone-reg-v1");
 
-        // AAD is the gateway's X25519 public key derived from Ed25519
-        let gw_x25519 =
-            crypto::ed25519_to_x25519_public(&gw_signing_key.verifying_key().to_bytes()).unwrap();
+        // Compute phone_key_hint from PSK
+        let phone_key_hint = compute_key_hint(phone_psk);
 
-        // Plaintext: phone_psk + rf_channel
-        let mut plaintext = Vec::with_capacity(33);
+        // Plaintext: status[1] + phone_psk[32] + phone_key_hint[2] + rf_channel[1] = 36 bytes
+        let mut plaintext = Vec::with_capacity(36);
+        plaintext.push(0x00); // status = accepted
         plaintext.extend_from_slice(phone_psk);
+        plaintext.extend_from_slice(&phone_key_hint.to_be_bytes());
         plaintext.push(rf_channel);
 
         let nonce = [0x01u8; 12];
         let ciphertext =
-            crypto::aes256gcm_encrypt(&aes_key, &nonce, &plaintext, &gw_x25519).unwrap();
+            crypto::aes256gcm_encrypt(&aes_key, &nonce, &plaintext, gateway_id).unwrap();
 
-        let mut response = Vec::new();
-        response.push(PHONE_REGISTERED);
-        response.extend_from_slice(&gw_eph_public.to_bytes());
-        response.extend_from_slice(&nonce);
-        response.extend_from_slice(&ciphertext);
-        response
+        // Wire: nonce[12] + ciphertext (no ephemeral key)
+        let mut body = Vec::new();
+        body.extend_from_slice(&nonce);
+        body.extend_from_slice(&ciphertext);
+        build_envelope(PHONE_REGISTERED, &body)
     }
 
     /// The mock RNG seed determines the challenge and ephemeral keypair.
@@ -298,7 +344,8 @@ mod tests {
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            let result = pair_with_gateway(&mut transport, &mut store, &rng, &device_addr).await;
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
             let artifacts = result.unwrap();
 
             assert_eq!(*artifacts.phone_psk, phone_psk);
@@ -330,36 +377,27 @@ mod tests {
             let rng = MockRng::new([0x42u8; 32]);
             let challenge = predicted_challenge(&rng);
 
-            // Sign with wrong key
-            let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(build_gw_info_response(
-                &wrong_key,
-                &gateway_id,
-                &challenge,
-            )));
-
-            // The response has wrong_key's public key, but we don't have
-            // a valid signature from *that* key for our challenge either,
-            // actually wrong_key.sign(challenge) IS valid for wrong_key's public key.
-            // What we want is: sign with one key, present another key's public key.
-            // Let's build a manual response.
+            // Build a response with correct public key but signature from wrong key
             let vk_correct = signing_key.verifying_key();
-            let sig_wrong = wrong_key.sign(&challenge);
+            let mut wrong_msg = Vec::with_capacity(48);
+            wrong_msg.extend_from_slice(&challenge);
+            wrong_msg.extend_from_slice(&gateway_id);
+            let sig_wrong = wrong_key.sign(&wrong_msg);
 
-            let mut response = Vec::new();
-            response.push(GW_INFO_RESPONSE);
-            response.extend_from_slice(&vk_correct.to_bytes()); // public key of correct
-            response.extend_from_slice(&gateway_id);
-            response.extend_from_slice(&sig_wrong.to_bytes()); // signature from wrong key
+            let mut body = Vec::with_capacity(112);
+            body.extend_from_slice(&vk_correct.to_bytes());
+            body.extend_from_slice(&gateway_id);
+            body.extend_from_slice(&sig_wrong.to_bytes());
+            let response = build_envelope(GW_INFO_RESPONSE, &body);
 
-            // Reset transport with correct bad response
             let mut transport = MockBleTransport::new(247);
             transport.queue_response(Ok(response));
 
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            let result = pair_with_gateway(&mut transport, &mut store, &rng, &device_addr).await;
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
             assert!(matches!(
                 result,
                 Err(PairingError::SignatureVerificationFailed)
@@ -401,7 +439,8 @@ mod tests {
             store.save_artifacts(&different_artifacts).unwrap();
 
             let device_addr = [0xAA; 6];
-            let result = pair_with_gateway(&mut transport, &mut store, &rng, &device_addr).await;
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
             assert!(matches!(result, Err(PairingError::PublicKeyMismatch)));
         });
     }
@@ -426,16 +465,48 @@ mod tests {
                 &challenge,
             )));
             // Second response is an error with code 0x02 (registration window closed)
-            transport.queue_response(Ok(vec![MSG_ERROR, 0x02]));
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x02])));
 
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            let result = pair_with_gateway(&mut transport, &mut store, &rng, &device_addr).await;
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
             assert!(matches!(
                 result,
                 Err(PairingError::RegistrationWindowClosed)
             ));
+        });
+    }
+
+    #[test]
+    fn t_pt_203b_already_paired_with_gateway() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            // Second response is an error with code 0x03 (already paired)
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x03])));
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+            assert!(matches!(result, Err(PairingError::GatewayAlreadyPaired)));
         });
     }
 
@@ -453,7 +524,8 @@ mod tests {
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            let result = pair_with_gateway(&mut transport, &mut store, &rng, &device_addr).await;
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
             assert!(matches!(result, Err(PairingError::IndicationTimeout)));
         });
     }
@@ -482,7 +554,8 @@ mod tests {
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            let result = pair_with_gateway(&mut transport, &mut store, &rng, &device_addr).await;
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
             assert!(matches!(result, Err(PairingError::IndicationTimeout)));
         });
     }
@@ -507,20 +580,17 @@ mod tests {
                 &challenge,
             )));
 
-            // Build a PHONE_REGISTERED with garbage ciphertext
-            let gw_eph_secret = x25519_dalek::StaticSecret::from([0x44u8; 32]);
-            let gw_eph_public = x25519_dalek::PublicKey::from(&gw_eph_secret);
-            let mut bad_response = Vec::new();
-            bad_response.push(PHONE_REGISTERED);
-            bad_response.extend_from_slice(&gw_eph_public.to_bytes());
-            bad_response.extend_from_slice(&[0x01u8; 12]); // nonce
-            bad_response.extend_from_slice(&[0xFFu8; 49]); // garbage ciphertext
-            transport.queue_response(Ok(bad_response));
+            // Build a PHONE_REGISTERED with garbage ciphertext (no ephemeral key per spec)
+            let mut body = Vec::new();
+            body.extend_from_slice(&[0x01u8; 12]); // nonce
+            body.extend_from_slice(&[0xFFu8; 49]); // garbage ciphertext
+            transport.queue_response(Ok(build_envelope(PHONE_REGISTERED, &body)));
 
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            let result = pair_with_gateway(&mut transport, &mut store, &rng, &device_addr).await;
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
             assert!(matches!(result, Err(PairingError::DecryptionFailed)));
         });
     }
@@ -537,7 +607,8 @@ mod tests {
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            let result = pair_with_gateway(&mut transport, &mut store, &rng, &device_addr).await;
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
             match result {
                 Err(PairingError::MtuTooLow {
                     negotiated,

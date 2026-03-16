@@ -3,7 +3,7 @@
 
 use crate::cbor::encode_pairing_request;
 use crate::crypto;
-use crate::envelope::{build_envelope, parse_envelope, parse_node_ack};
+use crate::envelope::{build_envelope, parse_envelope, parse_error_body, parse_node_ack};
 use crate::error::PairingError;
 use crate::rng::RngProvider;
 use crate::store::PairingStore;
@@ -23,7 +23,7 @@ pub async fn provision_node(
     rng: &dyn RngProvider,
     device_address: &[u8; 6],
     node_id: &str,
-    sensors: &[&str],
+    sensors: &[SensorDescriptor],
 ) -> Result<NodeProvisionResult, PairingError> {
     // Step 1: Load PairingArtifacts from store
     let artifacts = store.load_artifacts()?.ok_or(PairingError::NotPaired)?;
@@ -117,7 +117,11 @@ async fn do_provision_node(
     ciphertext: &[u8],
 ) -> Result<NodeProvisionResult, PairingError> {
     // Step 12: Build NODE_PROVISION payload
-    let payload_len = (eph_public.len() + nonce.len() + ciphertext.len()) as u16;
+    let total_encrypted_len = eph_public.len() + nonce.len() + ciphertext.len();
+    if total_encrypted_len > u16::MAX as usize {
+        return Err(PairingError::PayloadTooLarge(total_encrypted_len));
+    }
+    let payload_len = total_encrypted_len as u16;
     let mut provision_payload = Vec::with_capacity(2 + 32 + 1 + 2 + 32 + 12 + ciphertext.len());
     provision_payload.extend_from_slice(&node_key_hint.to_be_bytes());
     provision_payload.extend_from_slice(node_psk);
@@ -140,10 +144,17 @@ async fn do_provision_node(
         .await?;
     let (msg_type, payload) = parse_envelope(&response)?;
 
+    if msg_type == MSG_ERROR {
+        let (status, message) = parse_error_body(payload);
+        return Err(PairingError::NodeErrorResponse { status, message });
+    }
     if msg_type != NODE_ACK {
         return Err(PairingError::InvalidResponse {
             msg_type,
-            reason: format!("expected NODE_ACK (0x83), got 0x{msg_type:02x}"),
+            reason: format!(
+                "expected NODE_ACK (0x{:02x}), got 0x{msg_type:02x}",
+                NODE_ACK
+            ),
         });
     }
 
@@ -190,6 +201,21 @@ mod tests {
         store
     }
 
+    fn test_sensors() -> Vec<SensorDescriptor> {
+        vec![
+            SensorDescriptor {
+                sensor_type: 1,
+                sensor_id: 0x48,
+                label: Some("temp".into()),
+            },
+            SensorDescriptor {
+                sensor_type: 2,
+                sensor_id: 3,
+                label: Some("humidity".into()),
+            },
+        ]
+    }
+
     #[test]
     fn t_pt_300_happy_path() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -198,11 +224,12 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(vec![NODE_ACK, 0x00])); // Success
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x00]))); // Success
 
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);
             let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
 
             let result = provision_node(
                 &mut transport,
@@ -210,7 +237,7 @@ mod tests {
                 &rng,
                 &device_addr,
                 "sensor-1",
-                &["temp", "humidity"],
+                &sensors,
             )
             .await;
 
@@ -236,6 +263,7 @@ mod tests {
             let store = MemoryPairingStore::new(); // empty — no artifacts
             let rng = MockRng::new([0x42u8; 32]);
             let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
 
             let result = provision_node(
                 &mut transport,
@@ -243,7 +271,7 @@ mod tests {
                 &rng,
                 &device_addr,
                 "sensor-1",
-                &["temp"],
+                &sensors[..1],
             )
             .await;
 
@@ -262,6 +290,7 @@ mod tests {
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);
             let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
 
             let result = provision_node(
                 &mut transport,
@@ -269,7 +298,7 @@ mod tests {
                 &rng,
                 &device_addr,
                 "", // empty node_id
-                &["temp"],
+                &sensors[..1],
             )
             .await;
 
@@ -285,11 +314,12 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(vec![NODE_ACK, 0x01])); // AlreadyPaired
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x01]))); // AlreadyPaired
 
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);
             let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
 
             let result = provision_node(
                 &mut transport,
@@ -297,7 +327,7 @@ mod tests {
                 &rng,
                 &device_addr,
                 "sensor-1",
-                &["temp"],
+                &sensors[..1],
             )
             .await;
 
@@ -318,11 +348,12 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(vec![NODE_ACK, 0x02])); // StorageError
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x02]))); // StorageError
 
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);
             let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
 
             let result = provision_node(
                 &mut transport,
@@ -330,7 +361,7 @@ mod tests {
                 &rng,
                 &device_addr,
                 "sensor-1",
-                &["temp"],
+                &sensors[..1],
             )
             .await;
 
@@ -356,6 +387,7 @@ mod tests {
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);
             let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
 
             let result = provision_node(
                 &mut transport,
@@ -363,11 +395,49 @@ mod tests {
                 &rng,
                 &device_addr,
                 "sensor-1",
-                &["temp"],
+                &sensors[..1],
             )
             .await;
 
             assert!(matches!(result, Err(PairingError::IndicationTimeout)));
+        });
+    }
+
+    #[test]
+    fn t_pt_306_node_error_response() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            // Node responds with ERROR (0xFF) containing status 0x01 and diagnostic
+            let mut error_body = vec![0x01];
+            error_body.extend_from_slice(b"malformed");
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &error_body)));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            match result {
+                Err(PairingError::NodeErrorResponse { status, message }) => {
+                    assert_eq!(status, 0x01);
+                    assert_eq!(message, "malformed");
+                }
+                other => panic!("expected NodeErrorResponse, got {other:?}"),
+            }
         });
     }
 }

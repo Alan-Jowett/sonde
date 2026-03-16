@@ -5,21 +5,35 @@ use crate::error::PairingError;
 
 /// Parse a BLE message envelope into (msg_type, payload).
 ///
-/// Layout: `[msg_type: 1B] [payload: rest]`
+/// Layout: `[msg_type: 1B] [len: 2B BE] [payload: len bytes]`
 pub fn parse_envelope(data: &[u8]) -> Result<(u8, &[u8]), PairingError> {
-    if data.is_empty() {
+    if data.len() < 3 {
         return Err(PairingError::InvalidResponse {
-            msg_type: 0,
-            reason: "empty message".into(),
+            msg_type: if data.is_empty() { 0 } else { data[0] },
+            reason: "envelope too short (need at least 3 bytes)".into(),
         });
     }
-    Ok((data[0], &data[1..]))
+    let msg_type = data[0];
+    let len = u16::from_be_bytes([data[1], data[2]]) as usize;
+    if data.len() < 3 + len {
+        return Err(PairingError::InvalidResponse {
+            msg_type,
+            reason: format!(
+                "envelope body length {} but only {} bytes available",
+                len,
+                data.len() - 3
+            ),
+        });
+    }
+    Ok((msg_type, &data[3..3 + len]))
 }
 
-/// Build a BLE message envelope: type byte followed by payload.
+/// Build a BLE message envelope: type byte + length (2B BE) + payload.
 pub fn build_envelope(msg_type: u8, payload: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(1 + payload.len());
+    let len = payload.len() as u16;
+    let mut buf = Vec::with_capacity(3 + payload.len());
     buf.push(msg_type);
+    buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(payload);
     buf
 }
@@ -61,16 +75,15 @@ pub fn parse_gw_info_response(payload: &[u8]) -> Result<GwInfoResponse, PairingE
 
 /// Parsed PHONE_REGISTERED fields.
 pub struct PhoneRegisteredResponse {
-    pub gw_ephemeral_public_key: [u8; 32],
     pub nonce: [u8; 12],
     pub ciphertext: Vec<u8>,
 }
 
 /// Parse a PHONE_REGISTERED payload.
 ///
-/// Layout: `[gw_ephemeral_public_key: 32B] [nonce: 12B] [ciphertext: rest]`
+/// Layout: `[nonce: 12B] [ciphertext: rest]`
 pub fn parse_phone_registered(payload: &[u8]) -> Result<PhoneRegisteredResponse, PairingError> {
-    const MIN_LEN: usize = 32 + 12 + 1; // at least 1 byte of ciphertext
+    const MIN_LEN: usize = 12 + 1; // at least 1 byte of ciphertext
     if payload.len() < MIN_LEN {
         return Err(PairingError::InvalidResponse {
             msg_type: 0x82,
@@ -78,30 +91,37 @@ pub fn parse_phone_registered(payload: &[u8]) -> Result<PhoneRegisteredResponse,
         });
     }
 
-    let mut gw_ephemeral_public_key = [0u8; 32];
-    gw_ephemeral_public_key.copy_from_slice(&payload[..32]);
-
     let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&payload[32..44]);
+    nonce.copy_from_slice(&payload[..12]);
 
-    let ciphertext = payload[44..].to_vec();
+    let ciphertext = payload[12..].to_vec();
 
-    Ok(PhoneRegisteredResponse {
-        gw_ephemeral_public_key,
-        nonce,
-        ciphertext,
-    })
+    Ok(PhoneRegisteredResponse { nonce, ciphertext })
 }
 
 /// Parse a NODE_ACK payload (single status byte).
 pub fn parse_node_ack(payload: &[u8]) -> Result<u8, PairingError> {
     if payload.len() != 1 {
         return Err(PairingError::InvalidResponse {
-            msg_type: 0x83,
+            msg_type: 0x81,
             reason: format!("expected 1 byte, got {}", payload.len()),
         });
     }
     Ok(payload[0])
+}
+
+/// Parse an ERROR envelope body into (status, diagnostic_message).
+pub fn parse_error_body(payload: &[u8]) -> (u8, String) {
+    if payload.is_empty() {
+        return (0, String::new());
+    }
+    let status = payload[0];
+    let message = if payload.len() > 1 {
+        String::from_utf8_lossy(&payload[1..]).into_owned()
+    } else {
+        String::new()
+    };
+    (status, message)
 }
 
 #[cfg(test)]
@@ -114,18 +134,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_envelope_too_short() {
+        assert!(parse_envelope(&[0x01]).is_err());
+        assert!(parse_envelope(&[0x01, 0x00]).is_err());
+    }
+
+    #[test]
     fn parse_envelope_type_only() {
-        let (ty, payload) = parse_envelope(&[0x01]).unwrap();
+        let (ty, payload) = parse_envelope(&[0x01, 0x00, 0x00]).unwrap();
         assert_eq!(ty, 0x01);
         assert!(payload.is_empty());
     }
 
     #[test]
     fn parse_envelope_with_payload() {
-        let data = [0x81, 0xAA, 0xBB, 0xCC];
+        let data = [0x81, 0x00, 0x03, 0xAA, 0xBB, 0xCC];
         let (ty, payload) = parse_envelope(&data).unwrap();
         assert_eq!(ty, 0x81);
         assert_eq!(payload, &[0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn parse_envelope_len_exceeds_data() {
+        // LEN says 5 but only 3 bytes of body available
+        let data = [0x01, 0x00, 0x05, 0xAA, 0xBB, 0xCC];
+        assert!(parse_envelope(&data).is_err());
     }
 
     #[test]
@@ -157,20 +190,18 @@ mod tests {
 
     #[test]
     fn parse_phone_registered_valid() {
-        let mut data = vec![0u8; 45]; // 32 + 12 + 1
-        data[0] = 0xAA;
-        data[32] = 0xBB;
-        data[44] = 0xCC;
+        let mut data = vec![0u8; 13]; // 12 nonce + 1 ciphertext
+        data[0] = 0xAA; // first byte of nonce
+        data[12] = 0xCC; // first byte of ciphertext
 
         let resp = parse_phone_registered(&data).unwrap();
-        assert_eq!(resp.gw_ephemeral_public_key[0], 0xAA);
-        assert_eq!(resp.nonce[0], 0xBB);
+        assert_eq!(resp.nonce[0], 0xAA);
         assert_eq!(resp.ciphertext, &[0xCC]);
     }
 
     #[test]
     fn parse_phone_registered_too_short() {
-        assert!(parse_phone_registered(&[0u8; 44]).is_err());
+        assert!(parse_phone_registered(&[0u8; 12]).is_err());
     }
 
     #[test]
@@ -183,5 +214,28 @@ mod tests {
     fn parse_node_ack_wrong_length() {
         assert!(parse_node_ack(&[]).is_err());
         assert!(parse_node_ack(&[0x00, 0x01]).is_err());
+    }
+
+    #[test]
+    fn parse_error_body_empty() {
+        let (status, msg) = parse_error_body(&[]);
+        assert_eq!(status, 0);
+        assert!(msg.is_empty());
+    }
+
+    #[test]
+    fn parse_error_body_status_only() {
+        let (status, msg) = parse_error_body(&[0x02]);
+        assert_eq!(status, 0x02);
+        assert!(msg.is_empty());
+    }
+
+    #[test]
+    fn parse_error_body_with_message() {
+        let mut data = vec![0x03];
+        data.extend_from_slice(b"already paired");
+        let (status, msg) = parse_error_body(&data);
+        assert_eq!(status, 0x03);
+        assert_eq!(msg, "already paired");
     }
 }

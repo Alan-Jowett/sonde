@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use crate::error::PairingError;
+use crate::types::SensorDescriptor;
 use crate::validation::compute_key_hint;
 use ciborium::Value;
 use zeroize::Zeroizing;
@@ -13,7 +14,7 @@ pub struct PairingRequestFields {
     pub node_key_hint: u16,
     pub node_psk: Zeroizing<[u8; 32]>,
     pub rf_channel: u8,
-    pub sensors: Vec<String>,
+    pub sensors: Vec<SensorDescriptor>,
     pub timestamp: i64,
 }
 
@@ -24,16 +25,33 @@ pub struct PairingRequestFields {
 /// - 2: node_key_hint (unsigned)
 /// - 3: node_psk (bytes, 32)
 /// - 4: rf_channel (unsigned)
-/// - 5: sensors (array of text)
+/// - 5: sensors (array of maps `{1: sensor_type, 2: sensor_id, 3: label?}`)
 /// - 6: timestamp (integer)
 pub fn encode_pairing_request(
     node_id: &str,
     node_psk: &[u8; 32],
     rf_channel: u8,
-    sensors: &[&str],
+    sensors: &[SensorDescriptor],
     timestamp: i64,
 ) -> Result<Vec<u8>, PairingError> {
     let node_key_hint = compute_key_hint(node_psk);
+
+    let sensor_values: Vec<Value> = sensors
+        .iter()
+        .map(|s| {
+            let mut map = vec![
+                (
+                    Value::Integer(1.into()),
+                    Value::Integer(s.sensor_type.into()),
+                ),
+                (Value::Integer(2.into()), Value::Integer(s.sensor_id.into())),
+            ];
+            if let Some(ref label) = s.label {
+                map.push((Value::Integer(3.into()), Value::Text(label.clone())));
+            }
+            Value::Map(map)
+        })
+        .collect();
 
     // Build CBOR map with integer keys in sorted order (1..6)
     let map = Value::Map(vec![
@@ -44,16 +62,13 @@ pub fn encode_pairing_request(
         ),
         (Value::Integer(3.into()), Value::Bytes(node_psk.to_vec())),
         (Value::Integer(4.into()), Value::Integer(rf_channel.into())),
-        (
-            Value::Integer(5.into()),
-            Value::Array(sensors.iter().map(|s| Value::Text(s.to_string())).collect()),
-        ),
+        (Value::Integer(5.into()), Value::Array(sensor_values)),
         (Value::Integer(6.into()), Value::Integer(timestamp.into())),
     ]);
 
     let mut buf = Vec::new();
     ciborium::into_writer(&map, &mut buf)
-        .map_err(|e| PairingError::CborDecodeFailed(format!("CBOR encode failed: {e}")))?;
+        .map_err(|e| PairingError::CborEncodeFailed(format!("{e}")))?;
     Ok(buf)
 }
 
@@ -78,6 +93,9 @@ pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, Pairi
         let key = match k {
             Value::Integer(i) => {
                 let val: i128 = (*i).into();
+                if val < 0 {
+                    continue;
+                }
                 val as u64
             }
             _ => continue,
@@ -97,6 +115,11 @@ pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, Pairi
                 node_key_hint = match v {
                     Value::Integer(i) => {
                         let val: i128 = (*i).into();
+                        if val < 0 || val > u16::MAX as i128 {
+                            return Err(PairingError::CborDecodeFailed(format!(
+                                "key 2 (node_key_hint) out of range: {val}"
+                            )));
+                        }
                         Some(val as u16)
                     }
                     _ => {
@@ -130,6 +153,11 @@ pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, Pairi
                 rf_channel = match v {
                     Value::Integer(i) => {
                         let val: i128 = (*i).into();
+                        if !(1..=13).contains(&val) {
+                            return Err(PairingError::CborDecodeFailed(format!(
+                                "key 4 (rf_channel) out of range: {val}, must be 1-13"
+                            )));
+                        }
                         Some(val as u8)
                     }
                     _ => {
@@ -145,10 +173,98 @@ pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, Pairi
                         let mut result = Vec::new();
                         for item in arr {
                             match item {
-                                Value::Text(s) => result.push(s.clone()),
+                                Value::Map(map_entries) => {
+                                    let mut sensor_type = None;
+                                    let mut sensor_id = None;
+                                    let mut label = None;
+                                    for (mk, mv) in map_entries {
+                                        let mkey = match mk {
+                                            Value::Integer(i) => {
+                                                let val: i128 = (*i).into();
+                                                if val < 0 {
+                                                    continue;
+                                                }
+                                                val as u64
+                                            }
+                                            _ => continue,
+                                        };
+                                        match mkey {
+                                            1 => {
+                                                sensor_type = match mv {
+                                                    Value::Integer(i) => {
+                                                        let val: i128 = (*i).into();
+                                                        if !(0..=255).contains(&val) {
+                                                            return Err(
+                                                                PairingError::CborDecodeFailed(
+                                                                    format!(
+                                                                    "sensor_type out of range: {val}"
+                                                                ),
+                                                                ),
+                                                            );
+                                                        }
+                                                        Some(val as u8)
+                                                    }
+                                                    _ => {
+                                                        return Err(PairingError::CborDecodeFailed(
+                                                            "sensor_type must be integer".into(),
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                            2 => {
+                                                sensor_id = match mv {
+                                                    Value::Integer(i) => {
+                                                        let val: i128 = (*i).into();
+                                                        if !(0..=255).contains(&val) {
+                                                            return Err(
+                                                                PairingError::CborDecodeFailed(
+                                                                    format!(
+                                                                    "sensor_id out of range: {val}"
+                                                                ),
+                                                                ),
+                                                            );
+                                                        }
+                                                        Some(val as u8)
+                                                    }
+                                                    _ => {
+                                                        return Err(PairingError::CborDecodeFailed(
+                                                            "sensor_id must be integer".into(),
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                            3 => {
+                                                label = match mv {
+                                                    Value::Text(s) => Some(s.clone()),
+                                                    _ => {
+                                                        return Err(PairingError::CborDecodeFailed(
+                                                            "sensor label must be text".into(),
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    let st = sensor_type.ok_or_else(|| {
+                                        PairingError::CborDecodeFailed(
+                                            "sensor missing sensor_type (key 1)".into(),
+                                        )
+                                    })?;
+                                    let si = sensor_id.ok_or_else(|| {
+                                        PairingError::CborDecodeFailed(
+                                            "sensor missing sensor_id (key 2)".into(),
+                                        )
+                                    })?;
+                                    result.push(SensorDescriptor {
+                                        sensor_type: st,
+                                        sensor_id: si,
+                                        label,
+                                    });
+                                }
                                 _ => {
                                     return Err(PairingError::CborDecodeFailed(
-                                        "key 5 (sensors) elements must be text".into(),
+                                        "key 5 (sensors) elements must be CBOR maps".into(),
                                     ))
                                 }
                             }
@@ -166,6 +282,11 @@ pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, Pairi
                 timestamp = match v {
                     Value::Integer(i) => {
                         let val: i128 = (*i).into();
+                        if val < i64::MIN as i128 || val > i64::MAX as i128 {
+                            return Err(PairingError::CborDecodeFailed(format!(
+                                "key 6 (timestamp) out of i64 range: {val}"
+                            )));
+                        }
                         Some(val as i64)
                     }
                     _ => {
@@ -200,10 +321,25 @@ pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, Pairi
 mod tests {
     use super::*;
 
+    fn test_sensors() -> Vec<SensorDescriptor> {
+        vec![
+            SensorDescriptor {
+                sensor_type: 1,
+                sensor_id: 0x48,
+                label: Some("temp".into()),
+            },
+            SensorDescriptor {
+                sensor_type: 2,
+                sensor_id: 3,
+                label: Some("humidity".into()),
+            },
+        ]
+    }
+
     #[test]
     fn round_trip_pairing_request() {
         let psk = [0x42u8; 32];
-        let sensors = ["temp", "humidity"];
+        let sensors = test_sensors();
         let encoded = encode_pairing_request("sensor-1", &psk, 6, &sensors, 1700000000).unwrap();
 
         let decoded = decode_pairing_request(&encoded).unwrap();
@@ -211,18 +347,35 @@ mod tests {
         assert_eq!(decoded.node_key_hint, compute_key_hint(&psk));
         assert_eq!(*decoded.node_psk, psk);
         assert_eq!(decoded.rf_channel, 6);
-        assert_eq!(decoded.sensors, vec!["temp", "humidity"]);
+        assert_eq!(decoded.sensors, sensors);
         assert_eq!(decoded.timestamp, 1700000000);
     }
 
     #[test]
     fn encode_empty_sensors() {
         let psk = [0x42u8; 32];
-        let sensors: &[&str] = &[];
-        let encoded = encode_pairing_request("node-x", &psk, 1, sensors, 0).unwrap();
+        let sensors: Vec<SensorDescriptor> = vec![];
+        let encoded = encode_pairing_request("node-x", &psk, 1, &sensors, 0).unwrap();
 
         let decoded = decode_pairing_request(&encoded).unwrap();
         assert!(decoded.sensors.is_empty());
+    }
+
+    #[test]
+    fn encode_sensor_without_label() {
+        let psk = [0x42u8; 32];
+        let sensors = vec![SensorDescriptor {
+            sensor_type: 3,
+            sensor_id: 5,
+            label: None,
+        }];
+        let encoded = encode_pairing_request("node-x", &psk, 1, &sensors, 0).unwrap();
+
+        let decoded = decode_pairing_request(&encoded).unwrap();
+        assert_eq!(decoded.sensors.len(), 1);
+        assert_eq!(decoded.sensors[0].sensor_type, 3);
+        assert_eq!(decoded.sensors[0].sensor_id, 5);
+        assert!(decoded.sensors[0].label.is_none());
     }
 
     #[test]
@@ -241,7 +394,11 @@ mod tests {
     #[test]
     fn deterministic_encoding() {
         let psk = [0x42u8; 32];
-        let sensors = ["a", "b"];
+        let sensors = vec![SensorDescriptor {
+            sensor_type: 1,
+            sensor_id: 0x10,
+            label: Some("a".into()),
+        }];
         let enc1 = encode_pairing_request("n1", &psk, 3, &sensors, 100).unwrap();
         let enc2 = encode_pairing_request("n1", &psk, 3, &sensors, 100).unwrap();
         assert_eq!(enc1, enc2, "encoding must be deterministic");

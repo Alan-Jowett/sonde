@@ -66,8 +66,23 @@ pub enum PairingError {
     #[error("CBOR decode failed: {0}")]
     CborDecodeFailed(String),
 
+    #[error("CBOR encode failed: {0}")]
+    CborEncodeFailed(String),
+
     #[error("node provisioning failed: {0}")]
     NodeProvisionFailed(NodeAckStatus),
+
+    #[error("node error response: status=0x{status:02x}, {message}")]
+    NodeErrorResponse { status: u8, message: String },
+
+    #[error("already paired with this gateway")]
+    GatewayAlreadyPaired,
+
+    #[error("payload too large for BLE envelope: {0} bytes exceeds u16 max")]
+    PayloadTooLarge(usize),
+
+    #[error("invalid phone label: {0}")]
+    InvalidPhoneLabel(String),
 
     // Store errors
     #[error("failed to save pairing artifacts: {0}")]

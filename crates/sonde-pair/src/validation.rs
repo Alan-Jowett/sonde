@@ -6,17 +6,17 @@ use sha2::{Digest, Sha256};
 
 /// Validate a node ID: must be 1-64 bytes of UTF-8, non-empty (after trimming).
 pub fn validate_node_id(id: &str) -> Result<(), PairingError> {
+    if id.len() > 64 {
+        return Err(PairingError::InvalidNodeId(format!(
+            "node ID must be at most 64 bytes, got {}",
+            id.len()
+        )));
+    }
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return Err(PairingError::InvalidNodeId(
             "node ID must not be empty".into(),
         ));
-    }
-    if trimmed.len() > 64 {
-        return Err(PairingError::InvalidNodeId(format!(
-            "node ID must be at most 64 bytes, got {}",
-            trimmed.len()
-        )));
     }
     Ok(())
 }
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn key_hint_uses_last_two_bytes() {
         let psk = [0x42u8; 32];
-        let hash = Sha256::digest(&psk);
+        let hash = Sha256::digest(psk);
         let expected = u16::from_be_bytes([hash[30], hash[31]]);
         assert_eq!(compute_key_hint(&psk), expected);
     }

@@ -67,7 +67,8 @@ async fn do_pair_with_gateway(
     debug!("generated challenge");
 
     // Step 3: Write REQUEST_GW_INFO
-    let request = build_envelope(REQUEST_GW_INFO, &challenge);
+    let request = build_envelope(REQUEST_GW_INFO, &challenge)
+        .ok_or(PairingError::PayloadTooLarge(challenge.len()))?;
     transport
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &request)
         .await?;
@@ -122,7 +123,8 @@ async fn do_pair_with_gateway(
     register_body.extend_from_slice(&eph_public);
     register_body.push(phone_label.len() as u8);
     register_body.extend_from_slice(phone_label.as_bytes());
-    let register = build_envelope(REGISTER_PHONE, &register_body);
+    let register = build_envelope(REGISTER_PHONE, &register_body)
+        .ok_or(PairingError::PayloadTooLarge(register_body.len()))?;
     transport
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &register)
         .await?;
@@ -251,7 +253,7 @@ mod tests {
         body.extend_from_slice(&vk.to_bytes());
         body.extend_from_slice(gateway_id);
         body.extend_from_slice(&sig.to_bytes());
-        build_envelope(GW_INFO_RESPONSE, &body)
+        build_envelope(GW_INFO_RESPONSE, &body).unwrap()
     }
 
     /// Build a valid mock PHONE_REGISTERED response for testing.
@@ -290,7 +292,7 @@ mod tests {
         let mut body = Vec::new();
         body.extend_from_slice(&nonce);
         body.extend_from_slice(&ciphertext);
-        build_envelope(PHONE_REGISTERED, &body)
+        build_envelope(PHONE_REGISTERED, &body).unwrap()
     }
 
     /// The mock RNG seed determines the challenge and ephemeral keypair.
@@ -388,7 +390,7 @@ mod tests {
             body.extend_from_slice(&vk_correct.to_bytes());
             body.extend_from_slice(&gateway_id);
             body.extend_from_slice(&sig_wrong.to_bytes());
-            let response = build_envelope(GW_INFO_RESPONSE, &body);
+            let response = build_envelope(GW_INFO_RESPONSE, &body).unwrap();
 
             let mut transport = MockBleTransport::new(247);
             transport.queue_response(Ok(response));
@@ -465,7 +467,7 @@ mod tests {
                 &challenge,
             )));
             // Second response is an error with code 0x02 (registration window closed)
-            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x02])));
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x02]).unwrap()));
 
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
@@ -499,7 +501,7 @@ mod tests {
                 &challenge,
             )));
             // Second response is an error with code 0x03 (already paired)
-            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x03])));
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x03]).unwrap()));
 
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
@@ -584,7 +586,7 @@ mod tests {
             let mut body = Vec::new();
             body.extend_from_slice(&[0x01u8; 12]); // nonce
             body.extend_from_slice(&[0xFFu8; 49]); // garbage ciphertext
-            transport.queue_response(Ok(build_envelope(PHONE_REGISTERED, &body)));
+            transport.queue_response(Ok(build_envelope(PHONE_REGISTERED, &body).unwrap()));
 
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];

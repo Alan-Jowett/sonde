@@ -118,6 +118,9 @@ async fn do_provision_node(
 ) -> Result<NodeProvisionResult, PairingError> {
     // Step 12: Build NODE_PROVISION payload
     let total_encrypted_len = eph_public.len() + nonce.len() + ciphertext.len();
+    if total_encrypted_len > PEER_PAYLOAD_MAX_LEN {
+        return Err(PairingError::PayloadTooLarge(total_encrypted_len));
+    }
     if total_encrypted_len > u16::MAX as usize {
         return Err(PairingError::PayloadTooLarge(total_encrypted_len));
     }
@@ -131,7 +134,8 @@ async fn do_provision_node(
     provision_payload.extend_from_slice(nonce);
     provision_payload.extend_from_slice(ciphertext);
 
-    let message = build_envelope(NODE_PROVISION, &provision_payload);
+    let message = build_envelope(NODE_PROVISION, &provision_payload)
+        .ok_or(PairingError::PayloadTooLarge(provision_payload.len()))?;
 
     // Step 13: Write to NODE_COMMAND_UUID
     transport
@@ -224,7 +228,7 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x00]))); // Success
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x00]).unwrap())); // Success
 
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);
@@ -314,7 +318,7 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x01]))); // AlreadyPaired
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x01]).unwrap())); // AlreadyPaired
 
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);
@@ -348,7 +352,7 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x02]))); // StorageError
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x02]).unwrap())); // StorageError
 
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);
@@ -414,7 +418,7 @@ mod tests {
             // Node responds with ERROR (0xFF) containing status 0x01 and diagnostic
             let mut error_body = vec![0x01];
             error_body.extend_from_slice(b"malformed");
-            transport.queue_response(Ok(build_envelope(MSG_ERROR, &error_body)));
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &error_body).unwrap()));
 
             let store = store_with_artifacts();
             let rng = MockRng::new([0x42u8; 32]);

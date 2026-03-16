@@ -15,11 +15,11 @@ pub fn parse_envelope(data: &[u8]) -> Result<(u8, &[u8]), PairingError> {
     }
     let msg_type = data[0];
     let len = u16::from_be_bytes([data[1], data[2]]) as usize;
-    if data.len() < 3 + len {
+    if data.len() != 3 + len {
         return Err(PairingError::InvalidResponse {
             msg_type,
             reason: format!(
-                "envelope body length {} but only {} bytes available",
+                "envelope length field says {} but body is {} bytes",
                 len,
                 data.len() - 3
             ),
@@ -29,13 +29,18 @@ pub fn parse_envelope(data: &[u8]) -> Result<(u8, &[u8]), PairingError> {
 }
 
 /// Build a BLE message envelope: type byte + length (2B BE) + payload.
-pub fn build_envelope(msg_type: u8, payload: &[u8]) -> Vec<u8> {
+///
+/// Returns `None` if `payload.len()` exceeds `u16::MAX`.
+pub fn build_envelope(msg_type: u8, payload: &[u8]) -> Option<Vec<u8>> {
+    if payload.len() > u16::MAX as usize {
+        return None;
+    }
     let len = payload.len() as u16;
     let mut buf = Vec::with_capacity(3 + payload.len());
     buf.push(msg_type);
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(payload);
-    buf
+    Some(buf)
 }
 
 /// Parsed GW_INFO_RESPONSE fields.
@@ -163,7 +168,7 @@ mod tests {
 
     #[test]
     fn build_envelope_round_trip() {
-        let msg = build_envelope(0x02, &[0x01, 0x02, 0x03]);
+        let msg = build_envelope(0x02, &[0x01, 0x02, 0x03]).unwrap();
         let (ty, payload) = parse_envelope(&msg).unwrap();
         assert_eq!(ty, 0x02);
         assert_eq!(payload, &[0x01, 0x02, 0x03]);

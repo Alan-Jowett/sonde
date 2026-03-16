@@ -93,7 +93,8 @@ fn main() {
         // GPIO 9 is the BOOT button on most ESP32-C3 boards.
         // Configure as input with internal pull-up (active LOW).
         let button_pin = peripherals.pins.gpio9;
-        let button = PinDriver::input(button_pin, Pull::Up).expect("failed to configure pairing button GPIO");
+        let button = PinDriver::input(button_pin, Pull::Up)
+            .expect("failed to configure pairing button GPIO");
 
         const SAMPLE_INTERVAL_MS: u32 = 10;
         const SAMPLE_COUNT: u32 = 500 / SAMPLE_INTERVAL_MS; // 50 samples over 500 ms

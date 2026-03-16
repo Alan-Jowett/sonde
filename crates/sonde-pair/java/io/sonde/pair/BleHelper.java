@@ -59,6 +59,7 @@ public class BleHelper {
     private final List<ScanResult> discoveredDevices =
             Collections.synchronizedList(new ArrayList<>());
     private volatile ScanCallback activeScanCallback;
+    private final List<ScanFilter> activeFilters = new ArrayList<>();
 
     // --- GATT state --------------------------------------------------------
     private volatile BluetoothGatt gatt;
@@ -176,19 +177,17 @@ public class BleHelper {
     // --- Scanning ----------------------------------------------------------
 
     /**
-     * Start a BLE scan filtered to the given service UUID.
+     * Start or extend a BLE scan for the given service UUID.
+     *
+     * <p>If a scan is already active, the new UUID is added to the filter
+     * set and the scan is restarted with all accumulated filters.  This
+     * supports {@code DeviceScanner.start()}, which calls {@code start_scan}
+     * once for the gateway UUID and once for the node UUID.
      *
      * @param serviceUuidStr UUID in standard string form
      *                       (e.g. {@code "0000fe60-0000-1000-8000-00805f9b34fb"})
      */
     public void startScan(String serviceUuidStr) throws Exception {
-        // If a scan is already active, stop it first so the caller can
-        // start a new scan (DeviceScanner calls start_scan twice — once
-        // for the gateway UUID, once for the node UUID).
-        if (activeScanCallback != null) {
-            stopScan();
-        }
-
         BluetoothLeScanner scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) throw new Exception("BLE scanner unavailable");
 
@@ -197,11 +196,25 @@ public class BleHelper {
         ScanFilter filter = new ScanFilter.Builder()
                 .setServiceUuid(new ParcelUuid(serviceUuid))
                 .build();
+
+        // If a scan is already active, stop it so we can restart with the
+        // expanded filter set.  Preserve discovered devices across restarts.
+        if (activeScanCallback != null) {
+            try {
+                scanner.stopScan(activeScanCallback);
+            } catch (Exception ignored) { }
+            activeScanCallback = null;
+        } else {
+            // Fresh scan — clear previous results and filters.
+            discoveredDevices.clear();
+            activeFilters.clear();
+        }
+
+        activeFilters.add(filter);
+
         ScanSettings settings = new ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .build();
-
-        discoveredDevices.clear();
 
         ScanCallback cb = new ScanCallback() {
             @Override
@@ -226,7 +239,7 @@ public class BleHelper {
         };
 
         activeScanCallback = cb;
-        scanner.startScan(Collections.singletonList(filter), settings, cb);
+        scanner.startScan(activeFilters, settings, cb);
     }
 
     /** Stop the active BLE scan (no-op if not scanning). */
@@ -234,6 +247,7 @@ public class BleHelper {
         ScanCallback cb = activeScanCallback;
         if (cb == null) return;
         activeScanCallback = null;
+        activeFilters.clear();
         try {
             BluetoothLeScanner scanner = adapter.getBluetoothLeScanner();
             if (scanner != null) scanner.stopScan(cb);

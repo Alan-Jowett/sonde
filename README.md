@@ -2,7 +2,7 @@
   Copyright (c) 2026 sonde contributors -->
 
 <p align="center">
-  <img src="docs/sonde_logo.png" alt="Sonde logo showing a stylized bee labeled 'BPF' with circuit‑board wings, sensor waveforms on the left, a radio tower emitting waves on the right, and the word 'SONDE' below." width="256">
+  <img src="docs/sonde_logo.png" alt="Sonde logo showing a stylized bee labeled 'BPF' with circuit-board wings, sensor waveforms on the left, a radio tower emitting waves on the right, and the word 'SONDE' below." width="256">
 </p>
 
 # Sonde

@@ -702,6 +702,9 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         firmware_abi_version: firmware_abi_version.flatten(),
         last_battery_mv: last_battery_mv.flatten(),
         last_seen,
+        rf_channel: None,
+        sensors: Vec::new(),
+        registered_by_phone_id: None,
     })
 }
 

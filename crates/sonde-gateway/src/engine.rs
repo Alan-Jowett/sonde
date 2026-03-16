@@ -11,14 +11,17 @@ use tracing::warn;
 
 use sonde_protocol::{
     decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
-    NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK,
-    MSG_PROGRAM_ACK, MSG_WAKE,
+    HmacProvider, NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND,
+    MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_PROOF,
+    PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
 };
 
 use std::collections::BTreeMap;
 
 use crate::crypto::{RustCryptoHmac, RustCryptoSha256};
+use crate::gateway_identity::GatewayIdentity;
 use crate::handler::HandlerRouter;
+use crate::phone_trust::PhonePskStatus;
 use crate::program::ProgramLibrary;
 use crate::registry::NodeRecord;
 use crate::session::{SessionManager, SessionState};
@@ -49,6 +52,8 @@ pub struct Gateway {
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     /// Optional handler router for APP_DATA dispatch (Phase 2C).
     handler_router: Option<Arc<HandlerRouter>>,
+    /// Cached gateway identity for ECDH decryption (lazy-loaded from storage).
+    identity_cache: RwLock<Option<GatewayIdentity>>,
 }
 
 impl Gateway {
@@ -63,6 +68,7 @@ impl Gateway {
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
             handler_router: None,
+            identity_cache: RwLock::new(None),
         }
     }
 
@@ -80,6 +86,7 @@ impl Gateway {
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
             handler_router: Some(handler_router),
+            identity_cache: RwLock::new(None),
         }
     }
 
@@ -97,6 +104,7 @@ impl Gateway {
             crypto_sha: RustCryptoSha256,
             pending_commands,
             handler_router: None,
+            identity_cache: RwLock::new(None),
         }
     }
 
@@ -120,6 +128,14 @@ impl Gateway {
     pub async fn process_frame(&self, raw: &[u8], peer: PeerAddress) -> Option<Vec<u8>> {
         // 1. Decode the frame (reject TooShort / TooLong)
         let decoded = decode_frame(raw).ok()?;
+
+        // GW-1211: For PEER_REQUEST (0x05), bypass the normal key-hint lookup
+        // and HMAC verification. The node is not yet registered, so its PSK
+        // is unknown. HMAC is verified later (step 8) using the node_psk
+        // extracted from the decrypted payload.
+        if decoded.header.msg_type == MSG_PEER_REQUEST {
+            return self.handle_peer_request(raw, &decoded).await;
+        }
 
         // 2. Extract key_hint from header
         let key_hint = decoded.header.key_hint;
@@ -152,6 +168,232 @@ impl Gateway {
             }
             _ => None,
         }
+    }
+
+    /// Lazy-load the gateway identity from storage (cached after first load).
+    async fn get_identity(&self) -> Option<GatewayIdentity> {
+        // Fast path: return cached identity.
+        {
+            let cache = self.identity_cache.read().await;
+            if let Some(ref id) = *cache {
+                return Some(id.clone());
+            }
+        }
+        // Slow path: load from storage.
+        let id = self.storage.load_gateway_identity().await.ok()??;
+        let mut cache = self.identity_cache.write().await;
+        *cache = Some(id.clone());
+        Some(id)
+    }
+
+    /// Handle a PEER_REQUEST frame (GW-1211–GW-1221).
+    ///
+    /// Implements the 13-step pipeline from ble-pairing-protocol.md §7.3.
+    /// All verification failures result in silent discard (no PEER_ACK).
+    async fn handle_peer_request(
+        &self,
+        _raw: &[u8],
+        decoded: &sonde_protocol::DecodedFrame,
+    ) -> Option<Vec<u8>> {
+        use aes_gcm::aead::{Aead, KeyInit};
+        use aes_gcm::{Aes256Gcm, Nonce};
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        use x25519_dalek::PublicKey as X25519PublicKey;
+
+        const HKDF_INFO: &[u8] = b"sonde-node-pair-v1";
+        const PROOF_DOMAIN: &[u8] = b"sonde-peer-ack-v1";
+        const MAX_TIMESTAMP_DRIFT_S: u64 = 86400;
+
+        // Step 1: msg_type already verified by caller (== MSG_PEER_REQUEST).
+
+        // Step 2: Bypass key-hint lookup (handled by caller).
+
+        // Step 3: Parse CBOR, extract encrypted_payload.
+        let cbor: ciborium::Value = ciborium::from_reader(&decoded.payload[..]).ok()?;
+        let map = cbor.as_map()?;
+        let mut encrypted_payload: Option<&[u8]> = None;
+        for (k, v) in map {
+            let key = k.as_integer().and_then(|i| u64::try_from(i).ok())?;
+            if key == PEER_REQ_KEY_PAYLOAD {
+                encrypted_payload = v.as_bytes().map(|b| b.as_slice());
+            }
+        }
+        let encrypted_payload = encrypted_payload?;
+
+        // Step 4: Decrypt encrypted_payload (ECDH + HKDF + AES-256-GCM).
+        // encrypted_payload layout: eph_public(32) + nonce(12) + ciphertext(N+16)
+        if encrypted_payload.len() < 44 + 16 {
+            return None; // Too short for eph_pub + nonce + tag
+        }
+        let eph_public_bytes: [u8; 32] = encrypted_payload[..32].try_into().ok()?;
+        let gcm_nonce = &encrypted_payload[32..44];
+        let ciphertext = &encrypted_payload[44..];
+
+        let identity = self.get_identity().await?;
+        let (x25519_secret, _) = identity.to_x25519().ok()?;
+        let eph_public = X25519PublicKey::from(eph_public_bytes);
+        let shared_secret = x25519_secret.diffie_hellman(&eph_public);
+
+        // Reject zero shared secret (low-order point).
+        if shared_secret.as_bytes() == &[0u8; 32] {
+            return None;
+        }
+
+        let gateway_id = identity.gateway_id();
+        let hkdf = Hkdf::<Sha256>::new(Some(gateway_id), shared_secret.as_bytes());
+        let mut aes_key = [0u8; 32];
+        hkdf.expand(HKDF_INFO, &mut aes_key).ok()?;
+
+        let cipher = Aes256Gcm::new_from_slice(&aes_key).ok()?;
+        let nonce = Nonce::from_slice(gcm_nonce);
+        let authenticated_request = cipher
+            .decrypt(
+                nonce,
+                aes_gcm::aead::Payload {
+                    msg: ciphertext,
+                    aad: gateway_id,
+                },
+            )
+            .ok()?;
+
+        // Step 5: Parse authenticated_request.
+        // Layout: phone_key_hint(2) + cbor_bytes(N) + phone_hmac(32)
+        if authenticated_request.len() < 2 + 32 {
+            return None;
+        }
+        let phone_key_hint =
+            u16::from_be_bytes([authenticated_request[0], authenticated_request[1]]);
+        let cbor_bytes = &authenticated_request[2..authenticated_request.len() - 32];
+        let phone_hmac = &authenticated_request[authenticated_request.len() - 32..];
+
+        // Step 6: Verify phone HMAC (GW-1213).
+        let phone_candidates = self
+            .storage
+            .get_phone_psks_by_key_hint(phone_key_hint)
+            .await
+            .ok()?;
+
+        let mut matched_phone_id: Option<u32> = None;
+        for phone in &phone_candidates {
+            if matches!(phone.status, PhonePskStatus::Revoked) {
+                continue;
+            }
+            let expected = self.crypto_hmac.compute(&*phone.psk, cbor_bytes);
+            if phone_hmac.len() == 32 {
+                let hmac_arr: &[u8; 32] = phone_hmac.try_into().ok()?;
+                if expected == *hmac_arr {
+                    matched_phone_id = Some(phone.phone_id);
+                    break;
+                }
+            }
+        }
+        let phone_id = matched_phone_id?;
+
+        // Step 7: Parse PairingRequest CBOR.
+        let pairing_cbor: ciborium::Value = ciborium::from_reader(cbor_bytes).ok()?;
+        let pairing_map = pairing_cbor.as_map()?;
+
+        let mut node_id: Option<String> = None;
+        let mut node_key_hint: Option<u16> = None;
+        let mut node_psk: Option<[u8; 32]> = None;
+        let mut rf_channel: Option<u8> = None;
+        let mut timestamp: Option<u64> = None;
+
+        for (k, v) in pairing_map {
+            let key = k.as_integer().and_then(|i| u64::try_from(i).ok())?;
+            match key {
+                1 => node_id = v.as_text().map(|s| s.to_owned()),
+                2 => {
+                    node_key_hint = v
+                        .as_integer()
+                        .and_then(|i| u64::try_from(i).ok())
+                        .and_then(|v| u16::try_from(v).ok())
+                }
+                3 => {
+                    if let Some(b) = v.as_bytes() {
+                        if b.len() == 32 {
+                            let mut psk = [0u8; 32];
+                            psk.copy_from_slice(b);
+                            node_psk = Some(psk);
+                        }
+                    }
+                }
+                4 => {
+                    rf_channel = v
+                        .as_integer()
+                        .and_then(|i| u64::try_from(i).ok())
+                        .and_then(|v| u8::try_from(v).ok())
+                }
+                6 => timestamp = v.as_integer().and_then(|i| u64::try_from(i).ok()),
+                _ => {} // ignore unknown keys (including 5=sensors for now)
+            }
+        }
+
+        let node_id = node_id?;
+        let node_key_hint = node_key_hint?;
+        let node_psk = node_psk?;
+        let rf_channel = rf_channel?;
+        let timestamp = timestamp?;
+
+        // Step 8: Verify frame HMAC with extracted node_psk (GW-1214).
+        if !verify_frame(decoded, &node_psk, &self.crypto_hmac) {
+            return None;
+        }
+
+        // Step 9: Verify timestamp within ±86400s (GW-1215).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        if now.abs_diff(timestamp) > MAX_TIMESTAMP_DRIFT_S {
+            return None;
+        }
+
+        // Step 10: Check node_id uniqueness (GW-1216).
+        if self.storage.get_node(&node_id).await.ok()?.is_some() {
+            return None;
+        }
+
+        // Step 11: Verify key_hint consistency (GW-1217).
+        if decoded.header.key_hint != node_key_hint {
+            return None;
+        }
+
+        // Step 12: Register node (GW-1218).
+        let mut record = NodeRecord::new(node_id, node_key_hint, node_psk);
+        record.rf_channel = Some(rf_channel);
+        record.registered_by_phone_id = Some(phone_id);
+        self.storage.upsert_node(&record).await.ok()?;
+
+        // Step 13: Send PEER_ACK (GW-1219).
+        // registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" || encrypted_payload)
+        let mut proof_input = Vec::with_capacity(PROOF_DOMAIN.len() + encrypted_payload.len());
+        proof_input.extend_from_slice(PROOF_DOMAIN);
+        proof_input.extend_from_slice(encrypted_payload);
+        let proof = self.crypto_hmac.compute(&node_psk, &proof_input);
+
+        // Build CBOR: { 1: 0, 2: registration_proof }
+        let ack_cbor = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Integer(PEER_ACK_KEY_STATUS.into()),
+                ciborium::Value::Integer(0.into()),
+            ),
+            (
+                ciborium::Value::Integer(PEER_ACK_KEY_PROOF.into()),
+                ciborium::Value::Bytes(proof.to_vec()),
+            ),
+        ]);
+        let mut ack_cbor_buf = Vec::new();
+        ciborium::into_writer(&ack_cbor, &mut ack_cbor_buf).ok()?;
+
+        let ack_header = FrameHeader {
+            key_hint: node_key_hint,
+            msg_type: MSG_PEER_ACK,
+            nonce: decoded.header.nonce, // echo nonce
+        };
+
+        encode_frame(&ack_header, &ack_cbor_buf, &node_psk, &self.crypto_hmac).ok()
     }
 
     /// Handle a WAKE message: create session, determine command, respond.

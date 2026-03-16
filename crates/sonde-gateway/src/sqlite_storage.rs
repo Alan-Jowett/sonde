@@ -585,6 +585,9 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         firmware_abi_version: row.get(6)?,
         last_battery_mv: row.get(7)?,
         last_seen: last_seen_epoch.map(epoch_s_to_system_time),
+        rf_channel: None,
+        sensors: Vec::new(),
+        registered_by_phone_id: None,
     })
 }
 
@@ -1170,6 +1173,9 @@ mod tests {
             firmware_abi_version: None,
             last_battery_mv: None,
             last_seen: None,
+            rf_channel: None,
+            sensors: Vec::new(),
+            registered_by_phone_id: None,
         }
     }
 

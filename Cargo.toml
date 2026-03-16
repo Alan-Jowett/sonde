@@ -8,6 +8,7 @@ members = [
     "crates/sonde-admin",
     "crates/sonde-bpf",
     "crates/sonde-e2e",
+    "crates/sonde-pair",
 ]
 default-members = [
     "crates/sonde-protocol",

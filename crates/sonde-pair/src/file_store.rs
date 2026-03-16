@@ -106,8 +106,17 @@ impl FilePairingStore {
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
 
         // Atomic write: temp file → fsync → rename.
+        // Clean up the temp file on any error so we never leave key material
+        // (phone_psk) on disk in an orphaned file.
         let temp_path = self.path.with_extension("json.tmp");
+        let result = self.write_temp_and_rename(&temp_path, json.as_bytes());
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        result
+    }
 
+    fn write_temp_and_rename(&self, temp_path: &Path, data: &[u8]) -> Result<(), PairingError> {
         // On Unix, create with restrictive permissions from the start so the
         // file is never world-readable, even briefly.
         #[cfg(unix)]
@@ -118,20 +127,20 @@ impl FilePairingStore {
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
-                .open(&temp_path)
+                .open(temp_path)
                 .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?
         };
         #[cfg(not(unix))]
-        let mut file = fs::File::create(&temp_path)
+        let mut file = fs::File::create(temp_path)
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
 
-        file.write_all(json.as_bytes())
+        file.write_all(data)
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
         file.sync_all()
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
         drop(file);
 
-        fs::rename(&temp_path, &self.path)
+        fs::rename(temp_path, &self.path)
             .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
 
         Ok(())

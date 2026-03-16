@@ -7,10 +7,12 @@
 # Published to: ghcr.io/alan-jowett/sonde-android-dev
 #
 # Usage:
-#   docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev \
+#   docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:latest \
 #     cargo ndk -t arm64-v8a build -p sonde-pair --release
 
-FROM ubuntu:24.04
+# Pinned by digest for reproducible builds (ubuntu 24.04 LTS).
+# To update: docker pull ubuntu:24.04 && docker inspect --format='{{index .RepoDigests 0}}' ubuntu:24.04
+FROM ubuntu@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9
 
 LABEL org.opencontainers.image.source="https://github.com/Alan-Jowett/sonde"
 LABEL org.opencontainers.image.description="Sonde Android/Tauri development container"
@@ -70,10 +72,14 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018
 ENV PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}"
 
-# Install Android command-line tools
+# Install Android command-line tools (with SHA-256 integrity check)
+ENV CMDLINE_TOOLS_URL=https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+ENV CMDLINE_TOOLS_SHA256=2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258
+
 RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
     && cd ${ANDROID_HOME}/cmdline-tools \
-    && wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip \
+    && wget -q ${CMDLINE_TOOLS_URL} -O tools.zip \
+    && echo "${CMDLINE_TOOLS_SHA256}  tools.zip" | sha256sum -c - \
     && unzip -q tools.zip \
     && mv cmdline-tools latest \
     && rm tools.zip
@@ -104,8 +110,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # Cargo tools
 # ---------------------------------------------------------------------------
 
-RUN cargo install cargo-ndk --locked \
-    && cargo install tauri-cli --version "^2" --locked
+RUN cargo install cargo-ndk@4.1.2 --locked \
+    && cargo install tauri-cli@2.10.1 --locked
 
 # ---------------------------------------------------------------------------
 # Verify installation

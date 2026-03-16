@@ -39,7 +39,7 @@ Sonde is a programmable sensor node platform. Nodes run BPF programs distributed
 - **`sonde-node`** — ESP32-C3/S3 firmware (Rust + ESP-IDF). Cyclic state machine: wake → WAKE/COMMAND → BPF execution → sleep. BPF interpreter behind a `BpfInterpreter` trait.
 - **`sonde-modem`** — ESP32-S3 USB-CDC modem firmware. Bridges ESP-NOW radio and BLE GATT to the gateway over serial. Hosts the Gateway Pairing Service for BLE-based node provisioning.
 - **`sonde-admin`** — CLI tool wrapping the gateway gRPC API. Handles USB-mediated node pairing.
-- **`sonde-pair`** — BLE pairing tool (Tauri v2 app). Targets Android (`aarch64-linux-android`) and Windows. Cross-compiled using the Android dev container (`ghcr.io/alan-jowett/sonde-android-dev`). See `.devcontainer/android/` for VS Code / Codespaces setup.
+- **`sonde-pair`** — BLE pairing tool (Tauri v2 app). Targets Android (`aarch64-linux-android`), Windows, and Linux. Cross-compiled using the Android dev container (`ghcr.io/alan-jowett/sonde-android-dev`). See `.devcontainer/android/` for VS Code / Codespaces setup.
 - **`sonde-bpf`** — Safe BPF interpreter with tagged register tracking. Used by `sonde-node`.
 - **`sonde-e2e`** — End-to-end test harness.
 

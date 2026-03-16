@@ -314,11 +314,11 @@ The container is published to `ghcr.io/alan-jowett/sonde-android-dev:latest`.
 
 ```bash
 # Cross-compile sonde-pair for Android (arm64)
-docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev \
+docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:latest \
   cargo ndk -t arm64-v8a build -p sonde-pair --release
 
 # Build sonde-pair for Linux host (CI testing with mock BLE)
-docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev \
+docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:latest \
   cargo build -p sonde-pair --release
 ```
 

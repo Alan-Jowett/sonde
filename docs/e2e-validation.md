@@ -469,7 +469,7 @@ impl E2eNode {
 **Validates:** GW-1200, GW-1201 — Ed25519 keypair and gateway_id generation and persistence.
 
 **Preconditions:**
-1. Fresh `SqliteStorage::in_memory()`.
+1. Fresh `SqliteStorage::in_memory(master_key)`.
 
 **Procedure:**
 1. Call `GatewayIdentity::generate()` and store via `Storage::store_gateway_identity`.
@@ -675,6 +675,7 @@ impl E2eNode {
 | T-E2E-041 | GW-0602, ND-0303 |
 | T-E2E-050 | GW-1100, GW-1101 |
 | T-E2E-051 | GW-1100, modem protocol |
+| T-E2E-058 | ND-0200, ND-0300, ND-0900 |
 | T-E2E-060 | GW-1200, GW-1201 |
 | T-E2E-061 | GW-1206, GW-1207, GW-1208, GW-1209, GW-1210 |
 | T-E2E-062 | ND-0905, ND-0906, ND-0907, ND-0908 |

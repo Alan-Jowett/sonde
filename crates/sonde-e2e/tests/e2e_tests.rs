@@ -848,7 +848,7 @@ async fn t_e2e_030_app_data_round_trip() {
 // Lifecycle tests
 // ===========================================================================
 
-/// T-E2E-060 — Full boot → pair → boot → run lifecycle.
+/// T-E2E-058 — Full boot → pair → boot → run lifecycle (USB pairing).
 ///
 /// Exercises the complete node lifecycle from factory-fresh state using the
 /// real `run_pairing_mode` firmware function with a mock serial transport:
@@ -863,7 +863,7 @@ async fn t_e2e_030_app_data_round_trip() {
 ///    `ResetRequest`, then mock serial disconnects.
 /// 5. **Boot unpaired again** — confirms the node reverts to `Unpaired`.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
+async fn t_e2e_058_lifecycle_usb_pair_boot_run() {
     use sonde_node::pairing::run_pairing_mode;
     use sonde_protocol::modem::{
         IdentityResponse, ModemMessage, PairAck, PairRequest, PairingReady, ResetAck,
@@ -984,7 +984,7 @@ async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
 }
 
 // ===========================================================================
-// BLE pairing / onboarding tests (T-E2E-060b through T-E2E-070)
+// BLE pairing / onboarding tests (T-E2E-060 through T-E2E-070)
 // ===========================================================================
 
 use sonde_e2e::harness::{

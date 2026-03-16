@@ -103,6 +103,8 @@ pub(crate) fn parse_hex_key(hex: &str) -> Result<Zeroizing<[u8; 32]>, KeyProvide
     }
     let mut key = Zeroizing::new([0u8; 32]);
     for (i, byte) in key.iter_mut().enumerate() {
+        // Safety: hex.len() == 64 (checked above), i is 0..32,
+        // so i*2..i*2+2 is always a valid ASCII pair within bounds.
         *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
             .map_err(|e| KeyProviderError::Format(format!("hex parse error at byte {i}: {e}")))?;
     }
@@ -229,6 +231,8 @@ impl KeyProvider for DpapiKeyProvider {
 
         let plaintext = dpapi::decrypt(&blob)
             .map_err(|e| KeyProviderError::Backend(format!("DPAPI decryption failed: {e}")))?;
+        // Wrap in Zeroizing so the plaintext is cleared from memory on drop.
+        let plaintext = Zeroizing::new(plaintext);
 
         if plaintext.len() != 32 {
             return Err(KeyProviderError::Format(format!(
@@ -463,6 +467,8 @@ async fn ss_load(label: &str) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
         .get_secret()
         .await
         .map_err(|e| KeyProviderError::Backend(format!("cannot retrieve secret: {e}")))?;
+    // Wrap in Zeroizing so the raw key bytes are cleared from memory on drop.
+    let secret_bytes = Zeroizing::new(secret_bytes);
 
     if secret_bytes.len() != 32 {
         return Err(KeyProviderError::Format(format!(
@@ -486,7 +492,8 @@ async fn ss_load(label: &str) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
 /// `--key-provider secret-service` on the next gateway start.
 #[cfg(target_os = "linux")]
 pub fn store_in_secret_service(key: &[u8; 32], label: &str) -> Result<(), KeyProviderError> {
-    let key_bytes: Vec<u8> = key.to_vec();
+    // Use Zeroizing<Vec<u8>> so the key copy is cleared on drop.
+    let key_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(key.to_vec());
     let label = label.to_owned();
 
     if let Ok(handle) = tokio::runtime::Handle::try_current() {

@@ -523,6 +523,52 @@ The gateway's key store SHOULD encrypt PSK material at rest. Plaintext PSKs SHOU
 
 ---
 
+### GW-0601b  OS-native master key protection via `KeyProvider`
+
+**Priority:** Should  
+**Source:** security.md §2.3.1
+
+**Description:**  
+The gateway SHOULD support pluggable key-provider backends so that the master
+key itself can benefit from OS-native protection (hardware-backed or
+OS-managed encryption) rather than relying solely on file-system permissions.
+
+A `KeyProvider` trait abstracts how the 32-byte master key is obtained:
+
+```rust
+pub trait KeyProvider: Send + Sync {
+    fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError>;
+}
+```
+
+`Zeroizing<[u8; 32]>` wraps the key array in the `zeroize` crate's
+`Zeroizing` guard, which zeroes the memory on drop.  The `[u8; 32]` array
+type implements the `Zeroize` trait so the guard can clear it when the value
+goes out of scope.
+
+The following backends MUST be provided:
+
+| Backend | `--key-provider` value | Platform | Mechanism |
+|---------|------------------------|----------|-----------|
+| `FileKeyProvider` | `file` *(default)* | All | Read 64 hex chars from `--master-key-file`. Preserves existing `--master-key-file` workflow unchanged. |
+| `EnvKeyProvider` | `env` | All | Read 64 hex chars from `SONDE_MASTER_KEY` env var. Preserves existing env-var workflow unchanged. |
+| `DpapiKeyProvider` | `dpapi` | Windows | Decrypt a DPAPI blob at `--master-key-file` using `CryptProtectData` / `CryptUnprotectData`. The blob is tied to the Windows user or machine account. |
+| `SecretServiceKeyProvider` | `secret-service` | Linux | Retrieve the key from the D-Bus Secret Service (GNOME Keyring / KWallet) via `--key-label`. |
+
+The trait is designed to be extensible for future backends (macOS Keychain,
+HSM/PKCS#11, cloud KMS) without changes to the gateway startup code.
+
+**Acceptance criteria:**
+
+1. Existing `--master-key-file` and `SONDE_MASTER_KEY` workflows continue to work unchanged with `--key-provider file` and `--key-provider env` respectively (no breaking change).
+2. On Windows, `--key-provider dpapi` reads a DPAPI-protected blob and decrypts it using `CryptUnprotectData`, returning the raw 32-byte key.
+3. On Linux, `--key-provider secret-service` retrieves a 32-byte binary secret from the system keyring under the specified `--key-label`.
+4. Requesting a platform-specific backend on an unsupported platform (e.g., `--key-provider dpapi` on Linux) returns a clear error at startup, before the database is opened.
+5. `KeyProviderError` variants distinguish I/O errors, format errors, platform availability errors, and backend errors.
+6. The `KeyProvider` trait is publicly exported from the `sonde-gateway` library crate so external backends can be implemented downstream.
+
+---
+
 ### GW-0602  Replay protection — session-scoped sequence numbers
 
 **Priority:** Must  
@@ -1312,6 +1358,7 @@ The admin API MUST expose an `OpenBlePairing` RPC (and corresponding `sonde-admi
 | GW-0600 | HMAC-SHA256 message authentication | Must |
 | GW-0601 | Per-node key management | Must |
 | GW-0601a | Key store encryption at rest | Should |
+| GW-0601b | OS-native master key protection via `KeyProvider` | Should |
 | GW-0602 | Replay protection — session-scoped sequence numbers | Must |
 | GW-0603 | Authentication overhead budget | Must |
 | GW-0700 | Node registry | Must |

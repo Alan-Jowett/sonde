@@ -102,7 +102,13 @@ impl<T: BleTransport> DeviceScanner<T> {
         }
 
         self.transport.start_scan(GATEWAY_SERVICE_UUID).await?;
-        self.transport.start_scan(NODE_SERVICE_UUID).await?;
+
+        if let Err(e) = self.transport.start_scan(NODE_SERVICE_UUID).await {
+            // Clean up the first scan so the transport is not left in a
+            // partially-started state.
+            let _ = self.transport.stop_scan().await;
+            return Err(e);
+        }
 
         self.scanning = true;
         self.scan_started_at = Some(Instant::now());

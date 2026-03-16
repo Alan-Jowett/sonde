@@ -462,6 +462,199 @@ impl E2eNode {
 - Response arrives at node intact.
 - Modem framing (length prefix, type byte, body) correctly encoded/decoded at both ends.
 
+### 4.7  BLE pairing / onboarding
+
+#### T-E2E-060  Gateway Ed25519 identity persistence
+
+**Validates:** GW-1200, GW-1201 — Ed25519 keypair and gateway_id generation and persistence.
+
+**Preconditions:**
+1. Fresh `SqliteStorage::in_memory()`.
+
+**Procedure:**
+1. Call `GatewayIdentity::generate()` and store via `Storage::store_gateway_identity`.
+2. Reload identity via `Storage::load_gateway_identity`.
+
+**Assertions:**
+- Public key and gateway_id are identical after round-trip.
+
+#### T-E2E-061  Phone registration (Phase 1)
+
+**Validates:** GW-1206–GW-1210 — REQUEST_GW_INFO challenge-response, REGISTER_PHONE ECDH + AES-GCM, registration window enforcement.
+
+**Preconditions:**
+1. Gateway identity stored.
+2. Registration window open.
+
+**Procedure:**
+1. Send REQUEST_GW_INFO envelope via `handle_ble_recv` with 32-byte challenge.
+2. Parse GW_INFO_RESPONSE (verify Ed25519 public key, gateway_id, signature).
+3. Send REGISTER_PHONE with ephemeral X25519 public key + label.
+4. Decrypt PHONE_REGISTERED response (ECDH + HKDF + AES-256-GCM).
+5. Close registration window and attempt REGISTER_PHONE again.
+
+**Assertions:**
+- GW_INFO_RESPONSE contains valid 112-byte response.
+- PHONE_REGISTERED decrypts to 36-byte inner (status + PSK + key_hint + channel).
+- Phone PSK stored in gateway storage.
+- Closed window returns ERROR envelope with status 0x02.
+
+#### T-E2E-062  Node BLE provisioning (Phase 2)
+
+**Validates:** ND-0905–ND-0908 — NODE_PROVISION handling, NVS state persistence.
+
+**Preconditions:**
+1. Phase 1 complete (phone PSK available).
+2. Encrypted payload constructed from Phase 1 artifacts.
+
+**Procedure:**
+1. Build `encrypted_payload` (CBOR PairingRequest + phone HMAC + ECDH + AES-GCM).
+2. Call `handle_node_provision` with key_hint, PSK, channel, and encrypted payload.
+
+**Assertions:**
+- `handle_node_provision` returns `NODE_ACK_SUCCESS`.
+- Node storage contains: PSK, key_hint, channel, peer_payload.
+- `reg_complete` is `false`.
+
+#### T-E2E-063  PEER_REQUEST/PEER_ACK (Phase 3)
+
+**Validates:** GW-1211–GW-1219, ND-0909–ND-0913 — Node relays encrypted payload to gateway, gateway decrypts and registers node, returns PEER_ACK with registration_proof.
+
+**Preconditions:**
+1. Gateway identity and phone PSK stored.
+2. Node BLE-provisioned (PSK + peer_payload in storage, reg_complete = false).
+
+**Procedure:**
+1. Run wake cycle. Node detects `!reg_complete && has_peer_payload`.
+2. Node builds PEER_REQUEST frame (msg_type 0x05) and sends via ESP-NOW.
+3. Gateway decrypts encrypted_payload (ECDH + HKDF + AES-GCM), verifies phone HMAC, registers node.
+4. Gateway returns PEER_ACK with `registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)`.
+5. Node verifies PEER_ACK, sets `reg_complete`, proceeds to WAKE.
+
+**Assertions:**
+- PEER_REQUEST frame sent (msg_type 0x05).
+- Node registered in gateway storage with correct key_hint.
+- `reg_complete` is `true`.
+- Wake cycle completes with `Sleep { seconds: 60 }`.
+
+#### T-E2E-064  Complete onboarding → first WAKE
+
+**Validates:** ND-0914 — Node transitions from bootstrap to steady-state; peer_payload erased after first WAKE.
+
+**Preconditions:**
+1. Same as T-E2E-063.
+
+**Procedure:**
+1. Run first wake cycle (PEER_REQUEST + WAKE).
+2. Verify steady-state transition.
+3. Run second wake cycle (pure WAKE, no PEER_REQUEST).
+
+**Assertions:**
+- After first cycle: `reg_complete` true, `peer_payload` erased (ND-0914).
+- Second cycle succeeds without PEER_REQUEST.
+- No msg_type 0x05 frames in second cycle.
+
+#### T-E2E-065  Deferred erasure
+
+**Validates:** ND-0913 (retain peer_payload on PEER_ACK), ND-0914 (erase after WAKE success).
+
+**Preconditions:**
+1. BLE-provisioned node with peer_payload present.
+
+**Procedure:**
+1. Verify peer_payload present before cycle.
+2. Run wake cycle (PEER_REQUEST + WAKE).
+3. Verify peer_payload absent after cycle.
+
+**Assertions:**
+- peer_payload present before cycle.
+- `reg_complete` true and `peer_payload` None after WAKE success.
+
+#### T-E2E-066  Self-healing
+
+**Validates:** ND-0915 — WAKE failure after forged PEER_ACK reverts to PEER_REQUEST.
+
+**Preconditions:**
+1. BLE-provisioned node with `reg_complete = true` (forged) and peer_payload present.
+2. Gateway does NOT have the node registered.
+
+**Procedure:**
+1. Run wake cycle: skip PEER_REQUEST (reg_complete=true) → WAKE fails (unknown node) → self-healing clears reg_complete.
+2. Run second wake cycle: PEER_REQUEST → gateway registers → PEER_ACK → WAKE succeeds.
+
+**Assertions:**
+- After first cycle: `reg_complete` false, peer_payload retained.
+- After second cycle: `reg_complete` true, peer_payload erased.
+
+#### T-E2E-067  Agent revocation
+
+**Validates:** GW-1213 — Revoked phone PSK causes PEER_REQUEST silent discard.
+
+**Preconditions:**
+1. Phone registered then revoked via `Storage::revoke_phone_psk`.
+2. Encrypted payload built with the revoked phone's credentials.
+
+**Procedure:**
+1. Run wake cycle: PEER_REQUEST sent → gateway discards (revoked phone HMAC fails) → PEER_ACK timeout.
+
+**Assertions:**
+- PEER_REQUEST frame sent.
+- `reg_complete` remains false.
+- Node NOT registered in gateway storage.
+
+#### T-E2E-068  Factory reset and re-provisioning
+
+**Validates:** ND-0917 — Factory reset clears all state; re-provisioning succeeds.
+
+**Preconditions:**
+1. Node previously registered (PEER_REQUEST + WAKE completed).
+
+**Procedure:**
+1. Factory reset via `run_pairing_mode` with `ResetRequest`.
+2. Verify all state cleared.
+3. Re-provision with new identity via `handle_node_provision`.
+4. Run wake cycle (PEER_REQUEST + WAKE).
+
+**Assertions:**
+- After reset: key None, peer_payload None.
+- Re-provisioned node completes PEER_REQUEST + WAKE successfully.
+- New identity registered in gateway.
+
+#### T-E2E-069  Multi-node concurrent
+
+**Validates:** GW-1216 (node_id uniqueness), key isolation between nodes.
+
+**Preconditions:**
+1. Two nodes provisioned with distinct PSKs via the same phone.
+
+**Procedure:**
+1. Onboard node A (PEER_REQUEST + WAKE).
+2. Onboard node B (PEER_REQUEST + WAKE).
+3. Both run steady-state WAKE cycles.
+
+**Assertions:**
+- Both nodes registered in gateway storage.
+- Both succeed in steady-state (no PEER_REQUEST in second cycle).
+
+#### T-E2E-070  Full use case
+
+**Validates:** All onboarding requirements + steady-state program execution.
+
+**Preconditions:**
+1. Fresh environment.
+
+**Procedure:**
+1. Generate gateway identity.
+2. Phone registration (Phase 1).
+3. Build encrypted payload and BLE-provision node (Phase 2).
+4. PEER_REQUEST/PEER_ACK + first WAKE (Phase 3).
+5. Deploy a BPF program that calls `send()` (helper 8).
+6. Run wake cycle with real `SondeBpfInterpreter`.
+
+**Assertions:**
+- All onboarding steps succeed.
+- BPF program executes and sends APP_DATA (msg_type 0x04).
+
 ---
 
 ## 5  Test-to-requirement traceability
@@ -482,6 +675,17 @@ impl E2eNode {
 | T-E2E-041 | GW-0602, ND-0303 |
 | T-E2E-050 | GW-1100, GW-1101 |
 | T-E2E-051 | GW-1100, modem protocol |
+| T-E2E-060 | GW-1200, GW-1201 |
+| T-E2E-061 | GW-1206, GW-1207, GW-1208, GW-1209, GW-1210 |
+| T-E2E-062 | ND-0905, ND-0906, ND-0907, ND-0908 |
+| T-E2E-063 | GW-1211, GW-1212, GW-1213, GW-1214, GW-1215, GW-1216, GW-1217, GW-1218, GW-1219, ND-0909, ND-0912, ND-0913 |
+| T-E2E-064 | ND-0914 |
+| T-E2E-065 | ND-0913, ND-0914 |
+| T-E2E-066 | ND-0915 |
+| T-E2E-067 | GW-1213 |
+| T-E2E-068 | ND-0917 |
+| T-E2E-069 | GW-1216 |
+| T-E2E-070 | GW-1200, GW-1206, GW-1209, GW-1211, GW-1218, ND-0905, ND-0909, ND-0914, ND-0602 |
 
 ---
 
@@ -493,10 +697,10 @@ The E2E tests should live in a dedicated workspace crate:
 
 ```
 crates/sonde-e2e/
-├── Cargo.toml          # depends on sonde-gateway, sonde-node, sonde-modem, sonde-protocol
+├── Cargo.toml          # depends on sonde-gateway, sonde-node, sonde-modem, sonde-protocol, sonde-pair
 └── tests/
-    ├── harness.rs      # shared test setup (ChannelRadio, ChannelTransport, E2eNode, etc.)
-    └── e2e_tests.rs    # test cases T-E2E-001 through T-E2E-051
+    ├── harness.rs      # shared test setup (ChannelRadio, ChannelTransport, E2eNode, BLE pairing helpers, etc.)
+    └── e2e_tests.rs    # test cases T-E2E-001 through T-E2E-070
 ```
 
 ### 6.2  Async ↔ sync bridge

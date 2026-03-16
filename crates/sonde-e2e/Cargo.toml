@@ -9,6 +9,7 @@ sonde-protocol = { path = "../sonde-protocol" }
 sonde-gateway = { path = "../sonde-gateway" }
 sonde-node = { path = "../sonde-node" }
 sonde-modem = { path = "../sonde-modem" }
+sonde-pair = { path = "../sonde-pair" }
 tokio = { version = "1", features = ["full", "test-util"] }
 hmac = "0.12"
 sha2 = "0.10"

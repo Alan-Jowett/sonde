@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 pub mod admin;
+pub mod ble_pairing;
 pub mod crypto;
 pub mod engine;
 pub mod gateway_identity;

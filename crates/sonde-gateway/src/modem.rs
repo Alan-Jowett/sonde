@@ -14,10 +14,26 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, error, info, warn};
 
 use sonde_protocol::modem::{
-    encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, ModemStatus, SendFrame,
+    encode_modem_frame, BleConnected, BleDisconnected, BleIndicate, BlePairingConfirm,
+    BlePairingConfirmReply, BleRecv, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
+    SendFrame,
 };
 
 use crate::transport::{PeerAddress, Transport, TransportError};
+
+/// BLE event received from the modem, forwarded to the gateway's BLE
+/// pairing state machine.
+#[derive(Debug, Clone)]
+pub enum BleEvent {
+    /// BLE GATT write received from a connected phone.
+    Recv(BleRecv),
+    /// Phone connected via BLE (includes negotiated MTU).
+    Connected(BleConnected),
+    /// Phone disconnected from BLE.
+    Disconnected(BleDisconnected),
+    /// Numeric Comparison passkey from the modem for operator confirmation.
+    PairingConfirm(BlePairingConfirm),
+}
 
 /// Type-erased async writer behind a shared mutex.
 type SharedWriter = Arc<Mutex<Box<dyn AsyncWrite + Send + Unpin>>>;
@@ -30,6 +46,7 @@ type SharedWriter = Arc<Mutex<Box<dyn AsyncWrite + Send + Unpin>>>;
 pub struct UsbEspNowTransport {
     writer: SharedWriter,
     recv_rx: Mutex<mpsc::Receiver<(Vec<u8>, PeerAddress)>>,
+    ble_rx: Mutex<mpsc::Receiver<BleEvent>>,
     status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
     modem_mac: [u8; 6],
     reader_handle: tokio::task::JoinHandle<()>,
@@ -55,6 +72,7 @@ impl UsbEspNowTransport {
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(write_half)));
 
         let (recv_tx, recv_rx) = mpsc::channel::<(Vec<u8>, PeerAddress)>(256);
+        let (ble_tx, ble_rx) = mpsc::channel::<BleEvent>(64);
         let (ready_tx, ready_rx) = oneshot::channel::<ModemReady>();
         let (ack_tx, ack_rx) = oneshot::channel::<u8>();
         let status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>> =
@@ -88,6 +106,7 @@ impl UsbEspNowTransport {
                                         dispatch_message(
                                             msg,
                                             &recv_tx,
+                                            &ble_tx,
                                             &mut ready_tx,
                                             &mut ack_tx,
                                             &status_slot,
@@ -170,6 +189,7 @@ impl UsbEspNowTransport {
                 Ok(Self {
                     writer,
                     recv_rx: Mutex::new(recv_rx),
+                    ble_rx: Mutex::new(ble_rx),
                     status_slot,
                     modem_mac,
                     reader_handle,
@@ -185,6 +205,37 @@ impl UsbEspNowTransport {
     /// Return the modem's MAC address reported during startup.
     pub fn modem_mac(&self) -> &[u8; 6] {
         &self.modem_mac
+    }
+
+    /// Receive the next BLE event from the modem.
+    ///
+    /// Returns `None` when the reader task has stopped.
+    pub async fn recv_ble_event(&self) -> Option<BleEvent> {
+        self.ble_rx.lock().await.recv().await
+    }
+
+    /// Send a BLE_INDICATE command to the modem (relayed to the connected phone).
+    pub async fn send_ble_indicate(&self, data: &[u8]) -> Result<(), TransportError> {
+        let msg = ModemMessage::BleIndicate(BleIndicate {
+            ble_data: data.to_vec(),
+        });
+        Self::send_encoded(&self.writer, &msg).await
+    }
+
+    /// Send a BLE_ENABLE command to the modem (start BLE advertising).
+    pub async fn send_ble_enable(&self) -> Result<(), TransportError> {
+        Self::send_encoded(&self.writer, &ModemMessage::BleEnable).await
+    }
+
+    /// Send a BLE_DISABLE command to the modem (stop BLE advertising).
+    pub async fn send_ble_disable(&self) -> Result<(), TransportError> {
+        Self::send_encoded(&self.writer, &ModemMessage::BleDisable).await
+    }
+
+    /// Send a BLE_PAIRING_CONFIRM_REPLY to the modem (accept/reject Numeric Comparison).
+    pub async fn send_ble_pairing_confirm_reply(&self, accept: bool) -> Result<(), TransportError> {
+        let msg = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept });
+        Self::send_encoded(&self.writer, &msg).await
     }
 
     /// Send GET_STATUS and wait for the STATUS response.
@@ -426,6 +477,7 @@ pub fn spawn_health_monitor(
 async fn dispatch_message(
     msg: ModemMessage,
     recv_tx: &mpsc::Sender<(Vec<u8>, PeerAddress)>,
+    ble_tx: &mpsc::Sender<BleEvent>,
     ready_tx: &mut Option<oneshot::Sender<ModemReady>>,
     ack_tx: &mut Option<oneshot::Sender<u8>>,
     status_slot: &Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
@@ -441,6 +493,26 @@ async fn dispatch_message(
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     debug!("recv channel closed, dropping frame");
                 }
+            }
+        }
+        ModemMessage::BleRecv(br) => {
+            if ble_tx.try_send(BleEvent::Recv(br)).is_err() {
+                debug!("BLE event channel full/closed, dropping BLE_RECV");
+            }
+        }
+        ModemMessage::BleConnected(bc) => {
+            if ble_tx.try_send(BleEvent::Connected(bc)).is_err() {
+                debug!("BLE event channel full/closed, dropping BLE_CONNECTED");
+            }
+        }
+        ModemMessage::BleDisconnected(bd) => {
+            if ble_tx.try_send(BleEvent::Disconnected(bd)).is_err() {
+                debug!("BLE event channel full/closed, dropping BLE_DISCONNECTED");
+            }
+        }
+        ModemMessage::BlePairingConfirm(pc) => {
+            if ble_tx.try_send(BleEvent::PairingConfirm(pc)).is_err() {
+                debug!("BLE event channel full/closed, dropping BLE_PAIRING_CONFIRM");
             }
         }
         ModemMessage::ModemReady(mr) => {

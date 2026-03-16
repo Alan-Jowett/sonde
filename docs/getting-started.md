@@ -11,16 +11,18 @@
 
 ## 1  Overview
 
-The Sonde workspace contains multiple crates with different platform requirements. Currently `sonde-protocol` and `sonde-gateway` are implemented; the remaining crates are planned:
+The Sonde workspace contains multiple crates with different platform requirements:
 
 | Crate | Runs on | Toolchain needed |
 |-------|---------|-----------------|
 | `sonde-protocol` | Any (no_std) | Standard Rust |
 | `sonde-gateway` | Host (Linux/macOS/Windows) | Standard Rust |
-| `sonde-admin` (planned) | Host (Linux/macOS/Windows) | Standard Rust |
+| `sonde-admin` | Host (Linux/macOS/Windows) | Standard Rust |
+| `sonde-node` | ESP32-C3 or ESP32-S3 | Espressif Rust (RISC-V and/or Xtensa) |
+| `sonde-modem` | ESP32-S3 | Espressif Rust (Xtensa) |
+| `sonde-bpf` | Host (used by `sonde-node`) | Standard Rust |
+| `sonde-e2e` | Host | Standard Rust |
 | `sonde-pair` (planned) | Android / Windows / Linux | Standard Rust + Android NDK ([dev container](#9--android--tauri-development-container)) |
-| `sonde-node` (planned) | ESP32-C3 or ESP32-S3 | Espressif Rust (RISC-V and/or Xtensa) |
-| `sonde-modem` (planned) | ESP32-S3 | Espressif Rust (Xtensa) |
 
 You only need the Espressif toolchain once the node or modem firmware crates are available. The protocol crate, gateway, and admin CLI build with a standard Rust toolchain on any platform.
 
@@ -252,7 +254,7 @@ sonde/
 │   ├── sonde-gateway/            # Async gateway service (tokio)
 │   ├── sonde-node/               # ESP32 sensor node firmware
 │   ├── sonde-modem/              # ESP32-S3 radio modem firmware
-│   ├── sonde-admin/              # CLI admin tool (planned)
+│   ├── sonde-admin/              # CLI admin tool
 │   ├── sonde-pair/               # BLE pairing tool — Tauri v2 (planned)
 │   ├── sonde-bpf/                # Safe BPF interpreter
 │   └── sonde-e2e/                # End-to-end test harness
@@ -316,11 +318,11 @@ don't need to install the Android SDK, NDK, or Tauri dependencies locally.
 The container is published to `ghcr.io/alan-jowett/sonde-android-dev:latest`.
 
 ```bash
-# Cross-compile sonde-pair for Android (arm64)
+# Cross-compile sonde-pair for Android (once the crate exists — see #163)
 docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:latest \
   cargo ndk -t arm64-v8a build -p sonde-pair --release
 
-# Build sonde-pair for Linux host (CI testing with mock BLE)
+# Build sonde-pair for Linux host (once the crate exists)
 docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:latest \
   cargo build -p sonde-pair --release
 ```

@@ -18,61 +18,24 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
 
     container:
-      # Pinned ESP-IDF release image — provides IDF_PATH, Python 3, and all
-      # ESP-IDF host tools including esptool.py and idf_tools.py.
-      # Tag: espressif/idf:v5.3.2
-      image: espressif/idf@sha256:d85ffe6db6162f16589c4c2221de1d5c40c9d9aa2331099e2fe6f5e33d1b8f09
+      image: ghcr.io/alan-jowett/sonde-esp-dev:latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       # ------------------------------------------------------------------ #
-      # Rust toolchain
+      # Build cache
       # ------------------------------------------------------------------ #
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-        with:
-          toolchain: stable
 
       - name: Cache Rust build artefacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           workspaces: ". -> target"
           key: esp32c3-riscv-${{ hashFiles('crates/sonde-node/sdkconfig.defaults') }}
-
-      # ------------------------------------------------------------------ #
-      # ESP Rust toolchain (required for riscv32imc-esp-espidf target)
-      # ------------------------------------------------------------------ #
-
-      - name: Install espup
-        run: cargo install espup --locked
-
-      - name: Install ESP Rust toolchain for ESP32-C3
-        # espup install (without --targets) installs the full `esp` Rust
-        # toolchain (the Espressif fork of nightly) and writes ~/export-esp.sh,
-        # which sets PATH, LIBCLANG_PATH, and CLANG_PATH for ESP GCC/LLVM.
-        # --targets esp32c3 would only add RISC-V targets to the *stable*
-        # toolchain without creating the `esp` toolchain, causing
-        # `cargo +esp build` to fail with "toolchain 'esp' is not installed".
-        # The full `esp` toolchain supports all ESP targets including RISC-V.
-        run: espup install
-
-      - name: Install ldproxy linker
-        run: cargo install ldproxy --locked
-
-      # ------------------------------------------------------------------ #
-      # QEMU for RISC-V (ESP32-C3)
-      # ------------------------------------------------------------------ #
-
-      - name: Install QEMU for RISC-V via idf_tools.py
-        # qemu-riscv32 provides experimental ESP32-C3 machine support; install
-        # is idempotent so it is safe to run even if already present.
-        run: |
-          "$IDF_PATH/tools/idf_tools.py" install qemu-riscv32
 
       # ------------------------------------------------------------------ #
       # Build

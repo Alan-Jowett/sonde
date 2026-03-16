@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+//
+// VS Code / GitHub Codespaces development container for ESP32 firmware builds.
+// Provides a one-click development environment with all ESP32 toolchain
+// dependencies pre-installed.
+{
+  "name": "Sonde ESP32 Dev",
+  "image": "ghcr.io/alan-jowett/sonde-esp-dev:latest",
+  "remoteUser": "root",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer"
+      ]
+    }
+  }
+}

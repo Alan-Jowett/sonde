@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Pre-built ESP32 development container for sonde firmware builds.
+# Includes Rust stable, the Espressif `esp` toolchain (RISC-V + Xtensa),
+# ldproxy, QEMU for RISC-V, and host build dependencies.
+#
+# Published to ghcr.io/alan-jowett/sonde-esp-dev by the
+# esp-dev-container.yml CI workflow.
+
+# Pin the base image by digest for reproducibility.
+# Tag: espressif/idf:v5.3.2
+FROM espressif/idf@sha256:d85ffe6db6162f16589c4c2221de1d5c40c9d9aa2331099e2fe6f5e33d1b8f09
+
+# Avoid interactive prompts during package installation.
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System packages for gateway/host builds ──────────────────────────────────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        protobuf-compiler \
+        libudev-dev \
+        pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Rust stable toolchain ────────────────────────────────────────────────────
+# The IDF image may ship an older Rust; install the latest stable via rustup.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal && \
+    echo 'source "$HOME/.cargo/env"' >> /etc/bash.bashrc
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# ── ESP Rust toolchain (RISC-V + Xtensa) ─────────────────────────────────────
+# espup installs the `esp` Rust toolchain (Espressif's nightly fork) which
+# supports both riscv32imc-esp-espidf (ESP32-C3) and xtensa-esp32s3-espidf
+# (ESP32-S3) targets. The export-esp.sh script sets PATH, LIBCLANG_PATH,
+# and CLANG_PATH for the Espressif LLVM/Clang.
+RUN cargo install espup@0.16.0 --locked && \
+    espup install && \
+    echo 'source "$HOME/export-esp.sh"' >> /etc/bash.bashrc
+
+# ── ldproxy (ESP-IDF linker proxy) ───────────────────────────────────────────
+RUN cargo install ldproxy@0.3.4 --locked
+
+# ── Use bash for remaining RUN steps (export.sh may use bash features) ───────
+SHELL ["/bin/bash", "-c"]
+
+# ── QEMU for RISC-V (ESP32-C3 smoke tests) ──────────────────────────────────
+RUN . "$IDF_PATH/export.sh" && \
+    "$IDF_PATH/tools/idf_tools.py" install qemu-riscv32
+
+# ── cargo-fuzz (optional, for local fuzz testing) ────────────────────────────
+RUN cargo install cargo-fuzz@0.12.0 --locked
+
+# ── Clean up cargo caches to reduce image size ───────────────────────────────
+RUN rm -rf /root/.cargo/registry/cache /root/.cargo/registry/src \
+           /root/.cargo/registry/index /root/.cargo/git
+
+# ── Default entrypoint sources ESP-IDF and ESP Rust environments ─────────────
+ENTRYPOINT ["/bin/bash", "-c", ". \"$IDF_PATH/export.sh\" && . \"$HOME/export-esp.sh\" && exec \"$@\"", "--"]
+CMD ["/bin/bash"]

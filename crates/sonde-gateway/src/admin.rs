@@ -9,7 +9,9 @@ use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 use zeroize::Zeroizing;
 
+use crate::ble_pairing::BlePairingController;
 use crate::engine::PendingCommand;
+use crate::modem::UsbEspNowTransport;
 use crate::program::{ProgramLibrary, VerificationProfile};
 use crate::registry::NodeRecord;
 use crate::session::SessionManager;
@@ -28,6 +30,8 @@ pub struct AdminService {
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     program_library: ProgramLibrary,
     session_manager: Arc<SessionManager>,
+    ble_controller: Option<Arc<BlePairingController>>,
+    transport: Option<Arc<UsbEspNowTransport>>,
 }
 
 impl AdminService {
@@ -41,7 +45,20 @@ impl AdminService {
             pending_commands,
             program_library: ProgramLibrary::new(),
             session_manager,
+            ble_controller: None,
+            transport: None,
         }
+    }
+
+    /// Set the BLE pairing controller and transport for admin BLE RPCs.
+    pub fn with_ble(
+        mut self,
+        controller: Arc<BlePairingController>,
+        transport: Arc<UsbEspNowTransport>,
+    ) -> Self {
+        self.ble_controller = Some(controller);
+        self.transport = Some(transport);
+        self
     }
 }
 
@@ -522,5 +539,240 @@ impl GatewayAdmin for AdminService {
         Err(Status::unimplemented(
             "`scan_modem_channels` requires a modem transport — not yet wired",
         ))
+    }
+
+    // -- BLE phone pairing (GW-1222) ----------------------------------------
+
+    type OpenBlePairingStream =
+        tokio_stream::wrappers::ReceiverStream<Result<BlePairingEvent, Status>>;
+
+    /// Open a BLE phone registration window.
+    ///
+    /// Returns a server-streaming response that pushes BLE pairing events
+    /// (passkey requests, phone connections, registrations) to the CLI.
+    /// The stream ends when the window closes (auto-timeout or explicit).
+    async fn open_ble_pairing(
+        &self,
+        request: Request<OpenBlePairingRequest>,
+    ) -> Result<Response<Self::OpenBlePairingStream>, Status> {
+        let controller = self.ble_controller.as_ref().ok_or_else(|| {
+            Status::unavailable("BLE pairing not configured (no modem transport)")
+        })?;
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("modem transport not configured"))?;
+
+        let duration_s = request.into_inner().duration_s;
+        let duration_s = if duration_s == 0 { 120 } else { duration_s };
+
+        // Enable BLE advertising first — if this fails, don't open the window.
+        transport
+            .send_ble_enable()
+            .await
+            .map_err(|e| Status::internal(format!("failed to enable BLE: {e}")))?;
+
+        // Open the registration window only after BLE is enabled.
+        controller.open_window(duration_s).await;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let _ = tx
+            .send(Ok(BlePairingEvent {
+                event: Some(ble_pairing_event::Event::WindowOpened(
+                    BlePairingWindowOpened { duration_s },
+                )),
+            }))
+            .await;
+
+        // Subscribe to BLE events broadcast from the BLE loop.
+        let mut event_rx = controller.subscribe_events();
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let close_controller = Arc::clone(controller);
+        let close_transport = Arc::clone(transport);
+
+        controller.set_timeout_cancel(cancel.clone()).await;
+
+        // Spawn a task that forwards BLE events to the stream, handles
+        // timeout, cancellation, and client disconnect.
+        tokio::spawn(async move {
+            use crate::ble_pairing::BlePairingEventKind;
+
+            let timeout = tokio::time::sleep(std::time::Duration::from_secs(duration_s as u64));
+            tokio::pin!(timeout);
+
+            loop {
+                tokio::select! {
+                    _ = &mut timeout => {
+                        close_controller.close_window().await;
+                        let _ = close_transport.send_ble_disable().await;
+                        let _ = tx.send(Ok(BlePairingEvent {
+                            event: Some(ble_pairing_event::Event::WindowClosed(
+                                BlePairingWindowClosed {},
+                            )),
+                        })).await;
+                        break;
+                    }
+                    _ = cancel_clone.cancelled() => {
+                        // Explicit close — send WindowClosed then exit.
+                        let _ = tx.send(Ok(BlePairingEvent {
+                            event: Some(ble_pairing_event::Event::WindowClosed(
+                                BlePairingWindowClosed {},
+                            )),
+                        })).await;
+                        break;
+                    }
+                    _ = tx.closed() => {
+                        // Client disconnected — close window and disable BLE.
+                        close_controller.close_window().await;
+                        let _ = close_transport.send_ble_disable().await;
+                        break;
+                    }
+                    result = event_rx.recv() => {
+                        match result {
+                            Ok(evt) => {
+                                let proto_event = match evt {
+                                    BlePairingEventKind::PhoneConnected { peer_addr, mtu } => {
+                                        ble_pairing_event::Event::PhoneConnected(
+                                            BlePairingPhoneConnected {
+                                                peer_addr: peer_addr.to_vec(),
+                                                mtu: mtu as u32,
+                                            },
+                                        )
+                                    }
+                                    BlePairingEventKind::PhoneDisconnected { peer_addr } => {
+                                        ble_pairing_event::Event::PhoneDisconnected(
+                                            BlePairingPhoneDisconnected {
+                                                peer_addr: peer_addr.to_vec(),
+                                            },
+                                        )
+                                    }
+                                    BlePairingEventKind::PasskeyRequest { passkey } => {
+                                        ble_pairing_event::Event::Passkey(
+                                            BlePairingPasskey { passkey },
+                                        )
+                                    }
+                                    BlePairingEventKind::PhoneRegistered {
+                                        label,
+                                        phone_key_hint,
+                                    } => {
+                                        ble_pairing_event::Event::PhoneRegistered(
+                                            BlePairingPhoneRegistered {
+                                                label,
+                                                phone_key_hint: phone_key_hint as u32,
+                                            },
+                                        )
+                                    }
+                                };
+                                if tx.send(Ok(BlePairingEvent {
+                                    event: Some(proto_event),
+                                })).await.is_err() {
+                                    break; // Client disconnected
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                // Missed some events due to slow consumer — keep going.
+                                continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                // Broadcast channel closed — exit loop.
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            rx,
+        )))
+    }
+
+    /// Close the BLE phone registration window.
+    async fn close_ble_pairing(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
+        let controller = self
+            .ble_controller
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("BLE pairing not configured"))?;
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("modem transport not configured"))?;
+
+        // Cancel the timeout task from OpenBlePairing (if running).
+        controller.cancel_timeout().await;
+        controller.close_window().await;
+        transport
+            .send_ble_disable()
+            .await
+            .map_err(|e| Status::internal(format!("failed to disable BLE: {e}")))?;
+
+        Ok(Response::new(Empty {}))
+    }
+
+    /// Confirm or reject a BLE Numeric Comparison passkey.
+    async fn confirm_ble_pairing(
+        &self,
+        request: Request<ConfirmBlePairingRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let controller = self
+            .ble_controller
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("BLE pairing not configured"))?;
+
+        let accept = request.into_inner().accept;
+        if !controller.confirm_passkey(accept).await {
+            return Err(Status::failed_precondition(
+                "no pending passkey confirmation request",
+            ));
+        }
+
+        Ok(Response::new(Empty {}))
+    }
+
+    /// List all registered phones with their PSK metadata.
+    async fn list_phones(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ListPhonesResponse>, Status> {
+        let records = self.storage.list_phone_psks().await.map_err(storage_err)?;
+
+        let phones = records
+            .iter()
+            .map(|r| {
+                let issued_at_ms = r
+                    .issued_at
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                PhoneInfo {
+                    phone_id: r.phone_id,
+                    phone_key_hint: r.phone_key_hint as u32,
+                    label: r.label.clone(),
+                    issued_at_ms,
+                    status: match r.status {
+                        crate::phone_trust::PhonePskStatus::Active => "active".to_string(),
+                        crate::phone_trust::PhonePskStatus::Revoked => "revoked".to_string(),
+                    },
+                }
+            })
+            .collect();
+
+        Ok(Response::new(ListPhonesResponse { phones }))
+    }
+
+    /// Revoke a phone's PSK by phone_id.
+    async fn revoke_phone(
+        &self,
+        request: Request<RevokePhoneRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let phone_id = request.into_inner().phone_id;
+        self.storage
+            .revoke_phone_psk(phone_id)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(Empty {}))
     }
 }

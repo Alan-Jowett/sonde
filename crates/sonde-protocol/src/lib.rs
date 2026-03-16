@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+pub mod ble_envelope;
 pub mod chunk;
 pub mod codec;
 pub mod constants;
@@ -15,6 +16,7 @@ pub mod modem;
 pub mod program_image;
 pub mod traits;
 
+pub use ble_envelope::{encode_ble_envelope, parse_ble_envelope};
 pub use chunk::{chunk_count, get_chunk};
 pub use codec::{decode_frame, encode_frame, verify_frame, DecodedFrame};
 pub use constants::*;

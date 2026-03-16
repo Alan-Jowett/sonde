@@ -200,7 +200,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(channel = cli.channel, "modem transport ready");
 
     // 7. Start gRPC admin server
-    let admin_service = AdminService::new(storage.clone(), pending_commands, session_manager);
+    let ble_controller = Arc::new(sonde_gateway::ble_pairing::BlePairingController::new());
+    let admin_service = AdminService::new(storage.clone(), pending_commands, session_manager)
+        .with_ble(Arc::clone(&ble_controller), Arc::clone(&transport));
     let admin_socket = cli.admin_socket.clone();
 
     let grpc_handle = tokio::spawn(async move {
@@ -233,6 +235,124 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // 8a. BLE event processing loop (Phase 1 phone pairing via modem relay).
+    let ble_transport = transport.clone();
+    let ble_storage: Arc<dyn Storage> = storage.clone();
+    let ble_channel = cli.channel;
+    let ble_ctrl = Arc::clone(&ble_controller);
+    let ble_loop = tokio::spawn(async move {
+        use sonde_gateway::ble_pairing::handle_ble_recv;
+        use sonde_gateway::modem::BleEvent;
+        use tracing::{debug, warn};
+
+        // Load gateway identity for BLE pairing operations.
+        let identity = match ble_storage.load_gateway_identity().await {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                error!("BLE loop: no gateway identity — cannot handle BLE pairing");
+                return;
+            }
+            Err(e) => {
+                error!("BLE loop: failed to load gateway identity: {e}");
+                return;
+            }
+        };
+
+        // Use the shared registration window via the controller.
+        let mut window = sonde_gateway::ble_pairing::RegistrationWindow::new();
+
+        loop {
+            // Sync the local window state from the controller on each iteration.
+            // The controller may have opened/closed it via admin RPCs.
+            let controller_open = ble_ctrl.is_window_open().await;
+            if controller_open && !window.is_open() {
+                // Controller opened the window — sync to local state.
+                // We don't know the exact deadline, but the controller
+                // handles auto-close, so just open with a long duration.
+                window.open(3600);
+            } else if !controller_open && window.is_open() {
+                window.close();
+            }
+
+            match ble_transport.recv_ble_event().await {
+                Some(BleEvent::Recv(br)) => {
+                    if let Some(response) = handle_ble_recv(
+                        &br.ble_data,
+                        &identity,
+                        &ble_storage,
+                        &mut window,
+                        ble_channel,
+                        Some(&ble_ctrl),
+                    )
+                    .await
+                    {
+                        if let Err(e) = ble_transport.send_ble_indicate(&response).await {
+                            error!("BLE_INDICATE send error: {e}");
+                        }
+                    }
+                }
+                Some(BleEvent::Connected(bc)) => {
+                    info!(
+                        peer = ?bc.peer_addr,
+                        mtu = bc.mtu,
+                        "BLE phone connected"
+                    );
+                    ble_ctrl.broadcast_event(
+                        sonde_gateway::ble_pairing::BlePairingEventKind::PhoneConnected {
+                            peer_addr: bc.peer_addr,
+                            mtu: bc.mtu,
+                        },
+                    );
+                }
+                Some(BleEvent::Disconnected(bd)) => {
+                    info!(
+                        peer = ?bd.peer_addr,
+                        reason = bd.reason,
+                        "BLE phone disconnected"
+                    );
+                    ble_ctrl.broadcast_event(
+                        sonde_gateway::ble_pairing::BlePairingEventKind::PhoneDisconnected {
+                            peer_addr: bd.peer_addr,
+                        },
+                    );
+                }
+                Some(BleEvent::PairingConfirm(pc)) => {
+                    info!(
+                        passkey = pc.passkey,
+                        "BLE Numeric Comparison passkey — awaiting operator confirmation"
+                    );
+                    // Broadcast to admin CLI streams.
+                    ble_ctrl.broadcast_event(
+                        sonde_gateway::ble_pairing::BlePairingEventKind::PasskeyRequest {
+                            passkey: pc.passkey,
+                        },
+                    );
+                    // Forward to admin CLI via the controller. If no admin
+                    // client is listening, wait up to 30s then auto-reject.
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    ble_ctrl.set_passkey_responder(tx).await;
+
+                    let accept =
+                        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+                            Ok(Ok(v)) => v,
+                            _ => {
+                                warn!("passkey confirmation timed out — rejecting");
+                                false
+                            }
+                        };
+
+                    if let Err(e) = ble_transport.send_ble_pairing_confirm_reply(accept).await {
+                        error!("BLE_PAIRING_CONFIRM_REPLY send error: {e}");
+                    }
+                }
+                None => {
+                    debug!("BLE event channel closed");
+                    break;
+                }
+            }
+        }
+    });
+
     // 9. Wait for shutdown
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -240,6 +360,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ = frame_loop => {
             error!("frame processing loop exited");
+        }
+        _ = ble_loop => {
+            error!("BLE event loop exited");
         }
         _ = grpc_handle => {
             error!("gRPC server exited");

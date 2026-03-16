@@ -20,6 +20,7 @@ serde_json = "1"
 sonde-protocol = { path = "../sonde-protocol" }
 hyper-util = "0.1"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 tonic = "0.14"
 tonic-prost = "0.14"
 tower = "0.5"

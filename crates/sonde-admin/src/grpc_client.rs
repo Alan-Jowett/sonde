@@ -260,4 +260,41 @@ impl AdminClient {
         let resp = self.inner.scan_modem_channels(Empty {}).await?;
         Ok(resp.into_inner().entries)
     }
+
+    // -- BLE phone pairing --
+
+    pub async fn open_ble_pairing(
+        &mut self,
+        duration_s: u32,
+    ) -> Result<tonic::Streaming<BlePairingEvent>, tonic::Status> {
+        let resp = self
+            .inner
+            .open_ble_pairing(OpenBlePairingRequest { duration_s })
+            .await?;
+        Ok(resp.into_inner())
+    }
+
+    pub async fn close_ble_pairing(&mut self) -> Result<(), tonic::Status> {
+        self.inner.close_ble_pairing(Empty {}).await?;
+        Ok(())
+    }
+
+    pub async fn confirm_ble_pairing(&mut self, accept: bool) -> Result<(), tonic::Status> {
+        self.inner
+            .confirm_ble_pairing(ConfirmBlePairingRequest { accept })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_phones(&mut self) -> Result<Vec<PhoneInfo>, tonic::Status> {
+        let resp = self.inner.list_phones(Empty {}).await?;
+        Ok(resp.into_inner().phones)
+    }
+
+    pub async fn revoke_phone(&mut self, phone_id: u32) -> Result<(), tonic::Status> {
+        self.inner
+            .revoke_phone(RevokePhoneRequest { phone_id })
+            .await?;
+        Ok(())
+    }
 }

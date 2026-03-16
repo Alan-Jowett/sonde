@@ -5,6 +5,13 @@
 //!
 //! # Bundle wire format
 //!
+//! The bundle is a flat byte sequence with five consecutive regions:
+//! an 8-byte magic identifier (`b"SNDESTAT"`), a 4-byte little-endian version number
+//! (currently `1`), a 16-byte random PBKDF2 salt, a 12-byte random AES-256-GCM nonce,
+//! and finally the AES-256-GCM ciphertext of the CBOR payload (the 16-byte GCM
+//! authentication tag is appended by AES-GCM and forms the last 16 bytes of the
+//! ciphertext region).
+//!
 //! ```text
 //! ┌──────────────────┬───────────────────────────────────────────────────────┐
 //! │  Field           │  Size / description                                   │

@@ -13,6 +13,8 @@
 
 The node firmware is a single Rust binary targeting ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) via ESP-IDF bindings. It implements a simple cyclic state machine:
 
+On each power-on or deep-sleep wake the node moves through the following stages in order: boot, wake-up hardware initialization, WAKE/COMMAND radio exchange with the gateway, execution of the received command (e.g., program update or schedule change), BPF program execution, and finally deep sleep until the next scheduled wake time.
+
 ```
 boot → wake → WAKE/COMMAND exchange → execute command → BPF execution → sleep
 ```
@@ -38,6 +40,8 @@ The firmware is **uniform across all nodes** — application behavior is defined
 ---
 
 ## 3  Module architecture
+
+The node firmware is divided into eight functional modules arranged in two tiers. The upper tier handles the data path: Transport (ESP-NOW radio), Protocol Codec (frame encode/decode), Wake Cycle Engine (session state machine), and BPF Runtime (program execution). The lower tier provides platform services: HAL (I2C/SPI/GPIO/ADC buses), Key Store (PSK in flash), Program Store (A/B flash partitions), and Map Storage (RTC SRAM). A horizontal Sleep Manager spans the bottom of the firmware, managing deep sleep, wake intervals, and RTC memory. Data flows left-to-right in the upper tier; the Wake Cycle Engine coordinates all lower-tier modules.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -81,6 +85,8 @@ The firmware is **uniform across all nodes** — application behavior is defined
 The wake cycle engine is the central state machine. It runs once per wake and then the node sleeps.
 
 ### 4.1  State machine
+
+The state machine has five main states. Starting from BOOT, the node reads the PSK from the key store; if no PSK is present it sleeps indefinitely. Otherwise it enters WAKE SEND, which transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
 
 ```
 ┌─────────┐
@@ -133,6 +139,8 @@ The wake cycle engine is the central state machine. It runs once per wake and th
 8. **Sleep**: Enter deep sleep for `min(set_next_wake_value, base_interval)`.
 
 ### 4.3  Chunked transfer sub-state
+
+The chunked transfer loop iterates over each chunk index from 0 to `chunk_count − 1`. For each chunk: compute the sequence number (`starting_seq + chunk_index`), send `GET_CHUNK` with that sequence number, await the `CHUNK` response (50 ms timeout, up to 3 retries per chunk); if all retries fail, abort and sleep. After collecting all chunks, reassemble the program image, verify its SHA-256 hash against the expected value (if mismatched, discard and sleep), decode the CBOR program image (bytecode and map definitions), resolve `LDDW src=1` instructions to runtime map pointers, install the program (flash for resident programs, RAM for ephemeral), and send `PROGRAM_ACK`.
 
 ```
 for chunk_index in 0..chunk_count:

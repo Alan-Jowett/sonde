@@ -128,6 +128,8 @@ If MTU negotiation yields < 247, the phone should disconnect and report an error
 
 All messages on both the Gateway Command and Node Command characteristics use a common envelope:
 
+Every BLE message is wrapped in a 3-byte header followed by the body. The first byte is the `TYPE` discriminator. The next 2 bytes are `LEN` (a big-endian u16), the length of the body in bytes. The `BODY` follows immediately and may be 0 to 65535 bytes long.
+
 ```
 ┌──────────┬──────────┬───────────────────────────┐
 │ TYPE (1B)│ LEN (2B) │ BODY (0..65535 bytes)      │
@@ -181,6 +183,8 @@ Total envelope overhead: 3 bytes.
 ## 5  Phase 1 — Phone-to-gateway pairing
 
 ### 5.1  Sequence
+
+The Phase 1 (phone-to-gateway) pairing sequence has two exchanges. First the phone connects via BLE (including MTU negotiation to ≥ 247 bytes and LESC Numeric Comparison pairing), then sends `REQUEST_GW_INFO` containing a 32-byte challenge nonce. The gateway responds with `GW_INFO_RESPONSE` carrying its Ed25519 public key, `gateway_id`, and a signature over the challenge — the phone verifies the signature and persists the public key (TOFU). Second, the phone sends `REGISTER_PHONE` with its ephemeral X25519 public key and a label; the gateway (if the registration window is open) generates a phone PSK, encrypts it, and responds with `PHONE_REGISTERED`. The phone then disconnects.
 
 ```
 Phone                              Gateway
@@ -409,6 +413,8 @@ Total: 44 + len(authenticated_request) + 16 bytes.
 
 ### 6.5  Sequence
 
+The Phase 2 (node pairing) sequence involves the Phone, Node, and Gateway. The phone connects to the node via BLE (MTU exchange and LESC Just Works pairing), then sends a `NODE_PROVISION` message containing the node PSK, key hint, RF channel, and encrypted pairing payload. The node stores all fields and responds with `NODE_ACK`. After the phone disconnects, the node reboots, connects to the ESP-NOW network, and sends `PEER_REQUEST` to the gateway. The gateway processes the encrypted payload, registers the node, and responds with `PEER_ACK`.
+
 ```
 Phone                    Node                    Gateway
   │                        │                        │
@@ -474,6 +480,8 @@ Offset  Size  Field
 
 Uses the standard ESP-NOW frame format from [protocol.md](protocol.md):
 
+The `PEER_REQUEST` frame follows the standard frame layout: an 11-byte binary Header (`key_hint` 2 bytes, `msg_type` 1 byte, `nonce` 8 bytes), followed by a CBOR-encoded payload (containing the encrypted pairing payload as a CBOR byte string at key 1), followed by a 32-byte HMAC-SHA256 tag.
+
 ```
 ┌─────────────────────────────────────────┬───────────────┬────────┐
 │ Header (11 bytes)                       │ CBOR payload  │ HMAC   │
@@ -504,6 +512,8 @@ CBOR integer keys are scoped per `msg_type` — key `1` in a `PEER_REQUEST` is u
 The node transmits `PEER_REQUEST` on each boot cycle until it receives `PEER_ACK(0x00)`.  Retransmission interval follows the normal wake cycle schedule (default 60 seconds).
 
 ### 7.2  PEER_ACK (msg_type 0x84, Gateway → Node)
+
+The `PEER_ACK` frame follows the same standard layout as `PEER_REQUEST`: an 11-byte Header (`key_hint` echoed back, `msg_type` = 0x84, `nonce` echoing the `PEER_REQUEST` nonce), followed by CBOR payload (containing a `status` uint at key 1 and a `registration_proof` byte string at key 2), followed by a 32-byte HMAC-SHA256 tag.
 
 ```
 ┌─────────────────────────────────────────┬───────────────┬────────┐
@@ -736,6 +746,8 @@ For even higher assurance, BLE Passkey Entry can be used in place of Numeric Com
 
 The ESP-NOW maximum frame payload is 250 bytes.  The PEER_REQUEST frame budget:
 
+The total 250-byte ESP-NOW frame is consumed as follows: 11 bytes for the binary Header, 4 bytes for CBOR framing overhead (a 1-pair map with bstr header for payloads ≤ 255 bytes), and 32 bytes for the HMAC tag. This leaves 203 bytes for `encrypted_payload`; the constant is set to 202 (one byte reserved for future CBOR key expansion).
+
 ```
 Header:            11 bytes  (key_hint[2] + msg_type[1] + nonce[8])
 CBOR overhead:      4 bytes  (1-pair map: 0xA1 + key + bstr-2 header = 4 bytes for payloads ≤ 255B)
@@ -747,6 +759,8 @@ Available for encrypted_payload:  203 bytes (exact)
 The constant `MAX_ENCRYPTED_PAYLOAD` is set to **202 bytes** (conservative, reserving 1 byte for possible future CBOR keys).  The `protocol.md` payload budget of 207 bytes (250 − 11 − 32) is 4 bytes larger because it does not include CBOR framing overhead.
 
 The encrypted payload contains:
+
+Within the 202-byte `encrypted_payload`, 94 bytes are consumed by fixed-size fields: 32 bytes for the ephemeral X25519 public key, 12 bytes for the AES-GCM nonce, 16 bytes for the GCM authentication tag, 2 bytes for `phone_key_hint`, and 32 bytes for `phone_hmac`. This leaves approximately 108 bytes for the CBOR-encoded PairingRequest.
 
 ```
 eph_public:        32 bytes
@@ -769,6 +783,8 @@ A minimal PairingRequest (20-char node_id, no sensors) is ~80 bytes CBOR.  This 
 When the gateway does not have a local BLE radio, BLE GATT services are hosted on the ESP32-S3 modem and relayed to the gateway over the USB-CDC serial protocol defined in [modem-protocol.md](modem-protocol.md).
 
 ### 12.1  Architecture
+
+When using the modem relay, there are three components in series: the Phone communicates over BLE to the Modem, and the Modem communicates over USB-CDC to the Gateway. The modem is a transparent relay between the BLE GATT layer and the USB serial link.
 
 ```
 Phone ←(BLE)→ Modem ←(USB-CDC)→ Gateway

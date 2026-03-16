@@ -496,23 +496,23 @@ async fn dispatch_message(
             }
         }
         ModemMessage::BleRecv(br) => {
-            if ble_tx.try_send(BleEvent::Recv(br)).is_err() {
-                debug!("BLE event channel full/closed, dropping BLE_RECV");
+            if ble_tx.send(BleEvent::Recv(br)).await.is_err() {
+                debug!("BLE event channel closed, dropping BLE_RECV");
             }
         }
         ModemMessage::BleConnected(bc) => {
-            if ble_tx.try_send(BleEvent::Connected(bc)).is_err() {
-                debug!("BLE event channel full/closed, dropping BLE_CONNECTED");
+            if ble_tx.send(BleEvent::Connected(bc)).await.is_err() {
+                debug!("BLE event channel closed, dropping BLE_CONNECTED");
             }
         }
         ModemMessage::BleDisconnected(bd) => {
-            if ble_tx.try_send(BleEvent::Disconnected(bd)).is_err() {
-                debug!("BLE event channel full/closed, dropping BLE_DISCONNECTED");
+            if ble_tx.send(BleEvent::Disconnected(bd)).await.is_err() {
+                debug!("BLE event channel closed, dropping BLE_DISCONNECTED");
             }
         }
         ModemMessage::BlePairingConfirm(pc) => {
-            if ble_tx.try_send(BleEvent::PairingConfirm(pc)).is_err() {
-                debug!("BLE event channel full/closed, dropping BLE_PAIRING_CONFIRM");
+            if ble_tx.send(BleEvent::PairingConfirm(pc)).await.is_err() {
+                debug!("BLE event channel closed, dropping BLE_PAIRING_CONFIRM");
             }
         }
         ModemMessage::ModemReady(mr) => {

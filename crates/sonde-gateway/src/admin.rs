@@ -9,7 +9,9 @@ use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 use zeroize::Zeroizing;
 
+use crate::ble_pairing::BlePairingController;
 use crate::engine::PendingCommand;
+use crate::modem::UsbEspNowTransport;
 use crate::program::{ProgramLibrary, VerificationProfile};
 use crate::registry::NodeRecord;
 use crate::session::SessionManager;
@@ -28,6 +30,8 @@ pub struct AdminService {
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     program_library: ProgramLibrary,
     session_manager: Arc<SessionManager>,
+    ble_controller: Option<Arc<BlePairingController>>,
+    transport: Option<Arc<UsbEspNowTransport>>,
 }
 
 impl AdminService {
@@ -41,7 +45,20 @@ impl AdminService {
             pending_commands,
             program_library: ProgramLibrary::new(),
             session_manager,
+            ble_controller: None,
+            transport: None,
         }
+    }
+
+    /// Set the BLE pairing controller and transport for admin BLE RPCs.
+    pub fn with_ble(
+        mut self,
+        controller: Arc<BlePairingController>,
+        transport: Arc<UsbEspNowTransport>,
+    ) -> Self {
+        self.ble_controller = Some(controller);
+        self.transport = Some(transport);
+        self
     }
 }
 
@@ -536,30 +553,97 @@ impl GatewayAdmin for AdminService {
     /// The stream ends when the window closes (auto-timeout or explicit).
     async fn open_ble_pairing(
         &self,
-        _request: Request<OpenBlePairingRequest>,
+        request: Request<OpenBlePairingRequest>,
     ) -> Result<Response<Self::OpenBlePairingStream>, Status> {
-        // TODO: Wire to modem transport + BLE pairing state machine.
-        // For now, return unimplemented until the engine integration is done.
-        Err(Status::unimplemented(
-            "`open_ble_pairing` requires modem transport — not yet wired",
-        ))
+        let controller = self.ble_controller.as_ref().ok_or_else(|| {
+            Status::unavailable("BLE pairing not configured (no modem transport)")
+        })?;
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("modem transport not configured"))?;
+
+        let duration_s = request.into_inner().duration_s;
+        let duration_s = if duration_s == 0 { 120 } else { duration_s };
+
+        // Open the registration window and enable BLE advertising.
+        controller.open_window(duration_s).await;
+        transport
+            .send_ble_enable()
+            .await
+            .map_err(|e| Status::internal(format!("failed to enable BLE: {e}")))?;
+
+        // Send initial event and return a stream. The stream will be used
+        // by the CLI to receive passkey events and registration results.
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let _ = tx
+            .send(Ok(BlePairingEvent {
+                event: Some(ble_pairing_event::Event::WindowOpened(
+                    BlePairingWindowOpened { duration_s },
+                )),
+            }))
+            .await;
+
+        // Spawn a task that closes the window after the timeout and sends
+        // a WindowClosed event.
+        let close_controller = Arc::clone(controller);
+        let close_transport = Arc::clone(transport);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(duration_s as u64)).await;
+            close_controller.close_window().await;
+            let _ = close_transport.send_ble_disable().await;
+            let _ = tx
+                .send(Ok(BlePairingEvent {
+                    event: Some(ble_pairing_event::Event::WindowClosed(
+                        BlePairingWindowClosed {},
+                    )),
+                }))
+                .await;
+        });
+
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            rx,
+        )))
     }
 
     /// Close the BLE phone registration window.
     async fn close_ble_pairing(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
-        Err(Status::unimplemented(
-            "`close_ble_pairing` requires modem transport — not yet wired",
-        ))
+        let controller = self
+            .ble_controller
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("BLE pairing not configured"))?;
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("modem transport not configured"))?;
+
+        controller.close_window().await;
+        transport
+            .send_ble_disable()
+            .await
+            .map_err(|e| Status::internal(format!("failed to disable BLE: {e}")))?;
+
+        Ok(Response::new(Empty {}))
     }
 
     /// Confirm or reject a BLE Numeric Comparison passkey.
     async fn confirm_ble_pairing(
         &self,
-        _request: Request<ConfirmBlePairingRequest>,
+        request: Request<ConfirmBlePairingRequest>,
     ) -> Result<Response<Empty>, Status> {
-        Err(Status::unimplemented(
-            "`confirm_ble_pairing` requires modem transport — not yet wired",
-        ))
+        let controller = self
+            .ble_controller
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("BLE pairing not configured"))?;
+
+        let accept = request.into_inner().accept;
+        if !controller.confirm_passkey(accept).await {
+            return Err(Status::failed_precondition(
+                "no pending passkey confirmation request",
+            ));
+        }
+
+        Ok(Response::new(Empty {}))
     }
 
     /// List all registered phones with their PSK metadata.

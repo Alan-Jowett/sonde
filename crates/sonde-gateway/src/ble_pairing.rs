@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 use sonde_protocol::{encode_ble_envelope, parse_ble_envelope};
 
 use crate::gateway_identity::GatewayIdentity;
-use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
+use crate::phone_trust::{PhonePskRecord, PhonePskStatus, PHONE_LABEL_MAX_BYTES};
 use crate::storage::Storage;
 
 // ---------------------------------------------------------------------------
@@ -50,9 +50,6 @@ const ERROR_WINDOW_CLOSED: u8 = 0x02;
 
 /// HKDF info string for phone registration AES key derivation.
 const HKDF_INFO: &[u8] = b"sonde-phone-reg-v1";
-
-/// Maximum phone label length in bytes (UTF-8).
-const PHONE_LABEL_MAX_LEN: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Registration window
@@ -101,6 +98,61 @@ impl RegistrationWindow {
                 }
             }
             true
+        } else {
+            false
+        }
+    }
+}
+
+/// Shared BLE pairing controller accessible from the admin gRPC service.
+///
+/// Wraps the registration window and provides methods to open/close it.
+/// The actual BLE commands (BLE_ENABLE/BLE_DISABLE) are sent by the caller
+/// through the modem transport.
+pub struct BlePairingController {
+    window: tokio::sync::Mutex<RegistrationWindow>,
+    /// Channel for forwarding passkey confirmation requests to the admin CLI.
+    passkey_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
+}
+
+impl Default for BlePairingController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BlePairingController {
+    pub fn new() -> Self {
+        Self {
+            window: tokio::sync::Mutex::new(RegistrationWindow::new()),
+            passkey_tx: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Open the registration window for `duration_s` seconds.
+    pub async fn open_window(&self, duration_s: u32) {
+        self.window.lock().await.open(duration_s);
+    }
+
+    /// Close the registration window.
+    pub async fn close_window(&self) {
+        self.window.lock().await.close();
+    }
+
+    /// Check whether the window is currently open.
+    pub async fn is_window_open(&self) -> bool {
+        self.window.lock().await.is_open()
+    }
+
+    /// Register a oneshot channel for passkey confirmation from the admin CLI.
+    pub async fn set_passkey_responder(&self, tx: tokio::sync::oneshot::Sender<bool>) {
+        *self.passkey_tx.lock().await = Some(tx);
+    }
+
+    /// Send a passkey confirmation response (from admin CLI).
+    pub async fn confirm_passkey(&self, accept: bool) -> bool {
+        if let Some(tx) = self.passkey_tx.lock().await.take() {
+            tx.send(accept).is_ok()
         } else {
             false
         }
@@ -205,7 +257,7 @@ async fn handle_register_phone(
     let ephemeral_pubkey_bytes: [u8; 32] = body[..32].try_into().unwrap();
     let label_len = body[32] as usize;
 
-    if label_len > PHONE_LABEL_MAX_LEN {
+    if label_len > PHONE_LABEL_MAX_BYTES {
         warn!(label_len, "REGISTER_PHONE: label too long (max 64 bytes)");
         return None;
     }
@@ -266,11 +318,12 @@ async fn handle_register_phone(
     }
 
     // 5. Build plaintext: status(1) + phone_psk(32) + phone_key_hint(2) + rf_channel(1)
-    let mut plaintext = Vec::with_capacity(36);
-    plaintext.push(0x00); // status = accepted
-    plaintext.extend_from_slice(&*phone_psk);
-    plaintext.extend_from_slice(&phone_key_hint.to_be_bytes());
-    plaintext.push(rf_channel);
+    // Wrapped in Zeroizing to wipe key material after encryption.
+    let mut plaintext = Zeroizing::new(vec![0u8; 36]);
+    plaintext[0] = 0x00; // status = accepted
+    plaintext[1..33].copy_from_slice(&*phone_psk);
+    plaintext[33..35].copy_from_slice(&phone_key_hint.to_be_bytes());
+    plaintext[35] = rf_channel;
 
     // 6. Encrypt with AES-256-GCM (AAD = gateway_id)
     let cipher = match Aes256Gcm::new_from_slice(&*aes_key) {

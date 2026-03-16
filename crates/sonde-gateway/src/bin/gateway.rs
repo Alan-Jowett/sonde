@@ -200,7 +200,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(channel = cli.channel, "modem transport ready");
 
     // 7. Start gRPC admin server
-    let admin_service = AdminService::new(storage.clone(), pending_commands, session_manager);
+    let ble_controller = Arc::new(sonde_gateway::ble_pairing::BlePairingController::new());
+    let admin_service = AdminService::new(storage.clone(), pending_commands, session_manager)
+        .with_ble(Arc::clone(&ble_controller), Arc::clone(&transport));
     let admin_socket = cli.admin_socket.clone();
 
     let grpc_handle = tokio::spawn(async move {
@@ -237,12 +239,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ble_transport = transport.clone();
     let ble_storage: Arc<dyn Storage> = storage.clone();
     let ble_channel = cli.channel;
+    let ble_ctrl = Arc::clone(&ble_controller);
     let ble_loop = tokio::spawn(async move {
-        use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
+        use sonde_gateway::ble_pairing::handle_ble_recv;
         use sonde_gateway::modem::BleEvent;
-        use tracing::debug;
-
-        let mut window = RegistrationWindow::new();
+        use tracing::{debug, warn};
 
         // Load gateway identity for BLE pairing operations.
         let identity = match ble_storage.load_gateway_identity().await {
@@ -257,7 +258,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
+        // Use the shared registration window via the controller.
+        let mut window = sonde_gateway::ble_pairing::RegistrationWindow::new();
+
         loop {
+            // Sync the local window state from the controller on each iteration.
+            // The controller may have opened/closed it via admin RPCs.
+            let controller_open = ble_ctrl.is_window_open().await;
+            if controller_open && !window.is_open() {
+                // Controller opened the window — sync to local state.
+                // We don't know the exact deadline, but the controller
+                // handles auto-close, so just open with a long duration.
+                window.open(3600);
+            } else if !controller_open && window.is_open() {
+                window.close();
+            }
+
             match ble_transport.recv_ble_event().await {
                 Some(BleEvent::Recv(br)) => {
                     if let Some(response) = handle_ble_recv(
@@ -293,9 +309,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         passkey = pc.passkey,
                         "BLE Numeric Comparison passkey — awaiting operator confirmation"
                     );
-                    // TODO: Forward to admin CLI stream for operator confirmation.
-                    // For now, auto-accept.
-                    if let Err(e) = ble_transport.send_ble_pairing_confirm_reply(true).await {
+                    // Forward to admin CLI via the controller. If no admin
+                    // client is listening, wait up to 30s then auto-reject.
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    ble_ctrl.set_passkey_responder(tx).await;
+
+                    let accept =
+                        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+                            Ok(Ok(v)) => v,
+                            _ => {
+                                warn!("passkey confirmation timed out — rejecting");
+                                false
+                            }
+                        };
+
+                    if let Err(e) = ble_transport.send_ble_pairing_confirm_reply(accept).await {
                         error!("BLE_PAIRING_CONFIRM_REPLY send error: {e}");
                     }
                 }

@@ -51,7 +51,7 @@ jobs:
         # toolchain does not ship pre-compiled std for riscv32imc-esp-espidf.
         run: |
           . "$IDF_PATH/export.sh"
-          . "$HOME/export-esp.sh"
+          . /opt/esp/export-esp.sh
           cargo +esp build \
             -p sonde-node \
             --bin node \

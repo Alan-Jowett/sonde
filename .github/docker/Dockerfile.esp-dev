@@ -29,7 +29,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain stable --profile minimal && \
     echo 'source "$HOME/.cargo/env"' >> /etc/bash.bashrc
 
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Set RUSTUP_HOME and CARGO_HOME to fixed paths so they work regardless
+# of what HOME is set to at runtime (GitHub Actions uses /github/home).
+ENV RUSTUP_HOME="/root/.rustup" \
+    CARGO_HOME="/root/.cargo" \
+    PATH="/root/.cargo/bin:${PATH}"
 
 # ── ESP Rust toolchain (RISC-V + Xtensa) ─────────────────────────────────────
 # espup installs the `esp` Rust toolchain (Espressif's nightly fork) which
@@ -38,7 +42,9 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # and CLANG_PATH for the Espressif LLVM/Clang.
 RUN cargo install espup@0.16.0 --locked && \
     espup install && \
-    echo 'source "$HOME/export-esp.sh"' >> /etc/bash.bashrc
+    mkdir -p /opt/esp && \
+    cp /root/export-esp.sh /opt/esp/export-esp.sh && \
+    echo 'source /opt/esp/export-esp.sh' >> /etc/bash.bashrc
 
 # ── ldproxy (ESP-IDF linker proxy) ───────────────────────────────────────────
 RUN cargo install ldproxy@0.3.4 --locked
@@ -58,5 +64,5 @@ RUN rm -rf /root/.cargo/registry/cache /root/.cargo/registry/src \
            /root/.cargo/registry/index /root/.cargo/git
 
 # ── Default entrypoint sources ESP-IDF and ESP Rust environments ─────────────
-ENTRYPOINT ["/bin/bash", "-c", ". \"$IDF_PATH/export.sh\" && . \"$HOME/export-esp.sh\" && exec \"$@\"", "--"]
+ENTRYPOINT ["/bin/bash", "-c", ". \"$IDF_PATH/export.sh\" && . /opt/esp/export-esp.sh && exec \"$@\"", "--"]
 CMD ["/bin/bash"]

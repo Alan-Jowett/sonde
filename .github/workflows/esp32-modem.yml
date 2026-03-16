@@ -49,7 +49,7 @@ jobs:
         # -Zbuild-std is required because the esp toolchain does not ship
         # pre-compiled std for the xtensa-esp32s3-espidf target.
         run: |
-          . "$HOME/export-esp.sh"
+          . /opt/esp/export-esp.sh
           cargo +esp build \
             -p sonde-modem \
             --bin modem \

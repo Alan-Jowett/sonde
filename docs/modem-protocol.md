@@ -13,6 +13,8 @@
 
 The gateway runs on a host computer that has no ESP-NOW radio hardware. An ESP32-S3 connected via USB acts as a **radio modem** — a transparent bridge between the host and the ESP-NOW wireless network:
 
+The system consists of three components connected in series: the Gateway (running on the host) communicates with the ESP32-S3 Radio Modem over a USB-CDC serial link, and the Radio Modem communicates wirelessly with Sensor Nodes (e.g., ESP32-C3) using ESP-NOW radio.
+
 ```
 ┌──────────┐   USB-CDC   ┌──────────────┐  ESP-NOW  ┌──────────────┐
 │  Gateway │◄───────────►│  ESP32-S3    │◄ ─ ─ ─ ─ ►│  Sensor Node │
@@ -36,6 +38,8 @@ The modem is **protocol-unaware**: it does not perform HMAC verification, CBOR p
 USB-CDC provides reliable, ordered byte delivery. The protocol uses simple length-prefixed framing with no byte stuffing.
 
 ### 2.1  Frame envelope
+
+Every serial frame starts with a 2-byte big-endian `LEN` field that gives the combined length of the TYPE byte and BODY in bytes (so the minimum value is 1 and the maximum is 512). The `LEN` field itself is not included in the count. Following `LEN` is a single `TYPE` byte (the message type discriminator), then the variable-length `BODY` (0 to 511 bytes).
 
 ```
 ┌───────────┬──────────┬──────────────────────────────┐
@@ -116,6 +120,8 @@ All multi-byte integers are big-endian unless otherwise stated.
 
 Transmit `frame_data` to the specified peer via ESP-NOW. The modem auto-registers unknown peer MACs transparently. This is a fire-and-forget operation — no per-frame response is sent. Delivery failures are counted in `tx_fail_count` (see §4.6).
 
+The `SEND_FRAME` body consists of two fields concatenated: a 6-byte `peer_mac` destination address followed by the variable-length opaque `frame_data` (1 to 250 bytes).
+
 ```
 ┌──────────────────┬──────────────────────────────────┐
 │  peer_mac (6B)   │  frame_data (N bytes)            │
@@ -141,6 +147,8 @@ The modem MUST respond with `SET_CHANNEL_ACK` (§4.5) after the channel change t
 
 Sent when the modem has completed initialization and is ready to send and receive ESP-NOW frames. The gateway MUST wait for this message before sending any other commands.
 
+The `MODEM_READY` body contains two fields: a 4-byte big-endian `firmware_version` (encoded as major.minor.patch.build, one byte each) followed by the 6-byte `mac_address` (the modem's own WiFi MAC).
+
 ```
 ┌────────────────────────┬──────────────────┐
 │  firmware_version (4B) │  mac_address (6B)│
@@ -160,6 +168,8 @@ This message is sent:
 ### 4.4  RECV_FRAME (Modem → Gateway)
 
 An ESP-NOW frame was received from a remote peer.
+
+The `RECV_FRAME` body contains three fields: a 6-byte `peer_mac` (source MAC address), a 1-byte signed `rssi` (received signal strength in dBm), and the variable-length `frame_data` (1 to 250 bytes) — the exact bytes received over the air, unmodified.
 
 ```
 ┌──────────────────┬────────────┬──────────────────────────────────┐
@@ -187,6 +197,8 @@ Confirms that the ESP-NOW channel has been changed.
 
 Response to `GET_STATUS`. Reports modem health and counters.
 
+The `STATUS` body contains five consecutive big-endian fields: `channel` (1 byte, current WiFi channel), `uptime_s` (4 bytes, seconds since boot or RESET), `tx_count` (4 bytes, total frames transmitted), `rx_count` (4 bytes, total frames received and forwarded), and `tx_fail_count` (4 bytes, MAC-layer send failures). Total body size: 17 bytes.
+
 ```
 ┌────────────┬───────────────┬──────────────┬──────────────┬───────────────────┐
 │ channel(1B)│ uptime_s (4B) │ tx_count(4B) │ rx_count(4B) │ tx_fail_count(4B) │
@@ -206,6 +218,8 @@ Counters reset to zero on boot and on `RESET`. The gateway polls `GET_STATUS` pe
 ### 4.7  SCAN_RESULT (Modem → Gateway)
 
 Response to `SCAN_CHANNELS`. Reports per-channel WiFi AP activity to help the administrator select the least congested channel.
+
+The `SCAN_RESULT` body starts with a 1-byte `count` field (number of channel entries, typically 14) followed by `count` entries of 3 bytes each. Each entry holds three 1-byte fields: `channel` (WiFi channel number), `ap_count` (number of APs detected on that channel, capped at 255), and `strongest_rssi` (signed dBm RSSI of the strongest AP; 0 if none detected).
 
 ```
 ┌────────────┬─────────────────────────────────────────────────────┐
@@ -244,6 +258,8 @@ Reports an unrecoverable modem error. The gateway should log this and may attemp
 
 Gateway sends a BLE indication payload to the connected phone via the Gateway Command characteristic. The modem handles indication fragmentation per ATT MTU (see ble-pairing-protocol.md §3.4). This is a fire-and-forget operation — no per-message response is sent. If no BLE client is connected, the modem silently discards the message.
 
+The `BLE_INDICATE` body is a single variable-length field: the opaque `ble_data` (1 to 511 bytes) to relay to the BLE client.
+
 ```
 ┌──────────────────────────────────┐
 │  ble_data (N bytes)              │
@@ -257,6 +273,8 @@ Gateway sends a BLE indication payload to the connected phone via the Gateway Co
 ### 4.10  BLE_RECV (Modem → Gateway)
 
 A BLE GATT write was received on the Gateway Command characteristic from the connected phone. The modem forwards the complete reassembled write payload (after Write Long reassembly if applicable). Empty GATT writes (zero payload bytes) MUST be silently discarded — no `BLE_RECV` is sent.
+
+The `BLE_RECV` body is a single variable-length field: the opaque `ble_data` (1 to 511 bytes) received from the BLE client.
 
 ```
 ┌──────────────────────────────────┐
@@ -272,6 +290,8 @@ A BLE GATT write was received on the Gateway Command characteristic from the con
 
 A BLE client connected to the Gateway Pairing Service and completed LESC pairing. Sent after MTU negotiation and LESC pairing succeed.
 
+The `BLE_CONNECTED` body contains two fields: the 6-byte `peer_addr` (BLE address of the connected phone) followed by a 2-byte big-endian `mtu` (negotiated ATT MTU, always ≥ 247).
+
 ```
 ┌──────────────────┬────────────┐
 │  peer_addr (6B)  │  mtu (2B)  │
@@ -286,6 +306,8 @@ A BLE client connected to the Gateway Pairing Service and completed LESC pairing
 ### 4.12  BLE_DISCONNECTED (Modem → Gateway)
 
 The BLE client disconnected from the Gateway Pairing Service.
+
+The `BLE_DISCONNECTED` body contains two fields: the 6-byte `peer_addr` (BLE address of the disconnected phone) followed by a 1-byte `reason` (BLE HCI disconnect reason code).
 
 ```
 ┌──────────────────┬──────────────┐
@@ -314,6 +336,8 @@ Body: (empty — no fields)
 
 During BLE LESC Numeric Comparison pairing, the modem sends this message to the gateway with the 6-digit pin that should be displayed to the operator. The gateway (or admin CLI) shows the pin; the operator verifies it matches the phone's display. The gateway responds with `BLE_PAIRING_CONFIRM_REPLY` (§4.16) to accept or reject the pairing.
 
+The `BLE_PAIRING_CONFIRM` body is a single 4-byte big-endian `passkey` field containing a value from 0 to 999999. The gateway MUST display it zero-padded to 6 digits.
+
 ```
 ┌──────────────────┐
 │  passkey (4B)    │
@@ -327,6 +351,8 @@ During BLE LESC Numeric Comparison pairing, the modem sends this message to the 
 ### 4.16  BLE_PAIRING_CONFIRM_REPLY (Gateway → Modem)
 
 Gateway's response to a `BLE_PAIRING_CONFIRM` — accepts or rejects the Numeric Comparison pairing.
+
+The `BLE_PAIRING_CONFIRM_REPLY` body is a single 1-byte `accept` field: `0x01` means the operator confirmed the passkeys match (accept pairing); `0x00` means the operator rejected or the confirmation timed out (reject pairing).
 
 ```
 ┌──────────────┐
@@ -345,6 +371,8 @@ Gateway's response to a `BLE_PAIRING_CONFIRM` — accepts or rejects the Numeric
 ### 5.1  Startup
 
 The gateway MUST always send `RESET` when opening the serial port, regardless of whether the modem was just powered on or was already running. This ensures deterministic state.
+
+The startup sequence is: (1) gateway opens the serial port and immediately sends `RESET`; (2) the modem performs initialization and sends `MODEM_READY` (containing its firmware version and MAC address); (3) the gateway sends `SET_CHANNEL` with the desired WiFi channel; (4) the modem applies the channel and responds with `SET_CHANNEL_ACK`; then normal operation begins.
 
 ```
 Gateway                          Modem
@@ -370,6 +398,8 @@ During normal operation, two independent flows run concurrently:
 
 **Inbound (radio → gateway):** The modem sends `RECV_FRAME` whenever an ESP-NOW frame arrives. These are asynchronous — they can arrive at any time, interleaved with responses to gateway commands.
 
+The inbound flow shows the modem pushing unsolicited `RECV_FRAME` messages to the gateway as ESP-NOW frames arrive from nodes, with the gateway sending `SEND_FRAME` responses back through the modem.
+
 ```
 Gateway                          Modem
    │                               │
@@ -386,6 +416,8 @@ Gateway                          Modem
 
 ### 5.3  Health check
 
+In the health-check flow, the gateway sends `GET_STATUS` and the modem responds synchronously with a `STATUS` message containing current counters (channel, uptime, transmit count, receive count, and failure count).
+
 ```
 Gateway                          Modem
    │                               │
@@ -397,6 +429,8 @@ Gateway                          Modem
 The gateway polls periodically (recommended: every 30 seconds). A rising `tx_fail_count` indicates radio delivery problems.
 
 ### 5.4  Channel survey
+
+In the channel-survey flow, the gateway sends `SCAN_CHANNELS` and the modem performs a WiFi AP scan (interrupting ESP-NOW reception for approximately 2–3 seconds), then sends a `SCAN_RESULT` with per-channel AP counts and RSSI values.
 
 ```
 Gateway                          Modem
@@ -411,6 +445,8 @@ Gateway                          Modem
 ESP-NOW reception is interrupted during the scan. This flow is only used during setup or maintenance.
 
 ### 5.5  Error recovery
+
+When the modem encounters an unrecoverable error it sends an `ERROR` message (with error code and human-readable description) to the gateway. The gateway logs the error and responds by sending `RESET`, which causes the modem to reinitialize and send a fresh `MODEM_READY`. The gateway then re-establishes the channel with `SET_CHANNEL` / `SET_CHANNEL_ACK`.
 
 ```
 Gateway                          Modem
@@ -429,6 +465,8 @@ On `ERROR`, the gateway logs the error and sends `RESET` to attempt recovery.
 ### 5.6  BLE pairing relay
 
 When a phone connects via BLE for pairing, the modem relays GATT messages between the phone and the gateway. The gateway must first enable BLE advertising via `BLE_ENABLE`:
+
+The BLE pairing relay involves three parties: the Gateway, the Modem, and the Phone. The sequence is: (1) gateway sends `BLE_ENABLE` to start advertising; (2) phone discovers and connects via BLE; (3) LESC Numeric Comparison pairing occurs — the modem sends the 6-digit passkey to the gateway via `BLE_PAIRING_CONFIRM`, the operator confirms it matches the phone display, and the gateway replies with `BLE_PAIRING_CONFIRM_REPLY` (accept); (4) modem sends `BLE_CONNECTED`; (5) the phone sends GATT writes (relayed as `BLE_RECV`) and the gateway sends GATT indications back via `BLE_INDICATE`; (6) after the phone disconnects, the modem sends `BLE_DISCONNECTED` and the gateway disables BLE advertising with `BLE_DISABLE`.
 
 ```
 Gateway                          Modem                            Phone

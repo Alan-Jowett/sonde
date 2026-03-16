@@ -168,6 +168,8 @@ Properties:
 
 Every frame exchanged between a node and the gateway has the following layout:
 
+A frame is three contiguous regions: the fixed 11-byte binary Header (`key_hint` 2 bytes, `msg_type` 1 byte, `nonce` 8 bytes); a variable-length CBOR-encoded Payload; and a trailing 32-byte HMAC-SHA256 authentication tag. The HMAC is computed over the Header and Payload only — it does not cover the tag itself.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Header               │  Payload               │  HMAC      │

@@ -38,6 +38,8 @@ Communication between nodes and the gateway is:
 
 Every frame on the wire has the following layout:
 
+A frame consists of three consecutive regions: first the fixed binary Header containing the `key_hint` (2 bytes), `msg_type` (1 byte), and `nonce` (8 bytes) fields; then the variable-length CBOR-encoded Payload; and finally a 32-byte HMAC-SHA256 authentication tag. The HMAC covers the concatenation of the Header and Payload — it does not cover itself.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Header               │  Payload               │  HMAC      │
@@ -190,6 +192,8 @@ This encoding is consistent with the standard BPF loader convention (`src=1` = m
 
 #### Ingestion pipeline
 
+The gateway ingests a BPF ELF file and transforms it into a compact CBOR program image through the following sequential steps: (1) parse the ELF to extract the `.text` bytecode section and `.maps` map definitions; (2) verify the bytecode with Prevail, which resolves map relocations to `LDDW src=1` instructions; (3) encode the result as a CBOR map `{ 1: bytecode, 2: [map_defs...] }`; (4) compute `program_hash` as the SHA-256 of that CBOR image; and (5) store the image in the program library keyed by hash. The original ELF is never sent to nodes.
+
 ```
 BPF ELF file (developer artifact)
   │
@@ -333,6 +337,8 @@ If a `send_recv()` call on the node times out waiting for `APP_DATA_REPLY`, the 
 
 ### 6.1  Normal wake cycle (no update needed)
 
+In the normal flow, the node sends a `WAKE` message and the gateway — after verifying the HMAC and confirming the node's program is already current — replies with `COMMAND {NOP}`. The node then executes its resident BPF program, which may send zero or more `APP_DATA` messages to the gateway (and receive `APP_DATA_REPLY` responses for request-response calls). Finally the node sleeps.
+
 ```
     Node                          Gateway
      │                               │
@@ -350,6 +356,8 @@ If a `send_recv()` call on the node times out waiting for `APP_DATA_REPLY`, the 
 ```
 
 ### 6.2  Program update (chunked transfer)
+
+When the gateway detects a program-hash mismatch, it replies to `WAKE` with `COMMAND {UPDATE_PROGRAM}` containing the new program's hash, total size, and chunk parameters. The node then fetches each chunk in sequence using `GET_CHUNK` / `CHUNK` exchanges, verifies the completed image against the hash, stores it to flash, sends `PROGRAM_ACK`, and immediately executes the new program before sleeping.
 
 ```
     Node                          Gateway
@@ -384,6 +392,8 @@ After sending `PROGRAM_ACK`, the node **executes the new program immediately** i
 
 Ephemeral programs use the same chunked transfer as resident programs (see §6.2). The `command_type` (`RUN_EPHEMERAL`) tells the node to store the program in RAM and discard it after execution.
 
+The ephemeral flow is identical to §6.2 except the node loads the program into RAM instead of flash, executes it once, and discards it before sleeping. The sequence: `WAKE` → `COMMAND {RUN_EPHEMERAL}` → `GET_CHUNK` / `CHUNK` repeats → `PROGRAM_ACK` → BPF execution → optional `APP_DATA` exchanges → sleep.
+
 ```
     Node                          Gateway
      │                               │
@@ -413,6 +423,8 @@ Ephemeral programs use the same chunked transfer as resident programs (see §6.2
 
 ### 6.4  Schedule update
 
+In the schedule-update flow, the gateway responds to `WAKE` with `COMMAND {UPDATE_SCHEDULE}` carrying the new `interval_s`. The node stores the new interval, executes its resident BPF program, then sleeps for the new interval. No chunked transfer occurs.
+
 ```
     Node                          Gateway
      │                               │
@@ -430,6 +442,8 @@ The BPF program and gateway application communicate through `APP_DATA` messages.
 
 - **Fire-and-forget** (`send()`): The BPF program sends data without waiting for a reply.
 - **Request-response** (`send_recv()`): The BPF program sends data and blocks until `APP_DATA_REPLY` arrives or the timeout expires.
+
+The sequence below shows both modes in a single wake cycle: first a fire-and-forget `APP_DATA` (no reply expected), then a request-response `APP_DATA` that receives an `APP_DATA_REPLY` from the handler before the node sleeps.
 
 ```
     Node                          Gateway

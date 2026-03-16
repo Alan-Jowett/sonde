@@ -40,6 +40,8 @@ The gateway is **stateless with respect to replay protection** — active sessio
 
 ## 3  Module architecture
 
+The gateway is composed of eight functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), and Handler Process (handler stdin/stdout management). Node Registry and Program Library share a common Storage trait abstraction at the bottom.
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                        gateway                               │
@@ -171,6 +173,8 @@ The protocol codec is provided by the shared `sonde-protocol` crate (see [protoc
 
 All types, constants, and functions in this section are provided by the `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full API). The gateway-specific code only provides the `HmacProvider` implementation.
 
+The frame is a flat byte array with fields at fixed offsets. The first 11 bytes form the binary header: `key_hint` occupies bytes 0–1 (big-endian u16), `msg_type` is byte 2, and `nonce` occupies bytes 3–10 (big-endian u64). Following the header is the variable-length CBOR-encoded payload. The final 32 bytes of the frame are the HMAC-SHA256 authentication tag, computed over all preceding bytes (header + payload).
+
 ```
 Offset 0:  key_hint    (2 bytes, big-endian)
 Offset 2:  msg_type    (1 byte)
@@ -253,6 +257,8 @@ Sessions are stored in a `HashMap<NodeId, Session>`. At most one session exists 
 Sessions are reaped after a configurable timeout (default: 30 seconds). A background task periodically scans the session map and removes expired entries.
 
 ### 6.3  Inbound frame processing
+
+Every inbound frame goes through a sequential pipeline. First the binary header is parsed (extracting `key_hint`, `msg_type`, and `nonce`). The `key_hint` is used to look up candidate node keys from the registry; if none are found the frame is silently discarded. The gateway tries each candidate key for HMAC verification; if none match, the frame is discarded. Once the node is identified by its matching key, the frame is dispatched based on `msg_type`. A `WAKE` frame causes a new session to be created (or an existing one replaced), a `COMMAND` response to be encoded and sent back, and a `node_online` event to be emitted. Post-WAKE frames (`GET_CHUNK`, `PROGRAM_ACK`, `APP_DATA`) require an active session and a matching sequence number; they are then routed to the program library, node registry, or handler process as appropriate. Any error at any step results in a silent discard — no error response is ever sent to the node.
 
 ```
 recv frame
@@ -431,6 +437,8 @@ Each handler config spawns a handler process (GW-0503):
 
 ### 9.4  Message flow
 
+When an `APP_DATA` frame arrives from a node it is routed to the matching handler process by `program_hash`. The gateway constructs a DATA message (containing `request_id`, `node_id`, `program_hash`, the opaque data blob, and a Unix timestamp) and writes it as a length-prefixed CBOR message to the handler's stdin. The gateway then reads the handler's stdout for a `DATA_REPLY` message whose `request_id` matches the request. If the reply contains a non-empty data field, the gateway sends an `APP_DATA_REPLY` back to the node; an empty data field means no reply is sent. The handler may also write `LOG` messages at any time, which the gateway routes to its own log.
+
 ```
 APP_DATA from node
   │
@@ -501,6 +509,8 @@ Storage implementations SHOULD encrypt PSK material at rest (GW-0601a). The `Nod
 ## 11  Concurrency model
 
 The gateway runs a single tokio async runtime:
+
+The runtime has four categories of concurrent tasks. The transport receive loop (main task) accepts inbound frames and spawns a short-lived per-node processing task for each. Two periodic background tasks run on a timer: the session reaper (removes expired sessions from the session map) and the node timeout detector (emits `node_timeout` events for nodes that have missed their expected wake window). Finally, one long-lived handler I/O task exists per active handler process; each reads that handler's stdout and routes `LOG` and `DATA_REPLY` messages.
 
 ```
 tokio runtime

@@ -13,6 +13,7 @@ use tracing::{error, info};
 use sonde_gateway::admin::pb::gateway_admin_server::GatewayAdminServer;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
+use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
 use sonde_gateway::modem::UsbEspNowTransport;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
@@ -25,6 +26,20 @@ use zeroize::Zeroizing;
 const DEFAULT_ADMIN_SOCKET: &str = "/var/run/sonde/admin.sock";
 #[cfg(windows)]
 const DEFAULT_ADMIN_SOCKET: &str = r"\\.\pipe\sonde-admin";
+
+/// Key provider backend selection.
+#[derive(clap::ValueEnum, Clone, Debug, Default)]
+enum KeyProviderKind {
+    /// Read a 64-hex-char key from the file given by `--master-key-file` (default).
+    #[default]
+    File,
+    /// Read a 64-hex-char key from the `SONDE_MASTER_KEY` environment variable.
+    Env,
+    /// Decrypt a DPAPI-protected blob file given by `--master-key-file` (Windows only).
+    Dpapi,
+    /// Retrieve the key from the Linux D-Bus Secret Service keyring (Linux only).
+    SecretService,
+}
 
 /// Sonde gateway — manages sensor nodes over ESP-NOW radio.
 #[derive(Parser, Debug)]
@@ -61,51 +76,77 @@ struct Cli {
     #[arg(long)]
     handler_config: Option<PathBuf>,
 
-    /// Path to a file containing the 32-byte master key as 64 hex characters.
+    /// Key provider backend for loading the 32-byte master key (GW-0601a).
     ///
-    /// The master key encrypts node PSKs at rest (GW-0601a). If not provided,
-    /// the gateway falls back to the `SONDE_MASTER_KEY` environment variable.
+    /// - `file`           — Read 64 hex chars from `--master-key-file` (default).
+    /// - `env`            — Read 64 hex chars from `SONDE_MASTER_KEY` env var.
+    /// - `dpapi`          — Decrypt a DPAPI-protected blob at `--master-key-file` (Windows only).
+    /// - `secret-service` — Retrieve from the Linux D-Bus Secret Service keyring (Linux only).
+    #[arg(long, default_value = "file", value_enum)]
+    key_provider: KeyProviderKind,
+
+    /// Path to the master key file (hex or DPAPI blob, depending on `--key-provider`).
+    ///
+    /// Required for `--key-provider file` and `--key-provider dpapi`.
+    /// For `--key-provider env`, falls back to the `SONDE_MASTER_KEY` environment variable.
     #[arg(long)]
     master_key_file: Option<PathBuf>,
+
+    /// Label used to identify the master key in the Secret Service keyring.
+    ///
+    /// Only used when `--key-provider secret-service` is selected.
+    /// Defaults to `"sonde-gateway-master-key"`.
+    #[arg(long, default_value = "sonde-gateway-master-key")]
+    key_label: String,
 }
 
-/// Load the 32-byte master key from a file or environment variable.
+/// Build the appropriate [`KeyProvider`] from the CLI arguments.
 ///
-/// Priority:
-/// 1. `--master-key-file <path>` — file containing 64 hex characters
-/// 2. `SONDE_MASTER_KEY` env var — 64 hex characters
-///
-/// Returns an error if neither source is available or the key is malformed.
-fn load_master_key(cli: &Cli) -> Result<[u8; 32], Box<dyn std::error::Error>> {
-    let hex = if let Some(path) = &cli.master_key_file {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read master key file {}: {e}", path.display()))?;
-        raw.trim().to_string()
-    } else if let Ok(val) = std::env::var("SONDE_MASTER_KEY") {
-        val.trim().to_string()
-    } else {
-        return Err(
-            "master key required: provide --master-key-file or set SONDE_MASTER_KEY env var".into(),
-        );
-    };
-
-    if hex.len() != 64 {
-        return Err(format!(
-            "master key must be exactly 64 hex characters, got {}",
-            hex.len()
-        )
-        .into());
+/// Returns an error if the selected backend is not available on the current
+/// platform or if required arguments are missing.
+fn build_key_provider(cli: &Cli) -> Result<Box<dyn KeyProvider>, Box<dyn std::error::Error>> {
+    match cli.key_provider {
+        KeyProviderKind::File => {
+            let path = cli.master_key_file.clone().ok_or(
+                "master key required: provide --master-key-file when using --key-provider file",
+            )?;
+            Ok(Box::new(FileKeyProvider::new(path)))
+        }
+        KeyProviderKind::Env => Ok(Box::new(EnvKeyProvider::default())),
+        KeyProviderKind::Dpapi => {
+            #[cfg(windows)]
+            {
+                use sonde_gateway::key_provider::DpapiKeyProvider;
+                let path = cli.master_key_file.clone().ok_or(
+                    "DPAPI blob path required: provide --master-key-file when using --key-provider dpapi",
+                )?;
+                Ok(Box::new(DpapiKeyProvider::new(path)))
+            }
+            #[cfg(not(windows))]
+            {
+                Err(KeyProviderError::NotAvailable(
+                    "dpapi backend is only available on Windows".into(),
+                )
+                .into())
+            }
+        }
+        KeyProviderKind::SecretService => {
+            #[cfg(target_os = "linux")]
+            {
+                use sonde_gateway::key_provider::SecretServiceKeyProvider;
+                Ok(Box::new(SecretServiceKeyProvider::new(
+                    cli.key_label.clone(),
+                )))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err(KeyProviderError::NotAvailable(
+                    "secret-service backend is only available on Linux".into(),
+                )
+                .into())
+            }
+        }
     }
-
-    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("master key contains non-hex characters".into());
-    }
-
-    let mut key = [0u8; 32];
-    for (i, byte) in key.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)?;
-    }
-    Ok(key)
 }
 
 #[tokio::main]
@@ -121,9 +162,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(db = %cli.db, port = %cli.port, channel = cli.channel, "starting sonde-gateway");
 
-    // 1. Load master key for at-rest PSK encryption (GW-0601a)
-    let master_key = Zeroizing::new(load_master_key(&cli)?);
-    info!("master key loaded");
+    // 1. Load master key for at-rest PSK encryption (GW-0601a).
+    //    Build the appropriate KeyProvider from CLI arguments, then invoke it.
+    let provider = build_key_provider(&cli)?;
+    let master_key = Zeroizing::new({
+        let k = provider.load_master_key()?;
+        *k
+    });
+    info!(provider = ?cli.key_provider, "master key loaded");
 
     // 2. Open persistent storage
     let storage = Arc::new(SqliteStorage::open(&cli.db, master_key)?);

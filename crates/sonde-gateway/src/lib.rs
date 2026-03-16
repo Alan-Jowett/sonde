@@ -7,6 +7,7 @@ pub mod crypto;
 pub mod engine;
 pub mod gateway_identity;
 pub mod handler;
+pub mod key_provider;
 pub mod modem;
 pub mod phone_trust;
 pub mod program;

@@ -3,6 +3,7 @@
 
 pub mod cbor;
 pub mod crypto;
+pub mod discovery;
 pub mod envelope;
 pub mod error;
 pub mod phase1;

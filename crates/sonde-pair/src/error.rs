@@ -113,4 +113,8 @@ pub enum PairingError {
 
     #[error("not paired — run Phase 1 (gateway pairing) first")]
     NotPaired,
+
+    // Scan errors
+    #[error("scan is already active")]
+    ScanAlreadyActive,
 }

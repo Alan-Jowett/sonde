@@ -565,6 +565,140 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0603a  FileKeyProvider — happy path
+
+**Validates:** GW-0601b
+
+**Procedure:**
+1. Write a valid 64-hex-char key to a temp file.
+2. Construct `FileKeyProvider` pointing to that file.
+3. Call `load_master_key()`.
+4. Assert: returns `Ok` with the expected 32-byte key.
+
+---
+
+### T-0603b  FileKeyProvider — missing file
+
+**Validates:** GW-0601b
+
+**Procedure:**
+1. Construct `FileKeyProvider` with a path that does not exist.
+2. Call `load_master_key()`.
+3. Assert: returns `Err(KeyProviderError::Io(_))`.
+
+---
+
+### T-0603c  FileKeyProvider — malformed content
+
+**Validates:** GW-0601b
+
+**Procedure:**
+1. Write a non-hex string to a temp file.
+2. Construct `FileKeyProvider` pointing to that file.
+3. Call `load_master_key()`.
+4. Assert: returns `Err(KeyProviderError::Format(_))`.
+
+---
+
+### T-0603d  EnvKeyProvider — happy path
+
+**Validates:** GW-0601b
+
+**Procedure:**
+1. Set an environment variable to a valid 64-hex-char key.
+2. Construct `EnvKeyProvider` for that variable name.
+3. Call `load_master_key()`.
+4. Assert: returns `Ok` with the expected 32-byte key.
+
+---
+
+### T-0603e  EnvKeyProvider — variable not set
+
+**Validates:** GW-0601b
+
+**Procedure:**
+1. Ensure a test-specific environment variable is unset.
+2. Construct `EnvKeyProvider` for that variable name.
+3. Call `load_master_key()`.
+4. Assert: returns `Err(KeyProviderError::Io(_))`.
+
+---
+
+### T-0603f  DpapiKeyProvider — round-trip (Windows only)
+
+**Validates:** GW-0601b  
+**Platforms:** Windows
+
+**Procedure:**
+1. Generate a random 32-byte key.
+2. Call `protect_with_dpapi(&key, blob_path)` to write the DPAPI blob.
+3. Construct `DpapiKeyProvider::new(blob_path)`.
+4. Call `load_master_key()`.
+5. Assert: returns `Ok` with the same 32-byte key.
+
+---
+
+### T-0603g  DpapiKeyProvider — unavailable on non-Windows
+
+**Validates:** GW-0601b  
+**Platforms:** Linux, macOS
+
+**Procedure:**
+1. Pass `--key-provider dpapi` on a non-Windows platform.
+2. Assert: `build_key_provider()` returns an error containing `"Windows"`.
+
+---
+
+### T-0603h  SecretServiceKeyProvider — round-trip (Linux only)
+
+**Validates:** GW-0601b  
+**Platforms:** Linux (requires a running Secret Service daemon)
+
+**Procedure:**
+1. Generate a random 32-byte key.
+2. Call `store_in_secret_service(&key, "test-sonde-master-key")`.
+3. Construct `SecretServiceKeyProvider::new("test-sonde-master-key")`.
+4. Call `load_master_key()`.
+5. Assert: returns `Ok` with the same 32-byte key.
+6. Clean up: delete the keyring item.
+
+---
+
+### T-0603i  SecretServiceKeyProvider — item not found
+
+**Validates:** GW-0601b  
+**Platforms:** Linux (requires a running Secret Service daemon)
+
+**Procedure:**
+1. Construct `SecretServiceKeyProvider::new("nonexistent-label-xyz")`.
+2. Call `load_master_key()` (item is not in keyring).
+3. Assert: returns `Err(KeyProviderError::Backend(_))`.
+
+---
+
+### T-0603j  SecretServiceKeyProvider — unavailable on non-Linux
+
+**Validates:** GW-0601b  
+**Platforms:** Windows, macOS
+
+**Procedure:**
+1. Pass `--key-provider secret-service` on a non-Linux platform.
+2. Assert: `build_key_provider()` returns an error containing `"Linux"`.
+
+---
+
+### T-0603k  Wrong master key detected at startup
+
+**Validates:** GW-0601b (fallback detection, all backends)
+
+**Procedure:**
+1. Open a `SqliteStorage` with key A and register a node (PSK is encrypted with key A).
+2. Re-open `SqliteStorage` with a different key B.
+3. Assert: `open()` returns an error (wrong key detected by PSK validation at startup).
+4. Assert: the error is returned before any storage operations are possible.
+
+---
+
 ### T-0604  Replay protection — sequence number enforced
 
 **Validates:** GW-0602
@@ -1339,6 +1473,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0600 | T-0600, T-0601, T-0602 |
 | GW-0601 | T-0602, T-0603 |
 | GW-0601a | *(verified by storage implementation tests)* |
+| GW-0601b | T-0603a, T-0603b, T-0603c, T-0603d, T-0603e, T-0603f, T-0603g, T-0603h, T-0603i, T-0603j, T-0603k |
 | GW-0602 | T-0604, T-0605, T-0606, T-0607, T-1004 |
 | GW-0603 | T-0608 |
 | GW-0700 | T-0700 |

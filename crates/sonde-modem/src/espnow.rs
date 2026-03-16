@@ -203,7 +203,7 @@ pub struct EspNowDriver {
 
 impl EspNowDriver {
     pub fn new(
-        modem: Modem,
+        modem: Modem<'static>,
         sysloop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
         counters: &Arc<ModemCounters>,

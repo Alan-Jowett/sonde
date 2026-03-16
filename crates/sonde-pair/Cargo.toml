@@ -5,7 +5,9 @@ edition = "2021"
 license = "MIT"
 
 [features]
-file-store = ["dep:serde", "dep:serde_json", "dep:hex"]
+default = []
+btleplug = ["dep:btleplug", "dep:uuid", "dep:tokio", "dep:futures"]
+file-store = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["zeroize"] }
@@ -22,10 +24,15 @@ tracing = "0.1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-hex = { version = "0.4", optional = true }
+
+# Optional — desktop BLE transport (Windows / Linux / macOS)
+btleplug = { version = "0.11", optional = true }
+uuid = { version = "1", optional = true }
+tokio = { version = "1", features = ["time", "rt"], optional = true }
+futures = { version = "0.3", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }
 tempfile = "3"

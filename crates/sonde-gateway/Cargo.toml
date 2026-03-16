@@ -43,5 +43,15 @@ path = "src/bin/gateway.rs"
 [build-dependencies]
 tonic-prost-build = "0.14"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Security_Cryptography",
+    "Win32_Foundation",
+    "Win32_System_Memory",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
+
 [dev-dependencies]
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }

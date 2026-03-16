@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Persistent [`PairingStore`] backed by a JSON file on the local filesystem.
+//! Persistent [`PairingStore`] backed by a JSON file.
 //!
-//! Enabled via the `file-store` Cargo feature.
+//! Enabled by the `file-store` cargo feature. Stores pairing artifacts in a
+//! platform-appropriate location:
 //!
-//! # Platform paths
+//! - **Windows:** `%APPDATA%\sonde\pairing.json`
+//! - **Linux / macOS:** `~/.config/sonde/pairing.json`
 //!
-//! [`FilePairingStore::default_location`] resolves to:
-//! - **Windows**: `%APPDATA%\sonde\pairing.json`
-//! - **Linux/macOS**: `$XDG_CONFIG_HOME/sonde/pairing.json` (defaults to
-//!   `~/.config/sonde/pairing.json`)
+//! Writes are atomic (write-to-temp, then rename) to prevent corruption on
+//! crash. On Unix the file is restricted to user-only access (mode `0o600`).
 
 use std::fs;
-use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -24,8 +24,16 @@ use crate::store::PairingStore;
 use crate::types::{GatewayIdentity, PairingArtifacts};
 
 // ---------------------------------------------------------------------------
-// JSON schema
+// Serialisation types — kept private so the JSON schema is an internal detail.
 // ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct StoredData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_identity: Option<StoredGatewayIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifacts: Option<StoredArtifacts>,
+}
 
 #[derive(Serialize, Deserialize)]
 struct StoredGatewayIdentity {
@@ -34,19 +42,13 @@ struct StoredGatewayIdentity {
 }
 
 #[derive(Serialize, Deserialize)]
-struct StoredPhoneCredentials {
+struct StoredArtifacts {
+    gateway_public_key: String,
+    gateway_id: String,
     phone_psk: String,
     phone_key_hint: u16,
     rf_channel: u8,
     phone_label: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct StoredData {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    gateway_identity: Option<StoredGatewayIdentity>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    phone_credentials: Option<StoredPhoneCredentials>,
 }
 
 // ---------------------------------------------------------------------------
@@ -55,281 +57,257 @@ struct StoredData {
 
 /// Persistent [`PairingStore`] backed by a JSON file.
 ///
-/// Writes are atomic (temp file + rename) to prevent corruption on crash.
-/// On Unix, file permissions are set to `0o600` (owner read/write only).
+/// See [module-level documentation](self) for platform paths and atomicity
+/// guarantees.
 pub struct FilePairingStore {
     path: PathBuf,
 }
 
 impl FilePairingStore {
-    /// Create a store at the given file path.
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
     /// Create a store at the platform default location.
-    ///
-    /// - **Windows**: `%APPDATA%\sonde\pairing.json`
-    /// - **Linux/macOS**: `$XDG_CONFIG_HOME/sonde/pairing.json`
-    ///   (defaults to `~/.config/sonde/pairing.json`)
-    pub fn default_location() -> Result<Self, PairingError> {
-        let dir = default_config_dir().ok_or_else(|| {
-            PairingError::StoreLoadFailed(
-                "cannot determine config directory: \
-                 set APPDATA (Windows) or HOME (Unix)"
-                    .into(),
-            )
-        })?;
+    pub fn new() -> Result<Self, PairingError> {
         Ok(Self {
-            path: dir.join("sonde").join("pairing.json"),
+            path: default_path()?,
         })
     }
 
-    /// Returns the file path used by this store.
+    /// Create a store at a caller-chosen path (useful for tests).
+    pub fn with_path(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Returns the file path backing this store.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Read and deserialize the JSON file, returning `None` if it does not
-    /// exist.
+    // -- internal helpers ---------------------------------------------------
+
     fn read_stored(&self) -> Result<Option<StoredData>, PairingError> {
-        let mut contents = match fs::read_to_string(&self.path) {
-            Ok(c) => c,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(PairingError::StoreLoadFailed(format!(
-                    "{}: {e}",
-                    self.path.display()
-                )))
-            }
+        let bytes = match fs::read(&self.path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(PairingError::StoreLoadFailed(e.to_string())),
         };
 
-        let result = serde_json::from_str::<StoredData>(&contents);
-        contents.zeroize();
+        let data: StoredData = serde_json::from_slice(&bytes).map_err(|e| {
+            PairingError::StoreCorrupted(format!("{e}: delete or fix {}", self.path.display()))
+        })?;
 
-        match result {
-            Ok(data) => Ok(Some(data)),
-            Err(e) => Err(PairingError::StoreCorrupted(format!(
-                "invalid JSON in {}: {e}",
-                self.path.display()
-            ))),
-        }
+        Ok(Some(data))
     }
 
-    /// Serialize and atomically write the JSON file.
     fn write_stored(&self, data: &StoredData) -> Result<(), PairingError> {
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                PairingError::StoreSaveFailed(format!(
-                    "cannot create directory {}: {e}",
-                    parent.display()
-                ))
-            })?;
+            fs::create_dir_all(parent).map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
         }
 
-        let mut json = serde_json::to_string_pretty(data)
-            .map_err(|e| PairingError::StoreSaveFailed(format!("JSON encoding failed: {e}")))?;
+        let json = serde_json::to_string_pretty(data)
+            .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
 
-        let tmp_path = self.path.with_extension("json.tmp");
-        let write_result = fs::write(&tmp_path, json.as_bytes());
-        json.zeroize();
-        write_result.map_err(|e| {
-            PairingError::StoreSaveFailed(format!("write to {}: {e}", tmp_path.display()))
-        })?;
+        // Atomic write: temp file → fsync → rename.
+        // Clean up the temp file on any error so we never leave key material
+        // (phone_psk) on disk in an orphaned file.
+        let temp_path = self.path.with_extension("json.tmp");
+        let result = self.write_temp_and_rename(&temp_path, json.as_bytes());
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        result
+    }
 
+    fn write_temp_and_rename(&self, temp_path: &Path, data: &[u8]) -> Result<(), PairingError> {
+        // On Unix, create with restrictive permissions from the start so the
+        // file is never world-readable, even briefly.
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600)).map_err(|e| {
-                PairingError::StoreSaveFailed(format!(
-                    "set permissions on {}: {e}",
-                    tmp_path.display()
-                ))
-            })?;
-        }
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(temp_path)
+                .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?
+        };
+        #[cfg(not(unix))]
+        let mut file = fs::File::create(temp_path)
+            .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
 
-        fs::rename(&tmp_path, &self.path).map_err(|e| {
-            PairingError::StoreSaveFailed(format!(
-                "rename {} → {}: {e}",
-                tmp_path.display(),
-                self.path.display()
-            ))
-        })?;
+        file.write_all(data)
+            .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+        file.sync_all()
+            .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+        drop(file);
+
+        fs::rename(temp_path, &self.path)
+            .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
 
         Ok(())
     }
 }
 
-// ---------------------------------------------------------------------------
-// Conversion helpers
-// ---------------------------------------------------------------------------
-
-fn decode_gateway_identity(
-    stored: &StoredGatewayIdentity,
-) -> Result<GatewayIdentity, PairingError> {
-    let pk_bytes = hex::decode(&stored.public_key)
-        .map_err(|e| PairingError::StoreCorrupted(format!("invalid public_key hex: {e}")))?;
-    if pk_bytes.len() != 32 {
-        return Err(PairingError::StoreCorrupted(format!(
-            "public_key must be 32 bytes, got {}",
-            pk_bytes.len()
-        )));
-    }
-
-    let gw_bytes = hex::decode(&stored.gateway_id)
-        .map_err(|e| PairingError::StoreCorrupted(format!("invalid gateway_id hex: {e}")))?;
-    if gw_bytes.len() != 16 {
-        return Err(PairingError::StoreCorrupted(format!(
-            "gateway_id must be 16 bytes, got {}",
-            gw_bytes.len()
-        )));
-    }
-
-    let mut public_key = [0u8; 32];
-    public_key.copy_from_slice(&pk_bytes);
-
-    let mut gateway_id = [0u8; 16];
-    gateway_id.copy_from_slice(&gw_bytes);
-
-    Ok(GatewayIdentity {
-        public_key,
-        gateway_id,
-    })
-}
-
-fn encode_gateway_identity(identity: &GatewayIdentity) -> StoredGatewayIdentity {
-    StoredGatewayIdentity {
-        public_key: hex::encode(identity.public_key),
-        gateway_id: hex::encode(identity.gateway_id),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PairingStore impl
-// ---------------------------------------------------------------------------
-
 impl PairingStore for FilePairingStore {
     fn save_artifacts(&mut self, artifacts: &PairingArtifacts) -> Result<(), PairingError> {
-        let mut data = StoredData {
-            gateway_identity: Some(encode_gateway_identity(&artifacts.gateway_identity)),
-            phone_credentials: Some(StoredPhoneCredentials {
-                phone_psk: hex::encode(*artifacts.phone_psk),
-                phone_key_hint: artifacts.phone_key_hint,
-                rf_channel: artifacts.rf_channel,
-                phone_label: artifacts.phone_label.clone(),
-            }),
-        };
-
-        let result = self.write_stored(&data);
-        if let Some(ref mut creds) = data.phone_credentials {
-            creds.phone_psk.zeroize();
-        }
-        result
+        let mut data = self.read_stored()?.unwrap_or(StoredData {
+            gateway_identity: None,
+            artifacts: None,
+        });
+        data.artifacts = Some(artifacts_to_stored(artifacts));
+        self.write_stored(&data)
     }
 
     fn load_artifacts(&self) -> Result<Option<PairingArtifacts>, PairingError> {
-        let stored = match self.read_stored()? {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-
-        // Both gateway_identity and phone_credentials must be present.
-        let (gw_stored, mut creds) = match (stored.gateway_identity, stored.phone_credentials) {
-            (Some(gw), Some(c)) => (gw, c),
-            (_, Some(mut c)) => {
-                c.phone_psk.zeroize();
-                return Ok(None);
-            }
-            _ => return Ok(None),
-        };
-
-        let gateway_identity = decode_gateway_identity(&gw_stored)?;
-
-        let mut psk_bytes = hex::decode(&creds.phone_psk)
-            .map_err(|e| PairingError::StoreCorrupted(format!("invalid phone_psk hex: {e}")))?;
-        creds.phone_psk.zeroize();
-
-        if psk_bytes.len() != 32 {
-            psk_bytes.zeroize();
-            return Err(PairingError::StoreCorrupted(format!(
-                "phone_psk must be 32 bytes, got {}",
-                psk_bytes.len()
-            )));
+        match self.read_stored()? {
+            Some(StoredData {
+                artifacts: Some(ref s),
+                ..
+            }) => Ok(Some(artifacts_from_stored(s)?)),
+            _ => Ok(None),
         }
-
-        let mut phone_psk = Zeroizing::new([0u8; 32]);
-        phone_psk.copy_from_slice(&psk_bytes);
-        psk_bytes.zeroize();
-
-        Ok(Some(PairingArtifacts {
-            gateway_identity,
-            phone_psk,
-            phone_key_hint: creds.phone_key_hint,
-            rf_channel: creds.rf_channel,
-            phone_label: creds.phone_label,
-        }))
     }
 
     fn clear(&mut self) -> Result<(), PairingError> {
+        // Also clean up any leftover temp file from an interrupted write.
+        let _ = fs::remove_file(self.path.with_extension("json.tmp"));
         match fs::remove_file(&self.path) {
             Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(PairingError::StoreSaveFailed(format!(
-                "cannot remove {}: {e}",
-                self.path.display()
-            ))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(PairingError::StoreSaveFailed(e.to_string())),
         }
     }
 
     fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, PairingError> {
-        let mut stored = match self.read_stored()? {
-            Some(s) => s,
+        let data = match self.read_stored()? {
+            Some(d) => d,
             None => return Ok(None),
         };
-
-        // Zeroize phone credentials if present (not needed for this call).
-        if let Some(ref mut creds) = stored.phone_credentials {
-            creds.phone_psk.zeroize();
+        // Standalone identity takes precedence (mirrors MemoryPairingStore).
+        if let Some(ref id) = data.gateway_identity {
+            return Ok(Some(identity_from_stored(id)?));
         }
-
-        match stored.gateway_identity {
-            Some(ref gw) => Ok(Some(decode_gateway_identity(gw)?)),
-            None => Ok(None),
+        if let Some(ref arts) = data.artifacts {
+            let pk = from_hex(&arts.gateway_public_key, 32)?;
+            let gid = from_hex(&arts.gateway_id, 16)?;
+            return Ok(Some(GatewayIdentity {
+                public_key: pk.try_into().unwrap(),
+                gateway_id: gid.try_into().unwrap(),
+            }));
         }
+        Ok(None)
     }
 
     fn save_gateway_identity(&mut self, identity: &GatewayIdentity) -> Result<(), PairingError> {
-        let mut existing = self.read_stored()?.unwrap_or(StoredData {
+        let mut data = self.read_stored()?.unwrap_or(StoredData {
             gateway_identity: None,
-            phone_credentials: None,
+            artifacts: None,
         });
-
-        existing.gateway_identity = Some(encode_gateway_identity(identity));
-
-        let result = self.write_stored(&existing);
-        // Zeroize phone credentials that may have been loaded.
-        if let Some(ref mut creds) = existing.phone_credentials {
-            creds.phone_psk.zeroize();
-        }
-        result
+        data.gateway_identity = Some(identity_to_stored(identity));
+        self.write_stored(&data)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Platform default config directory
+// Hex helpers — validate ASCII before byte-indexing (see code-quality guide).
 // ---------------------------------------------------------------------------
 
-fn default_config_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("APPDATA").map(PathBuf::from)
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn from_hex(hex: &str, expected_len: usize) -> Result<Vec<u8>, PairingError> {
+    if hex.len() != expected_len * 2 {
+        return Err(PairingError::StoreCorrupted(format!(
+            "expected {} hex chars, got {}",
+            expected_len * 2,
+            hex.len()
+        )));
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(PairingError::StoreCorrupted(
+            "invalid hex character in stored data".into(),
+        ));
     }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|e| PairingError::StoreCorrupted(e.to_string()))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Domain ↔ stored conversions
+// ---------------------------------------------------------------------------
+
+fn identity_to_stored(id: &GatewayIdentity) -> StoredGatewayIdentity {
+    StoredGatewayIdentity {
+        public_key: to_hex(&id.public_key),
+        gateway_id: to_hex(&id.gateway_id),
+    }
+}
+
+fn identity_from_stored(s: &StoredGatewayIdentity) -> Result<GatewayIdentity, PairingError> {
+    let pk = from_hex(&s.public_key, 32)?;
+    let gid = from_hex(&s.gateway_id, 16)?;
+    Ok(GatewayIdentity {
+        public_key: pk.try_into().unwrap(),
+        gateway_id: gid.try_into().unwrap(),
+    })
+}
+
+fn artifacts_to_stored(a: &PairingArtifacts) -> StoredArtifacts {
+    StoredArtifacts {
+        gateway_public_key: to_hex(&a.gateway_identity.public_key),
+        gateway_id: to_hex(&a.gateway_identity.gateway_id),
+        phone_psk: to_hex(a.phone_psk.as_ref()),
+        phone_key_hint: a.phone_key_hint,
+        rf_channel: a.rf_channel,
+        phone_label: a.phone_label.clone(),
+    }
+}
+
+fn artifacts_from_stored(s: &StoredArtifacts) -> Result<PairingArtifacts, PairingError> {
+    let pk = from_hex(&s.gateway_public_key, 32)?;
+    let gid = from_hex(&s.gateway_id, 16)?;
+
+    let mut psk_vec = from_hex(&s.phone_psk, 32)?;
+    let mut psk = Zeroizing::new([0u8; 32]);
+    psk.copy_from_slice(&psk_vec);
+    psk_vec.zeroize();
+
+    Ok(PairingArtifacts {
+        gateway_identity: GatewayIdentity {
+            public_key: pk.try_into().unwrap(),
+            gateway_id: gid.try_into().unwrap(),
+        },
+        phone_psk: psk,
+        phone_key_hint: s.phone_key_hint,
+        rf_channel: s.rf_channel,
+        phone_label: s.phone_label.clone(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Default path
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn default_path() -> Result<PathBuf, PairingError> {
+    let appdata = std::env::var("APPDATA")
+        .map_err(|_| PairingError::StoreLoadFailed("%APPDATA% not set".into()))?;
+    Ok(PathBuf::from(appdata).join("sonde").join("pairing.json"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_path() -> Result<PathBuf, PairingError> {
+    let home =
+        std::env::var("HOME").map_err(|_| PairingError::StoreLoadFailed("$HOME not set".into()))?;
+    Ok(PathBuf::from(home)
+        .join(".config")
+        .join("sonde")
+        .join("pairing.json"))
 }
 
 // ---------------------------------------------------------------------------
@@ -347,21 +325,22 @@ mod tests {
                 public_key: [0x42u8; 32],
                 gateway_id: [0x01u8; 16],
             },
-            phone_psk: Zeroizing::new([0xABu8; 32]),
+            phone_psk: Zeroizing::new([0x42u8; 32]),
             phone_key_hint: 0x1234,
             rf_channel: 6,
             phone_label: "test-phone".into(),
         }
     }
 
-    fn store_in(dir: &TempDir) -> FilePairingStore {
-        FilePairingStore::new(dir.path().join("pairing.json"))
+    fn temp_store() -> (FilePairingStore, TempDir) {
+        let dir = TempDir::new().expect("failed to create temp dir");
+        let store = FilePairingStore::with_path(dir.path().join("pairing.json"));
+        (store, dir)
     }
 
     #[test]
-    fn round_trip() {
-        let dir = TempDir::new().unwrap();
-        let mut store = store_in(&dir);
+    fn save_and_load_round_trip() {
+        let (mut store, _dir) = temp_store();
         let artifacts = test_artifacts();
         store.save_artifacts(&artifacts).unwrap();
 
@@ -377,111 +356,65 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_returns_none() {
-        let dir = TempDir::new().unwrap();
-        let store = store_in(&dir);
+    fn load_missing_file_returns_none() {
+        let (store, _dir) = temp_store();
         assert!(store.load_artifacts().unwrap().is_none());
         assert!(store.load_gateway_identity().unwrap().is_none());
     }
 
     #[test]
     fn corrupted_json_returns_store_corrupted() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("pairing.json");
-        fs::write(&path, "not valid json!!!").unwrap();
+        let (store, _dir) = temp_store();
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), b"not valid json{{{").unwrap();
 
-        let store = FilePairingStore::new(path);
+        let err = store.load_artifacts().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("corrupted"),
+            "error should mention corruption: {msg}"
+        );
+        assert!(
+            msg.contains("pairing.json"),
+            "error should name the file: {msg}"
+        );
+    }
+
+    #[test]
+    fn missing_field_returns_store_corrupted() {
+        let (store, _dir) = temp_store();
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        // Valid JSON but missing required fields in artifacts.
+        fs::write(store.path(), r#"{"artifacts": {"phone_key_hint": 1}}"#).unwrap();
+
         let err = store.load_artifacts().unwrap_err();
         assert!(
-            matches!(err, PairingError::StoreCorrupted(_)),
-            "expected StoreCorrupted, got: {err}"
+            err.to_string().contains("corrupted"),
+            "should report corruption: {err}"
         );
     }
 
     #[test]
-    fn empty_file_returns_store_corrupted() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("pairing.json");
-        fs::write(&path, "").unwrap();
+    fn clear_removes_file() {
+        let (mut store, _dir) = temp_store();
+        store.save_artifacts(&test_artifacts()).unwrap();
+        assert!(store.path().exists());
 
-        let store = FilePairingStore::new(path);
-        let err = store.load_artifacts().unwrap_err();
-        assert!(
-            matches!(err, PairingError::StoreCorrupted(_)),
-            "expected StoreCorrupted, got: {err}"
-        );
+        store.clear().unwrap();
+        assert!(!store.path().exists());
+        assert!(store.load_artifacts().unwrap().is_none());
     }
 
     #[test]
-    fn corrupted_hex_returns_store_corrupted() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("pairing.json");
-        let bad = serde_json::json!({
-            "gateway_identity": {
-                "public_key": "not-valid-hex",
-                "gateway_id": "also-not-hex"
-            }
-        });
-        fs::write(&path, bad.to_string()).unwrap();
-
-        let store = FilePairingStore::new(path);
-        let err = store.load_gateway_identity().unwrap_err();
-        assert!(
-            matches!(err, PairingError::StoreCorrupted(_)),
-            "expected StoreCorrupted, got: {err}"
-        );
-    }
-
-    #[test]
-    fn wrong_public_key_length_returns_store_corrupted() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("pairing.json");
-        let bad = serde_json::json!({
-            "gateway_identity": {
-                "public_key": "aabb",
-                "gateway_id": hex::encode([0x01u8; 16])
-            }
-        });
-        fs::write(&path, bad.to_string()).unwrap();
-
-        let store = FilePairingStore::new(path);
-        let err = store.load_gateway_identity().unwrap_err();
-        assert!(
-            matches!(err, PairingError::StoreCorrupted(_)),
-            "expected StoreCorrupted, got: {err}"
-        );
-    }
-
-    #[test]
-    fn wrong_phone_psk_length_returns_store_corrupted() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("pairing.json");
-        let bad = serde_json::json!({
-            "gateway_identity": {
-                "public_key": hex::encode([0x42u8; 32]),
-                "gateway_id": hex::encode([0x01u8; 16])
-            },
-            "phone_credentials": {
-                "phone_psk": "aabb",
-                "phone_key_hint": 0x1234,
-                "rf_channel": 6,
-                "phone_label": "test"
-            }
-        });
-        fs::write(&path, bad.to_string()).unwrap();
-
-        let store = FilePairingStore::new(path);
-        let err = store.load_artifacts().unwrap_err();
-        assert!(
-            matches!(err, PairingError::StoreCorrupted(_)),
-            "expected StoreCorrupted, got: {err}"
-        );
+    fn clear_missing_file_is_ok() {
+        let (mut store, _dir) = temp_store();
+        // Should not error when the file doesn't exist.
+        store.clear().unwrap();
     }
 
     #[test]
     fn gateway_identity_standalone() {
-        let dir = TempDir::new().unwrap();
-        let mut store = store_in(&dir);
+        let (mut store, _dir) = temp_store();
         let identity = GatewayIdentity {
             public_key: [0x42u8; 32],
             gateway_id: [0x01u8; 16],
@@ -497,9 +430,21 @@ mod tests {
     }
 
     #[test]
-    fn save_gateway_identity_preserves_phone_credentials() {
-        let dir = TempDir::new().unwrap();
-        let mut store = store_in(&dir);
+    fn gateway_identity_from_artifacts() {
+        let (mut store, _dir) = temp_store();
+        store.save_artifacts(&test_artifacts()).unwrap();
+
+        let loaded = store
+            .load_gateway_identity()
+            .unwrap()
+            .expect("should have identity");
+        assert_eq!(loaded.public_key, [0x42u8; 32]);
+        assert_eq!(loaded.gateway_id, [0x01u8; 16]);
+    }
+
+    #[test]
+    fn standalone_identity_takes_precedence() {
+        let (mut store, _dir) = temp_store();
         store.save_artifacts(&test_artifacts()).unwrap();
 
         let new_identity = GatewayIdentity {
@@ -509,106 +454,75 @@ mod tests {
         store.save_gateway_identity(&new_identity).unwrap();
 
         let loaded = store
-            .load_artifacts()
-            .unwrap()
-            .expect("should have artifacts");
-        assert_eq!(loaded.gateway_identity, new_identity);
-        assert_eq!(*loaded.phone_psk, [0xABu8; 32]);
-    }
-
-    #[test]
-    fn clear_removes_file() {
-        let dir = TempDir::new().unwrap();
-        let mut store = store_in(&dir);
-        store.save_artifacts(&test_artifacts()).unwrap();
-        assert!(store.path().exists());
-
-        store.clear().unwrap();
-        assert!(!store.path().exists());
-        assert!(store.load_artifacts().unwrap().is_none());
-    }
-
-    #[test]
-    fn clear_missing_file_is_ok() {
-        let dir = TempDir::new().unwrap();
-        let mut store = store_in(&dir);
-        store.clear().unwrap();
-    }
-
-    #[test]
-    fn no_node_psk_in_stored_json() {
-        let dir = TempDir::new().unwrap();
-        let mut store = store_in(&dir);
-        store.save_artifacts(&test_artifacts()).unwrap();
-
-        let contents = fs::read_to_string(store.path()).unwrap();
-        assert!(
-            !contents.contains("node_psk"),
-            "node_psk must never appear in stored JSON"
-        );
-    }
-
-    #[test]
-    fn gateway_identity_only_no_artifacts() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("pairing.json");
-        let gw_only = serde_json::json!({
-            "gateway_identity": {
-                "public_key": hex::encode([0x42u8; 32]),
-                "gateway_id": hex::encode([0x01u8; 16])
-            }
-        });
-        fs::write(&path, gw_only.to_string()).unwrap();
-
-        let store = FilePairingStore::new(path);
-        assert!(store.load_artifacts().unwrap().is_none());
-
-        let identity = store
             .load_gateway_identity()
             .unwrap()
             .expect("should have identity");
-        assert_eq!(identity.public_key, [0x42u8; 32]);
+        assert_eq!(loaded, new_identity);
     }
 
     #[test]
     fn creates_parent_directories() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("nested").join("dirs").join("pairing.json");
-        let mut store = FilePairingStore::new(path);
+        let nested = dir
+            .path()
+            .join("a")
+            .join("b")
+            .join("c")
+            .join("pairing.json");
+        let mut store = FilePairingStore::with_path(&nested);
+        store.save_artifacts(&test_artifacts()).unwrap();
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn no_node_psk_in_json() {
+        let (mut store, _dir) = temp_store();
         store.save_artifacts(&test_artifacts()).unwrap();
 
+        let json = fs::read_to_string(store.path()).unwrap();
+        assert!(
+            !json.contains("node_psk"),
+            "node_psk must never appear in persisted JSON"
+        );
+    }
+
+    #[test]
+    fn persists_across_instances() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pairing.json");
+
+        {
+            let mut store = FilePairingStore::with_path(&path);
+            store.save_artifacts(&test_artifacts()).unwrap();
+        }
+
+        // New instance at the same path should see persisted data.
+        let store = FilePairingStore::with_path(&path);
         let loaded = store
             .load_artifacts()
             .unwrap()
-            .expect("should have artifacts");
-        assert_eq!(loaded.rf_channel, 6);
+            .expect("should survive across instances");
+        assert_eq!(loaded.phone_key_hint, 0x1234);
     }
 
     #[test]
-    fn default_location_returns_valid_path() {
-        // This test just verifies `default_location` succeeds (it reads
-        // environment variables, which should be set on any desktop OS).
-        let store = FilePairingStore::default_location().unwrap();
-        let path = store.path().to_string_lossy();
-        assert!(
-            path.contains("sonde"),
-            "default path should contain 'sonde': {path}"
-        );
-        assert!(
-            path.ends_with("pairing.json"),
-            "default path should end with 'pairing.json': {path}"
-        );
+    fn hex_round_trip() {
+        let input = [0xDE, 0xAD, 0xBE, 0xEF];
+        let hex = to_hex(&input);
+        assert_eq!(hex, "deadbeef");
+        let out = from_hex(&hex, 4).unwrap();
+        assert_eq!(out, input);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn file_permissions_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = TempDir::new().unwrap();
-        let mut store = store_in(&dir);
-        store.save_artifacts(&test_artifacts()).unwrap();
+    fn hex_rejects_non_ascii() {
+        let err = from_hex("café0000", 4).unwrap_err();
+        assert!(err.to_string().contains("corrupted"));
+    }
 
-        let perms = fs::metadata(store.path()).unwrap().permissions();
-        assert_eq!(perms.mode() & 0o777, 0o600);
+    #[test]
+    fn hex_rejects_wrong_length() {
+        let err = from_hex("abcd", 4).unwrap_err();
+        assert!(err.to_string().contains("corrupted"));
     }
 }

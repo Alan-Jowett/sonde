@@ -63,6 +63,75 @@ The gateway stores the per-node key database persistently. The key database maps
 - The key store SHOULD be encrypted at rest.
 - Exporting the key store SHOULD require explicit operator authorization (see [gateway-requirements.md GW-1001](gateway-requirements.md)).
 
+#### 2.3.1  Master key providers (GW-0601b)
+
+The gateway abstracts master-key loading behind a `KeyProvider` trait.  The
+backend is selected with `--key-provider` at startup.  Four backends are
+available:
+
+| Backend | `--key-provider` value | Platform | Description |
+|---------|------------------------|----------|-------------|
+| `FileKeyProvider` | `file` *(default)* | All | Read 64 hex characters from `--master-key-file`. |
+| `EnvKeyProvider` | `env` | All | Read 64 hex characters from the `SONDE_MASTER_KEY` environment variable. |
+| `DpapiKeyProvider` | `dpapi` | Windows only | Decrypt a DPAPI-protected blob at `--master-key-file`. The blob is tied to the Windows user or machine account — it cannot be decrypted on another machine or by a different user. |
+| `SecretServiceKeyProvider` | `secret-service` | Linux only | Retrieve the key from the D-Bus Secret Service (GNOME Keyring, KWallet, or any compatible implementation), identified by `--key-label`. |
+
+**Deployment guidance:**
+
+*File backend (all platforms — default):*
+```
+# Generate a 32-byte key
+openssl rand -hex 32 > /etc/sonde/master.hex
+chmod 600 /etc/sonde/master.hex
+sonde-gateway --key-provider file --master-key-file /etc/sonde/master.hex ...
+```
+Protect the key file with file-system permissions and, if available, encrypt
+the containing volume.
+
+*DPAPI backend (Windows):*
+
+The DPAPI backend reads a binary blob file produced by `protect_with_dpapi()`
+(in the `sonde_gateway::key_provider` library).  The blob can only be
+decrypted by the **same Windows user or machine account** that created it —
+running as a different user, or copying the blob to another machine, causes a
+decryption failure at startup.  For service deployments, use a dedicated
+service account and create the blob as that account.
+
+```powershell
+# Provision once (run as the gateway service account):
+# 1. Place a hex key at master.hex (protect this file before this step)
+# 2. Use a small Rust snippet or a provisioning utility built from
+#    sonde_gateway::key_provider::protect_with_dpapi() to create the blob:
+#
+#    protect_with_dpapi(&key_bytes, Path::new(r"C:\ProgramData\sonde\master.dpapi"))
+
+# Run the gateway:
+sonde-gateway --key-provider dpapi --master-key-file C:\ProgramData\sonde\master.dpapi ...
+```
+
+*Secret Service backend (Linux):*
+
+```bash
+# Provision once (stores the key in the OS keyring):
+# Use store_in_secret_service() from sonde_gateway::key_provider,
+# or the following Python snippet as a reference:
+#
+# import secretstorage, secrets
+# conn = secretstorage.dbus_init()
+# coll = secretstorage.get_default_collection(conn)
+# coll.unlock()
+# key = bytes.fromhex(open('/etc/sonde/master.hex').read().strip())
+# coll.create_item('sonde-gateway-master-key',
+#   {'service': 'sonde-gateway', 'account': 'sonde-gateway-master-key'},
+#   key, replace=True)
+
+# Run the gateway:
+sonde-gateway --key-provider secret-service --key-label sonde-gateway-master-key ...
+```
+For headless servers without an interactive session, run
+`gnome-keyring-daemon --daemonize --unlock` at service start, or use
+`systemd-creds` as an alternative.
+
 ### 2.4  Key provisioning
 
 #### 2.4.1  USB pairing (development / bench testing)

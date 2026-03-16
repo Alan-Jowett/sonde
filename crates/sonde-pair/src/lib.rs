@@ -3,6 +3,7 @@
 
 pub mod cbor;
 pub mod crypto;
+pub mod discovery;
 pub mod envelope;
 pub mod error;
 #[cfg(feature = "file-store")]
@@ -14,3 +15,6 @@ pub mod store;
 pub mod transport;
 pub mod types;
 pub mod validation;
+
+#[cfg(feature = "btleplug")]
+pub mod btleplug_transport;

@@ -506,6 +506,75 @@ Storage implementations SHOULD encrypt PSK material at rest (GW-0601a). The `Nod
 
 ---
 
+## 10a  Master key provider
+
+The 32-byte master key (used by `SqliteStorage` to encrypt PSKs, phone PSKs,
+and the Ed25519 seed at rest) is loaded at startup via a `KeyProvider`
+implementation selected by the `--key-provider` CLI flag (GW-0601b).
+
+### 10a.1  Trait
+
+```rust
+/// Abstracts how the 32-byte gateway master key is obtained.
+pub trait KeyProvider: Send + Sync {
+    fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError>;
+}
+```
+
+The trait is intentionally synchronous; key loading is a one-time startup
+operation.  For async backends (e.g. Secret Service over D-Bus), the
+implementation uses `tokio::task::block_in_place` when called from within a
+tokio runtime, or a temporary `current_thread` runtime otherwise.
+
+### 10a.2  Backends
+
+| Struct | CLI value | Platform | Source |
+|--------|-----------|----------|--------|
+| `FileKeyProvider` | `file` *(default)* | All | 64-hex-char key file at `--master-key-file` |
+| `EnvKeyProvider` | `env` | All | `SONDE_MASTER_KEY` environment variable |
+| `DpapiKeyProvider` | `dpapi` | Windows | DPAPI-encrypted blob at `--master-key-file`; decrypted via `CryptUnprotectData` |
+| `SecretServiceKeyProvider` | `secret-service` | Linux | D-Bus Secret Service keyring item identified by `--key-label` |
+
+### 10a.3  Backend selection
+
+The `build_key_provider()` function in `gateway.rs` instantiates the
+appropriate backend from the parsed CLI.  Platform-specific backends compile
+only on their target OS (`#[cfg(windows)]` / `#[cfg(target_os = "linux")]`).
+Requesting an unavailable backend on the wrong platform returns
+`KeyProviderError::NotAvailable` before any database is opened.
+
+### 10a.4  DPAPI integration (Windows)
+
+`DpapiKeyProvider` reads a binary DPAPI blob from the file system and calls
+`CryptUnprotectData` (via `windows-sys`) to decrypt it.  The blob is created
+with `protect_with_dpapi()` during initial provisioning.  Decryption is tied
+to the Windows user or machine account — moving the blob to another machine or
+user silently fails.
+
+### 10a.5  Secret Service integration (Linux)
+
+`SecretServiceKeyProvider` connects to the D-Bus `org.freedesktop.secrets`
+endpoint (via `secret-service` crate, which uses `zbus`), unlocks the default
+collection, and retrieves a 32-byte binary secret stored under the attributes
+`service = "sonde-gateway"` and `account = <label>`.  The label defaults to
+`"sonde-gateway-master-key"` and is configurable via `--key-label`.
+
+The provisioning helper `store_in_secret_service()` writes a key into the
+keyring during initial deployment.
+
+### 10a.6  Error type
+
+`KeyProviderError` has four variants:
+
+| Variant | Meaning |
+|---------|---------|
+| `Io(String)` | File or environment I/O failed (file not found, variable not set) |
+| `Format(String)` | Key material is present but malformed (wrong length, non-hex characters, wrong byte count) |
+| `NotAvailable(String)` | The requested backend is not supported on this platform |
+| `Backend(String)` | The backend itself returned an error (DPAPI failure, D-Bus error, keyring locked) |
+
+---
+
 ## 11  Concurrency model
 
 The gateway runs a single tokio async runtime:

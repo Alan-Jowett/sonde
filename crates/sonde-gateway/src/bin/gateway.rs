@@ -233,6 +233,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // 8a. BLE event processing loop (Phase 1 phone pairing via modem relay).
+    let ble_transport = transport.clone();
+    let ble_storage: Arc<dyn Storage> = storage.clone();
+    let ble_channel = cli.channel;
+    let ble_loop = tokio::spawn(async move {
+        use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
+        use sonde_gateway::modem::BleEvent;
+        use tracing::debug;
+
+        let mut window = RegistrationWindow::new();
+
+        // Load gateway identity for BLE pairing operations.
+        let identity = match ble_storage.load_gateway_identity().await {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                error!("BLE loop: no gateway identity — cannot handle BLE pairing");
+                return;
+            }
+            Err(e) => {
+                error!("BLE loop: failed to load gateway identity: {e}");
+                return;
+            }
+        };
+
+        loop {
+            match ble_transport.recv_ble_event().await {
+                Some(BleEvent::Recv(br)) => {
+                    if let Some(response) = handle_ble_recv(
+                        &br.ble_data,
+                        &identity,
+                        &ble_storage,
+                        &mut window,
+                        ble_channel,
+                    )
+                    .await
+                    {
+                        if let Err(e) = ble_transport.send_ble_indicate(&response).await {
+                            error!("BLE_INDICATE send error: {e}");
+                        }
+                    }
+                }
+                Some(BleEvent::Connected(bc)) => {
+                    info!(
+                        peer = ?bc.peer_addr,
+                        mtu = bc.mtu,
+                        "BLE phone connected"
+                    );
+                }
+                Some(BleEvent::Disconnected(bd)) => {
+                    info!(
+                        peer = ?bd.peer_addr,
+                        reason = bd.reason,
+                        "BLE phone disconnected"
+                    );
+                }
+                Some(BleEvent::PairingConfirm(pc)) => {
+                    info!(
+                        passkey = pc.passkey,
+                        "BLE Numeric Comparison passkey — awaiting operator confirmation"
+                    );
+                    // TODO: Forward to admin CLI stream for operator confirmation.
+                    // For now, auto-accept.
+                    if let Err(e) = ble_transport.send_ble_pairing_confirm_reply(true).await {
+                        error!("BLE_PAIRING_CONFIRM_REPLY send error: {e}");
+                    }
+                }
+                None => {
+                    debug!("BLE event channel closed");
+                    break;
+                }
+            }
+        }
+    });
+
     // 9. Wait for shutdown
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -240,6 +314,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ = frame_loop => {
             error!("frame processing loop exited");
+        }
+        _ = ble_loop => {
+            error!("BLE event loop exited");
         }
         _ = grpc_handle => {
             error!("gRPC server exited");

@@ -182,7 +182,12 @@ public class BleHelper {
      *                       (e.g. {@code "0000fe60-0000-1000-8000-00805f9b34fb"})
      */
     public void startScan(String serviceUuidStr) throws Exception {
-        if (activeScanCallback != null) throw new Exception("scan already active");
+        // If a scan is already active, stop it first so the caller can
+        // start a new scan (DeviceScanner calls start_scan twice — once
+        // for the gateway UUID, once for the node UUID).
+        if (activeScanCallback != null) {
+            stopScan();
+        }
 
         BluetoothLeScanner scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) throw new Exception("BLE scanner unavailable");
@@ -256,6 +261,25 @@ public class BleHelper {
         return discoveredDevices.get(index).getRssi();
     }
 
+    /**
+     * Advertised service UUIDs for the device at {@code index}.
+     *
+     * @return array of UUID strings, or empty array if no scan record
+     */
+    public String[] getDeviceServiceUuids(int index) {
+        ScanResult result = discoveredDevices.get(index);
+        android.bluetooth.le.ScanRecord record = result.getScanRecord();
+        if (record == null || record.getServiceUuids() == null) {
+            return new String[0];
+        }
+        List<ParcelUuid> uuids = record.getServiceUuids();
+        String[] out = new String[uuids.size()];
+        for (int i = 0; i < uuids.size(); i++) {
+            out[i] = uuids.get(i).getUuid().toString();
+        }
+        return out;
+    }
+
     // --- Connection --------------------------------------------------------
 
     /**
@@ -301,6 +325,8 @@ public class BleHelper {
             remaining = deadline - System.currentTimeMillis();
             if (remaining > 0) mtuLatch.await(remaining, TimeUnit.MILLISECONDS);
         }
+        // Clear any MTU error so it doesn't abort service discovery.
+        lastError = null;
 
         // Step 3 — discover services
         discoveryLatch = new CountDownLatch(1);

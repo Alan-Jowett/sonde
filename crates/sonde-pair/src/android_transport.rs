@@ -205,11 +205,38 @@ impl BleTransport for AndroidBleTransport {
                         .i()
                         .map_err(jni_err)? as i8;
 
+                    // Service UUIDs
+                    let uuids_obj = env
+                        .call_method(
+                            helper,
+                            "getDeviceServiceUuids",
+                            "(I)[Ljava/lang/String;",
+                            &[idx],
+                        )
+                        .map_err(|e| jni_exception_or(&mut env, "getDeviceServiceUuids", e))?
+                        .l()
+                        .map_err(jni_err)?;
+                    let uuids_arr = jni::objects::JObjectArray::from(uuids_obj);
+                    let uuid_count = env.get_array_length(&uuids_arr).map_err(jni_err)?;
+                    let mut service_uuids = Vec::with_capacity(uuid_count as usize);
+                    for j in 0..uuid_count {
+                        let uuid_obj = env
+                            .get_object_array_element(&uuids_arr, j)
+                            .map_err(jni_err)?;
+                        let uuid_str: String = env
+                            .get_string(&JString::from(uuid_obj))
+                            .map_err(jni_err)?
+                            .into();
+                        if let Some(val) = parse_uuid_string(&uuid_str) {
+                            service_uuids.push(val);
+                        }
+                    }
+
                     devices.push(ScannedDevice {
                         name,
                         address,
                         rssi,
-                        service_uuids: Vec::new(),
+                        service_uuids,
                     });
                 }
 
@@ -439,6 +466,16 @@ fn get_exception_message(env: &mut JNIEnv<'_>) -> Option<String> {
     Some(msg)
 }
 
+/// Parse a UUID string (e.g. `"0000fe60-0000-1000-8000-00805f9b34fb"`) into
+/// a `u128`.  Returns `None` on malformed input.
+fn parse_uuid_string(s: &str) -> Option<u128> {
+    let hex: String = s.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    u128::from_str_radix(&hex, 16).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,5 +490,18 @@ mod tests {
     fn uuid_to_string_node_command() {
         let s = uuid_to_string(crate::types::NODE_COMMAND_UUID);
         assert_eq!(s, "0000fe51-0000-1000-8000-00805f9b34fb");
+    }
+
+    #[test]
+    fn uuid_round_trip() {
+        let uuid = crate::types::GATEWAY_SERVICE_UUID;
+        let s = uuid_to_string(uuid);
+        assert_eq!(parse_uuid_string(&s), Some(uuid));
+    }
+
+    #[test]
+    fn parse_uuid_string_invalid() {
+        assert_eq!(parse_uuid_string("not-a-uuid"), None);
+        assert_eq!(parse_uuid_string(""), None);
     }
 }

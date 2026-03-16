@@ -7,6 +7,7 @@ license = "MIT"
 [features]
 default = []
 btleplug = ["dep:btleplug", "dep:uuid", "dep:tokio", "dep:futures"]
+file-store = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["zeroize"] }
@@ -21,6 +22,8 @@ zeroize = { version = "1", features = ["derive"] }
 ciborium = "0.2"
 tracing = "0.1"
 thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 # Optional — desktop BLE transport (Windows / Linux / macOS)
 btleplug = { version = "0.11", optional = true }
@@ -32,3 +35,4 @@ futures = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }
+tempfile = "3"

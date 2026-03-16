@@ -42,6 +42,7 @@ ENV RUSTUP_HOME="/root/.rustup" \
 # and CLANG_PATH for the Espressif LLVM/Clang.
 RUN cargo install espup@0.16.0 --locked && \
     espup install && \
+    mkdir -p /opt/esp && \
     cp /root/export-esp.sh /opt/esp/export-esp.sh && \
     echo 'source /opt/esp/export-esp.sh' >> /etc/bash.bashrc
 

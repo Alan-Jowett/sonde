@@ -5,7 +5,7 @@ use crate::error::PairingError;
 use crate::types::SensorDescriptor;
 use crate::validation::compute_key_hint;
 use ciborium::Value;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Fields of a decoded PairingRequest.
 #[derive(Debug)]
@@ -18,6 +18,22 @@ pub struct PairingRequestFields {
     pub timestamp: i64,
 }
 
+/// Zeroize all `Value::Bytes` buffers in a ciborium Value tree so key material
+/// does not linger in freed heap memory.
+fn zeroize_cbor_values(value: &mut Value) {
+    match value {
+        Value::Bytes(b) => b.as_mut_slice().zeroize(),
+        Value::Array(arr) => arr.iter_mut().for_each(zeroize_cbor_values),
+        Value::Map(pairs) => {
+            for (k, v) in pairs {
+                zeroize_cbor_values(k);
+                zeroize_cbor_values(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Encode a PairingRequest as deterministic CBOR with integer keys.
 ///
 /// Map layout:
@@ -27,13 +43,16 @@ pub struct PairingRequestFields {
 /// - 4: rf_channel (unsigned)
 /// - 5: sensors (array of maps `{1: sensor_type, 2: sensor_id, 3: label?}`)
 /// - 6: timestamp (integer)
+///
+/// Returns `Zeroizing<Vec<u8>>` because the CBOR buffer contains key material
+/// (node PSK) that must be zeroized on drop.
 pub fn encode_pairing_request(
     node_id: &str,
     node_psk: &[u8; 32],
     rf_channel: u8,
     sensors: &[SensorDescriptor],
     timestamp: i64,
-) -> Result<Vec<u8>, PairingError> {
+) -> Result<Zeroizing<Vec<u8>>, PairingError> {
     let node_key_hint = compute_key_hint(node_psk);
 
     let sensor_values: Vec<Value> = sensors
@@ -54,7 +73,7 @@ pub fn encode_pairing_request(
         .collect();
 
     // Build CBOR map with integer keys in sorted order (1..6)
-    let map = Value::Map(vec![
+    let mut map = Value::Map(vec![
         (Value::Integer(1.into()), Value::Text(node_id.to_string())),
         (
             Value::Integer(2.into()),
@@ -69,7 +88,8 @@ pub fn encode_pairing_request(
     let mut buf = Vec::new();
     ciborium::into_writer(&map, &mut buf)
         .map_err(|e| PairingError::CborEncodeFailed(format!("{e}")))?;
-    Ok(buf)
+    zeroize_cbor_values(&mut map);
+    Ok(Zeroizing::new(buf))
 }
 
 /// Decode a PairingRequest from CBOR.
@@ -310,8 +330,7 @@ pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, Pairi
             .ok_or_else(|| PairingError::CborDecodeFailed("missing key 3 (node_psk)".into()))?,
         rf_channel: rf_channel
             .ok_or_else(|| PairingError::CborDecodeFailed("missing key 4 (rf_channel)".into()))?,
-        sensors: sensors
-            .ok_or_else(|| PairingError::CborDecodeFailed("missing key 5 (sensors)".into()))?,
+        sensors: sensors.unwrap_or_default(),
         timestamp: timestamp
             .ok_or_else(|| PairingError::CborDecodeFailed("missing key 6 (timestamp)".into()))?,
     })

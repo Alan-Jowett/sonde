@@ -10,16 +10,25 @@ pub trait PairingStore {
     fn load_artifacts(&self) -> Result<Option<PairingArtifacts>, PairingError>;
     fn clear(&mut self) -> Result<(), PairingError>;
     fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, PairingError>;
+    /// Persist the gateway identity independently of full artifacts.
+    ///
+    /// Called immediately after TOFU signature verification so the pinned
+    /// identity survives even if later protocol steps (e.g. registration) fail.
+    fn save_gateway_identity(&mut self, identity: &GatewayIdentity) -> Result<(), PairingError>;
 }
 
 /// In-memory pairing store for testing.
 pub struct MemoryPairingStore {
     artifacts: Option<PairingArtifacts>,
+    gateway_identity: Option<GatewayIdentity>,
 }
 
 impl MemoryPairingStore {
     pub fn new() -> Self {
-        Self { artifacts: None }
+        Self {
+            artifacts: None,
+            gateway_identity: None,
+        }
     }
 }
 
@@ -41,11 +50,20 @@ impl PairingStore for MemoryPairingStore {
 
     fn clear(&mut self) -> Result<(), PairingError> {
         self.artifacts = None;
+        self.gateway_identity = None;
         Ok(())
     }
 
     fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, PairingError> {
+        if let Some(ref id) = self.gateway_identity {
+            return Ok(Some(id.clone()));
+        }
         Ok(self.artifacts.as_ref().map(|a| a.gateway_identity.clone()))
+    }
+
+    fn save_gateway_identity(&mut self, identity: &GatewayIdentity) -> Result<(), PairingError> {
+        self.gateway_identity = Some(identity.clone());
+        Ok(())
     }
 }
 
@@ -63,6 +81,7 @@ mod tests {
             phone_psk: Zeroizing::new([0x42u8; 32]),
             phone_key_hint: 0x1234,
             rf_channel: 6,
+            phone_label: "test-phone".into(),
         }
     }
 
@@ -80,6 +99,7 @@ mod tests {
         assert_eq!(*loaded.phone_psk, *artifacts.phone_psk);
         assert_eq!(loaded.phone_key_hint, artifacts.phone_key_hint);
         assert_eq!(loaded.rf_channel, artifacts.rf_channel);
+        assert_eq!(loaded.phone_label, artifacts.phone_label);
     }
 
     #[test]
@@ -94,6 +114,7 @@ mod tests {
         store.save_artifacts(&test_artifacts()).unwrap();
         store.clear().unwrap();
         assert!(store.load_artifacts().unwrap().is_none());
+        assert!(store.load_gateway_identity().unwrap().is_none());
     }
 
     #[test]
@@ -108,5 +129,42 @@ mod tests {
             .expect("should have identity");
         assert_eq!(identity.public_key, [0x42u8; 32]);
         assert_eq!(identity.gateway_id, [0x01u8; 16]);
+    }
+
+    #[test]
+    fn save_gateway_identity_standalone() {
+        let mut store = MemoryPairingStore::new();
+        let identity = GatewayIdentity {
+            public_key: [0x42u8; 32],
+            gateway_id: [0x01u8; 16],
+        };
+        store.save_gateway_identity(&identity).unwrap();
+
+        // Identity available even without full artifacts
+        let loaded = store
+            .load_gateway_identity()
+            .unwrap()
+            .expect("should have identity");
+        assert_eq!(loaded, identity);
+        assert!(store.load_artifacts().unwrap().is_none());
+    }
+
+    #[test]
+    fn save_gateway_identity_takes_precedence() {
+        let mut store = MemoryPairingStore::new();
+        store.save_artifacts(&test_artifacts()).unwrap();
+
+        // Save a different standalone identity
+        let new_identity = GatewayIdentity {
+            public_key: [0x99u8; 32],
+            gateway_id: [0x02u8; 16],
+        };
+        store.save_gateway_identity(&new_identity).unwrap();
+
+        let loaded = store
+            .load_gateway_identity()
+            .unwrap()
+            .expect("should have identity");
+        assert_eq!(loaded, new_identity);
     }
 }

@@ -49,7 +49,7 @@ pub async fn provision_node(
 
     // Step 6: HMAC-SHA256 the CBOR with phone_psk
     let hmac = crypto::hmac_sha256(&*artifacts.phone_psk, &cbor);
-    let mut authenticated_request = Vec::with_capacity(2 + cbor.len() + 32);
+    let mut authenticated_request = Zeroizing::new(Vec::with_capacity(2 + cbor.len() + 32));
     authenticated_request.extend_from_slice(&artifacts.phone_key_hint.to_be_bytes());
     authenticated_request.extend_from_slice(&cbor);
     authenticated_request.extend_from_slice(&hmac);
@@ -196,6 +196,7 @@ mod tests {
             phone_psk: Zeroizing::new([0x55u8; 32]),
             phone_key_hint: compute_key_hint(&[0x55u8; 32]),
             rf_channel: 6,
+            phone_label: String::new(),
         }
     }
 

@@ -62,6 +62,8 @@ pub struct PairingArtifacts {
     pub phone_psk: Zeroizing<[u8; 32]>,
     pub phone_key_hint: u16,
     pub rf_channel: u8,
+    /// Operator-supplied phone label (0–64 bytes UTF-8), persisted per PT-0800.
+    pub phone_label: String,
 }
 
 impl std::fmt::Debug for PairingArtifacts {
@@ -70,6 +72,7 @@ impl std::fmt::Debug for PairingArtifacts {
             .field("gateway_identity", &self.gateway_identity)
             .field("phone_key_hint", &self.phone_key_hint)
             .field("rf_channel", &self.rf_channel)
+            .field("phone_label", &self.phone_label)
             .field("phone_psk", &"[REDACTED]")
             .finish()
     }

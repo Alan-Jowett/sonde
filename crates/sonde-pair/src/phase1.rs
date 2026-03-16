@@ -112,7 +112,14 @@ async fn do_pair_with_gateway(
         }
         debug!("gateway identity matches stored TOFU record");
     } else {
-        debug!("first-time gateway identity — storing TOFU record");
+        // Pin the gateway identity immediately so it survives even if
+        // later steps (e.g. registration window closed) fail.
+        let identity = GatewayIdentity {
+            public_key: gw_info.gw_public_key,
+            gateway_id: gw_info.gateway_id,
+        };
+        store.save_gateway_identity(&identity)?;
+        debug!("first-time gateway identity — TOFU record pinned");
     }
 
     // Step 7: Generate ephemeral X25519 keypair
@@ -206,6 +213,7 @@ async fn do_pair_with_gateway(
         phone_psk,
         phone_key_hint,
         rf_channel,
+        phone_label: phone_label.to_string(),
     };
     store.save_artifacts(&artifacts)?;
     info!(
@@ -437,6 +445,7 @@ mod tests {
                 phone_psk: Zeroizing::new([0x42u8; 32]),
                 phone_key_hint: 0x1234,
                 rf_channel: 1,
+                phone_label: String::new(),
             };
             store.save_artifacts(&different_artifacts).unwrap();
 

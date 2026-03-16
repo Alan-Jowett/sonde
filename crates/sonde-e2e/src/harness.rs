@@ -169,6 +169,25 @@ impl NodeProxy {
         }
     }
 
+    /// Create a BLE-provisioned node (PSK + peer_payload, not yet registered).
+    ///
+    /// Simulates a node that has completed BLE provisioning (Phase 2) and
+    /// has key material + encrypted payload stored, but has not yet run
+    /// the PEER_REQUEST/PEER_ACK exchange (reg_complete = false).
+    pub fn new_ble_provisioned(
+        key_hint: u16,
+        psk: [u8; 32],
+        channel: u8,
+        peer_payload: Vec<u8>,
+    ) -> Self {
+        Self {
+            mac: vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+            storage: MockNodeStorage::new_ble_provisioned(key_hint, psk, channel, peer_payload),
+            map_storage: MapStorage::new(4096),
+            rng: MockRng(0),
+        }
+    }
+
     /// Run one full wake cycle, relaying every frame through the real gateway.
     ///
     /// Uses `block_in_place` so the synchronous node code can call the async
@@ -924,6 +943,9 @@ pub struct MockNodeStorage {
     active_partition: u8,
     programs: [Option<Vec<u8>>; 2],
     early_wake_flag: bool,
+    channel: Option<u8>,
+    peer_payload: Option<Vec<u8>>,
+    reg_complete: bool,
 }
 
 impl MockNodeStorage {
@@ -934,6 +956,9 @@ impl MockNodeStorage {
             active_partition: 0,
             programs: [None, None],
             early_wake_flag: false,
+            channel: None,
+            peer_payload: None,
+            reg_complete: false,
         }
     }
 
@@ -946,6 +971,29 @@ impl MockNodeStorage {
             active_partition: 0,
             programs: [None, None],
             early_wake_flag: false,
+            channel: None,
+            peer_payload: None,
+            reg_complete: false,
+        }
+    }
+
+    /// Create BLE-provisioned storage (PSK + encrypted payload, not yet
+    /// registered with the gateway).
+    pub fn new_ble_provisioned(
+        key_hint: u16,
+        psk: [u8; 32],
+        channel: u8,
+        peer_payload: Vec<u8>,
+    ) -> Self {
+        Self {
+            key: Some((key_hint, psk)),
+            schedule_interval: 60,
+            active_partition: 0,
+            programs: [None, None],
+            early_wake_flag: false,
+            channel: Some(channel),
+            peer_payload: Some(peer_payload),
+            reg_complete: false,
         }
     }
 }
@@ -1014,6 +1062,35 @@ impl PlatformStorage for MockNodeStorage {
     }
     fn set_early_wake_flag(&mut self) -> NodeResult<()> {
         self.early_wake_flag = true;
+        Ok(())
+    }
+
+    fn read_channel(&self) -> Option<u8> {
+        self.channel
+    }
+    fn write_channel(&mut self, channel: u8) -> NodeResult<()> {
+        self.channel = Some(channel);
+        Ok(())
+    }
+    fn read_peer_payload(&self) -> Option<Vec<u8>> {
+        self.peer_payload.clone()
+    }
+    fn has_peer_payload(&self) -> bool {
+        self.peer_payload.is_some()
+    }
+    fn write_peer_payload(&mut self, payload: &[u8]) -> NodeResult<()> {
+        self.peer_payload = Some(payload.to_vec());
+        Ok(())
+    }
+    fn erase_peer_payload(&mut self) -> NodeResult<()> {
+        self.peer_payload = None;
+        Ok(())
+    }
+    fn read_reg_complete(&self) -> bool {
+        self.reg_complete
+    }
+    fn write_reg_complete(&mut self, complete: bool) -> NodeResult<()> {
+        self.reg_complete = complete;
         Ok(())
     }
 }
@@ -1208,4 +1285,194 @@ impl PairingSerial for MockPairingSerial {
         self.tx_buf.extend_from_slice(data);
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// BLE pairing E2E helpers
+// ---------------------------------------------------------------------------
+
+/// Generate and store a gateway Ed25519 identity.
+///
+/// Returns the identity for use in phone registration and encrypted
+/// payload construction.
+pub async fn setup_gateway_identity(storage: &SqliteStorage) -> sonde_gateway::GatewayIdentity {
+    let identity =
+        sonde_gateway::GatewayIdentity::generate().expect("GatewayIdentity::generate failed");
+    Storage::store_gateway_identity(storage, &identity)
+        .await
+        .expect("store gateway identity failed");
+    identity
+}
+
+/// Simulate BLE Phase 1 phone registration via `handle_ble_recv`.
+///
+/// Sends `REQUEST_GW_INFO` and `REGISTER_PHONE` to the gateway through
+/// a fresh registration window. Returns the phone PSK and key_hint.
+pub async fn simulate_phone_registration(
+    identity: &sonde_gateway::GatewayIdentity,
+    storage: &Arc<SqliteStorage>,
+    rf_channel: u8,
+) -> (Zeroizing<[u8; 32]>, u16) {
+    use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
+    use sonde_pair::crypto::{
+        aes256gcm_decrypt, ed25519_to_x25519_public, generate_x25519_keypair, hkdf_sha256,
+        verify_ed25519_signature, x25519_ecdh,
+    };
+    use sonde_pair::envelope::{
+        build_envelope, parse_envelope, parse_gw_info_response, parse_phone_registered,
+    };
+    use sonde_pair::rng::{OsRng, RngProvider};
+    use sonde_pair::types;
+
+    let mut window = RegistrationWindow::new();
+    window.open(120);
+    let dyn_storage: Arc<dyn Storage> = storage.clone();
+
+    // Phase 1a: REQUEST_GW_INFO
+    let rng = OsRng;
+    let mut challenge = [0u8; 32];
+    rng.fill_bytes(&mut challenge).unwrap();
+    let request = build_envelope(types::REQUEST_GW_INFO, &challenge).unwrap();
+    let response = handle_ble_recv(
+        &request,
+        identity,
+        &dyn_storage,
+        &mut window,
+        rf_channel,
+        None,
+    )
+    .await
+    .expect("GW_INFO_RESPONSE must be returned");
+
+    let (msg_type, body) = parse_envelope(&response).unwrap();
+    assert_eq!(msg_type, types::GW_INFO_RESPONSE);
+    let gw_info = parse_gw_info_response(body).unwrap();
+
+    // Verify Ed25519 signature over (challenge ‖ gateway_id) and assert
+    // the response fields match the expected gateway identity.
+    let mut signed_data = Vec::with_capacity(32 + 16);
+    signed_data.extend_from_slice(&challenge);
+    signed_data.extend_from_slice(&gw_info.gateway_id);
+    verify_ed25519_signature(&gw_info.gw_public_key, &signed_data, &gw_info.signature)
+        .expect("GW_INFO_RESPONSE Ed25519 signature must be valid");
+    assert_eq!(
+        gw_info.gw_public_key,
+        *identity.public_key(),
+        "response public key must match gateway identity"
+    );
+    assert_eq!(
+        gw_info.gateway_id,
+        *identity.gateway_id(),
+        "response gateway_id must match gateway identity"
+    );
+
+    // Phase 1b: REGISTER_PHONE
+    let (eph_secret, eph_public) = generate_x25519_keypair(&rng).unwrap();
+    let label = b"e2e-test-phone";
+    let mut register_body = Vec::with_capacity(32 + 1 + label.len());
+    register_body.extend_from_slice(&eph_public);
+    register_body.push(label.len() as u8);
+    register_body.extend_from_slice(label);
+    let register_request = build_envelope(types::REGISTER_PHONE, &register_body).unwrap();
+
+    let register_response = handle_ble_recv(
+        &register_request,
+        identity,
+        &dyn_storage,
+        &mut window,
+        rf_channel,
+        None,
+    )
+    .await
+    .expect("PHONE_REGISTERED must be returned");
+
+    // Decrypt PHONE_REGISTERED
+    let (msg_type, body) = parse_envelope(&register_response).unwrap();
+    assert_eq!(msg_type, types::PHONE_REGISTERED);
+    let registered = parse_phone_registered(body).unwrap();
+
+    // Decrypt using fields from the GW_INFO_RESPONSE (not the caller's
+    // identity) so the helper validates the response like a real phone.
+    let gw_x25519 = ed25519_to_x25519_public(&gw_info.gw_public_key).unwrap();
+    let shared_secret = x25519_ecdh(&eph_secret, &gw_x25519);
+    let aes_key = hkdf_sha256(&shared_secret, &gw_info.gateway_id, b"sonde-phone-reg-v1");
+    let plaintext = aes256gcm_decrypt(
+        &aes_key,
+        &registered.nonce,
+        &registered.ciphertext,
+        &gw_info.gateway_id,
+    )
+    .unwrap();
+
+    // Inner: status(1) + phone_psk(32) + phone_key_hint(2) + rf_channel(1)
+    assert_eq!(
+        plaintext.len(),
+        36,
+        "PHONE_REGISTERED inner must be 36 bytes"
+    );
+    assert_eq!(plaintext[0], 0x00, "status must be success");
+    let mut phone_psk = Zeroizing::new([0u8; 32]);
+    phone_psk.copy_from_slice(&plaintext[1..33]);
+    let phone_key_hint = u16::from_be_bytes([plaintext[33], plaintext[34]]);
+    assert_eq!(plaintext[35], rf_channel, "rf_channel must match");
+
+    (phone_psk, phone_key_hint)
+}
+
+/// Build the encrypted_payload for NODE_PROVISION and PEER_REQUEST.
+///
+/// Mirrors the payload construction from `sonde_pair::phase2::provision_node`
+/// using the public crypto and CBOR building blocks.
+#[allow(clippy::too_many_arguments)]
+pub fn build_encrypted_payload(
+    gw_public_key: &[u8; 32],
+    gw_gateway_id: &[u8; 16],
+    phone_psk: &[u8; 32],
+    phone_key_hint: u16,
+    node_id: &str,
+    node_psk: &[u8; 32],
+    rf_channel: u8,
+    sensors: &[sonde_pair::types::SensorDescriptor],
+) -> Vec<u8> {
+    use sonde_pair::cbor::encode_pairing_request;
+    use sonde_pair::crypto::{
+        aes256gcm_encrypt, ed25519_to_x25519_public, generate_x25519_keypair, hkdf_sha256,
+        hmac_sha256, x25519_ecdh,
+    };
+    use sonde_pair::rng::{OsRng, RngProvider};
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Step 1: Encode PairingRequest as CBOR
+    let cbor = encode_pairing_request(node_id, node_psk, rf_channel, sensors, timestamp).unwrap();
+
+    // Step 2: authenticated_request = phone_key_hint(2) + cbor + hmac(32)
+    let phone_hmac = hmac_sha256(phone_psk, &cbor);
+    let mut auth_request = Vec::with_capacity(2 + cbor.len() + 32);
+    auth_request.extend_from_slice(&phone_key_hint.to_be_bytes());
+    auth_request.extend_from_slice(&cbor);
+    auth_request.extend_from_slice(&phone_hmac);
+
+    // Step 3: ECDH with gateway
+    let gw_x25519 = ed25519_to_x25519_public(gw_public_key).unwrap();
+    let rng = OsRng;
+    let (eph_secret, eph_public) = generate_x25519_keypair(&rng).unwrap();
+    let shared_secret = x25519_ecdh(&eph_secret, &gw_x25519);
+    let aes_key = hkdf_sha256(&shared_secret, gw_gateway_id, b"sonde-node-pair-v1");
+
+    // Step 4: Encrypt
+    let mut nonce = [0u8; 12];
+    rng.fill_bytes(&mut nonce).unwrap();
+    let ciphertext = aes256gcm_encrypt(&aes_key, &nonce, &auth_request, gw_gateway_id).unwrap();
+
+    // Step 5: encrypted_payload = eph_public(32) + nonce(12) + ciphertext
+    let mut payload = Vec::with_capacity(32 + 12 + ciphertext.len());
+    payload.extend_from_slice(&eph_public);
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext);
+
+    payload
 }

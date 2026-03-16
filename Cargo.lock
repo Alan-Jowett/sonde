@@ -3045,6 +3045,7 @@ dependencies = [
  "sonde-gateway",
  "sonde-modem",
  "sonde-node",
+ "sonde-pair",
  "sonde-protocol",
  "tokio",
  "zeroize",

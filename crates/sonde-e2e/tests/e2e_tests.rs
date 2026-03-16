@@ -848,7 +848,7 @@ async fn t_e2e_030_app_data_round_trip() {
 // Lifecycle tests
 // ===========================================================================
 
-/// T-E2E-060 — Full boot → pair → boot → run lifecycle.
+/// T-E2E-058 — Full boot → pair → boot → run lifecycle (USB pairing).
 ///
 /// Exercises the complete node lifecycle from factory-fresh state using the
 /// real `run_pairing_mode` firmware function with a mock serial transport:
@@ -863,7 +863,7 @@ async fn t_e2e_030_app_data_round_trip() {
 ///    `ResetRequest`, then mock serial disconnects.
 /// 5. **Boot unpaired again** — confirms the node reverts to `Unpaired`.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
+async fn t_e2e_058_lifecycle_usb_pair_boot_run() {
     use sonde_node::pairing::run_pairing_mode;
     use sonde_protocol::modem::{
         IdentityResponse, ModemMessage, PairAck, PairRequest, PairingReady, ResetAck,
@@ -980,5 +980,757 @@ async fn t_e2e_060_lifecycle_boot_pair_boot_run() {
         stats.outcome,
         WakeCycleOutcome::Unpaired,
         "node must report Unpaired after factory reset"
+    );
+}
+
+// ===========================================================================
+// BLE pairing / onboarding tests (T-E2E-060 through T-E2E-070)
+// ===========================================================================
+
+use sonde_e2e::harness::{
+    build_encrypted_payload, setup_gateway_identity, simulate_phone_registration,
+};
+use sonde_pair::validation::compute_key_hint;
+
+/// T-E2E-060 — Gateway Ed25519 identity generated and persisted.
+///
+/// Validates GW-1200 and GW-1201: the gateway generates an Ed25519 keypair
+/// and 16-byte gateway_id on first startup, and both are recoverable from
+/// storage after a simulated restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_060_gateway_identity_persistence() {
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+
+    // Reload from storage — simulates restart.
+    let loaded = Storage::load_gateway_identity(&*env.storage)
+        .await
+        .unwrap()
+        .expect("identity must be persisted");
+
+    assert_eq!(loaded.public_key(), identity.public_key());
+    assert_eq!(loaded.gateway_id(), identity.gateway_id());
+}
+
+/// T-E2E-061 — Phone registration: TOFU + registration window + PSK exchange.
+///
+/// Full Phase 1 round-trip: REQUEST_GW_INFO challenge-response, REGISTER_PHONE
+/// with ECDH key exchange, and verification that:
+/// - Phone PSK is stored in gateway storage.
+/// - A closed registration window correctly returns ERROR 0x02.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_061_phone_registration() {
+    use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
+    use sonde_pair::crypto::generate_x25519_keypair;
+    use sonde_pair::envelope::{build_envelope, parse_envelope, parse_error_body};
+    use sonde_pair::rng::OsRng;
+    use sonde_pair::types;
+    use std::sync::Arc;
+
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+
+    // Phase 1: full registration via helper.
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    // Verify phone PSK stored in gateway.
+    let psks = Storage::list_phone_psks(&*env.storage).await.unwrap();
+    assert_eq!(psks.len(), 1, "exactly one phone PSK should be stored");
+    assert_eq!(psks[0].phone_key_hint, phone_key_hint);
+    assert_eq!(*psks[0].psk, *phone_psk);
+
+    // Verify closed window rejects REGISTER_PHONE with ERROR 0x02.
+    let mut window = RegistrationWindow::new(); // closed
+    let dyn_storage: Arc<dyn Storage> = env.storage.clone();
+
+    let rng = OsRng;
+    let (_, eph_public) = generate_x25519_keypair(&rng).unwrap();
+    let label = b"test";
+    let mut body = Vec::with_capacity(32 + 1 + label.len());
+    body.extend_from_slice(&eph_public);
+    body.push(label.len() as u8);
+    body.extend_from_slice(label);
+    let register_request = build_envelope(types::REGISTER_PHONE, &body).unwrap();
+    let register_response = handle_ble_recv(
+        &register_request,
+        &identity,
+        &dyn_storage,
+        &mut window,
+        rf_channel,
+        None,
+    )
+    .await;
+
+    assert!(
+        register_response.is_some(),
+        "should return ERROR envelope when window is closed"
+    );
+    let error_response = register_response.unwrap();
+    let (msg_type, error_body) = parse_envelope(&error_response).unwrap();
+    assert_eq!(msg_type, types::MSG_ERROR, "response must be ERROR type");
+    let (status, _) = parse_error_body(error_body);
+    assert_eq!(status, 0x02, "error status must be WINDOW_CLOSED (0x02)");
+}
+
+/// T-E2E-062 — Node BLE provisioning: Phase 2 NODE_PROVISION handling.
+///
+/// Constructs a valid NODE_PROVISION payload (including encrypted_payload
+/// derived from Phase 1 artifacts) and feeds it to the node's BLE
+/// provisioning handler. Verifies NVS state after provisioning.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_062_node_ble_provisioning() {
+    use sonde_node::ble_pairing::{handle_node_provision, NodeProvision, NODE_ACK_SUCCESS};
+
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    // Generate node identity.
+    let node_psk = [0xBBu8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+
+    // Build encrypted payload (mirrors sonde-pair Phase 2).
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        "ble-node-1",
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    // Feed NODE_PROVISION to the node handler.
+    let provision = NodeProvision {
+        key_hint: node_key_hint,
+        psk: node_psk,
+        rf_channel,
+        encrypted_payload: encrypted_payload.clone(),
+    };
+    let mut node = NodeProxy::new_unpaired();
+    let status = handle_node_provision(
+        &provision,
+        &mut node.storage,
+        &mut node.map_storage,
+        false,
+        false,
+    );
+    assert_eq!(status, NODE_ACK_SUCCESS, "NODE_PROVISION must succeed");
+
+    // Verify node storage state.
+    assert_eq!(node.storage.read_key(), Some((node_key_hint, node_psk)));
+    assert_eq!(node.storage.read_channel(), Some(rf_channel));
+    assert_eq!(
+        node.storage.read_peer_payload().as_deref(),
+        Some(encrypted_payload.as_slice())
+    );
+    assert!(
+        !node.storage.read_reg_complete(),
+        "reg_complete must be false after provisioning"
+    );
+}
+
+/// T-E2E-063 — PEER_REQUEST/PEER_ACK: node relays payload, gateway registers.
+///
+/// A BLE-provisioned node sends PEER_REQUEST over ESP-NOW. The gateway
+/// decrypts the encrypted_payload, verifies the phone HMAC, registers the
+/// node, and returns PEER_ACK with registration_proof.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_063_peer_request_ack() {
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_psk = [0xCCu8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+    let node_id = "peer-req-node";
+
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        node_id,
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    // Create BLE-provisioned node (PSK + payload, reg_complete=false).
+    let mut node =
+        NodeProxy::new_ble_provisioned(node_key_hint, node_psk, rf_channel, encrypted_payload);
+
+    // Run wake cycle — node sends PEER_REQUEST, gateway processes + WAKE.
+    let stats = node.run_wake_cycle(&env);
+
+    // PEER_REQUEST succeeded: node should complete a normal WAKE cycle.
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "node should complete PEER_REQUEST + WAKE and sleep"
+    );
+
+    // Verify PEER_REQUEST frame was sent (msg_type 0x05).
+    let peer_req_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PEER_REQUEST)
+        .count();
+    assert_eq!(
+        peer_req_count, 1,
+        "node must send exactly one PEER_REQUEST frame"
+    );
+
+    // Verify the node is now registered in the gateway.
+    let registered = env
+        .storage
+        .get_node(node_id)
+        .await
+        .unwrap()
+        .expect("node must be registered after PEER_REQUEST");
+    assert_eq!(registered.key_hint, node_key_hint);
+
+    // Verify node's reg_complete flag is set.
+    assert!(
+        node.storage.read_reg_complete(),
+        "reg_complete must be true after valid PEER_ACK"
+    );
+}
+
+/// T-E2E-064 — Complete onboarding → first WAKE.
+///
+/// Full lifecycle: Phase 1 (phone registration) → Phase 2 (node
+/// provisioning) → Phase 3 (PEER_REQUEST/PEER_ACK) → first WAKE/COMMAND.
+/// Verifies the node transitions from bootstrap to steady-state.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_064_onboarding_to_wake() {
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_psk = [0xDDu8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+    let node_id = "onboard-node";
+
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        node_id,
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    let mut node =
+        NodeProxy::new_ble_provisioned(node_key_hint, node_psk, rf_channel, encrypted_payload);
+
+    // First cycle: PEER_REQUEST + WAKE.
+    let stats = node.run_wake_cycle(&env);
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Verify steady-state: peer_payload erased (ND-0914), reg_complete set.
+    assert!(node.storage.read_reg_complete());
+    assert!(
+        node.storage.read_peer_payload().is_none(),
+        "peer_payload must be erased after first successful WAKE"
+    );
+
+    // Second cycle: pure WAKE (no PEER_REQUEST).
+    let stats2 = node.run_wake_cycle(&env);
+    assert_eq!(
+        stats2.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "steady-state wake cycle must succeed"
+    );
+    // No PEER_REQUEST in the second cycle.
+    let peer_req_count = stats2
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PEER_REQUEST)
+        .count();
+    assert_eq!(
+        peer_req_count, 0,
+        "steady-state cycle must not send PEER_REQUEST"
+    );
+}
+
+/// T-E2E-065 — Deferred erasure: peer_payload erased only after first WAKE.
+///
+/// Validates ND-0913 (retain peer_payload on PEER_ACK) and ND-0914 (erase
+/// after first WAKE/COMMAND success). The encrypted_payload survives the
+/// PEER_ACK step and is only erased when the gateway confirms the node
+/// via the steady-state WAKE/COMMAND exchange.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_065_deferred_erasure() {
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_psk = [0xEEu8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        "defer-node",
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    let mut node = NodeProxy::new_ble_provisioned(
+        node_key_hint,
+        node_psk,
+        rf_channel,
+        encrypted_payload.clone(),
+    );
+
+    // Before any cycle: payload present, reg_complete false.
+    assert!(node.storage.read_peer_payload().is_some());
+    assert!(!node.storage.read_reg_complete());
+
+    // Run cycle: PEER_REQUEST + WAKE succeeds → payload erased.
+    let stats = node.run_wake_cycle(&env);
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // After WAKE success: reg_complete set, peer_payload erased.
+    assert!(
+        node.storage.read_reg_complete(),
+        "reg_complete must be true"
+    );
+    assert!(
+        node.storage.read_peer_payload().is_none(),
+        "peer_payload must be erased after WAKE success (ND-0914)"
+    );
+}
+
+/// T-E2E-066 — Self-healing: forged ACK → WAKE failure → revert to PEER_REQUEST.
+///
+/// Simulates a scenario where reg_complete was set (e.g., by a forged PEER_ACK)
+/// but the gateway does not actually know the node. The WAKE attempt fails,
+/// triggering self-healing (ND-0915): reg_complete is cleared and the node
+/// reverts to PEER_REQUEST mode on the next cycle.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_066_self_healing() {
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_psk = [0x11u8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        "heal-node",
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    // Simulate forged PEER_ACK: reg_complete = true but gateway doesn't
+    // know the node.
+    let mut node = NodeProxy::new_ble_provisioned(
+        node_key_hint,
+        node_psk,
+        rf_channel,
+        encrypted_payload.clone(),
+    );
+    node.storage
+        .write_reg_complete(true)
+        .expect("set reg_complete");
+
+    // Cycle 1: reg_complete=true → skip PEER_REQUEST → WAKE fails
+    // (gateway doesn't recognize key_hint) → self-healing clears reg_complete.
+    let stats1 = node.run_wake_cycle(&env);
+    assert_eq!(
+        stats1.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "WAKE failure should result in Sleep"
+    );
+    assert!(
+        !node.storage.read_reg_complete(),
+        "self-healing must clear reg_complete after WAKE failure (ND-0915)"
+    );
+    assert!(
+        node.storage.read_peer_payload().is_some(),
+        "peer_payload must be retained for PEER_REQUEST retry"
+    );
+
+    // Cycle 2: reg_complete=false, payload present → PEER_REQUEST →
+    // gateway registers → PEER_ACK → WAKE → success.
+    let stats2 = node.run_wake_cycle(&env);
+    assert_eq!(
+        stats2.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "recovery cycle should succeed"
+    );
+    assert!(node.storage.read_reg_complete());
+    assert!(node.storage.read_peer_payload().is_none());
+}
+
+/// T-E2E-067 — Agent revocation: revoked phone PSK causes silent discard.
+///
+/// A phone PSK is revoked after registration. A PEER_REQUEST built with
+/// the revoked phone's credentials is silently discarded by the gateway.
+/// The node times out waiting for PEER_ACK and returns to sleep.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_067_agent_revocation() {
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    // Revoke the phone PSK.
+    let psks = Storage::list_phone_psks(&*env.storage).await.unwrap();
+    assert_eq!(psks.len(), 1);
+    Storage::revoke_phone_psk(&*env.storage, psks[0].phone_id)
+        .await
+        .unwrap();
+
+    let node_psk = [0x22u8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+
+    // Build payload with the now-revoked phone credentials.
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        "revoke-node",
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    let mut node =
+        NodeProxy::new_ble_provisioned(node_key_hint, node_psk, rf_channel, encrypted_payload);
+
+    // PEER_REQUEST should be silently discarded (revoked phone) → timeout → Sleep.
+    let stats = node.run_wake_cycle(&env);
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "revoked phone PEER_REQUEST must result in Sleep (timeout)"
+    );
+
+    // PEER_REQUEST was sent but no registration occurred.
+    let peer_req_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PEER_REQUEST)
+        .count();
+    assert_eq!(peer_req_count, 1, "node must send PEER_REQUEST");
+
+    assert!(
+        !node.storage.read_reg_complete(),
+        "reg_complete must remain false (no PEER_ACK received)"
+    );
+    assert!(
+        env.storage.get_node("revoke-node").await.unwrap().is_none(),
+        "node must NOT be registered with revoked phone credentials"
+    );
+}
+
+/// T-E2E-068 — Factory reset and re-provisioning.
+///
+/// A BLE-provisioned node is factory-reset via USB pairing mode, clearing
+/// all persistent state. The node can then be re-provisioned with a new
+/// identity and successfully complete the PEER_REQUEST/PEER_ACK exchange.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_068_factory_reset_reprovision() {
+    use sonde_node::pairing::run_pairing_mode;
+    use sonde_protocol::modem::{ModemMessage, PairingReady, ResetAck, PAIRING_STATUS_SUCCESS};
+
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_psk = [0x33u8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        "reset-node",
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    // Provision node.
+    let mut node =
+        NodeProxy::new_ble_provisioned(node_key_hint, node_psk, rf_channel, encrypted_payload);
+
+    // Run initial cycle to register the node.
+    let stats = node.run_wake_cycle(&env);
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(node.storage.read_reg_complete());
+
+    // Factory reset via USB pairing mode.
+    let mut serial = MockPairingSerial::new();
+    serial.enqueue(&ModemMessage::ResetRequest);
+    run_pairing_mode(&mut serial, &mut node.storage, &mut node.map_storage);
+
+    let responses = serial.received();
+    assert_eq!(responses.len(), 2);
+    assert!(matches!(
+        responses[0],
+        ModemMessage::PairingReady(PairingReady { .. })
+    ));
+    assert_eq!(
+        responses[1],
+        ModemMessage::ResetAck(ResetAck {
+            status: PAIRING_STATUS_SUCCESS,
+        })
+    );
+
+    // Verify all state erased.
+    assert_eq!(node.storage.read_key(), None, "key must be erased");
+    assert!(
+        node.storage.read_peer_payload().is_none(),
+        "peer_payload must be erased"
+    );
+
+    // Re-provision with new identity.
+    let new_node_psk = [0x44u8; 32];
+    let new_node_key_hint = compute_key_hint(&new_node_psk);
+    let new_encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        "reset-node-v2",
+        &new_node_psk,
+        rf_channel,
+        &[],
+    );
+
+    // Simulate BLE provisioning.
+    use sonde_node::ble_pairing::{handle_node_provision, NodeProvision, NODE_ACK_SUCCESS};
+    let provision = NodeProvision {
+        key_hint: new_node_key_hint,
+        psk: new_node_psk,
+        rf_channel,
+        encrypted_payload: new_encrypted_payload,
+    };
+    let status = handle_node_provision(
+        &provision,
+        &mut node.storage,
+        &mut node.map_storage,
+        false,
+        false,
+    );
+    assert_eq!(status, NODE_ACK_SUCCESS);
+
+    // Run PEER_REQUEST + WAKE with new identity.
+    let stats2 = node.run_wake_cycle(&env);
+    assert_eq!(
+        stats2.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "re-provisioned node must succeed"
+    );
+    assert!(node.storage.read_reg_complete());
+
+    // New node registered in gateway.
+    let registered = env
+        .storage
+        .get_node("reset-node-v2")
+        .await
+        .unwrap()
+        .expect("re-provisioned node must be registered");
+    assert_eq!(registered.key_hint, new_node_key_hint);
+}
+
+/// T-E2E-069 — Multi-node: two nodes onboarded and operating concurrently.
+///
+/// Two nodes are provisioned with distinct PSKs via the same phone. Both
+/// complete PEER_REQUEST/PEER_ACK, then both run normal WAKE cycles. This
+/// validates GW-1216 (node_id uniqueness) and confirms one node's key
+/// compromise does not affect the other.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_069_multi_node() {
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    // Node A
+    let psk_a = [0xAAu8; 32];
+    let hint_a = compute_key_hint(&psk_a);
+    let payload_a = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        "multi-node-a",
+        &psk_a,
+        rf_channel,
+        &[],
+    );
+
+    // Node B
+    let psk_b = [0xBBu8; 32];
+    let hint_b = compute_key_hint(&psk_b);
+    let payload_b = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        "multi-node-b",
+        &psk_b,
+        rf_channel,
+        &[],
+    );
+
+    let mut node_a = NodeProxy::new_ble_provisioned(hint_a, psk_a, rf_channel, payload_a);
+    let mut node_b = NodeProxy::new_ble_provisioned(hint_b, psk_b, rf_channel, payload_b);
+
+    // Onboard node A.
+    let stats_a = node_a.run_wake_cycle(&env);
+    assert_eq!(stats_a.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(node_a.storage.read_reg_complete());
+
+    // Onboard node B.
+    let stats_b = node_b.run_wake_cycle(&env);
+    assert_eq!(stats_b.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(node_b.storage.read_reg_complete());
+
+    // Both registered in gateway.
+    assert!(env
+        .storage
+        .get_node("multi-node-a")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(env
+        .storage
+        .get_node("multi-node-b")
+        .await
+        .unwrap()
+        .is_some());
+
+    // Both operate in steady-state.
+    let stats_a2 = node_a.run_wake_cycle(&env);
+    let stats_b2 = node_b.run_wake_cycle(&env);
+    assert_eq!(stats_a2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert_eq!(stats_b2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // No PEER_REQUEST in steady-state.
+    assert_eq!(
+        stats_a2
+            .sent_frames
+            .iter()
+            .filter(|(t, _)| *t == sonde_protocol::MSG_PEER_REQUEST)
+            .count(),
+        0
+    );
+    assert_eq!(
+        stats_b2
+            .sent_frames
+            .iter()
+            .filter(|(t, _)| *t == sonde_protocol::MSG_PEER_REQUEST)
+            .count(),
+        0
+    );
+}
+
+/// T-E2E-070 — Full use case: deploy → pair → onboard → program → data.
+///
+/// Exercises the complete administrator workflow:
+/// 1. Gateway deploys with fresh Ed25519 identity.
+/// 2. Phone registers with the gateway (Phase 1).
+/// 3. Node is BLE-provisioned (Phase 2 payload construction).
+/// 4. Node relays PEER_REQUEST → gateway registers → PEER_ACK.
+/// 5. A BPF program is deployed to the node.
+/// 6. Node runs the program and sends APP_DATA.
+///
+/// Uses the real `SondeBpfInterpreter` for BPF execution.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_070_full_use_case() {
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+
+    let env = E2eTestEnv::new();
+
+    // 1. Gateway identity.
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+
+    // 2. Phone registration.
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    // 3. Node provisioning.
+    let node_psk = [0x70u8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+    let node_id = "full-use-case-node";
+
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        node_id,
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    let mut node =
+        NodeProxy::new_ble_provisioned(node_key_hint, node_psk, rf_channel, encrypted_payload);
+
+    // 4. PEER_REQUEST/PEER_ACK + first WAKE.
+    let stats = node.run_wake_cycle(&env);
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(node.storage.read_reg_complete());
+    assert!(node.storage.read_peer_payload().is_none());
+
+    // 5. Deploy a BPF program (send APP_DATA via helper 8).
+    let (program, hash) = make_send_program();
+    env.storage.store_program(&program).await.unwrap();
+
+    let mut node_rec = env.storage.get_node(node_id).await.unwrap().unwrap();
+    node_rec.assigned_program_hash = Some(hash.clone());
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    // 6. Run with real BPF — program calls send() helper.
+    let mut interpreter = SondeBpfInterpreter::new();
+    let stats2 = node.run_wake_cycle_with(&env, &mut interpreter);
+    assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    // Verify APP_DATA was sent (msg_type 0x04).
+    let app_data_count = stats2
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_APP_DATA)
+        .count();
+    assert_eq!(
+        app_data_count, 1,
+        "node should send exactly one APP_DATA frame after full onboarding"
     );
 }

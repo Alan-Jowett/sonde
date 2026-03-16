@@ -269,15 +269,14 @@ pub fn protect_with_dpapi(
 
 #[cfg(windows)]
 mod dpapi {
-    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Foundation::{GetLastError, LocalFree};
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    use windows_sys::Win32::System::Memory::LocalFree;
 
     /// Decrypt a DPAPI-protected blob, returning the plaintext bytes.
     pub fn decrypt(encrypted_data: &[u8]) -> Result<Vec<u8>, String> {
-        let mut input = CRYPT_INTEGER_BLOB {
+        let input = CRYPT_INTEGER_BLOB {
             cbData: encrypted_data.len() as u32,
             pbData: encrypted_data.as_ptr() as *mut u8,
         };
@@ -288,7 +287,7 @@ mod dpapi {
 
         let ok = unsafe {
             CryptUnprotectData(
-                &mut input,
+                &input,
                 std::ptr::null_mut(), // description (out)
                 std::ptr::null_mut(), // optional entropy
                 std::ptr::null_mut(), // reserved
@@ -313,7 +312,7 @@ mod dpapi {
 
     /// Encrypt plaintext bytes with DPAPI, returning the blob.
     pub fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
-        let mut input = CRYPT_INTEGER_BLOB {
+        let input = CRYPT_INTEGER_BLOB {
             cbData: plaintext.len() as u32,
             pbData: plaintext.as_ptr() as *mut u8,
         };
@@ -324,7 +323,7 @@ mod dpapi {
 
         let ok = unsafe {
             CryptProtectData(
-                &mut input,
+                &input,
                 std::ptr::null_mut(), // description
                 std::ptr::null_mut(), // optional entropy
                 std::ptr::null_mut(), // reserved

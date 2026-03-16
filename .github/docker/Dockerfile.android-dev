@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Pre-built development container for cross-compiling sonde-pair
+# (BLE pairing tool) for Android and Linux.
+#
+# Published to: ghcr.io/alan-jowett/sonde-android-dev
+#
+# Usage:
+#   docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev \
+#     cargo ndk -t arm64-v8a build -p sonde-pair --release
+
+FROM ubuntu:24.04
+
+LABEL org.opencontainers.image.source="https://github.com/Alan-Jowett/sonde"
+LABEL org.opencontainers.image.description="Sonde Android/Tauri development container"
+LABEL org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# System packages
+# ---------------------------------------------------------------------------
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core build tools
+    build-essential \
+    curl \
+    ca-certificates \
+    git \
+    pkg-config \
+    unzip \
+    wget \
+    # Tauri v2 system dependencies (Linux host testing)
+    libwebkit2gtk-4.1-dev \
+    libgtk-3-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
+    # BLE (btleplug) dependencies
+    libudev-dev \
+    libdbus-1-dev \
+    # Protocol Buffers compiler (sonde-protocol)
+    protobuf-compiler \
+    # Java JDK 17 (Android SDK tools / Gradle)
+    openjdk-17-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+
+# ---------------------------------------------------------------------------
+# Node.js 20 LTS
+# ---------------------------------------------------------------------------
+
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Android SDK + NDK
+# ---------------------------------------------------------------------------
+
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018
+ENV PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}"
+
+# Install Android command-line tools
+RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
+    && cd ${ANDROID_HOME}/cmdline-tools \
+    && wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip \
+    && unzip -q tools.zip \
+    && mv cmdline-tools latest \
+    && rm tools.zip
+
+# Accept licenses and install SDK components
+RUN yes | sdkmanager --licenses > /dev/null 2>&1 \
+    && sdkmanager --install \
+        "platform-tools" \
+        "build-tools;35.0.0" \
+        "platforms;android-35" \
+        "ndk;27.2.12479018"
+
+# ---------------------------------------------------------------------------
+# Rust toolchain
+# ---------------------------------------------------------------------------
+
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --profile minimal \
+    && rustup target add aarch64-linux-android \
+    && rustup target add x86_64-unknown-linux-gnu \
+    && rustup component add clippy rustfmt
+
+# ---------------------------------------------------------------------------
+# Cargo tools
+# ---------------------------------------------------------------------------
+
+RUN cargo install cargo-ndk --locked \
+    && cargo install tauri-cli --version "^2" --locked
+
+# ---------------------------------------------------------------------------
+# Verify installation
+# ---------------------------------------------------------------------------
+
+RUN echo "=== Verification ===" \
+    && rustc --version \
+    && cargo --version \
+    && cargo ndk --version \
+    && cargo tauri --version \
+    && node --version \
+    && npm --version \
+    && java -version 2>&1 | head -1 \
+    && sdkmanager --version \
+    && protoc --version \
+    && echo "=== All tools installed ==="
+
+WORKDIR /sonde

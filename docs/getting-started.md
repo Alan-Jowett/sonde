@@ -18,6 +18,7 @@ The Sonde workspace will contain five crates with different platform requirement
 | `sonde-protocol` | Any (no_std) | Standard Rust |
 | `sonde-gateway` | Host (Linux/macOS/Windows) | Standard Rust |
 | `sonde-admin` (planned) | Host (Linux/macOS/Windows) | Standard Rust |
+| `sonde-pair` (planned) | Android / Windows / Linux | Standard Rust + Android NDK ([dev container](#7--android--tauri-development-container)) |
 | `sonde-node` (planned) | ESP32-C3 or ESP32-S3 | Espressif Rust (RISC-V and/or Xtensa) |
 | `sonde-modem` (planned) | ESP32-S3 | Espressif Rust (Xtensa) |
 
@@ -298,3 +299,53 @@ See [implementation-guide.md](implementation-guide.md) for the full module break
 ### cargo build --workspace fails for ESP targets
 
 `cargo build --workspace` builds all workspace members for the active toolchain. If firmware crates are added to the workspace, they will fail to build without the Espressif toolchain and an explicit `--target` flag (e.g., `--target xtensa-esp32s3-espidf`). To build only host crates, select them explicitly with `-p` (e.g., `cargo build -p sonde-protocol -p sonde-gateway`).
+
+---
+
+## 7  Android / Tauri development container
+
+The BLE pairing tool (`sonde-pair`) targets Android (`aarch64-linux-android`) and
+Windows/Linux. A pre-built development container provides all required tools so you
+don't need to install the Android SDK, NDK, or Tauri dependencies locally.
+
+### 7.1  Using the container image
+
+The container is published to `ghcr.io/alan-jowett/sonde-android-dev:latest`.
+
+```bash
+# Cross-compile sonde-pair for Android (arm64)
+docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev \
+  cargo ndk -t arm64-v8a build -p sonde-pair --release
+
+# Build sonde-pair for Linux host (CI testing with mock BLE)
+docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev \
+  cargo build -p sonde-pair --release
+```
+
+### 7.2  VS Code Dev Container / GitHub Codespaces
+
+Open the repository in VS Code, then select **Reopen in Container** when prompted.
+The `.devcontainer/android/devcontainer.json` configuration will use the pre-built
+container image. This also works in GitHub Codespaces.
+
+### 7.3  What's included
+
+| Component | Version / Notes |
+|-----------|----------------|
+| Ubuntu | 24.04 |
+| Rust (stable) | + `aarch64-linux-android` target |
+| Android SDK | Platform 35, Build Tools 35.0.0 |
+| Android NDK | r27 (27.2.12479018) |
+| Java JDK | 17 (headless) |
+| Node.js | 20 LTS |
+| `cargo-ndk` | For Android NDK cross-compilation |
+| `cargo-tauri` | Tauri CLI v2 |
+| `protobuf-compiler` | For sonde-protocol |
+| `libudev-dev`, `libdbus-1-dev` | For btleplug BLE on Linux |
+| Tauri system deps | `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, etc. |
+
+### 7.4  Building the container locally
+
+```bash
+docker build -f .github/docker/Dockerfile.android-dev -t sonde-android-dev .
+```

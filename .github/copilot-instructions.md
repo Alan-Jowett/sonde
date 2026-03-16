@@ -32,7 +32,7 @@ docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev \
 
 ## Architecture
 
-Sonde is a programmable sensor node platform. Nodes run BPF programs distributed by a gateway over ESP-NOW radio. The system has four crates in a Cargo workspace:
+Sonde is a programmable sensor node platform. Nodes run BPF programs distributed by a gateway over ESP-NOW radio. The workspace contains the following crates:
 
 - **`sonde-protocol`** — Shared `no_std` protocol crate. Frame codec, CBOR messages, program image format. Used by all other crates. No platform dependencies; all crypto is injected via `HmacProvider`/`Sha256Provider` traits.
 - **`sonde-gateway`** — Async gateway service (tokio). Authenticates nodes, manages sessions, distributes BPF programs, routes app data to handler processes via stdin/stdout. Admin interface via local gRPC.

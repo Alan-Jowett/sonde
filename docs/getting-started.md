@@ -250,9 +250,12 @@ sonde/
 ├── crates/
 │   ├── sonde-protocol/           # Shared no_std protocol crate
 │   ├── sonde-gateway/            # Async gateway service (tokio)
-│   ├── sonde-node/               # ESP32 sensor node firmware (planned)
-│   ├── sonde-modem/              # ESP32-S3 radio modem firmware (planned)
-│   └── sonde-admin/              # CLI admin tool (planned)
+│   ├── sonde-node/               # ESP32 sensor node firmware
+│   ├── sonde-modem/              # ESP32-S3 radio modem firmware
+│   ├── sonde-admin/              # CLI admin tool (planned)
+│   ├── sonde-pair/               # BLE pairing tool — Tauri v2 (planned)
+│   ├── sonde-bpf/                # Safe BPF interpreter
+│   └── sonde-e2e/                # End-to-end test harness
 ├── docs/                         # Specifications and design docs
 └── hooks/                        # Git hooks
 ```

@@ -11,6 +11,11 @@ on:
     paths:
       - '.github/docker/Dockerfile.android-dev'
       - '.github/workflows/android-dev-container.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/docker/Dockerfile.android-dev'
+      - '.github/workflows/android-dev-container.yml'
   workflow_dispatch:
 
 permissions:
@@ -51,6 +56,6 @@ jobs:
         with:
           context: .
           file: .github/docker/Dockerfile.android-dev
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

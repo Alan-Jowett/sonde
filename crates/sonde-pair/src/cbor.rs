@@ -97,8 +97,8 @@ pub fn encode_pairing_request(
 /// The parsed CBOR Value tree is zeroized before returning (regardless of
 /// success or failure) to prevent key material from lingering in heap memory.
 pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, PairingError> {
-    let value: Value = ciborium::from_reader(data)
-        .map_err(|e| PairingError::CborDecodeFailed(format!("{e}")))?;
+    let value: Value =
+        ciborium::from_reader(data).map_err(|e| PairingError::CborDecodeFailed(format!("{e}")))?;
 
     let map = match value {
         Value::Map(m) => m,
@@ -115,7 +115,6 @@ pub fn decode_pairing_request(data: &[u8]) -> Result<PairingRequestFields, Pairi
 }
 
 fn decode_from_map(map: &[(Value, Value)]) -> Result<PairingRequestFields, PairingError> {
-
     let mut node_id = None;
     let mut node_key_hint = None;
     let mut node_psk = None;

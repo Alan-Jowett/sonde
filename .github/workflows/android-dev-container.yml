@@ -18,6 +18,10 @@ on:
       - '.github/workflows/android-dev-container.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: alan-jowett/sonde-android-dev

@@ -296,6 +296,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         mtu = bc.mtu,
                         "BLE phone connected"
                     );
+                    ble_ctrl.broadcast_event(
+                        sonde_gateway::ble_pairing::BlePairingEventKind::PhoneConnected {
+                            mtu: bc.mtu,
+                        },
+                    );
                 }
                 Some(BleEvent::Disconnected(bd)) => {
                     info!(
@@ -303,11 +308,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         reason = bd.reason,
                         "BLE phone disconnected"
                     );
+                    ble_ctrl.broadcast_event(
+                        sonde_gateway::ble_pairing::BlePairingEventKind::PhoneDisconnected,
+                    );
                 }
                 Some(BleEvent::PairingConfirm(pc)) => {
                     info!(
                         passkey = pc.passkey,
                         "BLE Numeric Comparison passkey — awaiting operator confirmation"
+                    );
+                    // Broadcast to admin CLI streams.
+                    ble_ctrl.broadcast_event(
+                        sonde_gateway::ble_pairing::BlePairingEventKind::PasskeyRequest {
+                            passkey: pc.passkey,
+                        },
                     );
                     // Forward to admin CLI via the controller. If no admin
                     // client is listening, wait up to 30s then auto-reject.

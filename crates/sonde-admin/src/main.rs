@@ -728,13 +728,17 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                                     Some(pb::ble_pairing_event::Event::Passkey(p)) => {
                                         println!("Passkey: {:06}", p.passkey);
                                         eprint!("Confirm pairing? (y/n): ");
-                                        let mut input = String::new();
-                                        if std::io::stdin().read_line(&mut input).is_ok() {
-                                            let accept = input.trim().eq_ignore_ascii_case("y");
-                                            if let Err(e) = client.confirm_ble_pairing(accept).await
-                                            {
-                                                eprintln!("Failed to confirm: {e}");
-                                            }
+                                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                                        let input = tokio::task::spawn_blocking(|| {
+                                            let mut buf = String::new();
+                                            std::io::stdin().read_line(&mut buf).ok();
+                                            buf
+                                        })
+                                        .await
+                                        .unwrap_or_default();
+                                        let accept = input.trim().eq_ignore_ascii_case("y");
+                                        if let Err(e) = client.confirm_ble_pairing(accept).await {
+                                            eprintln!("Failed to confirm: {e}");
                                         }
                                     }
                                     Some(pb::ble_pairing_event::Event::PhoneConnected(c)) => {

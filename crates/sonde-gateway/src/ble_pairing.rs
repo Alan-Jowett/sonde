@@ -119,6 +119,17 @@ pub struct BlePairingController {
     passkey_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
     /// Cancel token for the auto-close timeout task.
     timeout_cancel: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// Broadcast channel for forwarding BLE pairing events to admin streams.
+    event_tx: tokio::sync::broadcast::Sender<BlePairingEventKind>,
+}
+
+/// Events broadcast from the BLE loop to admin CLI streams.
+#[derive(Debug, Clone)]
+pub enum BlePairingEventKind {
+    PhoneConnected { mtu: u16 },
+    PhoneDisconnected,
+    PasskeyRequest { passkey: u32 },
+    PhoneRegistered { label: String, phone_key_hint: u16 },
 }
 
 impl Default for BlePairingController {
@@ -129,10 +140,12 @@ impl Default for BlePairingController {
 
 impl BlePairingController {
     pub fn new() -> Self {
+        let (event_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
             window: tokio::sync::Mutex::new(RegistrationWindow::new()),
             passkey_tx: tokio::sync::Mutex::new(None),
             timeout_cancel: tokio::sync::Mutex::new(None),
+            event_tx,
         }
     }
 
@@ -178,6 +191,17 @@ impl BlePairingController {
         if let Some(token) = self.timeout_cancel.lock().await.take() {
             token.cancel();
         }
+    }
+
+    /// Broadcast a BLE pairing event to all admin CLI subscribers.
+    pub fn broadcast_event(&self, event: BlePairingEventKind) {
+        // Ignore send errors (no active subscribers).
+        let _ = self.event_tx.send(event);
+    }
+
+    /// Subscribe to BLE pairing events (used by admin CLI streams).
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<BlePairingEventKind> {
+        self.event_tx.subscribe()
     }
 }
 

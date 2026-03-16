@@ -584,32 +584,97 @@ impl GatewayAdmin for AdminService {
             }))
             .await;
 
-        // Spawn a cancellable task that closes the window after timeout.
-        // The task is cancelled if CloseBlePairing is called or the stream
-        // is dropped (client disconnects).
+        // Subscribe to BLE events broadcast from the BLE loop.
+        let mut event_rx = controller.subscribe_events();
+
         let cancel = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel.clone();
         let close_controller = Arc::clone(controller);
         let close_transport = Arc::clone(transport);
 
-        // Store the cancel token so CloseBlePairing can cancel it.
         controller.set_timeout_cancel(cancel.clone()).await;
 
+        // Spawn a task that forwards BLE events to the stream, handles
+        // timeout, cancellation, and client disconnect.
         tokio::spawn(async move {
-            tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_secs(duration_s as u64)) => {
-                    close_controller.close_window().await;
-                    let _ = close_transport.send_ble_disable().await;
-                    let _ = tx
-                        .send(Ok(BlePairingEvent {
+            use crate::ble_pairing::BlePairingEventKind;
+
+            let timeout = tokio::time::sleep(std::time::Duration::from_secs(duration_s as u64));
+            tokio::pin!(timeout);
+
+            loop {
+                tokio::select! {
+                    _ = &mut timeout => {
+                        close_controller.close_window().await;
+                        let _ = close_transport.send_ble_disable().await;
+                        let _ = tx.send(Ok(BlePairingEvent {
                             event: Some(ble_pairing_event::Event::WindowClosed(
                                 BlePairingWindowClosed {},
                             )),
-                        }))
-                        .await;
-                }
-                _ = cancel_clone.cancelled() => {
-                    // Window was closed explicitly — task exits cleanly.
+                        })).await;
+                        break;
+                    }
+                    _ = cancel_clone.cancelled() => {
+                        // Explicit close — send WindowClosed then exit.
+                        let _ = tx.send(Ok(BlePairingEvent {
+                            event: Some(ble_pairing_event::Event::WindowClosed(
+                                BlePairingWindowClosed {},
+                            )),
+                        })).await;
+                        break;
+                    }
+                    _ = tx.closed() => {
+                        // Client disconnected — close window and disable BLE.
+                        close_controller.close_window().await;
+                        let _ = close_transport.send_ble_disable().await;
+                        break;
+                    }
+                    result = event_rx.recv() => {
+                        match result {
+                            Ok(evt) => {
+                                let proto_event = match evt {
+                                    BlePairingEventKind::PhoneConnected { mtu } => {
+                                        ble_pairing_event::Event::PhoneConnected(
+                                            BlePairingPhoneConnected {
+                                                peer_addr: vec![],
+                                                mtu: mtu as u32,
+                                            },
+                                        )
+                                    }
+                                    BlePairingEventKind::PhoneDisconnected => {
+                                        ble_pairing_event::Event::PhoneDisconnected(
+                                            BlePairingPhoneDisconnected { peer_addr: vec![] },
+                                        )
+                                    }
+                                    BlePairingEventKind::PasskeyRequest { passkey } => {
+                                        ble_pairing_event::Event::Passkey(
+                                            BlePairingPasskey { passkey },
+                                        )
+                                    }
+                                    BlePairingEventKind::PhoneRegistered {
+                                        label,
+                                        phone_key_hint,
+                                    } => {
+                                        ble_pairing_event::Event::PhoneRegistered(
+                                            BlePairingPhoneRegistered {
+                                                label,
+                                                phone_key_hint: phone_key_hint as u32,
+                                            },
+                                        )
+                                    }
+                                };
+                                if tx.send(Ok(BlePairingEvent {
+                                    event: Some(proto_event),
+                                })).await.is_err() {
+                                    break; // Client disconnected
+                                }
+                            }
+                            Err(_) => {
+                                // Broadcast channel lagged or closed
+                                continue;
+                            }
+                        }
+                    }
                 }
             }
         });

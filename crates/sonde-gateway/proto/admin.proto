@@ -20,6 +20,18 @@ service GatewayAdmin {
     rpc GetModemStatus(Empty) returns (ModemStatus);
     rpc SetModemChannel(SetModemChannelRequest) returns (Empty);
     rpc ScanModemChannels(Empty) returns (ScanModemChannelsResponse);
+
+    // BLE phone pairing — Phase 1 (GW-1222).
+    // OpenBlePairing is server-streaming: it opens the registration window
+    // and streams BLE pairing events (passkey requests, registration results)
+    // back to the CLI client until the window closes or the client disconnects.
+    rpc OpenBlePairing(OpenBlePairingRequest) returns (stream BlePairingEvent);
+    rpc CloseBlePairing(Empty) returns (Empty);
+    rpc ConfirmBlePairing(ConfirmBlePairingRequest) returns (Empty);
+
+    // Phone PSK management.
+    rpc ListPhones(Empty) returns (ListPhonesResponse);
+    rpc RevokePhone(RevokePhoneRequest) returns (Empty);
 }
 
 message Empty {}
@@ -95,3 +107,46 @@ message ChannelSurveyEntry {
     int32 strongest_rssi = 3;
 }
 message ScanModemChannelsResponse { repeated ChannelSurveyEntry entries = 1; }
+
+// BLE phone pairing messages (GW-1222).
+message OpenBlePairingRequest {
+    // Registration window duration in seconds (0 = use default 120s).
+    uint32 duration_s = 1;
+}
+
+message BlePairingEvent {
+    oneof event {
+        // Registration window opened.
+        BlePairingWindowOpened window_opened = 1;
+        // Numeric Comparison passkey — operator must confirm.
+        BlePairingPasskey passkey = 2;
+        // Phone connected via BLE.
+        BlePairingPhoneConnected phone_connected = 3;
+        // Phone disconnected from BLE.
+        BlePairingPhoneDisconnected phone_disconnected = 4;
+        // Phone registered successfully.
+        BlePairingPhoneRegistered phone_registered = 5;
+        // Registration window closed (auto-timeout or explicit).
+        BlePairingWindowClosed window_closed = 6;
+    }
+}
+
+message BlePairingWindowOpened { uint32 duration_s = 1; }
+message BlePairingPasskey { uint32 passkey = 1; }
+message BlePairingPhoneConnected { bytes peer_addr = 1; uint32 mtu = 2; }
+message BlePairingPhoneDisconnected { bytes peer_addr = 1; }
+message BlePairingPhoneRegistered { string label = 1; uint32 phone_key_hint = 2; }
+message BlePairingWindowClosed {}
+
+message ConfirmBlePairingRequest { bool accept = 1; }
+
+// Phone PSK management.
+message PhoneInfo {
+    uint32 phone_id = 1;
+    uint32 phone_key_hint = 2;
+    string label = 3;
+    uint64 issued_at_ms = 4;
+    string status = 5; // "active" or "revoked"
+}
+message ListPhonesResponse { repeated PhoneInfo phones = 1; }
+message RevokePhoneRequest { uint32 phone_id = 1; }

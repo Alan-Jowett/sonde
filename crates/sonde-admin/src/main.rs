@@ -86,6 +86,11 @@ enum Commands {
         #[command(subcommand)]
         action: ModemAction,
     },
+    /// BLE phone pairing.
+    Pairing {
+        #[command(subcommand)]
+        action: PairingAction,
+    },
     /// USB pairing operations (direct node connection).
     Usb {
         #[command(subcommand)]
@@ -195,6 +200,25 @@ enum ModemAction {
     },
     /// Scan all WiFi channels for AP activity.
     Scan,
+}
+
+#[derive(Subcommand)]
+enum PairingAction {
+    /// Open BLE phone registration window.
+    Start {
+        /// Window duration in seconds (default: 120).
+        #[arg(long, default_value = "120")]
+        duration_s: u32,
+    },
+    /// Close BLE phone registration window.
+    Stop,
+    /// List registered phones.
+    ListPhones,
+    /// Revoke a phone's PSK.
+    RevokePhone {
+        /// Phone ID to revoke.
+        phone_id: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -685,6 +709,71 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                             e.channel, e.ap_count, e.strongest_rssi
                         );
                     }
+                }
+            }
+        },
+
+        Commands::Pairing { action } => match action {
+            PairingAction::Start { duration_s } => {
+                // OpenBlePairing is server-streaming but currently returns
+                // unimplemented. When wired, this will stream events and
+                // handle passkey confirmation interactively.
+                let resp = client.open_ble_pairing(*duration_s).await;
+                match resp {
+                    Ok(_stream) => {
+                        println!("BLE pairing window opened for {duration_s}s");
+                        // TODO: read stream events, display passkey, prompt
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to open BLE pairing: {e}");
+                        process::exit(1);
+                    }
+                }
+            }
+            PairingAction::Stop => {
+                client.close_ble_pairing().await?;
+                if json {
+                    print_json(&serde_json::json!({"status": "closed"}))?;
+                } else {
+                    println!("BLE pairing window closed");
+                }
+            }
+            PairingAction::ListPhones => {
+                let phones = client.list_phones().await?;
+                if json {
+                    print_json(
+                        &phones
+                            .iter()
+                            .map(|p| {
+                                serde_json::json!({
+                                    "phone_id": p.phone_id,
+                                    "phone_key_hint": format!("0x{:04x}", p.phone_key_hint),
+                                    "label": p.label,
+                                    "issued_at_ms": p.issued_at_ms,
+                                    "status": p.status,
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )?;
+                } else {
+                    println!(
+                        "{:<8} {:<12} {:<20} {:<12} Issued",
+                        "ID", "Key Hint", "Label", "Status"
+                    );
+                    for p in &phones {
+                        println!(
+                            "{:<8} 0x{:04x}       {:<20} {:<12} {}",
+                            p.phone_id, p.phone_key_hint, p.label, p.status, p.issued_at_ms
+                        );
+                    }
+                }
+            }
+            PairingAction::RevokePhone { phone_id } => {
+                client.revoke_phone(*phone_id).await?;
+                if json {
+                    print_json(&serde_json::json!({"phone_id": phone_id, "status": "revoked"}))?;
+                } else {
+                    println!("Phone {phone_id} revoked");
                 }
             }
         },

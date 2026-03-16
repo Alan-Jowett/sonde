@@ -523,4 +523,86 @@ impl GatewayAdmin for AdminService {
             "`scan_modem_channels` requires a modem transport — not yet wired",
         ))
     }
+
+    // -- BLE phone pairing (GW-1222) ----------------------------------------
+
+    type OpenBlePairingStream =
+        tokio_stream::wrappers::ReceiverStream<Result<BlePairingEvent, Status>>;
+
+    /// Open a BLE phone registration window.
+    ///
+    /// Returns a server-streaming response that pushes BLE pairing events
+    /// (passkey requests, phone connections, registrations) to the CLI.
+    /// The stream ends when the window closes (auto-timeout or explicit).
+    async fn open_ble_pairing(
+        &self,
+        _request: Request<OpenBlePairingRequest>,
+    ) -> Result<Response<Self::OpenBlePairingStream>, Status> {
+        // TODO: Wire to modem transport + BLE pairing state machine.
+        // For now, return unimplemented until the engine integration is done.
+        Err(Status::unimplemented(
+            "`open_ble_pairing` requires modem transport — not yet wired",
+        ))
+    }
+
+    /// Close the BLE phone registration window.
+    async fn close_ble_pairing(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented(
+            "`close_ble_pairing` requires modem transport — not yet wired",
+        ))
+    }
+
+    /// Confirm or reject a BLE Numeric Comparison passkey.
+    async fn confirm_ble_pairing(
+        &self,
+        _request: Request<ConfirmBlePairingRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Err(Status::unimplemented(
+            "`confirm_ble_pairing` requires modem transport — not yet wired",
+        ))
+    }
+
+    /// List all registered phones with their PSK metadata.
+    async fn list_phones(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ListPhonesResponse>, Status> {
+        let records = self.storage.list_phone_psks().await.map_err(storage_err)?;
+
+        let phones = records
+            .iter()
+            .map(|r| {
+                let issued_at_ms = r
+                    .issued_at
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                PhoneInfo {
+                    phone_id: r.phone_id,
+                    phone_key_hint: r.phone_key_hint as u32,
+                    label: r.label.clone(),
+                    issued_at_ms,
+                    status: match r.status {
+                        crate::phone_trust::PhonePskStatus::Active => "active".to_string(),
+                        crate::phone_trust::PhonePskStatus::Revoked => "revoked".to_string(),
+                    },
+                }
+            })
+            .collect();
+
+        Ok(Response::new(ListPhonesResponse { phones }))
+    }
+
+    /// Revoke a phone's PSK by phone_id.
+    async fn revoke_phone(
+        &self,
+        request: Request<RevokePhoneRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let phone_id = request.into_inner().phone_id;
+        self.storage
+            .revoke_phone_psk(phone_id)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(Empty {}))
+    }
 }

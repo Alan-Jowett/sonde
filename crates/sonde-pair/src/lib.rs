@@ -13,3 +13,6 @@ pub mod store;
 pub mod transport;
 pub mod types;
 pub mod validation;
+
+#[cfg(feature = "btleplug")]
+pub mod btleplug_transport;

@@ -210,7 +210,7 @@ mod tests {
             name: name.to_string(),
             address: addr,
             rssi,
-            service_uuids: vec![0x0000_1800_0000_1000_8000_00805F9B34FB],
+            service_uuids: vec![0x0000_1800_0000_1000_8000_0080_5F9B_34FB],
         }
     }
 

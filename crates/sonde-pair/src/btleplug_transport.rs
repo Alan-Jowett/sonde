@@ -14,6 +14,12 @@
 //! so [`BtleplugTransport::connect`] reports [`BLE_MTU_MIN`] (247) as a
 //! conservative lower bound.  The actual negotiated MTU is almost certainly
 //! higher.
+//!
+//! # Runtime requirements
+//!
+//! This module requires a [tokio](https://docs.rs/tokio) runtime with the
+//! `time` driver enabled.  `btleplug` itself is built on tokio, so this is
+//! always the case when using the standard `#[tokio::main]` entry point.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -26,7 +32,7 @@ use btleplug::api::{
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::stream::StreamExt;
-use tracing::{debug, warn};
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::error::PairingError;
@@ -87,6 +93,50 @@ impl BtleplugTransport {
             adapter,
             connected: None,
         })
+    }
+
+    /// Perform GATT service discovery and obtain the notification stream.
+    ///
+    /// Extracted so that `connect()` can cleanly disconnect the peripheral
+    /// if any post-connect step fails (PT-1001).
+    async fn post_connect_setup(
+        peripheral: &Peripheral,
+    ) -> Result<
+        (
+            Pin<Box<dyn futures::stream::Stream<Item = ValueNotification> + Send>>,
+            usize,
+        ),
+        PairingError,
+    > {
+        peripheral.discover_services().await.map_err(|e| {
+            PairingError::ConnectionFailed(format!("service discovery failed: {e}"))
+        })?;
+        let service_count = peripheral.services().len();
+
+        let notification_stream = peripheral.notifications().await.map_err(|e| {
+            PairingError::ConnectionFailed(format!("failed to obtain notification stream: {e}"))
+        })?;
+
+        Ok((notification_stream, service_count))
+    }
+
+    /// Best-effort disconnect of the current connection (if any).
+    ///
+    /// Used internally before connecting to a new device and in `Drop`.
+    async fn disconnect_inner(&mut self) {
+        if let Some(state) = self.connected.take() {
+            for uuid in &state.subscribed {
+                if let Some(chr) = state
+                    .peripheral
+                    .characteristics()
+                    .into_iter()
+                    .find(|c| c.uuid == *uuid)
+                {
+                    let _ = state.peripheral.unsubscribe(&chr).await;
+                }
+            }
+            let _ = state.peripheral.disconnect().await;
+        }
     }
 }
 
@@ -175,6 +225,12 @@ impl BleTransport for BtleplugTransport {
     ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
         let addr = *address;
         Box::pin(async move {
+            // Disconnect any existing connection first to avoid resource leaks.
+            if self.connected.is_some() {
+                debug!("disconnecting previous connection before new connect");
+                self.disconnect_inner().await;
+            }
+
             let target_addr = BDAddr::from(addr);
 
             // Locate the peripheral among previously discovered devices.
@@ -196,31 +252,30 @@ impl BleTransport for BtleplugTransport {
                 })?
                 .map_err(|e| PairingError::ConnectionFailed(format!("connect failed: {e}")))?;
 
-            // Discover GATT services and characteristics.
-            peripheral.discover_services().await.map_err(|e| {
-                PairingError::ConnectionFailed(format!("service discovery failed: {e}"))
-            })?;
-
-            debug!(
-                address = %target_addr,
-                services = peripheral.services().len(),
-                "connected and discovered services"
-            );
-
-            // Obtain the notification/indication stream for this peripheral.
-            let notification_stream = peripheral.notifications().await.map_err(|e| {
-                PairingError::ConnectionFailed(format!("failed to obtain notification stream: {e}"))
-            })?;
-
-            self.connected = Some(ConnectedState {
-                peripheral,
-                notification_stream,
-                subscribed: HashSet::new(),
-            });
+            // Post-connect setup — if any step fails, disconnect the
+            // peripheral so we don't leak a GATT connection (PT-1001).
+            match Self::post_connect_setup(&peripheral).await {
+                Ok((notification_stream, service_count)) => {
+                    debug!(
+                        address = %target_addr,
+                        services = service_count,
+                        "connected and discovered services"
+                    );
+                    self.connected = Some(ConnectedState {
+                        peripheral,
+                        notification_stream,
+                        subscribed: HashSet::new(),
+                    });
+                }
+                Err(e) => {
+                    let _ = peripheral.disconnect().await;
+                    return Err(e);
+                }
+            }
 
             // btleplug 0.11 does not expose MTU negotiation; report a
             // conservative default.  See module-level docs for rationale.
-            warn!(
+            debug!(
                 mtu = DEFAULT_REPORTED_MTU,
                 "btleplug does not expose MTU; reporting conservative default"
             );
@@ -230,23 +285,8 @@ impl BleTransport for BtleplugTransport {
 
     fn disconnect(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         Box::pin(async move {
-            if let Some(state) = self.connected.take() {
-                // Unsubscribe from all characteristics we subscribed to.
-                for uuid in &state.subscribed {
-                    if let Some(chr) = state
-                        .peripheral
-                        .characteristics()
-                        .into_iter()
-                        .find(|c| c.uuid == *uuid)
-                    {
-                        let _ = state.peripheral.unsubscribe(&chr).await;
-                    }
-                }
-                state.peripheral.disconnect().await.map_err(|e| {
-                    PairingError::ConnectionFailed(format!("disconnect failed: {e}"))
-                })?;
-                debug!("disconnected");
-            }
+            self.disconnect_inner().await;
+            debug!("disconnected");
             Ok(())
         })
     }

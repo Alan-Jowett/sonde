@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Pre-built development container for cross-compiling sonde-pair
+# (BLE pairing tool) for Android and Linux.
+#
+# Published to: ghcr.io/alan-jowett/sonde-android-dev
+#
+# Usage:
+#   docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:latest \
+#     cargo ndk -t arm64-v8a build -p sonde-pair --release
+
+# Pinned by digest for reproducible builds (ubuntu 24.04 LTS).
+# To update: docker pull ubuntu:24.04 && docker inspect --format='{{index .RepoDigests 0}}' ubuntu:24.04
+FROM ubuntu@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9
+
+LABEL org.opencontainers.image.source="https://github.com/Alan-Jowett/sonde"
+LABEL org.opencontainers.image.description="Sonde Android/Tauri development container"
+LABEL org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# System packages
+# ---------------------------------------------------------------------------
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core build tools
+    build-essential \
+    curl \
+    ca-certificates \
+    git \
+    pkg-config \
+    unzip \
+    wget \
+    # Tauri v2 system dependencies (Linux host testing)
+    libwebkit2gtk-4.1-dev \
+    libgtk-3-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
+    # BLE (btleplug) dependencies
+    libudev-dev \
+    libdbus-1-dev \
+    # Protocol Buffers compiler (sonde-protocol)
+    protobuf-compiler \
+    # Java JDK 17 (Android SDK tools / Gradle)
+    openjdk-17-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+
+# ---------------------------------------------------------------------------
+# Node.js 20 LTS (via signed APT repo — avoids curl|bash supply-chain risk)
+# ---------------------------------------------------------------------------
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gnupg \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Android SDK + NDK
+# ---------------------------------------------------------------------------
+
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018
+ENV PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${PATH}"
+
+# Install Android command-line tools (with SHA-256 integrity check)
+ENV CMDLINE_TOOLS_URL=https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+ENV CMDLINE_TOOLS_SHA256=2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258
+
+RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
+    && cd ${ANDROID_HOME}/cmdline-tools \
+    && wget -q ${CMDLINE_TOOLS_URL} -O tools.zip \
+    && echo "${CMDLINE_TOOLS_SHA256}  tools.zip" | sha256sum -c - \
+    && unzip -q tools.zip \
+    && mv cmdline-tools latest \
+    && rm tools.zip
+
+# Accept licenses and install SDK components
+RUN yes | sdkmanager --licenses > /dev/null 2>&1 \
+    && sdkmanager --install \
+        "platform-tools" \
+        "build-tools;35.0.0" \
+        "platforms;android-35" \
+        "ndk;27.2.12479018"
+
+# ---------------------------------------------------------------------------
+# Rust toolchain
+# ---------------------------------------------------------------------------
+
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
+
+# Pin rustup-init to a specific version with SHA-256 verification.
+ENV RUSTUP_INIT_VERSION=1.28.1
+ENV RUSTUP_INIT_SHA256=a3339fb004c3d0bb9862ba0bce001861fe5cbde9c10d16591eb3f39ee6cd3e7f
+
+RUN curl --proto '=https' --tlsv1.2 -sSfO \
+        "https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
+    && echo "${RUSTUP_INIT_SHA256}  rustup-init" | sha256sum -c - \
+    && chmod +x rustup-init \
+    && ./rustup-init -y --default-toolchain stable --profile minimal \
+    && rm rustup-init \
+    && rustup target add aarch64-linux-android \
+    && rustup target add x86_64-unknown-linux-gnu \
+    && rustup component add clippy rustfmt
+
+# ---------------------------------------------------------------------------
+# Cargo tools
+# ---------------------------------------------------------------------------
+
+RUN cargo install cargo-ndk@4.1.2 --locked \
+    && cargo install tauri-cli@2.10.1 --locked
+
+# ---------------------------------------------------------------------------
+# Verify installation
+# ---------------------------------------------------------------------------
+
+RUN echo "=== Verification ===" \
+    && rustc --version \
+    && cargo --version \
+    && cargo ndk --version \
+    && cargo tauri --version \
+    && node --version \
+    && npm --version \
+    && java -version 2>&1 | head -1 \
+    && sdkmanager --version \
+    && protoc --version \
+    && echo "=== All tools installed ==="
+
+WORKDIR /sonde

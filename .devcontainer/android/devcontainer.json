@@ -1,0 +1,19 @@
+{
+  "name": "Sonde Android/Tauri Dev",
+  "image": "ghcr.io/alan-jowett/sonde-android-dev:latest",
+  "postCreateCommand": "rustup show && cargo ndk --version && cargo tauri --version",
+  "remoteEnv": {
+    "ANDROID_HOME": "/opt/android-sdk",
+    "ANDROID_NDK_HOME": "/opt/android-sdk/ndk/27.2.12479018",
+    "JAVA_HOME": "/usr/lib/jvm/java-17-openjdk-amd64"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates"
+      ]
+    }
+  }
+}

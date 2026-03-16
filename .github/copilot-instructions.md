@@ -24,16 +24,23 @@ cargo test -p sonde-protocol test_p001
 # Pick a single-letter directory name not already in use (e.g., E:\b, F:\t, C:\z).
 # Example (adjust drive letter and dir name to your environment):
 CARGO_TARGET_DIR=F:\t cargo +esp build -p sonde-node --bin node --features esp --profile firmware --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
+
+# Build sonde-pair for Android (requires Android dev container or local NDK).
+# NOTE: sonde-pair crate is planned — see issue #163.
+# docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:latest \
+#   cargo ndk -t arm64-v8a build -p sonde-pair --release
 ```
 
 ## Architecture
 
-Sonde is a programmable sensor node platform. Nodes run BPF programs distributed by a gateway over ESP-NOW radio. The system has four crates in a Cargo workspace:
+Sonde is a programmable sensor node platform. Nodes run BPF programs distributed by a gateway over ESP-NOW radio. The workspace contains the following crates:
 
 - **`sonde-protocol`** — Shared `no_std` protocol crate. Frame codec, CBOR messages, program image format. Used by all other crates. No platform dependencies; all crypto is injected via `HmacProvider`/`Sha256Provider` traits.
 - **`sonde-gateway`** — Async gateway service (tokio). Authenticates nodes, manages sessions, distributes BPF programs, routes app data to handler processes via stdin/stdout. Admin interface via local gRPC.
 - **`sonde-node`** — ESP32-C3/S3 firmware (Rust + ESP-IDF). Cyclic state machine: wake → WAKE/COMMAND → BPF execution → sleep. BPF interpreter behind a `BpfInterpreter` trait.
+- **`sonde-modem`** — ESP32-S3 USB-CDC modem firmware. Bridges ESP-NOW radio and BLE GATT to the gateway over serial. Hosts the Gateway Pairing Service for BLE-based node provisioning.
 - **`sonde-admin`** — CLI tool wrapping the gateway gRPC API. Handles USB-mediated node pairing.
+- **`sonde-pair`** *(planned)* — BLE pairing tool (Tauri v2 app). Will target Android (`aarch64-linux-android`), Windows, and Linux. Cross-compiled using the Android dev container (`ghcr.io/alan-jowett/sonde-android-dev`). See `.devcontainer/android/` for VS Code / Codespaces setup.
 - **`sonde-bpf`** — Safe BPF interpreter with tagged register tracking. Used by `sonde-node`.
 - **`sonde-e2e`** — End-to-end test harness.
 

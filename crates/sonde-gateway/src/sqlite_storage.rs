@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
-use crate::registry::NodeRecord;
+use crate::registry::{NodeRecord, SensorDescriptor};
 use crate::storage::{Storage, StorageError};
 
 /// Encrypted PSK blob length: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag = 60 bytes.
@@ -377,7 +377,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     schedule_interval_s INTEGER NOT NULL DEFAULT 60,
     firmware_abi_version INTEGER,
     last_battery_mv INTEGER,
-    last_seen_epoch_s INTEGER
+    last_seen_epoch_s INTEGER,
+    rf_channel INTEGER,
+    sensors_json TEXT,
+    registered_by_phone_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_key_hint ON nodes(key_hint);
 
@@ -455,6 +458,27 @@ impl SqliteStorage {
         if !has_abi {
             conn.execute_batch("ALTER TABLE programs ADD COLUMN abi_version INTEGER")
                 .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+        }
+        // Migration: add BLE pairing columns to nodes table if they don't exist.
+        // Each column is checked and added independently to handle partial migrations.
+        {
+            let node_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(nodes)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| StorageError::Internal(format!("migration check: {e}")))?;
+            let has_col = |name: &str| node_cols.iter().any(|n| n == name);
+            if !has_col("rf_channel") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN rf_channel INTEGER")
+                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+            }
+            if !has_col("sensors_json") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN sensors_json TEXT")
+                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+            }
+            if !has_col("registered_by_phone_id") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN registered_by_phone_id INTEGER")
+                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+            }
         }
         // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted
         // form. This must run before `validate_master_key` since validation only
@@ -550,6 +574,19 @@ fn profile_to_str(p: &VerificationProfile) -> &'static str {
     }
 }
 
+/// Serialize sensor descriptors to JSON for SQLite storage.
+fn sensors_to_json(sensors: &[SensorDescriptor]) -> Option<String> {
+    if sensors.is_empty() {
+        return None;
+    }
+    serde_json::to_string(sensors).ok()
+}
+
+/// Parse sensor descriptors from JSON stored in SQLite.
+fn sensors_from_json(json: &str) -> Vec<SensorDescriptor> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
 /// Read a `NodeRecord` from the current row of a rusqlite statement,
 /// decrypting the stored PSK blob using `master_key`.
 ///
@@ -566,6 +603,21 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         )
     })?;
     let last_seen_epoch: Option<i64> = row.get(8)?;
+    let rf_channel: Option<u8> = {
+        let v: Option<u32> = row.get(9)?;
+        v.map(|c| {
+            u8::try_from(c).map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Integer,
+                    format!("rf_channel {c} out of u8 range").into(),
+                )
+            })
+        })
+        .transpose()?
+    };
+    let sensors_json: Option<String> = row.get(10)?;
+    let registered_by_phone_id: Option<u32> = row.get(11)?;
     Ok(NodeRecord {
         node_id,
         key_hint: {
@@ -585,6 +637,11 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         firmware_abi_version: row.get(6)?,
         last_battery_mv: row.get(7)?,
         last_seen: last_seen_epoch.map(epoch_s_to_system_time),
+        rf_channel,
+        sensors: sensors_json
+            .map(|j| sensors_from_json(&j))
+            .unwrap_or_default(),
+        registered_by_phone_id,
     })
 }
 
@@ -599,7 +656,8 @@ impl Storage for SqliteStorage {
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, schedule_interval_s, firmware_abi_version, \
-                     last_battery_mv, last_seen_epoch_s FROM nodes",
+                     last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
+                     registered_by_phone_id FROM nodes",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -621,7 +679,8 @@ impl Storage for SqliteStorage {
             conn.query_row(
                 "SELECT node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \
-                 last_battery_mv, last_seen_epoch_s FROM nodes WHERE node_id = ?1",
+                 last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
+                 registered_by_phone_id FROM nodes WHERE node_id = ?1",
                 params![node_id],
                 |row| row_to_node(row, &mk),
             )
@@ -638,7 +697,8 @@ impl Storage for SqliteStorage {
                 .prepare(
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, schedule_interval_s, firmware_abi_version, \
-                     last_battery_mv, last_seen_epoch_s FROM nodes WHERE key_hint = ?1",
+                     last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
+                     registered_by_phone_id FROM nodes WHERE key_hint = ?1",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -659,11 +719,13 @@ impl Storage for SqliteStorage {
         self.with_conn(move |conn| {
             let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
             let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
+            let sensors_json = sensors_to_json(&record.sensors);
             conn.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \
-                 last_battery_mv, last_seen_epoch_s) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
+                 registered_by_phone_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
                  ON CONFLICT(node_id) DO UPDATE SET \
                  key_hint = excluded.key_hint, \
                  psk = excluded.psk, \
@@ -672,7 +734,10 @@ impl Storage for SqliteStorage {
                  schedule_interval_s = excluded.schedule_interval_s, \
                  firmware_abi_version = excluded.firmware_abi_version, \
                  last_battery_mv = excluded.last_battery_mv, \
-                 last_seen_epoch_s = excluded.last_seen_epoch_s",
+                 last_seen_epoch_s = excluded.last_seen_epoch_s, \
+                 rf_channel = excluded.rf_channel, \
+                 sensors_json = excluded.sensors_json, \
+                 registered_by_phone_id = excluded.registered_by_phone_id",
                 params![
                     record.node_id,
                     record.key_hint as u32,
@@ -683,10 +748,48 @@ impl Storage for SqliteStorage {
                     record.firmware_abi_version,
                     record.last_battery_mv,
                     last_seen_epoch,
+                    record.rf_channel.map(|c| c as u32),
+                    sensors_json,
+                    record.registered_by_phone_id,
                 ],
             )
             .map_err(map_err)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn insert_node_if_not_exists(&self, record: &NodeRecord) -> Result<bool, StorageError> {
+        let record = record.clone();
+        let mk = self.master_key.clone();
+        self.with_conn(move |conn| {
+            let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
+            let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
+            let sensors_json = sensors_to_json(&record.sensors);
+            let rows = conn
+                .execute(
+                    "INSERT OR IGNORE INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
+                     current_program_hash, schedule_interval_s, firmware_abi_version, \
+                     last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
+                     registered_by_phone_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![
+                        record.node_id,
+                        record.key_hint as u32,
+                        encrypted_psk,
+                        record.assigned_program_hash,
+                        record.current_program_hash,
+                        record.schedule_interval_s,
+                        record.firmware_abi_version,
+                        record.last_battery_mv,
+                        last_seen_epoch,
+                        record.rf_channel.map(|c| c as u32),
+                        sensors_json,
+                        record.registered_by_phone_id,
+                    ],
+                )
+                .map_err(map_err)?;
+            Ok(rows > 0)
         })
         .await
     }
@@ -1170,6 +1273,9 @@ mod tests {
             firmware_abi_version: None,
             last_battery_mv: None,
             last_seen: None,
+            rf_channel: None,
+            sensors: Vec::new(),
+            registered_by_phone_id: None,
         }
     }
 

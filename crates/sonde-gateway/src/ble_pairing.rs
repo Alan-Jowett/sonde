@@ -78,7 +78,11 @@ impl RegistrationWindow {
     /// Open the window for `duration_s` seconds.
     pub fn open(&mut self, duration_s: u32) {
         self.open = true;
-        self.deadline = Some(Instant::now() + std::time::Duration::from_secs(duration_s as u64));
+        let dur = std::time::Duration::from_secs(duration_s as u64);
+        self.deadline = Instant::now().checked_add(dur);
+        // If checked_add returns None (overflow), the window stays open
+        // indefinitely until explicitly closed. This is safe — the admin
+        // can always call close().
     }
 
     /// Close the window immediately.
@@ -113,6 +117,8 @@ pub struct BlePairingController {
     window: tokio::sync::Mutex<RegistrationWindow>,
     /// Channel for forwarding passkey confirmation requests to the admin CLI.
     passkey_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
+    /// Cancel token for the auto-close timeout task.
+    timeout_cancel: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
 }
 
 impl Default for BlePairingController {
@@ -126,6 +132,7 @@ impl BlePairingController {
         Self {
             window: tokio::sync::Mutex::new(RegistrationWindow::new()),
             passkey_tx: tokio::sync::Mutex::new(None),
+            timeout_cancel: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -155,6 +162,21 @@ impl BlePairingController {
             tx.send(accept).is_ok()
         } else {
             false
+        }
+    }
+
+    /// Store a cancellation token for the auto-close timeout task.
+    pub async fn set_timeout_cancel(&self, token: tokio_util::sync::CancellationToken) {
+        // Cancel any previous timeout task before storing the new one.
+        if let Some(old) = self.timeout_cancel.lock().await.replace(token) {
+            old.cancel();
+        }
+    }
+
+    /// Cancel the auto-close timeout task (called by CloseBlePairing).
+    pub async fn cancel_timeout(&self) {
+        if let Some(token) = self.timeout_cancel.lock().await.take() {
+            token.cancel();
         }
     }
 }

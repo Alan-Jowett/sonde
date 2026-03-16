@@ -566,15 +566,15 @@ impl GatewayAdmin for AdminService {
         let duration_s = request.into_inner().duration_s;
         let duration_s = if duration_s == 0 { 120 } else { duration_s };
 
-        // Open the registration window and enable BLE advertising.
-        controller.open_window(duration_s).await;
+        // Enable BLE advertising first — if this fails, don't open the window.
         transport
             .send_ble_enable()
             .await
             .map_err(|e| Status::internal(format!("failed to enable BLE: {e}")))?;
 
-        // Send initial event and return a stream. The stream will be used
-        // by the CLI to receive passkey events and registration results.
+        // Open the registration window only after BLE is enabled.
+        controller.open_window(duration_s).await;
+
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let _ = tx
             .send(Ok(BlePairingEvent {
@@ -584,21 +584,34 @@ impl GatewayAdmin for AdminService {
             }))
             .await;
 
-        // Spawn a task that closes the window after the timeout and sends
-        // a WindowClosed event.
+        // Spawn a cancellable task that closes the window after timeout.
+        // The task is cancelled if CloseBlePairing is called or the stream
+        // is dropped (client disconnects).
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel.clone();
         let close_controller = Arc::clone(controller);
         let close_transport = Arc::clone(transport);
+
+        // Store the cancel token so CloseBlePairing can cancel it.
+        controller.set_timeout_cancel(cancel.clone()).await;
+
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(duration_s as u64)).await;
-            close_controller.close_window().await;
-            let _ = close_transport.send_ble_disable().await;
-            let _ = tx
-                .send(Ok(BlePairingEvent {
-                    event: Some(ble_pairing_event::Event::WindowClosed(
-                        BlePairingWindowClosed {},
-                    )),
-                }))
-                .await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(duration_s as u64)) => {
+                    close_controller.close_window().await;
+                    let _ = close_transport.send_ble_disable().await;
+                    let _ = tx
+                        .send(Ok(BlePairingEvent {
+                            event: Some(ble_pairing_event::Event::WindowClosed(
+                                BlePairingWindowClosed {},
+                            )),
+                        }))
+                        .await;
+                }
+                _ = cancel_clone.cancelled() => {
+                    // Window was closed explicitly — task exits cleanly.
+                }
+            }
         });
 
         Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
@@ -617,6 +630,8 @@ impl GatewayAdmin for AdminService {
             .as_ref()
             .ok_or_else(|| Status::unavailable("modem transport not configured"))?;
 
+        // Cancel the timeout task from OpenBlePairing (if running).
+        controller.cancel_timeout().await;
         controller.close_window().await;
         transport
             .send_ble_disable()

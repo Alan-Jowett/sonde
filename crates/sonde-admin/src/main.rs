@@ -715,14 +715,52 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
 
         Commands::Pairing { action } => match action {
             PairingAction::Start { duration_s } => {
-                // OpenBlePairing is server-streaming but currently returns
-                // unimplemented. When wired, this will stream events and
-                // handle passkey confirmation interactively.
+                use tokio_stream::StreamExt;
                 let resp = client.open_ble_pairing(*duration_s).await;
                 match resp {
-                    Ok(_stream) => {
-                        println!("BLE pairing window opened for {duration_s}s");
-                        // TODO: read stream events, display passkey, prompt
+                    Ok(mut stream) => {
+                        while let Some(event) = stream.next().await {
+                            match event {
+                                Ok(evt) => match evt.event {
+                                    Some(pb::ble_pairing_event::Event::WindowOpened(w)) => {
+                                        println!("BLE pairing window opened for {}s", w.duration_s);
+                                    }
+                                    Some(pb::ble_pairing_event::Event::Passkey(p)) => {
+                                        println!("Passkey: {:06}", p.passkey);
+                                        eprint!("Confirm pairing? (y/n): ");
+                                        let mut input = String::new();
+                                        if std::io::stdin().read_line(&mut input).is_ok() {
+                                            let accept = input.trim().eq_ignore_ascii_case("y");
+                                            if let Err(e) = client.confirm_ble_pairing(accept).await
+                                            {
+                                                eprintln!("Failed to confirm: {e}");
+                                            }
+                                        }
+                                    }
+                                    Some(pb::ble_pairing_event::Event::PhoneConnected(c)) => {
+                                        println!("Phone connected (MTU={})", c.mtu);
+                                    }
+                                    Some(pb::ble_pairing_event::Event::PhoneDisconnected(_)) => {
+                                        println!("Phone disconnected");
+                                    }
+                                    Some(pb::ble_pairing_event::Event::PhoneRegistered(r)) => {
+                                        println!(
+                                            "Phone registered: {} (key_hint=0x{:04x})",
+                                            r.label, r.phone_key_hint
+                                        );
+                                    }
+                                    Some(pb::ble_pairing_event::Event::WindowClosed(_)) => {
+                                        println!("BLE pairing window closed");
+                                        break;
+                                    }
+                                    None => {}
+                                },
+                                Err(e) => {
+                                    eprintln!("Stream error: {e}");
+                                    break;
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         eprintln!("Failed to open BLE pairing: {e}");

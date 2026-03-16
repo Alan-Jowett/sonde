@@ -496,23 +496,43 @@ async fn dispatch_message(
             }
         }
         ModemMessage::BleRecv(br) => {
-            if ble_tx.send(BleEvent::Recv(br)).await.is_err() {
-                debug!("BLE event channel closed, dropping BLE_RECV");
+            let send_result = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                ble_tx.send(BleEvent::Recv(br)),
+            )
+            .await;
+            if send_result.is_err() || matches!(send_result, Ok(Err(_))) {
+                debug!("BLE event channel full/closed, dropping BLE_RECV");
             }
         }
         ModemMessage::BleConnected(bc) => {
-            if ble_tx.send(BleEvent::Connected(bc)).await.is_err() {
-                debug!("BLE event channel closed, dropping BLE_CONNECTED");
+            let send_result = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                ble_tx.send(BleEvent::Connected(bc)),
+            )
+            .await;
+            if send_result.is_err() || matches!(send_result, Ok(Err(_))) {
+                debug!("BLE event channel full/closed, dropping BLE_CONNECTED");
             }
         }
         ModemMessage::BleDisconnected(bd) => {
-            if ble_tx.send(BleEvent::Disconnected(bd)).await.is_err() {
-                debug!("BLE event channel closed, dropping BLE_DISCONNECTED");
+            let send_result = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                ble_tx.send(BleEvent::Disconnected(bd)),
+            )
+            .await;
+            if send_result.is_err() || matches!(send_result, Ok(Err(_))) {
+                debug!("BLE event channel full/closed, dropping BLE_DISCONNECTED");
             }
         }
         ModemMessage::BlePairingConfirm(pc) => {
-            if ble_tx.send(BleEvent::PairingConfirm(pc)).await.is_err() {
-                debug!("BLE event channel closed, dropping BLE_PAIRING_CONFIRM");
+            let send_result = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                ble_tx.send(BleEvent::PairingConfirm(pc)),
+            )
+            .await;
+            if send_result.is_err() || matches!(send_result, Ok(Err(_))) {
+                debug!("BLE event channel full/closed, dropping BLE_PAIRING_CONFIRM");
             }
         }
         ModemMessage::ModemReady(mr) => {

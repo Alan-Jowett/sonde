@@ -126,8 +126,8 @@ pub struct BlePairingController {
 /// Events broadcast from the BLE loop to admin CLI streams.
 #[derive(Debug, Clone)]
 pub enum BlePairingEventKind {
-    PhoneConnected { mtu: u16 },
-    PhoneDisconnected,
+    PhoneConnected { peer_addr: [u8; 6], mtu: u16 },
+    PhoneDisconnected { peer_addr: [u8; 6] },
     PasskeyRequest { passkey: u32 },
     PhoneRegistered { label: String, phone_key_hint: u16 },
 }
@@ -219,13 +219,14 @@ pub async fn handle_ble_recv(
     storage: &Arc<dyn Storage>,
     window: &mut RegistrationWindow,
     rf_channel: u8,
+    controller: Option<&BlePairingController>,
 ) -> Option<Vec<u8>> {
     let (msg_type, body) = parse_ble_envelope(data)?;
 
     match msg_type {
         BLE_MSG_REQUEST_GW_INFO => handle_request_gw_info(body, identity),
         BLE_MSG_REGISTER_PHONE => {
-            handle_register_phone(body, identity, storage, window, rf_channel).await
+            handle_register_phone(body, identity, storage, window, rf_channel, controller).await
         }
         _ => {
             debug!(msg_type, "ignoring unknown BLE message type");
@@ -284,7 +285,11 @@ async fn handle_register_phone(
     storage: &Arc<dyn Storage>,
     window: &mut RegistrationWindow,
     rf_channel: u8,
+    controller: Option<&BlePairingController>,
 ) -> Option<Vec<u8>> {
+    /// Generic error code for malformed requests.
+    const ERROR_GENERIC: u8 = 0x01;
+
     // Check registration window
     if !window.is_open() {
         info!("REGISTER_PHONE rejected: registration window closed");
@@ -297,7 +302,7 @@ async fn handle_register_phone(
             len = body.len(),
             "REGISTER_PHONE: body too short (min 33 bytes)"
         );
-        return None;
+        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
     }
 
     let ephemeral_pubkey_bytes: [u8; 32] = body[..32].try_into().unwrap();
@@ -305,7 +310,7 @@ async fn handle_register_phone(
 
     if label_len > PHONE_LABEL_MAX_BYTES {
         warn!(label_len, "REGISTER_PHONE: label too long (max 64 bytes)");
-        return None;
+        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
     }
 
     if body.len() != 33 + label_len {
@@ -314,14 +319,14 @@ async fn handle_register_phone(
             actual = body.len(),
             "REGISTER_PHONE: body length mismatch"
         );
-        return None;
+        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
     }
 
     let label = match std::str::from_utf8(&body[33..33 + label_len]) {
         Ok(s) => s.to_owned(),
         Err(_) => {
             warn!("REGISTER_PHONE: label is not valid UTF-8");
-            return None;
+            return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
         }
     };
 
@@ -427,6 +432,14 @@ async fn handle_register_phone(
         "phone registered successfully"
     );
 
+    // Broadcast registration event to admin CLI streams.
+    if let Some(ctrl) = controller {
+        ctrl.broadcast_event(BlePairingEventKind::PhoneRegistered {
+            label: record.label.clone(),
+            phone_key_hint,
+        });
+    }
+
     encode_ble_envelope(BLE_MSG_PHONE_REGISTERED, &response)
 }
 
@@ -524,8 +537,8 @@ mod tests {
         let mut body = vec![0u8; 33];
         body[32] = 0; // label_len = 0
 
-        let response = handle_register_phone(&body, &identity, &storage, &mut window, 6).await;
-
+        let response =
+            handle_register_phone(&body, &identity, &storage, &mut window, 6, None).await;
         let response = response.unwrap();
         let (msg_type, resp_body) = parse_ble_envelope(&response).unwrap();
         assert_eq!(msg_type, BLE_MSG_ERROR);
@@ -554,7 +567,8 @@ mod tests {
         body.push(label.len() as u8);
         body.extend_from_slice(label);
 
-        let response = handle_register_phone(&body, &identity, &storage, &mut window, 6).await;
+        let response =
+            handle_register_phone(&body, &identity, &storage, &mut window, 6, None).await;
         let response = response.expect("should get PHONE_REGISTERED response");
 
         let (msg_type, resp_body) = parse_ble_envelope(&response).unwrap();

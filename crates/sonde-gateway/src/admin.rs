@@ -633,17 +633,19 @@ impl GatewayAdmin for AdminService {
                         match result {
                             Ok(evt) => {
                                 let proto_event = match evt {
-                                    BlePairingEventKind::PhoneConnected { mtu } => {
+                                    BlePairingEventKind::PhoneConnected { peer_addr, mtu } => {
                                         ble_pairing_event::Event::PhoneConnected(
                                             BlePairingPhoneConnected {
-                                                peer_addr: vec![],
+                                                peer_addr: peer_addr.to_vec(),
                                                 mtu: mtu as u32,
                                             },
                                         )
                                     }
-                                    BlePairingEventKind::PhoneDisconnected => {
+                                    BlePairingEventKind::PhoneDisconnected { peer_addr } => {
                                         ble_pairing_event::Event::PhoneDisconnected(
-                                            BlePairingPhoneDisconnected { peer_addr: vec![] },
+                                            BlePairingPhoneDisconnected {
+                                                peer_addr: peer_addr.to_vec(),
+                                            },
                                         )
                                     }
                                     BlePairingEventKind::PasskeyRequest { passkey } => {
@@ -669,9 +671,13 @@ impl GatewayAdmin for AdminService {
                                     break; // Client disconnected
                                 }
                             }
-                            Err(_) => {
-                                // Broadcast channel lagged or closed
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                // Missed some events due to slow consumer — keep going.
                                 continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                // Broadcast channel closed — exit loop.
+                                break;
                             }
                         }
                     }

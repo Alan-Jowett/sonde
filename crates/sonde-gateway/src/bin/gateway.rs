@@ -282,6 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &ble_storage,
                         &mut window,
                         ble_channel,
+                        Some(&ble_ctrl),
                     )
                     .await
                     {
@@ -298,6 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     ble_ctrl.broadcast_event(
                         sonde_gateway::ble_pairing::BlePairingEventKind::PhoneConnected {
+                            peer_addr: bc.peer_addr,
                             mtu: bc.mtu,
                         },
                     );
@@ -309,7 +311,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "BLE phone disconnected"
                     );
                     ble_ctrl.broadcast_event(
-                        sonde_gateway::ble_pairing::BlePairingEventKind::PhoneDisconnected,
+                        sonde_gateway::ble_pairing::BlePairingEventKind::PhoneDisconnected {
+                            peer_addr: bd.peer_addr,
+                        },
                     );
                 }
                 Some(BleEvent::PairingConfirm(pc)) => {

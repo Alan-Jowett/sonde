@@ -8,7 +8,6 @@
 //! like `MODEM_READY` are never silently dropped. Real DTR line-state
 //! detection should be added when the ESP-IDF HAL exposes callbacks.
 
-use esp_idf_hal::peripheral::Peripheral;
 use esp_idf_hal::usb_serial::{
     UsbDMinGpio, UsbDPlusGpio, UsbSerialConfig, UsbSerialDriver, USB_SERIAL,
 };
@@ -26,9 +25,9 @@ pub struct UsbCdcDriver {
 
 impl UsbCdcDriver {
     pub fn new(
-        usb: impl Peripheral<P = USB_SERIAL> + 'static,
-        usb_d_min: impl Peripheral<P = UsbDMinGpio> + 'static,
-        usb_d_plus: impl Peripheral<P = UsbDPlusGpio> + 'static,
+        usb: USB_SERIAL<'static>,
+        usb_d_min: UsbDMinGpio<'static>,
+        usb_d_plus: UsbDPlusGpio<'static>,
     ) -> Result<Self, esp_idf_sys::EspError> {
         let config = UsbSerialConfig::new();
         let serial = UsbSerialDriver::new(usb, usb_d_min, usb_d_plus, &config)?;

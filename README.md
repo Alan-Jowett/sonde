@@ -1,5 +1,10 @@
 <!-- SPDX-License-Identifier: MIT
   Copyright (c) 2026 sonde contributors -->
+
+<p align="center">
+  <img src="docs/sonde_logo.png" alt="Sonde Logo" width="256">
+</p>
+
 # Sonde
 
 **A programmable, verifiable runtime for distributed sensor nodes.**

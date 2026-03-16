@@ -29,6 +29,11 @@ CARGO_TARGET_DIR=F:\t cargo +esp build -p sonde-node --bin node --features esp -
 # NOTE: sonde-pair crate is planned — see issue #163.
 # docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:latest \
 #   cargo ndk -t arm64-v8a build -p sonde-pair --release
+
+# Build ESP32 firmware using the dev container (no local toolchain needed):
+docker run --rm -v "$(pwd)":/sonde -w /sonde ghcr.io/alan-jowett/sonde-esp-dev:latest \
+    cargo +esp build -p sonde-node --bin node --features esp --profile firmware \
+    --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
 ```
 
 ## Architecture

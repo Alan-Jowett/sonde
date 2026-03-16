@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-The Sonde workspace contains multiple crates with different platform requirements:
+The Sonde workspace contains several crates with different platform requirements:
 
 | Crate | Runs on | Toolchain needed |
 |-------|---------|-----------------|
@@ -24,7 +24,7 @@ The Sonde workspace contains multiple crates with different platform requirement
 | `sonde-e2e` | Host | Standard Rust |
 | `sonde-pair` (planned) | Android / Windows / Linux | Standard Rust + Android NDK ([dev container](#9--android--tauri-development-container)) |
 
-You only need the Espressif toolchain once the node or modem firmware crates are available. The protocol crate, gateway, and admin CLI build with a standard Rust toolchain on any platform.
+You only need the Espressif toolchain if you intend to build firmware (`sonde-node` or `sonde-modem`). The remaining crates build with a standard Rust toolchain on any platform.
 
 ---
 
@@ -66,11 +66,60 @@ cargo build -p sonde-protocol -p sonde-gateway
 
 ---
 
-## 3  Espressif Rust toolchain (ESP32 firmware)
+## 3  Docker-based ESP32 development (recommended)
+
+The easiest way to build ESP32 firmware is with the pre-built development container, which has all toolchain dependencies pre-installed.
+
+### 3.1  Using VS Code / GitHub Codespaces (devcontainer)
+
+The repository includes a [devcontainer](../.devcontainer/devcontainer.json) configuration. In VS Code:
+
+1. Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+2. Open the repo and select **"Reopen in Container"** when prompted.
+3. All ESP32 tools are available immediately — build firmware directly in the integrated terminal.
+
+On GitHub Codespaces, open the repo in a codespace and the container starts automatically.
+
+### 3.2  Using Docker directly
+
+Pull the image and mount the repo:
+
+```sh
+docker pull ghcr.io/alan-jowett/sonde-esp-dev:latest
+docker run --rm -v "$(pwd)":/sonde -w /sonde ghcr.io/alan-jowett/sonde-esp-dev:latest \
+    cargo +esp build -p sonde-node --bin node --features esp --profile firmware \
+    --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
+```
+
+Or start an interactive shell:
+
+```sh
+docker run --rm -it -v "$(pwd)":/sonde -w /sonde ghcr.io/alan-jowett/sonde-esp-dev:latest
+```
+
+### 3.3  Building both firmware targets
+
+**ESP32-C3 node firmware (RISC-V):**
+```sh
+cargo +esp build -p sonde-node --bin node --features esp --profile firmware \
+    --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
+```
+
+**ESP32-S3 modem firmware (Xtensa):**
+```sh
+cargo +esp build -p sonde-modem --bin modem --features esp --profile firmware \
+    --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
+```
+
+> **Note:** On Windows, use a short `CARGO_TARGET_DIR` (e.g., `F:\t`) to avoid exceeding MAX_PATH. See the [README](../README.md) for details.
+
+---
+
+## 4  Espressif Rust toolchain (manual setup)
 
 The node firmware targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa). The modem firmware targets ESP32-S3 (Xtensa) only. Both use the ESP-IDF framework via `esp-idf-hal` and `esp-idf-svc`.
 
-### 3.1  System prerequisites
+### 4.1  System prerequisites
 
 Install these before proceeding:
 
@@ -94,7 +143,7 @@ brew install cmake ninja python3
 3. Install [CMake](https://cmake.org/download/) and [Ninja](https://github.com/nicknisi/ninja/releases) (add both to PATH).
 4. Install [Git for Windows](https://gitforwindows.org/).
 
-### 3.2  Install espup
+### 4.2  Install espup
 
 [espup](https://github.com/esp-rs/espup) manages the Espressif Rust toolchain (Xtensa LLVM fork, RISC-V target, and ESP-IDF source):
 
@@ -108,7 +157,7 @@ cargo install cargo-binstall
 cargo binstall espup
 ```
 
-### 3.3  Install the Espressif toolchain
+### 4.3  Install the Espressif toolchain
 
 ```sh
 espup install
@@ -133,7 +182,7 @@ After installation, **source the environment file** so the custom toolchain is a
 
 > **Tip:** Add the source command to your shell profile (`.bashrc`, `.zshrc`, or PowerShell `$PROFILE`) so it runs automatically in every terminal session.
 
-### 3.4  Install ldproxy
+### 4.4  Install ldproxy
 
 The ESP-IDF build system requires `ldproxy` to wrap the linker:
 
@@ -141,7 +190,7 @@ The ESP-IDF build system requires `ldproxy` to wrap the linker:
 cargo install ldproxy
 ```
 
-### 3.5  Install espflash
+### 4.5  Install espflash
 
 [espflash](https://github.com/esp-rs/espflash) is the tool for flashing firmware and monitoring serial output:
 
@@ -149,9 +198,9 @@ cargo install ldproxy
 cargo install espflash
 ```
 
-### 3.6  Verify the toolchain
+### 4.6  Verify the toolchain
 
-After setup, verify you can target the ESP32 chips. These commands will work once the firmware crates are added to the workspace (see [implementation-guide.md](implementation-guide.md) Phase 5 and Phase 3):
+After setup, verify you can target the ESP32 chips:
 
 ```sh
 # List installed targets (should include esp targets)
@@ -169,11 +218,9 @@ cargo build -p sonde-node --target xtensa-esp32s3-espidf
 
 ---
 
-## 4  Flashing firmware
+## 5  Flashing firmware
 
-> **Note:** The firmware crates (`sonde-modem`, `sonde-node`) are not yet in the workspace. The commands below will work once they are added (see [implementation-guide.md](implementation-guide.md) Phase 3 and Phase 5).
-
-### 4.1  Modem (ESP32-S3)
+### 5.1  Modem (ESP32-S3)
 
 Connect the ESP32-S3 board via USB, then:
 
@@ -183,19 +230,19 @@ cargo espflash flash -p sonde-modem --features esp --target xtensa-esp32s3-espid
 
 The `--monitor` flag opens a serial console after flashing so you can see log output.
 
-### 4.2  Node (ESP32-C3)
+### 5.2  Node (ESP32-C3)
 
 ```sh
 cargo espflash flash -p sonde-node --target riscv32imc-esp-espidf --monitor
 ```
 
-### 4.3  Node (ESP32-S3)
+### 5.3  Node (ESP32-S3)
 
 ```sh
 cargo espflash flash -p sonde-node --target xtensa-esp32s3-espidf --monitor
 ```
 
-### 4.4  Serial port permissions (Linux)
+### 5.4  Serial port permissions (Linux)
 
 On Linux, you may need to add your user to the `dialout` group to access serial ports:
 
@@ -207,9 +254,9 @@ Log out and back in for the group change to take effect.
 
 ---
 
-## 5  Repository setup
+## 6  Repository setup
 
-### 5.1  Clone and configure git hooks
+### 6.1  Clone and configure git hooks
 
 ```sh
 git clone https://github.com/Alan-Jowett/sonde.git
@@ -226,7 +273,7 @@ pip install pre-commit
 pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
-### 5.2  SPDX headers
+### 6.2  SPDX headers
 
 Every `.rs` file must start with:
 ```rust
@@ -242,7 +289,7 @@ Every `.md` file must start with:
 
 ---
 
-## 6  Project structure
+## 7  Project structure
 
 The target workspace layout (see [implementation-guide.md §2](implementation-guide.md) for details):
 
@@ -266,7 +313,7 @@ See [implementation-guide.md](implementation-guide.md) for the full module break
 
 ---
 
-## 7  Common tasks
+## 8  Common tasks
 
 | Task | Command |
 |------|---------|
@@ -275,14 +322,14 @@ See [implementation-guide.md](implementation-guide.md) for the full module break
 | Test protocol crate | `cargo test -p sonde-protocol` |
 | Test gateway | `cargo test -p sonde-gateway` |
 | Build host crates | `cargo build -p sonde-protocol -p sonde-gateway` |
-| Build modem firmware (planned) | `cargo build -p sonde-modem --features esp --target xtensa-esp32s3-espidf` |
-| Build node firmware (planned) | `cargo build -p sonde-node --target riscv32imc-esp-espidf` |
-| Flash modem (planned) | `cargo espflash flash -p sonde-modem --features esp --target xtensa-esp32s3-espidf --monitor` |
-| Flash node (planned) | `cargo espflash flash -p sonde-node --target riscv32imc-esp-espidf --monitor` |
+| Build modem firmware | `cargo +esp build -p sonde-modem --bin modem --features esp --profile firmware --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort` |
+| Build node firmware | `cargo +esp build -p sonde-node --bin node --features esp --profile firmware --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort` |
+| Flash modem | `cargo espflash flash -p sonde-modem --features esp --target xtensa-esp32s3-espidf --monitor` |
+| Flash node | `cargo espflash flash -p sonde-node --features esp --target riscv32imc-esp-espidf --monitor` |
 
 ---
 
-## 8  Troubleshooting
+## 9  Troubleshooting
 
 ### espup install fails
 

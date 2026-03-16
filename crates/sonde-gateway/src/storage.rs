@@ -40,6 +40,10 @@ pub trait Storage: Send + Sync {
     async fn get_node(&self, node_id: &str) -> Result<Option<NodeRecord>, StorageError>;
     async fn get_nodes_by_key_hint(&self, key_hint: u16) -> Result<Vec<NodeRecord>, StorageError>;
     async fn upsert_node(&self, record: &NodeRecord) -> Result<(), StorageError>;
+    /// Insert a node only if no node with the same `node_id` exists.
+    ///
+    /// Returns `true` if the node was inserted, `false` if it already existed.
+    async fn insert_node_if_not_exists(&self, record: &NodeRecord) -> Result<bool, StorageError>;
     async fn delete_node(&self, node_id: &str) -> Result<(), StorageError>;
 
     // ── Program library ────────────────────────────────────────
@@ -144,6 +148,18 @@ impl Storage for InMemoryStorage {
         let mut nodes = self.nodes.write().await;
         nodes.insert(record.node_id.clone(), record.clone());
         Ok(())
+    }
+
+    async fn insert_node_if_not_exists(&self, record: &NodeRecord) -> Result<bool, StorageError> {
+        let mut nodes = self.nodes.write().await;
+        use std::collections::hash_map::Entry;
+        match nodes.entry(record.node_id.clone()) {
+            Entry::Occupied(_) => Ok(false),
+            Entry::Vacant(e) => {
+                e.insert(record.clone());
+                Ok(true)
+            }
+        }
     }
 
     async fn delete_node(&self, node_id: &str) -> Result<(), StorageError> {

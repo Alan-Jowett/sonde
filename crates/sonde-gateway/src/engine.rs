@@ -53,7 +53,7 @@ pub struct Gateway {
     /// Optional handler router for APP_DATA dispatch (Phase 2C).
     handler_router: Option<Arc<HandlerRouter>>,
     /// Cached gateway identity for ECDH decryption (lazy-loaded from storage).
-    identity_cache: RwLock<Option<GatewayIdentity>>,
+    identity_cache: RwLock<Option<Arc<GatewayIdentity>>>,
 }
 
 impl Gateway {
@@ -171,19 +171,20 @@ impl Gateway {
     }
 
     /// Lazy-load the gateway identity from storage (cached after first load).
-    async fn get_identity(&self) -> Option<GatewayIdentity> {
+    async fn get_identity(&self) -> Option<Arc<GatewayIdentity>> {
         // Fast path: return cached identity.
         {
             let cache = self.identity_cache.read().await;
             if let Some(ref id) = *cache {
-                return Some(id.clone());
+                return Some(Arc::clone(id));
             }
         }
         // Slow path: load from storage.
         let id = self.storage.load_gateway_identity().await.ok()??;
+        let arc = Arc::new(id);
         let mut cache = self.identity_cache.write().await;
-        *cache = Some(id.clone());
-        Some(id)
+        *cache = Some(Arc::clone(&arc));
+        Some(arc)
     }
 
     /// Handle a PEER_REQUEST frame (GW-1211–GW-1221).
@@ -200,6 +201,9 @@ impl Gateway {
         use hkdf::Hkdf;
         use sha2::Sha256;
         use x25519_dalek::PublicKey as X25519PublicKey;
+        use zeroize::Zeroizing;
+
+        use crate::registry::SensorDescriptor;
 
         const HKDF_INFO: &[u8] = b"sonde-node-pair-v1";
         const PROOF_DOMAIN: &[u8] = b"sonde-peer-ack-v1";
@@ -242,10 +246,10 @@ impl Gateway {
 
         let gateway_id = identity.gateway_id();
         let hkdf = Hkdf::<Sha256>::new(Some(gateway_id), shared_secret.as_bytes());
-        let mut aes_key = [0u8; 32];
-        hkdf.expand(HKDF_INFO, &mut aes_key).ok()?;
+        let mut aes_key = Zeroizing::new([0u8; 32]);
+        hkdf.expand(HKDF_INFO, &mut *aes_key).ok()?;
 
-        let cipher = Aes256Gcm::new_from_slice(&aes_key).ok()?;
+        let cipher = Aes256Gcm::new_from_slice(&*aes_key).ok()?;
         let nonce = Nonce::from_slice(gcm_nonce);
         let authenticated_request = cipher
             .decrypt(
@@ -279,10 +283,8 @@ impl Gateway {
             if matches!(phone.status, PhonePskStatus::Revoked) {
                 continue;
             }
-            let expected = self.crypto_hmac.compute(&*phone.psk, cbor_bytes);
-            if phone_hmac.len() == 32 {
-                let hmac_arr: &[u8; 32] = phone_hmac.try_into().ok()?;
-                if expected == *hmac_arr {
+            if let Ok(hmac_arr) = <&[u8; 32]>::try_from(phone_hmac) {
+                if self.crypto_hmac.verify(&*phone.psk, cbor_bytes, hmac_arr) {
                     matched_phone_id = Some(phone.phone_id);
                     break;
                 }
@@ -299,6 +301,7 @@ impl Gateway {
         let mut node_psk: Option<[u8; 32]> = None;
         let mut rf_channel: Option<u8> = None;
         let mut timestamp: Option<u64> = None;
+        let mut sensors: Vec<SensorDescriptor> = Vec::new();
 
         for (k, v) in pairing_map {
             let key = k.as_integer().and_then(|i| u64::try_from(i).ok())?;
@@ -325,8 +328,57 @@ impl Gateway {
                         .and_then(|i| u64::try_from(i).ok())
                         .and_then(|v| u8::try_from(v).ok())
                 }
+                5 => {
+                    // Parse sensor descriptor array.
+                    if let Some(arr) = v.as_array() {
+                        for item in arr {
+                            if let Some(sensor_map) = item.as_map() {
+                                let mut sensor_type: Option<u8> = None;
+                                let mut sensor_id: Option<u8> = None;
+                                let mut label: Option<String> = None;
+                                for (sk, sv) in sensor_map {
+                                    let skey =
+                                        sk.as_integer().and_then(|i| u64::try_from(i).ok());
+                                    match skey {
+                                        Some(1) => {
+                                            sensor_type = sv
+                                                .as_integer()
+                                                .and_then(|i| u64::try_from(i).ok())
+                                                .and_then(|v| u8::try_from(v).ok())
+                                        }
+                                        Some(2) => {
+                                            sensor_id = sv
+                                                .as_integer()
+                                                .and_then(|i| u64::try_from(i).ok())
+                                                .and_then(|v| u8::try_from(v).ok())
+                                        }
+                                        Some(3) => {
+                                            label = sv.as_text().map(|s| {
+                                                let bytes = s.as_bytes();
+                                                if bytes.len() > 64 {
+                                                    String::from_utf8_lossy(&bytes[..64])
+                                                        .into_owned()
+                                                } else {
+                                                    s.to_owned()
+                                                }
+                                            })
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if let (Some(st), Some(si)) = (sensor_type, sensor_id) {
+                                    sensors.push(SensorDescriptor {
+                                        sensor_type: st,
+                                        sensor_id: si,
+                                        label,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
                 6 => timestamp = v.as_integer().and_then(|i| u64::try_from(i).ok()),
-                _ => {} // ignore unknown keys (including 5=sensors for now)
+                _ => {} // ignore unknown keys for forward compatibility
             }
         }
 
@@ -335,6 +387,16 @@ impl Gateway {
         let node_psk = node_psk?;
         let rf_channel = rf_channel?;
         let timestamp = timestamp?;
+
+        // Validate node_id length (1–64 bytes).
+        if node_id.is_empty() || node_id.len() > 64 {
+            return None;
+        }
+
+        // Validate rf_channel range (1–13).
+        if !(1..=13).contains(&rf_channel) {
+            return None;
+        }
 
         // Step 8: Verify frame HMAC with extracted node_psk (GW-1214).
         if !verify_frame(decoded, &node_psk, &self.crypto_hmac) {
@@ -350,21 +412,19 @@ impl Gateway {
             return None;
         }
 
-        // Step 10: Check node_id uniqueness (GW-1216).
-        if self.storage.get_node(&node_id).await.ok()?.is_some() {
-            return None;
-        }
-
-        // Step 11: Verify key_hint consistency (GW-1217).
+        // Step 10 + 11: Verify key_hint consistency (GW-1217).
         if decoded.header.key_hint != node_key_hint {
             return None;
         }
 
-        // Step 12: Register node (GW-1218).
+        // Step 10 + 12: Atomically register node, rejecting if node_id exists (GW-1216, GW-1218).
         let mut record = NodeRecord::new(node_id, node_key_hint, node_psk);
         record.rf_channel = Some(rf_channel);
+        record.sensors = sensors;
         record.registered_by_phone_id = Some(phone_id);
-        self.storage.upsert_node(&record).await.ok()?;
+        if !self.storage.insert_node_if_not_exists(&record).await.ok()? {
+            return None; // node_id already registered
+        }
 
         // Step 13: Send PEER_ACK (GW-1219).
         // registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" || encrypted_payload)

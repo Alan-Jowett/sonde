@@ -42,7 +42,7 @@ use zeroize::Zeroizing;
 use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
-use crate::registry::NodeRecord;
+use crate::registry::{NodeRecord, SensorDescriptor};
 
 // ── Bundle constants ─────────────────────────────────────────────────────────
 
@@ -75,6 +75,9 @@ const NODE_KEY_SCHEDULE: i64 = 6;
 const NODE_KEY_FW_ABI: i64 = 7;
 const NODE_KEY_BATTERY: i64 = 8;
 const NODE_KEY_LAST_SEEN: i64 = 9;
+const NODE_KEY_RF_CHANNEL: i64 = 10;
+const NODE_KEY_SENSORS: i64 = 11;
+const NODE_KEY_REGISTERED_BY: i64 = 12;
 
 // ── CBOR key IDs (program map) ──────────────────────────────────────────────
 
@@ -367,6 +370,51 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
             Value::Integer(NODE_KEY_LAST_SEEN.into()),
             opt_i64_val(last_seen_s),
         ),
+        (
+            Value::Integer(NODE_KEY_RF_CHANNEL.into()),
+            match n.rf_channel {
+                Some(ch) => Value::Integer(ch.into()),
+                None => Value::Null,
+            },
+        ),
+        (
+            Value::Integer(NODE_KEY_SENSORS.into()),
+            if n.sensors.is_empty() {
+                Value::Null
+            } else {
+                Value::Array(
+                    n.sensors
+                        .iter()
+                        .map(|s| {
+                            let mut entries = vec![
+                                (
+                                    Value::Integer(1.into()),
+                                    Value::Integer(s.sensor_type.into()),
+                                ),
+                                (
+                                    Value::Integer(2.into()),
+                                    Value::Integer(s.sensor_id.into()),
+                                ),
+                            ];
+                            if let Some(ref label) = s.label {
+                                entries.push((
+                                    Value::Integer(3.into()),
+                                    Value::Text(label.clone()),
+                                ));
+                            }
+                            Value::Map(entries)
+                        })
+                        .collect(),
+                )
+            },
+        ),
+        (
+            Value::Integer(NODE_KEY_REGISTERED_BY.into()),
+            match n.registered_by_phone_id {
+                Some(id) => Value::Integer(id.into()),
+                None => Value::Null,
+            },
+        ),
     ])
 }
 
@@ -597,6 +645,9 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let mut firmware_abi_version: Option<Option<u32>> = None;
     let mut last_battery_mv: Option<Option<u32>> = None;
     let mut last_seen_epoch_s: Option<Option<i64>> = None;
+    let mut rf_channel: Option<u8> = None;
+    let mut sensors: Vec<SensorDescriptor> = Vec::new();
+    let mut registered_by_phone_id: Option<u32> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -657,6 +708,56 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                 Some(NODE_KEY_LAST_SEEN) => {
                     last_seen_epoch_s = Some(opt_i64_from_cbor(v, "last_seen_epoch_s")?);
                 }
+                Some(NODE_KEY_RF_CHANNEL) => {
+                    if let Value::Integer(i) = v {
+                        rf_channel = u8::try_from(i).ok();
+                    }
+                }
+                Some(NODE_KEY_SENSORS) => {
+                    if let Value::Array(arr) = v {
+                        for item in arr {
+                            if let Value::Map(sensor_map) = item {
+                                let mut st: Option<u8> = None;
+                                let mut si: Option<u8> = None;
+                                let mut label: Option<String> = None;
+                                for (sk, sv) in sensor_map {
+                                    if let Value::Integer(skey) = sk {
+                                        match i64::try_from(skey).ok() {
+                                            Some(1) => {
+                                                if let Value::Integer(i) = sv {
+                                                    st = u8::try_from(i).ok();
+                                                }
+                                            }
+                                            Some(2) => {
+                                                if let Value::Integer(i) = sv {
+                                                    si = u8::try_from(i).ok();
+                                                }
+                                            }
+                                            Some(3) => {
+                                                if let Value::Text(s) = sv {
+                                                    label = Some(s);
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                if let (Some(sensor_type), Some(sensor_id)) = (st, si) {
+                                    sensors.push(SensorDescriptor {
+                                        sensor_type,
+                                        sensor_id,
+                                        label,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(NODE_KEY_REGISTERED_BY) => {
+                    if let Value::Integer(i) = v {
+                        registered_by_phone_id = u32::try_from(i).ok();
+                    }
+                }
                 _ => {} // ignore unknown fields for forward compatibility
             }
         }
@@ -702,9 +803,9 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         firmware_abi_version: firmware_abi_version.flatten(),
         last_battery_mv: last_battery_mv.flatten(),
         last_seen,
-        rf_channel: None,
-        sensors: Vec::new(),
-        registered_by_phone_id: None,
+        rf_channel,
+        sensors,
+        registered_by_phone_id,
     })
 }
 

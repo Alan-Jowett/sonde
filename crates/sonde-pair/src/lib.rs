@@ -18,3 +18,8 @@ pub mod validation;
 
 #[cfg(feature = "btleplug")]
 pub mod btleplug_transport;
+
+#[cfg(feature = "android")]
+pub mod android_store;
+#[cfg(feature = "android")]
+pub mod android_transport;

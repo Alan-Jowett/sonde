@@ -26,12 +26,10 @@ fn main() {
     use sonde_node::crypto::{EspRng, SoftwareHmac, SoftwareSha256};
     use sonde_node::esp_ble_pairing::run_ble_pairing_mode;
     use sonde_node::esp_hal::{EspBatteryReader, EspClock, EspHal};
-    use sonde_node::esp_pairing_serial::EspUsbSerialJtag;
     use sonde_node::esp_sleep::EspSleepController;
     use sonde_node::esp_storage::NvsStorage;
     use sonde_node::esp_transport::EspNowTransport;
     use sonde_node::map_storage::{MapStorage, MAP_BUDGET};
-    use sonde_node::pairing::run_pairing_mode;
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
     use sonde_node::traits::{PlatformStorage, SleepController};
     use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
@@ -67,23 +65,12 @@ fn main() {
     // Boot priority (ND-0900)
     //
     // Check in order:
-    //   1. USB-CDC connected → USB pairing mode
-    //   2. No PSK OR pairing button held ≥ 500 ms → BLE pairing mode
-    //   3. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
-    //   4. PSK stored, reg_complete set → normal WAKE cycle
+    //   1. No PSK OR pairing button held ≥ 500 ms → BLE pairing mode
+    //   2. PSK stored, reg_complete NOT set → PEER_REQUEST mode (WAKE cycle variant)
+    //   3. PSK stored, reg_complete set → normal WAKE cycle
     // ---------------------------------------------------------------------------
 
-    // (1) USB-CDC: try to open the USB Serial/JTAG port.  If it succeeds, a
-    //     host is connected and we enter USB pairing mode.
-    if let Ok(mut usb_serial) = EspUsbSerialJtag::new() {
-        info!("USB-CDC detected — entering USB pairing mode");
-        run_pairing_mode(&mut usb_serial, &mut storage, &mut map_storage);
-        drop(usb_serial);
-        info!("USB pairing mode exited — rebooting");
-        sleep_ctrl.reboot();
-    }
-
-    // (2) No PSK, or pairing button held ≥ 500 ms → BLE pairing mode.
+    // (1) No PSK, or pairing button held ≥ 500 ms → BLE pairing mode.
     //
     // Pairing button is GPIO 9 on the ESP32-C3 DevKitM-1 (active LOW).
     // We sample it for 500 ms immediately after boot.  If the pin is

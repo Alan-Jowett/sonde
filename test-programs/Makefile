@@ -35,7 +35,8 @@ SRCS   := nop.c \
           oversized_map.c \
           deep_call.c \
           budget_exceeded.c \
-          i2c_sensor.c
+          i2c_sensor.c \
+          tmp102_sensor.c
 
 OBJS   := $(SRCS:.c=.o)
 

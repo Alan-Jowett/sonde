@@ -29,8 +29,3 @@ pub mod wake_cycle;
 
 /// Firmware ABI version. Bumped when the helper API changes.
 pub const FIRMWARE_ABI_VERSION: u32 = 1;
-
-/// Firmware version reported during BLE pairing. Bumped when the node
-/// firmware gains or changes pairing-visible features. Distinct from
-/// `FIRMWARE_ABI_VERSION`, which tracks BPF helper API compatibility.
-pub const FIRMWARE_VERSION: u32 = 1;

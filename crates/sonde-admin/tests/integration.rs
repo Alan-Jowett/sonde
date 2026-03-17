@@ -114,15 +114,20 @@ async fn grpc_register_remove_node() {
 async fn grpc_ingest_list_program() {
     let mut client = start_server_and_connect("ingest_list_program").await;
 
-    // Build a minimal CBOR program image.
-    let image = sonde_protocol::ProgramImage {
-        bytecode: vec![
-            0xB7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
-            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
-        ],
-        maps: vec![],
-    };
-    let cbor = image.encode_deterministic().unwrap();
+    // Build a minimal CBOR program image: {1: <bytecode>, 2: []}.
+    // Key 1 = bytecode, Key 2 = maps (empty array).
+    let bytecode: Vec<u8> = vec![
+        0xB7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+        0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+    ];
+    // Deterministic CBOR: map(2) { 1: bytes(bytecode), 2: array(0) }
+    let mut cbor = Vec::new();
+    cbor.push(0xA2); // map(2)
+    cbor.push(0x01); // key: 1
+    cbor.push(0x50); // bytes(16)
+    cbor.extend_from_slice(&bytecode);
+    cbor.push(0x02); // key: 2
+    cbor.push(0x80); // array(0)
 
     // Profile 1 = Resident (sonde_admin::pb::VerificationProfile::Resident).
     let (hash, size) = client.ingest_program(cbor.clone(), 1, None).await.unwrap();

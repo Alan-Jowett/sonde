@@ -70,9 +70,8 @@ async fn do_startup_handshake(server: &mut DuplexStream, channel: u8) {
 async fn create_transport_and_server(channel: u8) -> (UsbEspNowTransport, DuplexStream) {
     let (client, mut server) = duplex(4096);
 
-    let transport_handle = tokio::spawn(async move {
-        UsbEspNowTransport::new(client, channel).await.unwrap()
-    });
+    let transport_handle =
+        tokio::spawn(async move { UsbEspNowTransport::new(client, channel).await.unwrap() });
 
     do_startup_handshake(&mut server, channel).await;
 
@@ -176,16 +175,18 @@ async fn t1102_internal_message_demux() {
 async fn t1103_startup_sequence() {
     let (client, mut server) = duplex(4096);
 
-    let transport_handle = tokio::spawn(async move {
-        UsbEspNowTransport::new(client, 6).await.unwrap()
-    });
+    let transport_handle =
+        tokio::spawn(async move { UsbEspNowTransport::new(client, 6).await.unwrap() });
 
     let mut decoder = FrameDecoder::new();
     let mut buf = [0u8; 256];
 
     // 1. Assert: RESET received first.
     let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
-    assert!(matches!(msg, ModemMessage::Reset), "first msg must be RESET");
+    assert!(
+        matches!(msg, ModemMessage::Reset),
+        "first msg must be RESET"
+    );
 
     // 2. Send MODEM_READY.
     let ready = ModemMessage::ModemReady(ModemReady {
@@ -223,11 +224,8 @@ async fn t1103_startup_sequence() {
 async fn t1104_startup_modem_ready_timeout() {
     let (client, _server) = duplex(4096);
     // Don't respond with MODEM_READY — transport should timeout.
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        UsbEspNowTransport::new(client, 6),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(Duration::from_secs(10), UsbEspNowTransport::new(client, 6)).await;
 
     match result {
         Ok(Err(_)) => {} // Transport returned error — expected
@@ -400,7 +398,10 @@ async fn t1108_e2e_wake_cycle_over_pty() {
 
     // Send response back through transport.
     let resp_data = response.unwrap();
-    transport.send(&resp_data, &[0x11; 6].to_vec()).await.unwrap();
+    transport
+        .send(&resp_data, &[0x11; 6].to_vec())
+        .await
+        .unwrap();
 
     // Read SEND_FRAME from server side.
     let mut decoder = FrameDecoder::new();
@@ -412,8 +413,7 @@ async fn t1108_e2e_wake_cycle_over_pty() {
             let decoded = decode_frame(&sf.frame_data).unwrap();
             assert_eq!(decoded.header.msg_type, MSG_COMMAND);
             assert!(verify_frame(&decoded, &psk, &RustCryptoHmac));
-            let gw_msg =
-                GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+            let gw_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
             match gw_msg {
                 GatewayMessage::Command {
                     starting_seq,

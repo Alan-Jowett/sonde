@@ -5,9 +5,7 @@
 
 use std::path::PathBuf;
 
-use sonde_gateway::key_provider::{
-    EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError,
-};
+use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -197,9 +195,8 @@ fn t0603i_secret_service_item_not_found() {
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn t0603j_secret_service_unavailable_on_non_linux() {
-    let err = KeyProviderError::NotAvailable(
-        "secret-service backend is only available on Linux".into(),
-    );
+    let err =
+        KeyProviderError::NotAvailable("secret-service backend is only available on Linux".into());
     assert!(err.to_string().contains("Linux"));
 }
 
@@ -225,11 +222,7 @@ async fn t0603k_wrong_master_key_detected_at_startup() {
     // Open with key A and register a node so there's encrypted data.
     {
         let storage = SqliteStorage::open(db_str, key_a).unwrap();
-        let node = sonde_gateway::registry::NodeRecord::new(
-            "test-node".into(),
-            0x1234,
-            [0xAA; 32],
-        );
+        let node = sonde_gateway::registry::NodeRecord::new("test-node".into(), 0x1234, [0xAA; 32]);
         storage.upsert_node(&node).await.unwrap();
     }
 

@@ -11,7 +11,7 @@ use aes_gcm::{Aes256Gcm, Nonce as GcmNonce};
 use ed25519_dalek::{Signature, VerifyingKey};
 use hkdf::Hkdf;
 use sha2::Sha256;
-use x25519_dalek::{StaticSecret as X25519StaticSecret, PublicKey as X25519PublicKey};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 
 use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
 use sonde_gateway::gateway_identity::GatewayIdentity;
@@ -44,7 +44,11 @@ async fn t1200_ed25519_keypair_generation() {
     // Start with empty storage — generate identity.
     let identity = GatewayIdentity::generate().unwrap();
     assert_ne!(*identity.seed(), [0u8; 32], "seed must not be all-zero");
-    assert_ne!(*identity.public_key(), [0u8; 32], "public key must not be all-zero");
+    assert_ne!(
+        *identity.public_key(),
+        [0u8; 32],
+        "public key must not be all-zero"
+    );
 
     // Persist.
     storage.store_gateway_identity(&identity).await.unwrap();
@@ -71,7 +75,11 @@ async fn t1201_gateway_id_persistence() {
     let storage = Arc::new(InMemoryStorage::new());
 
     let identity = GatewayIdentity::generate().unwrap();
-    assert_ne!(*identity.gateway_id(), [0u8; 16], "gateway_id must not be all-zero");
+    assert_ne!(
+        *identity.gateway_id(),
+        [0u8; 16],
+        "gateway_id must not be all-zero"
+    );
 
     storage.store_gateway_identity(&identity).await.unwrap();
     let loaded = storage.load_gateway_identity().await.unwrap().unwrap();
@@ -102,7 +110,11 @@ fn t1202_x25519_conversion_and_low_order_rejection() {
     let peer_secret = X25519StaticSecret::from(peer_scalar);
     let peer_public = X25519PublicKey::from(&peer_secret);
     let shared = secret.diffie_hellman(&peer_public);
-    assert_ne!(*shared.as_bytes(), [0u8; 32], "ECDH shared secret must not be zero");
+    assert_ne!(
+        *shared.as_bytes(),
+        [0u8; 32],
+        "ECDH shared secret must not be zero"
+    );
 }
 
 // ── T-1203: REQUEST_GW_INFO happy path ──────────────────────────────────────
@@ -123,7 +135,10 @@ async fn t1203_request_gw_info_happy_path() {
     let envelope = encode_ble_envelope(BLE_MSG_REQUEST_GW_INFO, &challenge).unwrap();
 
     let response = handle_ble_recv(&envelope, &identity, &storage, &mut window, 7, None).await;
-    assert!(response.is_some(), "REQUEST_GW_INFO must produce a response");
+    assert!(
+        response.is_some(),
+        "REQUEST_GW_INFO must produce a response"
+    );
 
     let resp = response.unwrap();
     let (msg_type, body) = parse_ble_envelope(&resp).unwrap();
@@ -181,7 +196,9 @@ async fn t1204_gw_info_wrong_challenge() {
     let verifying_key = VerifyingKey::from_bytes(&gw_public_key).unwrap();
     let signature = Signature::from_bytes(&sig_bytes);
     assert!(
-        verifying_key.verify_strict(&wrong_input, &signature).is_err(),
+        verifying_key
+            .verify_strict(&wrong_input, &signature)
+            .is_err(),
         "signature must NOT verify with wrong challenge"
     );
 }
@@ -284,7 +301,13 @@ async fn t1207_register_phone_happy_path() {
     let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
     let gcm_nonce = GcmNonce::from_slice(nonce);
     let plaintext = cipher
-        .decrypt(gcm_nonce, aes_gcm::aead::Payload { msg: ciphertext, aad: gateway_id })
+        .decrypt(
+            gcm_nonce,
+            aes_gcm::aead::Payload {
+                msg: ciphertext,
+                aad: gateway_id,
+            },
+        )
         .expect("AES-GCM decryption must succeed");
 
     // Plaintext: status(1) + phone_psk(32) + phone_key_hint(2) + rf_channel(1) = 36
@@ -334,7 +357,10 @@ async fn t1208_phone_psk_storage_and_revocation() {
     assert_eq!(phones.len(), 1, "one phone PSK must be stored");
     assert_eq!(phones[0].label, "my-phone");
     assert!(
-        matches!(phones[0].status, sonde_gateway::phone_trust::PhonePskStatus::Active),
+        matches!(
+            phones[0].status,
+            sonde_gateway::phone_trust::PhonePskStatus::Active
+        ),
         "phone PSK must be active"
     );
 
@@ -342,7 +368,10 @@ async fn t1208_phone_psk_storage_and_revocation() {
     storage.revoke_phone_psk(phones[0].phone_id).await.unwrap();
     let phones = storage.list_phone_psks().await.unwrap();
     assert!(
-        matches!(phones[0].status, sonde_gateway::phone_trust::PhonePskStatus::Revoked),
+        matches!(
+            phones[0].status,
+            sonde_gateway::phone_trust::PhonePskStatus::Revoked
+        ),
         "phone PSK must be revoked"
     );
 }

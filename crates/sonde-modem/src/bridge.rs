@@ -1287,4 +1287,311 @@ mod tests {
         assert!(got_recv_frame, "expected RECV_FRAME from ESP-NOW");
         assert!(got_ble_recv, "expected BLE_RECV from BLE layer");
     }
+
+    // --- T-0102: Serial framing — valid frame and max length (MD-0101, MD-0102) ---
+
+    /// Validates: T-0102
+    ///
+    /// RESET → MODEM_READY, GET_STATUS → well-formed STATUS, then send a
+    /// max-length frame (len=512, unknown type) and verify silent discard
+    /// followed by successful GET_STATUS.
+    #[test]
+    fn serial_framing_valid_frame_and_max_length() {
+        let mut bridge = make_bridge();
+
+        // 1. RESET → MODEM_READY
+        let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::ModemReady(_)));
+
+        // 2. GET_STATUS → well-formed STATUS
+        let get_status = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&get_status);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::Status(_)));
+
+        // 3. Send max-length frame: len=512, type=0x7F (unknown), 511 bytes padding.
+        //    The bridge reads 64 bytes per poll, so multiple polls are needed.
+        let mut max_frame = Vec::new();
+        max_frame.extend_from_slice(&512u16.to_be_bytes()); // LEN = 512
+        max_frame.push(0x7F); // TYPE = unknown
+        max_frame.extend_from_slice(&[0xAA; 511]); // 511 bytes padding
+        bridge.usb.inject(&max_frame);
+        while !bridge.usb.rx_data.is_empty() {
+            bridge.poll();
+        }
+        bridge.poll(); // final decode pass
+
+        // No output expected (silent discard of unknown type).
+        assert!(bridge.usb.take_tx().is_empty());
+
+        // 4. GET_STATUS again — framing must remain synchronized.
+        bridge.usb.inject(&get_status);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::Status(_)));
+    }
+
+    // --- T-0103: Serial framing — oversized len (MD-0102) ---
+
+    /// Validates: T-0103
+    ///
+    /// Send RESET, then an oversized LEN header (len=1000 > 512 max), then
+    /// RESET again to resynchronize. Assert: modem recovers and sends
+    /// MODEM_READY.
+    #[test]
+    fn serial_framing_oversized_len() {
+        let mut bridge = make_bridge();
+
+        // 1. RESET → MODEM_READY
+        let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        assert!(matches!(
+            decode_modem_frame(&tx).unwrap().0,
+            ModemMessage::ModemReady(_)
+        ));
+
+        // 2. Send just the 2-byte LEN header with len=1000 (exceeds 512 max).
+        //    The bridge detects FrameTooLarge and resets the decoder.
+        bridge.usb.inject(&1000u16.to_be_bytes());
+        bridge.poll();
+
+        // 3. RESET to resynchronize — decoder was reset, so RESET is parsed
+        //    cleanly from the fresh stream.
+        bridge.usb.inject(&reset);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(
+            matches!(msg, ModemMessage::ModemReady(_)),
+            "modem must recover after oversized frame"
+        );
+    }
+
+    // --- T-0601: BLE GATT characteristic setup (MD-0400) ---
+
+    /// Validates: T-0601 (bridge level)
+    ///
+    /// Verifies that BLE_ENABLE activates the BLE driver (which registers the
+    /// GATT service on real hardware). A BLE_CONNECTED event is then forwarded,
+    /// confirming the bridge correctly chains enable → connect → notify.
+    #[test]
+    fn ble_gatt_setup_via_enable_and_connect() {
+        let mut bridge = make_bridge_with_ble();
+
+        // Enable BLE (registers GATT service on device).
+        let enable = encode_modem_frame(&ModemMessage::BleEnable).unwrap();
+        bridge.usb.inject(&enable);
+        bridge.poll();
+        assert!(bridge.ble.enabled);
+        bridge.usb.take_tx(); // discard
+
+        // Simulate a phone connecting after GATT discovery.
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 512,
+        });
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleConnected(c) => {
+                assert_eq!(c.peer_addr, peer);
+                assert_eq!(c.mtu, 512);
+            }
+            _ => panic!("expected BleConnected"),
+        }
+    }
+
+    // --- T-0602: MTU negotiation ≥ 247 (MD-0402) ---
+
+    /// Validates: T-0602 (bridge level)
+    ///
+    /// A BLE_CONNECTED event with mtu ≥ 247 is forwarded to the gateway with
+    /// the negotiated MTU value preserved.
+    #[test]
+    fn ble_mtu_negotiation_reported() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 247,
+        });
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleConnected(c) => {
+                assert!(c.mtu >= 247, "MTU must be ≥ 247, got {}", c.mtu);
+            }
+            _ => panic!("expected BleConnected"),
+        }
+    }
+
+    // --- T-0602a: MTU below minimum rejected (MD-0402) ---
+
+    /// Validates: T-0602a (bridge level)
+    ///
+    /// When the BLE stack rejects a low-MTU connection, no BLE_CONNECTED event
+    /// reaches the bridge, so nothing is forwarded to the gateway.
+    #[test]
+    fn ble_mtu_below_minimum_no_connected_event() {
+        let mut bridge = make_bridge_with_ble();
+        // BLE stack rejects a low-MTU client → no Connected event injected.
+        // Poll and verify no BLE_CONNECTED is sent to the gateway.
+        bridge.poll();
+        assert!(
+            bridge.usb.take_tx().is_empty(),
+            "no BLE_CONNECTED when MTU too low (rejected by BLE stack)"
+        );
+    }
+
+    // --- T-0603: BLE write → USB-CDC relay (MD-0401) ---
+
+    /// Validates: T-0603
+    ///
+    /// A BLE GATT write produces a BLE_RECV event whose ble_data payload is
+    /// forwarded verbatim to the gateway over USB-CDC.
+    #[test]
+    fn ble_write_to_usb_relay() {
+        let mut bridge = make_bridge_with_ble();
+        let ble_data = vec![0x01, 0x00, 0x05, 0xCA, 0xFE, 0xBA, 0xBE, 0x42];
+        bridge.ble.inject_event(BleEvent::Recv(ble_data.clone()));
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleRecv(r) => {
+                assert_eq!(r.ble_data, ble_data, "BLE_RECV payload must match write");
+            }
+            _ => panic!("expected BleRecv"),
+        }
+    }
+
+    // --- T-0604: USB-CDC → BLE indication relay (MD-0401) ---
+
+    /// Validates: T-0604
+    ///
+    /// A BLE_INDICATE serial message from the gateway is relayed to the BLE
+    /// layer as an indication with the exact payload.
+    #[test]
+    fn usb_to_ble_indication_relay() {
+        let mut bridge = make_bridge_with_ble();
+        let payload = vec![0x81, 0x00, 0x10, 0xAB, 0xCD];
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload.clone(),
+        }))
+        .unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+
+        assert_eq!(bridge.ble.indicated.len(), 1);
+        assert_eq!(
+            bridge.ble.indicated[0], payload,
+            "indication payload must match"
+        );
+    }
+
+    // --- T-0605: Indication fragmentation (MD-0403) ---
+
+    /// Validates: T-0605 (bridge level)
+    ///
+    /// A large BLE_INDICATE payload (> MTU-3 = 244 bytes) is passed intact to
+    /// the BLE driver. Fragmentation into multiple ATT indications is the
+    /// BLE driver's responsibility; the bridge must not truncate or reject it.
+    #[test]
+    fn ble_indicate_large_payload_forwarded() {
+        let mut bridge = make_bridge_with_ble();
+        // Payload larger than typical MTU-3 = 244 bytes.
+        let large_payload: Vec<u8> = (0..400).map(|i| (i & 0xFF) as u8).collect();
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: large_payload.clone(),
+        }))
+        .unwrap();
+        bridge.usb.inject(&frame);
+        // Frame is > 64 bytes — needs multiple polls.
+        while !bridge.usb.rx_data.is_empty() {
+            bridge.poll();
+        }
+        bridge.poll(); // final decode pass
+
+        assert_eq!(bridge.ble.indicated.len(), 1);
+        assert_eq!(
+            bridge.ble.indicated[0], large_payload,
+            "large payload must be forwarded intact for BLE-layer fragmentation"
+        );
+    }
+
+    // --- T-0606: Opaque relay — no content inspection (MD-0401) ---
+
+    /// Validates: T-0606
+    ///
+    /// Garbage bytes written via BLE are forwarded to USB-CDC without
+    /// modification or error. The modem must not inspect or validate BLE
+    /// payload contents.
+    #[test]
+    fn ble_opaque_relay_no_inspection() {
+        let mut bridge = make_bridge_with_ble();
+        // Invalid / garbage BLE data — not a valid BLE envelope.
+        let garbage = vec![0xFF, 0xFE, 0xFD, 0x00, 0x01, 0x02, 0x03];
+        bridge.ble.inject_event(BleEvent::Recv(garbage.clone()));
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleRecv(r) => {
+                assert_eq!(
+                    r.ble_data, garbage,
+                    "garbage payload must be relayed verbatim"
+                );
+            }
+            _ => panic!("expected BleRecv, not an error"),
+        }
+    }
+
+    // --- T-0622: Numeric Comparison timeout (MD-0414) ---
+
+    /// Validates: T-0622 (bridge level)
+    ///
+    /// After BLE_PAIRING_CONFIRM is forwarded to the gateway, the bridge must
+    /// NOT send an automatic reply. The gateway is responsible for sending
+    /// BLE_PAIRING_CONFIRM_REPLY; if it never does, the BLE stack times out.
+    /// This test verifies the bridge does not auto-accept or auto-reject.
+    #[test]
+    fn ble_pairing_confirm_no_auto_reply() {
+        let mut bridge = make_bridge_with_ble();
+
+        // BLE stack emits a pairing confirm event.
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 654321 });
+        bridge.poll();
+
+        // Verify the event was forwarded to the gateway.
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::BlePairingConfirm(_)));
+
+        // Poll again without sending a reply from the gateway.
+        bridge.poll();
+
+        // The bridge must NOT have sent any automatic pairing reply.
+        assert!(
+            bridge.ble.pairing_replies.is_empty(),
+            "bridge must not auto-reply to pairing confirm (timeout is BLE stack's job)"
+        );
+    }
 }

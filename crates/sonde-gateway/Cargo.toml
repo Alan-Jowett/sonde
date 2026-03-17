@@ -55,3 +55,5 @@ secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
 
 [dev-dependencies]
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
+hyper-util = "0.1"
+tower = "0.5"

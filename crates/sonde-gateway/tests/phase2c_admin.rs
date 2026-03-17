@@ -1037,3 +1037,71 @@ async fn t0810_import_replaces_existing_state() {
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].node_id, "old-node");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-0800 transport: gRPC API availability over Unix domain socket
+//  Validates GW-0800 end-to-end (server binds UDS, client connects, RPC works).
+// ═══════════════════════════════════════════════════════════════════════
+
+/// T-0800 transport: Start the admin gRPC server on a Unix domain socket,
+/// connect a tonic client, call ListNodes, and assert it succeeds.
+#[cfg(unix)]
+#[tokio::test]
+async fn t0800_grpc_uds_transport() {
+    use hyper_util::rt::TokioIo;
+    use tonic::transport::{Endpoint, Uri};
+    use tower::service_fn;
+
+    use sonde_gateway::admin::pb::gateway_admin_client::GatewayAdminClient;
+    use sonde_gateway::admin::pb::Empty;
+
+    // Use a temporary directory that is automatically removed when dropped.
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let socket_path = tmp_dir.path().join("admin.sock");
+    let socket_path_str = socket_path.to_str().unwrap().to_owned();
+
+    // Build the admin service backed by an in-memory store.
+    let h = TestHarness::new();
+
+    // Start the gRPC server on the UDS socket in a background task.
+    // Capture the handle so we can abort the task at the end of the test.
+    let socket_path_server = socket_path_str.clone();
+    let server_handle = tokio::spawn(async move {
+        if let Err(e) = sonde_gateway::admin::serve_admin(h.admin, &socket_path_server).await {
+            eprintln!("admin server task ended: {e}");
+        }
+    });
+
+    // Retry connecting until the socket is ready or the deadline passes.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let channel = loop {
+        let path = socket_path_str.clone();
+        match Endpoint::from_static("http://[::]:50051")
+            .connect_with_connector(service_fn(move |_: Uri| {
+                let p = path.clone();
+                async move {
+                    let stream = tokio::net::UnixStream::connect(p).await?;
+                    Ok::<_, std::io::Error>(TokioIo::new(stream))
+                }
+            }))
+            .await
+        {
+            Ok(ch) => break ch,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("failed to connect to UDS admin socket: {e}"),
+        }
+    };
+
+    let mut client = GatewayAdminClient::new(channel);
+
+    // T-0800 assertion: ListNodes succeeds over the UDS transport.
+    let resp = client
+        .list_nodes(tonic::Request::new(Empty {}))
+        .await
+        .expect("ListNodes over UDS should succeed");
+    assert_eq!(resp.into_inner().nodes.len(), 0);
+    // Abort the server task and let tmp_dir clean up the socket directory.
+    server_handle.abort();
+}

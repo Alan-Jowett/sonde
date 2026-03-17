@@ -19,12 +19,21 @@ Nodes run uniform firmware and execute behavior defined by [uBPF](https://github
 
 ## Project status
 
+**Lifecycle:** Active development — pre-1.0. APIs and wire formats may change between commits. Not yet recommended for production deployments.
+
+**Maintenance:** The project is actively maintained. Bug reports, pull requests, and feature discussions are welcome. See [Contributing](docs/contributing.md) for guidelines.
+
+**Versioning:** The project has not yet reached v1.0. Breaking changes to the wire protocol or crate APIs will be noted in commit messages and PR descriptions. A stable v1.0 release is planned after the full system (gateway + modem + node + admin) has been validated end-to-end.
+
+**Roadmap:** Core protocol, gateway, modem, and node crates are complete. Remaining work includes the BLE pairing tool (`sonde-pair`), end-to-end validation, and hardening for production deployments. See [implementation-guide.md](docs/implementation-guide.md) for the phased build plan.
+
 | Crate | Purpose | Status |
 |---|---|---|
 | [`sonde-protocol`](crates/sonde-protocol) | `no_std` wire format: frame codec, CBOR messages, program images | ✅ Complete — 41 validation tests, 4 fuzz targets |
 | [`sonde-gateway`](crates/sonde-gateway) | Async gateway service (tokio): sessions, program distribution, handler routing, gRPC admin | ✅ Core complete — handler routing and admin stubs in place |
 | [`sonde-modem`](crates/sonde-modem) | ESP32-S3 USB-to-ESP-NOW bridge firmware | ✅ Functional — bridge logic and ESP-IDF drivers working |
 | [`sonde-node`](crates/sonde-node) | ESP32-C3/S3 node firmware: wake cycle, BPF dispatch, program store | ✅ Core complete — wake cycle engine, 16 BPF helpers, A/B program store |
+| [`sonde-pair`](crates/sonde-pair) | BLE pairing tool — Tauri v2 (Android / Windows / Linux) | 🚧 In progress — see [issue #163](https://github.com/Alan-Jowett/sonde/issues/163) |
 
 CI runs on every push and PR: formatting, clippy, build, workspace tests, fuzz (protocol), and an ESP32 QEMU smoke test.
 
@@ -193,7 +202,9 @@ See [Getting Started](docs/getting-started.md) for full toolchain setup.
 
 ## Further reading
 
+- [Overview](docs/overview.md) — project summary, status, and goals
 - [Getting Started](docs/getting-started.md) — developer environment setup, toolchain installation, build and flash commands
+- [Contributing](docs/contributing.md) — contribution guidelines, DCO, SPDX requirements
 - [Why BPF?](docs/why-bpf.md) — rationale for using uBPF + Prevail as the execution model
 - [BPF Environment](docs/bpf-environment.md) — program API, memory model, verification, and development workflow
 - [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform
@@ -223,6 +234,8 @@ In contrast to these systems, which primarily treat eBPF as a *mechanism* for ho
 ---
 
 ## Contributing
+
+See [docs/contributing.md](docs/contributing.md) for full guidelines.
 
 All contributions must include:
 

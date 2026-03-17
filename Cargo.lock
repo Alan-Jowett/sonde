@@ -5129,17 +5129,13 @@ name = "sonde-admin"
 version = "0.1.0"
 dependencies = [
  "clap",
- "getrandom 0.4.2",
  "hex",
  "hyper-util",
  "prost",
  "rpassword",
  "serde",
  "serde_json",
- "serialport",
- "sha2",
  "sonde-gateway",
- "sonde-protocol",
  "tokio",
  "tokio-stream",
  "tonic",

@@ -7,7 +7,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
-use sonde_admin::usb;
 
 #[derive(Parser)]
 #[command(name = "sonde-admin", about = "Sonde gateway administration CLI")]
@@ -90,11 +89,6 @@ enum Commands {
     Pairing {
         #[command(subcommand)]
         action: PairingAction,
-    },
-    /// USB pairing operations (direct node connection).
-    Usb {
-        #[command(subcommand)]
-        action: UsbAction,
     },
 }
 
@@ -221,59 +215,9 @@ enum PairingAction {
     },
 }
 
-#[derive(Subcommand)]
-enum UsbAction {
-    /// Pair a node via USB.
-    Pair {
-        /// Serial port (e.g., COM5, /dev/ttyACM0).
-        port: String,
-        /// Node identifier for gateway registration (auto mode).
-        #[arg(long, conflicts_with = "raw", required_unless_present = "raw")]
-        node_id: Option<String>,
-        /// Raw mode: manually supply --key-hint and --psk; skip gateway registration.
-        #[arg(long)]
-        raw: bool,
-        /// Key hint in decimal or 0x hex (raw mode only).
-        #[arg(long, requires = "raw")]
-        key_hint: Option<String>,
-        /// 32-byte PSK as 64 hex chars (raw mode only).
-        #[arg(long, requires = "raw")]
-        psk: Option<String>,
-        /// WiFi channel for ESP-NOW (1–13). If omitted the node retains its
-        /// current channel (defaulting to 1 on first boot).
-        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=13))]
-        channel: Option<u8>,
-    },
-    /// Factory reset a node via USB.
-    FactoryReset {
-        /// Serial port.
-        port: String,
-    },
-    /// Query node identity via USB.
-    Identity {
-        /// Serial port.
-        port: String,
-    },
-}
-
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-
-    // USB FactoryReset and Identity operate locally — no gateway connection needed.
-    // Raw Pair also needs no gateway connection.
-    if let Commands::Usb { action } = &cli.command {
-        let json = matches!(cli.format, OutputFormat::Json);
-        let needs_gateway = matches!(action, UsbAction::Pair { raw: false, .. });
-        if !needs_gateway {
-            let result = run_usb_local(action, json);
-            if let Err(e) = result {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
-            return;
-        }
-    }
 
     let mut client = match AdminClient::connect(&cli.socket).await {
         Ok(c) => c,
@@ -283,48 +227,10 @@ async fn main() {
         }
     };
 
-    // Handle auto-mode USB Pair (requires gateway connection).
-    if let Commands::Usb {
-        action:
-            UsbAction::Pair {
-                port,
-                node_id,
-                raw: false,
-                channel,
-                ..
-            },
-    } = &cli.command
-    {
-        let json = matches!(cli.format, OutputFormat::Json);
-        // clap enforces `--node-id` is present when `--raw` is absent.
-        let node_id = match node_id.as_deref() {
-            Some(id) => id,
-            None => {
-                eprintln!("Error: --node-id is required unless --raw is set");
-                process::exit(1);
-            }
-        };
-        let result = run_usb_pair_auto(&mut client, port, node_id, *channel, json).await;
-        if let Err(e) = result {
-            eprintln!("Error: {e}");
-            process::exit(1);
-        }
-        return;
-    }
-
     let result = run(&mut client, &cli).await;
     if let Err(e) = result {
         eprintln!("Error: {e}");
         process::exit(1);
-    }
-}
-
-fn parse_key_hint(s: &str) -> Result<u16, String> {
-    if let Some(hex_str) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        u16::from_str_radix(hex_str, 16).map_err(|e| format!("invalid key_hint hex: {e}"))
-    } else {
-        s.parse::<u16>()
-            .map_err(|e| format!("invalid key_hint: {e}"))
     }
 }
 
@@ -345,98 +251,6 @@ fn resolve_passphrase(arg: &Option<String>) -> Result<String, String> {
         return Err("passphrase must not be empty".into());
     }
     Ok(pass)
-}
-
-/// Run USB commands that operate locally (no gateway connection needed):
-/// FactoryReset, Identity, and raw Pair.
-fn run_usb_local(action: &UsbAction, json: bool) -> Result<(), String> {
-    match action {
-        UsbAction::Pair {
-            port,
-            raw: true,
-            key_hint,
-            psk,
-            channel,
-            ..
-        } => {
-            let key_hint_str = key_hint
-                .as_deref()
-                .ok_or("--key-hint is required in raw mode")?;
-            let psk_str = psk.as_deref().ok_or("--psk is required in raw mode")?;
-            let kh = parse_key_hint(key_hint_str)?;
-            let psk_bytes = hex::decode(psk_str).map_err(|e| format!("invalid PSK hex: {e}"))?;
-            if psk_bytes.len() != sonde_protocol::modem::PSK_SIZE {
-                return Err(format!(
-                    "PSK must be exactly 32 bytes (64 hex chars), got {} bytes",
-                    psk_bytes.len()
-                ));
-            }
-            let mut psk_arr = [0u8; sonde_protocol::modem::PSK_SIZE];
-            psk_arr.copy_from_slice(&psk_bytes);
-            usb::pair_node(port, kh, psk_arr, *channel, json)
-        }
-        UsbAction::Pair { raw: false, .. } => {
-            unreachable!("auto pair is handled in the async path")
-        }
-        UsbAction::FactoryReset { port } => usb::factory_reset_node(port, json),
-        UsbAction::Identity { port } => usb::query_identity(port, json),
-    }
-}
-
-/// Auto pairing: generate PSK, pair via USB, register with gateway.
-/// On gateway failure, silently send RESET_REQUEST to roll back the node,
-/// then report the error.
-async fn run_usb_pair_auto(
-    client: &mut AdminClient,
-    port: &str,
-    node_id: &str,
-    channel: Option<u8>,
-    json: bool,
-) -> Result<(), String> {
-    let psk = usb::generate_psk()?;
-    let key_hint = usb::derive_key_hint(&psk);
-
-    usb::pair_node_inner(port, key_hint, psk, channel)?;
-
-    match client
-        .register_node(node_id, key_hint as u32, psk.to_vec())
-        .await
-    {
-        Ok(_) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "status": "success",
-                        "node_id": node_id,
-                        "key_hint": format!("0x{:04x}", key_hint),
-                    })
-                );
-            } else {
-                println!(
-                    "Paired and registered: {} (key_hint=0x{:04x})",
-                    node_id, key_hint
-                );
-            }
-            Ok(())
-        }
-        Err(e) => {
-            // Gateway registration failed — silently roll back the node.
-            let rollback = usb::factory_reset_silent(port);
-            if let Err(rb_err) = rollback {
-                Err(format!(
-                    "gateway registration failed: {}. Rollback also failed: {}. \
-                     Factory reset the node manually before re-pairing.",
-                    e, rb_err
-                ))
-            } else {
-                Err(format!(
-                    "gateway registration failed: {}. Node has been factory reset.",
-                    e
-                ))
-            }
-        }
-    }
 }
 
 async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -819,11 +633,6 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
         },
-
-        // USB commands are handled before reaching this match.
-        Commands::Usb { .. } => {
-            unreachable!("USB commands handled earlier and return before this match")
-        }
     }
 
     Ok(())

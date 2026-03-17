@@ -153,7 +153,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
        │
        ├──── sonde-modem    (std via ESP-IDF, esp-idf-hal, esp-idf-svc)
        │
-       ├──── sonde-admin    (std, tonic, clap, serialport)
+       ├──── sonde-admin    (std, tonic, clap)
        │
        ├──── sonde-bpf      (no_std-compatible, zero-alloc BPF interpreter)
        │

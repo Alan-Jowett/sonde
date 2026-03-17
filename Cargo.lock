@@ -5227,6 +5227,7 @@ dependencies = [
  "esp-idf-hal",
  "esp-idf-svc",
  "esp-idf-sys",
+ "esp32-nimble",
  "hmac",
  "log",
  "sha2",

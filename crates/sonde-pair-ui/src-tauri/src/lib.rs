@@ -335,6 +335,12 @@ mod hex {
 // App entry point
 // ---------------------------------------------------------------------------
 
+#[cfg(mobile)]
+#[tauri::mobile_entry_point]
+fn main() {
+    run();
+}
+
 pub fn run() {
     let logs = Arc::new(Mutex::new(Vec::<String>::new()));
 

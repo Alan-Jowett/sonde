@@ -1323,9 +1323,17 @@ mod tests {
         max_frame.push(0x7F); // TYPE = unknown
         max_frame.extend_from_slice(&vec![0xAA; max_body]); // padding
         bridge.usb.inject(&max_frame);
-        while !bridge.usb.rx_data.is_empty() {
+        // Frame is > 64 bytes (rx_buf size) — needs multiple polls.
+        for _ in 0..20 {
+            if bridge.usb.rx_data.is_empty() {
+                break;
+            }
             bridge.poll();
         }
+        assert!(
+            bridge.usb.rx_data.is_empty(),
+            "frame must be fully consumed"
+        );
         bridge.poll(); // final decode pass
 
         // No output expected (silent discard of unknown type).
@@ -1446,17 +1454,24 @@ mod tests {
 
     /// Validates: T-0602a (bridge level)
     ///
-    /// When the BLE stack rejects a low-MTU connection, no BLE_CONNECTED event
-    /// reaches the bridge, so nothing is forwarded to the gateway.
+    /// The protocol codec rejects `BleConnected` with `mtu < BLE_MTU_MIN` at
+    /// encode time, so even if the BLE stack emits a low-MTU Connected event
+    /// the bridge will not forward it to the gateway.
     #[test]
     fn ble_mtu_below_minimum_no_connected_event() {
         let mut bridge = make_bridge_with_ble();
-        // BLE stack rejects a low-MTU client → no Connected event injected.
-        // Poll and verify no BLE_CONNECTED is sent to the gateway.
+        let peer = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 100, // below BLE_MTU_MIN (247)
+        });
         bridge.poll();
+
+        // The codec rejects encoding BleConnected with mtu < 247, so
+        // nothing reaches the gateway.
         assert!(
             bridge.usb.take_tx().is_empty(),
-            "no BLE_CONNECTED when MTU too low (rejected by BLE stack)"
+            "low-MTU BLE_CONNECTED must not be forwarded (codec rejects mtu < 247)"
         );
     }
 
@@ -1524,10 +1539,17 @@ mod tests {
         }))
         .unwrap();
         bridge.usb.inject(&frame);
-        // Frame is > 64 bytes — needs multiple polls.
-        while !bridge.usb.rx_data.is_empty() {
+        // Frame is > 64 bytes (rx_buf size) — needs multiple polls.
+        for _ in 0..20 {
+            if bridge.usb.rx_data.is_empty() {
+                break;
+            }
             bridge.poll();
         }
+        assert!(
+            bridge.usb.rx_data.is_empty(),
+            "frame must be fully consumed"
+        );
         bridge.poll(); // final decode pass
 
         assert_eq!(bridge.ble.indicated.len(), 1);

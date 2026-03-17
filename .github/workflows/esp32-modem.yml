@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa).
+# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa),
+# assemble a merged flash image, and run a QEMU smoke test that asserts
+# the expected ESP-IDF boot-marker strings appear on UART.
+#
+# NOTE: ESP32-S3 Xtensa QEMU support is experimental (like ESP32-C3 RISC-V
+# QEMU). The systimer and some peripherals are not fully emulated, so
+# the FreeRTOS scheduler may never start. However, ESP-IDF boot markers
+# printed before the scheduler are sufficient to prove the firmware image
+# is valid and bootable.
 
 name: ESP32-S3 Modem Firmware CI
 
@@ -23,8 +31,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  esp32s3-modem-build:
-    name: Build ESP32-S3 modem firmware
+  esp32s3-modem-build-and-smoke:
+    name: Build ESP32-S3 modem firmware and QEMU smoke test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -68,3 +76,130 @@ jobs:
             --profile firmware \
             --target xtensa-esp32s3-espidf \
             -Zbuild-std=std,panic_abort
+
+      # ------------------------------------------------------------------ #
+      # Flash-image assembly
+      # ------------------------------------------------------------------ #
+
+      - name: Create merged flash image
+        run: |
+          . "$IDF_PATH/export.sh"
+          TARGET_DIR="target/xtensa-esp32s3-espidf/firmware"
+
+          # Locate bootloader and partition table produced by embuild.
+          # Use newest match to avoid stale cached artefacts.
+          BOOTLOADER=$(find "$TARGET_DIR/build" \
+            -name "bootloader.bin" -path "*/bootloader/*" \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
+          PARTITION_TABLE=$(find "$TARGET_DIR/build" \
+            -name "partition-table.bin" \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
+
+          if [ -z "$BOOTLOADER" ]; then
+            echo "ERROR: bootloader.bin not found under $TARGET_DIR/build" >&2
+            exit 1
+          fi
+          if [ -z "$PARTITION_TABLE" ]; then
+            echo "ERROR: partition-table.bin not found under $TARGET_DIR/build" >&2
+            exit 1
+          fi
+
+          echo "Bootloader:       $BOOTLOADER"
+          echo "Partition table:  $PARTITION_TABLE"
+
+          # Convert ELF → flat binary.
+          esptool.py --chip esp32s3 elf2image \
+            --flash_mode  dio \
+            --flash_freq  40m \
+            --flash_size  4MB \
+            --output "$TARGET_DIR/modem.bin" \
+            "$TARGET_DIR/modem"
+
+          # Merge bootloader + partition table + app into a single 4MB image.
+          # --fill-flash-size pads to exactly 4MB, which QEMU requires.
+          # On ESP32-S3 the bootloader loads at flash offset 0x0 (same as C3).
+          esptool.py --chip esp32s3 merge_bin \
+            --output flash_image.bin \
+            --fill-flash-size 4MB \
+            0x0     "$BOOTLOADER" \
+            0x8000  "$PARTITION_TABLE" \
+            0x10000 "$TARGET_DIR/modem.bin"
+
+          echo "flash_image.bin created ($(wc -c < flash_image.bin) bytes)"
+
+      # ------------------------------------------------------------------ #
+      # QEMU smoke test
+      # ------------------------------------------------------------------ #
+
+      - name: Run QEMU smoke test
+        # Source IDF export.sh so qemu-system-xtensa is on PATH.
+        #
+        # NOTE: The smoke test checks for ESP-IDF boot markers instead of
+        # Rust-level markers (`sonde-modem booting`). ESP32-S3 Xtensa QEMU
+        # support is experimental — some peripherals (e.g. systimer) may not
+        # be fully emulated, so the FreeRTOS scheduler may never start and
+        # `app_main()` / Rust `main()` may not be called.
+        #
+        # The ESP-IDF markers still prove the firmware was correctly:
+        #   1. Cross-compiled for xtensa-esp32s3-espidf
+        #   2. Converted from ELF → binary → merged flash image
+        #   3. Loaded and validated by the ESP-IDF 2nd-stage bootloader
+        #   4. Initialized through CPU start, heap, and flash detection
+        run: |
+          . "$IDF_PATH/export.sh"
+          QEMU_OUTPUT="/tmp/qemu_uart.txt"
+
+          # Boot the firmware under QEMU with a hard timeout.
+          # -no-reboot prevents restart loops on early failures.
+          # 15s is enough — ESP-IDF boot markers appear within 2s; the
+          # remaining time is buffer for slow CI runners.
+          set +e
+          timeout 15 qemu-system-xtensa \
+            -nographic \
+            -machine esp32s3 \
+            -drive file=flash_image.bin,if=mtd,format=raw \
+            -no-reboot \
+            > "$QEMU_OUTPUT" 2>&1
+          QEMU_EXIT=$?
+          set -e
+
+          echo ""
+          echo "=== QEMU UART output ==="
+          cat "$QEMU_OUTPUT"
+          echo "========================"
+
+          # Exit 124 = timeout (expected — QEMU may hang after eFuse init).
+          # Exit 0   = QEMU exited cleanly (unusual but acceptable).
+          # Any other non-zero = QEMU crashed or was killed → fail.
+          if [ "$QEMU_EXIT" -ne 0 ] && [ "$QEMU_EXIT" -ne 124 ]; then
+            echo "ERROR: QEMU exited with unexpected code $QEMU_EXIT" >&2
+            exit 1
+          fi
+
+          # Assert ESP-IDF boot markers that prove the firmware image is
+          # valid and bootable. These are printed before the FreeRTOS
+          # scheduler starts, so they work even though QEMU may not fully
+          # boot ESP32-S3 firmware.
+          #
+          # "cpu_start: Pro cpu start user code" — CPU init reached user code
+          # "app_init: Application information"  — app metadata loaded
+          # "heap_init: Initializing"            — RAM layout correct
+          PASS=true
+          for marker in \
+            "cpu_start: Pro cpu start user code" \
+            "app_init: Application information" \
+            "heap_init: Initializing"; do
+            if grep -qF "$marker" "$QEMU_OUTPUT"; then
+              echo "✓  Found marker: '$marker'"
+            else
+              echo "✗  Missing marker: '$marker'" >&2
+              PASS=false
+            fi
+          done
+
+          if [ "$PASS" = "false" ]; then
+            echo "Smoke test FAILED — one or more expected markers were not found." >&2
+            exit 1
+          fi
+
+          echo "Smoke test passed."

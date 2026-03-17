@@ -7,12 +7,20 @@
 # Placing settings in a chip-specific suffix file ensures they are applied only
 # for ESP32-S3 builds, not for the ESP32-C3 sonde-node build.
 
+# --- Flash (must match QEMU MTD drive: DIO mode, 40 MHz, 4 MB) ---
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
 # --- Console ---
 # Console output on UART0 so that log traces do not interfere with the
 # binary modem protocol running on the native USB-CDC port (GPIO19/20).
+# Explicitly disable the USB Serial/JTAG console so UART0 is used in QEMU
+# (the USB-JTAG peripheral is not emulated and would swallow log output).
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=n
 
 # --- Watchdog ---
 CONFIG_ESP_TASK_WDT_EN=y

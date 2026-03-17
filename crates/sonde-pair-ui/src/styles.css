@@ -22,6 +22,8 @@ body {
   color: var(--text);
   min-height: 100vh;
   padding: 0;
+  /* Respect mobile safe areas (notch, status bar). */
+  padding-top: env(safe-area-inset-top);
 }
 
 header {

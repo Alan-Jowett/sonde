@@ -1090,7 +1090,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ## Appendix B  Test ID to test function traceability
 
-This table maps each spec test ID (T-Nxxx) to the test function(s) that satisfy it.
+This table lists spec test IDs (T-Nxxx) that have host-based automated tests and maps each to the
+test function(s) that satisfy it. Spec IDs not listed here are either not yet implemented in the
+host suite or require target hardware/BLE-stack validation; see the note below the table.
 Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sonde-e2e/tests/e2e_tests.rs` are integration tests.
 
 | Spec ID | Test function(s) | Location |
@@ -1108,7 +1110,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N205 | `wake_cycle::test_update_schedule`, `sleep::test_update_schedule`, `t_e2e_020_update_schedule` | wake_cycle.rs, sleep.rs, e2e_tests.rs |
 | T-N206 | `test_reboot_command`, `t_e2e_021_reboot` | wake_cycle.rs, e2e_tests.rs |
 | T-N207 | `test_unknown_command_treated_as_nop` | wake_cycle.rs |
-| T-N208 | `test_set_next_wake_shorter`, `test_set_next_wake_equal` | sleep.rs |
+| T-N208 | `test_set_next_wake_shorter`, `test_set_next_wake_equal` *(partial — unit tests cover SleepManager clamping logic; the full e2e set_next_wake → base-interval-restore cycle is not yet tested)* | sleep.rs |
 | T-N209 | `test_set_next_wake_longer_clamped` | sleep.rs |
 | T-N300 | `test_outbound_frame_format`, `t_e2e_002_hmac_round_trip` | wake_cycle.rs, e2e_tests.rs |
 | T-N301 | `test_invalid_hmac_discarded`, `t_e2e_003_wrong_psk_rejected`, `t_e2e_040_unknown_node`, `t_e2e_053_bridged_wrong_psk` | wake_cycle.rs, e2e_tests.rs |
@@ -1125,7 +1127,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N500 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
 | T-N501 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N502 | `test_program_transfer_hash_mismatch` | wake_cycle.rs |
-| T-N503 | *(covered implicitly by T-N500/T-N501 — CBOR image decode is exercised in every chunked transfer test)* | — |
+| T-N503 | *(not yet covered — current transfer tests use empty map lists; a test with 2 map definitions, LDDW pointer resolution, and RTC SRAM allocation is needed)* | — |
 | T-N504 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N505 | `test_ephemeral_program_integration`, `t_e2e_022_run_ephemeral` | wake_cycle.rs, e2e_tests.rs |
 | T-N506 | `test_chunked_transfer_success` | wake_cycle.rs |
@@ -1133,9 +1135,22 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N508 | `test_chunked_transfer_success`, `test_wake_reason_program_update`, `test_wake_reason` (sleep.rs) | wake_cycle.rs, sleep.rs |
 | T-N509 | `test_wake_reason_early`, `test_wake_reason` (sleep.rs) | wake_cycle.rs, sleep.rs |
 | T-N510 | `test_post_update_immediate_execution` | wake_cycle.rs |
-| T-N604 | `test_send_recv_app_data_success`, `t_e2e_031_app_data_fire_and_forget`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
-| T-N605 | `test_send_recv_app_data_success`, `t_e2e_030_app_data_round_trip` | wake_cycle.rs, e2e_tests.rs |
-| T-N606 | `test_send_recv_app_data_timeout` | wake_cycle.rs |
+| T-N600 | `test_helper_i2c_read` | bpf_dispatch.rs |
+| T-N601 | `test_helper_i2c_error` | bpf_dispatch.rs |
+| T-N602 | `test_helper_spi_transfer` | bpf_dispatch.rs |
+| T-N603 | `test_helper_gpio_and_adc` | bpf_dispatch.rs |
+| T-N604 | `test_helper_send`, `test_send_recv_app_data_success`, `t_e2e_031_app_data_fire_and_forget`, `t_e2e_070_full_use_case` | bpf_dispatch.rs, wake_cycle.rs, e2e_tests.rs |
+| T-N605 | `test_helper_send_recv`, `test_send_recv_app_data_success`, `t_e2e_030_app_data_round_trip` | bpf_dispatch.rs, wake_cycle.rs, e2e_tests.rs |
+| T-N606 | `test_helper_send_recv_timeout`, `test_send_recv_app_data_timeout` | bpf_dispatch.rs, wake_cycle.rs |
+| T-N607 | `test_helper_map_lookup_update` | bpf_dispatch.rs |
+| T-N608 | `test_map_persistence_across_cycles` | wake_cycle.rs |
+| T-N609 | `test_helper_map_update_ephemeral_rejected` | bpf_dispatch.rs |
+| T-N610 | `test_helper_get_time_and_battery` | bpf_dispatch.rs |
+| T-N611 | `test_helper_delay_us` | bpf_dispatch.rs |
+| T-N612 | `test_helper_set_next_wake_ephemeral_rejected` | bpf_dispatch.rs |
+| T-N613 | `test_helper_bpf_trace_printk` | bpf_dispatch.rs |
+| T-N614 | `test_instruction_budget_exceeded_graceful` | wake_cycle.rs |
+| T-N615 | `test_call_depth_exceeded_graceful` | wake_cycle.rs |
 | T-N700 | `test_wake_retries_exhausted` | wake_cycle.rs |
 | T-N701 | `test_chunked_transfer_chunk_retry_exhausted` | wake_cycle.rs |
 | T-N800 | `test_malformed_cbor_discarded` | wake_cycle.rs |
@@ -1153,9 +1168,9 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N916 | `t_e2e_064_onboarding_to_wake`, `t_e2e_065_deferred_erasure` | e2e_tests.rs |
 | T-N917 | `t_e2e_066_self_healing` | e2e_tests.rs |
 
-> **Note:** Spec cases T-N600–T-N616 (BPF environment helpers),
-> T-N900–T-N903 (boot priority / BLE stack), T-N908 (BLE mode persistence), T-N910 (PEER_REQUEST
-> retransmission), T-N914 (PEER_ACK wrong registration proof), and T-N918 (NVS layout) require
-> hardware or BLE stack integration and are validated on the target platform rather than in the
-> host-based test suite. T-N702 (response timeout — mock gateway delays &gt;50 ms) is host-testable
-> but not yet implemented.
+> **Note:** Spec cases T-N900–T-N903 (boot priority / BLE stack), T-N908 (BLE mode persistence),
+> T-N910 (PEER_REQUEST retransmission), T-N914 (PEER_ACK wrong registration proof), and T-N918
+> (NVS layout) require hardware or BLE stack integration and are validated on the target platform
+> rather than in the host-based test suite. T-N503 (map decoding with LDDW pointer resolution),
+> T-N616 (map memory budget enforcement), and T-N702 (response timeout — mock gateway delays
+> > 50 ms) are host-testable but not yet implemented.

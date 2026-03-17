@@ -362,7 +362,9 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonde_protocol::modem::{decode_modem_frame, BleIndicate, ModemMessage, SERIAL_MAX_LEN};
+    use sonde_protocol::modem::{
+        decode_modem_frame, BleIndicate, ModemMessage, SERIAL_MAX_FRAME_SIZE, SERIAL_MAX_LEN,
+    };
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -1324,7 +1326,8 @@ mod tests {
         max_frame.extend_from_slice(&vec![0xAA; max_body]); // padding
         bridge.usb.inject(&max_frame);
         // Frame is > 64 bytes (rx_buf size) — needs multiple polls.
-        for _ in 0..20 {
+        let max_polls = SERIAL_MAX_FRAME_SIZE / bridge.rx_buf.len() + 1;
+        for _ in 0..max_polls {
             if bridge.usb.rx_data.is_empty() {
                 break;
             }
@@ -1351,9 +1354,9 @@ mod tests {
 
     /// Validates: T-0103
     ///
-    /// Send RESET, then an oversized LEN header (len=1000 > 512 max), then
-    /// RESET again to resynchronize. Assert: modem recovers and sends
-    /// MODEM_READY.
+    /// Send RESET, then an oversized LEN header (len = SERIAL_MAX_LEN + 1,
+    /// exceeding the 512-byte max), then RESET again to resynchronize.
+    /// Assert: modem recovers and sends MODEM_READY.
     #[test]
     fn serial_framing_oversized_len() {
         let mut bridge = make_bridge();
@@ -1540,7 +1543,8 @@ mod tests {
         .unwrap();
         bridge.usb.inject(&frame);
         // Frame is > 64 bytes (rx_buf size) — needs multiple polls.
-        for _ in 0..20 {
+        let max_polls = frame.len() / bridge.rx_buf.len() + 1;
+        for _ in 0..max_polls {
             if bridge.usb.rx_data.is_empty() {
                 break;
             }

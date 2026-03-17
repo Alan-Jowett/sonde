@@ -28,3 +28,6 @@ rpassword = "7.4.0"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+sonde-gateway = { path = "../sonde-gateway" }

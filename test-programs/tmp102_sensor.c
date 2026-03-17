@@ -64,7 +64,7 @@ int program(struct sonde_context *ctx)
 
     /* Sign-extend from 12 bits to 32 bits. */
     if (raw_12bit & 0x800)
-        raw_12bit |= 0xFFFFF000;
+        raw_12bit |= (__s32)-4096;  /* -4096 == 0xFFFFF000 as signed */
 
     /* Convert to millidegrees Celsius: raw * 0.0625 * 1000 = raw * 625 / 10
      * BPF doesn't support signed division, so handle sign separately. */
@@ -75,14 +75,17 @@ int program(struct sonde_context *ctx)
     /* Build 6-byte payload manually to avoid unaligned access:
      *   [0]   raw_hi
      *   [1]   raw_lo
-     *   [2:5] temp_mc as little-endian i32 */
+     *   [2:5] temp_mc as little-endian i32
+     * Cast to __u32 for bit-shifting to avoid implementation-defined
+     * behavior on signed right-shift. */
+    __u32 temp_bits = (__u32)temp_mc;
     __u8 payload[6];
     payload[0] = raw[0];
     payload[1] = raw[1];
-    payload[2] = (__u8)(temp_mc);
-    payload[3] = (__u8)(temp_mc >> 8);
-    payload[4] = (__u8)(temp_mc >> 16);
-    payload[5] = (__u8)(temp_mc >> 24);
+    payload[2] = (__u8)(temp_bits);
+    payload[3] = (__u8)(temp_bits >> 8);
+    payload[4] = (__u8)(temp_bits >> 16);
+    payload[5] = (__u8)(temp_bits >> 24);
 
     send(payload, sizeof(payload));
     return 0;

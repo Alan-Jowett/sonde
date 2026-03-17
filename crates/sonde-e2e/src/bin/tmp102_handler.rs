@@ -37,7 +37,13 @@ const TMP102_PAYLOAD_LEN: usize = 6;
 fn sanitize_node_id(node_id: &str) -> String {
     let sanitized: String = node_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if sanitized.is_empty() {
         "unknown".to_string()
@@ -157,14 +163,15 @@ fn main() {
                 match decode_tmp102(&data) {
                     Ok((raw_hi, raw_lo, temp_mc)) => {
                         let temp_c = temp_mc as f64 / 1000.0;
-                        send_log(
-                            &mut stdout,
-                            "info",
-                            &format!("{node_id}: {temp_c:.3} °C"),
-                        );
-                        if let Err(e) =
-                            append_reading(&output_dir, &node_id, timestamp, raw_hi, raw_lo, temp_mc)
-                        {
+                        send_log(&mut stdout, "info", &format!("{node_id}: {temp_c:.3} °C"));
+                        if let Err(e) = append_reading(
+                            &output_dir,
+                            &node_id,
+                            timestamp,
+                            raw_hi,
+                            raw_lo,
+                            temp_mc,
+                        ) {
                             send_log(
                                 &mut stdout,
                                 "error",
@@ -237,7 +244,10 @@ mod tests {
     #[test]
     fn test_sanitize_node_id() {
         assert_eq!(sanitize_node_id("greenhouse-1"), "greenhouse-1");
-        assert_eq!(sanitize_node_id("../../../etc/passwd"), "_________etc_passwd");
+        assert_eq!(
+            sanitize_node_id("../../../etc/passwd"),
+            "_________etc_passwd"
+        );
         assert_eq!(sanitize_node_id("node 1"), "node_1");
         assert_eq!(sanitize_node_id(""), "unknown");
     }

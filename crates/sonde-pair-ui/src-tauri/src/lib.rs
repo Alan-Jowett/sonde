@@ -3,6 +3,10 @@
 
 //! Tauri v2 backend for the Sonde BLE pairing tool.
 //!
+//! On desktop, BLE operations use [`BtleplugTransport`] and [`FilePairingStore`].
+//! On Android, BLE commands return stub errors until the Android transport is
+//! wired through Tauri (see issue #202).
+//!
 //! All BLE operations use `spawn_blocking` + `Handle::block_on` so that
 //! non-Send futures from [`sonde_pair::transport::BleTransport`] work on
 //! the tokio multi-threaded runtime.
@@ -10,12 +14,16 @@
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+#[cfg(not(target_os = "android"))]
 use sonde_pair::btleplug_transport::BtleplugTransport;
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
+#[cfg(not(target_os = "android"))]
 use sonde_pair::file_store::FilePairingStore;
 use sonde_pair::rng::OsRng;
+#[cfg(not(target_os = "android"))]
 use sonde_pair::store::PairingStore;
 use sonde_pair::types::ScannedDevice;
+#[cfg(not(target_os = "android"))]
 use sonde_pair::{phase1, phase2};
 
 // ---------------------------------------------------------------------------
@@ -23,6 +31,7 @@ use sonde_pair::{phase1, phase2};
 // ---------------------------------------------------------------------------
 
 struct AppState {
+    #[cfg(not(target_os = "android"))]
     scanner: Mutex<Option<DeviceScanner<BtleplugTransport>>>,
     phase: Mutex<String>,
     logs: Arc<Mutex<Vec<String>>>,
@@ -70,6 +79,7 @@ fn parse_address(s: &str) -> Result<[u8; 6], String> {
     Ok(addr)
 }
 
+#[cfg(not(target_os = "android"))]
 fn device_to_info(d: &ScannedDevice) -> DeviceInfo {
     let svc = service_type(d);
     DeviceInfo {
@@ -84,29 +94,13 @@ fn device_to_info(d: &ScannedDevice) -> DeviceInfo {
     }
 }
 
-/// Run a closure containing non-Send BLE futures on a blocking thread.
-#[allow(dead_code)]
-async fn ble_block<T, F>(f: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, sonde_pair::error::PairingError> + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let handle = tokio::runtime::Handle::current();
-        handle.block_on(async { f() })
-    })
-    .await
-    .map_err(|e| format!("task panicked: {e}"))?
-    .map_err(|e| e.to_string())
-}
-
 // ---------------------------------------------------------------------------
-// Tauri commands
+// Tauri commands — desktop (btleplug + FilePairingStore)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn start_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    // Drop any existing scanner.
     *state.scanner.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Scanning".into();
 
@@ -125,9 +119,10 @@ async fn start_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn stop_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut scanner = {
+    let scanner = {
         state
             .scanner
             .lock()
@@ -148,9 +143,10 @@ async fn stop_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    let mut scanner = state
+    let scanner = state
         .scanner
         .lock()
         .unwrap()
@@ -169,13 +165,13 @@ async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo
     Ok(devices)
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn pair_gateway(
     state: tauri::State<'_, AppState>,
     address: String,
     phone_label: String,
 ) -> Result<(), String> {
-    // Drop scanner — we're done scanning.
     *state.scanner.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Pairing".into();
 
@@ -205,13 +201,13 @@ async fn pair_gateway(
     }
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn provision_node(
     state: tauri::State<'_, AppState>,
     address: String,
     node_id: String,
 ) -> Result<String, String> {
-    // Drop scanner — we're done scanning.
     *state.scanner.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Provisioning".into();
 
@@ -241,11 +237,7 @@ async fn provision_node(
     }
 }
 
-#[tauri::command]
-fn get_phase(state: tauri::State<'_, AppState>) -> String {
-    state.phase.lock().unwrap().clone()
-}
-
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 fn get_pairing_status() -> Result<PairingStatus, String> {
     let store = FilePairingStore::new().map_err(|e| e.to_string())?;
@@ -256,12 +248,84 @@ fn get_pairing_status() -> Result<PairingStatus, String> {
     })
 }
 
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut store = FilePairingStore::new().map_err(|e| e.to_string())?;
     store.clear().map_err(|e| e.to_string())?;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands — Android stubs (until AndroidBleTransport is wired)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn start_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    *state.phase.lock().unwrap() = "Scanning".into();
+    Err("BLE scanning not yet implemented on Android".into())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn stop_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    *state.phase.lock().unwrap() = "Idle".into();
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn get_devices(_state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
+    Ok(vec![])
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn pair_gateway(
+    state: tauri::State<'_, AppState>,
+    _address: String,
+    _phone_label: String,
+) -> Result<(), String> {
+    *state.phase.lock().unwrap() = "Error: not supported".into();
+    Err("Gateway pairing not yet implemented on Android".into())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn provision_node(
+    state: tauri::State<'_, AppState>,
+    _address: String,
+    _node_id: String,
+) -> Result<String, String> {
+    *state.phase.lock().unwrap() = "Error: not supported".into();
+    Err("Node provisioning not yet implemented on Android".into())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn get_pairing_status() -> Result<PairingStatus, String> {
+    Ok(PairingStatus {
+        paired: false,
+        gateway_id: None,
+    })
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    *state.phase.lock().unwrap() = "Idle".into();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Platform-independent commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn get_phase(state: tauri::State<'_, AppState>) -> String {
+    state.phase.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -277,8 +341,6 @@ mod log_capture {
     use std::io;
     use std::sync::{Arc, Mutex};
 
-    /// A [`tracing_subscriber::fmt::MakeWriter`] that collects formatted log
-    /// lines into a shared buffer.
     #[derive(Clone)]
     pub struct LogMakeWriter(pub Arc<Mutex<Vec<String>>>);
 
@@ -321,10 +383,6 @@ mod log_capture {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Hex encoding (tiny helper — avoids adding a hex crate dep)
-// ---------------------------------------------------------------------------
-
 mod hex {
     pub fn encode(bytes: impl AsRef<[u8]>) -> String {
         bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
@@ -344,7 +402,6 @@ fn main() {
 pub fn run() {
     let logs = Arc::new(Mutex::new(Vec::<String>::new()));
 
-    // Install tracing subscriber that captures output for the verbose panel.
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
         .with(
@@ -360,13 +417,13 @@ pub fn run() {
         .init();
 
     let state = AppState {
+        #[cfg(not(target_os = "android"))]
         scanner: Mutex::new(None),
         phase: Mutex::new("Idle".into()),
         logs,
     };
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             start_scan,

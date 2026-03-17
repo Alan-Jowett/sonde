@@ -89,6 +89,54 @@ jobs:
           echo "sdkconfig.defaults verified ✓"
 
       # ------------------------------------------------------------------ #
+      # Flash-image assembly
+      # ------------------------------------------------------------------ #
+
+      - name: Create merged flash image
+        run: |
+          . /opt/esp/export-esp.sh
+          TARGET_DIR="target/xtensa-esp32s3-espidf/firmware"
+
+          # Locate bootloader and partition table produced by embuild.
+          # Use newest match to avoid stale cached artefacts.
+          BOOTLOADER=$(find "$TARGET_DIR/build" \
+            -name "bootloader.bin" -path "*/bootloader/*" \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
+          PARTITION_TABLE=$(find "$TARGET_DIR/build" \
+            -name "partition-table.bin" \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
+
+          if [ -z "$BOOTLOADER" ]; then
+            echo "ERROR: bootloader.bin not found under $TARGET_DIR/build" >&2
+            exit 1
+          fi
+          if [ -z "$PARTITION_TABLE" ]; then
+            echo "ERROR: partition-table.bin not found under $TARGET_DIR/build" >&2
+            exit 1
+          fi
+
+          echo "Bootloader:       $BOOTLOADER"
+          echo "Partition table:  $PARTITION_TABLE"
+
+          # Convert ELF → flat binary.
+          esptool.py --chip esp32s3 elf2image \
+            --flash_mode  dio \
+            --flash_freq  80m \
+            --flash_size  16MB \
+            --output "$TARGET_DIR/modem.bin" \
+            "$TARGET_DIR/modem"
+
+          # Merge bootloader + partition table + app into a single image.
+          # On ESP32-S3 the bootloader loads at flash offset 0x0 (not 0x1000).
+          esptool.py --chip esp32s3 merge_bin \
+            --output flash_image.bin \
+            0x0     "$BOOTLOADER" \
+            0x8000  "$PARTITION_TABLE" \
+            0x10000 "$TARGET_DIR/modem.bin"
+
+          echo "flash_image.bin created ($(wc -c < flash_image.bin) bytes)"
+
+      # ------------------------------------------------------------------ #
       # Upload firmware artifact
       # ------------------------------------------------------------------ #
 
@@ -96,6 +144,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: modem-firmware
-          path: target/xtensa-esp32s3-espidf/firmware/modem
+          path: flash_image.bin
           if-no-files-found: error
           retention-days: 7

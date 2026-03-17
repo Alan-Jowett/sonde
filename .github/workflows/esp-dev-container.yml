@@ -3,6 +3,10 @@
 #
 # Build and publish the ESP32 development container to GitHub Container Registry.
 # Triggered on pushes to main that change the Dockerfile, or manually via workflow_dispatch.
+#
+# The workflow smoke-tests the built container against both firmware targets
+# (ESP32-C3 node + ESP32-S3 modem) before pushing to GHCR. This prevents
+# broken containers from reaching :latest and breaking downstream firmware CI.
 
 name: ESP32 Dev Container
 
@@ -26,10 +30,11 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: alan-jowett/sonde-esp-dev
+  LOCAL_IMAGE: sonde-esp-dev:smoke-test
 
 jobs:
   build-and-push:
-    name: Build and publish container
+    name: Build, smoke-test, and publish container
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -56,11 +61,64 @@ jobs:
             type=raw,value=latest
             type=raw,value=v5.4.2-{{date 'YYYYMMDD'}}-{{sha}}
 
-      - name: Build and push container image
+      # ------------------------------------------------------------------ #
+      # Build (no push yet — smoke test first)
+      # ------------------------------------------------------------------ #
+
+      - name: Build container image (local only)
         uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6
         with:
           context: .github/docker
           file: .github/docker/Dockerfile.esp-dev
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          push: false
+          load: true
+          tags: ${{ env.LOCAL_IMAGE }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # ------------------------------------------------------------------ #
+      # Smoke tests — verify the container can compile both firmware targets
+      # ------------------------------------------------------------------ #
+
+      - name: Smoke test — node firmware (ESP32-C3, RISC-V)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/sonde" -w /sonde \
+            -e ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-node/sdkconfig.defaults \
+            -e ESP_IDF_COMPONENT_MANAGER=off \
+            ${{ env.LOCAL_IMAGE }} \
+            bash -c '. "$IDF_PATH/export.sh" && . /opt/esp/export-esp.sh && \
+              cargo +esp build -p sonde-node --bin node --features esp \
+              --profile firmware --target riscv32imc-esp-espidf \
+              -Zbuild-std=std,panic_abort'
+
+      - name: Smoke test — modem firmware (ESP32-S3, Xtensa)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/sonde" -w /sonde \
+            -e "ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-modem/sdkconfig.defaults;sdkconfig.defaults.esp32s3" \
+            -e ESP_IDF_COMPONENT_MANAGER=off \
+            ${{ env.LOCAL_IMAGE }} \
+            bash -c '. /opt/esp/export-esp.sh && \
+              cargo +esp build -p sonde-modem --bin modem --features esp \
+              --profile firmware --target xtensa-esp32s3-espidf \
+              -Zbuild-std=std,panic_abort'
+
+      # ------------------------------------------------------------------ #
+      # Push — only if smoke tests passed and we're on main
+      # ------------------------------------------------------------------ #
+
+      - name: Tag for registry
+        if: github.event_name != 'pull_request'
+        run: |
+          TAGS="${{ steps.meta.outputs.tags }}"
+          for TAG in $TAGS; do
+            docker tag ${{ env.LOCAL_IMAGE }} "$TAG"
+          done
+
+      - name: Push to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        run: |
+          TAGS="${{ steps.meta.outputs.tags }}"
+          for TAG in $TAGS; do
+            docker push "$TAG"
+          done

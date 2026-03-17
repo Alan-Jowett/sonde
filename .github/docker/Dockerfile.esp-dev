@@ -9,8 +9,8 @@
 # esp-dev-container.yml CI workflow.
 
 # Pin the base image by digest for reproducibility.
-# Tag: espressif/idf:v5.3.2
-FROM espressif/idf@sha256:d85ffe6db6162f16589c4c2221de1d5c40c9d9aa2331099e2fe6f5e33d1b8f09
+# Tag: espressif/idf:v5.4.2
+FROM espressif/idf@sha256:5d8a86433af19024bc2cb4940bf68ed73cf846e09eaf536fa83b2e7c14efcada
 
 # Avoid interactive prompts during package installation.
 ENV DEBIAN_FRONTEND=noninteractive
@@ -41,31 +41,16 @@ ENV RUSTUP_HOME="/root/.rustup" \
 # (ESP32-S3) targets. The export-esp.sh script sets PATH, LIBCLANG_PATH,
 # and CLANG_PATH for the Espressif LLVM/Clang.
 #
-# IMPORTANT: Both the Rust toolchain version AND the crosstool (GCC) version
-# MUST be compatible with the base IDF image (v5.3.2).
-#   - Toolchain 1.82.0.2 is the last release whose std source targets IDF v5.3.
-#   - Crosstool esp-13.2.0_20240530 matches IDF v5.3.2's expected GCC version.
-# Newer toolchain versions bundle std source for IDF v5.5+, causing ABI
-# incompatibility when -Zbuild-std links against the v5.3.2 C libraries
-# (manifests as InstrFetchProhibited crash on Core 1 at boot).
+# With IDF v5.4 the default espup toolchain and crosstool versions are
+# compatible — no version pins needed.
 RUN cargo install espup@0.16.0 --locked && \
-    espup install \
-        --toolchain-version 1.82.0.2 \
-        --crosstool-toolchain-version 13.2.0_20240530 && \
+    espup install && \
     mkdir -p /opt/esp && \
     cp /root/export-esp.sh /opt/esp/export-esp.sh && \
     echo 'source /opt/esp/export-esp.sh' >> /etc/bash.bashrc
 
 # ── ldproxy (ESP-IDF linker proxy) ───────────────────────────────────────────
 RUN cargo install ldproxy@0.3.4 --locked
-
-# ── Pin idf-component-manager <2 ─────────────────────────────────────────────
-# idf-component-manager 2.0 dropped --interface_version 2, which ESP-IDF
-# v5.3.2's cmake scripts still pass. Use PIP_CONSTRAINT so that every pip
-# install (including the venv embuild creates at build time) respects the pin.
-# Remove this pin when the base image is upgraded to ESP-IDF >= 5.4.
-RUN echo 'idf-component-manager<2' > /opt/esp/pip-constraints.txt
-ENV PIP_CONSTRAINT=/opt/esp/pip-constraints.txt
 
 # ── Use bash for remaining RUN steps (export.sh may use bash features) ───────
 SHELL ["/bin/bash", "-c"]

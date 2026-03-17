@@ -5138,13 +5138,16 @@ dependencies = [
  "serde_json",
  "serialport",
  "sha2",
+ "sonde-gateway",
  "sonde-protocol",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
  "tower",
+ "zeroize",
 ]
 
 [[package]]

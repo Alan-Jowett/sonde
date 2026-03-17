@@ -4,7 +4,6 @@
   "description": "Default permissions for the Sonde Pairing Tool",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "shell:allow-open"
+    "core:default"
   ]
 }

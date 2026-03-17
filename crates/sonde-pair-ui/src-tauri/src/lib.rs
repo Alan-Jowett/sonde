@@ -5,7 +5,7 @@
 //!
 //! On desktop, BLE operations use [`BtleplugTransport`] and [`FilePairingStore`].
 //! On Android, BLE commands return stub errors until the Android transport is
-//! wired through Tauri (see issue #202).
+//! wired through Tauri (see issue #230).
 //!
 //! All BLE operations use `spawn_blocking` + `Handle::block_on` so that
 //! non-Send futures from [`sonde_pair::transport::BleTransport`] work on
@@ -16,12 +16,15 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 #[cfg(not(target_os = "android"))]
 use sonde_pair::btleplug_transport::BtleplugTransport;
+#[cfg(not(target_os = "android"))]
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
 #[cfg(not(target_os = "android"))]
 use sonde_pair::file_store::FilePairingStore;
+#[cfg(not(target_os = "android"))]
 use sonde_pair::rng::OsRng;
 #[cfg(not(target_os = "android"))]
 use sonde_pair::store::PairingStore;
+#[cfg(not(target_os = "android"))]
 use sonde_pair::types::ScannedDevice;
 #[cfg(not(target_os = "android"))]
 use sonde_pair::{phase1, phase2};
@@ -59,6 +62,7 @@ struct PairingStatus {
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_os = "android"))]
 fn format_address(addr: &[u8; 6]) -> String {
     format!(
         "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
@@ -66,6 +70,7 @@ fn format_address(addr: &[u8; 6]) -> String {
     )
 }
 
+#[cfg(not(target_os = "android"))]
 fn parse_address(s: &str) -> Result<[u8; 6], String> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() != 6 {
@@ -132,6 +137,7 @@ async fn stop_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
     };
 
     let scanner = tokio::task::spawn_blocking(move || {
+        let mut scanner = scanner;
         let _ = tokio::runtime::Handle::current().block_on(async { scanner.stop().await });
         scanner
     })
@@ -154,6 +160,7 @@ async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo
         .ok_or_else(|| "not scanning".to_string())?;
 
     let (scanner, devices) = tokio::task::spawn_blocking(move || {
+        let mut scanner = scanner;
         let _ = tokio::runtime::Handle::current().block_on(async { scanner.refresh().await });
         let devices: Vec<DeviceInfo> = scanner.devices().iter().map(device_to_info).collect();
         (scanner, devices)
@@ -264,8 +271,8 @@ fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn start_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    *state.phase.lock().unwrap() = "Scanning".into();
-    Err("BLE scanning not yet implemented on Android".into())
+    *state.phase.lock().unwrap() = "Idle".into();
+    Err("BLE scanning not yet implemented on Android — see issue #230".into())
 }
 
 #[cfg(target_os = "android")]

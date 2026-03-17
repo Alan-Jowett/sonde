@@ -5140,7 +5140,6 @@ dependencies = [
  "sha2",
  "sonde-gateway",
  "sonde-protocol",
- "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",

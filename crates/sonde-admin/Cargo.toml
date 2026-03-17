@@ -31,4 +31,3 @@ tonic-prost-build = "0.14"
 
 [dev-dependencies]
 sonde-gateway = { path = "../sonde-gateway" }
-tempfile = "3"

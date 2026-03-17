@@ -11,13 +11,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
-sonde-pair = { path = "../../sonde-pair", features = ["btleplug", "file-store"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Desktop: use btleplug BLE transport and JSON file store
+[target.'cfg(not(target_os = "android"))'.dependencies.sonde-pair]
+path = "../../sonde-pair"
+features = ["btleplug", "file-store"]
+
+# Android: use JNI-based BLE transport and Android secure store
+[target.'cfg(target_os = "android")'.dependencies.sonde-pair]
+path = "../../sonde-pair"
+features = ["android"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

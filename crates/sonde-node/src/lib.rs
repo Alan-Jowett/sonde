@@ -12,8 +12,6 @@ pub mod esp_ble_pairing;
 #[cfg(feature = "esp")]
 pub mod esp_hal;
 #[cfg(feature = "esp")]
-pub mod esp_pairing_serial;
-#[cfg(feature = "esp")]
 pub mod esp_sleep;
 #[cfg(feature = "esp")]
 pub mod esp_storage;
@@ -22,7 +20,6 @@ pub mod esp_transport;
 pub mod hal;
 pub mod key_store;
 pub mod map_storage;
-pub mod pairing;
 pub mod peer_request;
 pub mod program_store;
 pub mod sleep;
@@ -33,7 +30,7 @@ pub mod wake_cycle;
 /// Firmware ABI version. Bumped when the helper API changes.
 pub const FIRMWARE_ABI_VERSION: u32 = 1;
 
-/// Firmware version reported in `PAIRING_READY`. Bumped when the node
+/// Firmware version reported during BLE pairing. Bumped when the node
 /// firmware gains or changes pairing-visible features. Distinct from
 /// `FIRMWARE_ABI_VERSION`, which tracks BPF helper API compatibility.
 pub const FIRMWARE_VERSION: u32 = 1;

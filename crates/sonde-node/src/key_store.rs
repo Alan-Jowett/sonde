@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-use crate::error::{NodeError, NodeResult};
+use crate::error::NodeResult;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
 
@@ -30,15 +30,6 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
             .map(|(key_hint, psk)| NodeIdentity { key_hint, psk })
     }
 
-    /// Provision a new PSK via USB pairing.
-    /// Fails if the node is already paired (factory reset required first).
-    pub fn pair(&mut self, key_hint: u16, psk: &[u8; 32]) -> NodeResult<()> {
-        if self.storage.read_key().is_some() {
-            return Err(NodeError::AlreadyPaired);
-        }
-        self.storage.write_key(key_hint, psk)
-    }
-
     /// Factory reset: erase PSK, programs, map data, schedule, and channel.
     ///
     /// Per security.md §2.6 and node-design.md §6.2, this erases:
@@ -49,7 +40,7 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
     /// 5. Stored WiFi channel (reset to default)
     /// 6. BLE pairing artifacts: peer_payload erased, reg_complete cleared (ND-0917)
     ///
-    /// After this, the node is inert until re-paired via USB or BLE.
+    /// After this, the node is inert until re-paired via BLE.
     pub fn factory_reset(&mut self, map_storage: &mut MapStorage) -> NodeResult<()> {
         self.storage.erase_key()?;
         self.storage.erase_program(0)?;
@@ -72,6 +63,7 @@ impl<'a, S: PlatformStorage> KeyStore<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::NodeError;
     use crate::traits::PlatformStorage;
 
     /// In-memory mock implementation of PlatformStorage for testing.
@@ -203,35 +195,6 @@ mod tests {
         let mut storage = MockStorage::new();
         let ks = KeyStore::new(&mut storage);
         assert!(ks.load_identity().is_none());
-    }
-
-    #[test]
-    fn test_pair_and_load() {
-        // T-N400: Pair stores PSK; subsequent load_identity returns it.
-        let mut storage = MockStorage::new();
-        let psk = [0xAA; 32];
-        {
-            let mut ks = KeyStore::new(&mut storage);
-            ks.pair(42, &psk).unwrap();
-        }
-        let ks = KeyStore::new(&mut storage);
-        let id = ks.load_identity().expect("should be paired");
-        assert_eq!(id.key_hint, 42);
-        assert_eq!(id.psk, psk);
-    }
-
-    #[test]
-    fn test_pair_rejects_already_paired() {
-        // T-N403: Attempting to pair an already-paired node returns an error.
-        let mut storage = MockStorage::new();
-        let psk = [0xBB; 32];
-        {
-            let mut ks = KeyStore::new(&mut storage);
-            ks.pair(1, &psk).unwrap();
-        }
-        let mut ks = KeyStore::new(&mut storage);
-        let result = ks.pair(2, &[0xCC; 32]);
-        assert!(result.is_err());
     }
 
     #[test]

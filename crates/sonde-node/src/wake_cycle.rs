@@ -2826,67 +2826,6 @@ mod tests {
     }
 
     // ===================================================================
-    // T-N402: USB pairing → node authenticates with new PSK
-    // ===================================================================
-
-    #[test]
-    fn test_usb_pairing_then_authenticated_wake() {
-        // T-N402: Pair via USB (write PSK), then run a wake cycle and
-        // verify the WAKE frame is authenticated with the new PSK.
-        let new_psk = [0x42; 32];
-        let new_key_hint = 99u16;
-
-        // Start unpaired
-        let mut storage = MockStorage::new();
-        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
-
-        // Pair via KeyStore
-        {
-            let mut ks = crate::key_store::KeyStore::new(&mut storage);
-            ks.pair(new_key_hint, &new_psk).unwrap();
-        }
-
-        // Now run a wake cycle — should send WAKE with the new PSK
-        let mut transport = MockTransport::new();
-        let command_frame = build_command_response(
-            &new_psk,
-            new_key_hint,
-            1,
-            1000,
-            1710000000000,
-            CommandPayload::Nop,
-        );
-        transport.queue_response(Some(command_frame));
-
-        let mut hal = MockHal;
-        let mut rng = MockRng(0);
-        let clock = MockClock;
-        let mut interp = MockBpfInterpreter::new();
-
-        let outcome = run_wake_cycle(
-            &mut transport,
-            &mut storage,
-            &mut hal,
-            &mut rng,
-            &clock,
-            &MockBattery,
-            &mut interp,
-            &mut map_storage,
-            &TestHmac,
-            &TestSha256,
-        );
-
-        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
-        assert!(!transport.outbound.is_empty());
-
-        // Verify the WAKE frame is authenticated with the new PSK
-        let decoded = decode_frame(&transport.outbound[0]).unwrap();
-        assert!(verify_frame(&decoded, &new_psk, &TestHmac));
-        assert_eq!(decoded.header.msg_type, MSG_WAKE);
-        assert_eq!(decoded.header.key_hint, new_key_hint);
-    }
-
-    // ===================================================================
     // T-N608: Map persistence across wake cycles
     // ===================================================================
 

@@ -38,10 +38,10 @@ use sonde_node::bpf_runtime::{BpfError, BpfInterpreter, HelperFn};
 use sonde_node::error::{NodeError, NodeResult};
 use sonde_node::hal::{BatteryReader, Hal};
 use sonde_node::map_storage::MapStorage;
-use sonde_node::traits::{Clock, PairingSerial, PlatformStorage, Rng, Transport as NodeTransport};
+use sonde_node::traits::{Clock, PlatformStorage, Rng, Transport as NodeTransport};
 use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
 
-use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, RecvFrame, MAC_SIZE};
+use sonde_protocol::modem::{RecvFrame, MAC_SIZE};
 use sonde_protocol::{HmacProvider, Sha256Provider};
 
 // ---------------------------------------------------------------------------
@@ -1208,82 +1208,6 @@ impl BpfInterpreter for MockBpfInterpreter {
             self.captured_ctx = Some(*ctx);
         }
         self.execute_result.clone()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MockPairingSerial — simulated USB-CDC serial for pairing tests
-// ---------------------------------------------------------------------------
-
-/// Simulated serial port for testing [`sonde_node::pairing::run_pairing_mode`].
-///
-/// Feed encoded modem frames via [`enqueue`], then call `run_pairing_mode`.
-/// After it returns, inspect [`received`] for all frames the node wrote back.
-pub struct MockPairingSerial {
-    /// Bytes the node will read, in order. Populated by [`enqueue`].
-    rx_buf: VecDeque<u8>,
-    /// Raw bytes the node wrote back. Decode with [`received`].
-    tx_buf: Vec<u8>,
-    /// When `rx_buf` is drained and this is true, reads return `Err`
-    /// (simulating USB disconnect).
-    disconnect_when_empty: bool,
-}
-
-impl Default for MockPairingSerial {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MockPairingSerial {
-    pub fn new() -> Self {
-        Self {
-            rx_buf: VecDeque::new(),
-            tx_buf: Vec::new(),
-            disconnect_when_empty: true,
-        }
-    }
-
-    /// Enqueue a modem message for the node to read.
-    pub fn enqueue(&mut self, msg: &ModemMessage) {
-        let frame = encode_modem_frame(msg).expect("encode mock message");
-        self.rx_buf.extend(frame);
-    }
-
-    /// Decode all frames the node sent back (PAIRING_READY + responses).
-    pub fn received(&self) -> Vec<ModemMessage> {
-        let mut decoder = FrameDecoder::new();
-        decoder.push(&self.tx_buf);
-        let mut msgs = Vec::new();
-        loop {
-            match decoder.decode() {
-                Ok(Some(msg)) => msgs.push(msg),
-                Ok(None) => break,
-                Err(_) => continue,
-            }
-        }
-        msgs
-    }
-}
-
-impl PairingSerial for MockPairingSerial {
-    fn read(&mut self, buf: &mut [u8], _timeout_ms: u32) -> NodeResult<usize> {
-        if self.rx_buf.is_empty() {
-            if self.disconnect_when_empty {
-                return Err(NodeError::Transport("mock USB disconnect"));
-            }
-            return Ok(0);
-        }
-        let n = buf.len().min(self.rx_buf.len());
-        for b in buf.iter_mut().take(n) {
-            *b = self.rx_buf.pop_front().unwrap();
-        }
-        Ok(n)
-    }
-
-    fn write(&mut self, data: &[u8]) -> NodeResult<()> {
-        self.tx_buf.extend_from_slice(data);
-        Ok(())
     }
 }
 

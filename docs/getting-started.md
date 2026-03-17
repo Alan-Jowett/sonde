@@ -282,18 +282,18 @@ RUN_ID=$(gh run list --branch "$(git branch --show-current)" \
 
 # Node firmware (ESP32-C3)
 gh run download "$RUN_ID" --name node-firmware --dir ./firmware/
-espflash write-bin -p /dev/ttyUSB0 0x0 ./firmware/flash_image.bin
-espflash monitor -p /dev/ttyUSB0
+espflash write-bin -p PORT 0x0 ./firmware/flash_image.bin
+espflash monitor -p PORT
 
 # Modem firmware (ESP32-S3) — use the modem workflow name instead:
 RUN_ID=$(gh run list --branch "$(git branch --show-current)" \
   -w "ESP32-S3 Modem Firmware CI" --json databaseId -q '.[0].databaseId')
 gh run download "$RUN_ID" --name modem-firmware --dir ./firmware-modem/
-espflash write-bin -p /dev/ttyUSB1 0x0 ./firmware-modem/flash_image.bin
-espflash monitor -p /dev/ttyUSB1
+espflash write-bin -p PORT 0x0 ./firmware-modem/flash_image.bin
+espflash monitor -p PORT
 ```
 
-> **Note:** The CI artifacts contain **merged flash images** (bootloader + partition table + app) built against the same ESP-IDF version as the app. Using `espflash write-bin` at offset `0x0` writes this image directly, avoiding bootloader/app version mismatches that occur when `espflash flash` substitutes its own bundled bootloader.
+> **Note:** The CI artifacts contain **merged flash images** (bootloader + partition table + app) built against the same ESP-IDF version as the app. Using `espflash write-bin` at offset `0x0` writes this image directly, avoiding bootloader/app version mismatches that occur when `espflash flash` substitutes its own bundled bootloader. Replace `PORT` with your device's serial port (e.g., `COM6` on Windows, `/dev/ttyUSB0` on Linux, `/dev/cu.usbmodem*` on macOS). If unsure, omit `-p PORT` and `espflash` will auto-detect or prompt.
 
 **Benefits:**
 - **10× faster** — 2–3 min (push + CI + download) vs 20+ min local Docker build.

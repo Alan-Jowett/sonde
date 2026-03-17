@@ -49,8 +49,8 @@ gh run download "$(gh run list --branch "$BRANCH" -w 'ESP32-S3 Modem Firmware CI
   --name modem-firmware --dir ./firmware-modem/             # ESP32-S3 modem
 gh run download "$(gh run list --branch "$BRANCH" -w CI --json databaseId -q '.[0].databaseId')" \
   --name gateway-linux-x86_64 --dir ./bin/                 # gateway binary
-espflash write-bin -p COM6 0x0 ./firmware/flash_image.bin  # flash node
-espflash write-bin -p COM4 0x0 ./firmware-modem/flash_image.bin  # flash modem
+espflash write-bin -p PORT 0x0 ./firmware/flash_image.bin  # flash node (replace PORT with your serial port)
+espflash write-bin -p PORT 0x0 ./firmware-modem/flash_image.bin  # flash modem
 ```
 
 ## Architecture

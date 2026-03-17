@@ -26,6 +26,12 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 # --- WiFi / ESP-NOW ---
 CONFIG_ESP_WIFI_ENABLED=y
 
+# --- Flash configuration ---
+# Pin flash parameters so elf2image in CI uses matching values.
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
 # --- Bluetooth / NimBLE (MD-0400) ---
 # Use NimBLE (BLE-only, lightweight) instead of Bluedroid.
 # Required for the Gateway Pairing Service GATT server.

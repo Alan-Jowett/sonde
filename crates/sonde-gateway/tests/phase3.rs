@@ -255,9 +255,9 @@ async fn t0701_stale_program_detection() {
 
     // Ingest two programs with distinct bytecode.
     let hash_a =
-        store_test_program(&*storage, &[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).await;
+        store_test_program(&storage, &[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).await;
     let hash_b =
-        store_test_program(&*storage, &[0xB7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).await;
+        store_test_program(&storage, &[0xB7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).await;
 
     // Register node with program A assigned.
     let mut node_record = node.to_record();
@@ -395,7 +395,7 @@ async fn t1002_export_import_round_trip() {
     storage_a.upsert_node(&node2).await.unwrap();
 
     let hash = store_test_program(
-        &*storage_a,
+        &storage_a,
         &[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
     )
     .await;

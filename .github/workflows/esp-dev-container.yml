@@ -86,10 +86,7 @@ jobs:
             -e ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-node/sdkconfig.defaults \
             -e ESP_IDF_COMPONENT_MANAGER=off \
             ${{ env.LOCAL_IMAGE }} \
-            bash -c '. "$IDF_PATH/export.sh" && . /opt/esp/export-esp.sh && \
-              cargo +esp build -p sonde-node --bin node --features esp \
-              --profile firmware --target riscv32imc-esp-espidf \
-              -Zbuild-std=std,panic_abort'
+            bash -c '. "$IDF_PATH/export.sh" && . /opt/esp/export-esp.sh && cargo +esp build -p sonde-node --bin node --features esp --profile firmware --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort'
 
       - name: Smoke test — modem firmware (ESP32-S3, Xtensa)
         run: |
@@ -98,17 +95,14 @@ jobs:
             -e "ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-modem/sdkconfig.defaults;sdkconfig.defaults.esp32s3" \
             -e ESP_IDF_COMPONENT_MANAGER=off \
             ${{ env.LOCAL_IMAGE }} \
-            bash -c '. /opt/esp/export-esp.sh && \
-              cargo +esp build -p sonde-modem --bin modem --features esp \
-              --profile firmware --target xtensa-esp32s3-espidf \
-              -Zbuild-std=std,panic_abort'
+            bash -c '. /opt/esp/export-esp.sh && cargo +esp build -p sonde-modem --bin modem --features esp --profile firmware --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort'
 
       # ------------------------------------------------------------------ #
       # Push — only if smoke tests passed and we're on main
       # ------------------------------------------------------------------ #
 
       - name: Tag for registry
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           TAGS="${{ steps.meta.outputs.tags }}"
           for TAG in $TAGS; do
@@ -116,7 +110,7 @@ jobs:
           done
 
       - name: Push to GitHub Container Registry
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           TAGS="${{ steps.meta.outputs.tags }}"
           for TAG in $TAGS; do

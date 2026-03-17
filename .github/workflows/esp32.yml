@@ -67,6 +67,7 @@ jobs:
         # cache so a stale rust-cache restore cannot override our settings.
         env:
           ESP_IDF_SDKCONFIG_DEFAULTS: crates/sonde-node/sdkconfig.defaults
+          ESP_IDF_COMPONENT_MANAGER: "off"
         run: |
           . "$IDF_PATH/export.sh"
           . /opt/esp/export-esp.sh

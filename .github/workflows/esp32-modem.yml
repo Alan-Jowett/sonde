@@ -86,6 +86,8 @@ jobs:
             || { echo "ERROR: CONFIG_BT_NIMBLE_ENABLED=y not found — sdkconfig.defaults.esp32s3 may not have been applied" >&2; exit 1; }
           grep -q 'CONFIG_ESP_TASK_WDT_EN=y' "$SDKCONFIG" \
             || { echo "ERROR: CONFIG_ESP_TASK_WDT_EN=y not found — crate sdkconfig.defaults may not have been applied" >&2; exit 1; }
+          grep -q 'CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y' "$SDKCONFIG" \
+            || { echo "ERROR: CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y not found — factory partition may be too small" >&2; exit 1; }
           echo "sdkconfig.defaults verified ✓"
 
       # ------------------------------------------------------------------ #

@@ -32,3 +32,10 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 
 # --- WiFi / ESP-NOW ---
 CONFIG_ESP_WIFI_ENABLED=y
+
+# --- Partition table ---
+# Use the "Single factory app (large)" table.  The default
+# "Single factory app" table provides only 1 MB for the factory
+# partition, which is too small for the modem firmware (~1.2 MB).
+# The "large" variant provides ~4 MB (0x3F0000 bytes).
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

@@ -12,13 +12,40 @@ use crate::store::PairingStore;
 use crate::transport::BleTransport;
 use crate::types::*;
 use crate::validation::validate_rf_channel;
-use tracing::{debug, info};
+use tracing::{debug, info, trace, warn};
 use zeroize::Zeroizing;
+
+/// Map a BLE pairing message type byte to its spec name (PT-0702).
+fn msg_type_name(t: u8) -> &'static str {
+    match t {
+        REQUEST_GW_INFO => "REQUEST_GW_INFO",
+        GW_INFO_RESPONSE => "GW_INFO_RESPONSE",
+        REGISTER_PHONE => "REGISTER_PHONE",
+        PHONE_REGISTERED => "PHONE_REGISTERED",
+        MSG_ERROR => "ERROR",
+        _ => "UNKNOWN",
+    }
+}
 
 /// Phase 1: Pair with a gateway via BLE.
 ///
 /// Establishes trust-on-first-use (TOFU) identity, performs ECDH key exchange,
 /// and receives the phone PSK and RF channel from the gateway.
+///
+/// # Re-run safety (PT-0600)
+///
+/// This function takes `&mut` references to `transport` and `store`, which
+/// provides compile-time mutual exclusion via the Rust borrow checker.
+/// Callers using `Arc<Mutex<..>>` for async sharing get serialized access
+/// through the mutex.  Re-running Phase 1 against the same gateway
+/// overwrites artifacts cleanly without corrupting local state.
+///
+/// # Already-paired warning (PT-0601)
+///
+/// If the store already contains a gateway identity, a `tracing::warn!` is
+/// emitted before proceeding.  Callers that need interactive confirmation
+/// should call [`crate::store::is_already_paired`] first and prompt the
+/// operator.
 pub async fn pair_with_gateway(
     transport: &mut dyn BleTransport,
     store: &mut dyn PairingStore,
@@ -32,6 +59,14 @@ pub async fn pair_with_gateway(
             "phone label must be at most 64 bytes, got {}",
             phone_label.len()
         )));
+    }
+
+    // PT-0601: warn if already paired with a gateway.
+    if let Some(existing) = store.load_gateway_identity()? {
+        warn!(
+            gateway_id = ?existing.gateway_id,
+            "gateway identity already stored — pairing may overwrite existing state if it succeeds"
+        );
     }
 
     // Step 1: Connect and check MTU
@@ -64,7 +99,7 @@ async fn do_pair_with_gateway(
     // Step 2: Generate 32-byte challenge
     let mut challenge = [0u8; 32];
     rng.fill_bytes(&mut challenge)?;
-    debug!("generated challenge");
+    trace!("generated 32-byte random challenge");
 
     // Step 3: Write REQUEST_GW_INFO
     let request =
@@ -72,15 +107,23 @@ async fn do_pair_with_gateway(
             size: challenge.len(),
             max: u16::MAX as usize,
         })?;
+    trace!(msg = "REQUEST_GW_INFO", len = request.len(), "BLE write");
     transport
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &request)
         .await?;
 
     // Step 4: Read indication (timeout 5s)
+    trace!("waiting for GW_INFO_RESPONSE indication (5 s timeout)");
     let response = transport
         .read_indication(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, 5000)
         .await?;
     let (msg_type, payload) = parse_envelope(&response)?;
+    trace!(
+        msg_type = format_args!("0x{msg_type:02x}"),
+        msg_name = msg_type_name(msg_type),
+        len = payload.len(),
+        "BLE indication received"
+    );
 
     // Check for error response
     if msg_type == MSG_ERROR {
@@ -107,6 +150,7 @@ async fn do_pair_with_gateway(
     signed_message.extend_from_slice(&gw_info.gateway_id);
     crypto::verify_ed25519_signature(&gw_info.gw_public_key, &signed_message, &gw_info.signature)?;
     info!("gateway signature verified");
+    trace!("Ed25519 signature verification succeeded");
 
     // Step 6: TOFU — check stored identity
     if let Some(stored) = store.load_gateway_identity()? {
@@ -127,6 +171,7 @@ async fn do_pair_with_gateway(
 
     // Step 7: Generate ephemeral X25519 keypair
     let (eph_secret, eph_public) = crypto::generate_x25519_keypair(rng)?;
+    trace!("generated ephemeral X25519 keypair");
 
     // Step 8: Write REGISTER_PHONE (ephemeral_pubkey || label_len || label)
     let mut register_body = Vec::with_capacity(32 + 1 + phone_label.len());
@@ -138,15 +183,23 @@ async fn do_pair_with_gateway(
             size: register_body.len(),
             max: u16::MAX as usize,
         })?;
+    trace!(msg = "REGISTER_PHONE", len = register.len(), "BLE write");
     transport
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &register)
         .await?;
 
     // Step 9: Read indication (timeout 30s)
+    trace!("waiting for PHONE_REGISTERED indication (30 s timeout)");
     let response2 = transport
         .read_indication(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, 30_000)
         .await?;
     let (msg_type2, payload2) = parse_envelope(&response2)?;
+    trace!(
+        msg_type = format_args!("0x{msg_type2:02x}"),
+        msg_name = msg_type_name(msg_type2),
+        len = payload2.len(),
+        "BLE indication received (step 9)"
+    );
 
     if msg_type2 == MSG_ERROR {
         let (status, diagnostic) = parse_error_body(payload2);
@@ -183,6 +236,7 @@ async fn do_pair_with_gateway(
         &phone_reg.ciphertext,
         &gw_info.gateway_id,
     )?;
+    trace!("AES-256-GCM decryption succeeded");
 
     // Step 11: Parse decrypted inner: status[1] + phone_psk[32] + phone_key_hint[2] + rf_channel[1] = 36 bytes
     if decrypted.len() != 36 {
@@ -643,5 +697,109 @@ mod tests {
                 other => panic!("expected MtuTooLow, got {other:?}"),
             }
         });
+    }
+
+    // --- PT-0600: Re-run safety ---
+
+    /// Validates: PT-0600 criterion 1
+    ///
+    /// Running Phase 1 twice against the same gateway must not corrupt local
+    /// state. The second run succeeds and overwrites artifacts cleanly.
+    #[test]
+    fn t_pt_600_repeated_phase1_does_not_corrupt_state() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+            let eph_public = predicted_eph_public(&rng);
+
+            // First pairing.
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "first")
+                .await
+                .unwrap();
+            let first = store.load_artifacts().unwrap().unwrap();
+            assert_eq!(first.phone_label, "first");
+
+            // Second pairing (same gateway, same store).
+            let rng2 = MockRng::new([0x42u8; 32]);
+            let challenge2 = predicted_challenge(&rng2);
+            let eph_public2 = predicted_eph_public(&rng2);
+
+            let mut transport2 = MockBleTransport::new(247);
+            transport2.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge2,
+            )));
+            transport2.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public2,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            pair_with_gateway(&mut transport2, &mut store, &rng2, &device_addr, "second")
+                .await
+                .unwrap();
+
+            // State must be consistent — second pairing overwrites cleanly.
+            let second = store.load_artifacts().unwrap().unwrap();
+            assert_eq!(second.phone_label, "second");
+            assert_eq!(*second.phone_psk, phone_psk);
+            assert_eq!(second.rf_channel, rf_channel);
+        });
+    }
+
+    // --- PT-0601: Already-paired detection ---
+
+    /// Validates: PT-0601
+    ///
+    /// If a gateway identity is already stored, `is_already_paired` returns
+    /// `Some(identity)` so the caller can warn the operator.
+    #[test]
+    fn t_pt_601_already_paired_detection() {
+        use crate::store::is_already_paired;
+
+        let mut store = MemoryPairingStore::new();
+
+        // Initially not paired.
+        assert!(is_already_paired(&store).unwrap().is_none());
+
+        // After saving a gateway identity.
+        let identity = GatewayIdentity {
+            public_key: [0x42u8; 32],
+            gateway_id: [0x01u8; 16],
+        };
+        store.save_gateway_identity(&identity).unwrap();
+
+        let existing = is_already_paired(&store).unwrap();
+        assert!(existing.is_some(), "should detect existing pairing");
+        assert_eq!(existing.unwrap(), identity);
     }
 }

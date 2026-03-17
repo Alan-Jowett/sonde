@@ -10,13 +10,33 @@ use crate::store::PairingStore;
 use crate::transport::BleTransport;
 use crate::types::*;
 use crate::validation::{compute_key_hint, validate_node_id};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 use zeroize::Zeroizing;
+
+/// Map a BLE provisioning message type byte to its spec name (PT-0702).
+fn msg_type_name(t: u8) -> &'static str {
+    match t {
+        NODE_PROVISION => "NODE_PROVISION",
+        NODE_ACK => "NODE_ACK",
+        MSG_ERROR => "ERROR",
+        _ => "UNKNOWN",
+    }
+}
 
 /// Phase 2: Provision a node via BLE.
 ///
 /// Requires a prior Phase 1 pairing (artifacts in store). Generates a node PSK,
 /// builds an authenticated+encrypted provision message, and sends it to the node.
+///
+/// # Re-run safety (PT-0600)
+///
+/// This function takes `&mut dyn BleTransport`, providing compile-time mutual
+/// exclusion via the Rust borrow checker.  The store is read-only (`&dyn`).
+/// Callers using `Arc<Mutex<..>>` for async sharing get serialized access
+/// through the mutex.  Re-provisioning an already-paired node (without
+/// holding the pairing button) returns
+/// `Err(NodeProvisionFailed(AlreadyPaired))`; callers should treat this
+/// as a non-destructive outcome.
 pub async fn provision_node(
     transport: &mut dyn BleTransport,
     store: &dyn PairingStore,
@@ -35,9 +55,11 @@ pub async fn provision_node(
     // Step 3: Generate node_psk
     let mut node_psk = Zeroizing::new([0u8; 32]);
     rng.fill_bytes(&mut *node_psk)?;
+    trace!("generated 32-byte node PSK");
 
     // Step 4: Compute node_key_hint
     let node_key_hint = compute_key_hint(&node_psk);
+    trace!("computed node key hint");
 
     // Step 5: Build PairingRequest CBOR
     let timestamp = std::time::SystemTime::now()
@@ -59,6 +81,7 @@ pub async fn provision_node(
 
     // Step 8: Generate ephemeral X25519 keypair
     let (eph_secret, eph_public) = crypto::generate_x25519_keypair(rng)?;
+    trace!("generated ephemeral X25519 keypair");
 
     // Step 9: ECDH + HKDF → AES key
     let shared_secret = crypto::x25519_ecdh(&eph_secret, &gw_x25519);
@@ -77,6 +100,7 @@ pub async fn provision_node(
         &authenticated_request,
         &artifacts.gateway_identity.gateway_id,
     )?;
+    trace!("AES-256-GCM encryption succeeded");
 
     // Step 11: Connect to node, check MTU
     info!("connecting to node");
@@ -142,15 +166,23 @@ async fn do_provision_node(
     )?;
 
     // Step 13: Write to NODE_COMMAND_UUID
+    trace!(msg = "NODE_PROVISION", len = message.len(), "BLE write");
     transport
         .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &message)
         .await?;
 
     // Step 14: Read indication (timeout 5s)
+    trace!("waiting for NODE_ACK indication (5 s timeout)");
     let response = transport
         .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, 5000)
         .await?;
     let (msg_type, payload) = parse_envelope(&response)?;
+    trace!(
+        msg_type = format_args!("0x{msg_type:02x}"),
+        msg_name = msg_type_name(msg_type),
+        len = payload.len(),
+        "BLE indication received"
+    );
 
     if msg_type == MSG_ERROR {
         let (status, message) = parse_error_body(payload);

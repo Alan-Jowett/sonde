@@ -17,6 +17,17 @@ pub trait PairingStore {
     fn save_gateway_identity(&mut self, identity: &GatewayIdentity) -> Result<(), PairingError>;
 }
 
+/// Check whether a gateway identity is already stored (PT-0601).
+///
+/// Returns `Some(identity)` if the store already has a pinned gateway,
+/// indicating that Phase 1 has been run before.  The caller (typically the
+/// UI layer) should warn the operator before re-pairing.
+pub fn is_already_paired(
+    store: &dyn PairingStore,
+) -> Result<Option<GatewayIdentity>, PairingError> {
+    store.load_gateway_identity()
+}
+
 /// In-memory pairing store for testing.
 pub struct MemoryPairingStore {
     artifacts: Option<PairingArtifacts>,

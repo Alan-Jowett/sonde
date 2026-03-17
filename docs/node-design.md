@@ -215,11 +215,7 @@ Factory reset erases:
 3. Both program partitions (`program_a`, `program_b` → erased).
 4. Schedule partition → reset to default interval.
 
-After reset, the magic bytes are missing → firmware detects unpaired state → sleeps indefinitely until USB pairing.
-
-### 6.3  USB pairing
-
-The provisioning tool writes the PSK, key_hint, and magic bytes to the `key` partition over USB serial. The firmware does not participate in key generation — it simply stores what the tool provides and reboots into normal operation.
+After reset, the magic bytes are missing → firmware detects unpaired state → enters BLE pairing mode on next boot.
 
 ---
 

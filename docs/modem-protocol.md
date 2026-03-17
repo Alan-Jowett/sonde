@@ -576,10 +576,10 @@ The `firmware_version` field in `MODEM_READY` allows the gateway to detect the m
 | Range | Purpose |
 |-------|---------|
 | 0x01 – 0x0F | Core modem commands (RESET, SEND_FRAME, SET_CHANNEL, GET_STATUS, SCAN_CHANNELS) |
-| 0x10 – 0x1F | [USB pairing protocol](pairing-protocol.md) host → node commands |
+| 0x10 – 0x1F | Reserved |
 | 0x20 – 0x2F | BLE relay commands (BLE_INDICATE, BLE_ENABLE, BLE_DISABLE, BLE_PAIRING_CONFIRM_REPLY) |
 | 0x30 – 0x7F | Reserved for future gateway → modem commands |
 | 0x81 – 0x8F | Core modem events/responses |
-| 0x90 – 0x9F | [USB pairing protocol](pairing-protocol.md) node → host responses |
+| 0x90 – 0x9F | Reserved |
 | 0xA0 – 0xAF | BLE relay events (BLE_RECV, BLE_CONNECTED, BLE_DISCONNECTED, BLE_PAIRING_CONFIRM) |
 | 0xB0 – 0xFF | Reserved for future modem → gateway messages |

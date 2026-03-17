@@ -67,7 +67,6 @@ sonde/
 │   │       ├── hal.rs             # I2C, SPI, GPIO, ADC wrappers
 │   │       ├── sleep.rs           # sleep manager, wake reason
 │   │       ├── crypto.rs          # software HMAC/SHA256; ESP hardware (feature: esp)
-│   │       ├── pairing.rs         # USB pairing protocol handler
 │   │       ├── sonde_bpf_adapter.rs   # BpfInterpreter impl for sonde-bpf backend
 │   │       ├── traits.rs          # Transport, Rng, Clock, SleepController, PlatformStorage
 │   │       ├── error.rs           # NodeError enum
@@ -100,8 +99,7 @@ sonde/
 │   │   └── src/
 │   │       ├── lib.rs            # module declarations
 │   │       ├── main.rs           # CLI argument parsing (clap)
-│   │       ├── grpc_client.rs    # gRPC client for gateway admin API
-│   │       └── usb.rs            # USB serial pairing/reset
+│   │       └── grpc_client.rs    # gRPC client for gateway admin API
 │   │
 │   └── sonde-e2e/                # end-to-end test harness (Phase 7)
 │       ├── Cargo.toml
@@ -303,7 +301,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 **Validation:** [node-validation.md](node-validation.md)  
 **Key dependencies:** `sonde-protocol`, `sonde-bpf`, `ciborium`, `hmac`, `sha2`, `log`. ESP-IDF dependencies (`esp-idf-hal`, `esp-idf-svc`) are behind the `esp` feature. See `crates/sonde-node/Cargo.toml` for the full list.
 
-**Status:** Mostly complete. 101 tests pass covering all validation test cases (T-N100 through T-N802). All 19 modules implemented including ESP-specific platform adapters. Modules added beyond original plan: `bpf_dispatch.rs` (helper dispatch), `pairing.rs` (USB pairing handler), `sonde_bpf_adapter.rs` (BpfInterpreter impl for sonde-bpf), `traits.rs` (platform abstractions), `error.rs` (error types), and four ESP-specific modules (`esp_hal.rs`, `esp_sleep.rs`, `esp_storage.rs`, `esp_transport.rs`).
+**Status:** Mostly complete. 101 tests pass covering all validation test cases (T-N100 through T-N802). All 19 modules implemented including ESP-specific platform adapters. Modules added beyond original plan: `bpf_dispatch.rs` (helper dispatch), `sonde_bpf_adapter.rs` (BpfInterpreter impl for sonde-bpf), `traits.rs` (platform abstractions), `error.rs` (error types), and four ESP-specific modules (`esp_hal.rs`, `esp_sleep.rs`, `esp_storage.rs`, `esp_transport.rs`).
 
 **Module order:**
 
@@ -311,7 +309,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 |---|---|---|---|
 | 3.1 | `crypto.rs` | Software HMAC/SHA256 (ESP hardware impl behind `esp` feature) | Unit tests |
 | 3.2 | `traits.rs` / `esp_transport.rs` | `Transport` trait + ESP-NOW send/receive (feature: esp) | T-N100, T-N102 |
-| 3.3 | `key_store.rs` | PSK flash partition read/write, magic check | T-N400, T-N401, T-N402, T-N403, T-N404 |
+| 3.3 | `key_store.rs` | PSK flash partition read/write, magic check | T-N400, T-N401, T-N404 |
 | 3.4 | `sleep.rs` | Deep sleep entry, wake reason, interval management | T-N208, T-N209 |
 | 3.5 | `wake_cycle.rs` | WAKE → COMMAND state machine (without BPF) | T-N200 to T-N207, T-N300 to T-N306 |
 | 3.6 | `program_store.rs` | A/B partitions, CBOR decode, LDDW resolution | T-N500 to T-N505 |
@@ -331,13 +329,13 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 ### Phase 4: `sonde-admin` CLI tool — ✅ DONE
 
-**Goal:** A CLI that wraps the gateway gRPC API and handles USB pairing.
+**Goal:** A CLI that wraps the gateway gRPC API.
 
 **Design doc:** [gateway-design.md §13](gateway-design.md)  
 **Requirements:** GW-0806  
-**Dependencies:** `tonic` (gRPC client), `clap` (CLI parsing), `serialport` (USB serial).
+**Dependencies:** `tonic` (gRPC client), `clap` (CLI parsing).
 
-**Status:** Complete. All 4 modules implemented (`grpc_client.rs`, `usb.rs`, `main.rs`, `lib.rs`). USB pairing supports `--format json` output. No automated tests (USB pairing requires hardware; gRPC client requires a running gateway).
+**Status:** Complete. All 3 modules implemented (`grpc_client.rs`, `main.rs`, `lib.rs`). No automated tests (gRPC client requires a running gateway).
 
 The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/run/sonde/admin.sock`) or a Windows named pipe (default: `\\.\pipe\sonde-admin`). **Note:** The gateway binary currently starts its gRPC server on a TCP `SocketAddr` (`--admin-addr`); a UDS/pipe listener on the gateway side is needed to match the admin CLI's transport.
 
@@ -346,10 +344,9 @@ The admin CLI connects to the gateway over UDS on Linux/macOS (default: `/var/ru
 | Step | Module | What to build | Test with |
 |---|---|---|---|
 | 4.1 | `grpc_client.rs` | Connect to gateway, call all admin RPCs | Integration test against running gateway |
-| 4.2 | `usb.rs` | USB serial: write PSK, factory reset | Manual test with hardware |
-| 4.3 | `main.rs` | CLI argument parsing, command dispatch, JSON output | CLI smoke tests |
+| 4.2 | `main.rs` | CLI argument parsing, command dispatch, JSON output | CLI smoke tests |
 
-**Exit criteria:** All `sonde-admin` commands work against a running gateway instance. USB pairing tested with hardware. ✅
+**Exit criteria:** All `sonde-admin` commands work against a running gateway instance. ✅
 
 ---
 

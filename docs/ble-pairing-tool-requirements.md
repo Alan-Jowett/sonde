@@ -5,7 +5,7 @@
 > **Document status:** Draft  
 > **Source:** Derived from [ble-pairing-protocol.md](ble-pairing-protocol.md) (BLE pairing protocol specification).  
 > **Scope:** This document covers the Sonde **BLE pairing tool** (phone/operator-side) only. Gateway-side BLE GATT services and node firmware BLE behavior are out of scope.  
-> **Related:** [ble-pairing-protocol.md](ble-pairing-protocol.md), [security.md](security.md), [pairing-protocol.md](pairing-protocol.md), [gateway-requirements.md](gateway-requirements.md), [node-requirements.md](node-requirements.md)
+> **Related:** [ble-pairing-protocol.md](ble-pairing-protocol.md), [security.md](security.md), [gateway-requirements.md](gateway-requirements.md), [node-requirements.md](node-requirements.md)
 
 ---
 

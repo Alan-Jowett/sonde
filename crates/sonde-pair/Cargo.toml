@@ -8,6 +8,8 @@ license = "MIT"
 default = []
 btleplug = ["dep:btleplug", "dep:uuid", "dep:tokio", "dep:futures"]
 file-store = ["dep:serde", "dep:serde_json"]
+dpapi = ["dep:windows-sys", "file-store"]
+secret-service-store = ["dep:secret-service", "dep:tokio", "tokio/rt-multi-thread", "file-store"]
 android = ["dep:jni", "dep:tokio"]
 
 [dependencies]
@@ -34,6 +36,18 @@ futures = { version = "0.3", optional = true }
 
 # Optional — Android BLE transport and persistent store (aarch64-linux-android)
 jni = { version = "0.21", optional = true }
+
+# Optional — Windows DPAPI PSK protection (enable via `dpapi` feature)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Security_Cryptography",
+    "Win32_Foundation",
+    "Win32_System_Memory",
+], optional = true }
+
+# Optional — Linux Secret Service PSK protection (enable via `secret-service-store` feature)
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }

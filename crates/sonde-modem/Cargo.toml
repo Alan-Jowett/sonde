@@ -32,6 +32,7 @@ embuild = { version = "0.33", optional = true }
 
 [package.metadata.esp-idf-sys]
 esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
+esp_idf_component_manager = "n"
 
 [dev-dependencies]
 sonde-protocol = { path = "../sonde-protocol" }

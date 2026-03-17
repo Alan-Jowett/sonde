@@ -55,6 +55,15 @@ RUN cargo install ldproxy@0.3.4 --locked
 # ── Use bash for remaining RUN steps (export.sh may use bash features) ───────
 SHELL ["/bin/bash", "-c"]
 
+# ── Disable IDF component manager ────────────────────────────────────────────
+# embuild 0.33.1 passes --interface_version 3, which IDF v5.4's
+# idf-component-manager rejects (only accepts 4+). Sonde firmware uses
+# no managed components, so disabling the component manager is safe.
+# The firmware Cargo.toml files also set esp_idf_component_manager = "n"
+# (embuild overrides env vars), but this ENV covers interactive Docker use.
+# Remove this when embuild is updated to pass --interface_version 4+.
+ENV IDF_COMPONENT_MANAGER=0
+
 # ── QEMU for RISC-V (ESP32-C3 smoke tests) ──────────────────────────────────
 RUN . "$IDF_PATH/export.sh" && \
     "$IDF_PATH/tools/idf_tools.py" install qemu-riscv32

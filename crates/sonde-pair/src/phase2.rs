@@ -13,17 +13,28 @@ use crate::validation::{compute_key_hint, validate_node_id};
 use tracing::{debug, info, trace};
 use zeroize::Zeroizing;
 
+/// Map a BLE provisioning message type byte to its spec name (PT-0702).
+fn msg_type_name(t: u8) -> &'static str {
+    match t {
+        NODE_PROVISION => "NODE_PROVISION",
+        NODE_ACK => "NODE_ACK",
+        MSG_ERROR => "ERROR",
+        _ => "UNKNOWN",
+    }
+}
+
 /// Phase 2: Provision a node via BLE.
 ///
 /// Requires a prior Phase 1 pairing (artifacts in store). Generates a node PSK,
 /// builds an authenticated+encrypted provision message, and sends it to the node.
 ///
-/// # Concurrency
+/// # Re-run safety (PT-0600)
 ///
 /// This function takes `&mut dyn BleTransport`, providing compile-time mutual
 /// exclusion via the Rust borrow checker.  The store is read-only (`&dyn`).
 /// Callers using `Arc<Mutex<..>>` for async sharing get serialized access
-/// through the mutex (PT-0600).
+/// through the mutex.  Re-provisioning an already-paired node (without
+/// holding the pairing button) produces `NODE_ACK(0x01)` with no state change.
 pub async fn provision_node(
     transport: &mut dyn BleTransport,
     store: &dyn PairingStore,
@@ -46,7 +57,7 @@ pub async fn provision_node(
 
     // Step 4: Compute node_key_hint
     let node_key_hint = compute_key_hint(&node_psk);
-    trace!(node_key_hint, "computed node key hint");
+    trace!("computed node key hint");
 
     // Step 5: Build PairingRequest CBOR
     let timestamp = std::time::SystemTime::now()
@@ -166,6 +177,7 @@ async fn do_provision_node(
     let (msg_type, payload) = parse_envelope(&response)?;
     trace!(
         msg_type = format_args!("0x{msg_type:02x}"),
+        msg_name = msg_type_name(msg_type),
         len = payload.len(),
         "BLE indication received"
     );

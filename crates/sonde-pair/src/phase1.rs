@@ -15,17 +15,30 @@ use crate::validation::validate_rf_channel;
 use tracing::{debug, info, trace, warn};
 use zeroize::Zeroizing;
 
+/// Map a BLE pairing message type byte to its spec name (PT-0702).
+fn msg_type_name(t: u8) -> &'static str {
+    match t {
+        REQUEST_GW_INFO => "REQUEST_GW_INFO",
+        GW_INFO_RESPONSE => "GW_INFO_RESPONSE",
+        REGISTER_PHONE => "REGISTER_PHONE",
+        PHONE_REGISTERED => "PHONE_REGISTERED",
+        MSG_ERROR => "ERROR",
+        _ => "UNKNOWN",
+    }
+}
+
 /// Phase 1: Pair with a gateway via BLE.
 ///
 /// Establishes trust-on-first-use (TOFU) identity, performs ECDH key exchange,
 /// and receives the phone PSK and RF channel from the gateway.
 ///
-/// # Concurrency
+/// # Re-run safety (PT-0600)
 ///
 /// This function takes `&mut` references to `transport` and `store`, which
 /// provides compile-time mutual exclusion via the Rust borrow checker.
 /// Callers using `Arc<Mutex<..>>` for async sharing get serialized access
-/// through the mutex (PT-0600).
+/// through the mutex.  Re-running Phase 1 against the same gateway
+/// overwrites artifacts atomically without corrupting local state.
 ///
 /// # Already-paired warning (PT-0601)
 ///
@@ -40,20 +53,20 @@ pub async fn pair_with_gateway(
     device_address: &[u8; 6],
     phone_label: &str,
 ) -> Result<PairingArtifacts, PairingError> {
-    // PT-0601: warn if already paired with a gateway.
-    if let Some(existing) = store.load_gateway_identity()? {
-        warn!(
-            gateway_id = ?existing.gateway_id,
-            "already paired with a gateway — re-pairing will overwrite existing artifacts"
-        );
-    }
-
     // Validate phone label length (spec §5.4: 0–64 bytes)
     if phone_label.len() > 64 {
         return Err(PairingError::InvalidPhoneLabel(format!(
             "phone label must be at most 64 bytes, got {}",
             phone_label.len()
         )));
+    }
+
+    // PT-0601: warn if already paired with a gateway.
+    if let Some(existing) = store.load_gateway_identity()? {
+        warn!(
+            gateway_id = ?existing.gateway_id,
+            "gateway identity already stored — existing artifacts may be overwritten if pairing succeeds"
+        );
     }
 
     // Step 1: Connect and check MTU
@@ -107,6 +120,7 @@ async fn do_pair_with_gateway(
     let (msg_type, payload) = parse_envelope(&response)?;
     trace!(
         msg_type = format_args!("0x{msg_type:02x}"),
+        msg_name = msg_type_name(msg_type),
         len = payload.len(),
         "BLE indication received"
     );
@@ -182,8 +196,9 @@ async fn do_pair_with_gateway(
     let (msg_type2, payload2) = parse_envelope(&response2)?;
     trace!(
         msg_type = format_args!("0x{msg_type2:02x}"),
+        msg_name = msg_type_name(msg_type2),
         len = payload2.len(),
-        "BLE indication received"
+        "BLE indication received (step 9)"
     );
 
     if msg_type2 == MSG_ERROR {

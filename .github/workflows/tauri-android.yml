@@ -63,6 +63,10 @@ jobs:
         working-directory: crates/sonde-pair-ui
         run: npm install
 
+      - name: Initialize Android project
+        working-directory: crates/sonde-pair-ui
+        run: cargo tauri android init
+
       - name: Build Android APK (debug)
         working-directory: crates/sonde-pair-ui
         run: cargo tauri android build --debug

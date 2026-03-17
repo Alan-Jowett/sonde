@@ -21,7 +21,7 @@ log = "0.4"
 # ESP-IDF dependencies — only pulled in with the "esp" feature.
 esp-idf-hal = { version = "0.46", optional = true }
 esp-idf-svc = { version = "0.52", features = ["binstart"], optional = true }
-esp32-nimble = { git = "https://github.com/taks/esp32-nimble.git", rev = "aa67d0b8", optional = true }
+esp32-nimble = { version = "0.12", optional = true }
 esp-idf-sys = { version = "0.37", features = ["binstart"], optional = true }
 
 # Device test dependency — only pulled in with the "device-tests" feature.

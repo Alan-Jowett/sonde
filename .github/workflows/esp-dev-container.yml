@@ -59,7 +59,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
-            type=raw,value=v5.4.2-{{date 'YYYYMMDD'}}-{{sha}}
+            type=raw,value=v5.4.1-{{date 'YYYYMMDD'}}-{{sha}}
 
       # ------------------------------------------------------------------ #
       # Build (no push yet — smoke test first)

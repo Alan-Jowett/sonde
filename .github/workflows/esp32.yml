@@ -46,7 +46,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           workspaces: ". -> target"
-          key: esp32c3-riscv-${{ hashFiles('crates/sonde-node/sdkconfig.defaults') }}
+          key: esp32c3-riscv-${{ hashFiles('crates/sonde-node/sdkconfig.defaults', '.github/docker/Dockerfile.esp-dev') }}
 
       # ------------------------------------------------------------------ #
       # Build

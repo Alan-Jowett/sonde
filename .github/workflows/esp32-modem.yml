@@ -87,3 +87,15 @@ jobs:
           grep -q 'CONFIG_ESP_TASK_WDT_EN=y' "$SDKCONFIG" \
             || { echo "ERROR: CONFIG_ESP_TASK_WDT_EN=y not found — crate sdkconfig.defaults may not have been applied" >&2; exit 1; }
           echo "sdkconfig.defaults verified ✓"
+
+      # ------------------------------------------------------------------ #
+      # Upload firmware artifact
+      # ------------------------------------------------------------------ #
+
+      - name: Upload modem firmware
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: modem-firmware
+          path: target/xtensa-esp32s3-espidf/firmware/modem
+          if-no-files-found: error
+          retention-days: 7

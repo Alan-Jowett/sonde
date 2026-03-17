@@ -60,6 +60,17 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Build gateway (release)
+        run: cargo build --release -p sonde-gateway
+
+      - name: Upload gateway binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gateway-linux-x86_64
+          path: target/release/sonde-gateway
+          if-no-files-found: error
+          retention-days: 7
+
   bpf-conformance:
     name: BPF conformance (RFC 9669)
     runs-on: ubuntu-latest

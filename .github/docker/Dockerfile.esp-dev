@@ -9,8 +9,8 @@
 # esp-dev-container.yml CI workflow.
 
 # Pin the base image by digest for reproducibility.
-# Tag: espressif/idf:v5.4.2
-FROM espressif/idf@sha256:5d8a86433af19024bc2cb4940bf68ed73cf846e09eaf536fa83b2e7c14efcada
+# Tag: espressif/idf:v5.4.2 (linux/amd64)
+FROM espressif/idf@sha256:4666cc8e769710b8f2346ba683b6ec1dd9550e2e4fe12fed5ca6e6591290f372
 
 # Avoid interactive prompts during package installation.
 ENV DEBIAN_FRONTEND=noninteractive

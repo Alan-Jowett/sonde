@@ -829,7 +829,9 @@ pub async fn serve_admin(
 
     impl Connected for NamedPipeConn {
         type ConnectInfo = ();
-        fn connect_info(&self) -> Self::ConnectInfo {}
+        fn connect_info(&self) -> Self::ConnectInfo {
+            ()
+        }
     }
 
     impl AsyncRead for NamedPipeConn {

@@ -1064,10 +1064,10 @@ async fn t0800_grpc_uds_transport() {
     let h = TestHarness::new();
 
     // Start the gRPC server on the UDS socket in a background task.
+    // Capture the handle so we can abort the task at the end of the test.
     let socket_path_server = socket_path_str.clone();
-    tokio::spawn(async move {
+    let server_handle = tokio::spawn(async move {
         if let Err(e) = sonde_gateway::admin::serve_admin(h.admin, &socket_path_server).await {
-            // Only log — the server exits when the socket is cleaned up.
             eprintln!("admin server task ended: {e}");
         }
     });
@@ -1102,5 +1102,6 @@ async fn t0800_grpc_uds_transport() {
         .await
         .expect("ListNodes over UDS should succeed");
     assert_eq!(resp.into_inner().nodes.len(), 0);
-    // tmp_dir is dropped here, cleaning up the socket directory automatically.
+    // Abort the server task and let tmp_dir clean up the socket directory.
+    server_handle.abort();
 }

@@ -3,8 +3,6 @@
 
 //! Key provider tests (T-0603a through T-0603k).
 
-use std::path::PathBuf;
-
 use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -37,7 +35,9 @@ fn t0603a_file_key_provider_happy_path() {
 /// Assert: returns Err(KeyProviderError::Io(_)).
 #[test]
 fn t0603b_file_key_provider_missing_file() {
-    let provider = FileKeyProvider::new(PathBuf::from("/nonexistent/path/master.key"));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("does_not_exist.key");
+    let provider = FileKeyProvider::new(path);
     let result = provider.load_master_key();
     assert!(result.is_err());
     let err = result.unwrap_err();

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 //! Modem transport tests (T-1100 through T-1108 except T-1105 which is
-//! already in phase2d.rs), and BLE admin tests (T-1221, T-1222).
+//! already in phase2d.rs).
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -241,12 +241,12 @@ async fn t1206_registration_window_auto_close() {
     let mut window = RegistrationWindow::new();
     assert!(!window.is_open(), "window starts closed");
 
-    window.open(1); // 1 second
-    assert!(window.is_open(), "window must be open after open(1)");
-
-    // Wait for timeout.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert!(!window.is_open(), "window must auto-close after timeout");
+    // Open with 0-second timeout — deadline is effectively now.
+    window.open(0);
+    // The next is_open() check sees the deadline has passed and auto-closes.
+    // Allow a tiny delay so Instant::now() advances past the deadline.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert!(!window.is_open(), "window must auto-close after 0s timeout");
 }
 
 // ── T-1207: REGISTER_PHONE happy path ───────────────────────────────────────

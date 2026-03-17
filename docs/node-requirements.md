@@ -278,29 +278,13 @@ The node MUST store its 256-bit PSK in a dedicated flash partition. The firmware
 
 ---
 
-### ND-0401  USB-mediated pairing
-
-**Priority:** Must  
-**Source:** security.md §2.4
-
-**Description:**  
-The node MUST support USB-mediated pairing. During pairing, the provisioning host writes a PSK to the node's key partition. The node accepts the key and persists it.
-
-**Acceptance criteria:**
-
-1. A provisioning host can write a PSK to the node via USB.
-2. After pairing, the node uses the provisioned PSK for all HMAC operations.
-3. Pairing is rejected if the node already has a PSK (factory reset required first).
-
----
-
 ### ND-0402  Factory reset
 
 **Priority:** Must  
 **Source:** security.md §2.6
 
 **Description:**  
-The node MUST support a factory reset that erases the PSK, all persistent map data, and the resident BPF program. After reset, the node is inert and must be re-paired via USB.
+The node MUST support a factory reset that erases the PSK, all persistent map data, and the resident BPF program. After reset, the node is inert and must be re-paired via BLE.
 
 **Acceptance criteria:**
 
@@ -693,14 +677,13 @@ During chunked transfer, if the node receives a CHUNK response with a `chunk_ind
 **Source:** ble-pairing-protocol.md §8.1
 
 **Description:**  
-On boot the node MUST check, in order: (1) USB-CDC connected → enter USB pairing mode, (2) no PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode, (3) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (4) PSK stored and `reg_complete` flag set → normal WAKE cycle.  (The `reg_complete` NVS key is defined in ND-0916.)
+On boot the node MUST check, in order: (1) no PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode, (2) PSK stored and `reg_complete` flag NOT set → send PEER_REQUEST, (3) PSK stored and `reg_complete` flag set → normal WAKE cycle.  (The `reg_complete` NVS key is defined in ND-0916.)
 
 **Acceptance criteria:**
 
-1. USB-CDC detection takes highest priority.
-2. BLE pairing mode is entered when no PSK exists or the pairing button is held.
-3. PEER_REQUEST path is taken when PSK is stored but registration is incomplete.
-4. Normal WAKE cycle is entered only when PSK is stored and registration is complete.
+1. BLE pairing mode is entered when no PSK exists or the pairing button is held.
+2. PEER_REQUEST path is taken when PSK is stored but registration is incomplete.
+3. Normal WAKE cycle is entered only when PSK is stored and registration is complete.
 
 ---
 
@@ -988,7 +971,6 @@ Factory reset via BLE is triggered by holding the pairing button during boot, th
 | ND-0303 | Sequence number management | Must |
 | ND-0304 | Nonce generation | Must |
 | ND-0400 | PSK storage | Must |
-| ND-0401 | USB-mediated pairing | Must |
 | ND-0402 | Factory reset | Must |
 | ND-0403 | Secure boot support | Should |
 | ND-0403a | Flash encryption support | Should |

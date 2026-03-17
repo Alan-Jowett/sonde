@@ -1480,8 +1480,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0701 | T-0201, T-0701 |
 | GW-0702 | T-0702 |
 | GW-0703 | T-0703, T-0704 |
-| GW-0704 | T-0801 *(registration side; USB provisioning is CLI-level)* |
-| GW-0705 | T-0802 *(removal side; USB reset is CLI-level)* |
+| GW-0705 | T-0802 |
 | GW-0800 | T-0800 |
 | GW-0801 | T-0801, T-0802 |
 | GW-0802 | T-0803, T-0804, T-0805 |

@@ -342,29 +342,6 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N402  USB pairing
-
-**Validates:** ND-0401
-
-**Procedure:**
-1. Erase the key partition.
-2. Write PSK + key_hint + magic via USB serial interface.
-3. Boot the node.
-4. Assert: node sends WAKE authenticated with the new PSK.
-
----
-
-### T-N403  Pairing rejected when already paired
-
-**Validates:** ND-0401
-
-**Procedure:**
-1. Node has an existing PSK.
-2. Attempt USB pairing with a new PSK.
-3. Assert: pairing is rejected (factory reset required first).
-
----
-
 ### T-N404  Factory reset
 
 **Validates:** ND-0402
@@ -784,14 +761,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0900
 
 **Procedure:**
-1. Configure node with no USB-CDC, no PSK, pairing button not held.
+1. Configure node with no PSK, pairing button not held.
 2. Assert: node enters BLE pairing mode.
-3. Configure node with PSK stored, `reg_complete` not set, no USB-CDC.
+3. Configure node with PSK stored, `reg_complete` not set.
 4. Assert: node sends PEER_REQUEST.
-5. Configure node with PSK stored, `reg_complete` set, no USB-CDC.
+5. Configure node with PSK stored, `reg_complete` set.
 6. Assert: node enters normal WAKE cycle.
-7. Configure node with USB-CDC connected (regardless of PSK state).
-8. Assert: node enters USB pairing mode.
 
 ---
 
@@ -1042,7 +1017,6 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0303 | T-N305 |
 | ND-0304 | T-N306 |
 | ND-0400 | T-N100, T-N400, T-N401 |
-| ND-0401 | T-N402, T-N403 |
 | ND-0402 | T-N404 |
 | ND-0403 | *(verified by secure boot platform tests)* |
 | ND-0403a | *(verified by flash encryption platform tests)* |

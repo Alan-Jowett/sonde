@@ -344,9 +344,9 @@ pub fn lookup_by_key_hint(&self, key_hint: u16) -> Vec<&NodeRecord>
 
 Returns all nodes matching the `key_hint`. The caller tries HMAC verification with each candidate's PSK (GW-0601).
 
-### 7.3  Node registration (USB pairing)
+### 7.3  Node registration
 
-The registry supports adding and removing nodes (GW-0601, GW-0704, GW-0705). Registration is an admin operation, not part of the radio protocol.
+The registry supports adding and removing nodes (GW-0601, GW-0705). Registration is an admin operation, not part of the radio protocol.
 
 ---
 
@@ -660,8 +660,8 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 
 | Operation | gRPC method | Description |
 |---|---|---|
-| Pair node | `RegisterNode` | Called by CLI after USB key provisioning. Registers key_hint, PSK, and admin node_id. |
-| Factory reset | `RemoveNode` | Called by CLI after USB factory reset. Removes node from registry. |
+| Pair node | `RegisterNode` | Called after BLE key provisioning. Registers key_hint, PSK, and admin node_id. |
+| Factory reset | `RemoveNode` | Called after factory reset. Removes node from registry. |
 | Ingest program | `IngestProgram` | Accepts ELF binary + profile. Triggers verification, CBOR encoding, storage. Returns hash or error. |
 | Assign program | `AssignProgram` | Sets a node's assigned program. Next WAKE triggers UPDATE_PROGRAM if hash differs. |
 | Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |
@@ -671,13 +671,11 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 
 ### 13.3  CLI tool (`sonde-admin`)
 
-The CLI wraps the gRPC API and handles USB communication for pairing/reset:
+The CLI wraps the gRPC API:
 
 ```
 sonde-admin node list
 sonde-admin node get <node-id>
-sonde-admin node pair --usb <port>           # USB + gRPC
-sonde-admin node reset --usb <port>          # USB + gRPC
 sonde-admin node remove <node-id>
 
 sonde-admin program ingest <elf-file> --profile resident|ephemeral
@@ -700,18 +698,6 @@ sonde-admin modem scan
 ```
 
 All commands support `--format json` for machine-readable output.
-
-**USB pairing flow:**
-1. CLI connects to node via USB serial.
-2. CLI generates a 256-bit PSK (from OS CSPRNG).
-3. CLI writes PSK to node's flash key partition over USB.
-4. CLI calls `RegisterNode` on the gateway gRPC API with the key_hint, PSK, and admin-assigned node_id.
-5. If either step fails, both sides are rolled back.
-
-**USB factory reset flow:**
-1. CLI connects to node via USB serial.
-2. CLI sends factory reset command to node (erases key, maps, program).
-3. CLI calls `RemoveNode` on the gateway gRPC API.
 
 ---
 

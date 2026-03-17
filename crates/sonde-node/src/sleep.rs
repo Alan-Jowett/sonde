@@ -165,14 +165,17 @@ mod tests {
 
     #[test]
     fn test_zero_interval_clamped_to_minimum() {
-        // T-N205: Zero base interval is clamped to the minimum (1 second).
+        // Defensive clamp: a zero base interval is floored to 1 second
+        // to prevent the node sleeping for 0 seconds on misconfiguration.
+        // (Not directly described in the spec; this is an implementation invariant.)
         let sm = SleepManager::new(0, WakeReason::Scheduled);
         assert_eq!(sm.effective_sleep_s(), 1);
     }
 
     #[test]
     fn test_zero_next_wake_clamped_to_minimum() {
-        // T-N208: set_next_wake(0) is clamped to the minimum (1 second).
+        // Defensive clamp: set_next_wake(0) is floored to 1 second.
+        // (Not directly described in the spec; this is an implementation invariant.)
         let mut sm = SleepManager::new(300, WakeReason::Scheduled);
         sm.set_next_wake(0);
         assert_eq!(sm.effective_sleep_s(), 1);

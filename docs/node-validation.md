@@ -1105,10 +1105,10 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N202 | `test_wake_message_fields`, `t_e2e_001_nop_wake_cycle` | wake_cycle.rs, e2e_tests.rs |
 | T-N203 | `test_no_program_empty_hash` | wake_cycle.rs |
 | T-N204 | `test_normal_nop_wake_cycle`, `t_e2e_011_program_already_current` | wake_cycle.rs, e2e_tests.rs |
-| T-N205 | `test_update_schedule`, `test_update_schedule` (sleep.rs), `t_e2e_020_update_schedule` | wake_cycle.rs, sleep.rs, e2e_tests.rs |
+| T-N205 | `wake_cycle::test_update_schedule`, `sleep::test_update_schedule`, `t_e2e_020_update_schedule` | wake_cycle.rs, sleep.rs, e2e_tests.rs |
 | T-N206 | `test_reboot_command`, `t_e2e_021_reboot` | wake_cycle.rs, e2e_tests.rs |
 | T-N207 | `test_unknown_command_treated_as_nop` | wake_cycle.rs |
-| T-N208 | `test_set_next_wake_shorter`, `test_set_next_wake_equal`, `test_zero_next_wake_clamped_to_minimum` | sleep.rs |
+| T-N208 | `test_set_next_wake_shorter`, `test_set_next_wake_equal` | sleep.rs |
 | T-N209 | `test_set_next_wake_longer_clamped` | sleep.rs |
 | T-N300 | `test_outbound_frame_format`, `t_e2e_002_hmac_round_trip` | wake_cycle.rs, e2e_tests.rs |
 | T-N301 | `test_invalid_hmac_discarded`, `t_e2e_003_wrong_psk_rejected`, `t_e2e_040_unknown_node`, `t_e2e_053_bridged_wrong_psk` | wake_cycle.rs, e2e_tests.rs |
@@ -1153,8 +1153,9 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N916 | `t_e2e_064_onboarding_to_wake`, `t_e2e_065_deferred_erasure` | e2e_tests.rs |
 | T-N917 | `t_e2e_066_self_healing` | e2e_tests.rs |
 
-> **Note:** Spec cases T-N600–T-N616 (BPF environment helpers), T-N702 (response timeout),
+> **Note:** Spec cases T-N600–T-N616 (BPF environment helpers),
 > T-N900–T-N903 (boot priority / BLE stack), T-N908 (BLE mode persistence), T-N910 (PEER_REQUEST
 > retransmission), T-N914 (PEER_ACK wrong registration proof), and T-N918 (NVS layout) require
 > hardware or BLE stack integration and are validated on the target platform rather than in the
-> host-based test suite.
+> host-based test suite. T-N702 (response timeout — mock gateway delays &gt;50 ms) is host-testable
+> but not yet implemented.

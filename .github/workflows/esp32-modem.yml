@@ -97,4 +97,5 @@ jobs:
         with:
           name: modem-firmware
           path: target/xtensa-esp32s3-espidf/firmware/modem
+          if-no-files-found: error
           retention-days: 7

@@ -276,12 +276,18 @@ The fastest way to get a flashable binary is to let CI build it:
 4. Flash directly with `espflash`.
 
 ```sh
+# Find the latest CI run for your branch, then download its artifacts:
+RUN_ID=$(gh run list --branch "$(git branch --show-current)" \
+  -w "ESP32-C3 Node Firmware CI" --json databaseId -q '.[0].databaseId')
+
 # Node firmware (ESP32-C3)
-gh run download --name node-firmware --dir ./firmware/
+gh run download "$RUN_ID" --name node-firmware --dir ./firmware/
 espflash flash ./firmware/node --monitor
 
-# Modem firmware (ESP32-S3)
-gh run download --name modem-firmware --dir ./firmware/
+# Modem firmware (ESP32-S3) — use the modem workflow name instead:
+RUN_ID=$(gh run list --branch "$(git branch --show-current)" \
+  -w "ESP32-S3 Modem Firmware CI" --json databaseId -q '.[0].databaseId')
+gh run download "$RUN_ID" --name modem-firmware --dir ./firmware/
 espflash flash ./firmware/modem --monitor
 ```
 
@@ -290,7 +296,7 @@ espflash flash ./firmware/modem --monitor
 - **No local toolchain needed** — only `espflash` and USB access required.
 - **Consistent builds** — the same binary that CI tests is what gets flashed.
 
-> **Prerequisites:** Install the [GitHub CLI](https://cli.github.com/) (`gh`) and [`espflash`](https://github.com/esp-rs/espflash) (`cargo install espflash`). The gateway binary is also available as a CI artifact (`gh run download --name gateway-linux-x86_64`).
+> **Prerequisites:** Install the [GitHub CLI](https://cli.github.com/) (`gh`) and [`espflash`](https://github.com/esp-rs/espflash) (`cargo install espflash`). The gateway binary is also available as a CI artifact (`gh run download "$(gh run list --branch "$(git branch --show-current)" -w CI --json databaseId -q '.[0].databaseId')" --name gateway-linux-x86_64`).
 
 ### 5.2  Modem (ESP32-S3) — local build
 

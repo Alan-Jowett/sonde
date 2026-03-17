@@ -38,10 +38,15 @@ docker run --rm -v "$(pwd)":/sonde -w /sonde ghcr.io/alan-jowett/sonde-esp-dev:l
 # Cloud build + local flash (PREFERRED for hardware testing):
 # Push your branch, wait ~2-3 min for CI, then download the firmware artifact.
 # This is 10x faster than local Docker builds and requires no ESP toolchain.
-gh run download --name node-firmware --dir ./firmware/   # ESP32-C3 node
-gh run download --name modem-firmware --dir ./firmware/   # ESP32-S3 modem
-gh run download --name gateway-linux-x86_64 --dir ./bin/  # gateway binary
-espflash flash ./firmware/node --monitor                  # flash + serial monitor
+# Always pin to your branch's run to avoid downloading the wrong binary:
+BRANCH=$(git branch --show-current)
+gh run download "$(gh run list --branch "$BRANCH" -w 'ESP32-C3 Node Firmware CI' --json databaseId -q '.[0].databaseId')" \
+  --name node-firmware --dir ./firmware/                    # ESP32-C3 node
+gh run download "$(gh run list --branch "$BRANCH" -w 'ESP32-S3 Modem Firmware CI' --json databaseId -q '.[0].databaseId')" \
+  --name modem-firmware --dir ./firmware/                   # ESP32-S3 modem
+gh run download "$(gh run list --branch "$BRANCH" -w CI --json databaseId -q '.[0].databaseId')" \
+  --name gateway-linux-x86_64 --dir ./bin/                 # gateway binary
+espflash flash ./firmware/node --monitor                   # flash + serial monitor
 ```
 
 ## Architecture

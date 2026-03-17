@@ -227,3 +227,14 @@ jobs:
 
           echo "Smoke test passed."
 
+      # ------------------------------------------------------------------ #
+      # Upload firmware artifact
+      # ------------------------------------------------------------------ #
+
+      - name: Upload node firmware
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: node-firmware
+          path: target/riscv32imc-esp-espidf/firmware/node
+          retention-days: 7
+

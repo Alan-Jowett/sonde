@@ -266,7 +266,33 @@ cargo build -p sonde-node --target xtensa-esp32s3-espidf
 
 ## 5  Flashing firmware
 
-### 5.1  Modem (ESP32-S3)
+### 5.1  Cloud build + local flash (recommended)
+
+The fastest way to get a flashable binary is to let CI build it:
+
+1. Push your branch to GitHub.
+2. Wait ~2–3 minutes for the ESP32 CI workflows to finish.
+3. Download the firmware artifact with the GitHub CLI.
+4. Flash directly with `espflash`.
+
+```sh
+# Node firmware (ESP32-C3)
+gh run download --name node-firmware --dir ./firmware/
+espflash flash ./firmware/node --monitor
+
+# Modem firmware (ESP32-S3)
+gh run download --name modem-firmware --dir ./firmware/
+espflash flash ./firmware/modem --monitor
+```
+
+**Benefits:**
+- **10× faster** — 2–3 min (push + CI + download) vs 20+ min local Docker build.
+- **No local toolchain needed** — only `espflash` and USB access required.
+- **Consistent builds** — the same binary that CI tests is what gets flashed.
+
+> **Prerequisites:** Install the [GitHub CLI](https://cli.github.com/) (`gh`) and [`espflash`](https://github.com/esp-rs/espflash) (`cargo install espflash`). The gateway binary is also available as a CI artifact (`gh run download --name gateway-linux-x86_64`).
+
+### 5.2  Modem (ESP32-S3) — local build
 
 Connect the ESP32-S3 board via USB, then:
 
@@ -276,19 +302,19 @@ cargo espflash flash -p sonde-modem --features esp --target xtensa-esp32s3-espid
 
 The `--monitor` flag opens a serial console after flashing so you can see log output.
 
-### 5.2  Node (ESP32-C3)
+### 5.3  Node (ESP32-C3) — local build
 
 ```sh
 cargo espflash flash -p sonde-node --target riscv32imc-esp-espidf --monitor
 ```
 
-### 5.3  Node (ESP32-S3)
+### 5.4  Node (ESP32-S3) — local build
 
 ```sh
 cargo espflash flash -p sonde-node --target xtensa-esp32s3-espidf --monitor
 ```
 
-### 5.4  Serial port permissions (Linux)
+### 5.5  Serial port permissions (Linux)
 
 On Linux, you may need to add your user to the `dialout` group to access serial ports:
 

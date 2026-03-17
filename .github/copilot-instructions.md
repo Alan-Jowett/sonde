@@ -34,6 +34,14 @@ CARGO_TARGET_DIR=F:\t cargo +esp build -p sonde-node --bin node --features esp -
 docker run --rm -v "$(pwd)":/sonde -w /sonde ghcr.io/alan-jowett/sonde-esp-dev:latest \
     cargo +esp build -p sonde-node --bin node --features esp --profile firmware \
     --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
+
+# Cloud build + local flash (PREFERRED for hardware testing):
+# Push your branch, wait ~2-3 min for CI, then download the firmware artifact.
+# This is 10x faster than local Docker builds and requires no ESP toolchain.
+gh run download --name node-firmware --dir ./firmware/   # ESP32-C3 node
+gh run download --name modem-firmware --dir ./firmware/   # ESP32-S3 modem
+gh run download --name gateway-linux-x86_64 --dir ./bin/  # gateway binary
+espflash flash ./firmware/node --monitor                  # flash + serial monitor
 ```
 
 ## Architecture

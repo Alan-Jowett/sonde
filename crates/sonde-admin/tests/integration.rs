@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Integration tests for sonde-admin gRPC client, BLE pairing, and CLI output.
+//! Integration tests for sonde-admin gRPC client and BLE pairing operations.
 //!
 //! These tests spin up a real `AdminService` (backed by `InMemoryStorage`)
 //! on a platform-native transport (UDS on Unix, named pipe on Windows)
@@ -27,13 +27,9 @@ fn unique_endpoint(test_name: &str) -> String {
     if cfg!(windows) {
         format!(r"\\.\pipe\sonde-admin-test-{test_name}-{pid}")
     } else {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        // Leak the tempdir so it survives the test.  The OS cleans up temp
-        // files at reboot, and tests are short-lived.
-        let path = dir.path().join(format!("{test_name}.sock"));
-        let s = path.to_str().unwrap().to_owned();
-        std::mem::forget(dir);
-        s
+        // Use /tmp directly with a unique filename. No tempdir needed since
+        // serve_admin handles cleanup of stale socket files.
+        format!("/tmp/sonde-admin-test-{test_name}-{pid}.sock")
     }
 }
 
@@ -128,7 +124,7 @@ async fn grpc_ingest_list_program() {
     };
     let cbor = image.encode_deterministic().unwrap();
 
-    // Profile 1 = Resident.
+    // Profile 1 = Resident (sonde_admin::pb::VerificationProfile::Resident).
     let (hash, size) = client.ingest_program(cbor.clone(), 1, None).await.unwrap();
     assert!(!hash.is_empty(), "program hash must not be empty");
     assert!(size > 0, "program size must be non-zero");

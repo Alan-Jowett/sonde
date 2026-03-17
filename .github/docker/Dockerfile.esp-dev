@@ -41,10 +41,13 @@ ENV RUSTUP_HOME="/root/.rustup" \
 # (ESP32-S3) targets. The export-esp.sh script sets PATH, LIBCLANG_PATH,
 # and CLANG_PATH for the Espressif LLVM/Clang.
 #
-# With IDF v5.4 the default espup toolchain and crosstool versions are
-# compatible — no version pins needed.
+# The crosstool (GCC) version MUST match what IDF v5.4.1 expects.
+# IDF v5.4.1's tool_version_check.cmake accepts esp-14.2.0_20241119.
+# The default espup GCC (esp-15.2.0) is too new and causes a cmake error.
+# The Rust toolchain version is left unpinned (latest is compatible).
 RUN cargo install espup@0.16.0 --locked && \
-    espup install && \
+    espup install \
+        --crosstool-toolchain-version 14.2.0_20241119 && \
     mkdir -p /opt/esp && \
     cp /root/export-esp.sh /opt/esp/export-esp.sh && \
     echo 'source /opt/esp/export-esp.sh' >> /etc/bash.bashrc

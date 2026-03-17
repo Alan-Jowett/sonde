@@ -59,15 +59,10 @@ jobs:
       # Build
       # ------------------------------------------------------------------ #
 
-      - name: Install npm dependencies
-        working-directory: crates/sonde-pair-ui
-        run: npm install
-
       - name: Initialize Android project
-        working-directory: crates/sonde-pair-ui/src-tauri
+        working-directory: crates/sonde-pair-ui
         run: |
-          rm -rf gen/android
-          cd ..
+          rm -rf src-tauri/gen/android
           cargo tauri android init
 
       - name: Build Android APK (debug)

@@ -105,42 +105,6 @@ pub const MODEM_ERR_WIFI_INIT_FAILED: u8 = 0x02;
 pub const MODEM_ERR_CHANNEL_SET_FAILED: u8 = 0x03;
 pub const MODEM_ERR_UNKNOWN: u8 = 0xFF;
 
-// -- USB Pairing Protocol (host → node) --
-
-/// Provision key_hint and PSK to a node.
-pub const PAIRING_MSG_PAIR_REQUEST: u8 = 0x10;
-
-/// Factory-reset pairing state on the node.
-pub const PAIRING_MSG_RESET_REQUEST: u8 = 0x11;
-
-/// Query the node's current pairing identity.
-pub const PAIRING_MSG_IDENTITY_REQUEST: u8 = 0x12;
-
-// -- USB Pairing Protocol (node → host) --
-
-/// Acknowledgement of a PAIR_REQUEST.
-pub const PAIRING_MSG_PAIR_ACK: u8 = 0x90;
-
-/// Acknowledgement of a RESET_REQUEST.
-pub const PAIRING_MSG_RESET_ACK: u8 = 0x91;
-
-/// Response to IDENTITY_REQUEST with current pairing state.
-pub const PAIRING_MSG_IDENTITY_RESPONSE: u8 = 0x92;
-
-/// Node entered pairing mode and is ready.
-pub const PAIRING_MSG_PAIRING_READY: u8 = 0x9F;
-
-// -- Pairing status codes --
-
-pub const PAIRING_STATUS_SUCCESS: u8 = 0x00;
-/// PAIR_ACK status: node is already paired (must factory reset first).
-pub const PAIR_ACK_ALREADY_PAIRED: u8 = 0x01;
-/// PAIR_ACK / RESET_ACK status 0x02: flash storage error (write failure
-/// in PAIR_ACK, erase failure in RESET_ACK).
-pub const PAIRING_STATUS_STORAGE_ERROR: u8 = 0x02;
-/// IDENTITY_RESPONSE status: node is unpaired.
-pub const IDENTITY_STATUS_UNPAIRED: u8 = 0x01;
-
 // -- Body sizes for fixed-layout messages --
 
 /// MODEM_READY body: firmware_version (4B) + mac_address (6B).
@@ -164,16 +128,7 @@ pub const RECV_FRAME_MAX_BODY_SIZE: usize = MAC_SIZE + 1 + 250; // 257
 /// Maximum ESP-NOW frame payload size.
 pub const ESPNOW_MAX_DATA_SIZE: usize = 250;
 
-/// Size of a pre-shared key (PSK).
-pub const PSK_SIZE: usize = 32;
-
-/// PAIR_REQUEST body without channel: key_hint (2B) + psk (32B).
-pub const PAIR_REQUEST_BODY_SIZE: usize = 2 + PSK_SIZE; // 34
-
-/// PAIR_REQUEST body with optional channel: key_hint (2B) + psk (32B) + channel (1B).
-pub const PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL: usize = PAIR_REQUEST_BODY_SIZE + 1; // 35
-
-/// Maximum BLE_INDICATE / BLE_RECV body size: the serial frame body is at most 511 bytes.
+/// MaximumBLE_INDICATE / BLE_RECV body size: the serial frame body is at most 511 bytes.
 pub const BLE_DATA_MAX_BODY_SIZE: usize = (SERIAL_MAX_LEN as usize) - 1; // 511
 
 /// BLE_CONNECTED body: peer_addr (6B) + mtu (2B BE).
@@ -304,15 +259,6 @@ pub enum ModemMessage {
     ScanResult(ScanResult),
     Error(ModemError),
 
-    // -- USB Pairing Protocol --
-    PairRequest(PairRequest),
-    ResetRequest,
-    IdentityRequest,
-    PairAck(PairAck),
-    ResetAck(ResetAck),
-    IdentityResponse(IdentityResponse),
-    PairingReady(PairingReady),
-
     // -- BLE relay: Gateway → Modem --
     BleIndicate(BleIndicate),
     BleEnable,
@@ -386,56 +332,7 @@ pub struct ModemError {
     pub message: Vec<u8>,
 }
 
-/// PAIR_REQUEST (Host → Node): provision key_hint, PSK, and optional WiFi channel.
-///
-/// `channel` is an optional WiFi channel (1–13). When present, the node stores
-/// it in NVS and uses it for ESP-NOW communication. When absent, the node
-/// retains its previously configured channel (or defaults to channel 1).
-#[derive(Clone, PartialEq)]
-pub struct PairRequest {
-    pub key_hint: u16,
-    pub psk: [u8; PSK_SIZE],
-    pub channel: Option<u8>,
-}
-
-impl core::fmt::Debug for PairRequest {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("PairRequest")
-            .field("key_hint", &self.key_hint)
-            .field("psk", &"[REDACTED]")
-            .field("channel", &self.channel)
-            .finish()
-    }
-}
-
-/// PAIR_ACK (Node → Host): response to PAIR_REQUEST.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PairAck {
-    pub status: u8,
-}
-
-/// RESET_ACK (Node → Host): response to RESET_REQUEST.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResetAck {
-    pub status: u8,
-}
-
-/// IDENTITY_RESPONSE (Node → Host): current pairing state.
-/// Uses an enum to make invalid states unrepresentable — a paired
-/// response always carries a key_hint.
-#[derive(Debug, Clone, PartialEq)]
-pub enum IdentityResponse {
-    Paired { key_hint: u16 },
-    Unpaired,
-}
-
-/// PAIRING_READY (Node → Host): node entered pairing mode.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PairingReady {
-    pub firmware_version: u32,
-}
-
-/// BLE_INDICATE (Gateway → Modem): send a BLE indication to the connected phone.
+/// BLE_INDICATE(Gateway → Modem): send a BLE indication to the connected phone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BleIndicate {
     /// Opaque payload relayed to the BLE client (1 .. [`BLE_DATA_MAX_BODY_SIZE`] bytes).
@@ -585,41 +482,6 @@ fn encode_body(msg: &ModemMessage) -> Result<(u8, Vec<u8>), ModemCodecError> {
             body.push(e.error_code);
             body.extend_from_slice(&e.message);
             Ok((MODEM_MSG_ERROR, body))
-        }
-        ModemMessage::PairRequest(pr) => {
-            let body_size = if pr.channel.is_some() {
-                PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL
-            } else {
-                PAIR_REQUEST_BODY_SIZE
-            };
-            let mut body = Vec::with_capacity(body_size);
-            body.extend_from_slice(&pr.key_hint.to_be_bytes());
-            body.extend_from_slice(&pr.psk);
-            if let Some(ch) = pr.channel {
-                body.push(ch);
-            }
-            Ok((PAIRING_MSG_PAIR_REQUEST, body))
-        }
-        ModemMessage::ResetRequest => Ok((PAIRING_MSG_RESET_REQUEST, Vec::new())),
-        ModemMessage::IdentityRequest => Ok((PAIRING_MSG_IDENTITY_REQUEST, Vec::new())),
-        ModemMessage::PairAck(pa) => Ok((PAIRING_MSG_PAIR_ACK, alloc::vec![pa.status])),
-        ModemMessage::ResetAck(ra) => Ok((PAIRING_MSG_RESET_ACK, alloc::vec![ra.status])),
-        ModemMessage::IdentityResponse(ir) => match ir {
-            IdentityResponse::Paired { key_hint } => {
-                let mut body = Vec::with_capacity(3);
-                body.push(PAIRING_STATUS_SUCCESS);
-                body.extend_from_slice(&key_hint.to_be_bytes());
-                Ok((PAIRING_MSG_IDENTITY_RESPONSE, body))
-            }
-            IdentityResponse::Unpaired => Ok((
-                PAIRING_MSG_IDENTITY_RESPONSE,
-                alloc::vec![IDENTITY_STATUS_UNPAIRED],
-            )),
-        },
-        ModemMessage::PairingReady(pr) => {
-            let mut body = Vec::with_capacity(4);
-            body.extend_from_slice(&pr.firmware_version.to_be_bytes());
-            Ok((PAIRING_MSG_PAIRING_READY, body))
         }
         ModemMessage::BleIndicate(bi) => {
             if bi.ble_data.is_empty() {
@@ -914,91 +776,6 @@ fn decode_typed_message(msg_type: u8, body: &[u8]) -> Result<ModemMessage, Modem
             Ok(ModemMessage::Error(ModemError {
                 error_code: body[0],
                 message: body[1..].to_vec(),
-            }))
-        }
-
-        PAIRING_MSG_PAIR_REQUEST => {
-            // Accept 34 bytes (without channel) or 35 bytes (with channel).
-            // Per pairing-protocol.md §4.1, the *node receiver* should silently
-            // discard invalid frames — that policy is enforced by the caller,
-            // not the codec.
-            check_body_range(
-                msg_type,
-                body,
-                PAIR_REQUEST_BODY_SIZE,
-                PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL,
-            )?;
-            let key_hint = u16::from_be_bytes([body[0], body[1]]);
-            let mut psk = [0u8; PSK_SIZE];
-            psk.copy_from_slice(&body[2..2 + PSK_SIZE]);
-            let channel = if body.len() == PAIR_REQUEST_BODY_SIZE_WITH_CHANNEL {
-                Some(body[PAIR_REQUEST_BODY_SIZE])
-            } else {
-                None
-            };
-            Ok(ModemMessage::PairRequest(PairRequest {
-                key_hint,
-                psk,
-                channel,
-            }))
-        }
-
-        PAIRING_MSG_RESET_REQUEST => {
-            check_exact_body(msg_type, body, 0)?;
-            Ok(ModemMessage::ResetRequest)
-        }
-
-        PAIRING_MSG_IDENTITY_REQUEST => {
-            check_exact_body(msg_type, body, 0)?;
-            Ok(ModemMessage::IdentityRequest)
-        }
-
-        PAIRING_MSG_PAIR_ACK => {
-            check_exact_body(msg_type, body, 1)?;
-            Ok(ModemMessage::PairAck(PairAck { status: body[0] }))
-        }
-
-        PAIRING_MSG_RESET_ACK => {
-            check_exact_body(msg_type, body, 1)?;
-            Ok(ModemMessage::ResetAck(ResetAck { status: body[0] }))
-        }
-
-        PAIRING_MSG_IDENTITY_RESPONSE => {
-            if body.is_empty() {
-                return Err(ModemCodecError::BodyTooShort {
-                    msg_type,
-                    expected_min: 1,
-                    actual: 0,
-                });
-            }
-            let status = body[0];
-            match status {
-                PAIRING_STATUS_SUCCESS => {
-                    // Paired: status(1B) + key_hint(2B BE) = 3 bytes
-                    check_exact_body(msg_type, body, 3)?;
-                    let key_hint = u16::from_be_bytes([body[1], body[2]]);
-                    Ok(ModemMessage::IdentityResponse(IdentityResponse::Paired {
-                        key_hint,
-                    }))
-                }
-                IDENTITY_STATUS_UNPAIRED => {
-                    // Unpaired: status(1B) = 1 byte
-                    check_exact_body(msg_type, body, 1)?;
-                    Ok(ModemMessage::IdentityResponse(IdentityResponse::Unpaired))
-                }
-                // Unknown status — treat as Unknown for forward compatibility
-                _ => Ok(ModemMessage::Unknown {
-                    msg_type,
-                    body: body.to_vec(),
-                }),
-            }
-        }
-
-        PAIRING_MSG_PAIRING_READY => {
-            check_exact_body(msg_type, body, 4)?;
-            let firmware_version = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
-            Ok(ModemMessage::PairingReady(PairingReady {
-                firmware_version,
             }))
         }
 
@@ -1609,185 +1386,6 @@ mod tests {
         let overflow = alloc::vec![0xAAu8; 20];
         decoder.push(&overflow);
         assert_eq!(decoder.buffered(), 20); // buffer was cleared then refilled
-    }
-
-    // -- USB Pairing Protocol round-trip tests --
-
-    #[test]
-    fn round_trip_pair_request() {
-        let mut psk = [0u8; PSK_SIZE];
-        for (i, b) in psk.iter_mut().enumerate() {
-            *b = i as u8;
-        }
-        let msg = ModemMessage::PairRequest(PairRequest {
-            key_hint: 0x1234,
-            psk,
-            channel: None,
-        });
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-        assert_eq!(consumed, frame.len());
-    }
-
-    #[test]
-    fn pair_request_specific_values() {
-        let psk = [0xAB; PSK_SIZE];
-        let msg = ModemMessage::PairRequest(PairRequest {
-            key_hint: 0xBEEF,
-            psk,
-            channel: None,
-        });
-        let frame = encode_modem_frame(&msg).unwrap();
-        // LEN = 1 (TYPE) + 34 (BODY) = 35
-        assert_eq!(frame[0], 0x00);
-        assert_eq!(frame[1], 35);
-        assert_eq!(frame[2], PAIRING_MSG_PAIR_REQUEST);
-        // key_hint BE
-        assert_eq!(frame[3], 0xBE);
-        assert_eq!(frame[4], 0xEF);
-        // first PSK byte
-        assert_eq!(frame[5], 0xAB);
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn pair_request_with_channel_round_trips() {
-        let psk = [0xCD; PSK_SIZE];
-        let msg = ModemMessage::PairRequest(PairRequest {
-            key_hint: 0x1234,
-            psk,
-            channel: Some(6),
-        });
-        let frame = encode_modem_frame(&msg).unwrap();
-        // LEN = 1 (TYPE) + 35 (BODY) = 36
-        assert_eq!(frame[0], 0x00);
-        assert_eq!(frame[1], 36);
-        assert_eq!(frame[2], PAIRING_MSG_PAIR_REQUEST);
-        // channel byte is last
-        assert_eq!(frame[frame.len() - 1], 6);
-        let (decoded, consumed) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-        assert_eq!(consumed, frame.len());
-    }
-
-    #[test]
-    fn round_trip_reset_request() {
-        let msg = ModemMessage::ResetRequest;
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn round_trip_identity_request() {
-        let msg = ModemMessage::IdentityRequest;
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn round_trip_pair_ack() {
-        let msg = ModemMessage::PairAck(PairAck {
-            status: PAIRING_STATUS_SUCCESS,
-        });
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn round_trip_pair_ack_already_paired() {
-        let msg = ModemMessage::PairAck(PairAck {
-            status: PAIR_ACK_ALREADY_PAIRED,
-        });
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn round_trip_reset_ack() {
-        let msg = ModemMessage::ResetAck(ResetAck {
-            status: PAIRING_STATUS_SUCCESS,
-        });
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn round_trip_identity_response_paired() {
-        let msg = ModemMessage::IdentityResponse(IdentityResponse::Paired { key_hint: 0x00FF });
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn round_trip_identity_response_unpaired() {
-        let msg = ModemMessage::IdentityResponse(IdentityResponse::Unpaired);
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn round_trip_pairing_ready() {
-        let msg = ModemMessage::PairingReady(PairingReady {
-            firmware_version: 0x0102_0304,
-        });
-        let frame = encode_modem_frame(&msg).unwrap();
-        let (decoded, _) = decode_modem_frame(&frame).unwrap();
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn streaming_pairing_messages() {
-        let mut decoder = FrameDecoder::new();
-
-        let f1 = encode_modem_frame(&ModemMessage::PairingReady(PairingReady {
-            firmware_version: 1,
-        }))
-        .unwrap();
-        let f2 = encode_modem_frame(&ModemMessage::PairRequest(PairRequest {
-            key_hint: 0x0042,
-            psk: [0xFF; PSK_SIZE],
-            channel: None,
-        }))
-        .unwrap();
-        let f3 = encode_modem_frame(&ModemMessage::PairAck(PairAck {
-            status: PAIRING_STATUS_SUCCESS,
-        }))
-        .unwrap();
-
-        decoder.push(&f1);
-        decoder.push(&f2);
-        decoder.push(&f3);
-
-        assert_eq!(
-            decoder.decode().unwrap().unwrap(),
-            ModemMessage::PairingReady(PairingReady {
-                firmware_version: 1,
-            })
-        );
-        assert_eq!(
-            decoder.decode().unwrap().unwrap(),
-            ModemMessage::PairRequest(PairRequest {
-                key_hint: 0x0042,
-                psk: [0xFF; PSK_SIZE],
-                channel: None,
-            })
-        );
-        assert_eq!(
-            decoder.decode().unwrap().unwrap(),
-            ModemMessage::PairAck(PairAck {
-                status: PAIRING_STATUS_SUCCESS,
-            })
-        );
-        assert_eq!(decoder.decode().unwrap(), None);
     }
 
     // -- BLE relay round-trip tests --

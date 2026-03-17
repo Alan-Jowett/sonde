@@ -216,7 +216,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
 
             // Parse BLE envelope.
             let ack_data = match parse_ble_envelope(&data) {
-                Ok((msg_type, body)) if msg_type == BLE_MSG_NODE_PROVISION => {
+                Some((msg_type, body)) if msg_type == BLE_MSG_NODE_PROVISION => {
                     match parse_node_provision(body) {
                         Ok(provision) => {
                             let status = handle_node_provision(
@@ -235,26 +235,20 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                         }
                     }
                 }
-                Ok((msg_type, _)) => {
+                Some((msg_type, _)) => {
                     warn!("BLE: unexpected message type 0x{:02x}", msg_type);
                     encode_node_ack(NODE_ACK_STORAGE_ERROR)
                 }
-                Err(e) => {
-                    warn!("BLE: envelope parse error: {}", e);
+                None => {
+                    warn!("BLE: envelope parse error (too short or malformed)");
                     encode_node_ack(NODE_ACK_STORAGE_ERROR)
                 }
             };
 
-            // Send NODE_ACK indication.
+            // Send NODE_ACK indication via set_value + notify.
             let chr = node_cmd_char.lock();
-            if let Some(handle) = ble_server.connected_count().checked_sub(0) {
-                // Use notify_with if a connection handle is available.
-                // Fall back to set_value + notify for simplicity.
-                chr.set_value(&ack_data);
-                if let Err(e) = chr.indicate() {
-                    warn!("BLE: NODE_ACK indication failed: {:?}", e);
-                }
-            }
+            chr.set_value(&ack_data);
+            chr.notify();
         }
 
         // Busy-wait with a short sleep to avoid spinning.

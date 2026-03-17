@@ -362,7 +362,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sonde_protocol::modem::{decode_modem_frame, BleIndicate, ModemMessage};
+    use sonde_protocol::modem::{decode_modem_frame, BleIndicate, ModemMessage, SERIAL_MAX_LEN};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -1315,12 +1315,13 @@ mod tests {
         let (msg, _) = decode_modem_frame(&tx).unwrap();
         assert!(matches!(msg, ModemMessage::Status(_)));
 
-        // 3. Send max-length frame: len=512, type=0x7F (unknown), 511 bytes padding.
+        // 3. Send max-length frame: len=SERIAL_MAX_LEN, type=0x7F (unknown), padding.
         //    The bridge reads 64 bytes per poll, so multiple polls are needed.
+        let max_body = SERIAL_MAX_LEN as usize - 1; // 511 bytes (TYPE takes 1)
         let mut max_frame = Vec::new();
-        max_frame.extend_from_slice(&512u16.to_be_bytes()); // LEN = 512
+        max_frame.extend_from_slice(&SERIAL_MAX_LEN.to_be_bytes()); // LEN
         max_frame.push(0x7F); // TYPE = unknown
-        max_frame.extend_from_slice(&[0xAA; 511]); // 511 bytes padding
+        max_frame.extend_from_slice(&vec![0xAA; max_body]); // padding
         bridge.usb.inject(&max_frame);
         while !bridge.usb.rx_data.is_empty() {
             bridge.poll();
@@ -1359,9 +1360,10 @@ mod tests {
             ModemMessage::ModemReady(_)
         ));
 
-        // 2. Send just the 2-byte LEN header with len=1000 (exceeds 512 max).
+        // 2. Send just the 2-byte LEN header exceeding SERIAL_MAX_LEN.
         //    The bridge detects FrameTooLarge and resets the decoder.
-        bridge.usb.inject(&1000u16.to_be_bytes());
+        let oversized_len = SERIAL_MAX_LEN + 1;
+        bridge.usb.inject(&oversized_len.to_be_bytes());
         bridge.poll();
 
         // 3. RESET to resynchronize — decoder was reset, so RESET is parsed
@@ -1418,7 +1420,7 @@ mod tests {
     /// Validates: T-0602 (bridge level)
     ///
     /// A BLE_CONNECTED event with mtu ≥ 247 is forwarded to the gateway with
-    /// the negotiated MTU value preserved.
+    /// the exact negotiated MTU and peer address preserved.
     #[test]
     fn ble_mtu_negotiation_reported() {
         let mut bridge = make_bridge_with_ble();
@@ -1433,7 +1435,8 @@ mod tests {
         let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
             ModemMessage::BleConnected(c) => {
-                assert!(c.mtu >= 247, "MTU must be ≥ 247, got {}", c.mtu);
+                assert_eq!(c.mtu, 247, "negotiated MTU must be preserved exactly");
+                assert_eq!(c.peer_addr, peer, "peer address must be preserved");
             }
             _ => panic!("expected BleConnected"),
         }

@@ -41,13 +41,17 @@ ENV RUSTUP_HOME="/root/.rustup" \
 # (ESP32-S3) targets. The export-esp.sh script sets PATH, LIBCLANG_PATH,
 # and CLANG_PATH for the Espressif LLVM/Clang.
 #
-# IMPORTANT: The crosstool (GCC) version MUST match the version expected by
-# the base IDF image. IDF v5.3.2 expects esp-13.2.0_20240530. If espup
-# installs a newer GCC (e.g. esp-15.2.0), the Xtensa toolchain's bundled
-# std source targets a different IDF version, causing ABI incompatibility
-# that manifests as InstrFetchProhibited crashes on Core 1 at boot.
+# IMPORTANT: Both the Rust toolchain version AND the crosstool (GCC) version
+# MUST be compatible with the base IDF image (v5.3.2).
+#   - Toolchain 1.82.0.2 is the last release whose std source targets IDF v5.3.
+#   - Crosstool esp-13.2.0_20240530 matches IDF v5.3.2's expected GCC version.
+# Newer toolchain versions bundle std source for IDF v5.5+, causing ABI
+# incompatibility when -Zbuild-std links against the v5.3.2 C libraries
+# (manifests as InstrFetchProhibited crash on Core 1 at boot).
 RUN cargo install espup@0.16.0 --locked && \
-    espup install --crosstool-toolchain-version 13.2.0_20240530 && \
+    espup install \
+        --toolchain-version 1.82.0.2 \
+        --crosstool-toolchain-version 13.2.0_20240530 && \
     mkdir -p /opt/esp && \
     cp /root/export-esp.sh /opt/esp/export-esp.sh && \
     echo 'source /opt/esp/export-esp.sh' >> /etc/bash.bashrc

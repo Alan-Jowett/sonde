@@ -71,7 +71,7 @@ The workspace contains:
 | `sonde-node` | ESP32 firmware: wake/sleep cycle, BPF execution, NVS storage |
 | `sonde-modem` | ESP32-S3 bridge: relays ESP-NOW frames between radio and USB |
 | `sonde-admin` | CLI wrapping the gateway gRPC admin API |
-| `sonde-pair` | BLE pairing tool (planned — Tauri v2, Android + desktop) |
+| `sonde-pair` | BLE pairing tool (in progress — Tauri v2, Android + desktop) |
 | `sonde-bpf` | Safe BPF interpreter with tagged register tracking |
 | `sonde-e2e` | End-to-end test harness |
 

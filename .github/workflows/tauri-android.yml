@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Tauri Android APK CI: build sonde-pair-ui for Android (aarch64) and
+# upload the unsigned debug APK as a CI artifact for sideloading/testing.
+
+name: Tauri Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/sonde-pair/**'
+      - 'crates/sonde-pair-ui/**'
+      - 'crates/sonde-protocol/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/tauri-android.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/sonde-pair/**'
+      - 'crates/sonde-pair-ui/**'
+      - 'crates/sonde-protocol/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/tauri-android.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/alan-jowett/sonde-android-dev:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # ------------------------------------------------------------------ #
+      # Build cache
+      # ------------------------------------------------------------------ #
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          workspaces: ". -> target"
+          key: android-aarch64-${{ hashFiles('crates/sonde-pair-ui/src-tauri/Cargo.toml', '.github/docker/Dockerfile.android-dev') }}
+
+      # ------------------------------------------------------------------ #
+      # Build
+      # ------------------------------------------------------------------ #
+
+      - name: Install npm dependencies
+        working-directory: crates/sonde-pair-ui
+        run: npm install
+
+      - name: Build Android APK (debug)
+        working-directory: crates/sonde-pair-ui
+        run: cargo tauri android build --debug
+
+      # ------------------------------------------------------------------ #
+      # Upload artifact
+      # ------------------------------------------------------------------ #
+
+      - name: Upload APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sonde-pair-android
+          path: crates/sonde-pair-ui/src-tauri/gen/android/**/outputs/**/*.apk
+          retention-days: 7
+          if-no-files-found: error

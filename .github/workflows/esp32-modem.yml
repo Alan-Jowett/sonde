@@ -59,8 +59,12 @@ jobs:
         # Xtensa Rust toolchain installed by espup (not the default stable).
         # -Zbuild-std is required because the esp toolchain does not ship
         # pre-compiled std for the xtensa-esp32s3-espidf target.
+        env:
+          ESP_IDF_SDKCONFIG_DEFAULTS: crates/sonde-modem/sdkconfig.defaults;sdkconfig.defaults.esp32s3
         run: |
           . /opt/esp/export-esp.sh
+          find target -name sdkconfig -path "*/esp-idf-sys-*/out/sdkconfig" -delete 2>/dev/null || true
+          find target -name CMakeCache.txt -path "*/esp-idf-sys-*/out/build/CMakeCache.txt" -delete 2>/dev/null || true
           cargo +esp build \
             -p sonde-modem \
             --bin modem \
@@ -68,3 +72,17 @@ jobs:
             --profile firmware \
             --target xtensa-esp32s3-espidf \
             -Zbuild-std=std,panic_abort
+
+      - name: Verify sdkconfig.defaults applied
+        run: |
+          SDKCONFIG=$(find target/xtensa-esp32s3-espidf/firmware/build -name sdkconfig -path "*/esp-idf-sys-*/out/sdkconfig" -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
+          if [ -z "$SDKCONFIG" ]; then
+            echo "ERROR: generated sdkconfig not found" >&2
+            exit 1
+          fi
+          echo "Generated sdkconfig: $SDKCONFIG"
+          grep -q 'CONFIG_BT_NIMBLE_ENABLED=y' "$SDKCONFIG" \
+            || { echo "ERROR: CONFIG_BT_NIMBLE_ENABLED=y not found — sdkconfig.defaults.esp32s3 may not have been applied" >&2; exit 1; }
+          grep -q 'CONFIG_ESP_TASK_WDT_EN=y' "$SDKCONFIG" \
+            || { echo "ERROR: CONFIG_ESP_TASK_WDT_EN=y not found — crate sdkconfig.defaults may not have been applied" >&2; exit 1; }
+          echo "sdkconfig.defaults verified ✓"

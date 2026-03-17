@@ -172,7 +172,10 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     });
 
     // --- Advertising ---
-    let mac = ble_device.get_addr().as_le_bytes();
+    let mac = ble_device
+        .get_addr()
+        .map_err(|_| crate::error::NodeError::StorageError("BLE: failed to read MAC address"))?
+        .as_le_bytes();
     let device_name = format!("sonde-{:02x}{:02x}", mac[1], mac[0]);
     info!("BLE: advertising as '{}' (ND-0903)", device_name);
 

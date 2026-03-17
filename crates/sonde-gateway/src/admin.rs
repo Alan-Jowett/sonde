@@ -776,3 +776,121 @@ impl GatewayAdmin for AdminService {
         Ok(Response::new(Empty {}))
     }
 }
+
+/// Bind and serve the admin gRPC server on a Unix domain socket (Linux/macOS)
+/// or a Windows named pipe. This keeps the admin API off the network entirely.
+///
+/// On Unix the socket file is created at `socket_path`; any stale file from a
+/// previous run is removed first. The parent directory is created if it does
+/// not exist. On Windows `socket_path` is treated as a named-pipe name
+/// (e.g. `\\.\pipe\sonde-admin`).
+#[cfg(unix)]
+pub async fn serve_admin(
+    service: AdminService,
+    socket_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tokio::net::UnixListener;
+    use tokio_stream::wrappers::UnixListenerStream;
+    use tracing::info;
+
+    // Create parent directory if it does not exist.
+    if let Some(parent) = std::path::Path::new(socket_path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Remove a stale socket file left by a previous run.
+    let _ = std::fs::remove_file(socket_path);
+
+    let listener = UnixListener::bind(socket_path)?;
+    info!(socket = %socket_path, "gRPC admin server listening on Unix socket");
+
+    tonic::transport::Server::builder()
+        .add_service(pb::gateway_admin_server::GatewayAdminServer::new(service))
+        .serve_with_incoming(UnixListenerStream::new(listener))
+        .await?;
+    Ok(())
+}
+
+/// Bind and serve the admin gRPC server on a Windows named pipe.
+#[cfg(windows)]
+pub async fn serve_admin(
+    service: AdminService,
+    pipe_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::net::windows::named_pipe::ServerOptions;
+    use tonic::transport::server::Connected;
+    use tracing::info;
+
+    /// Wraps a Windows named pipe server connection so it satisfies tonic's
+    /// `Connected + AsyncRead + AsyncWrite + Unpin` bound.
+    struct NamedPipeConn(tokio::net::windows::named_pipe::NamedPipeServer);
+
+    impl Connected for NamedPipeConn {
+        type ConnectInfo = ();
+        fn connect_info(&self) -> Self::ConnectInfo {}
+    }
+
+    impl AsyncRead for NamedPipeConn {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for NamedPipeConn {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.0).poll_write(cx, buf)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.0).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.0).poll_shutdown(cx)
+        }
+    }
+
+    let pipe_name = pipe_name.to_owned();
+    info!(pipe = %pipe_name, "gRPC admin server listening on named pipe");
+
+    // Build a stream that accepts connections from the named pipe one at a time.
+    // Each iteration creates a new server instance to wait for the next client.
+    let incoming = futures::stream::unfold((true, pipe_name), |(first, name)| async move {
+        let server = match ServerOptions::new()
+            .first_pipe_instance(first)
+            .create(&name)
+        {
+            Ok(s) => s,
+            Err(e) => return Some((Err::<NamedPipeConn, _>(e), (false, name))),
+        };
+        match server.connect().await {
+            Ok(()) => Some((Ok(NamedPipeConn(server)), (false, name))),
+            Err(e) => Some((Err(e), (false, name))),
+        }
+    });
+
+    tonic::transport::Server::builder()
+        .add_service(pb::gateway_admin_server::GatewayAdminServer::new(service))
+        .serve_with_incoming(incoming)
+        .await?;
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub async fn serve_admin(
+    _service: AdminService,
+    _socket: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err("sonde-gateway admin gRPC requires Unix (UDS) or Windows (named pipe)".into())
+}

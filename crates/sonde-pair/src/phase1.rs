@@ -38,7 +38,7 @@ fn msg_type_name(t: u8) -> &'static str {
 /// provides compile-time mutual exclusion via the Rust borrow checker.
 /// Callers using `Arc<Mutex<..>>` for async sharing get serialized access
 /// through the mutex.  Re-running Phase 1 against the same gateway
-/// overwrites artifacts atomically without corrupting local state.
+/// overwrites artifacts cleanly without corrupting local state.
 ///
 /// # Already-paired warning (PT-0601)
 ///
@@ -65,7 +65,7 @@ pub async fn pair_with_gateway(
     if let Some(existing) = store.load_gateway_identity()? {
         warn!(
             gateway_id = ?existing.gateway_id,
-            "gateway identity already stored — existing artifacts may be overwritten if pairing succeeds"
+            "gateway identity already stored — pairing may overwrite existing state if it succeeds"
         );
     }
 
@@ -183,10 +183,10 @@ async fn do_pair_with_gateway(
             size: register_body.len(),
             max: u16::MAX as usize,
         })?;
+    trace!(msg = "REGISTER_PHONE", len = register.len(), "BLE write");
     transport
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &register)
         .await?;
-    trace!(msg = "REGISTER_PHONE", len = register.len(), "BLE write");
 
     // Step 9: Read indication (timeout 30s)
     trace!("waiting for PHONE_REGISTERED indication (30 s timeout)");

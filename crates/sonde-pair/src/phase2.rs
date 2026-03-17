@@ -34,7 +34,9 @@ fn msg_type_name(t: u8) -> &'static str {
 /// exclusion via the Rust borrow checker.  The store is read-only (`&dyn`).
 /// Callers using `Arc<Mutex<..>>` for async sharing get serialized access
 /// through the mutex.  Re-provisioning an already-paired node (without
-/// holding the pairing button) produces `NODE_ACK(0x01)` with no state change.
+/// holding the pairing button) returns
+/// `Err(NodeProvisionFailed(AlreadyPaired))`; callers should treat this
+/// as a non-destructive outcome.
 pub async fn provision_node(
     transport: &mut dyn BleTransport,
     store: &dyn PairingStore,

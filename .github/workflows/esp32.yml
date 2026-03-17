@@ -60,9 +60,18 @@ jobs:
         # Use `+esp` to select the Rust toolchain installed by espup (not
         # the default stable).  -Zbuild-std is required because the esp
         # toolchain does not ship pre-compiled std for riscv32imc-esp-espidf.
+        #
+        # ESP_IDF_SDKCONFIG_DEFAULTS tells esp-idf-sys where to find our
+        # sdkconfig.defaults. Without this, the build silently falls back to
+        # ESP-IDF defaults. We also delete any cached sdkconfig and CMake
+        # cache so a stale rust-cache restore cannot override our settings.
+        env:
+          ESP_IDF_SDKCONFIG_DEFAULTS: crates/sonde-node/sdkconfig.defaults
         run: |
           . "$IDF_PATH/export.sh"
           . /opt/esp/export-esp.sh
+          find target -name sdkconfig -path "*/esp-idf-sys-*/out/sdkconfig" -delete 2>/dev/null || true
+          find target -name CMakeCache.txt -path "*/esp-idf-sys-*/out/build/CMakeCache.txt" -delete 2>/dev/null || true
           cargo +esp build \
             -p sonde-node \
             --bin node \
@@ -70,6 +79,23 @@ jobs:
             --profile firmware \
             --target riscv32imc-esp-espidf \
             -Zbuild-std=std,panic_abort
+
+      - name: Verify sdkconfig.defaults applied
+        # Catch silent sdkconfig regression — the esp-idf-sys build script
+        # can silently fall back to ESP-IDF defaults if the sdkconfig.defaults
+        # file is not found. Assert our configured stack size is present.
+        run: |
+          SDKCONFIG=$(find target/riscv32imc-esp-espidf/firmware/build -name sdkconfig -path "*/esp-idf-sys-*/out/sdkconfig" -printf '%T@ %p\n' | sort -nr | head -n1 | awk '{print $2}')
+          if [ -z "$SDKCONFIG" ]; then
+            echo "ERROR: generated sdkconfig not found" >&2
+            exit 1
+          fi
+          echo "Generated sdkconfig: $SDKCONFIG"
+          grep -q 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384' "$SDKCONFIG" \
+            || { echo "ERROR: CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384 not found in sdkconfig — sdkconfig.defaults may not have been applied" >&2; exit 1; }
+          grep -q 'CONFIG_FREERTOS_HZ=1000' "$SDKCONFIG" \
+            || { echo "ERROR: CONFIG_FREERTOS_HZ=1000 not found in sdkconfig" >&2; exit 1; }
+          echo "sdkconfig.defaults verified ✓"
 
       # ------------------------------------------------------------------ #
       # Flash-image assembly

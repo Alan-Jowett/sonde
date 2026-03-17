@@ -86,7 +86,9 @@ Pull the image and mount the repo:
 
 ```sh
 docker pull ghcr.io/alan-jowett/sonde-esp-dev:latest
-docker run --rm -v "$(pwd)":/sonde -w /sonde ghcr.io/alan-jowett/sonde-esp-dev:latest \
+docker run --rm -v "$(pwd)":/sonde -w /sonde \
+    -e ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-node/sdkconfig.defaults \
+    ghcr.io/alan-jowett/sonde-esp-dev:latest \
     cargo +esp build -p sonde-node --bin node --features esp --profile firmware \
     --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
 ```
@@ -99,19 +101,61 @@ docker run --rm -it -v "$(pwd)":/sonde -w /sonde ghcr.io/alan-jowett/sonde-esp-d
 
 ### 3.3  Building both firmware targets
 
+Each firmware build requires `ESP_IDF_SDKCONFIG_DEFAULTS` to be set so the ESP-IDF build system applies the correct settings (see §3.4).
+
 **ESP32-C3 node firmware (RISC-V):**
 ```sh
-cargo +esp build -p sonde-node --bin node --features esp --profile firmware \
+ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-node/sdkconfig.defaults \
+    cargo +esp build -p sonde-node --bin node --features esp --profile firmware \
     --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
 ```
 
 **ESP32-S3 modem firmware (Xtensa):**
 ```sh
-cargo +esp build -p sonde-modem --bin modem --features esp --profile firmware \
+ESP_IDF_SDKCONFIG_DEFAULTS="crates/sonde-modem/sdkconfig.defaults;sdkconfig.defaults.esp32s3" \
+    cargo +esp build -p sonde-modem --bin modem --features esp --profile firmware \
     --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
 ```
 
 > **Note:** On Windows, use a short `CARGO_TARGET_DIR` (e.g., `F:\t`) to avoid exceeding MAX_PATH. See the [README](../README.md) for details.
+
+### 3.4  sdkconfig.defaults and ESP-IDF configuration
+
+Each firmware crate has a `sdkconfig.defaults` file that controls ESP-IDF settings (main task stack size, FreeRTOS tick rate, flash mode, WiFi features, etc.):
+
+- `crates/sonde-node/sdkconfig.defaults` — node settings (stack size, flash config, tick rate)
+- `crates/sonde-modem/sdkconfig.defaults` — modem settings (console, watchdog, WiFi)
+- `sdkconfig.defaults.esp32s3` — **workspace-root** chip-specific settings for ESP32-S3 (Bluetooth/NimBLE configuration required by the modem's BLE GATT server)
+
+The modem build uses **both** its crate-local defaults and the workspace-root ESP32-S3 file (semicolon-separated in the env var). The node build uses only its crate-local defaults.
+
+These are passed to the ESP-IDF build system via the `ESP_IDF_SDKCONFIG_DEFAULTS` environment variable. The CI workflows set this automatically. For local Docker builds, pass it explicitly:
+
+```sh
+# Node:
+docker run --rm -v "$(pwd)":/sonde -w /sonde \
+    -e ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-node/sdkconfig.defaults \
+    ghcr.io/alan-jowett/sonde-esp-dev:latest \
+    cargo +esp build -p sonde-node --bin node --features esp --profile firmware \
+    --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
+
+# Modem (both defaults files):
+docker run --rm -v "$(pwd)":/sonde -w /sonde \
+    -e "ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-modem/sdkconfig.defaults;sdkconfig.defaults.esp32s3" \
+    ghcr.io/alan-jowett/sonde-esp-dev:latest \
+    cargo +esp build -p sonde-modem --bin modem --features esp --profile firmware \
+    --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
+```
+
+The path is **relative to the workspace root**.
+
+**Important caveats:**
+
+1. **Generated sdkconfig persists in the target directory.** Once the ESP-IDF build runs, it creates a `sdkconfig` file in the build output. On subsequent builds, this generated file takes precedence over `sdkconfig.defaults`. If you change `sdkconfig.defaults`, you must **delete the target directory** (or at least the generated `sdkconfig` under `target/<target>/<profile>/build/esp-idf-sys-*/out/sdkconfig`) for the changes to take effect.
+
+2. **Silent fallback to ESP-IDF defaults.** If `esp-idf-sys` cannot find `sdkconfig.defaults` (missing `[package.metadata.esp-idf-sys]` or wrong path), it silently falls back to ESP-IDF's built-in defaults. This can cause hard-to-debug issues like stack overflows (ESP-IDF's default main task stack is 3584 bytes, but the node firmware needs 16KB).
+
+3. **CI cache invalidation.** The CI workflows include `sdkconfig.defaults` in the cache key, so changing the file automatically busts the cache. A CI step also asserts that critical config values (stack size, tick rate) appear in the generated `sdkconfig`.
 
 ---
 
@@ -351,6 +395,14 @@ See [implementation-guide.md](implementation-guide.md) for the full module break
 ### cargo build --workspace fails for ESP targets
 
 `cargo build --workspace` builds all workspace members for the active toolchain. If firmware crates are added to the workspace, they will fail to build without the Espressif toolchain and an explicit `--target` flag (e.g., `--target xtensa-esp32s3-espidf`). To build only host crates, select them explicitly with `-p` (e.g., `cargo build -p sonde-protocol -p sonde-gateway`).
+
+### Firmware crashes with "Stack protection fault" on boot
+
+The main task stack is too small. Check that `sdkconfig.defaults` is being applied (see §3.4). Common causes:
+
+- **Stale generated sdkconfig:** Delete `target/<target>/<profile>/build/esp-idf-sys-*/out/sdkconfig` and rebuild.
+- **Missing `[package.metadata.esp-idf-sys]`:** Each firmware crate's `Cargo.toml` must have this section pointing to `sdkconfig.defaults`. Without it, `esp-idf-sys` silently uses ESP-IDF's default 3584-byte stack.
+- **Stack size too small:** If the firmware adds new features that increase stack usage, bump `CONFIG_ESP_MAIN_TASK_STACK_SIZE` in `sdkconfig.defaults`.
 
 ---
 

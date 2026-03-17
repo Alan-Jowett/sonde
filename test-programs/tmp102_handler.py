@@ -25,6 +25,7 @@ Usage in handler config (handlers.yaml):
 """
 
 import argparse
+import re
 import struct
 import sys
 from datetime import datetime, timezone
@@ -33,9 +34,7 @@ from pathlib import Path
 try:
     import cbor2
 except ImportError:
-    # Minimal CBOR decoder for integer-keyed maps (no external deps).
-    # Handles the subset used by the sonde handler protocol.
-    cbor2 = None
+    sys.exit("ERROR: cbor2 package required — install with: pip install cbor2")
 
 
 # Handler protocol message types (CBOR integer key 1).
@@ -45,29 +44,34 @@ MSG_DATA_REPLY = 0x81
 MSG_LOG = 0x82
 
 
+def _read_exact(stream, n):
+    """Read exactly n bytes from stream, handling partial reads."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
 def read_message(stream):
     """Read a length-prefixed CBOR message from a binary stream."""
-    len_bytes = stream.read(4)
-    if len(len_bytes) < 4:
+    len_bytes = _read_exact(stream, 4)
+    if len_bytes is None:
         return None
     length = struct.unpack(">I", len_bytes)[0]
     if length > 1_048_576:
         return None
-    payload = stream.read(length)
-    if len(payload) < length:
+    payload = _read_exact(stream, length)
+    if payload is None:
         return None
-    if cbor2:
-        return cbor2.loads(payload)
-    # Fallback: use ciborium-style decode (not implemented here).
-    raise RuntimeError("cbor2 package required: pip install cbor2")
+    return cbor2.loads(payload)
 
 
 def write_message(stream, msg):
     """Write a length-prefixed CBOR message to a binary stream."""
-    if cbor2:
-        payload = cbor2.dumps(msg)
-    else:
-        raise RuntimeError("cbor2 package required: pip install cbor2")
+    payload = cbor2.dumps(msg)
     stream.write(struct.pack(">I", len(payload)))
     stream.write(payload)
     stream.flush()
@@ -80,8 +84,8 @@ def send_log(stream, level, message):
 
 def decode_tmp102_payload(data):
     """Decode the 6-byte TMP102 payload into (raw_hi, raw_lo, temp_mc)."""
-    if len(data) < 6:
-        raise ValueError(f"expected 6 bytes, got {len(data)}")
+    if len(data) != 6:
+        raise ValueError(f"expected exactly 6 bytes, got {len(data)}")
     raw_hi = data[0]
     raw_lo = data[1]
     temp_mc = struct.unpack("<i", data[2:6])[0]
@@ -116,13 +120,18 @@ def main():
             data = msg.get(5, b"")
             timestamp = msg.get(6, 0)
 
+            # Sanitize node_id to prevent path traversal.
+            safe_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", node_id)
+            if not safe_id:
+                safe_id = "unknown"
+
             try:
                 raw_hi, raw_lo, temp_mc = decode_tmp102_payload(data)
                 temp_c = temp_mc / 1000.0
                 ts = datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
-                # Append to file named after node_id.
-                node_file = output_dir / f"{node_id}.csv"
+                # Append to file named after sanitized node_id.
+                node_file = output_dir / f"{safe_id}.csv"
                 is_new = not node_file.exists()
                 with open(node_file, "a") as f:
                     if is_new:

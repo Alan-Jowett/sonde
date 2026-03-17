@@ -35,13 +35,6 @@
  *   temp_mC = raw_12bit * 625 / 10
  * This gives integer millidegrees Celsius (e.g., 25125 = 25.125 °C). */
 
-/* Payload sent to the gateway. */
-struct tmp102_payload {
-    __u8  raw_hi;      /**< Raw temperature byte 0 (MSB).             */
-    __u8  raw_lo;      /**< Raw temperature byte 1 (LSB, lower 4 bits unused). */
-    __s32 temp_mc;     /**< Temperature in millidegrees Celsius (LE).  */
-} __attribute__((packed));
-
 /* Error messages for trace output. */
 static const char err_read[] = "tmp102: read failed\n";
 
@@ -79,12 +72,18 @@ int program(struct sonde_context *ctx)
     __u32 abs_mc = abs_raw * 625u / 10u;
     __s32 temp_mc = (raw_12bit < 0) ? -(__s32)abs_mc : (__s32)abs_mc;
 
-    /* Build and send payload. */
-    struct tmp102_payload payload;
-    payload.raw_hi = raw[0];
-    payload.raw_lo = raw[1];
-    payload.temp_mc = temp_mc;
+    /* Build 6-byte payload manually to avoid unaligned access:
+     *   [0]   raw_hi
+     *   [1]   raw_lo
+     *   [2:5] temp_mc as little-endian i32 */
+    __u8 payload[6];
+    payload[0] = raw[0];
+    payload[1] = raw[1];
+    payload[2] = (__u8)(temp_mc);
+    payload[3] = (__u8)(temp_mc >> 8);
+    payload[4] = (__u8)(temp_mc >> 16);
+    payload[5] = (__u8)(temp_mc >> 24);
 
-    send(&payload, sizeof(payload));
+    send(payload, sizeof(payload));
     return 0;
 }

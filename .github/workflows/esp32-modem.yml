@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa).
+# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa) and run
+# a Wokwi boot test that asserts the application reaches `main()`.
 
 name: ESP32-S3 Modem Firmware CI
 
@@ -17,6 +18,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/esp32-modem.yml'
+      - 'wokwi/modem/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -24,7 +26,7 @@ concurrency:
 
 jobs:
   esp32s3-modem-build:
-    name: Build ESP32-S3 modem firmware
+    name: Build ESP32-S3 modem firmware and Wokwi boot test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -158,3 +160,21 @@ jobs:
           path: flash_image.bin
           if-no-files-found: error
           retention-days: 7
+
+      # ------------------------------------------------------------------ #
+      # Wokwi boot test
+      # ------------------------------------------------------------------ #
+
+      - name: Run Wokwi boot test
+        # Wokwi CI simulates full ESP32-S3 hardware so `app_main()` / Rust
+        # `main()` actually runs. This closes the modem boot-test gap (#223).
+        #
+        # Uses the merged flash_image.bin produced above.
+        uses: wokwi/wokwi-ci-action@8d0e92eca93c6fc7832c805bfdc0d50bacff7558 # v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: wokwi/modem
+          timeout: 30000
+          expect_text: 'sonde-modem firmware starting'
+          fail_text: 'panic'
+          serial_log_file: 'wokwi-modem-boot.log'

@@ -1,0 +1,7 @@
+# Wokwi CI configuration for sonde-node (ESP32-C3).
+# firmware path is relative to this file — flash_image.bin is created
+# at the workspace root by the CI workflow.
+[wokwi]
+version = 1
+firmware = '../../flash_image.bin'
+elf = '../../target/riscv32imc-esp-espidf/firmware/node'

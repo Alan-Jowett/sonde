@@ -2,7 +2,7 @@
 # Copyright (c) 2026 sonde contributors
 #
 # ESP32-C3 node firmware CI: build sonde-node for ESP32-C3 (RISC-V) and run a
-# QEMU smoke test that asserts the expected boot-marker strings appear on UART.
+# Wokwi boot test that asserts the application reaches `main()`.
 
 name: ESP32-C3 Node Firmware CI
 
@@ -18,6 +18,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/esp32.yml'
+      - 'wokwi/node/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -25,7 +26,7 @@ concurrency:
 
 jobs:
   esp32c3-node-build-and-smoke:
-    name: Build ESP32-C3 node firmware and QEMU smoke test
+    name: Build ESP32-C3 node firmware and Wokwi boot test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -149,83 +150,28 @@ jobs:
           echo "flash_image.bin created ($(wc -c < flash_image.bin) bytes)"
 
       # ------------------------------------------------------------------ #
-      # QEMU smoke test
+      # Wokwi boot test
       # ------------------------------------------------------------------ #
 
-      - name: Run QEMU smoke test
-        # Source IDF export.sh so qemu-system-riscv32 is on PATH.
+      - name: Run Wokwi boot test
+        # Wokwi CI simulates full ESP32-C3 hardware including the systimer
+        # peripheral, so FreeRTOS ticks and `app_main()` / Rust `main()`
+        # actually execute. This replaces the old QEMU smoke test which
+        # could only validate bootloader markers (see #227, #105).
         #
-        # NOTE: The smoke test checks for ESP-IDF boot markers instead of
-        # Rust-level markers (`sonde-node booting`). ESP32-C3 QEMU support
-        # is experimental — the systimer peripheral used for FreeRTOS tick
-        # generation is not fully emulated, so the FreeRTOS scheduler never
-        # starts and `app_main()` / Rust `main()` is never called. See #105.
+        # Uses the merged flash_image.bin (bootloader + partition table + app)
+        # produced by the flash-image assembly step above.
         #
-        # The ESP-IDF markers still prove the firmware was correctly:
-        #   1. Cross-compiled for riscv32imc-esp-espidf
-        #   2. Converted from ELF → binary → merged flash image
-        #   3. Loaded and validated by the ESP-IDF 2nd-stage bootloader
-        #   4. Initialized through CPU start, heap, and flash detection
-        run: |
-          . "$IDF_PATH/export.sh"
-          QEMU_OUTPUT="/tmp/qemu_uart.txt"
-
-          # Boot the firmware under QEMU with a hard timeout.
-          # -no-reboot prevents restart loops on early failures.
-          # 15s is enough — ESP-IDF boot markers appear within 2s; the
-          # remaining time is buffer for slow CI runners. The firmware
-          # hangs after eFuse init (before FreeRTOS scheduler start) so
-          # a longer timeout just wastes CI time.
-          set +e
-          timeout 15 qemu-system-riscv32 \
-            -nographic \
-            -machine esp32c3 \
-            -drive file=flash_image.bin,if=mtd,format=raw \
-            -no-reboot \
-            > "$QEMU_OUTPUT" 2>&1
-          QEMU_EXIT=$?
-          set -e
-
-          echo ""
-          echo "=== QEMU UART output ==="
-          cat "$QEMU_OUTPUT"
-          echo "========================"
-
-          # Exit 124 = timeout (expected — QEMU hangs after eFuse init).
-          # Exit 0   = QEMU exited cleanly (unusual but acceptable).
-          # Any other non-zero = QEMU crashed or was killed → fail.
-          if [ "$QEMU_EXIT" -ne 0 ] && [ "$QEMU_EXIT" -ne 124 ]; then
-            echo "ERROR: QEMU exited with unexpected code $QEMU_EXIT" >&2
-            exit 1
-          fi
-
-          # Assert ESP-IDF boot markers that prove the firmware image is
-          # valid and bootable. These are printed before the FreeRTOS
-          # scheduler starts, so they work even though QEMU can't fully
-          # boot ESP32-C3 firmware (see note above).
-          #
-          # "cpu_start: Pro cpu start user code" — CPU init reached user code
-          # "app_init: Application information"  — app metadata loaded
-          # "heap_init: Initializing"            — RAM layout correct
-          PASS=true
-          for marker in \
-            "cpu_start: Pro cpu start user code" \
-            "app_init: Application information" \
-            "heap_init: Initializing"; do
-            if grep -qF "$marker" "$QEMU_OUTPUT"; then
-              echo "✓  Found marker: '$marker'"
-            else
-              echo "✗  Missing marker: '$marker'" >&2
-              PASS=false
-            fi
-          done
-
-          if [ "$PASS" = "false" ]; then
-            echo "Smoke test FAILED — one or more expected markers were not found." >&2
-            exit 1
-          fi
-
-          echo "Smoke test passed."
+        # Expects the application-level marker printed in node.rs main().
+        # Fails immediately if a Rust panic is detected.
+        uses: wokwi/wokwi-ci-action@8d0e92eca93c6fc7832c805bfdc0d50bacff7558 # v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: wokwi/node
+          timeout: 30000
+          expect_text: 'sonde-node booting'
+          fail_text: 'panic'
+          serial_log_file: 'wokwi-node-boot.log'
 
       # ------------------------------------------------------------------ #
       # Upload firmware artifact

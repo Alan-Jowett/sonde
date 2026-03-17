@@ -1,0 +1,7 @@
+# Wokwi CI configuration for sonde-modem (ESP32-S3).
+# firmware path is relative to this file — flash_image.bin is created
+# at the workspace root by the CI workflow.
+[wokwi]
+version = 1
+firmware = '../../flash_image.bin'
+elf = '../../target/xtensa-esp32s3-espidf/firmware/modem'

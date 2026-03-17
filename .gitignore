@@ -1,2 +1,3 @@
 target/
 test-programs/*.o
+crates/sonde-pair-ui/src-tauri/gen/

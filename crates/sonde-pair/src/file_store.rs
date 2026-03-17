@@ -140,10 +140,13 @@ pub struct FilePairingStore {
 
 impl FilePairingStore {
     /// Create a store at the platform default location.
+    ///
+    /// On supported platforms the [`default_protector`] is attached
+    /// automatically so `phone_psk` is encrypted at rest.
     pub fn new() -> Result<Self, PairingError> {
         Ok(Self {
             path: default_path()?,
-            protector: None,
+            protector: default_protector(),
         })
     }
 
@@ -313,18 +316,20 @@ impl PairingStore for FilePairingStore {
     }
 
     fn clear(&mut self) -> Result<(), PairingError> {
-        if let Some(ref protector) = self.protector {
-            if let Err(e) = protector.clear_protected() {
-                tracing::warn!("failed to clear protected PSK: {e}");
-            }
-        }
         // Also clean up any leftover temp file from an interrupted write.
         let _ = fs::remove_file(self.path.with_extension("json.tmp"));
+        // Delete the JSON file first so a failure here does not leave an
+        // inconsistent state (file referencing a deleted keyring secret).
         match fs::remove_file(&self.path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(PairingError::StoreSaveFailed(e.to_string())),
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(PairingError::StoreSaveFailed(e.to_string())),
         }
+        // Clear any externally stored protected material (e.g., keyring).
+        if let Some(ref protector) = self.protector {
+            protector.clear_protected()?;
+        }
+        Ok(())
     }
 
     fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, PairingError> {

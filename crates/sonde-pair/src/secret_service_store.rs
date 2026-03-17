@@ -75,23 +75,50 @@ impl PskProtector for SecretServicePskProtector {
 
 /// Drive an async Secret Service call synchronously.
 ///
-/// Uses `block_in_place` when inside a multi-thread tokio runtime, otherwise
-/// spins up a temporary single-threaded runtime.
+/// - **Multi-thread runtime:** uses `block_in_place` so other tasks keep running.
+/// - **Current-thread runtime:** spawns a helper thread with its own runtime
+///   (calling `block_in_place` on a current-thread runtime would panic).
+/// - **No runtime:** builds a temporary single-threaded runtime in place.
 fn run_blocking<F, Fut, T>(f: F) -> Result<T, PairingError>
 where
-    F: FnOnce() -> Fut,
+    F: FnOnce() -> Fut + Send,
     Fut: std::future::Future<Output = Result<T, PairingError>>,
+    T: Send,
 {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(move || handle.block_on(f()))
-    } else {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                PairingError::EncryptionFailed(format!("failed to build async runtime: {e}"))
-            })?;
-        rt.block_on(f())
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(move || handle.block_on(f()))
+        }
+        Ok(_) => {
+            // Current-thread runtime — spawn a helper thread with its own
+            // runtime to avoid panicking from `block_in_place`.
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| {
+                            PairingError::EncryptionFailed(format!("async runtime: {e}"))
+                        })?;
+                    rt.block_on(f())
+                })
+                .join()
+                .unwrap_or_else(|_| {
+                    Err(PairingError::EncryptionFailed(
+                        "Secret Service thread panicked".into(),
+                    ))
+                })
+            })
+        }
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| {
+                    PairingError::EncryptionFailed(format!("failed to build async runtime: {e}"))
+                })?;
+            rt.block_on(f())
+        }
     }
 }
 

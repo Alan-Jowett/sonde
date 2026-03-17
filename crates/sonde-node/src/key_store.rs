@@ -199,6 +199,7 @@ mod tests {
 
     #[test]
     fn test_load_identity_unpaired() {
+        // T-N400, T-N401: No stored PSK → load_identity returns None (unpaired).
         let mut storage = MockStorage::new();
         let ks = KeyStore::new(&mut storage);
         assert!(ks.load_identity().is_none());
@@ -206,6 +207,7 @@ mod tests {
 
     #[test]
     fn test_pair_and_load() {
+        // T-N400: Pair stores PSK; subsequent load_identity returns it.
         let mut storage = MockStorage::new();
         let psk = [0xAA; 32];
         {
@@ -220,6 +222,7 @@ mod tests {
 
     #[test]
     fn test_pair_rejects_already_paired() {
+        // T-N403: Attempting to pair an already-paired node returns an error.
         let mut storage = MockStorage::new();
         let psk = [0xBB; 32];
         {
@@ -233,6 +236,8 @@ mod tests {
 
     #[test]
     fn test_factory_reset() {
+        // T-N404: Factory reset erases all persistent state (key, programs,
+        // schedule, channel, BLE artifacts, map data).
         let mut storage = MockStorage::new();
         let psk = [0xDD; 32];
         storage.key = Some((10, psk));

@@ -1085,3 +1085,76 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0915 | T-N917 |
 | ND-0916 | T-N918 |
 | ND-0917 | T-N906 |
+
+---
+
+## Appendix B  Test ID to test function traceability
+
+This table maps each spec test ID (T-Nxxx) to the test function(s) that satisfy it.
+Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sonde-e2e/tests/e2e_tests.rs` are integration tests.
+
+| Spec ID | Test function(s) | Location |
+|---------|-----------------|----------|
+| T-N100 | `test_unpaired_node_returns_unpaired`, `t_e2e_058_lifecycle_usb_pair_boot_run` | wake_cycle.rs, e2e_tests.rs |
+| T-N101 | `test_wake_cbor_integer_keys` | wake_cycle.rs |
+| T-N102 | `test_outbound_frame_format` | wake_cycle.rs |
+| T-N103 | `test_send_app_data_max_blob` | wake_cycle.rs |
+| T-N104 | `test_send_app_data_oversized_blob` | wake_cycle.rs |
+| T-N200 | `test_normal_nop_wake_cycle`, `t_e2e_001_nop_wake_cycle`, `t_e2e_002b_consecutive_wake_cycles`, `t_e2e_011_program_already_current`, `t_e2e_051_modem_frame_round_trip`, `t_e2e_052_bridged_consecutive_cycles`, `t_e2e_069_multi_node`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
+| T-N201 | `test_wake_retries_exhausted` | wake_cycle.rs |
+| T-N202 | `test_wake_message_fields`, `t_e2e_001_nop_wake_cycle` | wake_cycle.rs, e2e_tests.rs |
+| T-N203 | `test_no_program_empty_hash` | wake_cycle.rs |
+| T-N204 | `test_normal_nop_wake_cycle`, `t_e2e_011_program_already_current` | wake_cycle.rs, e2e_tests.rs |
+| T-N205 | `test_update_schedule`, `test_update_schedule` (sleep.rs), `t_e2e_020_update_schedule` | wake_cycle.rs, sleep.rs, e2e_tests.rs |
+| T-N206 | `test_reboot_command`, `t_e2e_021_reboot` | wake_cycle.rs, e2e_tests.rs |
+| T-N207 | `test_unknown_command_treated_as_nop` | wake_cycle.rs |
+| T-N208 | `test_set_next_wake_shorter`, `test_set_next_wake_equal`, `test_zero_next_wake_clamped_to_minimum` | sleep.rs |
+| T-N209 | `test_set_next_wake_longer_clamped` | sleep.rs |
+| T-N300 | `test_outbound_frame_format`, `t_e2e_002_hmac_round_trip` | wake_cycle.rs, e2e_tests.rs |
+| T-N301 | `test_invalid_hmac_discarded`, `t_e2e_003_wrong_psk_rejected`, `t_e2e_040_unknown_node`, `t_e2e_053_bridged_wrong_psk` | wake_cycle.rs, e2e_tests.rs |
+| T-N302 | `test_outbound_frame_format`, `t_e2e_002_hmac_round_trip` | wake_cycle.rs, e2e_tests.rs |
+| T-N303 | `test_wrong_nonce_discarded`, `test_send_recv_app_data_wrong_nonce` | wake_cycle.rs |
+| T-N304 | `test_wrong_seq_on_chunk_discarded` | wake_cycle.rs |
+| T-N305 | `test_sequence_increment_correctness`, `t_e2e_041_sequence_numbers` | wake_cycle.rs, e2e_tests.rs |
+| T-N306 | `test_nonce_uniqueness_across_cycles`, `t_e2e_002b_consecutive_wake_cycles`, `t_e2e_052_bridged_consecutive_cycles` | wake_cycle.rs, e2e_tests.rs |
+| T-N400 | `test_load_identity_unpaired`, `test_pair_and_load` | key_store.rs |
+| T-N401 | `test_load_identity_unpaired`, `test_unpaired_node_returns_unpaired`, `t_e2e_058_lifecycle_usb_pair_boot_run` | key_store.rs, wake_cycle.rs, e2e_tests.rs |
+| T-N402 | `test_usb_pairing_then_authenticated_wake`, `t_e2e_058_lifecycle_usb_pair_boot_run` | wake_cycle.rs, e2e_tests.rs |
+| T-N403 | `test_pair_rejects_already_paired`, `t_e2e_058_lifecycle_usb_pair_boot_run` | key_store.rs, e2e_tests.rs |
+| T-N404 | `test_factory_reset`, `t_e2e_058_lifecycle_usb_pair_boot_run`, `t_e2e_068_factory_reset_reprovision` | key_store.rs, e2e_tests.rs |
+| T-N500 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
+| T-N501 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update` | wake_cycle.rs, e2e_tests.rs |
+| T-N502 | `test_program_transfer_hash_mismatch` | wake_cycle.rs |
+| T-N503 | *(covered implicitly by T-N500/T-N501 — CBOR image decode is exercised in every chunked transfer test)* | — |
+| T-N504 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update` | wake_cycle.rs, e2e_tests.rs |
+| T-N505 | `test_ephemeral_program_integration`, `t_e2e_022_run_ephemeral` | wake_cycle.rs, e2e_tests.rs |
+| T-N506 | `test_chunked_transfer_success` | wake_cycle.rs |
+| T-N507 | `test_execution_context_fields` | wake_cycle.rs |
+| T-N508 | `test_chunked_transfer_success`, `test_wake_reason_program_update`, `test_wake_reason` (sleep.rs) | wake_cycle.rs, sleep.rs |
+| T-N509 | `test_wake_reason_early`, `test_wake_reason` (sleep.rs) | wake_cycle.rs, sleep.rs |
+| T-N510 | `test_post_update_immediate_execution` | wake_cycle.rs |
+| T-N604 | `test_send_recv_app_data_success`, `t_e2e_031_app_data_fire_and_forget`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
+| T-N605 | `test_send_recv_app_data_success`, `t_e2e_030_app_data_round_trip` | wake_cycle.rs, e2e_tests.rs |
+| T-N606 | `test_send_recv_app_data_timeout` | wake_cycle.rs |
+| T-N700 | `test_wake_retries_exhausted` | wake_cycle.rs |
+| T-N701 | `test_chunked_transfer_chunk_retry_exhausted` | wake_cycle.rs |
+| T-N800 | `test_malformed_cbor_discarded` | wake_cycle.rs |
+| T-N801 | `test_unexpected_msg_type_discarded` | wake_cycle.rs |
+| T-N802 | `test_chunked_transfer_wrong_chunk_index` | wake_cycle.rs |
+| T-N904 | `t_n904_happy_path`, `t_e2e_062_node_ble_provisioning`, `t_e2e_068_factory_reset_reprovision`, `t_e2e_070_full_use_case` | ble_pairing.rs, e2e_tests.rs |
+| T-N905 | `t_n905_same_session_reprovision` | ble_pairing.rs |
+| T-N906 | `t_n906_factory_reset_on_button_hold` | ble_pairing.rs |
+| T-N907 | `t_n907_nvs_write_key_failure`, `t_n907_nvs_write_channel_failure`, `t_n907_nvs_write_peer_payload_failure`, `t_n907_nvs_write_reg_complete_failure` | ble_pairing.rs |
+| T-N909 | `t_e2e_063_peer_request_ack` | e2e_tests.rs |
+| T-N911 | `t_e2e_067_agent_revocation` | e2e_tests.rs |
+| T-N912 | `t_e2e_063_peer_request_ack` | e2e_tests.rs |
+| T-N913 | `t_e2e_065_deferred_erasure` | e2e_tests.rs |
+| T-N915 | `t_e2e_063_peer_request_ack`, `t_e2e_064_onboarding_to_wake` | e2e_tests.rs |
+| T-N916 | `t_e2e_064_onboarding_to_wake`, `t_e2e_065_deferred_erasure` | e2e_tests.rs |
+| T-N917 | `t_e2e_066_self_healing` | e2e_tests.rs |
+
+> **Note:** Spec cases T-N600–T-N616 (BPF environment helpers), T-N702 (response timeout),
+> T-N900–T-N903 (boot priority / BLE stack), T-N908 (BLE mode persistence), T-N910 (PEER_REQUEST
+> retransmission), T-N914 (PEER_ACK wrong registration proof), and T-N918 (NVS layout) require
+> hardware or BLE stack integration and are validated on the target platform rather than in the
+> host-based test suite.

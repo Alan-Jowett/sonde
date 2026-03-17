@@ -111,6 +111,7 @@ mod tests {
 
     #[test]
     fn test_default_sleep_uses_base_interval() {
+        // T-N200: Default sleep uses the configured base interval.
         let sm = SleepManager::new(300, WakeReason::Scheduled);
         assert_eq!(sm.effective_sleep_s(), 300);
         assert!(!sm.will_wake_early());
@@ -118,6 +119,7 @@ mod tests {
 
     #[test]
     fn test_set_next_wake_shorter() {
+        // T-N208: set_next_wake with a shorter interval is accepted.
         let mut sm = SleepManager::new(300, WakeReason::Scheduled);
         sm.set_next_wake(10);
         assert_eq!(sm.effective_sleep_s(), 10);
@@ -126,6 +128,7 @@ mod tests {
 
     #[test]
     fn test_set_next_wake_longer_clamped() {
+        // T-N209: set_next_wake cannot extend beyond the configured base interval.
         let mut sm = SleepManager::new(60, WakeReason::Scheduled);
         sm.set_next_wake(600);
         // min(600, 60) = 60
@@ -135,6 +138,7 @@ mod tests {
 
     #[test]
     fn test_set_next_wake_equal() {
+        // T-N208: set_next_wake equal to the base interval is a no-op (will_wake_early stays false).
         let mut sm = SleepManager::new(60, WakeReason::Scheduled);
         sm.set_next_wake(60);
         assert_eq!(sm.effective_sleep_s(), 60);
@@ -143,6 +147,7 @@ mod tests {
 
     #[test]
     fn test_update_schedule() {
+        // T-N205: set_base_interval updates the effective sleep duration.
         let mut sm = SleepManager::new(60, WakeReason::Scheduled);
         sm.set_base_interval(120);
         assert_eq!(sm.effective_sleep_s(), 120);
@@ -150,6 +155,7 @@ mod tests {
 
     #[test]
     fn test_wake_reason() {
+        // T-N508, T-N509: wake_reason is preserved from construction.
         let sm = SleepManager::new(60, WakeReason::Early);
         assert_eq!(sm.wake_reason(), WakeReason::Early);
 
@@ -159,12 +165,14 @@ mod tests {
 
     #[test]
     fn test_zero_interval_clamped_to_minimum() {
+        // T-N205: Zero base interval is clamped to the minimum (1 second).
         let sm = SleepManager::new(0, WakeReason::Scheduled);
         assert_eq!(sm.effective_sleep_s(), 1);
     }
 
     #[test]
     fn test_zero_next_wake_clamped_to_minimum() {
+        // T-N208: set_next_wake(0) is clamped to the minimum (1 second).
         let mut sm = SleepManager::new(300, WakeReason::Scheduled);
         sm.set_next_wake(0);
         assert_eq!(sm.effective_sleep_s(), 1);

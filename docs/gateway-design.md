@@ -660,8 +660,8 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 
 | Operation | gRPC method | Description |
 |---|---|---|
-| Pair node | `RegisterNode` | Called after BLE key provisioning. Registers key_hint, PSK, and admin node_id. |
-| Factory reset | `RemoveNode` | Called after factory reset. Removes node from registry. |
+| Pair node | `RegisterNode` | Admin/manual operation. Registers key_hint, PSK, and admin node_id. (In the BLE pairing flow, node registration happens automatically via `PEER_REQUEST` processing — see ble-pairing-protocol.md §7.3.) |
+| Factory reset | `RemoveNode` | Removes node from registry. |
 | Ingest program | `IngestProgram` | Accepts ELF binary + profile. Triggers verification, CBOR encoding, storage. Returns hash or error. |
 | Assign program | `AssignProgram` | Sets a node's assigned program. Next WAKE triggers UPDATE_PROGRAM if hash differs. |
 | Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |

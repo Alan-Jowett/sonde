@@ -70,6 +70,8 @@ fn make_program_from_bytecode(
 ///
 /// A paired node with no pending commands completes a normal WAKE/COMMAND
 /// exchange and returns to sleep at its configured interval.
+///
+/// Covers: T-N200, T-N202
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_001_nop_wake_cycle() {
     let env = E2eTestEnv::new();
@@ -96,6 +98,8 @@ async fn t_e2e_001_nop_wake_cycle() {
 /// Validates that the gateway (RustCryptoHmac) and node (TestHmac) produce
 /// compatible HMAC-SHA256 tags. A successful NOP cycle proves both sides
 /// authenticate each other's frames.
+///
+/// Covers: T-N300, T-N302
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002_hmac_round_trip() {
     let env = E2eTestEnv::new();
@@ -115,6 +119,8 @@ async fn t_e2e_002_hmac_round_trip() {
 /// Runs two wake cycles on the same `NodeProxy`. Verifies that both cycles
 /// complete successfully with persistent storage and monotonic RNG state.
 /// Explicitly asserts that the WAKE nonces differ across the two cycles.
+///
+/// Covers: T-N200, T-N306
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_002b_consecutive_wake_cycles() {
     let env = E2eTestEnv::new();
@@ -157,6 +163,8 @@ async fn t_e2e_002b_consecutive_wake_cycles() {
 /// When the node's PSK does not match the gateway's record the gateway
 /// silently discards the WAKE frame. The node exhausts its retries and
 /// sleeps for its configured schedule interval.
+///
+/// Covers: T-N301
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_003_wrong_psk_rejected() {
     let env = E2eTestEnv::new();
@@ -192,6 +200,8 @@ async fn t_e2e_003_wrong_psk_rejected() {
 ///
 /// The gateway queues an UpdateSchedule command. After the wake cycle the
 /// node adopts the new interval.
+///
+/// Covers: T-N205
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_020_update_schedule() {
     let env = E2eTestEnv::new();
@@ -223,6 +233,8 @@ async fn t_e2e_020_update_schedule() {
 /// T-E2E-021 — REBOOT command.
 ///
 /// The gateway queues a Reboot command. The wake cycle returns `Reboot`.
+///
+/// Covers: T-N206
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_021_reboot() {
     let env = E2eTestEnv::new();
@@ -243,6 +255,8 @@ async fn t_e2e_021_reboot() {
 ///
 /// A node whose key_hint is not registered on the gateway gets no
 /// response. The node exhausts retries and sleeps at the default interval.
+///
+/// Covers: T-N301
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_040_unknown_node() {
     let env = E2eTestEnv::new();
@@ -276,6 +290,8 @@ async fn t_e2e_040_unknown_node() {
 /// A node with no program receives UPDATE_PROGRAM from the gateway,
 /// downloads the image via chunked transfer, verifies its hash, persists
 /// it, and sends PROGRAM_ACK. The gateway confirms the update.
+///
+/// Covers: T-N500, T-N501, T-N504
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_010_full_program_update() {
     let env = E2eTestEnv::new();
@@ -335,6 +351,8 @@ async fn t_e2e_010_full_program_update() {
 ///
 /// When the node already has the assigned program (reports matching hash
 /// in WAKE), the gateway responds with NOP (no chunked transfer occurs).
+///
+/// Covers: T-N200, T-N204
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_011_program_already_current() {
     let env = E2eTestEnv::new();
@@ -389,6 +407,8 @@ async fn t_e2e_011_program_already_current() {
 /// The gateway queues a RunEphemeral command. The node downloads the
 /// ephemeral program via chunked transfer, executes it, but does NOT
 /// persist it to storage partitions.
+///
+/// Covers: T-N505
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_022_run_ephemeral() {
     let env = E2eTestEnv::new();
@@ -445,6 +465,8 @@ async fn t_e2e_022_run_ephemeral() {
 /// During a program update, verifies that GET_CHUNK frames use monotonically
 /// increasing sequence numbers (nonces) assigned by the gateway's COMMAND
 /// `starting_seq`.
+///
+/// Covers: T-N305
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_041_sequence_numbers() {
     let env = E2eTestEnv::new();
@@ -537,6 +559,8 @@ async fn t_e2e_050_modem_startup_handshake() {
 ///
 /// Uses `ModemTestEnv` to wire all components together and
 /// `NodeProxy::run_wake_cycle_bridged` to drive the node.
+///
+/// Covers: T-N200
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_051_modem_frame_round_trip() {
     use sonde_e2e::harness::ModemTestEnv;
@@ -576,6 +600,8 @@ async fn t_e2e_051_modem_frame_round_trip() {
 ///
 /// Runs two wake cycles on the same node through the modem bridge.
 /// Verifies state persistence and nonce uniqueness across cycles.
+///
+/// Covers: T-N200, T-N306
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_052_bridged_consecutive_cycles() {
     use sonde_e2e::harness::ModemTestEnv;
@@ -621,6 +647,8 @@ async fn t_e2e_052_bridged_consecutive_cycles() {
 /// When the node's PSK does not match the gateway's record, the gateway
 /// silently discards frames. With the modem bridge in the loop, the node
 /// should exhaust retries and sleep normally.
+///
+/// Covers: T-N301
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_053_bridged_wrong_psk() {
     use sonde_e2e::harness::ModemTestEnv;
@@ -656,6 +684,8 @@ async fn t_e2e_053_bridged_wrong_psk() {
 /// A full chunked program transfer flowing through the modem bridge.
 /// Validates that multi-frame exchanges (WAKE → COMMAND → GET_CHUNK →
 /// CHUNK → PROGRAM_ACK) survive the serial codec round-trip.
+///
+/// Covers: T-N500, T-N501
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_054_bridged_program_update() {
     use sonde_e2e::harness::ModemTestEnv;
@@ -722,6 +752,8 @@ async fn t_e2e_054_bridged_program_update() {
 ///
 /// Uses the real `SondeBpfInterpreter` to execute BPF bytecode that calls
 /// the `send()` helper, triggering the full APP_DATA dispatch path.
+///
+/// Covers: T-N604
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_031_app_data_fire_and_forget() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
@@ -766,6 +798,8 @@ async fn t_e2e_031_app_data_fire_and_forget() {
 ///
 /// Uses the real `SondeBpfInterpreter` and a real `HandlerRouter` wired to
 /// the `stub_handler` binary built alongside this crate.
+///
+/// Covers: T-N605
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_030_app_data_round_trip() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
@@ -862,6 +896,8 @@ async fn t_e2e_030_app_data_round_trip() {
 /// 4. **Factory reset via pairing mode** — `run_pairing_mode` processes a
 ///    `ResetRequest`, then mock serial disconnects.
 /// 5. **Boot unpaired again** — confirms the node reverts to `Unpaired`.
+///
+/// Covers: T-N100, T-N401, T-N402, T-N403, T-N404
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_058_lifecycle_usb_pair_boot_run() {
     use sonde_node::pairing::run_pairing_mode;
@@ -1079,6 +1115,8 @@ async fn t_e2e_061_phone_registration() {
 /// Constructs a valid NODE_PROVISION payload (including encrypted_payload
 /// derived from Phase 1 artifacts) and feeds it to the node's BLE
 /// provisioning handler. Verifies NVS state after provisioning.
+///
+/// Covers: T-N904
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_062_node_ble_provisioning() {
     use sonde_node::ble_pairing::{handle_node_provision, NodeProvision, NODE_ACK_SUCCESS};
@@ -1140,6 +1178,8 @@ async fn t_e2e_062_node_ble_provisioning() {
 /// A BLE-provisioned node sends PEER_REQUEST over ESP-NOW. The gateway
 /// decrypts the encrypted_payload, verifies the phone HMAC, registers the
 /// node, and returns PEER_ACK with registration_proof.
+///
+/// Covers: T-N909, T-N912, T-N915
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_063_peer_request_ack() {
     let env = E2eTestEnv::new();
@@ -1209,6 +1249,8 @@ async fn t_e2e_063_peer_request_ack() {
 /// Full lifecycle: Phase 1 (phone registration) → Phase 2 (node
 /// provisioning) → Phase 3 (PEER_REQUEST/PEER_ACK) → first WAKE/COMMAND.
 /// Verifies the node transitions from bootstrap to steady-state.
+///
+/// Covers: T-N915, T-N916
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_064_onboarding_to_wake() {
     let env = E2eTestEnv::new();
@@ -1271,6 +1313,8 @@ async fn t_e2e_064_onboarding_to_wake() {
 /// after first WAKE/COMMAND success). The encrypted_payload survives the
 /// PEER_ACK step and is only erased when the gateway confirms the node
 /// via the steady-state WAKE/COMMAND exchange.
+///
+/// Covers: T-N913, T-N916
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_065_deferred_erasure() {
     let env = E2eTestEnv::new();
@@ -1325,6 +1369,8 @@ async fn t_e2e_065_deferred_erasure() {
 /// but the gateway does not actually know the node. The WAKE attempt fails,
 /// triggering self-healing (ND-0915): reg_complete is cleared and the node
 /// reverts to PEER_REQUEST mode on the next cycle.
+///
+/// Covers: T-N917
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_066_self_healing() {
     let env = E2eTestEnv::new();
@@ -1393,6 +1439,8 @@ async fn t_e2e_066_self_healing() {
 /// A phone PSK is revoked after registration. A PEER_REQUEST built with
 /// the revoked phone's credentials is silently discarded by the gateway.
 /// The node times out waiting for PEER_ACK and returns to sleep.
+///
+/// Covers: T-N911
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_067_agent_revocation() {
     let env = E2eTestEnv::new();
@@ -1457,6 +1505,8 @@ async fn t_e2e_067_agent_revocation() {
 /// A BLE-provisioned node is factory-reset via USB pairing mode, clearing
 /// all persistent state. The node can then be re-provisioned with a new
 /// identity and successfully complete the PEER_REQUEST/PEER_ACK exchange.
+///
+/// Covers: T-N404, T-N904
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_068_factory_reset_reprovision() {
     use sonde_node::pairing::run_pairing_mode;
@@ -1572,6 +1622,8 @@ async fn t_e2e_068_factory_reset_reprovision() {
 /// complete PEER_REQUEST/PEER_ACK, then both run normal WAKE cycles. This
 /// validates GW-1216 (node_id uniqueness) and confirms one node's key
 /// compromise does not affect the other.
+///
+/// Covers: T-N200
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_069_multi_node() {
     let env = E2eTestEnv::new();
@@ -1671,6 +1723,8 @@ async fn t_e2e_069_multi_node() {
 /// 6. Node runs the program and sends APP_DATA.
 ///
 /// Uses the real `SondeBpfInterpreter` for BPF execution.
+///
+/// Covers: T-N200, T-N500, T-N604, T-N904, T-N915, T-N916
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_070_full_use_case() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;

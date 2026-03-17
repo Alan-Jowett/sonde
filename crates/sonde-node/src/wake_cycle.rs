@@ -1341,6 +1341,7 @@ mod tests {
 
     #[test]
     fn test_unpaired_node_returns_unpaired() {
+        // T-N100, T-N401: Unpaired node sends no frames and returns Unpaired.
         let mut transport = MockTransport::new();
         let mut storage = MockStorage::new(); // no key
         let mut hal = MockHal;
@@ -1368,6 +1369,7 @@ mod tests {
 
     #[test]
     fn test_wake_retries_exhausted() {
+        // T-N201, T-N700: No gateway response → exhaust retries → sleep.
         let psk = [0xAA; 32];
         let mut transport = MockTransport::new();
         // Queue 4 timeouts (1 initial + 3 retries)
@@ -1401,6 +1403,7 @@ mod tests {
 
     #[test]
     fn test_normal_nop_wake_cycle() {
+        // T-N200, T-N204: Normal NOP wake cycle — WAKE → COMMAND → NOP → BPF → sleep.
         let psk = [0xBB; 32];
         let key_hint = 7u16;
         let mut transport = MockTransport::new();
@@ -1443,6 +1446,7 @@ mod tests {
 
     #[test]
     fn test_reboot_command() {
+        // T-N206: COMMAND REBOOT → outcome is Reboot.
         let psk = [0xCC; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -1482,6 +1486,7 @@ mod tests {
 
     #[test]
     fn test_update_schedule() {
+        // T-N205: COMMAND UPDATE_SCHEDULE → node stores new interval and sleeps for it.
         let psk = [0xDD; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -1522,6 +1527,7 @@ mod tests {
 
     #[test]
     fn test_invalid_hmac_discarded() {
+        // T-N301: Frame with wrong HMAC → discarded; retries exhausted → sleep.
         let psk = [0xEE; 32];
         let wrong_psk = [0xFF; 32];
         let key_hint = 1u16;
@@ -1568,6 +1574,7 @@ mod tests {
 
     #[test]
     fn test_wrong_nonce_discarded() {
+        // T-N303: COMMAND with wrong echoed nonce → discarded; retries exhausted → sleep.
         let psk = [0x11; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -1607,6 +1614,8 @@ mod tests {
 
     #[test]
     fn test_chunked_transfer_success() {
+        // T-N500, T-N501, T-N504, T-N506, T-N508: Complete chunked transfer,
+        // hash verification, A/B partition swap, BPF execution, ProgramUpdate wake reason.
         let psk = [0x22; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -1684,6 +1693,7 @@ mod tests {
 
     #[test]
     fn test_chunked_transfer_chunk_retry_exhausted() {
+        // T-N701: Chunk transfer timeout → exhaust retries → sleep (no BPF execution).
         let psk = [0x33; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -1736,6 +1746,7 @@ mod tests {
 
     #[test]
     fn test_chunked_transfer_wrong_chunk_index() {
+        // T-N802: CHUNK with wrong chunk_index → discarded; retries exhausted → sleep.
         let psk = [0x44; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -1790,6 +1801,7 @@ mod tests {
 
     #[test]
     fn test_send_recv_app_data_success() {
+        // T-N604, T-N605: send() and send_recv() helpers — successful APP_DATA exchange.
         let psk = [0x55; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -1817,6 +1829,7 @@ mod tests {
 
     #[test]
     fn test_send_recv_app_data_timeout() {
+        // T-N606: send_recv() timeout → returns Timeout error.
         let psk = [0x66; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -1840,6 +1853,7 @@ mod tests {
 
     #[test]
     fn test_send_recv_app_data_wrong_nonce() {
+        // T-N303: APP_DATA_REPLY with wrong nonce → silently discarded → timeout.
         let psk = [0x77; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();

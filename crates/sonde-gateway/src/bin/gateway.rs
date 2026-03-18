@@ -239,7 +239,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 6. Open serial port and create modem transport
-    let serial_port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
+    //
+    // Drain any boot log garbage from the USB-CDC buffer before starting
+    // the modem protocol. ESP32-S3 ROM and early IDF init may send text
+    // to the USB endpoint before the console is routed to UART.
+    let serial_port = {
+        use tokio::io::AsyncReadExt;
+        let mut port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
+        let mut drain_buf = [0u8; 4096];
+        loop {
+            match tokio::time::timeout(Duration::from_millis(500), port.read(&mut drain_buf)).await
+            {
+                Ok(Ok(n)) if n > 0 => {
+                    info!("drained {n} bytes of boot garbage from serial port");
+                }
+                _ => break,
+            }
+        }
+        port
+    };
     let transport = Arc::new(UsbEspNowTransport::new(serial_port, cli.channel).await?);
     info!(channel = cli.channel, "modem transport ready");
 

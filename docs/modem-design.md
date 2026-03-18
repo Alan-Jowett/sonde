@@ -320,7 +320,7 @@ The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_I
 
 The following `sdkconfig.defaults` entries control console routing:
 
-```
+```ini
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
@@ -330,7 +330,7 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 
 The ESP32-S3 modem firmware requires specific flash parameters in `sdkconfig.defaults.esp32s3` so that `elf2image` in CI uses matching values and the merged flash image boots correctly:
 
-```
+```ini
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y

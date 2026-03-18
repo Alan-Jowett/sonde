@@ -66,11 +66,16 @@ jobs:
           cargo tauri android init
 
       - name: Patch Gradle for BLE Java classes
-        # Copy sonde-pair Java sources into the generated Android project
-        # and add the security-crypto dependency. This must run after
+        # Copy sonde-pair Java sources into the generated Android project,
+        # restore our custom AndroidManifest (with BLE permissions), and add
+        # the security-crypto dependency. This must run after
         # `tauri android init` regenerates gen/android/.
         working-directory: crates/sonde-pair-ui/src-tauri/gen/android
         run: |
+          # Restore custom AndroidManifest.xml with BLE permissions.
+          # `tauri android init` overwrites it with a minimal default.
+          git checkout -- app/src/main/AndroidManifest.xml
+
           # Copy Java source files into the standard Android source tree
           mkdir -p app/src/main/java/io/sonde/pair
           cp ../../../../../crates/sonde-pair/java/io/sonde/pair/*.java \

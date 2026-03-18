@@ -140,43 +140,44 @@ pub(crate) fn parse_hex_key(hex: &str) -> Result<Zeroizing<[u8; 32]>, KeyProvide
     Ok(key)
 }
 
-/// Write a 64-character hex key string to a file, using mode 0o600 on Unix.
+/// Atomically create a new key file containing 64 hex characters.
 ///
-/// On Unix the file is created with owner-read/write only (`0o600`).
-/// On other platforms the file is written with default OS permissions.
-fn write_hex_key_file(path: &std::path::Path, hex: &str) -> Result<(), KeyProviderError> {
+/// Uses `create_new` (exclusive creation) to eliminate the TOCTOU race that
+/// would exist between an `exists()` check and a subsequent write.
+///
+/// On Unix the initial `mode(0o600)` is combined with an explicit
+/// `set_permissions(0o600)` call after writing to guarantee the final mode is
+/// exactly `0o600` regardless of the process umask setting.
+/// `File::set_permissions` on Unix calls `fchmod(fd, mode)` internally (not
+/// `chmod(path, mode)`), so there is no TOCTOU concern between the write and
+/// the permission change.
+///
+/// Returns `Err(AlreadyExists)` if the file already exists — callers can
+/// catch that and fall back to loading the existing key.
+fn try_create_hex_key_file(path: &std::path::Path, hex: &str) -> std::io::Result<()> {
     use std::io::Write as _;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true) // fail immediately if the file already exists
             .mode(0o600)
-            .open(path)
-            .map_err(|e| {
-                KeyProviderError::Io(format!("cannot create key file {}: {e}", path.display()))
-            })?;
-        f.write_all(hex.as_bytes()).map_err(|e| {
-            KeyProviderError::Io(format!("cannot write key file {}: {e}", path.display()))
-        })?;
+            .open(path)?;
+        f.write_all(hex.as_bytes())?;
+        // Explicitly set permissions via fchmod(fd) after writing to override
+        // any umask that may have restricted the initial mode below 0o600.
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
 
     #[cfg(not(unix))]
     {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)
-            .map_err(|e| {
-                KeyProviderError::Io(format!("cannot create key file {}: {e}", path.display()))
-            })?;
-        f.write_all(hex.as_bytes()).map_err(|e| {
-            KeyProviderError::Io(format!("cannot write key file {}: {e}", path.display()))
-        })?;
+            .create_new(true) // fail immediately if the file already exists
+            .open(path)?;
+        f.write_all(hex.as_bytes())?;
     }
 
     Ok(())
@@ -211,13 +212,7 @@ impl KeyProvider for FileKeyProvider {
     }
 
     fn generate_or_load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
-        // If the key file already exists, load it without overwriting.
-        if self.path.exists() {
-            tracing::info!(path = %self.path.display(), "master key file exists, loading");
-            return self.load_master_key();
-        }
-
-        // Generate a fresh key from the OS CSPRNG.
+        // Generate a fresh key upfront from the OS CSPRNG.
         // The buffer starts zeroed; getrandom::fill overwrites all 32 bytes
         // with cryptographically random data before any use.
         let mut raw = Zeroizing::new([0u8; 32]);
@@ -231,14 +226,29 @@ impl KeyProvider for FileKeyProvider {
             write!(hex, "{b:02x}").expect("write to String is infallible");
         }
 
-        // Write the key file with restrictive permissions (0o600 on Unix).
-        write_hex_key_file(&self.path, &hex)?;
-
-        tracing::warn!(
-            path = %self.path.display(),
-            "master key generated and written; back this file up securely"
-        );
-        Ok(raw)
+        // Attempt an exclusive (atomic) create so that concurrent gateway
+        // instances cannot race and overwrite each other's key.
+        // `try_create_hex_key_file` uses create_new — it fails immediately
+        // with AlreadyExists if another process created the file first.
+        match try_create_hex_key_file(&self.path, &hex) {
+            Ok(()) => {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    "master key generated and written; back this file up securely"
+                );
+                Ok(raw)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // A concurrent instance created the file between our attempt.
+                // Load and return the key that was actually written.
+                tracing::info!(path = %self.path.display(), "master key file already exists, loading");
+                self.load_master_key()
+            }
+            Err(e) => Err(KeyProviderError::Io(format!(
+                "cannot create key file {}: {e}",
+                self.path.display()
+            ))),
+        }
     }
 }
 
@@ -349,24 +359,49 @@ impl KeyProvider for DpapiKeyProvider {
     }
 
     fn generate_or_load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
-        // If the DPAPI blob already exists, load it without overwriting.
-        if self.blob_path.exists() {
-            tracing::info!(path = %self.blob_path.display(), "DPAPI key blob exists, loading");
-            return self.load_master_key();
-        }
-
-        // Generate a fresh key from the OS CSPRNG.
+        // Generate a fresh key from the OS CSPRNG upfront.
         let mut raw = Zeroizing::new([0u8; 32]);
         getrandom::fill(raw.as_mut())
             .map_err(|e| KeyProviderError::Backend(format!("getrandom failed: {e}")))?;
 
-        protect_with_dpapi(&raw, &self.blob_path)?;
+        let blob = dpapi::encrypt(&*raw)
+            .map_err(|e| KeyProviderError::Backend(format!("DPAPI encryption failed: {e}")))?;
 
-        tracing::warn!(
-            path = %self.blob_path.display(),
-            "master key generated and stored as DPAPI blob; back this file up securely"
-        );
-        Ok(raw)
+        // Attempt an exclusive (atomic) create — fail immediately if the blob
+        // file already exists to prevent concurrent instances from overwriting
+        // each other's key.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.blob_path)
+        {
+            Ok(mut f) => {
+                use std::io::Write as _;
+                f.write_all(&blob).map_err(|e| {
+                    KeyProviderError::Io(format!(
+                        "cannot write DPAPI blob {}: {e}",
+                        self.blob_path.display()
+                    ))
+                })?;
+                tracing::warn!(
+                    path = %self.blob_path.display(),
+                    "master key generated and stored as DPAPI blob; back this file up securely"
+                );
+                Ok(raw)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // A concurrent instance created the blob first; load it.
+                tracing::info!(
+                    path = %self.blob_path.display(),
+                    "DPAPI key blob already exists, loading"
+                );
+                self.load_master_key()
+            }
+            Err(e) => Err(KeyProviderError::Io(format!(
+                "cannot create DPAPI blob {}: {e}",
+                self.blob_path.display()
+            ))),
+        }
     }
 }
 
@@ -561,9 +596,7 @@ impl KeyProvider for SecretServiceKeyProvider {
         // first: if it succeeds the existing key is returned unchanged; if the
         // key is absent (`NotFound`) we generate and store a fresh one.  Any
         // other error (D-Bus connection failure, keyring locked, etc.) is
-        // propagated as-is.  This matches the `exists → load` pattern used by
-        // `FileKeyProvider` and `DpapiKeyProvider` at the semantic level, even
-        // though the implementation is load-first rather than exists-first.
+        // propagated as-is.
         match self.load_master_key() {
             Ok(key) => {
                 tracing::info!(label = %self.label, "master key loaded from Secret Service");
@@ -582,13 +615,29 @@ impl KeyProvider for SecretServiceKeyProvider {
         getrandom::fill(raw.as_mut())
             .map_err(|e| KeyProviderError::Backend(format!("getrandom failed: {e}")))?;
 
-        store_in_secret_service(&raw, &self.label)?;
+        // Store with replace=false — if a concurrent instance raced and stored
+        // a different key between our NotFound result and this write, their key
+        // is preserved rather than overwritten.  The Secret Service spec
+        // defines CreateItem(replace=false) to return the existing item's path
+        // without modifying it when attributes match — it does NOT error — so
+        // the subsequent load is guaranteed to find an item.
+        store_in_secret_service_if_not_exists(&raw, &self.label)?;
 
+        // Load the canonical key from the keyring to ensure the returned value
+        // matches what is actually persisted.  The Secret Service CreateItem
+        // API returns only an item path (for both new and existing items) when
+        // replace=false, so there is no API-level signal to distinguish "we
+        // stored" from "existing item preserved".  We therefore always load to
+        // obtain the true stored key — in the non-racing case this is our
+        // generated key; in the race case it is the concurrently-stored key,
+        // which is what both instances must use to stay consistent across
+        // restarts.
+        let canonical = self.load_master_key()?;
         tracing::warn!(
             label = %self.label,
-            "master key generated and stored in Secret Service"
+            "master key set in Secret Service for the first time"
         );
-        Ok(raw)
+        Ok(canonical)
     }
 }
 
@@ -695,6 +744,75 @@ async fn ss_store(key_bytes: &[u8], label: &str) -> Result<(), KeyProviderError>
             attributes,
             key_bytes,
             true, // replace existing item
+            "application/octet-stream",
+        )
+        .await
+        .map_err(|e| KeyProviderError::Backend(format!("cannot store secret: {e}")))?;
+
+    Ok(())
+}
+
+/// Store a 32-byte key in the Linux Secret Service keyring only if no item
+/// with the same attributes already exists (`replace=false`).
+///
+/// Used exclusively by the generation path so that concurrent instances cannot
+/// overwrite each other's newly-generated key.  Callers should load the key
+/// after this call to obtain the canonical stored value.
+#[cfg(target_os = "linux")]
+fn store_in_secret_service_if_not_exists(
+    key: &[u8; 32],
+    label: &str,
+) -> Result<(), KeyProviderError> {
+    let key_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(key.to_vec());
+    let label = label.to_owned();
+
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(move || {
+            handle.block_on(ss_store_if_not_exists(&key_bytes, &label))
+        })
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| {
+                KeyProviderError::Backend(format!("failed to build async runtime: {e}"))
+            })?;
+        rt.block_on(ss_store_if_not_exists(&key_bytes, &label))
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn ss_store_if_not_exists(key_bytes: &[u8], label: &str) -> Result<(), KeyProviderError> {
+    use secret_service::{EncryptionType, SecretService};
+    use std::collections::HashMap;
+
+    let ss = SecretService::connect(EncryptionType::Dh)
+        .await
+        .map_err(|e| KeyProviderError::Backend(format!("cannot connect to Secret Service: {e}")))?;
+
+    let collection = ss
+        .get_default_collection()
+        .await
+        .map_err(|e| KeyProviderError::Backend(format!("cannot get default collection: {e}")))?;
+
+    collection
+        .unlock()
+        .await
+        .map_err(|e| KeyProviderError::Backend(format!("cannot unlock collection: {e}")))?;
+
+    let attributes = HashMap::from([("service", "sonde-gateway"), ("account", label)]);
+
+    collection
+        .create_item(
+            label,
+            attributes,
+            key_bytes,
+            false, // do NOT replace — preserve a concurrently-stored key.
+                   // Per the Secret Service spec, CreateItem with replace=false
+                   // returns the existing item's path without modifying it
+                   // (no error is returned when attributes match an existing
+                   // item); callers must load after this call to get the
+                   // canonical stored value.
             "application/octet-stream",
         )
         .await

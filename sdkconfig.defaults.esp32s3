@@ -13,6 +13,11 @@
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+# Disable the secondary console.  ESP-IDF defaults to
+# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG on the ESP32-S3, which
+# causes ROM and early-init log output to appear on the USB endpoint
+# and corrupt the binary modem protocol stream.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # --- Watchdog ---
 CONFIG_ESP_TASK_WDT_EN=y

@@ -504,11 +504,70 @@ All inbound protocol errors result in **silent discard** — the node does not s
 
 ---
 
-## 15  Shared protocol crate (`sonde-protocol`)
+## 15  BLE pairing mode
+
+When the node boots unpaired, or the pairing button is held during boot (ND-0900, ND-0901), the firmware enters BLE pairing mode instead of the wake cycle engine. The entry point is `run_ble_pairing_mode()` in the `esp_ble_pairing` module (compiled only with the `esp` feature).
+
+### 15.1  NimBLE stack
+
+The BLE stack uses the `esp32-nimble` crate, a safe Rust wrapper around the ESP-IDF NimBLE host. Key configuration:
+
+| Setting | Value | Rationale |
+|---|---|---|
+| `CONFIG_BT_NIMBLE_ENABLED` | `y` | NimBLE is lighter than Bluedroid (ND-0902) |
+| `CONFIG_BT_NIMBLE_PINNED_TO_CORE_0` | `y` | Prevents crash on dual-core S3; no-op on unicore C3 |
+| `CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE` | `7000` | GATT server workload |
+| `CONFIG_BT_NIMBLE_NVS_PERSIST` | `n` | No persistent bonds; each session is independent |
+
+### 15.2  GATT service
+
+The Node Provisioning Service exposes a single characteristic:
+
+| UUID | Property | Purpose |
+|---|---|---|
+| `0xFE50` (service) | — | Node Provisioning Service |
+| `0xFE51` (characteristic) | Write + Indicate | NODE_PROVISION (write) / NODE_ACK (indicate) |
+
+GATT writes are rejected until LESC pairing completes and the negotiated ATT MTU is ≥ 247 bytes (ND-0904). On authentication failure or insufficient MTU the connection is dropped.
+
+### 15.3  Security model
+
+Security is configured as LESC Just Works:
+
+- `AuthReq::all()` — requests SC (Secure Connections) + Bond + MITM.
+- `SecurityIOCap::NoInputNoOutput` — downgrades MITM to Just Works while keeping LESC.
+
+This matches the modem's BLE configuration so that the same phone app can pair with both gateway and node endpoints.
+
+### 15.4  Advertising
+
+The node advertises as `sonde-XXXX` where `XXXX` is the last two bytes of the BLE MAC in hex (ND-0903). The advertisement includes the `0xFE50` service UUID for phone-side filtering.
+
+### 15.5  Event flow
+
+```
+boot → NimBLE init → GATT service register → start advertising
+    ↓
+phone connects → LESC pairing → MTU exchange → auth complete
+    ↓
+GATT write (NODE_PROVISION) → handle_node_provision() → NODE_ACK indicate
+    ↓
+phone disconnects → return → reboot (ND-0907)
+```
+
+The main loop polls for pending GATT writes and disconnection events at 100 ms intervals. On disconnect, the function returns and the caller reboots into normal wake-cycle mode with the newly provisioned credentials.
+
+### 15.6  Platform-independent handler
+
+The GATT write payload is parsed and handled by `handle_node_provision()` in the platform-independent `ble_pairing` module. This keeps provisioning logic testable on the host (see T-N904–T-N907). The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
+
+---
+
+## 16  Shared protocol crate (`sonde-protocol`)
 
 The `sonde-protocol` crate is a `no_std`-compatible Rust library shared between the gateway and the node. It contains all wire-format logic so that both sides encode and decode frames identically.
 
-### 15.1  Contents
+### 16.1  Contents
 
 | Component | Description |
 |---|---|
@@ -518,7 +577,7 @@ The `sonde-protocol` crate is a `no_std`-compatible Rust library shared between 
 | **Program image** | `ProgramImage` and `MapDef` structs; CBOR deterministic encode/decode |
 | **HMAC trait** | `HmacProvider` trait — platform provides the implementation |
 
-### 15.2  HMAC trait
+### 16.2  HMAC trait
 
 ```rust
 pub trait HmacProvider {
@@ -533,6 +592,6 @@ pub trait HmacProvider {
 | Node | ESP-IDF hardware HMAC peripheral |
 | Tests | Software implementation (same as gateway) |
 
-### 15.3  `no_std` compatibility
+### 16.3  `no_std` compatibility
 
 The crate uses `#![no_std]` with `alloc` (for `Vec<u8>` in message types). Both the gateway (std) and the node (ESP-IDF std) can use it. The crate has no platform-specific dependencies — all platform behavior is injected via traits.

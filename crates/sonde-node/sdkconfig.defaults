@@ -29,8 +29,10 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 
-# Main task stack size — increased from default (3584) to accommodate
-# NVS, ESP-NOW, BPF interpreter, and BLE pairing initialization.
+# Main task stack size — increased from default (3584) to 16 KB
+# (ND-0918).  The primary driver is BLE stack initialization
+# (NimBLE host + GATT server setup in run_ble_pairing_mode); NVS,
+# ESP-NOW, and BPF interpreter also contribute.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # FreeRTOS tick rate — pinned to 1000 Hz (1 ms/tick).
@@ -52,6 +54,11 @@ CONFIG_BT_BLUEDROID_ENABLED=n
 CONFIG_BT_NIMBLE_ENABLED=y
 # NimBLE host task stack size — increased for GATT server workload.
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=7000
+# Pin NimBLE host task to Core 0.  On the dual-core ESP32-S3, NimBLE
+# defaults to Core 1 which crashes during init; the unicore ESP32-C3
+# runs everything on Core 0 regardless, but setting this explicitly
+# keeps the configuration consistent with sdkconfig.defaults.esp32s3.
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
 # Disable NVS bond persistence — the provisioning protocol does
 # not rely on persistent BLE bonds.
 CONFIG_BT_NIMBLE_NVS_PERSIST=n

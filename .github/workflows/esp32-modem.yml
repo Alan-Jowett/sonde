@@ -88,6 +88,8 @@ jobs:
             || { echo "ERROR: CONFIG_ESP_TASK_WDT_EN=y not found — crate sdkconfig.defaults may not have been applied" >&2; exit 1; }
           grep -q 'CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y' "$SDKCONFIG" \
             || { echo "ERROR: CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y not found — factory partition may be too small" >&2; exit 1; }
+          grep -q 'CONFIG_ESP_CONSOLE_SECONDARY_NONE=y' "$SDKCONFIG" \
+            || { echo "ERROR: CONFIG_ESP_CONSOLE_SECONDARY_NONE=y not found — secondary console may leak boot logs to USB-CDC (#280)" >&2; exit 1; }
           echo "sdkconfig.defaults verified ✓"
 
       # ------------------------------------------------------------------ #

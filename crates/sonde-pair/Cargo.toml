@@ -40,7 +40,7 @@ jni = { version = "0.21", optional = true }
 
 # Optional — Windows DPAPI PSK protection (enable via `dpapi` feature)
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Security_Cryptography",
     "Win32_Foundation",
     "Win32_System_Memory",

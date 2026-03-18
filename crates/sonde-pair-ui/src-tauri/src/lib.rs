@@ -353,8 +353,8 @@ async fn pair_gateway(
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
-            let mut transport = AndroidBleTransport::from_cached_vm().map_err(|e| e.to_string())?;
-            let mut store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+            let mut transport = AndroidBleTransport::from_cached_vm()?;
+            let mut store = AndroidPairingStore::from_cached_vm()?;
             let rng = OsRng;
             phase1::pair_with_gateway(&mut transport, &mut store, &rng, &addr, &phone_label).await
         })
@@ -389,8 +389,8 @@ async fn provision_node(
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
-            let mut transport = AndroidBleTransport::from_cached_vm().map_err(|e| e.to_string())?;
-            let store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+            let mut transport = AndroidBleTransport::from_cached_vm()?;
+            let store = AndroidPairingStore::from_cached_vm()?;
             let rng = OsRng;
             phase2::provision_node(&mut transport, &store, &rng, &addr, &node_id, &[]).await
         })

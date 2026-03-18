@@ -39,3 +39,7 @@ CONFIG_ESP_WIFI_ENABLED=y
 # partition, which is too small for the modem firmware (~1.2 MB).
 # The "large" variant provides ~4 MB (0x3F0000 bytes).
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# --- Stack sizes ---
+# The modem firmware needs more stack than ESP-IDF's default 3584 bytes.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384

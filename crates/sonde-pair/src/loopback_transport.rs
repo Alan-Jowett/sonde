@@ -68,7 +68,7 @@ async fn read_envelope(stream: &mut TcpStream) -> Result<Vec<u8>, PairingError> 
 impl BleTransport for LoopbackBleTransport {
     fn start_scan(
         &mut self,
-        _service_uuid: u128,
+        _service_uuids: &[u128],
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         Box::pin(async { Ok(()) })
     }

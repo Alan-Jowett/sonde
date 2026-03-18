@@ -65,6 +65,20 @@ jobs:
           rm -rf src-tauri/gen/android
           cargo tauri android init
 
+      - name: Patch Gradle for BLE Java classes
+        # Add sonde-pair's Java source (BleHelper, SecureStore) to the
+        # Gradle build and include the security-crypto dependency.
+        # This must run after `tauri android init` regenerates gen/android/.
+        working-directory: crates/sonde-pair-ui/src-tauri/gen/android/app
+        run: |
+          GRADLE="build.gradle.kts"
+          # Add Java source set for BleHelper.java / SecureStore.java
+          sed -i '/defaultConfig {/i\    sourceSets.getByName("main") {\n        java.srcDir("${'$'}{rootDir}/../../../../../crates/sonde-pair/java")\n    }' "$GRADLE"
+          # Add security-crypto dependency for EncryptedSharedPreferences
+          sed -i '/implementation("androidx.appcompat/a\    implementation("androidx.security:security-crypto:1.1.0-alpha06")' "$GRADLE"
+          echo "--- Patched $GRADLE ---"
+          cat "$GRADLE"
+
       - name: Build Android APK (debug)
         working-directory: crates/sonde-pair-ui
         run: cargo tauri android build --debug

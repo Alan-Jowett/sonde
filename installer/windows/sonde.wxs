@@ -6,13 +6,13 @@
   sonde.wxs — WiX v4 installer source for sonde-gateway + sonde-admin.
 
   Build prerequisites (all available via winget or Scoop):
-    dotnet tool install --global wix --version 4.0.6
+    dotnet tool install -g wix -v 4.0.6
     wix extension add WixToolset.UI.wixext/4.0.6
     wix extension add WixToolset.Util.wixext/4.0.6
 
   Build command (from repository root, after a release build):
     wix build installer\windows\sonde.wxs ^
-         -d Version=<version> ^
+         -d Version=VERSION ^
          -d GatewayBin=target\release\sonde-gateway.exe ^
          -d AdminBin=target\release\sonde-admin.exe ^
          -ext WixToolset.UI.wixext ^

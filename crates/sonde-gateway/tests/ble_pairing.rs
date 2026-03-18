@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! BLE pairing and gateway identity tests (T-1200 through T-1209, T-1220).
+//! BLE pairing and gateway identity tests (T-1200 through T-1209, T-1220,
+//! T-1221, T-1222).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -460,4 +461,248 @@ async fn t1220_peer_request_random_nonces() {
     // because the content is invalid, but importantly NOT because the
     // nonce is "wrong").
     let _ = gateway.process_frame(&frame, vec![]).await;
+}
+
+// ── T-1221: Admin BLE pairing session ──────────────────────────────────────
+
+// Modem mock helpers (same pattern as modem_transport.rs).
+
+use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, ModemReady};
+use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+
+async fn read_modem_msg(
+    stream: &mut DuplexStream,
+    decoder: &mut FrameDecoder,
+    buf: &mut [u8],
+) -> ModemMessage {
+    loop {
+        match decoder.decode() {
+            Ok(Some(msg)) => return msg,
+            Ok(None) => {}
+            Err(e) => panic!("decode error: {e}"),
+        }
+        let n = stream.read(buf).await.expect("read failed");
+        assert!(n > 0, "stream closed unexpectedly");
+        decoder.push(&buf[..n]);
+    }
+}
+
+async fn modem_startup(server: &mut DuplexStream, channel: u8) {
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+
+    // 1. Read RESET
+    let msg = read_modem_msg(server, &mut decoder, &mut buf).await;
+    assert!(matches!(msg, ModemMessage::Reset));
+
+    // 2. Send MODEM_READY
+    let ready = ModemMessage::ModemReady(ModemReady {
+        firmware_version: [1, 0, 0, 0],
+        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+    });
+    server
+        .write_all(&encode_modem_frame(&ready).unwrap())
+        .await
+        .unwrap();
+
+    // 3. Read SET_CHANNEL
+    let msg = read_modem_msg(server, &mut decoder, &mut buf).await;
+    let ch = match msg {
+        ModemMessage::SetChannel(c) => c,
+        other => panic!("expected SetChannel, got {other:?}"),
+    };
+    assert_eq!(ch, channel);
+
+    // 4. Send SET_CHANNEL_ACK
+    server
+        .write_all(&encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap())
+        .await
+        .unwrap();
+}
+
+use sonde_gateway::admin::pb::gateway_admin_server::GatewayAdmin;
+use sonde_gateway::admin::pb::*;
+use sonde_gateway::admin::AdminService;
+use sonde_gateway::ble_pairing::BlePairingController;
+use sonde_gateway::engine::PendingCommand;
+use sonde_gateway::modem::UsbEspNowTransport;
+use sonde_gateway::session::SessionManager;
+
+use std::collections::HashMap;
+use tokio::sync::RwLock;
+use tokio_stream::StreamExt;
+use tonic::Request;
+
+/// T-1221  Admin BLE pairing session (GW-1222).
+///
+/// 1. Call OpenBlePairing.
+/// 2. Assert: BLE_ENABLE sent to modem.
+/// 3. Assert: registration window is open.
+/// 4. Call CloseBlePairing.
+/// 5. Assert: BLE_DISABLE sent to modem.
+/// 6. Assert: registration window is closed.
+#[tokio::test]
+async fn t1221_admin_ble_pairing_session() {
+    let (client, mut server) = duplex(4096);
+    let channel = 6u8;
+    let transport_handle =
+        tokio::spawn(async move { UsbEspNowTransport::new(client, channel).await.unwrap() });
+    modem_startup(&mut server, channel).await;
+    let transport = Arc::new(transport_handle.await.unwrap());
+
+    let controller = Arc::new(BlePairingController::new());
+    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
+    let admin = AdminService::new(storage, pending, session_manager)
+        .with_ble(controller.clone(), transport);
+
+    // 1. Call OpenBlePairing with a long timeout (we'll close explicitly).
+    let request = Request::new(OpenBlePairingRequest { duration_s: 60 });
+    let resp = admin.open_ble_pairing(request).await.unwrap();
+    let mut stream = resp.into_inner();
+
+    // 2. Read the first event: WindowOpened.
+    let event = stream
+        .next()
+        .await
+        .expect("stream ended")
+        .expect("should get WindowOpened");
+    assert!(
+        matches!(event.event, Some(ble_pairing_event::Event::WindowOpened(_))),
+        "first event must be WindowOpened"
+    );
+
+    // Assert BLE_ENABLE was sent to the modem.
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+    assert!(
+        matches!(msg, ModemMessage::BleEnable),
+        "BLE_ENABLE must be sent to modem, got {msg:?}"
+    );
+
+    // 3. Assert registration window is open.
+    assert!(
+        controller.is_window_open().await,
+        "registration window must be open after OpenBlePairing"
+    );
+
+    // 4. Call CloseBlePairing.
+    let close_resp = admin.close_ble_pairing(Request::new(Empty {})).await;
+    assert!(close_resp.is_ok(), "CloseBlePairing must succeed");
+
+    // 5. Assert BLE_DISABLE was sent to modem.
+    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+    assert!(
+        matches!(msg, ModemMessage::BleDisable),
+        "BLE_DISABLE must be sent to modem, got {msg:?}"
+    );
+
+    // 6. Assert registration window is closed.
+    assert!(
+        !controller.is_window_open().await,
+        "registration window must be closed after CloseBlePairing"
+    );
+
+    // Read the WindowClosed event from the stream.
+    let event = stream
+        .next()
+        .await
+        .expect("stream ended")
+        .expect("should get WindowClosed");
+    assert!(
+        matches!(event.event, Some(ble_pairing_event::Event::WindowClosed(_))),
+        "should receive WindowClosed event"
+    );
+}
+
+// ── T-1222: Numeric Comparison passkey display ─────────────────────────────
+
+/// T-1222  Numeric Comparison passkey display (GW-1222).
+///
+/// 1. Start BLE pairing session.
+/// 2. Broadcast a PasskeyRequest event via the controller.
+/// 3. Assert: the streaming response includes the passkey.
+/// 4. Confirm via confirm_ble_pairing.
+/// 5. Assert: confirmation succeeds.
+#[tokio::test]
+async fn t1222_numeric_comparison_passkey_display() {
+    use sonde_gateway::ble_pairing::BlePairingEventKind;
+
+    let (client, mut server) = duplex(4096);
+    let channel = 6u8;
+    let transport_handle =
+        tokio::spawn(async move { UsbEspNowTransport::new(client, channel).await.unwrap() });
+    modem_startup(&mut server, channel).await;
+    let transport = Arc::new(transport_handle.await.unwrap());
+
+    let controller = Arc::new(BlePairingController::new());
+    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
+    let admin = AdminService::new(storage, pending, session_manager)
+        .with_ble(controller.clone(), transport);
+
+    // 1. Open BLE pairing.
+    let request = Request::new(OpenBlePairingRequest { duration_s: 60 });
+    let resp = admin.open_ble_pairing(request).await.unwrap();
+    let mut stream = resp.into_inner();
+
+    // Consume WindowOpened event.
+    let event = stream
+        .next()
+        .await
+        .expect("stream ended")
+        .expect("should get WindowOpened");
+    assert!(matches!(
+        event.event,
+        Some(ble_pairing_event::Event::WindowOpened(_))
+    ));
+
+    // Consume BLE_ENABLE from the mock modem.
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+    assert!(matches!(msg, ModemMessage::BleEnable));
+
+    // 2. Set up a passkey responder before broadcasting the event.
+    let (passkey_tx, passkey_rx) = tokio::sync::oneshot::channel();
+    controller.set_passkey_responder(passkey_tx).await;
+
+    // Broadcast PasskeyRequest (simulating modem BLE_PAIRING_CONFIRM).
+    controller.broadcast_event(BlePairingEventKind::PasskeyRequest { passkey: 123456 });
+
+    // 3. Read the passkey event from the stream.
+    let event = stream
+        .next()
+        .await
+        .expect("stream ended")
+        .expect("should get Passkey event");
+    match event.event {
+        Some(ble_pairing_event::Event::Passkey(pk)) => {
+            assert_eq!(
+                pk.passkey, 123456,
+                "passkey must be forwarded to admin client"
+            );
+        }
+        other => panic!("expected Passkey event, got {other:?}"),
+    }
+
+    // 4. Confirm the passkey via the admin API.
+    let confirm_resp = admin
+        .confirm_ble_pairing(Request::new(ConfirmBlePairingRequest { accept: true }))
+        .await;
+    assert!(confirm_resp.is_ok(), "confirm_ble_pairing must succeed");
+
+    // 5. Verify the passkey responder received the acceptance.
+    let accepted = passkey_rx.await.unwrap();
+    assert!(accepted, "passkey must be accepted");
+
+    // Clean up: close pairing.
+    let _ = admin.close_ble_pairing(Request::new(Empty {})).await;
 }

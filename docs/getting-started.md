@@ -24,7 +24,7 @@ The Sonde workspace contains several crates with different platform requirements
 | `sonde-modem` | ESP32-S3 | Espressif Rust (Xtensa) |
 | `sonde-bpf` | Host (used by `sonde-node`) | Standard Rust |
 | `sonde-e2e` | Host | Standard Rust |
-| `sonde-pair` (planned) | Android / Windows / Linux | Standard Rust + Android NDK ([dev container](#9--android--tauri-development-container)) |
+| `sonde-pair` (planned) | Android / Windows / Linux | Standard Rust + Android NDK ([dev container](#11--android--tauri-development-container)) |
 
 You only need the Espressif toolchain if you intend to build firmware (`sonde-node` or `sonde-modem`). The remaining crates build with a standard Rust toolchain on any platform.
 
@@ -411,7 +411,68 @@ See [implementation-guide.md](implementation-guide.md) for the full module break
 
 ---
 
-## 9  Troubleshooting
+## 9  Linux deployment (systemd)
+
+The gateway can run as a systemd service for production use on Linux. Tracing output goes to stderr, which journald captures automatically — no additional logging configuration is needed.
+
+### 9.1  Prerequisites
+
+1. **Build and install the binary:**
+   ```sh
+   cargo build -p sonde-gateway --release
+   sudo cp target/release/sonde-gateway /usr/local/bin/
+   ```
+
+2. **Create the `sonde` system user and add it to the `dialout` group for serial port access:**
+   ```sh
+   sudo useradd -r -s /usr/sbin/nologin sonde
+   sudo usermod -a -G dialout sonde
+   ```
+
+3. **Create the required directories and generate a master key:**
+   ```sh
+   sudo mkdir -p /var/lib/sonde /etc/sonde
+   sudo chown sonde:sonde /var/lib/sonde
+   # Generate a 32-byte (256-bit) random master key and store it as hex
+   # Use install to create the file with correct permissions atomically
+   openssl rand -hex 32 | sudo install -m 600 -o sonde -g sonde /dev/stdin /etc/sonde/master-key.hex
+   ```
+
+### 9.2  Install and enable the service
+
+The unit file is at `deploy/sonde-gateway.service` in the repository:
+
+```sh
+sudo cp deploy/sonde-gateway.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sonde-gateway
+```
+
+The default `ExecStart` line uses `/dev/ttyACM0` as the serial port. If your modem appears on a different port (e.g., `/dev/ttyUSB0`), edit `/etc/systemd/system/sonde-gateway.service` and update the `--port` argument, then reload and restart:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl restart sonde-gateway
+```
+
+### 9.3  Managing the service
+
+| Task | Command |
+|------|---------|
+| Start the service | `sudo systemctl start sonde-gateway` |
+| Stop the service | `sudo systemctl stop sonde-gateway` |
+| Restart the service | `sudo systemctl restart sonde-gateway` |
+| Check service status | `sudo systemctl status sonde-gateway` |
+| View live logs | `sudo journalctl -u sonde-gateway -f` |
+| View recent logs | `sudo journalctl -u sonde-gateway -n 100` |
+| Disable auto-start | `sudo systemctl disable sonde-gateway` |
+
+> **Tip:** To read logs without `sudo`, add your user to the `systemd-journal` group:
+> `sudo usermod -a -G systemd-journal $USER` (log out and back in for the change to take effect).
+
+---
+
+## 10  Troubleshooting
 
 ### espup install fails
 
@@ -444,13 +505,13 @@ The main task stack is too small. Check that `sdkconfig.defaults` is being appli
 
 ---
 
-## 9  Android / Tauri development container
+## 11  Android / Tauri development container
 
 The BLE pairing tool (`sonde-pair`) targets Android (`aarch64-linux-android`) and
 Windows/Linux. A pre-built development container provides all required tools so you
 don't need to install the Android SDK, NDK, or Tauri dependencies locally.
 
-### 9.1  Using the container image
+### 11.1  Using the container image
 
 The container is published to `ghcr.io/alan-jowett/sonde-android-dev:latest`.
 
@@ -464,13 +525,13 @@ docker run --rm -v .:/sonde -w /sonde ghcr.io/alan-jowett/sonde-android-dev:late
   cargo build -p sonde-pair --release
 ```
 
-### 9.2  VS Code Dev Container / GitHub Codespaces
+### 11.2  VS Code Dev Container / GitHub Codespaces
 
 Open the repository in VS Code, then select **Reopen in Container** when prompted.
 The `.devcontainer/android/devcontainer.json` configuration will use the pre-built
 container image. This also works in GitHub Codespaces.
 
-### 9.3  What's included
+### 11.3  What's included
 
 | Component | Version / Notes |
 |-----------|----------------|
@@ -486,7 +547,7 @@ container image. This also works in GitHub Codespaces.
 | `libudev-dev`, `libdbus-1-dev` | For btleplug BLE on Linux |
 | Tauri system deps | `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, etc. |
 
-### 9.4  Building the container locally
+### 11.4  Building the container locally
 
 ```bash
 docker build -f .github/docker/Dockerfile.android-dev -t sonde-android-dev .

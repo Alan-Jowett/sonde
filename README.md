@@ -7,6 +7,14 @@
 
 # Sonde
 
+[![CI](https://github.com/Alan-Jowett/sonde/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/ci.yml)
+[![ESP32-C3 Node](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32.yml)
+[![ESP32-S3 Modem](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32-modem.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32-modem.yml)
+[![Tauri Desktop](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-desktop.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-desktop.yml)
+[![Tauri Android](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-android.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-android.yml)
+[![Nightly Release](https://github.com/Alan-Jowett/sonde/actions/workflows/nightly-release.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/nightly-release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **A programmable, verifiable runtime for distributed sensor nodes.**
 
 Each node acts as a programmable sonde: a constrained probe that autonomously samples its environment and reports observations upstream.

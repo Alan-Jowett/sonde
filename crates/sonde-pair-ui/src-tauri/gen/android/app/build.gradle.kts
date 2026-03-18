@@ -26,7 +26,7 @@ android {
     }
     // Include BleHelper.java and SecureStore.java from sonde-pair crate
     sourceSets.getByName("main") {
-        java.srcDir("${rootDir}/../../../../crates/sonde-pair/java")
+        java.srcDir("${rootDir}/../../../../../crates/sonde-pair/java")
     }
     buildTypes {
         getByName("debug") {

@@ -23,6 +23,9 @@ pub mod validation;
 #[cfg(feature = "btleplug")]
 pub mod btleplug_transport;
 
+#[cfg(feature = "loopback-ble")]
+pub mod loopback_transport;
+
 #[cfg(feature = "android")]
 pub mod android_store;
 #[cfg(feature = "android")]

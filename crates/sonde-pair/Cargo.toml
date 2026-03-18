@@ -11,6 +11,7 @@ file-store = ["dep:serde", "dep:serde_json"]
 dpapi = ["dep:windows-sys", "file-store"]
 secret-service-store = ["dep:secret-service", "dep:tokio", "tokio/rt-multi-thread", "file-store"]
 android = ["dep:jni", "dep:tokio"]
+loopback-ble = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/time"]
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["zeroize"] }

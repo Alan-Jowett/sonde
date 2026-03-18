@@ -7,4 +7,5 @@
 //! in-memory frame queues, validating protocol compatibility across
 //! component boundaries.
 
+pub mod fake_peripheral;
 pub mod harness;

@@ -173,6 +173,7 @@ fn ecdh_encrypt(identity: &GatewayIdentity, plaintext: &[u8]) -> Vec<u8> {
 
 /// Build a complete PEER_REQUEST frame, also returning the encrypted_payload
 /// and the nonce used in the header (needed for T-1219 verification).
+#[allow(clippy::too_many_arguments)]
 fn build_peer_request_detailed(
     identity: &GatewayIdentity,
     node_id: &str,

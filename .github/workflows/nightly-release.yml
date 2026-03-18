@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Nightly release orchestrator: calls each build workflow, collects their
+# artifacts, and publishes a dated GitHub pre-release so testers always have
+# fresh binaries.  Dev-container workflows run on their own schedule (05:00-
+# 05:30 UTC) so images are up-to-date before firmware builds start here.
+
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+jobs:
+  # ── Build workflows (run in parallel) ──────────────────────────────
+  gateway:
+    name: Gateway
+    uses: ./.github/workflows/ci.yml
+
+  node-firmware:
+    name: Node firmware
+    uses: ./.github/workflows/esp32.yml
+
+  modem-firmware:
+    name: Modem firmware
+    uses: ./.github/workflows/esp32-modem.yml
+
+  desktop:
+    name: Desktop apps
+    uses: ./.github/workflows/tauri-desktop.yml
+
+  android:
+    name: Android APK
+    uses: ./.github/workflows/tauri-android.yml
+
+  # ── Publish release ────────────────────────────────────────────────
+  release:
+    name: Publish nightly
+    needs: [gateway, node-firmware, modem-firmware, desktop, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: artifacts
+
+      - name: Create nightly pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y-%m-%d)
+          TAG="nightly-${DATE}"
+
+          # Delete previous release for today (re-runs)
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          # Rename artifacts to avoid basename collisions (e.g. both
+          # node and modem firmware produce flash_image.bin).
+          mkdir -p release-assets
+          cp artifacts/gateway-linux-x86_64/sonde-gateway  release-assets/sonde-gateway
+          cp artifacts/node-firmware/flash_image.bin        release-assets/node-flash_image.bin
+          cp artifacts/modem-firmware/flash_image.bin       release-assets/modem-flash_image.bin
+          for f in artifacts/sonde-pair-windows/*; do cp "$f" release-assets/; done
+          for f in artifacts/sonde-pair-linux/*;   do cp "$f" release-assets/; done
+          for f in artifacts/sonde-pair-android/*; do cp "$f" release-assets/; done
+
+          # Build release notes
+          cat > notes.md <<'EOF'
+          ## Included artifacts
+
+          | Component | Asset filename |
+          |-----------|----------------|
+          | Gateway (Linux x86_64) | `sonde-gateway` |
+          | ESP32-C3 Node firmware | `node-flash_image.bin` |
+          | ESP32-S3 Modem firmware | `modem-flash_image.bin` |
+          | Desktop — Windows | `*.exe` |
+          | Desktop — Linux | `*.deb` |
+          | Android APK | `*.apk` |
+
+          ### Flashing firmware
+
+          ```bash
+          espflash write-bin -p PORT 0x0 node-flash_image.bin   # node
+          espflash write-bin -p PORT 0x0 modem-flash_image.bin  # modem
+          ```
+
+          > **Note:** Use `espflash write-bin` at offset `0x0` — these are merged
+          > flash images (bootloader + partition table + app). Do **not** use
+          > `espflash flash` as it substitutes its own bundled bootloader.
+          EOF
+
+          # Upload all staged assets
+          ASSETS=()
+          while IFS= read -r -d '' f; do
+            ASSETS+=("$f")
+          done < <(find release-assets -type f -print0)
+
+          gh release create "$TAG" \
+            --title "Nightly Build ${DATE}" \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --notes-file notes.md \
+            "${ASSETS[@]}"

@@ -11,6 +11,8 @@
 name: ESP32 Dev Container
 
 on:
+  schedule:
+    - cron: '0 5 * * *'
   push:
     branches: [main]
     paths:

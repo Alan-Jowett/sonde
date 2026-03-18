@@ -244,8 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the modem protocol. ESP32-S3 ROM and early IDF init may send text
     // to the USB endpoint before the console is routed to UART.
     let serial_port = {
-        use tokio::io::AsyncReadExt;
-        let mut port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
+        let port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
         let mut drain_buf = [0u8; 4096];
         loop {
             match tokio::time::timeout(Duration::from_millis(500), port.read(&mut drain_buf)).await

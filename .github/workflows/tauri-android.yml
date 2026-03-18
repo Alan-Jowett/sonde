@@ -66,23 +66,22 @@ jobs:
           cargo tauri android init
 
       - name: Patch Gradle for BLE Java classes
-        # Add sonde-pair's Java source (BleHelper, SecureStore) to the
-        # Gradle build and include the security-crypto dependency.
-        # This must run after `tauri android init` regenerates gen/android/.
-        working-directory: crates/sonde-pair-ui/src-tauri/gen/android/app
+        # Copy sonde-pair Java sources into the generated Android project
+        # and add the security-crypto dependency. This must run after
+        # `tauri android init` regenerates gen/android/.
+        working-directory: crates/sonde-pair-ui/src-tauri/gen/android
         run: |
-          GRADLE="build.gradle.kts"
-          # Insert sourceSets block before defaultConfig
+          # Copy Java source files into the standard Android source tree
+          mkdir -p app/src/main/java/io/sonde/pair
+          cp ../../../../../crates/sonde-pair/java/io/sonde/pair/*.java \
+             app/src/main/java/io/sonde/pair/
+          ls -la app/src/main/java/io/sonde/pair/
+
+          # Add security-crypto dependency
+          GRADLE="app/build.gradle.kts"
           python3 -c "
-          import re
           with open('$GRADLE') as f:
               txt = f.read()
-          # Add Java source set
-          txt = txt.replace(
-              'defaultConfig {',
-              'sourceSets.getByName(\"main\") {\n        java.srcDir(\"\\\${rootDir}/../../../../../crates/sonde-pair/java\")\n    }\n    defaultConfig {'
-          )
-          # Add security-crypto dependency
           txt = txt.replace(
               'implementation(\"androidx.appcompat:appcompat',
               'implementation(\"androidx.security:security-crypto:1.1.0-alpha06\")\n    implementation(\"androidx.appcompat:appcompat'
@@ -90,8 +89,7 @@ jobs:
           with open('$GRADLE', 'w') as f:
               f.write(txt)
           "
-          echo "--- Patched $GRADLE ---"
-          grep -n 'sourceSets\|security-crypto' "$GRADLE"
+          grep 'security-crypto' "$GRADLE"
 
       - name: Build Android APK (debug)
         working-directory: crates/sonde-pair-ui

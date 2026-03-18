@@ -1,0 +1,25 @@
+[Unit]
+Description=Sonde Gateway Service
+Documentation=https://github.com/Alan-Jowett/sonde
+After=network.target
+
+[Service]
+Type=simple
+User=sonde
+Group=sonde
+SupplementaryGroups=dialout
+WorkingDirectory=/var/lib/sonde
+ExecStart=/usr/local/bin/sonde-gateway --config /etc/sonde/gateway.yaml --db /var/lib/sonde/gateway.db
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/sonde
+ReadOnlyPaths=/etc/sonde
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

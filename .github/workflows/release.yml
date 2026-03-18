@@ -1,0 +1,106 @@
+name: Release Installers
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/sonde-gateway/**'
+      - 'crates/sonde-admin/**'
+      - 'installer/**'
+      - '.github/workflows/release.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Linux .deb ──────────────────────────────────────────────────────────────
+  deb:
+    name: Build Linux .deb package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            protobuf-compiler libudev-dev fakeroot dpkg
+
+      - name: Build binaries (release)
+        run: cargo build --release -p sonde-gateway -p sonde-admin
+
+      - name: Set package version
+        id: version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name=="sonde-gateway") | .version')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb package
+        run: |
+          chmod +x installer/linux/build-deb.sh
+          installer/linux/build-deb.sh \
+            --arch amd64 \
+            --version ${{ steps.version.outputs.version }}
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sonde-linux-deb
+          path: sonde_*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Windows MSI ─────────────────────────────────────────────────────────────
+  msi:
+    name: Build Windows MSI installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+
+      - name: Build binaries (release)
+        run: cargo build --release -p sonde-gateway -p sonde-admin
+
+      - name: Install WiX 4
+        run: |
+          dotnet tool install --global wix --version 4.*
+          wix extension add WixToolset.UI.wixext --global
+          wix extension add WixToolset.Util.wixext --global
+
+      - name: Set package version
+        id: version
+        shell: pwsh
+        run: |
+          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $ver = ($meta.packages | Where-Object { $_.name -eq 'sonde-gateway' }).version
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build MSI
+        run: |
+          wix build installer\windows\sonde.wxs `
+            -d GatewayBin=target\release\sonde-gateway.exe `
+            -d AdminBin=target\release\sonde-admin.exe `
+            -ext WixToolset.UI.wixext `
+            -ext WixToolset.Util.wixext `
+            -out sonde-${{ steps.version.outputs.version }}-x86_64.msi
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sonde-windows-msi
+          path: sonde-*.msi
+          if-no-files-found: error
+          retention-days: 7

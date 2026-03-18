@@ -4,8 +4,8 @@
 //! Tauri v2 backend for the Sonde BLE pairing tool.
 //!
 //! On desktop, BLE operations use [`BtleplugTransport`] and [`FilePairingStore`].
-//! On Android, BLE commands return stub errors until the Android transport is
-//! wired through Tauri (see issue #230).
+//! On Android, BLE operations use [`AndroidBleTransport`] and [`AndroidPairingStore`],
+//! initialized from the Tauri Android activity via JNI.
 //!
 //! All BLE operations use `spawn_blocking` + `Handle::block_on` so that
 //! non-Send futures from [`sonde_pair::transport::BleTransport`] work on
@@ -14,20 +14,21 @@
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
+use sonde_pair::rng::OsRng;
+use sonde_pair::store::PairingStore;
+use sonde_pair::types::ScannedDevice;
+use sonde_pair::{phase1, phase2};
+
 #[cfg(not(target_os = "android"))]
 use sonde_pair::btleplug_transport::BtleplugTransport;
 #[cfg(not(target_os = "android"))]
-use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
-#[cfg(not(target_os = "android"))]
 use sonde_pair::file_store::FilePairingStore;
-#[cfg(not(target_os = "android"))]
-use sonde_pair::rng::OsRng;
-#[cfg(not(target_os = "android"))]
-use sonde_pair::store::PairingStore;
-#[cfg(not(target_os = "android"))]
-use sonde_pair::types::ScannedDevice;
-#[cfg(not(target_os = "android"))]
-use sonde_pair::{phase1, phase2};
+
+#[cfg(target_os = "android")]
+use sonde_pair::android_store::AndroidPairingStore;
+#[cfg(target_os = "android")]
+use sonde_pair::android_transport::AndroidBleTransport;
 
 // ---------------------------------------------------------------------------
 // State
@@ -36,6 +37,10 @@ use sonde_pair::{phase1, phase2};
 struct AppState {
     #[cfg(not(target_os = "android"))]
     scanner: Mutex<Option<DeviceScanner<BtleplugTransport>>>,
+    #[cfg(target_os = "android")]
+    scanner: Mutex<Option<DeviceScanner<AndroidBleTransport>>>,
+    #[cfg(target_os = "android")]
+    store: Mutex<Option<AndroidPairingStore>>,
     phase: Mutex<String>,
     logs: Arc<Mutex<Vec<String>>>,
 }
@@ -62,7 +67,6 @@ struct PairingStatus {
 // Helpers
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_os = "android"))]
 fn format_address(addr: &[u8; 6]) -> String {
     format!(
         "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
@@ -70,7 +74,6 @@ fn format_address(addr: &[u8; 6]) -> String {
     )
 }
 
-#[cfg(not(target_os = "android"))]
 fn parse_address(s: &str) -> Result<[u8; 6], String> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() != 6 {
@@ -84,7 +87,6 @@ fn parse_address(s: &str) -> Result<[u8; 6], String> {
     Ok(addr)
 }
 
-#[cfg(not(target_os = "android"))]
 fn device_to_info(d: &ScannedDevice) -> DeviceInfo {
     let svc = service_type(d);
     DeviceInfo {
@@ -265,63 +267,179 @@ fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Tauri commands — Android stubs (until AndroidBleTransport is wired)
+// Tauri commands — Android (AndroidBleTransport + AndroidPairingStore)
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn start_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    *state.phase.lock().unwrap() = "Idle".into();
-    Err("BLE scanning not yet implemented on Android — see issue #230".into())
+    *state.scanner.lock().unwrap() = None;
+    *state.phase.lock().unwrap() = "Scanning".into();
+
+    let scanner = tokio::task::spawn_blocking(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let transport = AndroidBleTransport::from_cached_vm().map_err(|e| e.to_string())?;
+            let mut scanner = DeviceScanner::new(transport);
+            scanner.start().await.map_err(|e| e.to_string())?;
+            Ok::<_, String>(scanner)
+        })
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))??;
+
+    *state.scanner.lock().unwrap() = Some(scanner);
+    Ok(())
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn stop_scan(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let scanner = {
+        state
+            .scanner
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| "not scanning".to_string())?
+    };
+
+    let scanner = tokio::task::spawn_blocking(move || {
+        let mut scanner = scanner;
+        let _ = tokio::runtime::Handle::current().block_on(async { scanner.stop().await });
+        scanner
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))?;
+
+    *state.scanner.lock().unwrap() = Some(scanner);
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-async fn get_devices(_state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    Ok(vec![])
+async fn get_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
+    let scanner = state
+        .scanner
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| "not scanning".to_string())?;
+
+    let (scanner, devices) = tokio::task::spawn_blocking(move || {
+        let mut scanner = scanner;
+        let _ = tokio::runtime::Handle::current().block_on(async { scanner.refresh().await });
+        let devices: Vec<DeviceInfo> = scanner.devices().iter().map(device_to_info).collect();
+        (scanner, devices)
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))?;
+
+    *state.scanner.lock().unwrap() = Some(scanner);
+    Ok(devices)
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn pair_gateway(
     state: tauri::State<'_, AppState>,
-    _address: String,
-    _phone_label: String,
+    address: String,
+    phone_label: String,
 ) -> Result<(), String> {
-    *state.phase.lock().unwrap() = "Error: not supported".into();
-    Err("Gateway pairing not yet implemented on Android".into())
+    *state.scanner.lock().unwrap() = None;
+    *state.phase.lock().unwrap() = "Pairing".into();
+
+    let addr = parse_address(&address)?;
+
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut transport = AndroidBleTransport::from_cached_vm().map_err(|e| e.to_string())?;
+            let mut store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+            let rng = OsRng;
+            phase1::pair_with_gateway(&mut transport, &mut store, &rng, &addr, &phone_label).await
+        })
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))?;
+
+    match result {
+        Ok(_) => {
+            *state.phase.lock().unwrap() = "Complete".into();
+            Ok(())
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            *state.phase.lock().unwrap() = format!("Error: {msg}");
+            Err(msg)
+        }
+    }
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn provision_node(
     state: tauri::State<'_, AppState>,
-    _address: String,
-    _node_id: String,
+    address: String,
+    node_id: String,
 ) -> Result<String, String> {
-    *state.phase.lock().unwrap() = "Error: not supported".into();
-    Err("Node provisioning not yet implemented on Android".into())
+    *state.scanner.lock().unwrap() = None;
+    *state.phase.lock().unwrap() = "Provisioning".into();
+
+    let addr = parse_address(&address)?;
+
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut transport = AndroidBleTransport::from_cached_vm().map_err(|e| e.to_string())?;
+            let store = AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?;
+            let rng = OsRng;
+            phase2::provision_node(&mut transport, &store, &rng, &addr, &node_id, &[]).await
+        })
+    })
+    .await
+    .map_err(|e| format!("task panicked: {e}"))?;
+
+    match result {
+        Ok(r) => {
+            *state.phase.lock().unwrap() = "Complete".into();
+            Ok(format!("{}", r.status))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            *state.phase.lock().unwrap() = format!("Error: {msg}");
+            Err(msg)
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn get_or_init_store(
+    store_lock: &Mutex<Option<AndroidPairingStore>>,
+) -> Result<std::sync::MutexGuard<'_, Option<AndroidPairingStore>>, String> {
+    let mut guard = store_lock.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?);
+    }
+    Ok(guard)
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-fn get_pairing_status() -> Result<PairingStatus, String> {
+fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus, String> {
+    let guard = get_or_init_store(&state.store)?;
+    let store = guard.as_ref().unwrap();
+    let identity = store.load_gateway_identity().map_err(|e| e.to_string())?;
     Ok(PairingStatus {
-        paired: false,
-        gateway_id: None,
+        paired: identity.is_some(),
+        gateway_id: identity.map(|id| hex::encode(id.gateway_id)),
     })
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
 fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut guard = get_or_init_store(&state.store)?;
+    let store = guard.as_mut().unwrap();
+    store.clear().map_err(|e| e.to_string())?;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
 }
@@ -397,6 +515,26 @@ mod hex {
 }
 
 // ---------------------------------------------------------------------------
+// Android JNI initialisation
+// ---------------------------------------------------------------------------
+
+/// Called by the Android runtime when this native library is loaded.
+/// Caches the `JavaVM` so `AndroidBleTransport::from_cached_vm()` and
+/// `AndroidPairingStore::from_cached_vm()` work from Tauri command handlers.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn JNI_OnLoad(
+    vm: *mut jni::sys::JavaVM,
+    _reserved: *mut std::ffi::c_void,
+) -> jni::sys::jint {
+    let vm1 = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
+    let vm2 = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
+    AndroidBleTransport::cache_vm(vm1);
+    AndroidPairingStore::cache_vm(vm2);
+    jni::JNIVersion::V6.into()
+}
+
+// ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
 
@@ -424,8 +562,9 @@ pub fn run() {
         .init();
 
     let state = AppState {
-        #[cfg(not(target_os = "android"))]
         scanner: Mutex::new(None),
+        #[cfg(target_os = "android")]
+        store: Mutex::new(None),
         phase: Mutex::new("Idle".into()),
         logs,
     };

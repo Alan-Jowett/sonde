@@ -22,7 +22,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use jni::objects::{GlobalRef, JByteArray, JObject, JString, JValue};
 use jni::JNIEnv;
@@ -38,6 +38,9 @@ const CONNECT_TIMEOUT_MS: i64 = 10_000;
 
 /// Default write-with-response timeout.
 const WRITE_TIMEOUT_MS: i64 = 5_000;
+
+/// Cached JavaVM for creating transports on demand (set in `JNI_OnLoad`).
+static CACHED_VM: OnceLock<JavaVM> = OnceLock::new();
 
 /// Android BLE transport backed by the companion `BleHelper` Java class.
 ///
@@ -99,6 +102,26 @@ impl AndroidBleTransport {
                 helper: helper_ref,
             }),
         })
+    }
+
+    /// Cache the `JavaVM` for later use by [`from_cached_vm()`].
+    /// Typically called from `JNI_OnLoad`.
+    pub fn cache_vm(vm: JavaVM) {
+        let _ = CACHED_VM.set(vm);
+        debug!("AndroidBleTransport: JavaVM cached");
+    }
+
+    /// Create a new transport from the cached `JavaVM`.
+    /// [`cache_vm()`] must have been called first (typically from
+    /// `JNI_OnLoad`).  The application context is obtained via
+    /// `ActivityThread.currentApplication()`.
+    pub fn from_cached_vm() -> Result<Self, PairingError> {
+        let vm = CACHED_VM.get().ok_or_else(|| {
+            PairingError::ConnectionFailed("JavaVM not cached — call cache_vm() first".into())
+        })?;
+        let mut env = vm.attach_current_thread().map_err(jni_err)?;
+        let context = get_application_context(&mut env)?;
+        Self::new(&mut env, &context)
     }
 
     /// Pause BLE operations (e.g. on Android `onPause`).
@@ -416,6 +439,29 @@ fn uuid_to_string(uuid: u128) -> String {
         b[14],
         b[15],
     )
+}
+
+/// Get the Application context via `ActivityThread.currentApplication()`.
+/// Works from any JNI-attached thread without needing an Activity reference.
+fn get_application_context<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>, PairingError> {
+    let activity_thread = env
+        .find_class("android/app/ActivityThread")
+        .map_err(jni_err)?;
+    let app = env
+        .call_static_method(
+            activity_thread,
+            "currentApplication",
+            "()Landroid/app/Application;",
+            &[],
+        )
+        .and_then(|v| v.l())
+        .map_err(|e| jni_exception_or(env, "currentApplication", e))?;
+    if app.is_null() {
+        return Err(PairingError::ConnectionFailed(
+            "ActivityThread.currentApplication() returned null".into(),
+        ));
+    }
+    Ok(app)
 }
 
 /// Map a plain JNI error (not a Java exception) to [`PairingError`].

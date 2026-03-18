@@ -808,11 +808,11 @@ async fn ss_store_if_not_exists(key_bytes: &[u8], label: &str) -> Result<(), Key
             attributes,
             key_bytes,
             false, // do NOT replace — preserve a concurrently-stored key.
-                   // Per the Secret Service spec, CreateItem with replace=false
-                   // returns the existing item's path without modifying it
-                   // (no error is returned when attributes match an existing
-                   // item); callers must load after this call to get the
-                   // canonical stored value.
+            // Per the Secret Service spec, CreateItem with replace=false
+            // returns the existing item's path without modifying it
+            // (no error is returned when attributes match an existing
+            // item); callers must load after this call to get the
+            // canonical stored value.
             "application/octet-stream",
         )
         .await
@@ -987,6 +987,9 @@ mod tests {
 
         let meta = std::fs::metadata(&path).unwrap();
         let mode = meta.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "key file should have mode 0o600, got {mode:#o}");
+        assert_eq!(
+            mode, 0o600,
+            "key file should have mode 0o600, got {mode:#o}"
+        );
     }
 }

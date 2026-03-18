@@ -131,15 +131,11 @@ impl UsbEspNowTransport {
                                             )
                                         ) =>
                                     {
-                                        error!(
-                                            "modem frame too large — terminating reader to force reconnect: {e}"
+                                        warn!(
+                                            "modem frame too large (likely boot log garbage) — resetting decoder: {e}"
                                         );
                                         decoder.reset();
-                                        // Reader task does not have write access to send a
-                                        // RESET. Terminate so recv() returns an error and
-                                        // higher-level code can tear down and rebuild the
-                                        // transport (which sends RESET in its constructor).
-                                        return;
+                                        break; // break inner loop, read more data
                                     }
                                     Err(e) => {
                                         warn!("modem decode error: {e}");

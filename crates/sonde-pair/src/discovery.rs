@@ -101,14 +101,12 @@ impl<T: BleTransport> DeviceScanner<T> {
             return Err(PairingError::ScanAlreadyActive);
         }
 
-        self.transport.start_scan(GATEWAY_SERVICE_UUID).await?;
-
-        if let Err(e) = self.transport.start_scan(NODE_SERVICE_UUID).await {
-            // Clean up the first scan so the transport is not left in a
-            // partially-started state.
-            let _ = self.transport.stop_scan().await;
-            return Err(e);
-        }
+        // Scan for both service UUIDs in a single call so the BLE adapter
+        // filters for both simultaneously (avoids the second call replacing
+        // the first filter on platforms like WinRT/btleplug).
+        self.transport
+            .start_scan(&[GATEWAY_SERVICE_UUID, NODE_SERVICE_UUID])
+            .await?;
 
         self.scanning = true;
         self.scan_started_at = Some(Instant::now());

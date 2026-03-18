@@ -14,7 +14,7 @@ use std::pin::Pin;
 pub trait BleTransport {
     fn start_scan(
         &mut self,
-        service_uuid: u128,
+        service_uuids: &[u128],
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>>;
 
     fn stop_scan(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>>;
@@ -85,7 +85,7 @@ impl MockBleTransport {
 impl BleTransport for MockBleTransport {
     fn start_scan(
         &mut self,
-        _service_uuid: u128,
+        _service_uuids: &[u128],
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         Box::pin(async { Ok(()) })
     }

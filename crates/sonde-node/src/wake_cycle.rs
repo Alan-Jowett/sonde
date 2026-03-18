@@ -100,7 +100,7 @@ where
     //     PEER_REQUEST exchange before proceeding to the normal WAKE cycle.
     //
     //     If reg_complete is false but peer_payload is absent, the node was
-    //     either USB-paired (no payload) or the payload was erased after a
+    //     either BLE-provisioned (no payload) or the payload was erased after a
     //     permanent error.  In both cases we fall through to the normal WAKE
     //     cycle — the gateway will accept the WAKE regardless.
     if !storage.read_reg_complete() {

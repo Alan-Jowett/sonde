@@ -11,6 +11,7 @@ file-store = ["dep:serde", "dep:serde_json"]
 dpapi = ["dep:windows-sys", "file-store"]
 secret-service-store = ["dep:secret-service", "dep:tokio", "tokio/rt-multi-thread", "file-store"]
 android = ["dep:jni", "dep:tokio"]
+loopback-ble = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/time"]
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["zeroize"] }
@@ -29,7 +30,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
 # Optional — desktop BLE transport (Windows / Linux / macOS)
-btleplug = { version = "0.11", optional = true }
+btleplug = { version = "0.12", optional = true }
 uuid = { version = "1", optional = true }
 tokio = { version = "1", features = ["time", "rt"], optional = true }
 futures = { version = "0.3", optional = true }
@@ -39,7 +40,7 @@ jni = { version = "0.21", optional = true }
 
 # Optional — Windows DPAPI PSK protection (enable via `dpapi` feature)
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Security_Cryptography",
     "Win32_Foundation",
     "Win32_System_Memory",

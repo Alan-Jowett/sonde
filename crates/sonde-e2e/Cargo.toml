@@ -9,12 +9,19 @@ sonde-protocol = { path = "../sonde-protocol" }
 sonde-gateway = { path = "../sonde-gateway" }
 sonde-node = { path = "../sonde-node" }
 sonde-modem = { path = "../sonde-modem" }
-sonde-pair = { path = "../sonde-pair" }
+sonde-pair = { path = "../sonde-pair", features = ["loopback-ble"] }
 tokio = { version = "1", features = ["full", "test-util"] }
+tokio-util = "0.7"
 hmac = "0.12"
 sha2 = "0.10"
 zeroize = "1.8.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [lib]
 name = "sonde_e2e"
 path = "src/lib.rs"
+
+[[bin]]
+name = "fake_gatt_peripheral"
+path = "src/bin/fake_gatt_peripheral.rs"

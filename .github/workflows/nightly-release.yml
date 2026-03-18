@@ -71,9 +71,9 @@ jobs:
           cp artifacts/gateway-linux-x86_64/sonde-gateway  release-assets/sonde-gateway
           cp artifacts/node-firmware/flash_image.bin        release-assets/node-flash_image.bin
           cp artifacts/modem-firmware/flash_image.bin       release-assets/modem-flash_image.bin
-          for f in artifacts/sonde-pair-windows/*; do cp "$f" release-assets/; done
-          for f in artifacts/sonde-pair-linux/*;   do cp "$f" release-assets/; done
-          for f in artifacts/sonde-pair-android/*; do cp "$f" release-assets/; done
+          for f in artifacts/sonde-pair-windows/*; do cp -r "$f" release-assets/; done
+          for f in artifacts/sonde-pair-linux/*;   do cp -r "$f" release-assets/; done
+          for f in artifacts/sonde-pair-android/*; do cp -r "$f" release-assets/; done
 
           # Build release notes
           cat > notes.md <<'EOF'

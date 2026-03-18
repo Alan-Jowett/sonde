@@ -55,7 +55,8 @@ cat > "${PKG_DIR}/DEBIAN/control" <<EOF
 Package: ${PACKAGE}
 Version: ${VERSION}
 Architecture: ${ARCH}
-Maintainer: sonde contributors <https://github.com/Alan-Jowett/sonde>
+Maintainer: sonde contributors <20480683+Alan-Jowett@users.noreply.github.com>
+Homepage: https://github.com/Alan-Jowett/sonde
 Description: Sonde gateway and admin tools
  sonde-gateway is the radio gateway service that authenticates sensor nodes,
  distributes BPF programs, and routes telemetry data.
@@ -66,8 +67,18 @@ Priority: optional
 EOF
 
 cat > "${PKG_DIR}/DEBIAN/conffiles" <<EOF
-/etc/sonde/gateway.yaml
+/etc/sonde/environment
 EOF
+
+# ── Default environment file (shipped so dpkg tracks it as a conffile) ────────
+# The sonde-gateway.service reads SERIAL_PORT from this file.
+# Edit this file to set the correct serial port for the ESP-NOW modem before
+# starting or enabling the service.
+cat > "${PKG_DIR}/etc/sonde/environment" <<'ENV'
+# Serial port for the ESP-NOW modem (required).
+# Examples: /dev/ttyUSB0, /dev/ttyACM0
+SERIAL_PORT=/dev/ttyUSB0
+ENV
 
 # ── postinst ──────────────────────────────────────────────────────────────────
 cat > "${PKG_DIR}/DEBIAN/postinst" <<'POSTINST'
@@ -88,21 +99,10 @@ fi
 usermod -aG dialout sonde 2>/dev/null || true
 
 # Create config and data directories.
-install -d -o sonde -g sonde -m 750 /etc/sonde
+# /etc/sonde is owned by root:sonde (mode 750) so the service can traverse and
+# read files within, but cannot modify system configuration.
+install -d -o root -g sonde -m 750 /etc/sonde
 install -d -o sonde -g sonde -m 750 /var/lib/sonde
-
-# Write a default config file only if one does not exist yet.
-if [ ! -f /etc/sonde/gateway.yaml ]; then
-    cat > /etc/sonde/gateway.yaml <<'YAML'
-# Sonde gateway configuration
-# See https://github.com/Alan-Jowett/sonde for documentation.
-
-# db: /var/lib/sonde/gateway.db
-# listen: "[::]:5683"
-YAML
-    chown sonde:sonde /etc/sonde/gateway.yaml
-    chmod 640 /etc/sonde/gateway.yaml
-fi
 
 # Enable and start systemd service when installed under systemd.
 if [ -d /run/systemd/system ]; then
@@ -119,9 +119,14 @@ chmod 755 "${PKG_DIR}/DEBIAN/postinst"
 cat > "${PKG_DIR}/DEBIAN/prerm" <<'PRERM'
 #!/bin/sh
 set -e
+# $1 = remove | upgrade | deconfigure | failed-upgrade
 if [ -d /run/systemd/system ]; then
     systemctl stop sonde-gateway.service || true
-    systemctl disable sonde-gateway.service || true
+    # Only disable (prevent autostart) when the package is actually being removed,
+    # not during an upgrade (postinst will re-enable after the new version installs).
+    if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+        systemctl disable sonde-gateway.service || true
+    fi
 fi
 exit 0
 PRERM
@@ -129,5 +134,15 @@ chmod 755 "${PKG_DIR}/DEBIAN/prerm"
 
 # ── Build the package ─────────────────────────────────────────────────────────
 DEB_NAME="${PACKAGE}_${VERSION}_${ARCH}.deb"
-fakeroot dpkg-deb --build "${PKG_DIR}" "${DEB_NAME}"
+# Run ownership fixups and dpkg-deb together under fakeroot so that the
+# installed files carry correct ownership without needing postinst chown.
+fakeroot -- sh -c "
+    chown -R root:root '${PKG_DIR}'
+    chown root:sonde '${PKG_DIR}/etc/sonde/environment'
+    chmod 640 '${PKG_DIR}/etc/sonde/environment'
+    # mode 750 on the directory: group-execute is required for traversal so the
+    # service user can open files inside /etc/sonde at runtime.
+    chmod 750 '${PKG_DIR}/etc/sonde'
+    dpkg-deb --build '${PKG_DIR}' '${DEB_NAME}'
+"
 echo "Package built: ${DEB_NAME}"

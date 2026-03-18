@@ -239,8 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 6. Open serial port and create modem transport
-    let serial_port =
-        tokio_serial::SerialStream::open(&tokio_serial::new(&cli.port, cli.baud_rate))?;
+    let serial_port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
     let transport = Arc::new(UsbEspNowTransport::new(serial_port, cli.channel).await?);
     info!(channel = cli.channel, "modem transport ready");
 

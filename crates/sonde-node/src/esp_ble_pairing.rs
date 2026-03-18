@@ -8,10 +8,10 @@
 //! - Node Provisioning Service (UUID `0000FE50-0000-1000-8000-00805F9B34FB`).
 //! - Node Command characteristic (UUID `0000FE51-...`, Write+Indicate).
 //! - Advertising as `sonde-XXXX` (last 4 hex digits of BLE MAC) (ND-0903).
-//! - MTU negotiation ≥ 247 bytes (ND-0904).
+//! - MTU negotiation >= 247 bytes (ND-0904).
 //! - LESC Just Works pairing acceptance (ND-0904).
 //! - Calls into the platform-independent handler in `ble_pairing.rs`.
-//! - Returns on BLE disconnect after provisioning (ND-0907).
+//! - Returns on BLE disconnect so the caller can reboot (ND-0907).
 //!
 //! # Boot flow
 //!
@@ -34,7 +34,7 @@ use log::{info, warn};
 
 use crate::ble_pairing::{
     encode_node_ack, handle_node_provision, parse_ble_envelope, parse_node_provision,
-    BLE_MSG_NODE_PROVISION, NODE_ACK_STORAGE_ERROR,
+    BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
 use crate::map_storage::MapStorage;
@@ -79,29 +79,31 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
 ) -> NodeResult<()> {
     let paired_on_entry = storage.read_key().is_some();
 
-    // Take ownership of storage and map_storage for the duration of BLE mode.
-    // We'll return them via the Arc<Mutex> when done.
-    //
-    // Since PlatformStorage is behind a mutable reference, we need to work
-    // with the writes happening inside the GATT callback. We use a channel
-    // approach: the callback stores the raw write data, and the main loop
-    // processes it with mutable access to storage.
+    // The GATT write callback cannot hold &mut storage (not Send, lifetime
+    // issues). Instead, the callback stores raw write bytes in a shared
+    // Option, and the main loop polls it with direct &mut storage access.
     let pending_write: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     let disconnected = Arc::new(Mutex::new(false));
+    let authenticated = Arc::new(Mutex::new(false));
+    let conn_handle: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
 
     // --- NimBLE initialisation ---
     let ble_device = BLEDevice::take();
 
     // Configure LESC Just Works security (ND-0904).
+    // AuthReq::all() includes SC (Secure Connections) + Bond + MITM,
+    // matching the modem's configuration. With NoInputNoOutput IO cap,
+    // MITM is downgraded to Just Works but LESC is still enforced.
     ble_device
         .security()
-        .set_auth(AuthReq::Bond)
+        .set_auth(AuthReq::all())
         .set_io_cap(SecurityIOCap::NoInputNoOutput);
 
     let ble_server = ble_device.get_server();
 
     // --- Connection event ---
     let disc_connect = Arc::clone(&disconnected);
+    let handle_connect = Arc::clone(&conn_handle);
     ble_server.on_connect(move |server, desc| {
         let peer_addr = desc.address();
         let mtu = desc.mtu();
@@ -114,22 +116,33 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
             return;
         }
 
-        // Clear disconnected flag on new connection.
         if let Ok(mut d) = disc_connect.lock() {
             *d = false;
+        }
+        if let Ok(mut h) = handle_connect.lock() {
+            *h = Some(desc.conn_handle());
         }
     });
 
     // --- Disconnect event ---
     let disc_disconnect = Arc::clone(&disconnected);
+    let auth_disconnect = Arc::clone(&authenticated);
+    let handle_disconnect = Arc::clone(&conn_handle);
     ble_server.on_disconnect(move |desc, _reason| {
         info!("BLE: client disconnected addr={:?}", desc.address());
         if let Ok(mut d) = disc_disconnect.lock() {
             *d = true;
         }
+        if let Ok(mut a) = auth_disconnect.lock() {
+            *a = false;
+        }
+        if let Ok(mut h) = handle_disconnect.lock() {
+            *h = None;
+        }
     });
 
     // --- Authentication complete ---
+    let auth_complete = Arc::clone(&authenticated);
     ble_server.on_authentication_complete(move |server, desc, result| {
         if result.is_ok() {
             let mtu = desc.mtu();
@@ -141,6 +154,9 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                 let _ = server.disconnect(desc.conn_handle());
             } else {
                 info!("BLE: LESC pairing complete, MTU={}", mtu);
+                if let Ok(mut a) = auth_complete.lock() {
+                    *a = true;
+                }
             }
         } else {
             warn!("BLE: pairing failed: {:?}", result);
@@ -159,11 +175,18 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
             NimbleProperties::WRITE | NimbleProperties::INDICATE,
         );
 
-    // GATT write handler: store the raw bytes for the main loop to process.
+    // GATT write handler: only accept writes after LESC pairing + MTU
+    // exchange completes (ble-pairing-protocol.md section 8.2 step 3).
     let write_pending = Arc::clone(&pending_write);
+    let write_auth = Arc::clone(&authenticated);
     node_cmd_char.lock().on_write(move |args| {
         let value = args.recv_data();
         if value.is_empty() {
+            return;
+        }
+        let is_auth = write_auth.lock().map(|a| *a).unwrap_or(false);
+        if !is_auth {
+            warn!("BLE: GATT write rejected -- not yet authenticated");
             return;
         }
         if let Ok(mut p) = write_pending.lock() {
@@ -174,7 +197,10 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     // --- Advertising ---
     let mac = ble_device
         .get_addr()
-        .map_err(|_| crate::error::NodeError::StorageError("BLE: failed to read MAC address"))?
+        .map_err(|e| {
+            warn!("BLE: failed to read MAC address: {:?}", e);
+            crate::error::NodeError::Transport("BLE: failed to read MAC address")
+        })?
         .as_le_bytes();
     let device_name = format!("sonde-{:02x}{:02x}", mac[1], mac[0]);
     info!("BLE: advertising as '{}' (ND-0903)", device_name);
@@ -187,11 +213,14 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     ble_advertising
         .lock()
         .set_data(&mut adv_data)
-        .map_err(|_| crate::error::NodeError::StorageError("BLE: set_data failed"))?;
-    ble_advertising
-        .lock()
-        .start()
-        .map_err(|_| crate::error::NodeError::StorageError("BLE: start_advertising failed"))?;
+        .map_err(|e| {
+            warn!("BLE: set_data failed: {:?}", e);
+            crate::error::NodeError::Transport("BLE: set_data failed")
+        })?;
+    ble_advertising.lock().start().map_err(|e| {
+        warn!("BLE: start_advertising failed: {:?}", e);
+        crate::error::NodeError::Transport("BLE: start_advertising failed")
+    })?;
 
     info!("BLE Node Provisioning Service registered (UUID 0xFE50, ND-0902)");
 
@@ -200,7 +229,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         // Check for disconnect.
         if let Ok(d) = disconnected.lock() {
             if *d {
-                info!("BLE: disconnect detected — exiting pairing mode");
+                info!("BLE: disconnect detected -- exiting pairing mode");
                 break;
             }
         }
@@ -217,7 +246,8 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         if let Some(data) = write_data {
             info!("BLE: GATT write received ({} bytes)", data.len());
 
-            // Parse BLE envelope.
+            // Parse BLE envelope. Silently discard malformed/unknown
+            // messages -- the phone will time out waiting for NODE_ACK.
             let ack_data = match parse_ble_envelope(&data) {
                 Some((msg_type, body)) if msg_type == BLE_MSG_NODE_PROVISION => {
                     match parse_node_provision(body) {
@@ -230,28 +260,39 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                                 paired_on_entry,
                             );
                             info!("BLE: NODE_PROVISION handled, status=0x{:02x}", status);
-                            encode_node_ack(status)
+                            Some(encode_node_ack(status))
                         }
                         Err(e) => {
                             warn!("BLE: NODE_PROVISION parse error: {}", e);
-                            encode_node_ack(NODE_ACK_STORAGE_ERROR)
+                            None // silently discard
                         }
                     }
                 }
                 Some((msg_type, _)) => {
-                    warn!("BLE: unexpected message type 0x{:02x}", msg_type);
-                    encode_node_ack(NODE_ACK_STORAGE_ERROR)
+                    warn!(
+                        "BLE: unexpected message type 0x{:02x}, discarding",
+                        msg_type
+                    );
+                    None // silently discard
                 }
                 None => {
-                    warn!("BLE: envelope parse error (too short or malformed)");
-                    encode_node_ack(NODE_ACK_STORAGE_ERROR)
+                    warn!("BLE: envelope parse error, discarding");
+                    None // silently discard
                 }
             };
 
-            // Send NODE_ACK indication via set_value + notify.
-            let mut chr = node_cmd_char.lock();
-            chr.set_value(&ack_data);
-            chr.notify();
+            // Send NODE_ACK indication if we have a valid response.
+            if let Some(ack) = ack_data {
+                let current_handle = conn_handle.lock().ok().and_then(|h| *h);
+                if let Some(handle) = current_handle {
+                    let chr = node_cmd_char.lock();
+                    if let Err(e) = chr.notify_with(&ack, handle) {
+                        warn!("BLE: NODE_ACK indication failed: {:?}", e);
+                    }
+                } else {
+                    warn!("BLE: no active connection for NODE_ACK indication");
+                }
+            }
         }
 
         // Busy-wait with a short sleep to avoid spinning.

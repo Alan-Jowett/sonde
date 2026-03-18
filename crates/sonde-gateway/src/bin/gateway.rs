@@ -147,6 +147,20 @@ struct Cli {
     #[arg(long, default_value = "sonde-gateway-master-key")]
     key_label: String,
 
+    /// Auto-generate the master key on first run if it does not already exist.
+    ///
+    /// When set, the gateway will generate a cryptographically random 32-byte
+    /// master key via `getrandom::fill()` and write it to the configured
+    /// backend (`--key-provider`) if no key is present.  If a key already
+    /// exists it is loaded unchanged — no data loss, no overwrite.
+    ///
+    /// A warning is logged when a new key is generated so operators are aware.
+    ///
+    /// Not supported with `--key-provider env` (environment variables are
+    /// read-only from the process).
+    #[arg(long, default_value_t = false)]
+    generate_master_key: bool,
+
     /// Run as a Windows NT service.
     ///
     /// This flag is set automatically by `sonde-gateway install` in the service
@@ -225,8 +239,12 @@ async fn run_gateway(
     info!(db = %cli.db, port = %cli.port, channel = cli.channel, "starting sonde-gateway");
 
     // 1. Load master key for at-rest PSK encryption (GW-0601a).
+    //    Build the appropriate KeyProvider from CLI arguments, then invoke it.
     let provider = build_key_provider(cli)?;
-    let master_key = Zeroizing::new({
+    let master_key = Zeroizing::new(if cli.generate_master_key {
+        let k = provider.generate_or_load_master_key()?;
+        *k
+    } else {
         let k = provider.load_master_key()?;
         *k
     });
@@ -623,10 +641,10 @@ fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 /// All gateway options passed on the command line are embedded in the service
 /// registration so they are used on every subsequent start by the SCM.
 #[cfg(windows)]
-fn install_service(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn install_service(_cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     use std::ffi::OsString;
     use windows_service::service::{
-        ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType,
+        ServiceAccess, ServiceErrorControl, ServiceStartType, ServiceType,
     };
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 

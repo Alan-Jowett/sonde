@@ -97,6 +97,20 @@ struct Cli {
     /// Defaults to `"sonde-gateway-master-key"`.
     #[arg(long, default_value = "sonde-gateway-master-key")]
     key_label: String,
+
+    /// Auto-generate the master key on first run if it does not already exist.
+    ///
+    /// When set, the gateway will generate a cryptographically random 32-byte
+    /// master key via `getrandom::fill()` and write it to the configured
+    /// backend (`--key-provider`) if no key is present.  If a key already
+    /// exists it is loaded unchanged — no data loss, no overwrite.
+    ///
+    /// A warning is logged when a new key is generated so operators are aware.
+    ///
+    /// Not supported with `--key-provider env` (environment variables are
+    /// read-only from the process).
+    #[arg(long, default_value_t = false)]
+    generate_master_key: bool,
 }
 
 /// Build the appropriate [`KeyProvider`] from the CLI arguments.
@@ -164,7 +178,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load master key for at-rest PSK encryption (GW-0601a).
     //    Build the appropriate KeyProvider from CLI arguments, then invoke it.
     let provider = build_key_provider(&cli)?;
-    let master_key = Zeroizing::new({
+    let master_key = Zeroizing::new(if cli.generate_master_key {
+        let k = provider.generate_or_load_master_key()?;
+        *k
+    } else {
         let k = provider.load_master_key()?;
         *k
     });

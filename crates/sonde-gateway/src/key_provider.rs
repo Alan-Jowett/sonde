@@ -37,7 +37,8 @@ use zeroize::Zeroizing;
 // Error type
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Errors returned by [`KeyProvider::load_master_key`].
+/// Errors returned by [`KeyProvider::load_master_key`] and
+/// [`KeyProvider::generate_or_load_master_key`].
 #[derive(Debug)]
 pub enum KeyProviderError {
     /// An I/O error occurred while reading the key material.
@@ -48,6 +49,8 @@ pub enum KeyProviderError {
     NotAvailable(String),
     /// The backend returned an error.
     Backend(String),
+    /// No key exists in this backend (used to distinguish absence from errors).
+    NotFound(String),
 }
 
 impl fmt::Display for KeyProviderError {
@@ -57,6 +60,7 @@ impl fmt::Display for KeyProviderError {
             Self::Format(msg) => write!(f, "invalid key format: {msg}"),
             Self::NotAvailable(msg) => write!(f, "backend not available: {msg}"),
             Self::Backend(msg) => write!(f, "backend error: {msg}"),
+            Self::NotFound(msg) => write!(f, "key not found: {msg}"),
         }
     }
 }
@@ -79,6 +83,31 @@ pub trait KeyProvider: Send + Sync {
     ///
     /// This method is called once at gateway startup.  Errors are fatal.
     fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError>;
+
+    /// Generate a random 32-byte master key and write it to the backend if no
+    /// key exists, or load the existing key if one is already present.
+    ///
+    /// This method provides a safe, idempotent "generate-on-first-use" pattern:
+    /// - If a key already exists in the backend, it is loaded unchanged.
+    /// - If no key exists, a cryptographically random 32-byte key is generated
+    ///   via `getrandom::fill()`, written to the backend, and returned.
+    ///
+    /// A `tracing::warn!` is emitted when a new key is generated so operators
+    /// are aware that a new key was created.
+    ///
+    /// # Errors
+    ///
+    /// The default implementation returns [`KeyProviderError::NotAvailable`].
+    /// Backends that do not support key generation (e.g. [`EnvKeyProvider`])
+    /// will use this default.  Pass `--key-provider env` with
+    /// `--generate-master-key` to receive a clear error message.
+    fn generate_or_load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
+        Err(KeyProviderError::NotAvailable(
+            "this key provider does not support key generation; \
+             use --key-provider file, dpapi, or secret-service"
+                .into(),
+        ))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,6 +140,48 @@ pub(crate) fn parse_hex_key(hex: &str) -> Result<Zeroizing<[u8; 32]>, KeyProvide
     Ok(key)
 }
 
+/// Write a 64-character hex key string to a file, using mode 0o600 on Unix.
+///
+/// On Unix the file is created with owner-read/write only (`0o600`).
+/// On other platforms the file is written with default OS permissions.
+fn write_hex_key_file(path: &std::path::Path, hex: &str) -> Result<(), KeyProviderError> {
+    use std::io::Write as _;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| {
+                KeyProviderError::Io(format!("cannot create key file {}: {e}", path.display()))
+            })?;
+        f.write_all(hex.as_bytes()).map_err(|e| {
+            KeyProviderError::Io(format!("cannot write key file {}: {e}", path.display()))
+        })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|e| {
+                KeyProviderError::Io(format!("cannot create key file {}: {e}", path.display()))
+            })?;
+        f.write_all(hex.as_bytes()).map_err(|e| {
+            KeyProviderError::Io(format!("cannot write key file {}: {e}", path.display()))
+        })?;
+    }
+
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FileKeyProvider
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,6 +208,37 @@ impl KeyProvider for FileKeyProvider {
             KeyProviderError::Io(format!("cannot read {}: {e}", self.path.display()))
         })?;
         parse_hex_key(&raw)
+    }
+
+    fn generate_or_load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
+        // If the key file already exists, load it without overwriting.
+        if self.path.exists() {
+            tracing::info!(path = %self.path.display(), "master key file exists, loading");
+            return self.load_master_key();
+        }
+
+        // Generate a fresh key from the OS CSPRNG.
+        // The buffer starts zeroed; getrandom::fill overwrites all 32 bytes
+        // with cryptographically random data before any use.
+        let mut raw = Zeroizing::new([0u8; 32]);
+        getrandom::fill(raw.as_mut())
+            .map_err(|e| KeyProviderError::Backend(format!("getrandom failed: {e}")))?;
+
+        // Encode as 64 lower-case hex characters using a pre-sized allocation.
+        let mut hex = String::with_capacity(64);
+        for b in raw.iter() {
+            use std::fmt::Write as _;
+            write!(hex, "{b:02x}").expect("write to String is infallible");
+        }
+
+        // Write the key file with restrictive permissions (0o600 on Unix).
+        write_hex_key_file(&self.path, &hex)?;
+
+        tracing::warn!(
+            path = %self.path.display(),
+            "master key generated and written; back this file up securely"
+        );
+        Ok(raw)
     }
 }
 
@@ -244,6 +346,27 @@ impl KeyProvider for DpapiKeyProvider {
         let mut key = Zeroizing::new([0u8; 32]);
         key.copy_from_slice(&plaintext);
         Ok(key)
+    }
+
+    fn generate_or_load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
+        // If the DPAPI blob already exists, load it without overwriting.
+        if self.blob_path.exists() {
+            tracing::info!(path = %self.blob_path.display(), "DPAPI key blob exists, loading");
+            return self.load_master_key();
+        }
+
+        // Generate a fresh key from the OS CSPRNG.
+        let mut raw = Zeroizing::new([0u8; 32]);
+        getrandom::fill(raw.as_mut())
+            .map_err(|e| KeyProviderError::Backend(format!("getrandom failed: {e}")))?;
+
+        protect_with_dpapi(&raw, &self.blob_path)?;
+
+        tracing::warn!(
+            path = %self.blob_path.display(),
+            "master key generated and stored as DPAPI blob; back this file up securely"
+        );
+        Ok(raw)
     }
 }
 
@@ -430,6 +553,43 @@ impl KeyProvider for SecretServiceKeyProvider {
             rt.block_on(ss_load(&label))
         }
     }
+
+    fn generate_or_load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
+        // The Secret Service API does not provide a lightweight "key exists"
+        // check separate from loading the secret value — both operations
+        // involve the same D-Bus round-trip.  We therefore attempt a load
+        // first: if it succeeds the existing key is returned unchanged; if the
+        // key is absent (`NotFound`) we generate and store a fresh one.  Any
+        // other error (D-Bus connection failure, keyring locked, etc.) is
+        // propagated as-is.  This matches the `exists → load` pattern used by
+        // `FileKeyProvider` and `DpapiKeyProvider` at the semantic level, even
+        // though the implementation is load-first rather than exists-first.
+        match self.load_master_key() {
+            Ok(key) => {
+                tracing::info!(label = %self.label, "master key loaded from Secret Service");
+                return Ok(key);
+            }
+            Err(KeyProviderError::NotFound(_)) => {
+                // Key doesn't exist yet — fall through to generate it.
+            }
+            Err(e) => return Err(e),
+        }
+
+        // Generate a fresh key from the OS CSPRNG.
+        // The buffer starts zeroed; getrandom::fill overwrites all 32 bytes
+        // with cryptographically random data before any use.
+        let mut raw = Zeroizing::new([0u8; 32]);
+        getrandom::fill(raw.as_mut())
+            .map_err(|e| KeyProviderError::Backend(format!("getrandom failed: {e}")))?;
+
+        store_in_secret_service(&raw, &self.label)?;
+
+        tracing::warn!(
+            label = %self.label,
+            "master key generated and stored in Secret Service"
+        );
+        Ok(raw)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -459,7 +619,7 @@ async fn ss_load(label: &str) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
         .map_err(|e| KeyProviderError::Backend(format!("keyring search failed: {e}")))?;
 
     let item = items.into_iter().next().ok_or_else(|| {
-        KeyProviderError::Backend(format!("master key not found in keyring (label={label:?})"))
+        KeyProviderError::NotFound(format!("master key not found in keyring (label={label:?})"))
     })?;
 
     let secret_bytes = item
@@ -639,5 +799,76 @@ mod tests {
         let err = provider.load_master_key().unwrap_err();
         assert!(matches!(err, KeyProviderError::Format(_)));
         std::env::remove_var(var);
+    }
+
+    // ── generate_or_load_master_key (FileKeyProvider) ──────────────────────
+
+    #[test]
+    fn file_provider_generate_creates_key_file_when_missing() {
+        // Use a path inside a temp dir that does not yet exist.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new_master.key");
+        assert!(!path.exists(), "file should not exist before generate");
+
+        let provider = FileKeyProvider::new(path.clone());
+        let key = provider.generate_or_load_master_key().unwrap();
+
+        // The file should now exist and contain a valid hex key.
+        assert!(path.exists(), "key file should have been created");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let loaded_key = parse_hex_key(&contents).unwrap();
+
+        // The returned key must match what was written.
+        assert_eq!(*key, *loaded_key);
+    }
+
+    #[test]
+    fn file_provider_generate_does_not_overwrite_existing_key() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "{HEX_KEY}").unwrap();
+
+        let provider = FileKeyProvider::new(f.path().to_path_buf());
+        // Call generate_or_load_master_key when the file already exists.
+        let key = provider.generate_or_load_master_key().unwrap();
+
+        // Should return the original key, not a freshly generated one.
+        assert_eq!(*key, [0x42u8; 32]);
+    }
+
+    #[test]
+    fn file_provider_generate_twice_returns_same_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("master.key");
+        let provider = FileKeyProvider::new(path.clone());
+
+        let key1 = provider.generate_or_load_master_key().unwrap();
+        let key2 = provider.generate_or_load_master_key().unwrap();
+
+        assert_eq!(*key1, *key2, "second call must return the same stored key");
+    }
+
+    #[test]
+    fn env_provider_generate_not_supported() {
+        let provider = EnvKeyProvider::default();
+        let err = provider.generate_or_load_master_key().unwrap_err();
+        assert!(
+            matches!(err, KeyProviderError::NotAvailable(_)),
+            "EnvKeyProvider must return NotAvailable for generate"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_provider_generate_sets_restrictive_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("master.key");
+        let provider = FileKeyProvider::new(path.clone());
+        provider.generate_or_load_master_key().unwrap();
+
+        let meta = std::fs::metadata(&path).unwrap();
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "key file should have mode 0o600, got {mode:#o}");
     }
 }

@@ -325,3 +325,19 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 ```
+
+### 14.4  Flash configuration
+
+The ESP32-S3 modem firmware requires specific flash parameters in `sdkconfig.defaults.esp32s3` so that `elf2image` in CI uses matching values and the merged flash image boots correctly:
+
+```
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+```
+
+`CONFIG_ESPTOOLPY_FLASHMODE_DIO=y` selects Dual I/O (DIO) SPI mode. DIO uses 2 data lines for both address and data phases and is widely compatible across flash chips found on ESP32-S3 modules. It is more conservative than QIO (Quad I/O) and avoids pin-multiplexing issues on boards that do not route all four QSPI data lines.
+
+`CONFIG_ESPTOOLPY_FLASHFREQ_80M=y` sets the SPI flash clock to 80 MHz, which is the maximum supported by the ESP32-S3 in DIO mode and improves firmware load performance.
+
+`CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y` declares the installed flash capacity. This must match the actual hardware. The partition table is sized accordingly; using a mismatched value causes the bootloader to reject the partition table at boot.

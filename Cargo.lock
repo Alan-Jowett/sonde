@@ -4602,7 +4602,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5182,7 +5182,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "x25519-dalek",
  "zeroize",
 ]
@@ -5241,7 +5241,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "x25519-dalek",
  "zeroize",
 ]

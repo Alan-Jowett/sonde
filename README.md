@@ -7,12 +7,12 @@
 
 # Sonde
 
-[![CI](https://github.com/Alan-Jowett/sonde/workflows/CI/badge.svg)](https://github.com/Alan-Jowett/sonde/actions/workflows/ci.yml)
-[![ESP32-C3 Node](https://github.com/Alan-Jowett/sonde/workflows/ESP32-C3%20Node%20Firmware%20CI/badge.svg)](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32.yml)
-[![ESP32-S3 Modem](https://github.com/Alan-Jowett/sonde/workflows/ESP32-S3%20Modem%20Firmware%20CI/badge.svg)](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32-modem.yml)
-[![Tauri Desktop](https://github.com/Alan-Jowett/sonde/workflows/Tauri%20Desktop%20Build/badge.svg)](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-desktop.yml)
-[![Tauri Android](https://github.com/Alan-Jowett/sonde/workflows/Tauri%20Android%20APK/badge.svg)](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-android.yml)
-[![Nightly Release](https://github.com/Alan-Jowett/sonde/workflows/Nightly%20Release/badge.svg)](https://github.com/Alan-Jowett/sonde/actions/workflows/nightly-release.yml)
+[![CI](https://github.com/Alan-Jowett/sonde/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/ci.yml)
+[![ESP32-C3 Node](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32.yml)
+[![ESP32-S3 Modem](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32-modem.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/esp32-modem.yml)
+[![Tauri Desktop](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-desktop.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-desktop.yml)
+[![Tauri Android](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-android.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-android.yml)
+[![Nightly Release](https://github.com/Alan-Jowett/sonde/actions/workflows/nightly-release.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/nightly-release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **A programmable, verifiable runtime for distributed sensor nodes.**

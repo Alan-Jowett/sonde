@@ -1059,6 +1059,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0915 | T-N917 |
 | ND-0916 | T-N918 |
 | ND-0917 | T-N906 |
+| ND-0918 | *(verified by sdkconfig.defaults setting)* |
 
 ---
 
@@ -1071,7 +1072,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 
 | Spec ID | Test function(s) | Location |
 |---------|-----------------|----------|
-| T-N100 | `test_unpaired_node_returns_unpaired`, `t_e2e_058_lifecycle_usb_pair_boot_run` | wake_cycle.rs, e2e_tests.rs |
+| T-N100 | `test_unpaired_node_returns_unpaired` | wake_cycle.rs |
 | T-N101 | `test_wake_cbor_integer_keys` | wake_cycle.rs |
 | T-N102 | `test_outbound_frame_format` | wake_cycle.rs |
 | T-N103 | `test_send_app_data_max_blob` | wake_cycle.rs |
@@ -1093,11 +1094,11 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N304 | `test_wrong_seq_on_chunk_discarded` | wake_cycle.rs |
 | T-N305 | `test_sequence_increment_correctness`, `t_e2e_041_sequence_numbers` | wake_cycle.rs, e2e_tests.rs |
 | T-N306 | `test_nonce_uniqueness_across_cycles`, `t_e2e_002b_consecutive_wake_cycles`, `t_e2e_052_bridged_consecutive_cycles` | wake_cycle.rs, e2e_tests.rs |
-| T-N400 | `test_load_identity_unpaired`, `test_pair_and_load` | key_store.rs |
-| T-N401 | `test_load_identity_unpaired`, `test_unpaired_node_returns_unpaired`, `t_e2e_058_lifecycle_usb_pair_boot_run` | key_store.rs, wake_cycle.rs, e2e_tests.rs |
-| T-N402 | `test_usb_pairing_then_authenticated_wake`, `t_e2e_058_lifecycle_usb_pair_boot_run` | wake_cycle.rs, e2e_tests.rs |
-| T-N403 | `test_pair_rejects_already_paired`, `t_e2e_058_lifecycle_usb_pair_boot_run` | key_store.rs, e2e_tests.rs |
-| T-N404 | `test_factory_reset`, `t_e2e_058_lifecycle_usb_pair_boot_run`, `t_e2e_068_factory_reset_reprovision` | key_store.rs, e2e_tests.rs |
+| T-N400 | `test_load_identity_unpaired` | key_store.rs |
+| T-N401 | `test_load_identity_unpaired`, `test_unpaired_node_returns_unpaired` | key_store.rs, wake_cycle.rs |
+| T-N402 | `t_e2e_064_onboarding_to_wake` | e2e_tests.rs |
+| T-N403 | `t_n905_same_session_reprovision` | ble_pairing.rs |
+| T-N404 | `test_factory_reset`, `t_e2e_068_factory_reset_reprovision` | key_store.rs, e2e_tests.rs |
 | T-N500 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
 | T-N501 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N502 | `test_program_transfer_hash_mismatch` | wake_cycle.rs |
@@ -1130,21 +1131,28 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N800 | `test_malformed_cbor_discarded` | wake_cycle.rs |
 | T-N801 | `test_unexpected_msg_type_discarded` | wake_cycle.rs |
 | T-N802 | `test_chunked_transfer_wrong_chunk_index` | wake_cycle.rs |
+| T-N900 | *(hardware — validated on target: boot priority and BLE stack init)* | — |
+| T-N901 | *(hardware — validated on target: pairing button detection)* | — |
+| T-N902 | *(hardware — validated on target: BLE GATT service registration)* | — |
+| T-N903 | *(hardware — validated on target: MTU negotiation and LESC pairing)* | — |
 | T-N904 | `t_n904_happy_path`, `t_e2e_062_node_ble_provisioning`, `t_e2e_068_factory_reset_reprovision`, `t_e2e_070_full_use_case` | ble_pairing.rs, e2e_tests.rs |
 | T-N905 | `t_n905_same_session_reprovision` | ble_pairing.rs |
 | T-N906 | `t_n906_factory_reset_on_button_hold` | ble_pairing.rs |
 | T-N907 | `t_n907_nvs_write_key_failure`, `t_n907_nvs_write_channel_failure`, `t_n907_nvs_write_peer_payload_failure`, `t_n907_nvs_write_reg_complete_failure` | ble_pairing.rs |
+| T-N908 | *(hardware — validated on target: BLE mode persistence after provisioning)* | — |
 | T-N909 | `t_e2e_063_peer_request_ack` | e2e_tests.rs |
+| T-N910 | *(hardware — validated on target: PEER_REQUEST retransmission)* | — |
 | T-N911 | `t_e2e_067_agent_revocation` | e2e_tests.rs |
 | T-N912 | `t_e2e_063_peer_request_ack` | e2e_tests.rs |
 | T-N913 | `t_e2e_065_deferred_erasure` | e2e_tests.rs |
+| T-N914 | *(hardware — validated on target: PEER_ACK wrong registration proof)* | — |
 | T-N915 | `t_e2e_063_peer_request_ack`, `t_e2e_064_onboarding_to_wake` | e2e_tests.rs |
 | T-N916 | `t_e2e_064_onboarding_to_wake`, `t_e2e_065_deferred_erasure` | e2e_tests.rs |
 | T-N917 | `t_e2e_066_self_healing` | e2e_tests.rs |
+| T-N918 | *(hardware — validated on target: NVS layout for BLE pairing artifacts)* | — |
 
-> **Note:** Spec cases T-N900–T-N903 (boot priority / BLE stack), T-N908 (BLE mode persistence),
-> T-N910 (PEER_REQUEST retransmission), T-N914 (PEER_ACK wrong registration proof), and T-N918
-> (NVS layout) require hardware or BLE stack integration and are validated on the target platform
-> rather than in the host-based test suite. T-N503 (map decoding with LDDW pointer resolution),
+> **Note:** Spec cases marked *(hardware — validated on target)* require the
+> NimBLE BLE stack or physical peripherals and cannot run in the host-based
+> test suite. T-N503 (map decoding with LDDW pointer resolution),
 > T-N616 (map memory budget enforcement), and T-N702 (response timeout — mock gateway delays
-> > 50 ms) are host-testable but not yet implemented.
+> \> 50 ms) are host-testable but not yet implemented.

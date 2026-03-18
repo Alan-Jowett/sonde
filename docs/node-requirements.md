@@ -953,6 +953,22 @@ Factory reset via BLE is triggered by holding the pairing button during boot, th
 
 ---
 
+### ND-0918  Main task stack size
+
+**Priority:** Must  
+**Source:** sdkconfig.defaults
+
+**Description:**  
+The ESP-IDF main task stack MUST be at least 16 KB (`CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384`). The default 3584 bytes is insufficient for BLE stack initialization (`run_ble_pairing_mode` → NimBLE host + GATT server setup), combined with NVS, ESP-NOW, and BPF interpreter usage on the main task stack.
+
+**Acceptance criteria:**
+
+1. `CONFIG_ESP_MAIN_TASK_STACK_SIZE` is set to at least 16384 in `sdkconfig.defaults`.
+2. The node boots and completes a full wake cycle without a stack overflow.
+3. BLE pairing mode initializes without a stack overflow.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1013,3 +1029,4 @@ Factory reset via BLE is triggered by holding the pairing button during boot, th
 | ND-0915 | Self-healing on WAKE failure | Must |
 | ND-0916 | NVS layout for BLE pairing artifacts | Must |
 | ND-0917 | Factory reset via BLE | Must |
+| ND-0918 | Main task stack size | Must |

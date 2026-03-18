@@ -249,7 +249,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
             };
 
             // Send NODE_ACK indication via set_value + notify.
-            let chr = node_cmd_char.lock();
+            let mut chr = node_cmd_char.lock();
             chr.set_value(&ack_data);
             chr.notify();
         }

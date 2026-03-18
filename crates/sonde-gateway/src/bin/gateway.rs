@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
+#[cfg(windows)]
+use clap::Subcommand;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
@@ -26,6 +28,24 @@ const DEFAULT_ADMIN_SOCKET: &str = "/var/run/sonde/admin.sock";
 #[cfg(windows)]
 const DEFAULT_ADMIN_SOCKET: &str = r"\\.\pipe\sonde-admin";
 
+// ── Windows NT service constants ─────────────────────────────────────────────
+#[cfg(windows)]
+const SERVICE_NAME: &str = "sonde-gateway";
+#[cfg(windows)]
+const SERVICE_DISPLAY_NAME: &str = "Sonde Gateway";
+#[cfg(windows)]
+const SERVICE_DESCRIPTION: &str = "Manages sensor nodes over ESP-NOW radio.";
+
+// Static storage for parsed CLI args, shared between main() and the service
+// entry point which runs on a separate thread dispatched by the SCM.
+#[cfg(windows)]
+static SERVICE_CLI: std::sync::OnceLock<Cli> = std::sync::OnceLock::new();
+
+// ── Windows NT service entry point ───────────────────────────────────────────
+// Must be defined at module scope (outside any function) per the macro contract.
+#[cfg(windows)]
+windows_service::define_windows_service!(ffi_service_main, service_entry);
+
 /// Key provider backend selection.
 #[derive(clap::ValueEnum, Clone, Debug, Default)]
 enum KeyProviderKind {
@@ -40,10 +60,39 @@ enum KeyProviderKind {
     SecretService,
 }
 
+/// Optional subcommands for Windows NT service management.
+///
+/// Without a subcommand the gateway runs as a normal console application.
+#[cfg(windows)]
+#[derive(Subcommand, Debug, Clone)]
+enum ServiceCommand {
+    /// Install sonde-gateway as a Windows NT service (requires Administrator).
+    ///
+    /// The service is registered to start automatically at boot. All gateway
+    /// options supplied here (--port, --db, …) are embedded in the service
+    /// registration and used on every subsequent start.
+    Install,
+    /// Remove the sonde-gateway Windows NT service registration (requires Administrator).
+    ///
+    /// If the service is running it is stopped first. The service entry is then
+    /// permanently deleted from the Service Control Manager database.
+    Uninstall,
+}
+
 /// Sonde gateway — manages sensor nodes over ESP-NOW radio.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "sonde-gateway", version, about)]
 struct Cli {
+    /// Service management subcommand (Windows only).
+    ///
+    /// `install`   — Register as a Windows NT service (auto-start on boot).
+    /// `uninstall` — Remove the service registration.
+    ///
+    /// Without a subcommand the gateway runs as a console application.
+    #[cfg(windows)]
+    #[command(subcommand)]
+    command: Option<ServiceCommand>,
+
     /// Path to the SQLite database file.
     #[arg(long, default_value = "sonde.db")]
     db: String,
@@ -111,6 +160,23 @@ struct Cli {
     /// read-only from the process).
     #[arg(long, default_value_t = false)]
     generate_master_key: bool,
+
+    /// Run as a Windows NT service.
+    ///
+    /// This flag is set automatically by `sonde-gateway install` in the service
+    /// registration and is passed by the Windows Service Control Manager when
+    /// starting the service. Do not set this flag manually.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    service: bool,
+
+    /// Path to the log file used when running as a Windows NT service.
+    ///
+    /// Defaults to `<db-path>.log` (e.g., `sonde.log` when `--db sonde.db`).
+    /// Has no effect in console mode.
+    #[cfg(windows)]
+    #[arg(long)]
+    log_file: Option<PathBuf>,
 }
 
 /// Build the appropriate [`KeyProvider`] from the CLI arguments.
@@ -162,22 +228,19 @@ fn build_key_provider(cli: &Cli) -> Result<Box<dyn KeyProvider>, Box<dyn std::er
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sonde_gateway=info".into()),
-        )
-        .init();
-
-    let cli = Cli::parse();
-
+/// Core gateway run loop.
+///
+/// Starts all subsystems (storage, transport, gRPC admin server, BLE loop, frame
+/// processing loop) and runs until `shutdown` resolves or any subsystem exits.
+async fn run_gateway(
+    cli: &Cli,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> Result<(), Box<dyn std::error::Error>> {
     info!(db = %cli.db, port = %cli.port, channel = cli.channel, "starting sonde-gateway");
 
     // 1. Load master key for at-rest PSK encryption (GW-0601a).
     //    Build the appropriate KeyProvider from CLI arguments, then invoke it.
-    let provider = build_key_provider(&cli)?;
+    let provider = build_key_provider(cli)?;
     let master_key = Zeroizing::new(if cli.generate_master_key {
         let k = provider.generate_or_load_master_key()?;
         *k
@@ -230,7 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    // 4. Gateway engine — wire up handler router when a config file was given
+    // 5. Gateway engine — wire up handler router when a config file was given
     let gateway = if let Some(config_path) = &cli.handler_config {
         let configs = load_handler_configs(config_path).map_err(|e| {
             error!("failed to load handler config: {e}");
@@ -341,12 +404,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             // Sync the local window state from the controller on each iteration.
-            // The controller may have opened/closed it via admin RPCs.
             let controller_open = ble_ctrl.is_window_open().await;
             if controller_open && !window.is_open() {
-                // Controller opened the window — sync to local state.
-                // We don't know the exact deadline, but the controller
-                // handles auto-close, so just open with a long duration.
                 window.open(3600);
             } else if !controller_open && window.is_open() {
                 window.close();
@@ -399,14 +458,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         passkey = pc.passkey,
                         "BLE Numeric Comparison passkey — awaiting operator confirmation"
                     );
-                    // Broadcast to admin CLI streams.
                     ble_ctrl.broadcast_event(
                         sonde_gateway::ble_pairing::BlePairingEventKind::PasskeyRequest {
                             passkey: pc.passkey,
                         },
                     );
-                    // Forward to admin CLI via the controller. If no admin
-                    // client is listening, wait up to 30s then auto-reject.
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     ble_ctrl.set_passkey_responder(tx).await;
 
@@ -431,22 +487,296 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 9. Wait for shutdown
+    // 9. Wait for shutdown signal, or for any subsystem to exit unexpectedly.
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            info!("received ctrl-c, shutting down");
+        _ = shutdown => {
+            info!("shutdown signal received, stopping gateway");
         }
         _ = frame_loop => {
-            error!("frame processing loop exited");
+            error!("frame processing loop exited unexpectedly");
         }
         _ = ble_loop => {
-            error!("BLE event loop exited");
+            error!("BLE event loop exited unexpectedly");
         }
         _ = grpc_handle => {
-            error!("gRPC server exited");
+            error!("gRPC server exited unexpectedly");
         }
     }
 
     info!("gateway stopped");
     Ok(())
+}
+
+// ── Windows NT service implementation ────────────────────────────────────────
+
+/// Service entry point called by the Windows Service Control Manager.
+///
+/// Runs on a dedicated thread created by `service_dispatcher::start()`.
+/// The CLI args are retrieved from [`SERVICE_CLI`] which is populated by
+/// `main()` before calling `service_dispatcher::start()`.
+#[cfg(windows)]
+fn service_entry(_arguments: Vec<std::ffi::OsString>) {
+    use std::sync::{Arc, Mutex};
+    use windows_service::service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+        ServiceType,
+    };
+    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+
+    const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
+    let cli = match SERVICE_CLI.get() {
+        Some(c) => c,
+        None => {
+            // This should never happen: main() stores the CLI before dispatching.
+            return;
+        }
+    };
+
+    // Channel used to signal the async gateway to shut down cleanly.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    // Wrap in Arc<Mutex<Option<…>>> so the Fn closure can send exactly once.
+    let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
+
+    let event_handler = move |control_event| -> ServiceControlHandlerResult {
+        match control_event {
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            ServiceControl::Stop | ServiceControl::Shutdown => {
+                if let Ok(mut guard) = shutdown_tx.lock() {
+                    if let Some(tx) = guard.take() {
+                        let _ = tx.send(());
+                    }
+                }
+                ServiceControlHandlerResult::NoError
+            }
+            _ => ServiceControlHandlerResult::NotImplemented,
+        }
+    };
+
+    let status_handle = match service_control_handler::register(SERVICE_NAME, event_handler) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("sonde-gateway: failed to register service control handler: {e}");
+            return;
+        }
+    };
+
+    // Report that the service is now running.
+    let running_status = ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    };
+    if let Err(e) = status_handle.set_service_status(running_status) {
+        eprintln!("sonde-gateway: failed to report Running status: {e}");
+        return;
+    }
+
+    // Run the gateway on a fresh tokio runtime.
+    let exit_code = match tokio::runtime::Runtime::new() {
+        Ok(rt) => match rt.block_on(run_gateway(cli, shutdown_rx)) {
+            Ok(()) => 0u32,
+            Err(e) => {
+                error!("gateway exited with error: {e}");
+                1
+            }
+        },
+        Err(e) => {
+            eprintln!("sonde-gateway: failed to create tokio runtime: {e}");
+            1
+        }
+    };
+
+    // Report that the service has stopped.
+    let stopped_status = ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(exit_code),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    };
+    let _ = status_handle.set_service_status(stopped_status);
+}
+
+/// Initialise tracing to write to a log file (used in service mode where there
+/// is no console).
+///
+/// The log file path defaults to `<db-path>.log` when `--log-file` is not set.
+#[cfg(windows)]
+fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use tracing_subscriber::EnvFilter;
+
+    let log_path = cli.log_file.clone().unwrap_or_else(|| {
+        let mut p = PathBuf::from(&cli.db);
+        p.set_extension("log");
+        p
+    });
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("cannot open log file {}: {e}", log_path.display()))?;
+
+    tracing_subscriber::fmt()
+        .with_writer(std::sync::Mutex::new(file))
+        .with_ansi(false)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "sonde_gateway=info".into()),
+        )
+        .init();
+
+    Ok(())
+}
+
+/// Install sonde-gateway as an auto-start Windows NT service.
+///
+/// The current executable is registered under the name `sonde-gateway`.
+/// All gateway options passed on the command line are embedded in the service
+/// registration so they are used on every subsequent start by the SCM.
+#[cfg(windows)]
+fn install_service(_cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use std::ffi::OsString;
+    use windows_service::service::{
+        ServiceAccess, ServiceErrorControl, ServiceStartType, ServiceType,
+    };
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+    let manager = ServiceManager::local_computer(
+        None::<&str>,
+        ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+    )?;
+
+    let exe_path = std::env::current_exe()?;
+
+    // Reconstruct launch arguments from the original command line, replacing
+    // the `install` subcommand with the `--service` flag so the SCM invokes
+    // the binary in service mode on each start.
+    let launch_args: Vec<OsString> = std::iter::once(OsString::from("--service"))
+        .chain(
+            std::env::args_os()
+                .skip(1) // skip binary path
+                .filter(|a| a.to_str() != Some("install")),
+        )
+        .collect();
+
+    let service_info = windows_service::service::ServiceInfo {
+        name: OsString::from(SERVICE_NAME),
+        display_name: OsString::from(SERVICE_DISPLAY_NAME),
+        service_type: ServiceType::OWN_PROCESS,
+        start_type: ServiceStartType::AutoStart,
+        error_control: ServiceErrorControl::Normal,
+        executable_path: exe_path,
+        launch_arguments: launch_args,
+        dependencies: vec![],
+        account_name: None, // run as LocalSystem
+        account_password: None,
+    };
+
+    let service = manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
+    service.set_description(SERVICE_DESCRIPTION)?;
+
+    println!("sonde-gateway service installed successfully.");
+    println!("Start with: sc start {SERVICE_NAME}");
+    Ok(())
+}
+
+/// Uninstall the sonde-gateway Windows NT service.
+///
+/// Stops the service if it is currently running, then removes it from the
+/// Service Control Manager database.
+#[cfg(windows)]
+fn uninstall_service() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+    use windows_service::service::{ServiceAccess, ServiceState};
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+    use windows_sys::Win32::Foundation::ERROR_SERVICE_DOES_NOT_EXIST;
+
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+
+    let service = manager.open_service(
+        SERVICE_NAME,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
+    )?;
+
+    // Mark the service for deletion. It won't actually be removed until all
+    // open handles are closed and the service is stopped.
+    service.delete()?;
+
+    if service.query_status()?.current_state != ServiceState::Stopped {
+        service.stop()?;
+        println!("Stopping sonde-gateway service…");
+    }
+
+    // Close our handle so the SCM can remove the entry.
+    drop(service);
+
+    // Poll until the service disappears from the SCM database (≤5 s).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+            Err(windows_service::Error::Winapi(e))
+                if e.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) =>
+            {
+                println!("sonde-gateway service uninstalled successfully.");
+                return Ok(());
+            }
+            _ => std::thread::sleep(Duration::from_millis(500)),
+        }
+    }
+
+    println!("sonde-gateway service is marked for deletion.");
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
+    // ── Windows NT service dispatch ──────────────────────────────────────────
+    #[cfg(windows)]
+    {
+        match &cli.command {
+            Some(ServiceCommand::Install) => return install_service(&cli),
+            Some(ServiceCommand::Uninstall) => return uninstall_service(),
+            None => {}
+        }
+
+        if cli.service {
+            // Running as a Windows NT service (invoked by the SCM).
+            // Initialise file-based logging first (no console available).
+            init_service_logging(&cli)?;
+            SERVICE_CLI
+                .set(cli)
+                .expect("SERVICE_CLI already set — duplicate service dispatch?");
+            windows_service::service_dispatcher::start(SERVICE_NAME, ffi_service_main)?;
+            return Ok(());
+        }
+    }
+
+    // ── Console mode (default on all platforms) ──────────────────────────────
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "sonde_gateway=info".into()),
+        )
+        .init();
+
+    // Drive ctrl-c into a oneshot so run_gateway has a uniform shutdown interface.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = shutdown_tx.send(());
+        }
+    });
+
+    run_gateway(&cli, shutdown_rx).await
 }

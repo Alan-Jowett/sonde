@@ -19,6 +19,7 @@ import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.ParcelUuid;
 
@@ -174,6 +175,41 @@ public class BleHelper {
         if (!this.adapter.isEnabled()) throw new Exception("Bluetooth is disabled");
     }
 
+    // --- Permission checks -------------------------------------------------
+
+    /**
+     * Verify that all BLE permissions required by the current API level have
+     * been granted.  Throws a descriptive exception listing the missing
+     * permissions so the Rust layer can surface an actionable error message.
+     */
+    private void requireBlePermissions() throws Exception {
+        List<String> missing = new ArrayList<>();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+ (API 31): need BLUETOOTH_SCAN and BLUETOOTH_CONNECT
+            if (context.checkSelfPermission("android.permission.BLUETOOTH_SCAN")
+                    != PackageManager.PERMISSION_GRANTED) {
+                missing.add("BLUETOOTH_SCAN");
+            }
+            if (context.checkSelfPermission("android.permission.BLUETOOTH_CONNECT")
+                    != PackageManager.PERMISSION_GRANTED) {
+                missing.add("BLUETOOTH_CONNECT");
+            }
+        } else {
+            // Android 6–11: need ACCESS_FINE_LOCATION for BLE scanning
+            if (context.checkSelfPermission("android.permission.ACCESS_FINE_LOCATION")
+                    != PackageManager.PERMISSION_GRANTED) {
+                missing.add("ACCESS_FINE_LOCATION");
+            }
+        }
+
+        if (!missing.isEmpty()) {
+            throw new Exception(
+                "BLE permissions not granted — request these at runtime: "
+                + String.join(", ", missing));
+        }
+    }
+
     // --- Scanning ----------------------------------------------------------
 
     /**
@@ -188,6 +224,8 @@ public class BleHelper {
      *                       (e.g. {@code "0000fe60-0000-1000-8000-00805f9b34fb"})
      */
     public void startScan(String serviceUuidStr) throws Exception {
+        requireBlePermissions();
+
         BluetoothLeScanner scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) throw new Exception("BLE scanner unavailable");
 
@@ -307,6 +345,7 @@ public class BleHelper {
      * @return the negotiated ATT MTU
      */
     public int connect(byte[] address, long timeoutMs) throws Exception {
+        requireBlePermissions();
         disconnectInner();
 
         String addrStr = bytesToMac(address);

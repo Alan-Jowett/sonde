@@ -28,6 +28,8 @@
 //!
 //! `node_psk` is **never** persisted (per PT-0801).
 
+use std::sync::OnceLock;
+
 use jni::objects::{GlobalRef, JByteArray, JObject, JString, JValue};
 use jni::JNIEnv;
 use jni::JavaVM;
@@ -37,6 +39,9 @@ use zeroize::Zeroizing;
 use crate::error::PairingError;
 use crate::store::PairingStore;
 use crate::types::{GatewayIdentity, PairingArtifacts};
+
+/// Cached JavaVM for creating stores on demand (set in `JNI_OnLoad`).
+static CACHED_STORE_VM: OnceLock<JavaVM> = OnceLock::new();
 
 // SharedPreferences key constants
 const KEY_GW_PUBLIC_KEY: &str = "gw_public_key";
@@ -105,6 +110,23 @@ impl AndroidPairingStore {
             vm,
             store: store_ref,
         })
+    }
+
+    /// Cache the `JavaVM` for later use by [`from_cached_vm()`].
+    pub fn cache_vm(vm: JavaVM) {
+        let _ = CACHED_STORE_VM.set(vm);
+        debug!("AndroidPairingStore: JavaVM cached");
+    }
+
+    /// Create a new store from the cached `JavaVM`.
+    /// [`cache_vm()`] must have been called first.
+    pub fn from_cached_vm() -> Result<Self, PairingError> {
+        let vm = CACHED_STORE_VM.get().ok_or_else(|| {
+            PairingError::StoreSaveFailed("JavaVM not cached — call cache_vm() first".into())
+        })?;
+        let mut env = vm.attach_current_thread().map_err(store_jni_err)?;
+        let context = get_app_context(&mut env)?;
+        Self::new(&mut env, &context)
     }
 }
 
@@ -358,6 +380,32 @@ fn get_string(
         .map_err(store_jni_err)?
         .into();
     Ok(Some(s))
+}
+
+// ---------------------------------------------------------------------------
+/// Get the Application context via `ActivityThread.currentApplication()`.
+fn get_app_context<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>, PairingError> {
+    let activity_thread = env
+        .find_class("android/app/ActivityThread")
+        .map_err(store_jni_err)?;
+    let app = env
+        .call_static_method(
+            activity_thread,
+            "currentApplication",
+            "()Landroid/app/Application;",
+            &[],
+        )
+        .and_then(|v| v.l())
+        .map_err(|e| {
+            let msg = jni_exception_msg(env).unwrap_or_else(|| e.to_string());
+            PairingError::StoreSaveFailed(format!("currentApplication: {msg}"))
+        })?;
+    if app.is_null() {
+        return Err(PairingError::StoreSaveFailed(
+            "ActivityThread.currentApplication() returned null".into(),
+        ));
+    }
+    Ok(app)
 }
 
 // ---------------------------------------------------------------------------

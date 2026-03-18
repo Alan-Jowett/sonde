@@ -62,8 +62,41 @@ jobs:
       - name: Initialize Android project
         working-directory: crates/sonde-pair-ui
         run: |
+          # Save our custom AndroidManifest.xml (with BLE permissions)
+          # before `tauri android init` overwrites it with a minimal default.
+          cp src-tauri/gen/android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak
           rm -rf src-tauri/gen/android
           cargo tauri android init
+
+      - name: Patch Gradle for BLE Java classes
+        # Copy sonde-pair Java sources into the generated Android project,
+        # restore our custom AndroidManifest (with BLE permissions), and add
+        # the security-crypto dependency. This must run after
+        # `tauri android init` regenerates gen/android/.
+        working-directory: crates/sonde-pair-ui/src-tauri/gen/android
+        run: |
+          # Restore custom AndroidManifest.xml with BLE permissions.
+          cp /tmp/AndroidManifest.xml.bak app/src/main/AndroidManifest.xml
+
+          # Copy Java source files into the standard Android source tree
+          mkdir -p app/src/main/java/io/sonde/pair
+          cp ../../../../../crates/sonde-pair/java/io/sonde/pair/*.java \
+             app/src/main/java/io/sonde/pair/
+          ls -la app/src/main/java/io/sonde/pair/
+
+          # Add security-crypto dependency
+          GRADLE="app/build.gradle.kts"
+          python3 -c "
+          with open('$GRADLE') as f:
+              txt = f.read()
+          txt = txt.replace(
+              'implementation(\"androidx.appcompat:appcompat',
+              'implementation(\"androidx.security:security-crypto:1.1.0-alpha06\")\n    implementation(\"androidx.appcompat:appcompat'
+          )
+          with open('$GRADLE', 'w') as f:
+              f.write(txt)
+          "
+          grep 'security-crypto' "$GRADLE"
 
       - name: Build Android APK (debug)
         working-directory: crates/sonde-pair-ui

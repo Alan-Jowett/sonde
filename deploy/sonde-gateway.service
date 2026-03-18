@@ -4,9 +4,19 @@ After=network.target
 
 [Service]
 ExecStart=/usr/local/bin/sonde-gateway --port /dev/ttyACM0 --db /var/lib/sonde/sonde.db --master-key-file /etc/sonde/master-key.hex
-Restart=always
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=300s
+StartLimitBurst=5
 User=sonde
 Group=dialout
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sonde
+RuntimeDirectory=sonde
 
 [Install]
 WantedBy=multi-user.target

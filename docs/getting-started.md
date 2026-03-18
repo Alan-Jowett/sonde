@@ -463,9 +463,12 @@ sudo systemctl restart sonde-gateway
 | Stop the service | `sudo systemctl stop sonde-gateway` |
 | Restart the service | `sudo systemctl restart sonde-gateway` |
 | Check service status | `sudo systemctl status sonde-gateway` |
-| View live logs | `journalctl -u sonde-gateway -f` |
-| View recent logs | `journalctl -u sonde-gateway -n 100` |
+| View live logs | `sudo journalctl -u sonde-gateway -f` |
+| View recent logs | `sudo journalctl -u sonde-gateway -n 100` |
 | Disable auto-start | `sudo systemctl disable sonde-gateway` |
+
+> **Tip:** To read logs without `sudo`, add your user to the `systemd-journal` group:
+> `sudo usermod -a -G systemd-journal $USER` (log out and back in for the change to take effect).
 
 ---
 

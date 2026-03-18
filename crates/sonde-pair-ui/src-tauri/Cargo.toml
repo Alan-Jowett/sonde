@@ -27,7 +27,7 @@ path = "../../sonde-pair"
 features = ["android"]
 
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
+jni = "0.22"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -157,6 +157,13 @@ pub(crate) fn parse_hex_key(hex: &str) -> Result<Zeroizing<[u8; 32]>, KeyProvide
 fn try_create_hex_key_file(path: &std::path::Path, hex: &str) -> std::io::Result<()> {
     use std::io::Write as _;
 
+    // Helper: best-effort removal of a partially-written key file so a
+    // subsequent run doesn't find a corrupt/empty file via `AlreadyExists`.
+    let cleanup = |e: std::io::Error| -> std::io::Error {
+        let _ = std::fs::remove_file(path);
+        e
+    };
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -165,10 +172,12 @@ fn try_create_hex_key_file(path: &std::path::Path, hex: &str) -> std::io::Result
             .create_new(true) // fail immediately if the file already exists
             .mode(0o600)
             .open(path)?;
-        f.write_all(hex.as_bytes())?;
+        f.write_all(hex.as_bytes()).map_err(&cleanup)?;
         // Explicitly set permissions via fchmod(fd) after writing to override
         // any umask that may have restricted the initial mode below 0o600.
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(&cleanup)?;
+        f.sync_all().map_err(cleanup)?;
     }
 
     #[cfg(not(unix))]
@@ -177,7 +186,8 @@ fn try_create_hex_key_file(path: &std::path::Path, hex: &str) -> std::io::Result
             .write(true)
             .create_new(true) // fail immediately if the file already exists
             .open(path)?;
-        f.write_all(hex.as_bytes())?;
+        f.write_all(hex.as_bytes()).map_err(&cleanup)?;
+        f.sync_all().map_err(cleanup)?;
     }
 
     Ok(())
@@ -377,12 +387,13 @@ impl KeyProvider for DpapiKeyProvider {
         {
             Ok(mut f) => {
                 use std::io::Write as _;
-                f.write_all(&blob).map_err(|e| {
-                    KeyProviderError::Io(format!(
+                if let Err(e) = f.write_all(&blob).and_then(|()| f.sync_all()) {
+                    let _ = std::fs::remove_file(&self.blob_path);
+                    return Err(KeyProviderError::Io(format!(
                         "cannot write DPAPI blob {}: {e}",
                         self.blob_path.display()
-                    ))
-                })?;
+                    )));
+                }
                 tracing::warn!(
                     path = %self.blob_path.display(),
                     "master key generated and stored as DPAPI blob; back this file up securely"

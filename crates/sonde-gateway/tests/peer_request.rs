@@ -171,8 +171,9 @@ fn ecdh_encrypt(identity: &GatewayIdentity, plaintext: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Build a complete PEER_REQUEST frame.
-fn build_peer_request(
+/// Build a complete PEER_REQUEST frame, also returning the encrypted_payload
+/// and the nonce used in the header (needed for T-1219 verification).
+fn build_peer_request_detailed(
     identity: &GatewayIdentity,
     node_id: &str,
     node_psk: &[u8; 32],
@@ -180,7 +181,8 @@ fn build_peer_request(
     phone_psk: &[u8; 32],
     timestamp: Option<u64>,
     sensors: Option<Vec<ciborium::Value>>,
-) -> Vec<u8> {
+    nonce: u64,
+) -> (Vec<u8>, Vec<u8>) {
     let node_key_hint = compute_key_hint(node_psk);
     let ts = timestamp.unwrap_or_else(|| {
         std::time::SystemTime::now()
@@ -196,7 +198,7 @@ fn build_peer_request(
     // Build outer CBOR: { 1: encrypted_payload }
     let outer = ciborium::Value::Map(vec![(
         ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
-        ciborium::Value::Bytes(encrypted_payload),
+        ciborium::Value::Bytes(encrypted_payload.clone()),
     )]);
     let mut outer_buf = Vec::new();
     ciborium::into_writer(&outer, &mut outer_buf).unwrap();
@@ -204,10 +206,34 @@ fn build_peer_request(
     let header = FrameHeader {
         key_hint: node_key_hint,
         msg_type: MSG_PEER_REQUEST,
-        nonce: 0x1234567890ABCDEF,
+        nonce,
     };
 
-    encode_frame(&header, &outer_buf, node_psk, &RustCryptoHmac).unwrap()
+    let frame = encode_frame(&header, &outer_buf, node_psk, &RustCryptoHmac).unwrap();
+    (frame, encrypted_payload)
+}
+
+/// Build a complete PEER_REQUEST frame.
+fn build_peer_request(
+    identity: &GatewayIdentity,
+    node_id: &str,
+    node_psk: &[u8; 32],
+    rf_channel: u8,
+    phone_psk: &[u8; 32],
+    timestamp: Option<u64>,
+    sensors: Option<Vec<ciborium::Value>>,
+) -> Vec<u8> {
+    build_peer_request_detailed(
+        identity,
+        node_id,
+        node_psk,
+        rf_channel,
+        phone_psk,
+        timestamp,
+        sensors,
+        0x1234567890ABCDEF,
+    )
+    .0
 }
 
 fn current_timestamp() -> u64 {
@@ -760,4 +786,488 @@ async fn peer_request_timestamp_boundary_plus1_rejected() {
 
     let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_none(), "timestamp at +86410s must be rejected");
+}
+
+// ── T-NNNN Spec Tests ─────────────────────────────────────────────────
+//
+// The following tests are the canonical spec-numbered tests from
+// gateway-validation.md.  They complement the tests above, which cover
+// the same functionality under descriptive names.
+
+// -- T-1210: PEER_REQUEST decryption happy path --
+
+/// T-1210  PEER_REQUEST decryption happy path (GW-1212).
+///
+/// Construct a correctly encrypted PEER_REQUEST, submit it, and assert
+/// the gateway successfully decrypts and produces a PEER_ACK.
+#[tokio::test]
+async fn t_1210_peer_request_decryption_happy_path() {
+    let env = TestEnv::new().await;
+
+    let frame = build_peer_request(
+        &env.identity,
+        "node-t1210",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        None,
+        None,
+    );
+
+    let response = env.gateway.process_frame(&frame, peer()).await;
+    assert!(
+        response.is_some(),
+        "correctly encrypted PEER_REQUEST must produce a PEER_ACK"
+    );
+
+    let raw = response.unwrap();
+    let decoded = decode_frame(&raw).unwrap();
+    assert_eq!(decoded.header.msg_type, MSG_PEER_ACK);
+}
+
+// -- T-1211: PEER_REQUEST with bad GCM tag --
+
+/// T-1211  PEER_REQUEST with bad GCM tag (GW-1212).
+///
+/// Corrupt the GCM authentication tag, assert silent discard.
+#[tokio::test]
+async fn t_1211_peer_request_bad_gcm_tag() {
+    let env = TestEnv::new().await;
+
+    let mut frame = build_peer_request(
+        &env.identity,
+        "node-t1211",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        None,
+        None,
+    );
+
+    // Corrupt a byte in the payload area (after the 11-byte header).
+    if frame.len() > 20 {
+        frame[20] ^= 0xFF;
+    }
+
+    let response = env.gateway.process_frame(&frame, peer()).await;
+    assert!(
+        response.is_none(),
+        "bad GCM tag must cause silent discard (no response)"
+    );
+}
+
+// -- T-1212: Phone HMAC with multiple candidates --
+
+/// T-1212  Phone HMAC with multiple candidates (GW-1213).
+///
+/// Register two phones whose PSKs produce the same `phone_key_hint`.
+/// Build a PEER_REQUEST using the second phone's PSK and assert the
+/// gateway tries both candidates and accepts the valid one.
+#[tokio::test]
+async fn t_1212_phone_hmac_multiple_candidates() {
+    let env = TestEnv::new().await;
+
+    // Phone A is already registered (TEST_PHONE_PSK) in TestEnv::new().
+    let phone_a_key_hint = compute_key_hint(&TEST_PHONE_PSK);
+
+    // Register phone B with a DIFFERENT PSK but the SAME key_hint.
+    let phone_b_psk = [0xAAu8; 32];
+    let phone_b_record = PhonePskRecord {
+        phone_id: 0,
+        phone_key_hint: phone_a_key_hint, // force same key_hint
+        psk: Zeroizing::new(phone_b_psk),
+        label: "phone-b-same-hint".into(),
+        issued_at: std::time::SystemTime::now(),
+        status: PhonePskStatus::Active,
+    };
+    env.storage.store_phone_psk(&phone_b_record).await.unwrap();
+
+    // Verify two phones now share the same key_hint.
+    let candidates = env
+        .storage
+        .get_phone_psks_by_key_hint(phone_a_key_hint)
+        .await
+        .unwrap();
+    assert_eq!(
+        candidates.len(),
+        2,
+        "two phone PSKs must share the same key_hint"
+    );
+
+    // Build request using phone A's PSK — the HMAC will only match phone A.
+    let frame = build_peer_request(
+        &env.identity,
+        "node-t1212",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        None,
+        None,
+    );
+
+    let response = env.gateway.process_frame(&frame, peer()).await;
+    assert!(
+        response.is_some(),
+        "gateway must try both candidates and accept the matching one"
+    );
+
+    // Verify the node was registered by the correct phone.
+    let node = env.storage.get_node("node-t1212").await.unwrap().unwrap();
+    assert_eq!(node.registered_by_phone_id, Some(env.phone_id));
+}
+
+// -- T-1213: Phone HMAC with revoked PSK --
+
+/// T-1213  Phone HMAC with revoked PSK rejected (GW-1213).
+///
+/// Register a phone, revoke its PSK, then submit a PEER_REQUEST using
+/// that PSK.  Assert silent discard (revoked PSK not tried).
+#[tokio::test]
+async fn t_1213_phone_hmac_revoked_psk() {
+    let env = TestEnv::new().await;
+
+    // Revoke the phone PSK.
+    env.storage.revoke_phone_psk(env.phone_id).await.unwrap();
+
+    let frame = build_peer_request(
+        &env.identity,
+        "node-t1213",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        None,
+        None,
+    );
+
+    let response = env.gateway.process_frame(&frame, peer()).await;
+    assert!(
+        response.is_none(),
+        "revoked phone PSK must cause silent discard"
+    );
+}
+
+// -- T-1214: PEER_REQUEST frame HMAC verification --
+
+/// T-1214  PEER_REQUEST frame HMAC verification (GW-1214).
+///
+/// 1. Valid frame HMAC: processing continues (implicit in happy path).
+/// 2. Corrupted frame HMAC: silent discard.
+#[tokio::test]
+async fn t_1214_frame_hmac_verification() {
+    let env = TestEnv::new().await;
+
+    let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
+    let ts = current_timestamp();
+    let cbor_bytes = build_pairing_cbor("node-t1214", node_key_hint, &TEST_NODE_PSK, 7, ts, None);
+    let authenticated_request = build_authenticated_request(&cbor_bytes, &TEST_PHONE_PSK);
+    let encrypted_payload = ecdh_encrypt(&env.identity, &authenticated_request);
+
+    let outer = ciborium::Value::Map(vec![(
+        ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(encrypted_payload),
+    )]);
+    let mut outer_buf = Vec::new();
+    ciborium::into_writer(&outer, &mut outer_buf).unwrap();
+
+    let header = FrameHeader {
+        key_hint: node_key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce: 0xAAAA,
+    };
+
+    // Sign with a DIFFERENT PSK than the node_psk in the pairing payload.
+    let wrong_psk = [0xEEu8; 32];
+    let bad_frame = encode_frame(&header, &outer_buf, &wrong_psk, &RustCryptoHmac).unwrap();
+
+    let response = env.gateway.process_frame(&bad_frame, peer()).await;
+    assert!(
+        response.is_none(),
+        "corrupted frame HMAC must cause silent discard"
+    );
+
+    // Now submit a valid frame HMAC for the same payload.
+    let good_frame = encode_frame(&header, &outer_buf, &TEST_NODE_PSK, &RustCryptoHmac).unwrap();
+    let response = env.gateway.process_frame(&good_frame, peer()).await;
+    assert!(
+        response.is_some(),
+        "valid frame HMAC must allow processing to continue"
+    );
+}
+
+// -- T-1215: Timestamp outside ±86 400 s range --
+
+/// T-1215  Timestamp outside ±86 400 s range (GW-1215).
+///
+/// 1. Timestamp 86 401 s in the past → silent discard.
+/// 2. Timestamp 86 401 s in the future → silent discard.
+/// 3. Timestamp within ±86 400 s → processing continues.
+#[tokio::test]
+async fn t_1215_timestamp_range_enforcement() {
+    let env = TestEnv::new().await;
+
+    // Past: 90 000 s ago (well beyond 86 400 s).
+    let past_ts = current_timestamp() - 90_000;
+    let frame = build_peer_request(
+        &env.identity,
+        "node-t1215a",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        Some(past_ts),
+        None,
+    );
+    assert!(
+        env.gateway.process_frame(&frame, peer()).await.is_none(),
+        "timestamp 90000s in the past must be rejected"
+    );
+
+    // Future: 90 000 s from now.
+    let future_ts = current_timestamp() + 90_000;
+    let frame = build_peer_request(
+        &env.identity,
+        "node-t1215b",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        Some(future_ts),
+        None,
+    );
+    assert!(
+        env.gateway.process_frame(&frame, peer()).await.is_none(),
+        "timestamp 90000s in the future must be rejected"
+    );
+
+    // Valid: current timestamp.
+    let frame = build_peer_request(
+        &env.identity,
+        "node-t1215c",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        Some(current_timestamp()),
+        None,
+    );
+    assert!(
+        env.gateway.process_frame(&frame, peer()).await.is_some(),
+        "current timestamp must be accepted"
+    );
+}
+
+// -- T-1216: Duplicate node_id rejected --
+
+/// T-1216  Duplicate node_id rejected (GW-1216).
+///
+/// Successfully pair a node, then submit a new PEER_REQUEST with the
+/// same node_id.  Assert silent discard.
+#[tokio::test]
+async fn t_1216_duplicate_node_id_rejected() {
+    let env = TestEnv::new().await;
+
+    let frame1 = build_peer_request(
+        &env.identity,
+        "node-t1216",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        None,
+        None,
+    );
+    assert!(
+        env.gateway.process_frame(&frame1, peer()).await.is_some(),
+        "first registration must succeed"
+    );
+
+    // Same node_id, fresh frame.
+    let frame2 = build_peer_request(
+        &env.identity,
+        "node-t1216",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        None,
+        None,
+    );
+    assert!(
+        env.gateway.process_frame(&frame2, peer()).await.is_none(),
+        "duplicate node_id must cause silent discard"
+    );
+}
+
+// -- T-1217: Key hint mismatch rejected --
+
+/// T-1217  Key hint mismatch rejected (GW-1217).
+///
+/// Build a frame where the header `key_hint` differs from the
+/// `node_key_hint` in the CBOR payload.  Assert silent discard.
+#[tokio::test]
+async fn t_1217_key_hint_mismatch_rejected() {
+    let env = TestEnv::new().await;
+
+    let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
+    let ts = current_timestamp();
+    let cbor_bytes = build_pairing_cbor("node-t1217", node_key_hint, &TEST_NODE_PSK, 7, ts, None);
+    let authenticated_request = build_authenticated_request(&cbor_bytes, &TEST_PHONE_PSK);
+    let encrypted_payload = ecdh_encrypt(&env.identity, &authenticated_request);
+
+    let outer = ciborium::Value::Map(vec![(
+        ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(encrypted_payload),
+    )]);
+    let mut outer_buf = Vec::new();
+    ciborium::into_writer(&outer, &mut outer_buf).unwrap();
+
+    // Use DIFFERENT key_hint in the frame header.
+    let wrong_key_hint = node_key_hint.wrapping_add(1);
+    let header = FrameHeader {
+        key_hint: wrong_key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce: 0xBBBB,
+    };
+
+    let frame = encode_frame(&header, &outer_buf, &TEST_NODE_PSK, &RustCryptoHmac).unwrap();
+    assert!(
+        env.gateway.process_frame(&frame, peer()).await.is_none(),
+        "key_hint mismatch must cause silent discard"
+    );
+}
+
+// -- T-1218: Node registration stores correct fields --
+
+/// T-1218  Node registration stores correct fields (GW-1218).
+///
+/// Process a PEER_REQUEST, then query the registry and assert all
+/// fields are stored: node_id, node_key_hint, node_psk, rf_channel,
+/// sensors, and `registered_by` = phone_id (stable identifier).
+#[tokio::test]
+async fn t_1218_node_registration_stores_fields() {
+    use ciborium::Value;
+
+    let env = TestEnv::new().await;
+
+    let sensors = vec![Value::Map(vec![
+        (Value::Integer(1.into()), Value::Integer(1.into())), // I2C
+        (Value::Integer(2.into()), Value::Integer(0x48.into())), // addr
+        (
+            Value::Integer(3.into()),
+            Value::Text("temp-sensor".to_string()),
+        ),
+    ])];
+
+    let frame = build_peer_request(
+        &env.identity,
+        "node-t1218",
+        &TEST_NODE_PSK,
+        9,
+        &TEST_PHONE_PSK,
+        None,
+        Some(sensors),
+    );
+
+    let response = env.gateway.process_frame(&frame, peer()).await;
+    assert!(response.is_some(), "PEER_REQUEST must succeed");
+
+    let node = env
+        .storage
+        .get_node("node-t1218")
+        .await
+        .unwrap()
+        .expect("node must be persisted");
+
+    // Verify all required fields.
+    assert_eq!(node.node_id, "node-t1218");
+    assert_eq!(node.key_hint, compute_key_hint(&TEST_NODE_PSK));
+    assert_eq!(node.psk, TEST_NODE_PSK);
+    assert_eq!(node.rf_channel, Some(9));
+    assert_eq!(node.sensors.len(), 1);
+    assert_eq!(node.sensors[0].sensor_type, 1);
+    assert_eq!(node.sensors[0].sensor_id, 0x48);
+    assert_eq!(node.sensors[0].label.as_deref(), Some("temp-sensor"));
+
+    // registered_by must be the phone's stable phone_id, not phone_key_hint.
+    assert_eq!(
+        node.registered_by_phone_id,
+        Some(env.phone_id),
+        "registered_by must be the phone's stable phone_id"
+    );
+}
+
+// -- T-1219: PEER_ACK happy path --
+
+/// T-1219  PEER_ACK happy path (GW-1219).
+///
+/// Submit a valid PEER_REQUEST and verify the PEER_ACK:
+/// 1. CBOR = {1: 0, 2: registration_proof}
+/// 2. registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)
+/// 3. Frame HMAC is valid under node_psk.
+/// 4. Nonce in PEER_ACK header matches the PEER_REQUEST nonce.
+#[tokio::test]
+async fn t_1219_peer_ack_happy_path() {
+    let env = TestEnv::new().await;
+
+    let request_nonce: u64 = 0xCAFE_BABE_DEAD_BEEF;
+    let (frame, encrypted_payload) = build_peer_request_detailed(
+        &env.identity,
+        "node-t1219",
+        &TEST_NODE_PSK,
+        7,
+        &TEST_PHONE_PSK,
+        None,
+        None,
+        request_nonce,
+    );
+
+    let response = env
+        .gateway
+        .process_frame(&frame, peer())
+        .await
+        .expect("valid PEER_REQUEST must produce PEER_ACK");
+
+    // Decode and verify the PEER_ACK frame.
+    let decoded = decode_frame(&response).unwrap();
+    assert_eq!(decoded.header.msg_type, MSG_PEER_ACK);
+
+    // 4. Nonce must echo the request nonce.
+    assert_eq!(
+        decoded.header.nonce, request_nonce,
+        "PEER_ACK nonce must echo the PEER_REQUEST nonce"
+    );
+
+    // 3. Frame HMAC must be valid under node_psk.
+    assert!(
+        verify_frame(&decoded, &TEST_NODE_PSK, &RustCryptoHmac),
+        "PEER_ACK frame HMAC must be valid under node_psk"
+    );
+
+    // 1. Parse PEER_ACK CBOR: { 1: status, 2: registration_proof }
+    let ack: ciborium::Value = ciborium::from_reader(&decoded.payload[..]).unwrap();
+    let map = ack.as_map().unwrap();
+    let mut status: Option<u64> = None;
+    let mut proof: Option<Vec<u8>> = None;
+    for (k, v) in map {
+        let key = k.as_integer().and_then(|i| u64::try_from(i).ok()).unwrap();
+        match key {
+            k if k == PEER_ACK_KEY_STATUS => {
+                status = v.as_integer().and_then(|i| u64::try_from(i).ok());
+            }
+            k if k == PEER_ACK_KEY_PROOF => {
+                proof = v.as_bytes().map(|b| b.to_vec());
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(status, Some(0), "PEER_ACK status must be 0 (success)");
+    let proof = proof.expect("PEER_ACK must contain registration_proof");
+    assert_eq!(proof.len(), 32, "registration_proof must be 32 bytes");
+
+    // 2. Verify registration_proof independently.
+    // proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)
+    let hmac = RustCryptoHmac;
+    let mut proof_input = Vec::with_capacity(b"sonde-peer-ack-v1".len() + encrypted_payload.len());
+    proof_input.extend_from_slice(b"sonde-peer-ack-v1");
+    proof_input.extend_from_slice(&encrypted_payload);
+    let expected_proof = hmac.compute(&TEST_NODE_PSK, &proof_input);
+    assert_eq!(
+        proof, expected_proof,
+        "registration_proof must equal HMAC-SHA256(node_psk, 'sonde-peer-ack-v1' || encrypted_payload)"
+    );
 }

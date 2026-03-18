@@ -1,0 +1,12 @@
+[Unit]
+Description=Sonde Gateway
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/sonde-gateway --port /dev/ttyACM0 --db /var/lib/sonde/sonde.db --master-key-file /etc/sonde/master-key.hex
+Restart=always
+User=sonde
+Group=dialout
+
+[Install]
+WantedBy=multi-user.target

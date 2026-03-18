@@ -165,17 +165,18 @@ fn find_characteristic(
 impl BleTransport for BtleplugTransport {
     fn start_scan(
         &mut self,
-        service_uuid: u128,
+        service_uuids: &[u128],
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
+        let uuids: Vec<Uuid> = service_uuids.iter().map(|u| to_uuid(*u)).collect();
         Box::pin(async move {
             let filter = ScanFilter {
-                services: vec![to_uuid(service_uuid)],
+                services: uuids.clone(),
             };
             self.adapter
                 .start_scan(filter)
                 .await
                 .map_err(|e| PairingError::ConnectionFailed(format!("scan start failed: {e}")))?;
-            debug!(service = %to_uuid(service_uuid), "BLE scan started");
+            debug!(services = ?uuids, "BLE scan started");
             Ok(())
         })
     }

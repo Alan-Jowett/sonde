@@ -116,10 +116,15 @@ impl AndroidBleTransport {
 impl BleTransport for AndroidBleTransport {
     fn start_scan(
         &mut self,
-        service_uuid: u128,
+        service_uuids: &[u128],
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         let inner = self.inner.clone();
-        let uuid_string = uuid_to_string(service_uuid);
+        // Android BLE scan uses the first UUID; filtering happens in refresh().
+        let uuid_string = if service_uuids.is_empty() {
+            String::new()
+        } else {
+            uuid_to_string(service_uuids[0])
+        };
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;

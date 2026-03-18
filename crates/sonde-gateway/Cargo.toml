@@ -29,7 +29,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-serial = "5.4"
+serial2-tokio = "0.1"
 tokio-stream = "0.1"
 futures = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }

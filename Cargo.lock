@@ -5168,6 +5168,9 @@ dependencies = [
  "sonde-pair",
  "sonde-protocol",
  "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
  "zeroize",
 ]
 

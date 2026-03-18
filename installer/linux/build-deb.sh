@@ -61,7 +61,7 @@ Description: Sonde gateway and admin tools
  sonde-gateway is the radio gateway service that authenticates sensor nodes,
  distributes BPF programs, and routes telemetry data.
  sonde-admin is the command-line administration tool for the gateway.
-Depends: libc6
+Depends: libc6, adduser, passwd
 Section: net
 Priority: optional
 EOF
@@ -102,6 +102,10 @@ usermod -aG dialout sonde 2>/dev/null || true
 # /etc/sonde is owned by root:sonde (mode 750) so the service can traverse and
 # read files within, but cannot modify system configuration.
 install -d -o root -g sonde -m 750 /etc/sonde
+# Fix ownership of conffiles shipped as root:root in the .deb payload.
+# This runs after the sonde group is created above.
+chown root:sonde /etc/sonde/environment 2>/dev/null || true
+chmod 640 /etc/sonde/environment 2>/dev/null || true
 install -d -o sonde -g sonde -m 750 /var/lib/sonde
 
 # Enable and start systemd service when installed under systemd.
@@ -138,11 +142,6 @@ DEB_NAME="${PACKAGE}_${VERSION}_${ARCH}.deb"
 # installed files carry correct ownership without needing postinst chown.
 fakeroot -- sh -c "
     chown -R root:root '${PKG_DIR}'
-    chown root:sonde '${PKG_DIR}/etc/sonde/environment'
-    chmod 640 '${PKG_DIR}/etc/sonde/environment'
-    # mode 750 on the directory: group-execute is required for traversal so the
-    # service user can open files inside /etc/sonde at runtime.
-    chmod 750 '${PKG_DIR}/etc/sonde'
     dpkg-deb --build '${PKG_DIR}' '${DEB_NAME}'
 "
 echo "Package built: ${DEB_NAME}"

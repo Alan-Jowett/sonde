@@ -14,7 +14,7 @@ EnvironmentFile=/etc/sonde/environment
 ExecStart=/usr/local/bin/sonde-gateway \
     --db /var/lib/sonde/gateway.db \
     --port ${SERIAL_PORT} \
-    --key-provider secret-service
+    --key-provider file
 Restart=on-failure
 RestartSec=5s
 # Create /var/run/sonde/ for the admin socket (default: /var/run/sonde/admin.sock).

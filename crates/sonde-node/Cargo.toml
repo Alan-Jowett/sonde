@@ -22,7 +22,7 @@ sha2 = "0.10"
 esp-idf-hal = { version = "0.46", optional = true }
 esp-idf-svc = { version = "0.52", features = ["binstart"], optional = true }
 esp-idf-sys = { version = "0.37", features = ["binstart"], optional = true }
-esp32-nimble = { version = "0.12", optional = true }
+esp32-nimble = { git = "https://github.com/taks/esp32-nimble", branch = "main", optional = true }
 sonde-bpf = { path = "../sonde-bpf", default-features = false }
 
 [build-dependencies]

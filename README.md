@@ -13,6 +13,7 @@
 [![Tauri Desktop](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-desktop.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-desktop.yml)
 [![Tauri Android](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-android.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/tauri-android.yml)
 [![Nightly Release](https://github.com/Alan-Jowett/sonde/actions/workflows/nightly-release.yml/badge.svg?branch=main)](https://github.com/Alan-Jowett/sonde/actions/workflows/nightly-release.yml)
+[![Coverage Status](https://coveralls.io/repos/github/Alan-Jowett/sonde/badge.svg?branch=main)](https://coveralls.io/github/Alan-Jowett/sonde?branch=main)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **A programmable, verifiable runtime for distributed sensor nodes.**

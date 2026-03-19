@@ -48,8 +48,8 @@ pub struct UsbEspNowTransport {
     recv_rx: Mutex<mpsc::Receiver<(Vec<u8>, PeerAddress)>>,
     ble_rx: Mutex<mpsc::Receiver<BleEvent>>,
     status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
-    channel_ack_slot: Arc<Mutex<Option<oneshot::Sender<u8>>>>,
-    scan_slot: Arc<Mutex<Option<oneshot::Sender<ScanResult>>>>,
+    channel_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
+    scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
     modem_mac: [u8; 6],
     reader_handle: tokio::task::JoinHandle<()>,
 }
@@ -79,8 +79,10 @@ impl UsbEspNowTransport {
         let (ack_tx, ack_rx) = oneshot::channel::<u8>();
         let status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>> =
             Arc::new(Mutex::new(None));
-        let channel_ack_slot: Arc<Mutex<Option<oneshot::Sender<u8>>>> = Arc::new(Mutex::new(None));
-        let scan_slot: Arc<Mutex<Option<oneshot::Sender<ScanResult>>>> = Arc::new(Mutex::new(None));
+        let channel_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>> =
+            Arc::new(std::sync::Mutex::new(None));
 
         // Start background reader task.
         let reader_handle = {
@@ -278,7 +280,8 @@ impl UsbEspNowTransport {
     /// Send SET_CHANNEL and wait for the SET_CHANNEL_ACK response.
     ///
     /// Unlike the startup `set_channel` (which consumes a pre-created oneshot),
-    /// this can be called at any time after construction.
+    /// this can be called at any time after construction.  The slot is cleared
+    /// on drop (cancellation-safe).
     pub async fn change_channel(&self, channel: u8) -> Result<(), TransportError> {
         if !(1..=14).contains(&channel) {
             return Err(TransportError::Io(format!(
@@ -287,7 +290,10 @@ impl UsbEspNowTransport {
         }
 
         let rx = {
-            let mut slot = self.channel_ack_slot.lock().await;
+            let mut slot = self
+                .channel_ack_slot
+                .lock()
+                .expect("channel_ack_slot poisoned");
             if slot.is_some() {
                 return Err(TransportError::Io(
                     "channel change already in progress".into(),
@@ -297,11 +303,9 @@ impl UsbEspNowTransport {
             *slot = Some(tx);
             rx
         };
+        let _guard = SlotGuard(Arc::clone(&self.channel_ack_slot));
 
-        if let Err(e) = Self::send_encoded(&self.writer, &ModemMessage::SetChannel(channel)).await {
-            self.channel_ack_slot.lock().await.take();
-            return Err(e);
-        }
+        Self::send_encoded(&self.writer, &ModemMessage::SetChannel(channel)).await?;
 
         match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
             Ok(Ok(ack)) => {
@@ -314,18 +318,17 @@ impl UsbEspNowTransport {
                     Ok(())
                 }
             }
-            Ok(Err(_)) => Err(TransportError::Io("channel ack channel closed".into())),
-            Err(_) => {
-                self.channel_ack_slot.lock().await.take();
-                Err(TransportError::Io("SET_CHANNEL_ACK timeout".into()))
-            }
+            Ok(Err(_)) => Err(TransportError::Io("SET_CHANNEL_ACK channel closed".into())),
+            Err(_) => Err(TransportError::Io("SET_CHANNEL_ACK timeout".into())),
         }
     }
 
     /// Send SCAN_CHANNELS and wait for the SCAN_RESULT response.
+    ///
+    /// The slot is cleared on drop (cancellation-safe).
     pub async fn scan_channels(&self) -> Result<ScanResult, TransportError> {
         let rx = {
-            let mut slot = self.scan_slot.lock().await;
+            let mut slot = self.scan_slot.lock().expect("scan_slot poisoned");
             if slot.is_some() {
                 return Err(TransportError::Io(
                     "channel scan already in progress".into(),
@@ -335,19 +338,14 @@ impl UsbEspNowTransport {
             *slot = Some(tx);
             rx
         };
+        let _guard = SlotGuard(Arc::clone(&self.scan_slot));
 
-        if let Err(e) = Self::send_encoded(&self.writer, &ModemMessage::ScanChannels).await {
-            self.scan_slot.lock().await.take();
-            return Err(e);
-        }
+        Self::send_encoded(&self.writer, &ModemMessage::ScanChannels).await?;
 
         match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
             Ok(Ok(result)) => Ok(result),
-            Ok(Err(_)) => Err(TransportError::Io("scan channel closed".into())),
-            Err(_) => {
-                self.scan_slot.lock().await.take();
-                Err(TransportError::Io("SCAN_RESULT timeout".into()))
-            }
+            Ok(Err(_)) => Err(TransportError::Io("SCAN_RESULT channel closed".into())),
+            Err(_) => Err(TransportError::Io("SCAN_RESULT timeout".into())),
         }
     }
 
@@ -555,6 +553,15 @@ pub fn spawn_health_monitor(
     })
 }
 
+/// Cancellation-safe guard that clears a `std::sync::Mutex<Option<T>>` on drop.
+struct SlotGuard<T>(Arc<std::sync::Mutex<Option<T>>>);
+
+impl<T> Drop for SlotGuard<T> {
+    fn drop(&mut self) {
+        self.0.lock().expect("slot guard poisoned").take();
+    }
+}
+
 /// Route a decoded modem message to the appropriate consumer.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_message(
@@ -564,8 +571,8 @@ async fn dispatch_message(
     ready_tx: &mut Option<oneshot::Sender<ModemReady>>,
     ack_tx: &mut Option<oneshot::Sender<u8>>,
     status_slot: &Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
-    channel_ack_slot: &Arc<Mutex<Option<oneshot::Sender<u8>>>>,
-    scan_slot: &Arc<Mutex<Option<oneshot::Sender<ScanResult>>>>,
+    channel_ack_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
+    scan_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
 ) {
     match msg {
         ModemMessage::RecvFrame(rf) => {
@@ -633,7 +640,7 @@ async fn dispatch_message(
             if let Some(tx) = ack_tx.take() {
                 let _ = tx.send(ch);
             } else {
-                let mut slot = channel_ack_slot.lock().await;
+                let mut slot = channel_ack_slot.lock().expect("channel_ack_slot poisoned");
                 if let Some(tx) = slot.take() {
                     let _ = tx.send(ch);
                 } else {
@@ -650,7 +657,7 @@ async fn dispatch_message(
             }
         }
         ModemMessage::ScanResult(sr) => {
-            let mut slot = scan_slot.lock().await;
+            let mut slot = scan_slot.lock().expect("scan_slot poisoned");
             if let Some(tx) = slot.take() {
                 let _ = tx.send(sr);
             } else {
@@ -682,13 +689,13 @@ async fn dispatch_message(
                 }
             }
             {
-                let mut slot = channel_ack_slot.lock().await;
+                let mut slot = channel_ack_slot.lock().expect("channel_ack_slot poisoned");
                 if slot.take().is_some() {
                     debug!("cancelling pending SET_CHANNEL_ACK waiter due to modem error");
                 }
             }
             {
-                let mut slot = scan_slot.lock().await;
+                let mut slot = scan_slot.lock().expect("scan_slot poisoned");
                 if slot.take().is_some() {
                     debug!("cancelling pending SCAN_RESULT waiter due to modem error");
                 }

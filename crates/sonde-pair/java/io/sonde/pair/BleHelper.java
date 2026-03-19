@@ -398,6 +398,17 @@ public class BleHelper {
         lastError = null;
         long deadline = System.currentTimeMillis() + timeoutMs;
 
+        // Step 0 — remove stale bond (must happen before GATT connect)
+        // The modem does NOT persist bonds across reboots, so any existing
+        // Android bond is stale and causes "encryption_change:key_missing"
+        // failures (GATT status 133) on connection.
+        if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+            Log.i("BleHelper", "removing stale bond (modem does not persist bonds)");
+            removeBond(device);
+            // Give the stack a moment to process the removal
+            Thread.sleep(500);
+        }
+
         // Step 1 — connect
         connectLatch = new CountDownLatch(1);
         gatt = device.connectGatt(context, false, gattCallback,
@@ -418,14 +429,6 @@ public class BleHelper {
 
         // Step 2 — initiate LESC bonding (Numeric Comparison)
         // The modem requires a bonded link before it will accept GATT writes.
-        // The modem does NOT persist bonds across reboots, so any existing
-        // Android bond is stale and must be removed first to avoid
-        // "encryption_change:key_missing" failures.
-        if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
-            Log.i("BleHelper", "removing stale bond (modem does not persist bonds)");
-            removeBond(device);
-        }
-
         {
             bonded = false;
             bondTarget = device;

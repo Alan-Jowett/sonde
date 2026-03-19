@@ -126,16 +126,12 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
 
-      - name: Run workspace tests with coverage
+      - name: Generate coverage
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace
           cargo test --workspace
           cargo build -p sonde-bpf --bin sonde_bpf_plugin
-
-      - name: Run BPF conformance tests with coverage
-        run: |
-          source <(cargo llvm-cov show-env --export-prefix)
           docker run \
             -v "${{ github.workspace }}":/sonde \
             -v "$CARGO_LLVM_COV_TARGET_DIR":"$CARGO_LLVM_COV_TARGET_DIR" \
@@ -144,9 +140,7 @@ jobs:
             bin/bpf_conformance_runner --test_file_directory tests \
             --plugin_path "$CARGO_LLVM_COV_TARGET_DIR/debug/sonde_bpf_plugin" \
             --exclude_regex "${{ env.KNOWN_FAILURES }}"
-
-      - name: Generate coverage report
-        run: cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload to Coveralls
         uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2

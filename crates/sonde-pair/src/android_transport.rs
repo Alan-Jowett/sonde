@@ -184,24 +184,23 @@ impl BleTransport for AndroidBleTransport {
         service_uuids: &[u128],
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         let inner = self.inner.clone();
-        // Android BLE scan uses the first UUID; filtering happens in refresh().
-        let uuid_string = if service_uuids.is_empty() {
-            String::new()
-        } else {
-            uuid_to_string(service_uuids[0])
-        };
+        let uuids: Vec<String> = service_uuids.iter().map(|u| uuid_to_string(*u)).collect();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;
-                let uuid_jstr = env.new_string(&uuid_string).map_err(jni_err)?;
-                env.call_method(
-                    inner.helper.as_obj(),
-                    "startScan",
-                    "(Ljava/lang/String;)V",
-                    &[JValue::Object(&uuid_jstr)],
-                )
-                .map_err(|e| jni_exception_or(&mut env, "startScan", e))?;
-                debug!(service = %uuid_string, "BLE scan started");
+                // Call startScan once per UUID — Java side accumulates
+                // ScanFilters and restarts the scan with the full set.
+                for uuid_string in &uuids {
+                    let uuid_jstr = env.new_string(uuid_string).map_err(jni_err)?;
+                    env.call_method(
+                        inner.helper.as_obj(),
+                        "startScan",
+                        "(Ljava/lang/String;)V",
+                        &[JValue::Object(&uuid_jstr)],
+                    )
+                    .map_err(|e| jni_exception_or(&mut env, "startScan", e))?;
+                }
+                debug!(?uuids, "BLE scan started");
                 Ok(())
             })
             .await

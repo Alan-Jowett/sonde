@@ -39,10 +39,77 @@ jobs:
     name: Android APK
     uses: ./.github/workflows/tauri-android.yml
 
+  # ── Installer builds (depend on gateway binaries) ───────────────
+  installer-linux:
+    name: Linux installer (.deb)
+    needs: [gateway]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: gateway-linux-x86_64
+          path: target/release
+
+      - name: Make binaries executable
+        run: chmod +x target/release/sonde-gateway target/release/sonde-admin
+
+      - name: Build .deb package
+        run: |
+          sudo apt-get update && sudo apt-get install -y fakeroot
+          bash installer/linux/build-deb.sh --version 0.1.0-nightly
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sonde-installer-linux
+          path: "*.deb"
+          if-no-files-found: error
+          retention-days: 7
+
+  installer-windows:
+    name: Windows installer (.msi)
+    needs: [gateway]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: gateway-windows-x86_64
+          path: target/release
+
+      - name: Install WiX v4
+        run: dotnet tool install -g wix --version 4.0.6
+
+      - name: Add WiX extensions
+        run: |
+          wix extension add WixToolset.UI.wixext/4.0.6
+          wix extension add WixToolset.Util.wixext/4.0.6
+
+      - name: Build MSI
+        run: |
+          wix build installer\windows\sonde.wxs `
+            -d Version=0.1.0 `
+            -d GatewayBin=target\release\sonde-gateway.exe `
+            -d AdminBin=target\release\sonde-admin.exe `
+            -ext WixToolset.UI.wixext `
+            -ext WixToolset.Util.wixext `
+            -out sonde-x86_64.msi
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sonde-installer-windows
+          path: sonde-x86_64.msi
+          if-no-files-found: error
+          retention-days: 7
+
   # ── Publish release ────────────────────────────────────────────────
   release:
     name: Publish nightly
-    needs: [gateway, node-firmware, modem-firmware, desktop, android]
+    needs: [gateway, node-firmware, modem-firmware, desktop, android, installer-linux, installer-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -77,6 +144,8 @@ jobs:
           for f in artifacts/sonde-pair-windows/*; do cp -r "$f" release-assets/; done
           for f in artifacts/sonde-pair-linux/*;   do cp -r "$f" release-assets/; done
           for f in artifacts/sonde-pair-android/*; do cp -r "$f" release-assets/; done
+          for f in artifacts/sonde-installer-linux/*;  do cp -r "$f" release-assets/; done
+          for f in artifacts/sonde-installer-windows/*; do cp -r "$f" release-assets/; done
 
           # Build release notes
           cat > notes.md <<'EOF'
@@ -93,6 +162,8 @@ jobs:
           | Desktop — Windows | `*.exe` |
           | Desktop — Linux | `*.deb` |
           | Android APK | `*.apk` |
+          | Installer — Windows | `sonde-x86_64.msi` |
+          | Installer — Linux | `sonde_*_amd64.deb` |
 
           ### Flashing firmware
 

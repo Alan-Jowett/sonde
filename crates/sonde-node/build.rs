@@ -9,8 +9,9 @@ fn main() {
     // Prefer an explicit SONDE_GIT_COMMIT env var (set by CI) over running
     // git — the git binary may not have access to the repository metadata
     // inside Docker containers (e.g. safe.directory ownership mismatch).
-    let commit = std::env::var("SONDE_GIT_COMMIT")
+    let raw = std::env::var("SONDE_GIT_COMMIT")
         .ok()
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             std::process::Command::new("git")
@@ -21,6 +22,11 @@ fn main() {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         });
+    // Normalise to a short hash (7 chars) for readable log output and
+    // consistency between CI (full SHA from github.sha) and local builds
+    // (short SHA from `git rev-parse --short`).  Also guards against
+    // newlines corrupting the `cargo:rustc-env` directive.
+    let commit: String = raw.chars().take(7).collect();
     println!("cargo:rustc-env=SONDE_GIT_COMMIT={commit}");
     println!("cargo:rerun-if-env-changed=SONDE_GIT_COMMIT");
 

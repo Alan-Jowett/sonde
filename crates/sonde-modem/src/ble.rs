@@ -458,13 +458,21 @@ impl Ble for EspBleDriver {
     }
 
     fn drain_event(&self) -> Option<BleEvent> {
-        // Send the next pending indication chunk if confirmed.
+        // Advance the indication queue: clear the previous chunk's
+        // awaiting_confirm flag and send the next chunk (one per poll).
         {
             let (pending, awaiting) = {
                 let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 (!s.indication_queue.is_empty(), s.awaiting_confirm)
             };
-            if pending && !awaiting {
+            if awaiting {
+                // Previous chunk was sent — clear the flag so send_next_chunk
+                // can proceed on this or the next poll cycle.
+                if let Ok(mut s) = self.state.lock() {
+                    s.awaiting_confirm = false;
+                }
+            }
+            if pending {
                 self.send_next_chunk();
             }
         }
@@ -492,17 +500,15 @@ impl EspBleDriver {
         };
 
         // notify_with() queues the indication via ble_gatts_indicate_custom
-        // (non-blocking).  NimBLE paces indications internally via
-        // set_indicate_wait / clear_indicate_wait and fires on_notify_tx
-        // when the ATT Handle Value Confirmation arrives from the peer.
+        // (non-blocking).  We keep awaiting_confirm = true so that
+        // drain_event() sends at most one chunk per poll cycle, avoiding
+        // NimBLE resource exhaustion from burst-sending all fragments.
         let chr = self.gateway_cmd_char.lock();
         match chr.notify_with(&chunk, conn_handle) {
             Ok(()) => {
-                // Indication queued successfully.  Clear awaiting_confirm
-                // since NimBLE handles confirmation pacing internally.
-                if let Ok(mut s) = self.state.lock() {
-                    s.awaiting_confirm = false;
-                }
+                // Indication queued — awaiting_confirm stays true.
+                // drain_event() will clear it on the next poll cycle,
+                // naturally pacing one chunk per bridge iteration.
             }
             Err(e) => {
                 warn!("BLE: indication failed: {:?}", e);

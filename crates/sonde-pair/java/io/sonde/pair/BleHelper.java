@@ -462,6 +462,7 @@ public class BleHelper {
                 if (bs == BluetoothDevice.BOND_BONDED) {
                     Log.i("BleHelper", "createBond() returned false but already bonded");
                     bonded = true;
+                    bondLatch.countDown();
                 } else if (bs == BluetoothDevice.BOND_BONDING) {
                     Log.i("BleHelper", "createBond() returned false — bonding already in progress");
                 } else {
@@ -653,29 +654,33 @@ public class BleHelper {
         }
 
         BluetoothGattDescriptor cccd = chr.getDescriptor(CCCD_UUID);
-        if (cccd != null) {
-            lastError = null;
-            descriptorLatch = new CountDownLatch(1);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                int rc = g.writeDescriptor(cccd,
-                        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
-                if (rc != BluetoothStatusCodes.SUCCESS) {
-                    throw new Exception("CCCD write failed: rc=" + rc);
-                }
-            } else {
-                cccd.setValue(
-                        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
-                if (!g.writeDescriptor(cccd)) {
-                    throw new Exception("CCCD write initiation failed");
-                }
-            }
-
-            if (!descriptorLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
-                throw new Exception("CCCD write timed out");
-            }
-            if (lastError != null) throw new Exception(lastError);
+        if (cccd == null) {
+            throw new Exception(
+                    "CCCD descriptor missing on characteristic " + charUuidStr
+                    + " — server does not support indications");
         }
+
+        lastError = null;
+        descriptorLatch = new CountDownLatch(1);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            int rc = g.writeDescriptor(cccd,
+                    BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
+            if (rc != BluetoothStatusCodes.SUCCESS) {
+                throw new Exception("CCCD write failed: rc=" + rc);
+            }
+        } else {
+            cccd.setValue(
+                    BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
+            if (!g.writeDescriptor(cccd)) {
+                throw new Exception("CCCD write initiation failed");
+            }
+        }
+
+        if (!descriptorLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            throw new Exception("CCCD write timed out");
+        }
+        if (lastError != null) throw new Exception(lastError);
 
         indicationQueues.put(charUuid, new LinkedBlockingQueue<>());
         subscribedChars.add(charUuid);

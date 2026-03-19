@@ -457,26 +457,28 @@ impl Ble for EspBleDriver {
         }
     }
 
-    fn drain_event(&self) -> Option<BleEvent> {
-        // Advance the indication queue: clear the previous chunk's
-        // awaiting_confirm flag and send the next chunk (one per poll).
-        {
-            let (pending, awaiting) = {
-                let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-                (!s.indication_queue.is_empty(), s.awaiting_confirm)
-            };
-            if awaiting {
-                // Previous chunk was sent — clear the flag so send_next_chunk
-                // can proceed on this or the next poll cycle.
-                if let Ok(mut s) = self.state.lock() {
-                    s.awaiting_confirm = false;
-                }
-            }
-            if pending {
-                self.send_next_chunk();
+    /// Advance the indication queue by one chunk.
+    ///
+    /// Called once per bridge poll cycle (not per `drain_event()` call)
+    /// to ensure at most one indication fragment is sent per poll.
+    fn advance_indication(&self) {
+        let (pending, awaiting) = {
+            let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            (!s.indication_queue.is_empty(), s.awaiting_confirm)
+        };
+        if awaiting {
+            // Previous chunk was sent — clear the flag so send_next_chunk
+            // can proceed.
+            if let Ok(mut s) = self.state.lock() {
+                s.awaiting_confirm = false;
             }
         }
+        if pending {
+            self.send_next_chunk();
+        }
+    }
 
+    fn drain_event(&self) -> Option<BleEvent> {
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
         s.events.pop_front()
     }
@@ -501,14 +503,15 @@ impl EspBleDriver {
 
         // notify_with() queues the indication via ble_gatts_indicate_custom
         // (non-blocking).  We keep awaiting_confirm = true so that
-        // drain_event() sends at most one chunk per poll cycle, avoiding
-        // NimBLE resource exhaustion from burst-sending all fragments.
+        // advance_indication() sends at most one chunk per poll cycle,
+        // avoiding NimBLE resource exhaustion from burst-sending all
+        // fragments.
         let chr = self.gateway_cmd_char.lock();
         match chr.notify_with(&chunk, conn_handle) {
             Ok(()) => {
                 // Indication queued — awaiting_confirm stays true.
-                // drain_event() will clear it on the next poll cycle,
-                // naturally pacing one chunk per bridge iteration.
+                // advance_indication() will clear it on the next poll
+                // cycle, naturally pacing one chunk per bridge iteration.
             }
             Err(e) => {
                 warn!("BLE: indication failed: {:?}", e);

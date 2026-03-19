@@ -82,7 +82,9 @@ jobs:
           path: target/release
 
       - name: Install WiX v4
-        run: dotnet tool install -g wix --version 4.0.6
+        run: |
+          dotnet tool install -g wix --version 4.0.6
+          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Add WiX extensions
         run: |

@@ -519,19 +519,42 @@ mod hex {
 // ---------------------------------------------------------------------------
 
 /// Called by the Android runtime when this native library is loaded.
-/// Caches the `JavaVM` so `AndroidBleTransport::from_cached_vm()` and
-/// `AndroidPairingStore::from_cached_vm()` work from Tauri command handlers.
+/// Caches the `JavaVM` and resolves app-defined Java classes while we are
+/// on the main thread (which has the application classloader).  Natively-
+/// attached threads (e.g. tokio blocking pool) only see the system
+/// classloader, so `FindClass` for app classes would fail there.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn JNI_OnLoad(
     vm: *mut jni::sys::JavaVM,
     _reserved: *mut std::ffi::c_void,
 ) -> jni::sys::jint {
-    let vm1 = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
-    let vm2 = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
+    // Wrap the fallible body so we can return JNI_ERR on failure instead
+    // of panicking (unwinding across extern "system" is UB).
+    match jni_on_load_inner(vm) {
+        Ok(ver) => ver,
+        Err(_) => jni::sys::JNI_ERR,
+    }
+}
+
+#[cfg(target_os = "android")]
+fn jni_on_load_inner(
+    vm: *mut jni::sys::JavaVM,
+) -> Result<jni::sys::jint, Box<dyn std::error::Error>> {
+    let vm1 = unsafe { jni::JavaVM::from_raw(vm)? };
+    let vm2 = unsafe { jni::JavaVM::from_raw(vm)? };
     AndroidBleTransport::cache_vm(vm1);
     AndroidPairingStore::cache_vm(vm2);
-    jni::JNIVersion::V6.into()
+
+    // Resolve app-defined classes on the main thread.
+    let vm_env = unsafe { jni::JavaVM::from_raw(vm)? };
+    let mut env = vm_env.get_env()?;
+    AndroidBleTransport::cache_helper_class(&mut env)
+        .map_err(|e| format!("cache BleHelper: {e}"))?;
+    AndroidPairingStore::cache_store_class(&mut env)
+        .map_err(|e| format!("cache SecureStore: {e}"))?;
+
+    Ok(jni::JNIVersion::V6.into())
 }
 
 // ---------------------------------------------------------------------------

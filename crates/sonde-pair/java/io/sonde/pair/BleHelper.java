@@ -418,7 +418,15 @@ public class BleHelper {
 
         // Step 2 — initiate LESC bonding (Numeric Comparison)
         // The modem requires a bonded link before it will accept GATT writes.
-        if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
+        // The modem does NOT persist bonds across reboots, so any existing
+        // Android bond is stale and must be removed first to avoid
+        // "encryption_change:key_missing" failures.
+        if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+            Log.i("BleHelper", "removing stale bond (modem does not persist bonds)");
+            removeBond(device);
+        }
+
+        {
             bonded = false;
             bondTarget = device;
             bondLatch = new CountDownLatch(1);
@@ -503,6 +511,24 @@ public class BleHelper {
     }
 
     // --- GATT operations ---------------------------------------------------
+
+    /**
+     * Remove an existing bond (paired device entry) via reflection.
+     *
+     * <p>The modem does not persist bonds across reboots
+     * ({@code CONFIG_BT_NIMBLE_NVS_PERSIST=n}), so any Android-side bond
+     * from a previous session is stale and will cause
+     * "encryption_change:key_missing" failures.  The public Android API
+     * does not expose {@code removeBond()}, so we call it reflectively.
+     */
+    @SuppressWarnings("JavaReflectionMemberAccess")
+    private static void removeBond(BluetoothDevice device) {
+        try {
+            device.getClass().getMethod("removeBond").invoke(device);
+        } catch (Exception e) {
+            Log.w("BleHelper", "removeBond failed: " + e.getMessage());
+        }
+    }
 
     /**
      * Write data to a characteristic (write-with-response).

@@ -174,11 +174,12 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         });
         self.send_msg(&msg);
         info!(
-            "sent MODEM_READY (fw={}.{}.{}.{}, mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
+            "sent MODEM_READY (fw={}.{}.{}.{}, commit={}, mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
             FIRMWARE_VERSION[0],
             FIRMWARE_VERSION[1],
             FIRMWARE_VERSION[2],
             FIRMWARE_VERSION[3],
+            env!("SONDE_GIT_COMMIT"),
             mac[0],
             mac[1],
             mac[2],

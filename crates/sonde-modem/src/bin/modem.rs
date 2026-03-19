@@ -31,7 +31,10 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
 
-    info!("sonde-modem firmware starting");
+    info!(
+        "sonde-modem firmware starting (commit {})",
+        env!("SONDE_GIT_COMMIT")
+    );
 
     let peripherals = Peripherals::take().expect("failed to take peripherals");
     let sysloop = EspSystemEventLoop::take().expect("failed to take event loop");

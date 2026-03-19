@@ -69,6 +69,7 @@ jobs:
           # node and modem firmware produce flash_image.bin).
           mkdir -p release-assets
           cp artifacts/gateway-linux-x86_64/sonde-gateway  release-assets/sonde-gateway
+          cp artifacts/gateway-linux-x86_64/sonde-admin     release-assets/sonde-admin
           cp artifacts/gateway-windows-x86_64/sonde-gateway.exe release-assets/sonde-gateway.exe
           cp artifacts/gateway-windows-x86_64/sonde-admin.exe   release-assets/sonde-admin.exe
           cp artifacts/node-firmware/flash_image.bin        release-assets/node-flash_image.bin
@@ -84,6 +85,7 @@ jobs:
           | Component | Asset filename |
           |-----------|----------------|
           | Gateway (Linux x86_64) | `sonde-gateway` |
+          | Admin CLI (Linux) | `sonde-admin` |
           | Gateway (Windows x86_64) | `sonde-gateway.exe` |
           | Admin CLI (Windows) | `sonde-admin.exe` |
           | ESP32-C3 Node firmware | `node-flash_image.bin` |

@@ -536,6 +536,11 @@ public class BleHelper {
     /**
      * Write data to a characteristic (write-with-response).
      *
+     * <p>If the characteristic supports indications/notifications and the
+     * client has not yet subscribed, this method subscribes first.  This
+     * avoids a race where the server sends an indication before the client
+     * has written the CCCD descriptor.
+     *
      * @param serviceUuidStr service UUID string
      * @param charUuidStr    characteristic UUID string
      * @param data           payload bytes
@@ -548,6 +553,10 @@ public class BleHelper {
 
         BluetoothGattCharacteristic chr =
                 findCharacteristic(g, serviceUuidStr, charUuidStr);
+
+        // Eagerly subscribe to indications before writing so the server
+        // can respond immediately without hitting "CCCD not written".
+        ensureSubscribed(g, serviceUuidStr, charUuidStr, timeoutMs);
 
         lastError = null;
         writeLatch = new CountDownLatch(1);
@@ -588,43 +597,7 @@ public class BleHelper {
         BluetoothGatt g = requireGatt();
         UUID charUuid = UUID.fromString(charUuidStr);
 
-        // Subscribe lazily
-        if (!subscribedChars.contains(charUuid)) {
-            BluetoothGattCharacteristic chr =
-                    findCharacteristic(g, serviceUuidStr, charUuidStr);
-
-            if (!g.setCharacteristicNotification(chr, true)) {
-                throw new Exception("setCharacteristicNotification failed");
-            }
-
-            BluetoothGattDescriptor cccd = chr.getDescriptor(CCCD_UUID);
-            if (cccd != null) {
-                lastError = null;
-                descriptorLatch = new CountDownLatch(1);
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    int rc = g.writeDescriptor(cccd,
-                            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
-                    if (rc != BluetoothStatusCodes.SUCCESS) {
-                        throw new Exception("CCCD write failed: rc=" + rc);
-                    }
-                } else {
-                    cccd.setValue(
-                            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
-                    if (!g.writeDescriptor(cccd)) {
-                        throw new Exception("CCCD write initiation failed");
-                    }
-                }
-
-                if (!descriptorLatch.await(5000, TimeUnit.MILLISECONDS)) {
-                    throw new Exception("CCCD write timed out");
-                }
-                if (lastError != null) throw new Exception(lastError);
-            }
-
-            indicationQueues.put(charUuid, new LinkedBlockingQueue<>());
-            subscribedChars.add(charUuid);
-        }
+        ensureSubscribed(g, serviceUuidStr, charUuidStr, timeoutMs);
 
         LinkedBlockingQueue<byte[]> queue = indicationQueues.get(charUuid);
         if (queue == null) throw new Exception("indication queue missing");
@@ -632,6 +605,55 @@ public class BleHelper {
         byte[] value = queue.poll(timeoutMs, TimeUnit.MILLISECONDS);
         if (value == null) throw new Exception("indication timeout");
         return value;
+    }
+
+    /**
+     * Ensure indications are subscribed for the given characteristic.
+     *
+     * <p>Writes the CCCD descriptor if not already subscribed.  Idempotent.
+     */
+    @SuppressWarnings("deprecation")
+    private void ensureSubscribed(BluetoothGatt g, String serviceUuidStr,
+            String charUuidStr, long timeoutMs) throws Exception {
+        UUID charUuid = UUID.fromString(charUuidStr);
+        if (subscribedChars.contains(charUuid)) {
+            return;
+        }
+
+        BluetoothGattCharacteristic chr =
+                findCharacteristic(g, serviceUuidStr, charUuidStr);
+
+        if (!g.setCharacteristicNotification(chr, true)) {
+            throw new Exception("setCharacteristicNotification failed");
+        }
+
+        BluetoothGattDescriptor cccd = chr.getDescriptor(CCCD_UUID);
+        if (cccd != null) {
+            lastError = null;
+            descriptorLatch = new CountDownLatch(1);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                int rc = g.writeDescriptor(cccd,
+                        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
+                if (rc != BluetoothStatusCodes.SUCCESS) {
+                    throw new Exception("CCCD write failed: rc=" + rc);
+                }
+            } else {
+                cccd.setValue(
+                        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
+                if (!g.writeDescriptor(cccd)) {
+                    throw new Exception("CCCD write initiation failed");
+                }
+            }
+
+            if (!descriptorLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                throw new Exception("CCCD write timed out");
+            }
+            if (lastError != null) throw new Exception(lastError);
+        }
+
+        indicationQueues.put(charUuid, new LinkedBlockingQueue<>());
+        subscribedChars.add(charUuid);
     }
 
     // --- Helpers -----------------------------------------------------------

@@ -58,7 +58,8 @@ jobs:
       - name: Build .deb package
         run: |
           sudo apt-get update && sudo apt-get install -y fakeroot
-          bash installer/linux/build-deb.sh --version 0.1.0-nightly
+          DATE=$(date -u +%Y%m%d)
+          bash installer/linux/build-deb.sh --version "0.1.0+nightly.${DATE}"
 
       - name: Upload .deb
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -90,8 +91,9 @@ jobs:
 
       - name: Build MSI
         run: |
+          $date = Get-Date -Format "yyyyMMdd"
           wix build installer\windows\sonde.wxs `
-            -d Version=0.1.0 `
+            -d Version="0.1.0.$date" `
             -d GatewayBin=target\release\sonde-gateway.exe `
             -d AdminBin=target\release\sonde-admin.exe `
             -ext WixToolset.UI.wixext `

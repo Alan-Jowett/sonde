@@ -322,6 +322,11 @@ impl EspBleDriver {
                 if s.authenticated && s.events.len() < MAX_BLE_EVENT_QUEUE {
                     info!("BLE: GATT write {} bytes", value.len());
                     s.events.push_back(BleEvent::Recv(value.to_vec()));
+                } else if !s.authenticated {
+                    warn!(
+                        "BLE: GATT write {} bytes rejected (not authenticated)",
+                        value.len()
+                    );
                 } else if s.events.len() >= MAX_BLE_EVENT_QUEUE {
                     warn!("BLE: event queue full; dropping GATT write");
                 }
@@ -452,18 +457,28 @@ impl Ble for EspBleDriver {
         }
     }
 
-    fn drain_event(&self) -> Option<BleEvent> {
-        // Send the next pending indication chunk if confirmed.
-        {
-            let (pending, awaiting) = {
-                let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-                (!s.indication_queue.is_empty(), s.awaiting_confirm)
-            };
-            if pending && !awaiting {
-                self.send_next_chunk();
+    /// Advance the indication queue by one chunk.
+    ///
+    /// Called once per bridge poll cycle (not per `drain_event()` call)
+    /// to ensure at most one indication fragment is sent per poll.
+    fn advance_indication(&self) {
+        let (pending, awaiting) = {
+            let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            (!s.indication_queue.is_empty(), s.awaiting_confirm)
+        };
+        if awaiting {
+            // Previous chunk was sent — clear the flag so send_next_chunk
+            // can proceed.
+            if let Ok(mut s) = self.state.lock() {
+                s.awaiting_confirm = false;
             }
         }
+        if pending {
+            self.send_next_chunk();
+        }
+    }
 
+    fn drain_event(&self) -> Option<BleEvent> {
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
         s.events.pop_front()
     }
@@ -487,17 +502,16 @@ impl EspBleDriver {
         };
 
         // notify_with() queues the indication via ble_gatts_indicate_custom
-        // (non-blocking).  NimBLE paces indications internally via
-        // set_indicate_wait / clear_indicate_wait and fires on_notify_tx
-        // when the ATT Handle Value Confirmation arrives from the peer.
+        // (non-blocking).  We keep awaiting_confirm = true so that
+        // advance_indication() sends at most one chunk per poll cycle,
+        // avoiding NimBLE resource exhaustion from burst-sending all
+        // fragments.
         let chr = self.gateway_cmd_char.lock();
         match chr.notify_with(&chunk, conn_handle) {
             Ok(()) => {
-                // Indication queued successfully.  Clear awaiting_confirm
-                // since NimBLE handles confirmation pacing internally.
-                if let Ok(mut s) = self.state.lock() {
-                    s.awaiting_confirm = false;
-                }
+                // Indication queued — awaiting_confirm stays true.
+                // advance_indication() will clear it on the next poll
+                // cycle, naturally pacing one chunk per bridge iteration.
             }
             Err(e) => {
                 warn!("BLE: indication failed: {:?}", e);

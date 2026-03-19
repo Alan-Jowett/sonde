@@ -18,10 +18,14 @@ import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.ParcelUuid;
+import android.util.Log;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -74,6 +78,44 @@ public class BleHelper {
     private volatile CountDownLatch discoveryLatch;
     private volatile CountDownLatch writeLatch;
     private volatile CountDownLatch descriptorLatch;
+    private volatile CountDownLatch bondLatch;
+
+    // --- Bonding state -----------------------------------------------------
+    private volatile boolean bonded;
+    private volatile boolean bondingStarted;
+    private volatile boolean bondReceiverRegistered;
+    private volatile BluetoothDevice bondTarget;
+
+    private final BroadcastReceiver bondReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context ctx, Intent intent) {
+            if (!BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(intent.getAction())) {
+                return;
+            }
+            BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            if (device == null || bondTarget == null
+                    || !device.getAddress().equals(bondTarget.getAddress())) {
+                return;
+            }
+            int state = intent.getIntExtra(
+                    BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
+            Log.i("BleHelper", "bond state changed: " + state);
+            if (state == BluetoothDevice.BOND_BONDED) {
+                bonded = true;
+                CountDownLatch l = bondLatch;
+                if (l != null) l.countDown();
+            } else if (state == BluetoothDevice.BOND_NONE && bondingStarted) {
+                // Only treat BOND_NONE as a failure if we actually started
+                // bonding.  Ignore BOND_NONE from removeBond() cleanup.
+                int reason = intent.getIntExtra(
+                        "android.bluetooth.device.extra.REASON", -1);
+                lastError = "bonding failed (reason=" + reason + ")";
+                bonded = false;
+                CountDownLatch l = bondLatch;
+                if (l != null) l.countDown();
+            }
+        }
+    };
 
     // --- Indication / notification state -----------------------------------
     private final Set<UUID> subscribedChars =
@@ -335,10 +377,16 @@ public class BleHelper {
     // --- Connection --------------------------------------------------------
 
     /**
-     * Connect to the device, negotiate MTU, and discover services.
+     * Connect to the device, bond, negotiate MTU, and discover services.
      *
-     * <p>Blocks until all three steps complete or {@code timeoutMs} elapses.
+     * <p>Blocks until all four steps complete or {@code timeoutMs} elapses.
      * On failure or timeout the connection is cleaned up before returning.
+     *
+     * <p>Step 0 removes any stale Android bond (the modem does not persist
+     * bonds across reboots).  Step 2 always initiates a fresh LESC pairing
+     * via {@code createBond()}.  On the modem this triggers Numeric
+     * Comparison — the operator must confirm the passkey before the modem
+     * will accept GATT writes.
      *
      * @param address   6-byte BLE device address
      * @param timeoutMs overall deadline in milliseconds
@@ -353,6 +401,17 @@ public class BleHelper {
 
         lastError = null;
         long deadline = System.currentTimeMillis() + timeoutMs;
+
+        // Step 0 — remove stale bond (must happen before GATT connect)
+        // The modem does NOT persist bonds across reboots, so any existing
+        // Android bond is stale and causes "encryption_change:key_missing"
+        // failures (GATT status 133) on connection.
+        if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+            Log.i("BleHelper", "removing stale bond (modem does not persist bonds)");
+            removeBond(device);
+            // Give the stack a moment to process the removal
+            Thread.sleep(500);
+        }
 
         // Step 1 — connect
         connectLatch = new CountDownLatch(1);
@@ -372,7 +431,61 @@ public class BleHelper {
             throw new Exception(err != null ? err : "connection failed");
         }
 
-        // Step 2 — request MTU (best effort; proceed even if request fails)
+        // Step 2 — initiate LESC bonding (Numeric Comparison)
+        // The modem requires a bonded link before it will accept GATT writes.
+        {
+            bonded = false;
+            bondingStarted = false;
+            bondTarget = device;
+            bondLatch = new CountDownLatch(1);
+            lastError = null;
+
+            // Register receiver before calling createBond to avoid races
+            if (!bondReceiverRegistered) {
+                IntentFilter filter = new IntentFilter(
+                        BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+                try {
+                    context.registerReceiver(bondReceiver, filter);
+                    bondReceiverRegistered = true;
+                } catch (SecurityException | IllegalArgumentException e) {
+                    disconnectInner();
+                    throw new Exception(
+                            "failed to register bond receiver: " + e.getMessage(), e);
+                }
+            }
+
+            bondingStarted = true;
+            if (!device.createBond()) {
+                // createBond can return false if bonding is already in
+                // progress or if removeBond failed.  Check current state.
+                int bs = device.getBondState();
+                if (bs == BluetoothDevice.BOND_BONDED) {
+                    Log.i("BleHelper", "createBond() returned false but already bonded");
+                    bonded = true;
+                    bondLatch.countDown();
+                } else if (bs == BluetoothDevice.BOND_BONDING) {
+                    Log.i("BleHelper", "createBond() returned false — bonding already in progress");
+                } else {
+                    disconnectInner();
+                    throw new Exception(
+                            "createBond() failed — try unpairing the device manually in Android Bluetooth settings");
+                }
+            }
+
+            remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0
+                    || !bondLatch.await(remaining, TimeUnit.MILLISECONDS)) {
+                disconnectInner();
+                throw new Exception("bonding timed out");
+            }
+            if (!bonded) {
+                String err = lastError;
+                disconnectInner();
+                throw new Exception(err != null ? err : "bonding failed");
+            }
+        }
+
+        // Step 3 — request MTU (best effort; proceed even if request fails)
         mtuLatch = new CountDownLatch(1);
         if (gatt.requestMtu(517)) {
             remaining = deadline - System.currentTimeMillis();
@@ -381,7 +494,7 @@ public class BleHelper {
         // Clear any MTU error so it doesn't abort service discovery.
         lastError = null;
 
-        // Step 3 — discover services
+        // Step 4 — discover services
         discoveryLatch = new CountDownLatch(1);
         if (!gatt.discoverServices()) {
             disconnectInner();
@@ -410,6 +523,13 @@ public class BleHelper {
     private void disconnectInner() {
         subscribedChars.clear();
         indicationQueues.clear();
+        bondTarget = null;
+        bondingStarted = false;
+        if (bondReceiverRegistered) {
+            try { context.unregisterReceiver(bondReceiver); }
+            catch (Exception ignored) { }
+            bondReceiverRegistered = false;
+        }
         BluetoothGatt g = gatt;
         gatt = null;
         connectionState = BluetoothProfile.STATE_DISCONNECTED;
@@ -422,7 +542,30 @@ public class BleHelper {
     // --- GATT operations ---------------------------------------------------
 
     /**
+     * Remove an existing bond (paired device entry) via reflection.
+     *
+     * <p>The modem does not persist bonds across reboots
+     * ({@code CONFIG_BT_NIMBLE_NVS_PERSIST=n}), so any Android-side bond
+     * from a previous session is stale and will cause
+     * "encryption_change:key_missing" failures.  The public Android API
+     * does not expose {@code removeBond()}, so we call it reflectively.
+     */
+    @SuppressWarnings("JavaReflectionMemberAccess")
+    private static void removeBond(BluetoothDevice device) {
+        try {
+            device.getClass().getMethod("removeBond").invoke(device);
+        } catch (Exception e) {
+            Log.w("BleHelper", "removeBond failed: " + e.getMessage());
+        }
+    }
+
+    /**
      * Write data to a characteristic (write-with-response).
+     *
+     * <p>If the characteristic supports indications/notifications and the
+     * client has not yet subscribed, this method subscribes first.  This
+     * avoids a race where the server sends an indication before the client
+     * has written the CCCD descriptor.
      *
      * @param serviceUuidStr service UUID string
      * @param charUuidStr    characteristic UUID string
@@ -436,6 +579,10 @@ public class BleHelper {
 
         BluetoothGattCharacteristic chr =
                 findCharacteristic(g, serviceUuidStr, charUuidStr);
+
+        // Eagerly subscribe to indications before writing so the server
+        // can respond immediately without hitting "CCCD not written".
+        ensureSubscribed(g, serviceUuidStr, charUuidStr, timeoutMs);
 
         lastError = null;
         writeLatch = new CountDownLatch(1);
@@ -476,43 +623,7 @@ public class BleHelper {
         BluetoothGatt g = requireGatt();
         UUID charUuid = UUID.fromString(charUuidStr);
 
-        // Subscribe lazily
-        if (!subscribedChars.contains(charUuid)) {
-            BluetoothGattCharacteristic chr =
-                    findCharacteristic(g, serviceUuidStr, charUuidStr);
-
-            if (!g.setCharacteristicNotification(chr, true)) {
-                throw new Exception("setCharacteristicNotification failed");
-            }
-
-            BluetoothGattDescriptor cccd = chr.getDescriptor(CCCD_UUID);
-            if (cccd != null) {
-                lastError = null;
-                descriptorLatch = new CountDownLatch(1);
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    int rc = g.writeDescriptor(cccd,
-                            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
-                    if (rc != BluetoothStatusCodes.SUCCESS) {
-                        throw new Exception("CCCD write failed: rc=" + rc);
-                    }
-                } else {
-                    cccd.setValue(
-                            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
-                    if (!g.writeDescriptor(cccd)) {
-                        throw new Exception("CCCD write initiation failed");
-                    }
-                }
-
-                if (!descriptorLatch.await(5000, TimeUnit.MILLISECONDS)) {
-                    throw new Exception("CCCD write timed out");
-                }
-                if (lastError != null) throw new Exception(lastError);
-            }
-
-            indicationQueues.put(charUuid, new LinkedBlockingQueue<>());
-            subscribedChars.add(charUuid);
-        }
+        ensureSubscribed(g, serviceUuidStr, charUuidStr, timeoutMs);
 
         LinkedBlockingQueue<byte[]> queue = indicationQueues.get(charUuid);
         if (queue == null) throw new Exception("indication queue missing");
@@ -520,6 +631,59 @@ public class BleHelper {
         byte[] value = queue.poll(timeoutMs, TimeUnit.MILLISECONDS);
         if (value == null) throw new Exception("indication timeout");
         return value;
+    }
+
+    /**
+     * Ensure indications are subscribed for the given characteristic.
+     *
+     * <p>Writes the CCCD descriptor if not already subscribed.  Idempotent.
+     */
+    @SuppressWarnings("deprecation")
+    private void ensureSubscribed(BluetoothGatt g, String serviceUuidStr,
+            String charUuidStr, long timeoutMs) throws Exception {
+        UUID charUuid = UUID.fromString(charUuidStr);
+        if (subscribedChars.contains(charUuid)) {
+            return;
+        }
+
+        BluetoothGattCharacteristic chr =
+                findCharacteristic(g, serviceUuidStr, charUuidStr);
+
+        if (!g.setCharacteristicNotification(chr, true)) {
+            throw new Exception("setCharacteristicNotification failed");
+        }
+
+        BluetoothGattDescriptor cccd = chr.getDescriptor(CCCD_UUID);
+        if (cccd == null) {
+            throw new Exception(
+                    "CCCD descriptor missing on characteristic " + charUuidStr
+                    + " — server does not support indications");
+        }
+
+        lastError = null;
+        descriptorLatch = new CountDownLatch(1);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            int rc = g.writeDescriptor(cccd,
+                    BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
+            if (rc != BluetoothStatusCodes.SUCCESS) {
+                throw new Exception("CCCD write failed: rc=" + rc);
+            }
+        } else {
+            cccd.setValue(
+                    BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
+            if (!g.writeDescriptor(cccd)) {
+                throw new Exception("CCCD write initiation failed");
+            }
+        }
+
+        if (!descriptorLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            throw new Exception("CCCD write timed out");
+        }
+        if (lastError != null) throw new Exception(lastError);
+
+        indicationQueues.put(charUuid, new LinkedBlockingQueue<>());
+        subscribedChars.add(charUuid);
     }
 
     // --- Helpers -----------------------------------------------------------

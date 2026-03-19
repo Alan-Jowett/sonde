@@ -95,6 +95,10 @@ pub trait Ble {
     fn indicate(&mut self, data: &[u8]);
     /// Accept or reject a Numeric Comparison pairing (MD-0414).
     fn pairing_confirm_reply(&mut self, accept: bool);
+    /// Advance the indication queue by at most one chunk.
+    ///
+    /// Must be called once per poll cycle to pace fragmented indications.
+    fn advance_indication(&self) {}
     /// Drain one queued BLE event, or `None` if empty.
     fn drain_event(&self) -> Option<BleEvent>;
 }
@@ -240,6 +244,9 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
                 None => break,
             }
         }
+
+        // Advance fragmented BLE indications (one chunk per poll cycle).
+        self.ble.advance_indication();
 
         // Forward any BLE events to the gateway over USB-CDC.
         // Cap at MAX_BLE_EVENTS_PER_POLL to prevent starvation of serial

@@ -50,6 +50,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
 ] }
 windows-service = "0.8.0"
+tracing-etw = "0.2.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }

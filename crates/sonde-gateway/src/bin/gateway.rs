@@ -170,9 +170,11 @@ struct Cli {
     #[arg(long, hide = true)]
     service: bool,
 
-    /// Path to the log file used when running as a Windows NT service.
+    /// Optional log file written alongside ETW when running as a Windows NT service.
     ///
-    /// Defaults to `<db-path>.log` (e.g., `sonde.log` when `--db sonde.db`).
+    /// ETW is always active in service mode and requires no log file.
+    /// When this flag is set, events are also written to the specified file
+    /// (useful for capturing logs without an active ETW session).
     /// Has no effect in console mode.
     #[cfg(windows)]
     #[arg(long)]
@@ -604,32 +606,46 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
     let _ = status_handle.set_service_status(stopped_status);
 }
 
-/// Initialise tracing to write to a log file (used in service mode where there
-/// is no console).
+/// Initialise tracing for Windows NT service mode.
 ///
-/// The log file path defaults to `<db-path>.log` when `--log-file` is not set.
+/// Registers an ETW provider named `"sonde-gateway"` so that events can be
+/// captured with `tracelog`, WPA/PerfView, or Event Viewer without any file
+/// management. If `--log-file` is explicitly given the same events are also
+/// written to that file (e.g. for debugging without an active ETW session).
 #[cfg(windows)]
 fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-    let log_path = cli.log_file.clone().unwrap_or_else(|| {
-        let mut p = PathBuf::from(&cli.db);
-        p.set_extension("log");
-        p
-    });
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "sonde_gateway=info".into());
 
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("cannot open log file {}: {e}", log_path.display()))?;
+    // ETW layer: emits structured events to Windows Event Tracing.
+    // Tools such as tracelog/traceview, WPA/PerfView, or Event Viewer can
+    // consume these events without any file management on our part.
+    let etw_layer = tracing_etw::LayerBuilder::new("sonde-gateway")
+        .build()
+        .map_err(|e| format!("failed to initialise ETW provider: {e}"))?;
 
-    tracing_subscriber::fmt()
-        .with_writer(std::sync::Mutex::new(file))
-        .with_ansi(false)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| "sonde_gateway=info".into()),
+    // Optional file layer: only written when --log-file is explicitly set.
+    let file_layer = if let Some(log_path) = &cli.log_file {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .map_err(|e| format!("cannot open log file {}: {e}", log_path.display()))?;
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false),
         )
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(etw_layer)
+        .with(file_layer)
         .init();
 
     Ok(())

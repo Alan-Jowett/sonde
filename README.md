@@ -204,6 +204,8 @@ See [Getting Started](docs/getting-started.md) for full toolchain setup.
 
 - [Overview](docs/overview.md) — project summary, status, and goals
 - [Getting Started](docs/getting-started.md) — developer environment setup, toolchain installation, build and flash commands
+- [Node BOM](docs/node-bom.md) — off-the-shelf parts list for building a sonde node (no custom PCB required)
+- [Gateway BOM](docs/gateway-bom.md) — off-the-shelf parts list for building a USB-attached ESP-NOW gateway
 - [Contributing](docs/contributing.md) — contribution guidelines, DCO, SPDX requirements
 - [Why BPF?](docs/why-bpf.md) — rationale for using uBPF + Prevail as the execution model
 - [BPF Environment](docs/bpf-environment.md) — program API, memory model, verification, and development workflow

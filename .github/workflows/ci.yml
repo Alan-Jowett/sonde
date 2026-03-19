@@ -64,7 +64,7 @@ jobs:
       - name: Build gateway and admin (release)
         run: cargo build --release -p sonde-gateway -p sonde-admin
 
-      - name: Upload gateway binary
+      - name: Upload Linux binaries
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: gateway-linux-x86_64

@@ -154,7 +154,7 @@ jobs:
           | Component | Asset filename |
           |-----------|----------------|
           | Gateway (Linux x86_64) | `sonde-gateway` |
-          | Admin CLI (Linux) | `sonde-admin` |
+          | Admin CLI (Linux x86_64) | `sonde-admin` |
           | Gateway (Windows x86_64) | `sonde-gateway.exe` |
           | Admin CLI (Windows) | `sonde-admin.exe` |
           | ESP32-C3 Node firmware | `node-flash_image.bin` |

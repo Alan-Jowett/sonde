@@ -5,7 +5,7 @@
 > **Document status:** Draft
 > **Scope:** Developer environment setup for building, testing, and flashing all Sonde crates.
 > **Audience:** Contributors and LLM agents working on any part of the Sonde codebase.
-> **Related:** [implementation-guide.md](implementation-guide.md), [README.md](../README.md)
+> **Related:** [implementation-guide.md](implementation-guide.md), [node-bom.md](node-bom.md), [README.md](../README.md)
 
 > **Repository status:** Active development — pre-1.0. Core crates (protocol, gateway, modem, node) are implemented and tested. See the [Project status](../README.md#project-status) section in the README for the current state of each crate and the roadmap.
 

@@ -538,7 +538,9 @@ pub extern "system" fn JNI_OnLoad(
 }
 
 #[cfg(target_os = "android")]
-fn jni_on_load_inner(vm: *mut jni::sys::JavaVM) -> Result<jni::sys::jint, Box<dyn std::error::Error>> {
+fn jni_on_load_inner(
+    vm: *mut jni::sys::JavaVM,
+) -> Result<jni::sys::jint, Box<dyn std::error::Error>> {
     let vm1 = unsafe { jni::JavaVM::from_raw(vm)? };
     let vm2 = unsafe { jni::JavaVM::from_raw(vm)? };
     AndroidBleTransport::cache_vm(vm1);

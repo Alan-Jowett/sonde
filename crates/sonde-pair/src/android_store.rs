@@ -100,8 +100,7 @@ impl AndroidPairingStore {
         // SAFETY: The GlobalRef was created from find_class(), which returns
         // a JClass.  We reconstruct a JClass from the raw jobject pointer;
         // the GlobalRef keeps the underlying reference alive.
-        let store_class =
-            unsafe { JClass::from_raw(cached.as_obj().as_raw()) };
+        let store_class = unsafe { JClass::from_raw(cached.as_obj().as_raw()) };
 
         let store_obj = env
             .new_object(

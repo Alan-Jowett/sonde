@@ -516,19 +516,46 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ModemStatus>, Status> {
-        Err(Status::unimplemented(
-            "`get_modem_status` requires a modem transport — not yet wired",
-        ))
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("no modem transport configured"))?;
+
+        let status = transport
+            .poll_status()
+            .await
+            .map_err(|e| Status::internal(format!("modem status poll failed: {e}")))?;
+
+        Ok(Response::new(ModemStatus {
+            channel: status.channel as u32,
+            tx_count: status.tx_count,
+            rx_count: status.rx_count,
+            tx_fail_count: status.tx_fail_count,
+            uptime_s: status.uptime_s,
+        }))
     }
 
     /// Set the modem's ESP-NOW radio channel.
     async fn set_modem_channel(
         &self,
-        _request: Request<SetModemChannelRequest>,
+        request: Request<SetModemChannelRequest>,
     ) -> Result<Response<Empty>, Status> {
-        Err(Status::unimplemented(
-            "`set_modem_channel` requires a modem transport — not yet wired",
-        ))
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("no modem transport configured"))?;
+
+        let channel = request.into_inner().channel;
+        if !(1..=14).contains(&channel) {
+            return Err(Status::invalid_argument("channel must be between 1 and 14"));
+        }
+
+        transport
+            .change_channel(channel as u8)
+            .await
+            .map_err(|e| Status::internal(format!("set modem channel failed: {e}")))?;
+
+        Ok(Response::new(Empty {}))
     }
 
     /// Scan all WiFi channels and report per-channel AP activity.
@@ -536,9 +563,27 @@ impl GatewayAdmin for AdminService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ScanModemChannelsResponse>, Status> {
-        Err(Status::unimplemented(
-            "`scan_modem_channels` requires a modem transport — not yet wired",
-        ))
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("no modem transport configured"))?;
+
+        let result = transport
+            .scan_channels()
+            .await
+            .map_err(|e| Status::internal(format!("modem channel scan failed: {e}")))?;
+
+        Ok(Response::new(ScanModemChannelsResponse {
+            entries: result
+                .entries
+                .into_iter()
+                .map(|e| ChannelSurveyEntry {
+                    channel: e.channel as u32,
+                    ap_count: e.ap_count as u32,
+                    strongest_rssi: e.strongest_rssi as i32,
+                })
+                .collect(),
+        }))
     }
 
     // -- BLE phone pairing (GW-1222) ----------------------------------------

@@ -81,6 +81,10 @@ unsafe impl Sync for AndroidPairingStore {}
 impl AndroidPairingStore {
     /// Create a new store, initialising the Java `SecureStore` via JNI.
     ///
+    /// [`cache_store_class()`] **must** have been called first (typically
+    /// from `JNI_OnLoad`) to resolve the `SecureStore` class on a thread
+    /// with the application classloader.
+    ///
     /// `context` must be an Android `Context`.
     pub fn new(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<Self, PairingError> {
         let vm = env.get_java_vm().map_err(store_jni_err)?;

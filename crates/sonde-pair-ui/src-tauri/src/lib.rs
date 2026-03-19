@@ -529,20 +529,30 @@ pub extern "system" fn JNI_OnLoad(
     vm: *mut jni::sys::JavaVM,
     _reserved: *mut std::ffi::c_void,
 ) -> jni::sys::jint {
-    let vm1 = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
-    let vm2 = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
+    // Wrap the fallible body so we can return JNI_ERR on failure instead
+    // of panicking (unwinding across extern "system" is UB).
+    match jni_on_load_inner(vm) {
+        Ok(ver) => ver,
+        Err(_) => jni::sys::JNI_ERR,
+    }
+}
+
+#[cfg(target_os = "android")]
+fn jni_on_load_inner(vm: *mut jni::sys::JavaVM) -> Result<jni::sys::jint, Box<dyn std::error::Error>> {
+    let vm1 = unsafe { jni::JavaVM::from_raw(vm)? };
+    let vm2 = unsafe { jni::JavaVM::from_raw(vm)? };
     AndroidBleTransport::cache_vm(vm1);
     AndroidPairingStore::cache_vm(vm2);
 
     // Resolve app-defined classes on the main thread.
-    let vm_env = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
-    let mut env = vm_env.get_env().expect("JNI_OnLoad: GetEnv failed");
+    let vm_env = unsafe { jni::JavaVM::from_raw(vm)? };
+    let mut env = vm_env.get_env()?;
     AndroidBleTransport::cache_helper_class(&mut env)
-        .expect("JNI_OnLoad: failed to cache BleHelper class");
+        .map_err(|e| format!("cache BleHelper: {e}"))?;
     AndroidPairingStore::cache_store_class(&mut env)
-        .expect("JNI_OnLoad: failed to cache SecureStore class");
+        .map_err(|e| format!("cache SecureStore: {e}"))?;
 
-    jni::JNIVersion::V6.into()
+    Ok(jni::JNIVersion::V6.into())
 }
 
 // ---------------------------------------------------------------------------

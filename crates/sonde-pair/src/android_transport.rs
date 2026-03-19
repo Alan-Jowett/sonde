@@ -77,6 +77,10 @@ unsafe impl Sync for JniState {}
 impl AndroidBleTransport {
     /// Create a new transport, initialising the Java `BleHelper` via JNI.
     ///
+    /// [`cache_helper_class()`] **must** have been called first (typically
+    /// from `JNI_OnLoad`) to resolve the `BleHelper` class on a thread
+    /// with the application classloader.
+    ///
     /// `context` must be an Android `Context` (e.g. `Activity` or
     /// `Application`).  The helper takes `getApplicationContext()` so the
     /// caller does not need to worry about lifecycle.

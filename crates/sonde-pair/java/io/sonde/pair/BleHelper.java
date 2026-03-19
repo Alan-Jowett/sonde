@@ -82,6 +82,7 @@ public class BleHelper {
 
     // --- Bonding state -----------------------------------------------------
     private volatile boolean bonded;
+    private volatile boolean bondingStarted;
     private volatile boolean bondReceiverRegistered;
     private volatile BluetoothDevice bondTarget;
 
@@ -103,8 +104,9 @@ public class BleHelper {
                 bonded = true;
                 CountDownLatch l = bondLatch;
                 if (l != null) l.countDown();
-            } else if (state == BluetoothDevice.BOND_NONE) {
-                // Pairing failed or was rejected
+            } else if (state == BluetoothDevice.BOND_NONE && bondingStarted) {
+                // Only treat BOND_NONE as a failure if we actually started
+                // bonding.  Ignore BOND_NONE from removeBond() cleanup.
                 int reason = intent.getIntExtra(
                         "android.bluetooth.device.extra.REASON", -1);
                 lastError = "bonding failed (reason=" + reason + ")";
@@ -380,9 +382,11 @@ public class BleHelper {
      * <p>Blocks until all four steps complete or {@code timeoutMs} elapses.
      * On failure or timeout the connection is cleaned up before returning.
      *
-     * <p>Step 2 (bonding) initiates LESC pairing if not already bonded.
-     * On the modem, this triggers Numeric Comparison — the operator must
-     * confirm the passkey before the modem will accept GATT writes.
+     * <p>Step 0 removes any stale Android bond (the modem does not persist
+     * bonds across reboots).  Step 2 always initiates a fresh LESC pairing
+     * via {@code createBond()}.  On the modem this triggers Numeric
+     * Comparison — the operator must confirm the passkey before the modem
+     * will accept GATT writes.
      *
      * @param address   6-byte BLE device address
      * @param timeoutMs overall deadline in milliseconds
@@ -431,6 +435,7 @@ public class BleHelper {
         // The modem requires a bonded link before it will accept GATT writes.
         {
             bonded = false;
+            bondingStarted = false;
             bondTarget = device;
             bondLatch = new CountDownLatch(1);
             lastError = null;
@@ -439,12 +444,31 @@ public class BleHelper {
             if (!bondReceiverRegistered) {
                 IntentFilter filter = new IntentFilter(
                         BluetoothDevice.ACTION_BOND_STATE_CHANGED);
-                context.registerReceiver(bondReceiver, filter);
-                bondReceiverRegistered = true;
+                try {
+                    context.registerReceiver(bondReceiver, filter);
+                    bondReceiverRegistered = true;
+                } catch (SecurityException | IllegalArgumentException e) {
+                    disconnectInner();
+                    throw new Exception(
+                            "failed to register bond receiver: " + e.getMessage(), e);
+                }
             }
 
+            bondingStarted = true;
             if (!device.createBond()) {
-                Log.w("BleHelper", "createBond() returned false — bonding may already be in progress");
+                // createBond can return false if bonding is already in
+                // progress or if removeBond failed.  Check current state.
+                int bs = device.getBondState();
+                if (bs == BluetoothDevice.BOND_BONDED) {
+                    Log.i("BleHelper", "createBond() returned false but already bonded");
+                    bonded = true;
+                } else if (bs == BluetoothDevice.BOND_BONDING) {
+                    Log.i("BleHelper", "createBond() returned false — bonding already in progress");
+                } else {
+                    disconnectInner();
+                    throw new Exception(
+                            "createBond() failed — try unpairing the device manually in Android Bluetooth settings");
+                }
             }
 
             remaining = deadline - System.currentTimeMillis();
@@ -499,6 +523,7 @@ public class BleHelper {
         subscribedChars.clear();
         indicationQueues.clear();
         bondTarget = null;
+        bondingStarted = false;
         if (bondReceiverRegistered) {
             try { context.unregisterReceiver(bondReceiver); }
             catch (Exception ignored) { }

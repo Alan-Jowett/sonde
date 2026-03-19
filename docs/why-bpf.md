@@ -4,7 +4,7 @@
 
 ## Summary
 
-This document describes the rationale for using BPF (via [uBPF](https://github.com/iovisor/ubpf) + [Prevail](https://github.com/vbpf/ebpf-verifier)) as the execution model for Sonde nodes. The goal is to make node firmware static and uniform, while all behavior — sampling logic, thresholds, batching, anomaly detection, diagnostics — is delivered dynamically as verified BPF bytecode. This enables a safe, flexible, low-power distributed system without OTA firmware updates.
+This document describes the rationale for using BPF ([RFC 9669](https://www.rfc-editor.org/rfc/rfc9669.html), verified by [Prevail](https://github.com/vbpf/ebpf-verifier)) as the execution model for Sonde nodes. The goal is to make node firmware static and uniform, while all behavior — sampling logic, thresholds, batching, anomaly detection, diagnostics — is delivered dynamically as verified BPF bytecode. This enables a safe, flexible, low-power distributed system without OTA firmware updates.
 
 ---
 
@@ -51,16 +51,16 @@ Prevail provides static guarantees:
 
 This ensures predictable wake-time energy usage and prevents runaway programs.
 
-### Tiny, portable runtime (uBPF)
+### Tiny, portable runtime (sonde-bpf)
 
-uBPF provides:
+`sonde-bpf` provides:
 
-- A small interpreter suitable for ESP32-C3/S3
-- Optional JIT (where supported)
-- A simple embedding model
+- A zero-allocation BPF interpreter (RFC 9669 compliant)
+- Tagged registers for pointer provenance and memory safety
+- `#![no_std]`-compatible — runs on ESP32-C3/S3
 - No OS dependencies
 
-This keeps node firmware minimal and uniform.
+This keeps node firmware minimal and uniform. The interpreter is injected via a `BpfInterpreter` trait, so alternative backends (e.g., rbpf, uBPF) can be substituted without changing the firmware.
 
 ### Dynamic behavior without firmware updates
 
@@ -141,4 +141,4 @@ Only new BPF programs.
 
 ## Conclusion
 
-BPF provides a safe, verifiable, low-power execution model that allows Sonde nodes to remain simple, uniform, and long-lived while still supporting dynamic behavior. The combination of uBPF + Prevail gives us a correctness-critical runtime with strong safety guarantees and a clean operational story. This architecture is significantly more flexible and maintainable than traditional firmware-centric IoT designs.
+BPF provides a safe, verifiable, low-power execution model that allows Sonde nodes to remain simple, uniform, and long-lived while still supporting dynamic behavior. The combination of `sonde-bpf` (a custom RFC 9669 interpreter) + Prevail gives us a correctness-critical runtime with strong safety guarantees and a clean operational story. This architecture is significantly more flexible and maintainable than traditional firmware-centric IoT designs.

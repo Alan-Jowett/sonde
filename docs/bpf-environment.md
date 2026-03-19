@@ -515,7 +515,7 @@ clang -target bpf -O2 -c my_program.c -o my_program.o
 Sonde provides a test library (`libsonde_test`) that lets developers verify, load, and execute BPF programs from unit tests. The library includes:
 
 - **Prevail verification** — runs the verifier against the chosen profile (resident or ephemeral).
-- **uBPF execution** — loads and runs the program in a sandboxed environment.
+- **BPF execution** — loads and runs the program in a sandboxed interpreter (`sonde-bpf`).
 - **Bus mocking** — register mock I2C/SPI/GPIO/ADC devices so you can observe how the BPF program interacts with sensors (what it reads, what it writes, in what order).
 - **Map inspection** — examine map contents before and after execution.
 - **APP_DATA capture** — capture `send()` / `send_recv()` calls and provide mock replies.

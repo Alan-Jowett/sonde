@@ -5,7 +5,7 @@
 > **Document status:** Draft  
 > **Scope:** Architecture and internal design of the Sonde node firmware.  
 > **Audience:** Implementers (human or LLM agent) building the node firmware.  
-> **Related:** [node-requirements.md](node-requirements.md), [protocol.md](protocol.md), [security.md](security.md), [bpf-environment.md](bpf-environment.md)
+> **Related:** [node-requirements.md](node-requirements.md), [protocol.md](protocol.md), [security.md](security.md), [bpf-environment.md](bpf-environment.md), [node-bom.md](node-bom.md)
 
 ---
 
@@ -30,7 +30,7 @@ The firmware is **uniform across all nodes** — application behavior is defined
 | Language | Rust | Same language as gateway; memory safety on bare metal |
 | Protocol crate | `sonde-protocol` (shared with gateway) | `no_std`-compatible; frame codec, CBOR messages, constants |
 | Platform bindings | `esp-idf-hal` + `esp-idf-svc` | Full ESP-IDF feature access (ESP-NOW, deep sleep, hardware crypto, flash partitions) |
-| BPF interpreter | **⚠ OPEN** — `rbpf` (pure Rust) or `uBPF` (C, via FFI). Both require extension for BPF-to-BPF function calls. |
+| BPF interpreter | `sonde-bpf` — custom RFC 9669 interpreter with tagged registers and zero heap allocation |
 | CBOR | Via `sonde-protocol` (`ciborium`) | serde-compatible; matches protocol crate implementation |
 | HMAC | ESP-IDF hardware HMAC peripheral (implements `sonde-protocol::HmacProvider` trait) | Hardware-accelerated; ~10x faster than software |
 | SHA-256 | ESP-IDF hardware SHA peripheral | Hardware-accelerated; used for program hash verification |
@@ -72,7 +72,7 @@ The node firmware is divided into eight functional modules arranged in two tiers
 | **Wake Cycle Engine** | State machine: WAKE → COMMAND → transfer/execute → sleep | ND-0200–0203, ND-0700–0702 |
 | **Key Store** | PSK storage in dedicated flash partition, pairing, factory reset | ND-0400–0402 |
 | **Program Store** | A/B flash partitions, program image decoding, LDDW resolution | ND-0500–0503, ND-0501a |
-| **BPF Runtime** | rbpf interpreter, helper dispatch, execution constraints | ND-0504–0506, ND-0600–0606 |
+| **BPF Runtime** | `sonde-bpf` interpreter, helper dispatch, execution constraints | ND-0504–0506, ND-0600–0606 |
 | **Map Storage** | Sleep-persistent maps in RTC slow SRAM | ND-0603, ND-0606 |
 | **HAL** | I2C, SPI, GPIO, ADC bus access for BPF helpers | ND-0601 |
 | **Sleep Manager** | Deep sleep entry, wake interval, RTC memory management | ND-0203 |
@@ -270,14 +270,9 @@ Ephemeral programs are stored in RAM (heap allocation), not flash. They are deco
 
 ### 8.1  Interpreter
 
-**⚠ OPEN:** The BPF interpreter choice is an open design decision:
+The BPF interpreter choice is resolved:
 
-| Option | Pros | Cons |
-|---|---|---|
-| `rbpf` (Rust) | Pure Rust, no FFI, same language as firmware | Less established; needs BPF-to-BPF call extension |
-| `uBPF` (C, via FFI) | Larger ecosystem, used by eBPF for Windows | Requires unsafe FFI; needs BPF-to-BPF call extension |
-
-Both options require extension to support BPF-to-BPF function calls (max 8 call frames, 512 bytes stack each). The firmware wraps whichever interpreter behind a `BpfInterpreter` trait, so the choice can be changed without affecting the rest of the design.
+The project uses `sonde-bpf`, a custom RFC 9669 compliant interpreter written in pure Rust. It provides zero-allocation execution, tagged register tracking for pointer provenance, and `#![no_std]` compatibility. The firmware wraps the interpreter behind a `BpfInterpreter` trait, so the backend can be changed without affecting the rest of the design.
 
 ### 8.1a  BPF interpreter trait
 
@@ -290,29 +285,33 @@ pub trait BpfInterpreter {
 
     /// Load bytecode and resolve LDDW src=1 map references.
     /// `map_ptrs` maps map_index → runtime pointer for relocation.
-    fn load(&mut self, bytecode: &[u8], map_ptrs: &[u64]) -> Result<(), BpfError>;
+    /// `map_defs` carries MapDef entries for bounds checking.
+    fn load(
+        &mut self,
+        bytecode: &[u8],
+        map_ptrs: &[u64],
+        map_defs: &[sonde_protocol::MapDef],
+    ) -> Result<(), BpfError>;
 
     /// Execute the loaded program with the given context pointer.
     /// `instruction_budget` limits execution; returns the program's
     /// return value or an error if budget/call-depth is exceeded.
-    fn execute(
-        &mut self,
-        ctx_ptr: u64,
-        instruction_budget: u64,
-    ) -> Result<u64, BpfError>;
+    fn execute(&mut self, ctx_ptr: u64, instruction_budget: u64) -> Result<u64, BpfError>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BpfError {
     InstructionBudgetExceeded,
     CallDepthExceeded,
-    InvalidBytecode,
+    InvalidBytecode(&'static str),
     HelperNotRegistered(u32),
-    LoadError(String),
+    LoadError(&'static str),
+    MapLoadError { index: usize, kind: &'static str },
+    RuntimeError(&'static str),
 }
 ```
 
-This trait is defined in the node firmware (not in `sonde-protocol`, since the gateway does not execute BPF). Both `rbpf` and `uBPF` adapters implement it.
+This trait is defined in the node firmware (not in `sonde-protocol`, since the gateway does not execute BPF). The `sonde-node` crate provides an adapter backed by `sonde-bpf`.
 
 The interpreter runs in bounded mode — an instruction counter enforces the instruction budget. If the budget is exceeded, execution is terminated and the program returns an error.
 

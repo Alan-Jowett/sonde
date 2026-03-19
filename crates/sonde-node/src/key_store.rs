@@ -76,6 +76,13 @@ mod tests {
         channel: Option<u8>,
         peer_payload: Option<Vec<u8>>,
         reg_complete: bool,
+        // Failure-injection flags for error-path testing.
+        fail_erase_key: bool,
+        fail_erase_program: bool,
+        fail_reset_schedule: bool,
+        fail_write_channel: bool,
+        fail_erase_peer_payload: bool,
+        fail_write_reg_complete: bool,
     }
 
     impl MockStorage {
@@ -89,6 +96,12 @@ mod tests {
                 channel: None,
                 peer_payload: None,
                 reg_complete: false,
+                fail_erase_key: false,
+                fail_erase_program: false,
+                fail_reset_schedule: false,
+                fail_write_channel: false,
+                fail_erase_peer_payload: false,
+                fail_write_reg_complete: false,
             }
         }
     }
@@ -107,6 +120,9 @@ mod tests {
         }
 
         fn erase_key(&mut self) -> NodeResult<()> {
+            if self.fail_erase_key {
+                return Err(NodeError::StorageError("injected erase_key failure"));
+            }
             self.key = None;
             Ok(())
         }
@@ -126,6 +142,9 @@ mod tests {
         }
 
         fn reset_schedule(&mut self) -> NodeResult<()> {
+            if self.fail_reset_schedule {
+                return Err(NodeError::StorageError("injected reset_schedule failure"));
+            }
             self.schedule_interval = 60;
             self.active_partition = 0;
             Ok(())
@@ -141,6 +160,9 @@ mod tests {
         }
 
         fn erase_program(&mut self, partition: u8) -> NodeResult<()> {
+            if self.fail_erase_program {
+                return Err(NodeError::StorageError("injected erase_program failure"));
+            }
             self.programs[partition as usize] = None;
             Ok(())
         }
@@ -161,6 +183,9 @@ mod tests {
         }
 
         fn write_channel(&mut self, channel: u8) -> NodeResult<()> {
+            if self.fail_write_channel {
+                return Err(NodeError::StorageError("injected write_channel failure"));
+            }
             self.channel = Some(channel);
             Ok(())
         }
@@ -175,6 +200,11 @@ mod tests {
         }
 
         fn erase_peer_payload(&mut self) -> NodeResult<()> {
+            if self.fail_erase_peer_payload {
+                return Err(NodeError::StorageError(
+                    "injected erase_peer_payload failure",
+                ));
+            }
             self.peer_payload = None;
             Ok(())
         }
@@ -184,6 +214,11 @@ mod tests {
         }
 
         fn write_reg_complete(&mut self, complete: bool) -> NodeResult<()> {
+            if self.fail_write_reg_complete {
+                return Err(NodeError::StorageError(
+                    "injected write_reg_complete failure",
+                ));
+            }
             self.reg_complete = complete;
             Ok(())
         }
@@ -247,6 +282,119 @@ mod tests {
         assert_eq!(
             map_storage.get(0).unwrap().lookup(0).unwrap(),
             &[0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn test_load_identity_paired() {
+        // T-N402: Paired node with stored PSK → load_identity returns the
+        // correct key_hint and PSK.
+        let mut storage = MockStorage::new();
+        let psk = [0x42; 32];
+        storage.key = Some((0xBEEF, psk));
+
+        let ks = KeyStore::new(&mut storage);
+        let id = ks.load_identity().expect("should return identity");
+        assert_eq!(id.key_hint, 0xBEEF);
+        assert_eq!(id.psk, psk);
+    }
+
+    // -- factory_reset error-path tests ------------------------------------
+    // Each test injects a failure at one step and asserts that factory_reset
+    // propagates the StorageError.
+
+    /// Helper: build a fully-populated MockStorage suitable for factory_reset.
+    fn populated_storage() -> MockStorage {
+        let mut s = MockStorage::new();
+        s.key = Some((10, [0xDD; 32]));
+        s.programs[0] = Some(vec![1, 2, 3]);
+        s.programs[1] = Some(vec![4, 5, 6]);
+        s.schedule_interval = 300;
+        s.active_partition = 1;
+        s.channel = Some(6);
+        s.peer_payload = Some(vec![0xAB; 64]);
+        s.reg_complete = true;
+        s
+    }
+
+    #[test]
+    fn test_factory_reset_erase_key_fails() {
+        // T-N405: erase_key failure propagates from factory_reset.
+        let mut storage = populated_storage();
+        storage.fail_erase_key = true;
+        let mut map_storage = MapStorage::new(4096);
+        let mut ks = KeyStore::new(&mut storage);
+        let err = ks.factory_reset(&mut map_storage).unwrap_err();
+        assert_eq!(err, NodeError::StorageError("injected erase_key failure"));
+    }
+
+    #[test]
+    fn test_factory_reset_erase_program_fails() {
+        // T-N406: erase_program failure propagates from factory_reset.
+        let mut storage = populated_storage();
+        storage.fail_erase_program = true;
+        let mut map_storage = MapStorage::new(4096);
+        let mut ks = KeyStore::new(&mut storage);
+        let err = ks.factory_reset(&mut map_storage).unwrap_err();
+        assert_eq!(
+            err,
+            NodeError::StorageError("injected erase_program failure")
+        );
+    }
+
+    #[test]
+    fn test_factory_reset_reset_schedule_fails() {
+        // T-N407: reset_schedule failure propagates from factory_reset.
+        let mut storage = populated_storage();
+        storage.fail_reset_schedule = true;
+        let mut map_storage = MapStorage::new(4096);
+        let mut ks = KeyStore::new(&mut storage);
+        let err = ks.factory_reset(&mut map_storage).unwrap_err();
+        assert_eq!(
+            err,
+            NodeError::StorageError("injected reset_schedule failure")
+        );
+    }
+
+    #[test]
+    fn test_factory_reset_write_channel_fails() {
+        // T-N408: write_channel failure propagates from factory_reset.
+        let mut storage = populated_storage();
+        storage.fail_write_channel = true;
+        let mut map_storage = MapStorage::new(4096);
+        let mut ks = KeyStore::new(&mut storage);
+        let err = ks.factory_reset(&mut map_storage).unwrap_err();
+        assert_eq!(
+            err,
+            NodeError::StorageError("injected write_channel failure")
+        );
+    }
+
+    #[test]
+    fn test_factory_reset_erase_peer_payload_fails() {
+        // T-N409: erase_peer_payload failure propagates from factory_reset.
+        let mut storage = populated_storage();
+        storage.fail_erase_peer_payload = true;
+        let mut map_storage = MapStorage::new(4096);
+        let mut ks = KeyStore::new(&mut storage);
+        let err = ks.factory_reset(&mut map_storage).unwrap_err();
+        assert_eq!(
+            err,
+            NodeError::StorageError("injected erase_peer_payload failure")
+        );
+    }
+
+    #[test]
+    fn test_factory_reset_write_reg_complete_fails() {
+        // T-N410: write_reg_complete failure propagates from factory_reset.
+        let mut storage = populated_storage();
+        storage.fail_write_reg_complete = true;
+        let mut map_storage = MapStorage::new(4096);
+        let mut ks = KeyStore::new(&mut storage);
+        let err = ks.factory_reset(&mut map_storage).unwrap_err();
+        assert_eq!(
+            err,
+            NodeError::StorageError("injected write_reg_complete failure")
         );
     }
 }

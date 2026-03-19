@@ -38,7 +38,7 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
 
-    info!("sonde-node booting");
+    info!("sonde-node booting (commit {})", env!("SONDE_GIT_COMMIT"));
     info!("firmware ABI version: {}", sonde_node::FIRMWARE_ABI_VERSION);
 
     // --- Initialize platform ---

@@ -48,8 +48,9 @@ impl std::error::Error for BpfError {}
 
 /// BPF interpreter abstraction.
 ///
-/// Both sonde-bpf and uBPF can implement this trait. The choice of interpreter
-/// backend does not affect the rest of the firmware design.
+/// The `sonde-node` crate provides an adapter backed by `sonde-bpf`.
+/// The choice of interpreter backend does not affect the rest of the
+/// firmware design.
 pub trait BpfInterpreter {
     /// Register a helper function by call number.
     ///

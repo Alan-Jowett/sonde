@@ -13,7 +13,7 @@
 
 Sonde is a programmable, verifiable runtime for distributed sensor nodes. Each node acts as a constrained probe — an instrument that autonomously samples its environment and reports observations to a gateway upstream.
 
-Nodes run **uniform firmware** and execute behavior defined by [uBPF](https://github.com/iovisor/ubpf) programs verified by [Prevail](https://github.com/vbpf/ebpf-verifier). A gateway distributes programs, schedules, and configuration over the air — no firmware updates required. The reference implementation targets ESP32-C3/S3.
+Nodes run **uniform firmware** and execute behavior defined by BPF programs ([RFC 9669](https://www.rfc-editor.org/rfc/rfc9669.html)) verified by [Prevail](https://github.com/vbpf/ebpf-verifier). A gateway distributes programs, schedules, and configuration over the air — no firmware updates required. The reference implementation targets ESP32-C3/S3.
 
 ---
 
@@ -86,4 +86,4 @@ The workspace contains:
 - [Protocol](protocol.md) — node-gateway wire protocol specification
 - [Security Model](security.md) — threat model, key provisioning, authentication, and replay protection
 - [BPF Environment](bpf-environment.md) — BPF program API, memory model, and development workflow
-- [Why BPF?](why-bpf.md) — rationale for using uBPF + Prevail as the execution model
+- [Why BPF?](why-bpf.md) — rationale for using BPF + Prevail as the execution model

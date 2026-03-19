@@ -188,7 +188,7 @@ BPF programs reference maps via `LDDW` instructions (RFC 9669 §4.3). In the ori
 - **Resolution:** Prevail's loader performs this transformation as part of verification — no additional pass is required.
 - **Node-side handling:** The node's BPF interpreter recognizes `LDDW src=1` and replaces the immediate with the runtime pointer to the corresponding map (allocated from sleep-persistent memory at program install time).
 
-This encoding is consistent with the standard BPF loader convention (`src=1` = map reference by index) and is already supported by uBPF.
+This encoding is consistent with the standard BPF loader convention (`src=1` = map reference by index).
 
 #### Ingestion pipeline
 

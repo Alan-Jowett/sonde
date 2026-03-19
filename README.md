@@ -20,7 +20,7 @@
 
 Each node acts as a programmable sonde: a constrained probe that autonomously samples its environment and reports observations upstream.
 
-Nodes run uniform firmware and execute behavior defined by [uBPF](https://github.com/iovisor/ubpf) programs verified with [Prevail](https://github.com/vbpf/ebpf-verifier). A gateway distributes programs, schedules, and configuration over the air — no firmware updates required. The architecture is hardware-agnostic; the reference implementation targets ESP32-C3/S3.
+Nodes run uniform firmware and execute behavior defined by BPF programs ([RFC 9669](https://www.rfc-editor.org/rfc/rfc9669.html)) verified with [Prevail](https://github.com/vbpf/ebpf-verifier). A gateway distributes programs, schedules, and configuration over the air — no firmware updates required. The architecture is hardware-agnostic; the reference implementation targets ESP32-C3/S3.
 
 > **Status:** Active development — protocol, gateway, modem, and node crates are implemented and tested. See [Project status](#project-status) below.
 
@@ -174,7 +174,7 @@ The reference implementation targets ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa) run
 | **Hardware crypto** | SHA-256, HMAC-SHA256, AES-128/256, hardware RNG (~10x faster than software) |
 | **RAM** | C3: 400 KB (16 KB cache). S3: 512 KB |
 | **Flash endurance** | ~100K erase cycles per 4 KB sector (273+ years at 1 update/day) |
-| **BPF execution** | Interpreter only (no uBPF JIT for RISC-V/Xtensa) |
+| **BPF execution** | Interpreter only (`sonde-bpf`, RFC 9669 compliant; no JIT for RISC-V/Xtensa). The `BpfInterpreter` trait allows alternative backends (e.g., rbpf, uBPF) to be plugged in. |
 | **Max program size** | 4 KB resident, 2 KB ephemeral (recommended) |
 | **Chunked transfer** | 4 KB program ≈ 20 round-trips over ESP-NOW |
 
@@ -216,7 +216,7 @@ See [Getting Started](docs/getting-started.md) for full toolchain setup.
 - [Node BOM](docs/node-bom.md) — off-the-shelf parts list for building a sonde node (no custom PCB required)
 - [Gateway BOM](docs/gateway-bom.md) — off-the-shelf parts list for building a USB-attached ESP-NOW gateway
 - [Contributing](docs/contributing.md) — contribution guidelines, DCO, SPDX requirements
-- [Why BPF?](docs/why-bpf.md) — rationale for using uBPF + Prevail as the execution model
+- [Why BPF?](docs/why-bpf.md) — rationale for using BPF + Prevail as the execution model
 - [BPF Environment](docs/bpf-environment.md) — program API, memory model, verification, and development workflow
 - [Application API](docs/gateway-api.md) — data-plane API for building applications on the Sonde platform
 - [Protocol](docs/protocol.md) — node-gateway wire protocol specification
@@ -236,6 +236,9 @@ Prior work has explored the use of eBPF‑derived virtual machines on microcontr
 Subsequent work, including **μBPF**, extends this line of research with just‑in‑time (JIT) compilation, over‑the‑air deployment pipelines, and formal verification to improve performance and provide stronger correctness guarantees for eBPF execution on microcontrollers. Key references include:
 - [μBPF paper](https://marioskogias.github.io/docs/microbpf.pdf)
 - [μBPF code](https://github.com/SzymonKubica/micro-bpf)
+
+**rbpf** is a pure‑Rust user‑space eBPF interpreter (and optional JIT) that demonstrates BPF execution outside the Linux kernel in a safe, portable runtime:
+- [rbpf code](https://github.com/qmonnet/rbpf)
 
 Related efforts also focus on formally verified eBPF interpreters and JITs for RIOT‑based systems, emphasizing proof‑carrying safety and memory isolation rather than general application architecture. See also:
 - [End‑to‑end mechanized proof of rBPF](https://link.springer.com/chapter/10.1007/978-3-031-65627-9_16)

@@ -91,9 +91,9 @@ jobs:
 
       - name: Build MSI
         run: |
-          $date = Get-Date -Format "yyyyMMdd"
+          $runNum = "${{ github.run_number }}"
           wix build installer\windows\sonde.wxs `
-            -d Version="0.1.0.$date" `
+            -d Version="0.1.0.$runNum" `
             -d GatewayBin=target\release\sonde-gateway.exe `
             -d AdminBin=target\release\sonde-admin.exe `
             -ext WixToolset.UI.wixext `

@@ -519,8 +519,10 @@ mod hex {
 // ---------------------------------------------------------------------------
 
 /// Called by the Android runtime when this native library is loaded.
-/// Caches the `JavaVM` so `AndroidBleTransport::from_cached_vm()` and
-/// `AndroidPairingStore::from_cached_vm()` work from Tauri command handlers.
+/// Caches the `JavaVM` and resolves app-defined Java classes while we are
+/// on the main thread (which has the application classloader).  Natively-
+/// attached threads (e.g. tokio blocking pool) only see the system
+/// classloader, so `FindClass` for app classes would fail there.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn JNI_OnLoad(
@@ -531,6 +533,15 @@ pub extern "system" fn JNI_OnLoad(
     let vm2 = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
     AndroidBleTransport::cache_vm(vm1);
     AndroidPairingStore::cache_vm(vm2);
+
+    // Resolve app-defined classes on the main thread.
+    let vm_env = unsafe { jni::JavaVM::from_raw(vm).unwrap() };
+    let mut env = vm_env.get_env().expect("JNI_OnLoad: GetEnv failed");
+    AndroidBleTransport::cache_helper_class(&mut env)
+        .expect("JNI_OnLoad: failed to cache BleHelper class");
+    AndroidPairingStore::cache_store_class(&mut env)
+        .expect("JNI_OnLoad: failed to cache SecureStore class");
+
     jni::JNIVersion::V6.into()
 }
 

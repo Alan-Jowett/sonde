@@ -30,7 +30,7 @@
 
 use std::sync::OnceLock;
 
-use jni::objects::{GlobalRef, JByteArray, JObject, JString, JValue};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
 use jni::JNIEnv;
 use jni::JavaVM;
 use tracing::debug;
@@ -42,6 +42,10 @@ use crate::types::{GatewayIdentity, PairingArtifacts};
 
 /// Cached JavaVM for creating stores on demand (set in `JNI_OnLoad`).
 static CACHED_STORE_VM: OnceLock<JavaVM> = OnceLock::new();
+
+/// Cached `SecureStore` class ref — see [`CACHED_HELPER_CLASS`](super::android_transport)
+/// for the rationale.
+static CACHED_STORE_CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
 // SharedPreferences key constants
 const KEY_GW_PUBLIC_KEY: &str = "gw_public_key";
@@ -81,13 +85,19 @@ impl AndroidPairingStore {
     pub fn new(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<Self, PairingError> {
         let vm = env.get_java_vm().map_err(store_jni_err)?;
 
-        let store_class = env.find_class("io/sonde/pair/SecureStore").map_err(|e| {
-            PairingError::StoreSaveFailed(format!(
-                "SecureStore class not found — ensure io.sonde.pair.SecureStore \
-                 is compiled into the APK and androidx.security:security-crypto \
-                 is in the Gradle dependencies: {e}"
-            ))
+        let cached = CACHED_STORE_CLASS.get().ok_or_else(|| {
+            PairingError::StoreSaveFailed(
+                "SecureStore class not cached — call cache_store_class() \
+                 from JNI_OnLoad before using the store"
+                    .into(),
+            )
         })?;
+
+        // SAFETY: The GlobalRef was created from find_class(), which returns
+        // a JClass.  We reconstruct a JClass from the raw jobject pointer;
+        // the GlobalRef keeps the underlying reference alive.
+        let store_class =
+            unsafe { JClass::from_raw(cached.as_obj().as_raw()) };
 
         let store_obj = env
             .new_object(
@@ -116,6 +126,24 @@ impl AndroidPairingStore {
     pub fn cache_vm(vm: JavaVM) {
         let _ = CACHED_STORE_VM.set(vm);
         debug!("AndroidPairingStore: JavaVM cached");
+    }
+
+    /// Resolve and cache the `SecureStore` class reference.
+    ///
+    /// Must be called from a thread with the application classloader
+    /// (e.g. the main thread inside `JNI_OnLoad`).
+    pub fn cache_store_class(env: &mut JNIEnv<'_>) -> Result<(), PairingError> {
+        let cls = env.find_class("io/sonde/pair/SecureStore").map_err(|e| {
+            PairingError::StoreSaveFailed(format!(
+                "SecureStore class not found — ensure io.sonde.pair.SecureStore \
+                 is compiled into the APK and androidx.security:security-crypto \
+                 is in the Gradle dependencies: {e}"
+            ))
+        })?;
+        let global = env.new_global_ref(cls).map_err(store_jni_err)?;
+        let _ = CACHED_STORE_CLASS.set(global);
+        debug!("AndroidPairingStore: SecureStore class cached");
+        Ok(())
     }
 
     /// Create a new store from the cached `JavaVM`.

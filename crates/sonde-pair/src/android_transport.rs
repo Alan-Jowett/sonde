@@ -24,7 +24,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use jni::objects::{GlobalRef, JByteArray, JObject, JString, JValue};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
 use jni::JNIEnv;
 use jni::JavaVM;
 use tracing::debug;
@@ -41,6 +41,12 @@ const WRITE_TIMEOUT_MS: i64 = 5_000;
 
 /// Cached JavaVM for creating transports on demand (set in `JNI_OnLoad`).
 static CACHED_VM: OnceLock<JavaVM> = OnceLock::new();
+
+/// Cached `BleHelper` class ref, resolved on the main thread which has
+/// the application classloader.  Native threads attached via
+/// `attach_current_thread()` only see the system classloader, so
+/// `find_class()` for app-defined classes fails on them.
+static CACHED_HELPER_CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
 /// Android BLE transport backed by the companion `BleHelper` Java class.
 ///
@@ -77,12 +83,22 @@ impl AndroidBleTransport {
     pub fn new(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<Self, PairingError> {
         let vm = env.get_java_vm().map_err(jni_err)?;
 
-        let helper_class = env.find_class("io/sonde/pair/BleHelper").map_err(|e| {
-            PairingError::ConnectionFailed(format!(
-                "BleHelper class not found — ensure io.sonde.pair.BleHelper \
-                 is compiled into the APK: {e}"
-            ))
+        // Use the cached class ref (resolved on the main thread which has the
+        // application classloader).  Natively-attached threads only see the
+        // system classloader, so find_class() for app classes would fail.
+        let cached = CACHED_HELPER_CLASS.get().ok_or_else(|| {
+            PairingError::ConnectionFailed(
+                "BleHelper class not cached — call cache_helper_class() \
+                 from JNI_OnLoad before using the transport"
+                    .into(),
+            )
         })?;
+
+        // SAFETY: The GlobalRef was created from find_class(), which returns
+        // a JClass.  We reconstruct a JClass from the raw jobject pointer;
+        // the GlobalRef keeps the underlying reference alive.
+        let helper_class =
+            unsafe { JClass::from_raw(cached.as_obj().as_raw()) };
 
         let helper = env
             .new_object(
@@ -109,6 +125,25 @@ impl AndroidBleTransport {
     pub fn cache_vm(vm: JavaVM) {
         let _ = CACHED_VM.set(vm);
         debug!("AndroidBleTransport: JavaVM cached");
+    }
+
+    /// Resolve and cache the `BleHelper` class reference.
+    ///
+    /// **Must** be called from a thread that has the application classloader
+    /// (e.g. the main thread inside `JNI_OnLoad`).  Natively-attached
+    /// threads only see the system classloader, so `find_class()` for
+    /// app-defined classes would fail on them.
+    pub fn cache_helper_class(env: &mut JNIEnv<'_>) -> Result<(), PairingError> {
+        let cls = env.find_class("io/sonde/pair/BleHelper").map_err(|e| {
+            PairingError::ConnectionFailed(format!(
+                "BleHelper class not found — ensure io.sonde.pair.BleHelper \
+                 is compiled into the APK: {e}"
+            ))
+        })?;
+        let global = env.new_global_ref(cls).map_err(jni_err)?;
+        let _ = CACHED_HELPER_CLASS.set(global);
+        debug!("AndroidBleTransport: BleHelper class cached");
+        Ok(())
     }
 
     /// Create a new transport from the cached `JavaVM`.

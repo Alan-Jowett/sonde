@@ -39,10 +39,81 @@ jobs:
     name: Android APK
     uses: ./.github/workflows/tauri-android.yml
 
+  # ── Installer builds (depend on gateway binaries) ───────────────
+  installer-linux:
+    name: Linux installer (.deb)
+    needs: [gateway]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: gateway-linux-x86_64
+          path: target/release
+
+      - name: Make binaries executable
+        run: chmod +x target/release/sonde-gateway target/release/sonde-admin
+
+      - name: Build .deb package
+        run: |
+          sudo apt-get update && sudo apt-get install -y fakeroot
+          DATE=$(date -u +%Y%m%d)
+          bash installer/linux/build-deb.sh --version "0.1.0+nightly.${DATE}"
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sonde-installer-linux
+          path: "*.deb"
+          if-no-files-found: error
+          retention-days: 7
+
+  installer-windows:
+    name: Windows installer (.msi)
+    needs: [gateway]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: gateway-windows-x86_64
+          path: target/release
+
+      - name: Install WiX v4
+        run: |
+          dotnet tool install -g wix --version 4.0.6
+          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Add WiX extensions
+        run: |
+          wix extension add WixToolset.UI.wixext/4.0.6
+          wix extension add WixToolset.Util.wixext/4.0.6
+
+      - name: Build MSI
+        run: |
+          $runNum = "${{ github.run_number }}"
+          wix build installer\windows\sonde.wxs `
+            -d Version="0.1.0.$runNum" `
+            -d GatewayBin=target\release\sonde-gateway.exe `
+            -d AdminBin=target\release\sonde-admin.exe `
+            -ext WixToolset.UI.wixext `
+            -ext WixToolset.Util.wixext `
+            -out sonde-x86_64.msi
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sonde-installer-windows
+          path: sonde-x86_64.msi
+          if-no-files-found: error
+          retention-days: 7
+
   # ── Publish release ────────────────────────────────────────────────
   release:
     name: Publish nightly
-    needs: [gateway, node-firmware, modem-firmware, desktop, android]
+    needs: [gateway, node-firmware, modem-firmware, desktop, android, installer-linux, installer-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -69,6 +140,7 @@ jobs:
           # node and modem firmware produce flash_image.bin).
           mkdir -p release-assets
           cp artifacts/gateway-linux-x86_64/sonde-gateway  release-assets/sonde-gateway
+          cp artifacts/gateway-linux-x86_64/sonde-admin     release-assets/sonde-admin
           cp artifacts/gateway-windows-x86_64/sonde-gateway.exe release-assets/sonde-gateway.exe
           cp artifacts/gateway-windows-x86_64/sonde-admin.exe   release-assets/sonde-admin.exe
           cp artifacts/node-firmware/flash_image.bin        release-assets/node-flash_image.bin
@@ -76,6 +148,8 @@ jobs:
           for f in artifacts/sonde-pair-windows/*; do cp -r "$f" release-assets/; done
           for f in artifacts/sonde-pair-linux/*;   do cp -r "$f" release-assets/; done
           for f in artifacts/sonde-pair-android/*; do cp -r "$f" release-assets/; done
+          for f in artifacts/sonde-installer-linux/*;  do cp -r "$f" release-assets/; done
+          for f in artifacts/sonde-installer-windows/*; do cp -r "$f" release-assets/; done
 
           # Build release notes
           cat > notes.md <<'EOF'
@@ -84,6 +158,7 @@ jobs:
           | Component | Asset filename |
           |-----------|----------------|
           | Gateway (Linux x86_64) | `sonde-gateway` |
+          | Admin CLI (Linux x86_64) | `sonde-admin` |
           | Gateway (Windows x86_64) | `sonde-gateway.exe` |
           | Admin CLI (Windows) | `sonde-admin.exe` |
           | ESP32-C3 Node firmware | `node-flash_image.bin` |
@@ -91,6 +166,8 @@ jobs:
           | Desktop — Windows | `*.exe` |
           | Desktop — Linux | `*.deb` |
           | Android APK | `*.apk` |
+          | Installer — Windows | `sonde-x86_64.msi` |
+          | Installer — Linux | `sonde_*_amd64.deb` |
 
           ### Flashing firmware
 

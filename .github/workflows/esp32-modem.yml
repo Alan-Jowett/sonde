@@ -63,6 +63,7 @@ jobs:
         env:
           ESP_IDF_SDKCONFIG_DEFAULTS: crates/sonde-modem/sdkconfig.defaults;sdkconfig.defaults.esp32s3
           ESP_IDF_COMPONENT_MANAGER: "off"
+          SONDE_GIT_COMMIT: ${{ github.sha }}
         run: |
           . /opt/esp/export-esp.sh
           find target -name sdkconfig -path "*/esp-idf-sys-*/out/sdkconfig" -delete 2>/dev/null || true

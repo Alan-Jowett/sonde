@@ -33,8 +33,12 @@ use crate::error::PairingError;
 use crate::transport::BleTransport;
 use crate::types::ScannedDevice;
 
-/// BLE connection timeout in milliseconds (PT-1002).
-const CONNECT_TIMEOUT_MS: i64 = 10_000;
+/// BLE connection + bonding timeout in milliseconds (PT-1002).
+///
+/// This budget covers GATT connect, LESC Numeric Comparison bonding
+/// (which requires operator confirmation on the gateway side), MTU
+/// negotiation, and service discovery.
+const CONNECT_TIMEOUT_MS: i64 = 30_000;
 
 /// Default write-with-response timeout.
 const WRITE_TIMEOUT_MS: i64 = 5_000;

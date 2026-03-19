@@ -322,6 +322,11 @@ impl EspBleDriver {
                 if s.authenticated && s.events.len() < MAX_BLE_EVENT_QUEUE {
                     info!("BLE: GATT write {} bytes", value.len());
                     s.events.push_back(BleEvent::Recv(value.to_vec()));
+                } else if !s.authenticated {
+                    warn!(
+                        "BLE: GATT write {} bytes rejected (not authenticated)",
+                        value.len()
+                    );
                 } else if s.events.len() >= MAX_BLE_EVENT_QUEUE {
                     warn!("BLE: event queue full; dropping GATT write");
                 }

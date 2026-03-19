@@ -18,10 +18,14 @@ import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.ParcelUuid;
+import android.util.Log;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -74,6 +78,42 @@ public class BleHelper {
     private volatile CountDownLatch discoveryLatch;
     private volatile CountDownLatch writeLatch;
     private volatile CountDownLatch descriptorLatch;
+    private volatile CountDownLatch bondLatch;
+
+    // --- Bonding state -----------------------------------------------------
+    private volatile boolean bonded;
+    private volatile boolean bondReceiverRegistered;
+    private volatile BluetoothDevice bondTarget;
+
+    private final BroadcastReceiver bondReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context ctx, Intent intent) {
+            if (!BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(intent.getAction())) {
+                return;
+            }
+            BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            if (device == null || bondTarget == null
+                    || !device.getAddress().equals(bondTarget.getAddress())) {
+                return;
+            }
+            int state = intent.getIntExtra(
+                    BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
+            Log.i("BleHelper", "bond state changed: " + state);
+            if (state == BluetoothDevice.BOND_BONDED) {
+                bonded = true;
+                CountDownLatch l = bondLatch;
+                if (l != null) l.countDown();
+            } else if (state == BluetoothDevice.BOND_NONE) {
+                // Pairing failed or was rejected
+                int reason = intent.getIntExtra(
+                        "android.bluetooth.device.extra.REASON", -1);
+                lastError = "bonding failed (reason=" + reason + ")";
+                bonded = false;
+                CountDownLatch l = bondLatch;
+                if (l != null) l.countDown();
+            }
+        }
+    };
 
     // --- Indication / notification state -----------------------------------
     private final Set<UUID> subscribedChars =
@@ -335,10 +375,14 @@ public class BleHelper {
     // --- Connection --------------------------------------------------------
 
     /**
-     * Connect to the device, negotiate MTU, and discover services.
+     * Connect to the device, bond, negotiate MTU, and discover services.
      *
-     * <p>Blocks until all three steps complete or {@code timeoutMs} elapses.
+     * <p>Blocks until all four steps complete or {@code timeoutMs} elapses.
      * On failure or timeout the connection is cleaned up before returning.
+     *
+     * <p>Step 2 (bonding) initiates LESC pairing if not already bonded.
+     * On the modem, this triggers Numeric Comparison — the operator must
+     * confirm the passkey before the modem will accept GATT writes.
      *
      * @param address   6-byte BLE device address
      * @param timeoutMs overall deadline in milliseconds
@@ -372,7 +416,40 @@ public class BleHelper {
             throw new Exception(err != null ? err : "connection failed");
         }
 
-        // Step 2 — request MTU (best effort; proceed even if request fails)
+        // Step 2 — initiate LESC bonding (Numeric Comparison)
+        // The modem requires a bonded link before it will accept GATT writes.
+        if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
+            bonded = false;
+            bondTarget = device;
+            bondLatch = new CountDownLatch(1);
+            lastError = null;
+
+            // Register receiver before calling createBond to avoid races
+            if (!bondReceiverRegistered) {
+                IntentFilter filter = new IntentFilter(
+                        BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+                context.registerReceiver(bondReceiver, filter);
+                bondReceiverRegistered = true;
+            }
+
+            if (!device.createBond()) {
+                Log.w("BleHelper", "createBond() returned false — bonding may already be in progress");
+            }
+
+            remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0
+                    || !bondLatch.await(remaining, TimeUnit.MILLISECONDS)) {
+                disconnectInner();
+                throw new Exception("bonding timed out");
+            }
+            if (!bonded) {
+                String err = lastError;
+                disconnectInner();
+                throw new Exception(err != null ? err : "bonding failed");
+            }
+        }
+
+        // Step 3 — request MTU (best effort; proceed even if request fails)
         mtuLatch = new CountDownLatch(1);
         if (gatt.requestMtu(517)) {
             remaining = deadline - System.currentTimeMillis();
@@ -381,7 +458,7 @@ public class BleHelper {
         // Clear any MTU error so it doesn't abort service discovery.
         lastError = null;
 
-        // Step 3 — discover services
+        // Step 4 — discover services
         discoveryLatch = new CountDownLatch(1);
         if (!gatt.discoverServices()) {
             disconnectInner();
@@ -410,6 +487,12 @@ public class BleHelper {
     private void disconnectInner() {
         subscribedChars.clear();
         indicationQueues.clear();
+        bondTarget = null;
+        if (bondReceiverRegistered) {
+            try { context.unregisterReceiver(bondReceiver); }
+            catch (Exception ignored) { }
+            bondReceiverRegistered = false;
+        }
         BluetoothGatt g = gatt;
         gatt = null;
         connectionState = BluetoothProfile.STATE_DISCONNECTED;

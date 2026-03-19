@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 use sonde_protocol::modem::{
     encode_modem_frame, BleConnected, BleDisconnected, BleIndicate, BlePairingConfirm,
     BlePairingConfirmReply, BleRecv, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
-    SendFrame,
+    ScanResult, SendFrame,
 };
 
 use crate::transport::{PeerAddress, Transport, TransportError};
@@ -48,6 +48,8 @@ pub struct UsbEspNowTransport {
     recv_rx: Mutex<mpsc::Receiver<(Vec<u8>, PeerAddress)>>,
     ble_rx: Mutex<mpsc::Receiver<BleEvent>>,
     status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
+    channel_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
+    scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
     modem_mac: [u8; 6],
     reader_handle: tokio::task::JoinHandle<()>,
 }
@@ -77,10 +79,16 @@ impl UsbEspNowTransport {
         let (ack_tx, ack_rx) = oneshot::channel::<u8>();
         let status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>> =
             Arc::new(Mutex::new(None));
+        let channel_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>> =
+            Arc::new(std::sync::Mutex::new(None));
 
         // Start background reader task.
         let reader_handle = {
             let status_slot = Arc::clone(&status_slot);
+            let channel_ack_slot = Arc::clone(&channel_ack_slot);
+            let scan_slot = Arc::clone(&scan_slot);
             let mut read_half = read_half;
             let mut decoder = FrameDecoder::new();
             // Oneshots are registered before RESET is sent. A stale
@@ -110,6 +118,8 @@ impl UsbEspNowTransport {
                                             &mut ready_tx,
                                             &mut ack_tx,
                                             &status_slot,
+                                            &channel_ack_slot,
+                                            &scan_slot,
                                         )
                                         .await;
                                     }
@@ -187,6 +197,8 @@ impl UsbEspNowTransport {
                     recv_rx: Mutex::new(recv_rx),
                     ble_rx: Mutex::new(ble_rx),
                     status_slot,
+                    channel_ack_slot,
+                    scan_slot,
                     modem_mac,
                     reader_handle,
                 })
@@ -262,6 +274,78 @@ impl UsbEspNowTransport {
                 self.status_slot.lock().await.take();
                 Err(TransportError::Io("STATUS response timeout".into()))
             }
+        }
+    }
+
+    /// Send SET_CHANNEL and wait for the SET_CHANNEL_ACK response.
+    ///
+    /// Unlike the startup `set_channel` (which consumes a pre-created oneshot),
+    /// this can be called at any time after construction.  The slot is cleared
+    /// on drop (cancellation-safe).
+    pub async fn change_channel(&self, channel: u8) -> Result<(), TransportError> {
+        if !(1..=14).contains(&channel) {
+            return Err(TransportError::Io(format!(
+                "WiFi channel must be 1-14, got {channel}"
+            )));
+        }
+
+        let rx = {
+            let mut slot = self
+                .channel_ack_slot
+                .lock()
+                .expect("channel_ack_slot poisoned");
+            if slot.is_some() {
+                return Err(TransportError::Io(
+                    "channel change already in progress".into(),
+                ));
+            }
+            let (tx, rx) = oneshot::channel();
+            *slot = Some(tx);
+            rx
+        };
+        let _guard = SlotGuard(Arc::clone(&self.channel_ack_slot));
+
+        Self::send_encoded(&self.writer, &ModemMessage::SetChannel(channel)).await?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
+            Ok(Ok(ack)) => {
+                if ack != channel {
+                    Err(TransportError::Io(format!(
+                        "SET_CHANNEL_ACK mismatch: expected channel {channel}, got {ack}"
+                    )))
+                } else {
+                    info!(channel, "modem channel changed");
+                    Ok(())
+                }
+            }
+            Ok(Err(_)) => Err(TransportError::Io("SET_CHANNEL_ACK channel closed".into())),
+            Err(_) => Err(TransportError::Io("SET_CHANNEL_ACK timeout".into())),
+        }
+    }
+
+    /// Send SCAN_CHANNELS and wait for the SCAN_RESULT response.
+    ///
+    /// The slot is cleared on drop (cancellation-safe).
+    pub async fn scan_channels(&self) -> Result<ScanResult, TransportError> {
+        let rx = {
+            let mut slot = self.scan_slot.lock().expect("scan_slot poisoned");
+            if slot.is_some() {
+                return Err(TransportError::Io(
+                    "channel scan already in progress".into(),
+                ));
+            }
+            let (tx, rx) = oneshot::channel();
+            *slot = Some(tx);
+            rx
+        };
+        let _guard = SlotGuard(Arc::clone(&self.scan_slot));
+
+        Self::send_encoded(&self.writer, &ModemMessage::ScanChannels).await?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err(TransportError::Io("SCAN_RESULT channel closed".into())),
+            Err(_) => Err(TransportError::Io("SCAN_RESULT timeout".into())),
         }
     }
 
@@ -469,7 +553,17 @@ pub fn spawn_health_monitor(
     })
 }
 
+/// Cancellation-safe guard that clears a `std::sync::Mutex<Option<T>>` on drop.
+struct SlotGuard<T>(Arc<std::sync::Mutex<Option<T>>>);
+
+impl<T> Drop for SlotGuard<T> {
+    fn drop(&mut self) {
+        self.0.lock().expect("slot guard poisoned").take();
+    }
+}
+
 /// Route a decoded modem message to the appropriate consumer.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_message(
     msg: ModemMessage,
     recv_tx: &mpsc::Sender<(Vec<u8>, PeerAddress)>,
@@ -477,6 +571,8 @@ async fn dispatch_message(
     ready_tx: &mut Option<oneshot::Sender<ModemReady>>,
     ack_tx: &mut Option<oneshot::Sender<u8>>,
     status_slot: &Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
+    channel_ack_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
+    scan_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
 ) {
     match msg {
         ModemMessage::RecvFrame(rf) => {
@@ -539,10 +635,17 @@ async fn dispatch_message(
             }
         }
         ModemMessage::SetChannelAck(ch) => {
+            // During startup, use the local oneshot. After startup (ack_tx
+            // consumed), fall through to the shared slot for runtime changes.
             if let Some(tx) = ack_tx.take() {
                 let _ = tx.send(ch);
             } else {
-                debug!(channel = ch, "unexpected SET_CHANNEL_ACK");
+                let mut slot = channel_ack_slot.lock().expect("channel_ack_slot poisoned");
+                if let Some(tx) = slot.take() {
+                    let _ = tx.send(ch);
+                } else {
+                    debug!(channel = ch, "unexpected SET_CHANNEL_ACK");
+                }
             }
         }
         ModemMessage::Status(s) => {
@@ -551,6 +654,14 @@ async fn dispatch_message(
                 let _ = tx.send(s);
             } else {
                 debug!("STATUS received with no pending request");
+            }
+        }
+        ModemMessage::ScanResult(sr) => {
+            let mut slot = scan_slot.lock().expect("scan_slot poisoned");
+            if let Some(tx) = slot.take() {
+                let _ = tx.send(sr);
+            } else {
+                debug!("SCAN_RESULT received with no pending request");
             }
         }
         ModemMessage::Error(e) => {
@@ -575,6 +686,18 @@ async fn dispatch_message(
                 let mut slot = status_slot.lock().await;
                 if slot.take().is_some() {
                     debug!("cancelling pending STATUS waiter due to modem error");
+                }
+            }
+            {
+                let mut slot = channel_ack_slot.lock().expect("channel_ack_slot poisoned");
+                if slot.take().is_some() {
+                    debug!("cancelling pending SET_CHANNEL_ACK waiter due to modem error");
+                }
+            }
+            {
+                let mut slot = scan_slot.lock().expect("scan_slot poisoned");
+                if slot.take().is_some() {
+                    debug!("cancelling pending SCAN_RESULT waiter due to modem error");
                 }
             }
         }
@@ -788,5 +911,110 @@ mod tests {
         assert_eq!(status.channel, 6);
         assert_eq!(status.uptime_s, 120);
         assert_eq!(status.tx_fail_count, 1);
+    }
+
+    #[tokio::test]
+    async fn t1106_change_channel_success() {
+        let (client, mut server) = duplex(1024);
+
+        let startup = tokio::spawn(async move {
+            do_startup_handshake(&mut server, 6).await;
+            server
+        });
+
+        let transport = UsbEspNowTransport::new(client, 6).await.unwrap();
+        let mut server = startup.await.unwrap();
+
+        let change = tokio::spawn(async move { transport.change_channel(11).await });
+
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 256];
+        let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+        assert!(
+            matches!(msg, ModemMessage::SetChannel(11)),
+            "expected SetChannel(11), got {msg:?}"
+        );
+
+        let ack = ModemMessage::SetChannelAck(11);
+        server
+            .write_all(&encode_modem_frame(&ack).unwrap())
+            .await
+            .unwrap();
+
+        change.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn t1107_change_channel_invalid() {
+        let (client, mut server) = duplex(1024);
+
+        let startup = tokio::spawn(async move {
+            do_startup_handshake(&mut server, 6).await;
+            server
+        });
+
+        let transport = UsbEspNowTransport::new(client, 6).await.unwrap();
+        let _server = startup.await.unwrap();
+
+        let result = transport.change_channel(0).await;
+        assert!(result.is_err());
+
+        let result = transport.change_channel(15).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn t1108_scan_channels_success() {
+        use sonde_protocol::modem::{ScanEntry, ScanResult};
+
+        let (client, mut server) = duplex(1024);
+
+        let startup = tokio::spawn(async move {
+            do_startup_handshake(&mut server, 6).await;
+            server
+        });
+
+        let transport = UsbEspNowTransport::new(client, 6).await.unwrap();
+        let mut server = startup.await.unwrap();
+
+        let scan = tokio::spawn(async move { transport.scan_channels().await });
+
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 256];
+        let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+        assert!(
+            matches!(msg, ModemMessage::ScanChannels),
+            "expected ScanChannels, got {msg:?}"
+        );
+
+        let scan_result = ModemMessage::ScanResult(ScanResult {
+            entries: vec![
+                ScanEntry {
+                    channel: 1,
+                    ap_count: 3,
+                    strongest_rssi: -40,
+                },
+                ScanEntry {
+                    channel: 6,
+                    ap_count: 0,
+                    strongest_rssi: -127,
+                },
+                ScanEntry {
+                    channel: 11,
+                    ap_count: 1,
+                    strongest_rssi: -65,
+                },
+            ],
+        });
+        server
+            .write_all(&encode_modem_frame(&scan_result).unwrap())
+            .await
+            .unwrap();
+
+        let result = scan.await.unwrap().unwrap();
+        assert_eq!(result.entries.len(), 3);
+        assert_eq!(result.entries[0].channel, 1);
+        assert_eq!(result.entries[0].ap_count, 3);
+        assert_eq!(result.entries[1].strongest_rssi, -127);
     }
 }

@@ -72,6 +72,34 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  gateway-windows:
+    name: Build gateway (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build gateway (release)
+        run: cargo build --release -p sonde-gateway -p sonde-admin
+
+      - name: Upload Windows gateway and admin binaries
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: gateway-windows-x86_64
+          path: |
+            target/release/sonde-gateway.exe
+            target/release/sonde-admin.exe
+          if-no-files-found: error
+          retention-days: 7
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest

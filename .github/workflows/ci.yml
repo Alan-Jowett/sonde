@@ -103,6 +103,9 @@ jobs:
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
+    env:
+      CONFORMANCE_IMAGE: "ghcr.io/alan-jowett/bpf_conformance@sha256:547765717557e0f222de71fbf26f4bd9621c0149911aa03296024b469dd4598b"
+      KNOWN_FAILURES: "mem-len"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -124,7 +127,20 @@ jobs:
         run: cargo install cargo-llvm-cov --locked
 
       - name: Generate coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace
+          cargo test --workspace
+          cargo build -p sonde-bpf --bin sonde_bpf_plugin
+          docker run \
+            -v "${{ github.workspace }}":/sonde \
+            -v "$CARGO_LLVM_COV_TARGET_DIR":"$CARGO_LLVM_COV_TARGET_DIR" \
+            -e LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/conformance-%p.profraw" \
+            --rm "${{ env.CONFORMANCE_IMAGE }}" \
+            bin/bpf_conformance_runner --test_file_directory tests \
+            --plugin_path "$CARGO_LLVM_COV_TARGET_DIR/debug/sonde_bpf_plugin" \
+            --exclude_regex "${{ env.KNOWN_FAILURES }}"
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload to Coveralls
         uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2

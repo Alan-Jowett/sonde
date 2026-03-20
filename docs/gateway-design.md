@@ -649,8 +649,20 @@ service GatewayAdmin {
     rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
 
     // State export/import
-    rpc ExportState(Empty) returns (ExportStateResponse);
+    rpc ExportState(ExportStateRequest) returns (ExportStateResponse);
     rpc ImportState(ImportStateRequest) returns (Empty);
+
+    // Modem management
+    rpc GetModemStatus(Empty) returns (ModemStatus);
+    rpc SetModemChannel(SetModemChannelRequest) returns (Empty);
+    rpc ScanModemChannels(Empty) returns (ScanModemChannelsResponse);
+
+    // BLE phone pairing
+    rpc OpenBlePairing(OpenBlePairingRequest) returns (stream BlePairingEvent);
+    rpc CloseBlePairing(Empty) returns (Empty);
+    rpc ConfirmBlePairing(ConfirmBlePairingRequest) returns (Empty);
+    rpc ListPhones(Empty) returns (ListPhonesResponse);
+    rpc RevokePhone(RevokePhoneRequest) returns (Empty);
 }
 ```
 
@@ -666,8 +678,17 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Assign program | `AssignProgram` | Sets a node's assigned program. Next WAKE triggers UPDATE_PROGRAM if hash differs. |
 | Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |
 | Set schedule | `SetSchedule` | Queues an UPDATE_SCHEDULE for a node's next WAKE. |
-| Export state | `ExportState` | Serializes the full gateway state (node registry, program library, and handler routing configuration). |
-| Import state | `ImportState` | Restores node registry, program library, and handler routing configuration from a previous export. |
+| Node status | `GetNodeStatus` | Returns latest known state for a node (program hash, battery, ABI version, last seen, active session). |
+| Export state | `ExportState` | Serializes the full gateway state (node registry, program library, and handler routing configuration). Encrypted with AES-256-GCM using an operator-supplied passphrase. |
+| Import state | `ImportState` | Restores node registry, program library, and handler routing configuration from a previously exported, encrypted bundle. |
+| Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |
+| Set modem channel | `SetModemChannel` | Sets the ESP-NOW radio channel (1–14). |
+| Scan channels | `ScanModemChannels` | Scans all WiFi channels for AP activity, returns AP counts and RSSI per channel. |
+| Open BLE pairing | `OpenBlePairing` | Opens the phone registration window and sends `BLE_ENABLE` to modem. Server-streaming RPC returning events (passkey, phone connected/disconnected/registered, window closed). |
+| Close BLE pairing | `CloseBlePairing` | Closes the registration window and sends `BLE_DISABLE` to modem. |
+| Confirm BLE pairing | `ConfirmBlePairing` | Accepts or rejects a Numeric Comparison passkey during BLE pairing. |
+| List phones | `ListPhones` | Lists all registered phones with PSK metadata (ID, key hint, label, issue time, status). |
+| Revoke phone | `RevokePhone` | Revokes a phone's PSK by phone ID. |
 
 ### 13.3  CLI tool (`sonde-admin`)
 
@@ -676,6 +697,7 @@ The CLI wraps the gRPC API:
 ```
 sonde-admin node list
 sonde-admin node get <node-id>
+sonde-admin node register <node-id> <key-hint> <psk-hex>
 sonde-admin node remove <node-id>
 
 sonde-admin program ingest <elf-file> --profile resident|ephemeral
@@ -687,14 +709,19 @@ sonde-admin schedule set <node-id> <interval-seconds>
 sonde-admin reboot <node-id>
 sonde-admin ephemeral <node-id> <elf-file>
 
-sonde-admin state export <file>
-sonde-admin state import <file>
+sonde-admin state export <file> [--passphrase <pass>]
+sonde-admin state import <file> [--passphrase <pass>]
 
 sonde-admin status <node-id>
 
 sonde-admin modem status
 sonde-admin modem set-channel <channel>
 sonde-admin modem scan
+
+sonde-admin pairing start [--duration-s <seconds>]
+sonde-admin pairing stop
+sonde-admin pairing list-phones
+sonde-admin pairing revoke-phone <phone-id>
 ```
 
 All commands support `--format json` for machine-readable output.

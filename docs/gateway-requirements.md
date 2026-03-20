@@ -1307,6 +1307,55 @@ The admin API MUST expose an `OpenBlePairing` RPC (and corresponding `sonde-admi
 
 ---
 
+### GW-1223  Admin API — phone listing
+
+**Priority:** Must  
+**Source:** GW-1210
+
+**Description:**  
+The admin API MUST expose a `ListPhones` RPC (and corresponding `sonde-admin pairing list-phones` CLI command) that returns all registered phones with their PSK metadata: phone ID, key hint, label, issue time, and revocation status.
+
+**Acceptance criteria:**
+
+1. `ListPhones` returns all registered phones with metadata.
+2. Revoked phones are included with their revocation status.
+3. `sonde-admin pairing list-phones` displays the phone list.
+
+---
+
+### GW-1224  Admin API — phone revocation
+
+**Priority:** Must  
+**Source:** GW-1210
+
+**Description:**  
+The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pairing revoke-phone` CLI command) that revokes a phone's PSK by phone ID. A revoked phone MUST NOT be able to submit `PEER_REQUEST` messages that pass HMAC verification (per GW-1213).
+
+**Acceptance criteria:**
+
+1. `RevokePhone` marks the phone's PSK as revoked.
+2. Subsequent `PEER_REQUEST` messages signed with the revoked PSK are rejected.
+3. `sonde-admin pairing revoke-phone <phone-id>` revokes the phone.
+
+---
+
+### GW-0807  Admin API — modem management
+
+**Priority:** Must  
+**Source:** GW-1100, modem-protocol.md
+
+**Description:**  
+The admin API MUST support querying modem status (radio channel, TX/RX/fail counters, uptime), setting the ESP-NOW radio channel (1–14), and scanning all WiFi channels for AP activity.
+
+**Acceptance criteria:**
+
+1. `GetModemStatus` returns the current modem status.
+2. `SetModemChannel` changes the ESP-NOW radio channel.
+3. `ScanModemChannels` returns AP counts and RSSI per channel.
+4. `sonde-admin modem status`, `modem set-channel`, and `modem scan` CLI commands invoke the corresponding RPCs.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1387,3 +1436,6 @@ The admin API MUST expose an `OpenBlePairing` RPC (and corresponding `sonde-admi
 | GW-1220 | Silent-discard error model for PEER_REQUEST | Must |
 | GW-1221 | Random nonces for PEER_REQUEST/PEER_ACK | Must |
 | GW-1222 | Admin API — BLE pairing session | Must |
+| GW-1223 | Admin API — phone listing | Must |
+| GW-1224 | Admin API — phone revocation | Must |
+| GW-0807 | Admin API — modem management | Must |

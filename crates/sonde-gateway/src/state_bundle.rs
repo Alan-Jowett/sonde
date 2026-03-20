@@ -1370,6 +1370,7 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
         matchers,
         command,
         args,
+        reply_timeout: None,
     })
 }
 
@@ -1629,11 +1630,13 @@ mod tests {
                 matchers: vec![ProgramMatcher::Hash(hash.clone())],
                 command: "/usr/bin/handler".to_string(),
                 args: vec!["--verbose".to_string()],
+                reply_timeout: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Any],
                 command: "/usr/bin/catch-all".to_string(),
                 args: Vec::new(),
+                reply_timeout: None,
             },
         ];
 

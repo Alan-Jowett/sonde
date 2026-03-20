@@ -133,7 +133,7 @@ fn write_handler_script(dir: &std::path::Path, name: &str, script: &str) -> Stri
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(script.as_bytes()).unwrap();
     f.flush().unwrap();
-    path.to_str().unwrap().to_string()
+    path.to_string_lossy().into_owned()
 }
 
 /// Echo handler: reads one DATA message, replies with DATA_REPLY containing
@@ -1241,6 +1241,7 @@ fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> Handl
         matchers,
         command: python_cmd().to_string(),
         args,
+        reply_timeout: None,
     }
 }
 
@@ -1851,8 +1852,8 @@ async fn t0503b_handler_persistence_across_messages() {
 
 /// T-0503c: Handler that hangs indefinitely — gateway must time out and return
 /// no reply. Validates GW-0503 AC2/AC3 (timeout kills handler, no reply sent).
-/// Uses `start_paused = true` + `tokio::time::advance` to avoid a real 30s wait.
-#[tokio::test(start_paused = true)]
+/// Uses a 2 s `reply_timeout` to avoid blocking the test suite for 30 s.
+#[tokio::test]
 async fn t0503c_handler_reply_timeout() {
     require_python!();
     let tmp = tempfile::tempdir().unwrap();
@@ -1860,10 +1861,10 @@ async fn t0503c_handler_reply_timeout() {
     let script = write_handler_script(tmp.path(), "hang.py", HANG_HANDLER_PY);
 
     let program_hash = vec![0x53; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let mut config =
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script);
+    config.reply_timeout = Some(Duration::from_secs(2));
+    let router = Arc::new(HandlerRouter::new(vec![config]));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1874,21 +1875,12 @@ async fn t0503c_handler_reply_timeout() {
     let (starting_seq, _, _) = do_wake(&gw, &node, 5301, &program_hash).await;
 
     // Send APP_DATA — handler will read it but never reply.
-    // Use tokio::join! to advance virtual time past the 30s handler timeout
-    // while process_frame is blocked waiting for a reply.
+    // Gateway must time out (2s) and return None.
     let blob = vec![0x01];
     let app_frame = node.build_app_data(starting_seq, &blob);
     let peer = node.peer_address();
 
-    let (resp, _) = tokio::join!(gw.process_frame(&app_frame, peer), async {
-        // Yield to let process_frame progress: write DATA to handler stdin
-        // and start the timeout(read) loop.
-        for _ in 0..100 {
-            tokio::task::yield_now().await;
-        }
-        // Advance virtual clock past the 30s handler timeout.
-        tokio::time::advance(Duration::from_secs(31)).await;
-    });
+    let resp = gw.process_frame(&app_frame, peer).await;
 
     assert!(
         resp.is_none(),

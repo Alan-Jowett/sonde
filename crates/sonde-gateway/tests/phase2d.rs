@@ -314,6 +314,7 @@ fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> Handl
         matchers,
         command: python_cmd().to_string(),
         args,
+        reply_timeout: None,
     }
 }
 

@@ -1351,7 +1351,7 @@ The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pa
 **Acceptance criteria:**
 
 1. `RevokePhone` marks the phone's PSK as revoked.
-2. Subsequent `PEER_REQUEST` messages signed with the revoked PSK are rejected.
+2. Subsequent `PEER_REQUEST` messages signed with the revoked PSK are silently discarded (no response is sent).
 3. `sonde-admin pairing revoke-phone <phone-id>` revokes the phone.
 
 ---

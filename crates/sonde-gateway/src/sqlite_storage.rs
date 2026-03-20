@@ -656,11 +656,17 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
 /// Load battery history for a node from the `battery_readings` table,
 /// ordered oldest-first, capped to the most recent 100 entries.
 fn load_battery_history(conn: &Connection, node_id: &str) -> rusqlite::Result<Vec<BatteryReading>> {
+    // Fetch only the most recent MAX entries in SQL to avoid loading the
+    // entire table into memory. The subquery selects rows newest-first with
+    // a LIMIT, then the outer query re-orders oldest-first.
+    const MAX: usize = 100;
     let mut stmt = conn.prepare(
-        "SELECT timestamp_epoch_s, battery_mv FROM battery_readings \
-         WHERE node_id = ?1 ORDER BY timestamp_epoch_s ASC",
+        "SELECT timestamp_epoch_s, battery_mv FROM ( \
+             SELECT timestamp_epoch_s, battery_mv FROM battery_readings \
+             WHERE node_id = ?1 ORDER BY timestamp_epoch_s DESC LIMIT ?2 \
+         ) ORDER BY timestamp_epoch_s ASC",
     )?;
-    let rows = stmt.query_map(params![node_id], |row| {
+    let rows = stmt.query_map(params![node_id, MAX as i64], |row| {
         let ts: i64 = row.get(0)?;
         let mv: u32 = row.get(1)?;
         Ok(BatteryReading {
@@ -671,11 +677,6 @@ fn load_battery_history(conn: &Connection, node_id: &str) -> rusqlite::Result<Ve
     let mut history = Vec::new();
     for r in rows {
         history.push(r?);
-    }
-    // Keep only the most recent MAX entries (matches runtime cap).
-    const MAX: usize = 100;
-    if history.len() > MAX {
-        history.drain(..history.len() - MAX);
     }
     Ok(history)
 }
@@ -1076,6 +1077,13 @@ impl Storage for SqliteStorage {
                         ],
                     )
                     .map_err(map_err)?;
+
+                    // Repopulate battery history (cascade-deleted with the
+                    // old nodes row above). Without this, imported bundles
+                    // silently lose battery readings.
+                    if !record.battery_history.is_empty() {
+                        save_battery_history(conn, &record.node_id, &record.battery_history)?;
+                    }
                 }
                 Ok(())
             })();

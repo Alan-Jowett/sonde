@@ -101,8 +101,9 @@ struct BleState {
     /// Comparison was used).  GATT writes are only forwarded once this is set,
     /// preventing data relay before the session is fully approved (MD-0414).
     authenticated: bool,
-    /// Monotonic timestamp recorded when a BLE client connects.
-    /// Used by `check_pairing_timeout()` to enforce `BLE_PAIRING_TIMEOUT`
+    /// Monotonic timestamp recorded when pairing begins (`pairing_pending`
+    /// becomes true).  Used by `check_pairing_timeout()` to enforce
+    /// `BLE_PAIRING_TIMEOUT` only while a pairing exchange is pending
     /// (MD-0414 AC#4).
     connection_start: Option<Instant>,
 }
@@ -190,8 +191,6 @@ impl EspBleDriver {
                 s.advertising = false;
                 s.mtu = mtu;
                 s.conn_handle = Some(desc.conn_handle());
-                // Start the pairing timeout clock (MD-0414 AC#4).
-                s.connection_start = Some(Instant::now());
             }
         });
 
@@ -262,6 +261,8 @@ impl EspBleDriver {
             info!("BLE: Numeric Comparison passkey = {:06}", passkey);
             if let Ok(mut s) = state_confirm.lock() {
                 s.pairing_pending = true;
+                // Start the pairing timeout clock (MD-0414 AC#4).
+                s.connection_start = Some(Instant::now());
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::PairingConfirm { passkey });
                 }
@@ -507,12 +508,27 @@ impl Ble for EspBleDriver {
         // calling NimBLE to avoid deadlock if NimBLE invokes on_disconnect
         // synchronously.
         let timed_out_handle = {
-            let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            match (s.conn_handle, s.connection_start) {
-                (Some(handle), Some(start)) if start.elapsed() >= BLE_PAIRING_TIMEOUT => {
-                    Some(handle)
+            let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            // Only enforce the MD-0414 pairing timeout while a pairing exchange
+            // is actually pending. This avoids disconnecting legitimate
+            // post-authenticated sessions.
+            if s.pairing_pending {
+                if let (Some(handle), Some(start)) = (s.conn_handle, s.connection_start) {
+                    if start.elapsed() >= BLE_PAIRING_TIMEOUT {
+                        // Clear pairing/timeout state so we don't repeatedly
+                        // log and attempt disconnect on subsequent polls if
+                        // the disconnect is slow or fails.
+                        s.pairing_pending = false;
+                        s.connection_start = None;
+                        Some(handle)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 }
-                _ => None,
+            } else {
+                None
             }
         };
         if let Some(handle) = timed_out_handle {

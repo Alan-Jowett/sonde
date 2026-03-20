@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rand::RngExt;
 use tokio::sync::RwLock;
 use tracing::warn;
 
@@ -476,7 +475,11 @@ impl Gateway {
             };
 
         // 2. Create/replace session (random starting_seq, current timestamp_ms)
-        let starting_seq: u64 = rand::rng().random();
+        let starting_seq: u64 = {
+            let mut buf = [0u8; 8];
+            getrandom::fill(&mut buf).expect("CSPRNG failure");
+            u64::from_ne_bytes(buf)
+        };
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

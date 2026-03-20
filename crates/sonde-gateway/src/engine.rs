@@ -851,29 +851,49 @@ impl Gateway {
                     _ => true,
                 };
                 if abi_ok {
-                    let chunk_size = DEFAULT_CHUNK_SIZE;
-                    if let Some(chunk_count) = self
-                        .program_library
-                        .chunk_count(program.image.len(), chunk_size as usize)
-                    {
-                        // Program loaded successfully — now remove from queue (match by hash).
-                        let deliver_hash = program.hash.clone();
-                        {
-                            let mut pending = self.pending_commands.write().await;
-                            if let Some(cmds) = pending.get_mut(&node.node_id) {
-                                if let Some(pos) = cmds.iter().position(|c| {
-                                    matches!(c, PendingCommand::RunEphemeral { program_hash: h } if h == &deliver_hash)
-                                }) {
-                                    cmds.remove(pos);
-                                }
+                    // GW-0202 AC3: reject ephemeral programs exceeding the
+                    // ephemeral size budget. A program ingested as Resident
+                    // (4 KB limit) may exceed the 2 KB ephemeral budget.
+                    if program.size > crate::program::MAX_EPHEMERAL_SIZE {
+                        warn!(
+                            node_id = %node.node_id,
+                            program_size = program.size,
+                            limit = crate::program::MAX_EPHEMERAL_SIZE,
+                            "ephemeral size budget exceeded — dropping RunEphemeral"
+                        );
+                        let mut pending = self.pending_commands.write().await;
+                        if let Some(cmds) = pending.get_mut(&node.node_id) {
+                            if let Some(pos) = cmds.iter().position(|c| {
+                                matches!(c, PendingCommand::RunEphemeral { program_hash: h } if h == &program.hash)
+                            }) {
+                                cmds.remove(pos);
                             }
                         }
-                        return Some(CommandPayload::RunEphemeral {
-                            program_hash: program.hash,
-                            program_size: program.size,
-                            chunk_size,
-                            chunk_count,
-                        });
+                    } else {
+                        let chunk_size = DEFAULT_CHUNK_SIZE;
+                        if let Some(chunk_count) = self
+                            .program_library
+                            .chunk_count(program.image.len(), chunk_size as usize)
+                        {
+                            // Program loaded successfully — now remove from queue (match by hash).
+                            let deliver_hash = program.hash.clone();
+                            {
+                                let mut pending = self.pending_commands.write().await;
+                                if let Some(cmds) = pending.get_mut(&node.node_id) {
+                                    if let Some(pos) = cmds.iter().position(|c| {
+                                        matches!(c, PendingCommand::RunEphemeral { program_hash: h } if h == &deliver_hash)
+                                    }) {
+                                        cmds.remove(pos);
+                                    }
+                                }
+                            }
+                            return Some(CommandPayload::RunEphemeral {
+                                program_hash: program.hash,
+                                program_size: program.size,
+                                chunk_size,
+                                chunk_count,
+                            });
+                        }
                     }
                 }
             }

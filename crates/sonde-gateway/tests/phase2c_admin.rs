@@ -285,6 +285,49 @@ async fn t0801b_remove_nonexistent() {
     assert_eq!(err.code(), tonic::Code::NotFound);
 }
 
+/// T-0705: Factory reset — RemoveNode deletes registry entry AND subsequent
+/// WAKE from the removed node is silently discarded (GW-0705 AC3).
+/// Full factory reset (node-side PSK/program erasure) requires protocol-level
+/// support not yet implemented; this test validates the gateway-side invariant.
+#[tokio::test]
+async fn t0705_remove_node_wake_rejected() {
+    let h = TestHarness::new();
+    let psk = [0x42u8; 32];
+
+    // Register the node.
+    h.admin
+        .register_node(Request::new(RegisterNodeRequest {
+            node_id: "reset-node".into(),
+            key_hint: 0x0705,
+            psk: psk.to_vec(),
+        }))
+        .await
+        .unwrap();
+
+    // WAKE succeeds while node is registered.
+    let gw = h.make_gateway();
+    let node = TestNode::new("reset-node", 0x0705, psk);
+    let frame = node.build_wake(1, 1, &[0u8; 32], 3300);
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
+    assert!(resp.is_some(), "WAKE must succeed while node is registered");
+
+    // Remove the node (simulates gateway side of factory reset).
+    h.admin
+        .remove_node(Request::new(RemoveNodeRequest {
+            node_id: "reset-node".into(),
+        }))
+        .await
+        .unwrap();
+
+    // Subsequent WAKE must be silently discarded (unknown node).
+    let frame2 = node.build_wake(2, 1, &[0u8; 32], 3300);
+    let resp2 = gw.process_frame(&frame2, node.peer_address()).await;
+    assert!(
+        resp2.is_none(),
+        "WAKE from removed node must be silently discarded"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  T-0802: IngestProgram + ListPrograms
 // ═══════════════════════════════════════════════════════════════════════

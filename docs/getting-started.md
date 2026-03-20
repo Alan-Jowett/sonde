@@ -114,7 +114,7 @@ ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-node/sdkconfig.defaults \
 
 **ESP32-S3 modem firmware (Xtensa):**
 ```sh
-ESP_IDF_SDKCONFIG_DEFAULTS="crates/sonde-modem/sdkconfig.defaults;sdkconfig.defaults.esp32s3" \
+ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults.esp32s3;crates/sonde-modem/sdkconfig.defaults" \
     cargo +esp build -p sonde-modem --bin modem --features esp --profile firmware \
     --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort
 ```
@@ -143,7 +143,7 @@ docker run --rm -v "$(pwd)":/sonde -w /sonde \
 
 # Modem (both defaults files):
 docker run --rm -v "$(pwd)":/sonde -w /sonde \
-    -e "ESP_IDF_SDKCONFIG_DEFAULTS=crates/sonde-modem/sdkconfig.defaults;sdkconfig.defaults.esp32s3" \
+    -e "ESP_IDF_SDKCONFIG_DEFAULTS=sdkconfig.defaults.esp32s3;crates/sonde-modem/sdkconfig.defaults" \
     ghcr.io/alan-jowett/sonde-esp-dev:latest \
     cargo +esp build -p sonde-modem --bin modem --features esp --profile firmware \
     --target xtensa-esp32s3-espidf -Zbuild-std=std,panic_abort

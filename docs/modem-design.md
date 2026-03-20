@@ -77,6 +77,8 @@ The ESP32-S3 has a native USB peripheral (not USB-over-JTAG). The firmware uses 
 
 The CDC receive callback is invoked when the host writes data. Received bytes are appended to a ring buffer that the serial codec reads from in the main loop.
 
+> **USB-CDC RX ring buffer (D9-1):** The USB-CDC receive callback stores inbound bytes in a pre-allocated, fixed-capacity ring buffer (e.g., `USB_RX_RING_CAP` slots). When the ring is full, incoming bytes are silently dropped and a `drop_count` counter is incremented. Bytes may also be dropped if the USB/TinyUSB task callback cannot acquire the ring mutex (contention with the main loop draining the buffer). This is intentional — the callback runs in the USB task context where heap allocation and blocking are unsafe; only the main loop drains the ring into the serial codec.
+
 ### 4.3  Write path
 
 Outbound frames (e.g., `RECV_FRAME`, `MODEM_READY`) are enqueued into a TX ring buffer from any producer context (including ESP-NOW receive callbacks). The main loop drains this buffer and writes to the USB-CDC TX endpoint. If the host-side TX buffer is full, the main loop retries with back-pressure, but callbacks never perform blocking USB writes.
@@ -142,7 +144,9 @@ The ESP-NOW receive callback is invoked from the WiFi task. It receives:
 - `data`: frame payload (up to 250 bytes).
 - `rssi`: signal strength (from the `esp_now_recv_info_t` struct).
 
-The callback constructs a `RECV_FRAME` message and writes it to the USB-CDC TX path. The `rx_count` counter is incremented.
+The callback copies the frame into the ESP-NOW RX ring buffer; the main loop drains the ring and writes `RECV_FRAME` messages to USB. For each frame that is successfully forwarded to USB, the `rx_count` counter is incremented.
+
+> **ESP-NOW RX ring buffer (D9-1):** The ESP-NOW receive callback stores inbound frames in a pre-allocated, fixed-capacity ring buffer (`RX_RING_CAP = 16` slots). When the ring is full (or a push into the ring fails), incoming frames are silently dropped and a `drop_count` counter is incremented. If the WiFi-task callback cannot acquire the ring mutex (contention with the main loop draining the buffer), the frame is also dropped, and this is recorded separately via an atomic `contention_drops` counter. This is intentional — the callback runs in the WiFi task context where heap allocation and blocking are unsafe.
 
 ### 6.3  Send path
 
@@ -236,7 +240,11 @@ loop {
 }
 ```
 
-The main loop polls the USB receive buffer. ESP-NOW frames arrive via callback and are written to USB from the callback context (or queued if contention exists).
+The main loop polls the USB receive buffer and drains the ESP-NOW RX ring buffer. ESP-NOW frames arrive via callback into the ring; the main loop constructs `RECV_FRAME` messages and writes them to USB.
+
+> **Per-poll processing caps (D9-2):** BLE events are drained up to `MAX_BLE_EVENTS_PER_POLL` (16) per main-loop iteration to prevent sustained BLE traffic from starving serial decode and ESP-NOW radio processing.
+
+> **Queue size limits (D9-3):** The BLE driver uses a bounded event queue (`MAX_BLE_EVENT_QUEUE = 32`). Events arriving when the queue is full are dropped; the firmware emits warnings for some drop conditions (for example, GATT writes rejected when not authenticated or when the event queue is full, and indication queue overflow). Outbound BLE indication fragments are also bounded (`MAX_INDICATION_CHUNKS = 64`); `BLE_INDICATE` messages that would exceed this limit are rejected. These caps prevent unbounded memory growth on the constrained ESP32-S3.
 
 ---
 
@@ -261,10 +269,12 @@ On `RESET` command or USB reconnection:
 
 The firmware uses the ESP-IDF task watchdog (`esp_task_wdt`):
 
-- Timeout: 10 seconds.
+- Timeout: 35 seconds (set via `CONFIG_ESP_TASK_WDT_TIMEOUT_S=35` in `crates/sonde-modem/sdkconfig.defaults`).
 - The main loop feeds the watchdog on each iteration.
-- If the main loop stalls (e.g., deadlock, infinite loop), the watchdog triggers a hardware reset.
+- If the main loop stalls (e.g., deadlock, infinite loop), the watchdog triggers a hardware reset (`CONFIG_ESP_TASK_WDT_PANIC=y`).
 - After reset, the firmware boots normally and sends `MODEM_READY`.
+
+> **sdkconfig note (D9-6):** The root `sdkconfig.defaults.esp32s3` sets `CONFIG_ESP_TASK_WDT_TIMEOUT_S=10`, and the modem crate's `crates/sonde-modem/sdkconfig.defaults` sets it to 35. During the modem build, both files are passed to ESP-IDF via `ESP_IDF_SDKCONFIG_DEFAULTS` in this order: first `sdkconfig.defaults.esp32s3`, then `crates/sonde-modem/sdkconfig.defaults`. ESP-IDF applies overrides in list order, so for a given key the **last** value wins; therefore, the effective watchdog timeout for the modem is 35 seconds. The longer timeout accommodates BLE stack operations (pairing, indication pacing) which can stall the main loop longer than the node firmware's radio-only workload.
 
 ---
 
@@ -371,11 +381,17 @@ The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-040
 
 1. The NimBLE stack generates a 6-digit passkey.
 2. The modem sends `BLE_PAIRING_CONFIRM` to the gateway with the passkey.
-3. The modem waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`).
+3. The BLE stack proceeds with LESC key exchange immediately (see D9-5 below — `on_confirm_pin` cannot block). The modem then waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`) — before setting the `authenticated` flag and emitting `BLE_CONNECTED`.
 4. If no reply arrives within 30 seconds, the modem rejects the pairing (MD-0414).
-5. On successful pairing, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
+5. On successful pairing and operator acceptance, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
 
 Just Works remains available as a fallback when the phone does not support Numeric Comparison (MD-0404).
+
+> **Tentative accept model (D9-5):** NimBLE's `on_confirm_pin` callback is synchronous — it requires an immediate yes/no return and cannot block waiting for the gateway's asynchronous `BLE_PAIRING_CONFIRM_REPLY`. The modem returns `true` to let the BLE stack proceed with LESC key exchange immediately, then relays the passkey to the gateway for operator verification. This means the encrypted link is established *before* operator approval. Multiple mitigations bound the security impact: (1) `BleEvent::Connected` is deferred until the operator accepts, (2) GATT writes are gated on the `authenticated` flag (see § 15.2.1 below), (3) NVS bond persistence is disabled (`CONFIG_BT_NIMBLE_NVS_PERSIST=n`), and (4) the client is disconnected immediately on rejection.
+
+#### 15.2.1  Write gating on `authenticated` flag (D9-4)
+
+GATT writes to the Gateway Command characteristic are gated on the `authenticated` flag in `BleState` (MD-0402, MD-0414). The flag is `false` at connection time and only set to `true` after LESC pairing completes *and* the operator accepts the Numeric Comparison passkey. While `authenticated` is `false`, inbound GATT writes are ignored/discarded (not forwarded to the gateway) and a warning is logged. This prevents data relay before the session is fully approved.
 
 ### 15.3  ATT MTU and indication pacing
 
@@ -393,6 +409,8 @@ On disconnection:
 
 - The modem sends `BLE_DISCONNECTED` (0xA2) with the peer address and HCI reason code (MD-0411).
 - All GATT state is cleaned up; subsequent connections start fresh (MD-0405).
+
+> **Reason code approximation (D10-4):** NimBLE's `on_disconnect` callback provides a `BLEError` result, but the wrapper does not expose a public accessor for the raw HCI reason code. The modem maps `Ok(())` to `0x16` (`BLE_ERR_CONN_TERM_LOCAL`) and any `Err(_)` to `0x13` (`BLE_ERR_REM_USER_CONN_TERM`) as a best-effort default. This means the exact HCI reason code reported in `BLE_DISCONNECTED` may not match the actual reason. This is a NimBLE Rust binding limitation.
 
 BLE pairing operations do not interfere with concurrent ESP-NOW radio operations (MD-0405).
 
@@ -430,3 +448,5 @@ On BLE client disconnection (MD-0405, MD-0413, MD-0414):
 4. If BLE is still enabled, advertising resumes (MD-0407).
 
 On `BLE_DISABLE`, the modem disconnects the active client (if any) and stops advertising. On `RESET`, BLE is disabled as part of the full reinitialisation sequence.
+
+> **`advertise_on_disconnect` interaction (D10-5):** During GATT server initialization the modem calls `ble_server.advertise_on_disconnect(true)` so that advertising resumes automatically after a client disconnect (MD-0407). This is a NimBLE stack-level setting that persists for the lifetime of the BLE server. When `BLE_DISABLE` is received, the modem explicitly stops advertising and clears its internal `advertising` flag, but does *not* clear the stack-level `advertise_on_disconnect` policy. If `disable()` disconnects an active client while `advertise_on_disconnect(true)` is still in effect, NimBLE may restart advertising in response to that disconnect and keep it enabled even though the gateway has issued `BLE_DISABLE`. Implementations **must** provide a mitigation in code (for example, clearing `advertise_on_disconnect` before initiating the disconnect, or ensuring that the post-disconnect path performs a final `ble_advertising.stop()` when BLE is disabled) so that advertising is guaranteed to remain off after `BLE_DISABLE`, as required by MD-0407/MD-0413.

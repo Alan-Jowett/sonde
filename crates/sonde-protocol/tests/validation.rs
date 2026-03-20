@@ -900,8 +900,6 @@ fn test_key_hint_from_psk() {
     let hash = SoftwareSha256.hash(&psk);
     let expected = u16::from_be_bytes([hash[30], hash[31]]);
     assert_eq!(hint, expected);
-    // Ensure it's not trivially zero (overwhelmingly unlikely for this input).
-    assert_ne!(hint, 0);
 }
 
 #[test]
@@ -910,8 +908,23 @@ fn test_key_hint_from_psk_different_keys() {
     let psk_b = [0xAAu8; 32];
     let hint_a = key_hint_from_psk(&psk_a, &SoftwareSha256);
     let hint_b = key_hint_from_psk(&psk_b, &SoftwareSha256);
-    // Different PSKs should (almost certainly) produce different hints.
-    assert_ne!(hint_a, hint_b);
+    // Verify each PSK maps to the expected hint derived from SHA-256,
+    // without assuming different PSKs must produce different 16-bit hints.
+    let expected_a = {
+        let mut hasher = Sha256::new();
+        hasher.update(&psk_a);
+        let hash = hasher.finalize();
+        u16::from_be_bytes([hash[30], hash[31]])
+    };
+    let expected_b = {
+        let mut hasher = Sha256::new();
+        hasher.update(&psk_b);
+        let hash = hasher.finalize();
+        u16::from_be_bytes([hash[30], hash[31]])
+    };
+
+    assert_eq!(hint_a, expected_a);
+    assert_eq!(hint_b, expected_b);
 }
 
 // ---------------------------------------------------------------------------

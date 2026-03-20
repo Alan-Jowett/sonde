@@ -420,9 +420,9 @@ Implements the length-prefixed framing protocol between the gateway and a USB-at
 **Public API:**
 
 - Constants: `SERIAL_LEN_SIZE`, `SERIAL_MAX_LEN`, `SERIAL_MAX_FRAME_SIZE`, `MAC_SIZE`, and message-type constants (`MODEM_MSG_*`).
-- `ModemFrame` — typed enum covering all gateway↔modem serial messages.
-- `ModemFrame::encode() -> Vec<u8>` / `ModemFrame::decode(&[u8]) -> Result` — encode and decode individual frames.
-- `SerialDecoder` — streaming decoder that buffers partial reads and yields complete `ModemFrame`s via `feed(&[u8])`.
+- `ModemMessage` — typed enum covering all gateway↔modem serial messages.
+- `encode_modem_frame` / `decode_modem_frame` — functions for encoding and decoding individual modem frames.
+- `FrameDecoder` — streaming decoder that buffers partial reads and yields complete `ModemMessage`s via a `push(&[u8])` + `decode()` API.
 
 ---
 

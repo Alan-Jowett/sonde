@@ -443,11 +443,11 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
                     n.battery_history
                         .iter()
                         .map(|r| {
-                            let ts = r
+                            let ts: i64 = r
                                 .timestamp
                                 .duration_since(UNIX_EPOCH)
                                 .ok()
-                                .map(|d| d.as_secs() as i64)
+                                .and_then(|d| i64::try_from(d.as_secs()).ok())
                                 .unwrap_or(0);
                             Value::Array(vec![
                                 Value::Integer(ts.into()),

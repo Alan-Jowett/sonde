@@ -538,6 +538,23 @@ After successful Phase 1, the following artifacts are persisted (PT-0800):
 - PSK bytes are hex-encoded in the JSON; the file is created with restricted permissions (user-only read/write via `SetFileSecurityW`)
 - On corruption (invalid JSON, missing fields): returns `PairingError::StoreCorrupted` with a clear message and offers to reset (PT-0803)
 
+#### Linux (`FilePairingStore` + `SecretServicePskProtector`)
+
+- Location: `~/.config/sonde/pairing.json`
+- Format: same JSON layout as Windows, but the `phone_psk` field is protected by the Linux Secret Service keyring rather than stored in plaintext
+- The `SecretServicePskProtector` (enabled via the `secret-service-store` Cargo feature) stores and retrieves the 32-byte PSK through D-Bus using GNOME Keyring, KWallet, or any other freedesktop.org Secret Service-compatible backend
+- The PSK is stored as a binary secret under attributes `service = "sonde-pair"` and `account = "sonde-pair-phone-psk"` (configurable label)
+- On `protect()`, the PSK is written to the keyring and the label is returned as opaque bytes for the JSON file; on `unprotect()`, the label is used to look up the PSK from the keyring
+- If no Secret Service provider is available at runtime, `FilePairingStore` falls back to plaintext hex PSK storage with restricted file permissions
+
+#### Plaintext-to-encrypted storage migration
+
+When a `PskProtector` is configured (e.g. the DPAPI protector on Windows or the Secret Service protector on Linux), the `FilePairingStore` transparently migrates legacy plaintext PSK data on load:
+
+1. On `load_artifacts()`, if the JSON contains a plaintext `phone_psk` field but no `phone_psk_protected` field, the PSK is read from plaintext and a `tracing::warn!` is emitted: *"phone_psk stored in plaintext — will be encrypted on next save"*.
+2. The next `save_artifacts()` call writes the PSK through the configured protector, producing a `phone_psk_protected` field and omitting the plaintext `phone_psk` field.
+3. This migration is idempotent and requires no operator action.  The warning log provides visibility into the one-time upgrade.
+
 #### Android (`AndroidPairingStore`)
 
 - Backend: Android `EncryptedSharedPreferences` backed by the Android Keystore

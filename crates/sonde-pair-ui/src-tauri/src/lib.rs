@@ -180,9 +180,22 @@ async fn pair_gateway(
     state: tauri::State<'_, AppState>,
     address: String,
     phone_label: String,
+    force: Option<bool>,
 ) -> Result<(), String> {
     *state.scanner.lock().unwrap() = None;
-    *state.phase.lock().unwrap() = "Pairing".into();
+
+    // PT-0601: check for existing pairing and require explicit confirmation.
+    if !force.unwrap_or(false) {
+        let store = FilePairingStore::new().map_err(|e| e.to_string())?;
+        if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
+            return Err(format!(
+                "already paired with gateway {} — pass force=true to re-pair",
+                hex::encode(identity.gateway_id),
+            ));
+        }
+    }
+
+    *state.phase.lock().unwrap() = "Connecting".into();
 
     let addr = parse_address(&address)?;
 
@@ -218,9 +231,11 @@ async fn provision_node(
     node_id: String,
 ) -> Result<String, String> {
     *state.scanner.lock().unwrap() = None;
-    *state.phase.lock().unwrap() = "Provisioning".into();
+    *state.phase.lock().unwrap() = "Connecting".into();
 
     let addr = parse_address(&address)?;
+
+    *state.phase.lock().unwrap() = "Provisioning".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
@@ -345,9 +360,23 @@ async fn pair_gateway(
     state: tauri::State<'_, AppState>,
     address: String,
     phone_label: String,
+    force: Option<bool>,
 ) -> Result<(), String> {
     *state.scanner.lock().unwrap() = None;
-    *state.phase.lock().unwrap() = "Pairing".into();
+
+    // PT-0601: check for existing pairing and require explicit confirmation.
+    if !force.unwrap_or(false) {
+        let guard = get_or_init_store(&state.store)?;
+        let store = guard.as_ref().unwrap();
+        if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
+            return Err(format!(
+                "already paired with gateway {} — pass force=true to re-pair",
+                hex::encode(identity.gateway_id),
+            ));
+        }
+    }
+
+    *state.phase.lock().unwrap() = "Connecting".into();
 
     let addr = parse_address(&address)?;
 
@@ -383,9 +412,11 @@ async fn provision_node(
     node_id: String,
 ) -> Result<String, String> {
     *state.scanner.lock().unwrap() = None;
-    *state.phase.lock().unwrap() = "Provisioning".into();
+    *state.phase.lock().unwrap() = "Connecting".into();
 
     let addr = parse_address(&address)?;
+
+    *state.phase.lock().unwrap() = "Provisioning".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {

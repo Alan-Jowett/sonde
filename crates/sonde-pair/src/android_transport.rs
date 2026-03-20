@@ -38,7 +38,7 @@ use crate::types::ScannedDevice;
 /// This budget covers GATT connect, LESC Numeric Comparison bonding
 /// (which requires operator confirmation on the gateway side), MTU
 /// negotiation, and service discovery.
-const CONNECT_TIMEOUT_MS: i64 = 30_000;
+const CONNECT_TIMEOUT_MS: i64 = 10_000;
 
 /// Default write-with-response timeout.
 const WRITE_TIMEOUT_MS: i64 = 5_000;

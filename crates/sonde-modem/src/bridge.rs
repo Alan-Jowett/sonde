@@ -99,6 +99,11 @@ pub trait Ble {
     ///
     /// Must be called once per poll cycle to pace fragmented indications.
     fn advance_indication(&self) {}
+    /// Check whether the current BLE connection has exceeded the pairing
+    /// timeout (MD-0414 AC#4).  If so, force-disconnect the client.
+    ///
+    /// Must be called once per poll cycle.
+    fn check_pairing_timeout(&self) {}
     /// Drain one queued BLE event, or `None` if empty.
     fn drain_event(&self) -> Option<BleEvent>;
 }
@@ -249,6 +254,9 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         // Advance fragmented BLE indications (one chunk per poll cycle).
         self.ble.advance_indication();
 
+        // Enforce BLE pairing timeout (MD-0414 AC#4).
+        self.ble.check_pairing_timeout();
+
         // Forward any BLE events to the gateway over USB-CDC.
         // Cap at MAX_BLE_EVENTS_PER_POLL to prevent starvation of serial
         // decode and radio under sustained BLE write traffic.
@@ -373,7 +381,7 @@ mod tests {
     use sonde_protocol::modem::{
         decode_modem_frame, BleIndicate, ModemMessage, SERIAL_MAX_FRAME_SIZE, SERIAL_MAX_LEN,
     };
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
 
     /// Mock serial port that records writes and plays back reads.
@@ -979,6 +987,7 @@ mod tests {
         indicated: Vec<Vec<u8>>,
         pairing_replies: Vec<bool>,
         event_queue: RefCell<VecDeque<BleEvent>>,
+        check_pairing_timeout_count: Cell<usize>,
     }
 
     impl MockBle {
@@ -988,6 +997,7 @@ mod tests {
                 indicated: Vec::new(),
                 pairing_replies: Vec::new(),
                 event_queue: RefCell::new(VecDeque::new()),
+                check_pairing_timeout_count: Cell::new(0),
             }
         }
 
@@ -1011,6 +1021,10 @@ mod tests {
         }
         fn pairing_confirm_reply(&mut self, accept: bool) {
             self.pairing_replies.push(accept);
+        }
+        fn check_pairing_timeout(&self) {
+            self.check_pairing_timeout_count
+                .set(self.check_pairing_timeout_count.get() + 1);
         }
         fn drain_event(&self) -> Option<BleEvent> {
             self.event_queue.borrow_mut().pop_front()
@@ -1154,6 +1168,17 @@ mod tests {
         bridge.usb.inject(&frame);
         bridge.poll();
         assert_eq!(bridge.ble.pairing_replies, vec![false]);
+    }
+
+    /// Validates: poll() calls check_pairing_timeout() exactly once per cycle (MD-0414 AC#4).
+    #[test]
+    fn poll_calls_check_pairing_timeout() {
+        let mut bridge = make_bridge_with_ble();
+        assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 0);
+        bridge.poll();
+        assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 1);
+        bridge.poll();
+        assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 2);
     }
 
     /// Validates: T-0613 (BLE_RECV forwarded to gateway)

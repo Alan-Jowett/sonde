@@ -26,6 +26,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use esp32_nimble::utilities::BleUuid;
 use esp32_nimble::{
@@ -54,6 +55,16 @@ const MAX_BLE_EVENT_QUEUE: usize = 32;
 
 /// Maximum queued indication chunks before new indications are rejected.
 const MAX_INDICATION_CHUNKS: usize = 64;
+
+/// Maximum time allowed for the operator to reply after `BLE_PAIRING_CONFIRM`
+/// is sent.  If no `BLE_PAIRING_CONFIRM_REPLY` arrives within this duration,
+/// the pairing is rejected (MD-0414 AC#4 / T-0622).
+const BLE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum time a BLE connection may remain without initiating pairing.
+/// Prevents a client that connects but never starts LESC pairing from holding
+/// the single-connection slot indefinitely.
+const BLE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Maximum ATT payload per indication fragment = MTU - 3.
 ///
@@ -93,6 +104,20 @@ struct BleState {
     /// Comparison was used).  GATT writes are only forwarded once this is set,
     /// preventing data relay before the session is fully approved (MD-0414).
     authenticated: bool,
+    /// Monotonic timestamp recorded when a client connects.  Used by
+    /// `check_pairing_timeout()` to enforce `BLE_IDLE_TIMEOUT` for clients
+    /// that connect but never initiate pairing.
+    /// Cleared once authentication completes successfully.
+    connection_start: Option<Instant>,
+    /// Monotonic timestamp recorded when `BLE_PAIRING_CONFIRM` is sent to the
+    /// gateway (in `on_confirm_pin`).  Used by `check_pairing_timeout()` to
+    /// enforce the 30 s `BLE_PAIRING_TIMEOUT` per MD-0414 AC#4 / T-0622.
+    /// Cleared once authentication completes or pairing is confirmed.
+    confirm_sent_at: Option<Instant>,
+    /// Set once the pairing timeout fires.  Suppresses repeated log messages
+    /// while `check_pairing_timeout()` retries `disconnect()` on subsequent
+    /// polls until `on_disconnect` clears `conn_handle`.
+    timeout_fired: bool,
 }
 
 impl BleState {
@@ -107,6 +132,9 @@ impl BleState {
             pairing_pending: false,
             deferred_connected: None,
             authenticated: false,
+            connection_start: None,
+            confirm_sent_at: None,
+            timeout_fired: false,
         }
     }
 }
@@ -177,6 +205,10 @@ impl EspBleDriver {
                 s.advertising = false;
                 s.mtu = mtu;
                 s.conn_handle = Some(desc.conn_handle());
+                // Record the connection timestamp for idle-timeout enforcement.
+                // The 30 s pairing timer (MD-0414 / T-0622) is started later,
+                // when BLE_PAIRING_CONFIRM is sent in on_confirm_pin.
+                s.connection_start = Some(Instant::now());
             }
         });
 
@@ -205,6 +237,9 @@ impl EspBleDriver {
                 s.pairing_pending = false;
                 s.deferred_connected = None;
                 s.authenticated = false;
+                s.connection_start = None;
+                s.confirm_sent_at = None;
+                s.timeout_fired = false;
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::Disconnected {
                         peer_addr,
@@ -224,11 +259,16 @@ impl EspBleDriver {
 
         // --- Numeric Comparison passkey relay (MD-0414) ---
         //
-        // NimBLE's `on_confirm_pin` is a synchronous callback that requires an
-        // immediate yes/no return value — it cannot block waiting for the
-        // gateway's asynchronous reply.  We return `true` to let the BLE stack
-        // proceed with LESC key exchange, then relay the passkey to the gateway
-        // for operator verification.
+        // TODO(#382): Numeric Comparison is auto-accepted here because NimBLE's
+        // `on_confirm_pin` is a synchronous callback that requires an immediate
+        // yes/no return value — it cannot block waiting for the gateway's
+        // asynchronous serial reply.  The proper fix is to gate this on a serial
+        // command from the gateway (which in turn requires admin approval),
+        // likely by running the SMP exchange on a dedicated FreeRTOS task that
+        // can block until the gateway responds.
+        //
+        // We return `true` to let the BLE stack proceed with LESC key exchange,
+        // then relay the passkey to the gateway for operator verification.
         //
         // This means the encrypted link is established before operator approval.
         // Multiple mitigations bound the security impact:
@@ -236,15 +276,13 @@ impl EspBleDriver {
         //   2. GATT writes are gated on the `authenticated` flag.
         //   3. NVS bond persistence is disabled (`CONFIG_BT_NIMBLE_NVS_PERSIST=n`).
         //   4. On rejection, the client is disconnected immediately.
-        //
-        // A stronger model (blocking until approval or defaulting to reject)
-        // would require a dedicated FreeRTOS task to decouple the SMP exchange
-        // from the serial bridge; this is deferred as a future improvement.
         let state_confirm = Arc::clone(&state);
         ble_server.on_confirm_pin(move |passkey| {
             info!("BLE: Numeric Comparison passkey = {:06}", passkey);
             if let Ok(mut s) = state_confirm.lock() {
                 s.pairing_pending = true;
+                // Start the 30 s pairing timeout clock (MD-0414 / T-0622).
+                s.confirm_sent_at = Some(Instant::now());
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::PairingConfirm { passkey });
                 }
@@ -266,7 +304,13 @@ impl EspBleDriver {
                     if current_mtu > 0 {
                         s.mtu = current_mtu;
                     }
-                    if s.mtu < BLE_MTU_MIN {
+                    if s.timeout_fired {
+                        // Timeout already triggered a disconnect — reject the
+                        // late SMP completion to prevent bypassing operator
+                        // approval (MD-0414 AC#4).
+                        warn!("BLE: ignoring late SMP completion after pairing timeout");
+                        true
+                    } else if s.mtu < BLE_MTU_MIN {
                         warn!(
                             "BLE: pairing complete but MTU too low ({}); disconnecting (MD-0402)",
                             s.mtu
@@ -279,6 +323,8 @@ impl EspBleDriver {
                     } else {
                         info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
                         s.authenticated = true;
+                        s.connection_start = None;
+                        s.confirm_sent_at = None;
                         let mtu = s.mtu;
                         if s.events.len() < MAX_BLE_EVENT_QUEUE {
                             s.events.push_back(BleEvent::Connected {
@@ -422,6 +468,9 @@ impl Ble for EspBleDriver {
             s.pairing_pending = false;
             s.deferred_connected = None;
             s.authenticated = false;
+            s.connection_start = None;
+            s.confirm_sent_at = None;
+            s.timeout_fired = false;
         }
         info!("BLE advertising stopped (MD-0407)");
     }
@@ -464,9 +513,21 @@ impl Ble for EspBleDriver {
         if accept {
             info!("BLE: Numeric Comparison accepted by operator");
             if let Ok(mut s) = self.state.lock() {
+                // Ignore late replies if pairing is no longer pending
+                // (e.g., timeout already disconnected the client).
+                if !s.pairing_pending {
+                    return;
+                }
                 s.pairing_pending = false;
-                s.authenticated = true;
+                // Only mark the link as authenticated and clear the pairing
+                // timeout once we know pairing has fully completed (i.e.,
+                // when a deferred connection is present).  If the operator
+                // accepts before SMP finishes, on_authentication_complete
+                // will handle promotion via the !pairing_pending else-branch.
                 if let Some((peer_addr, mtu)) = s.deferred_connected.take() {
+                    s.authenticated = true;
+                    s.connection_start = None;
+                    s.confirm_sent_at = None;
                     s.events.push_back(BleEvent::Connected { peer_addr, mtu });
                 }
             }
@@ -474,6 +535,10 @@ impl Ble for EspBleDriver {
             warn!("BLE: Numeric Comparison rejected by operator — disconnecting");
             let conn_handle = {
                 if let Ok(mut s) = self.state.lock() {
+                    // Ignore late replies if pairing is no longer pending.
+                    if !s.pairing_pending {
+                        return;
+                    }
                     s.pairing_pending = false;
                     s.deferred_connected = None;
                     s.conn_handle
@@ -506,6 +571,65 @@ impl Ble for EspBleDriver {
     fn drain_event(&self) -> Option<BleEvent> {
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
         s.events.pop_front()
+    }
+
+    fn check_pairing_timeout(&self) {
+        // Determine whether we should disconnect due to timeout.
+        // Compute the decision while holding the lock, then release before
+        // calling NimBLE to avoid deadlock if NimBLE invokes on_disconnect
+        // synchronously.
+        //
+        // Two independent timers apply:
+        //   1. `confirm_sent_at` — 30 s pairing timeout (MD-0414 / T-0622),
+        //      measured from when BLE_PAIRING_CONFIRM is sent.
+        //   2. `connection_start` — idle timeout for clients that connect
+        //      but never initiate pairing.
+        //
+        // We keep the timestamps intact so that timeout enforcement retries
+        // `disconnect()` on subsequent polls until `on_disconnect` clears
+        // `conn_handle`.  The `timeout_fired` flag suppresses repeated log
+        // messages after the first warning.
+        let action = {
+            let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(handle) = s.conn_handle {
+                if s.authenticated {
+                    None
+                } else {
+                    // Check the pairing timer first (30 s from confirm).
+                    let timed_out = if let Some(sent_at) = s.confirm_sent_at {
+                        sent_at.elapsed() >= BLE_PAIRING_TIMEOUT
+                    } else if let Some(start) = s.connection_start {
+                        // No pairing initiated yet — apply idle timeout.
+                        start.elapsed() >= BLE_IDLE_TIMEOUT
+                    } else {
+                        false
+                    };
+                    if timed_out {
+                        // Clear pairing state so we don't emit a stale
+                        // BleEvent::Connected from a late
+                        // pairing_confirm_reply, but keep timestamps
+                        // so that timeout enforcement continues on
+                        // subsequent polls until conn_handle is cleared by
+                        // on_disconnect.
+                        s.pairing_pending = false;
+                        s.deferred_connected = None;
+                        let first = !s.timeout_fired;
+                        s.timeout_fired = true;
+                        Some((handle, first))
+                    } else {
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
+        if let Some((handle, first)) = action {
+            if first {
+                warn!("BLE: pairing timeout exceeded — disconnecting (MD-0414 AC#4)");
+            }
+            let _ = BLEDevice::take().get_server().disconnect(handle);
+        }
     }
 }
 

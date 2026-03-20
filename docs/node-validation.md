@@ -999,61 +999,337 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N919  Unknown CBOR keys ignored
+
+**Validates:** ND-0101
+
+**Procedure:**
+1. Send an inbound message containing unknown CBOR integer keys alongside valid fields.
+2. Assert: node processes the message normally.
+3. Assert: unknown keys do not cause an error or affect behavior.
+
+---
+
+### T-N920  `send_recv()` rejects oversized blob
+
+**Validates:** ND-0103
+
+**Procedure:**
+1. Load a BPF program that calls `send_recv()` with a blob whose length exceeds
+   the maximum allowed blob length derived from the 250-byte APP_DATA frame
+   budget (see T-N103 `max_blob_len`).
+2. Execute the program.
+3. Assert: `send_recv()` returns an error code.
+4. Assert: no APP_DATA frame is transmitted.
+
+---
+
+### T-N921  Duplicate COMMAND during BPF execution discarded
+
+**Validates:** ND-0200
+
+**Procedure:**
+1. Complete WAKE handshake; node receives COMMAND and begins BPF execution.
+2. Inject a second valid COMMAND frame during BPF execution.
+3. Assert: the second COMMAND is discarded.
+4. Assert: BPF execution completes using the original COMMAND context.
+
+---
+
+### T-N922  COMMAND `timestamp_ms` populates `sonde_context`
+
+**Validates:** ND-0202
+
+**Procedure:**
+1. Mock gateway sends COMMAND with a known `timestamp_ms` value T.
+2. Node executes BPF program.
+3. Assert: `sonde_context.timestamp` (milliseconds since epoch) is derived from T plus local elapsed time.
+
+---
+
+### T-N923  `set_next_wake()` one-shot then restore base interval
+
+**Validates:** ND-0203
+
+**Procedure:**
+1. Configure node with a base wake interval of 60 s.
+2. BPF program calls `set_next_wake(5000)` (5 s).
+3. Assert: node sleeps for approximately 5 s.
+4. Node wakes and completes the next cycle without calling `set_next_wake()`.
+5. Assert: node sleeps for the base interval (60 s).
+
+---
+
+### T-N924  Invalid HMAC COMMAND — silent discard, no diagnostic frame
+
+**Validates:** ND-0301
+
+**Procedure:**
+1. Node sends WAKE; mock gateway responds with a COMMAND bearing an invalid HMAC.
+2. Assert: node discards the COMMAND.
+3. Monitor all transmitted frames until the next WAKE retry.
+4. Assert: no error response or diagnostic frame is transmitted — only the next WAKE retry appears.
+
+---
+
+### T-N925  APP_DATA_REPLY with mismatched nonce discarded
+
+**Validates:** ND-0302
+
+**Procedure:**
+1. BPF program calls `send_recv()`.
+2. Mock gateway replies with an APP_DATA_REPLY bearing a nonce that does not match the request.
+3. Assert: node discards the reply.
+4. Assert: `send_recv()` times out or returns an error.
+
+---
+
+### T-N926  Sequence numbers reset across wake cycles
+
+**Validates:** ND-0303
+
+**Procedure:**
+1. Complete wake cycle 1; gateway provides `starting_seq = S1`.
+2. Verify outbound messages in cycle 1 use sequence numbers starting at S1.
+3. Complete wake cycle 2; gateway provides `starting_seq = S2`.
+4. Assert: outbound messages in cycle 2 start at S2, with no carry-over from cycle 1.
+
+---
+
+### T-N927  HW RNG health-test failure aborts boot
+
+**Validates:** ND-0304
+
+**Procedure:**
+1. Configure the node's RNG backend (via the `RngProvider` HAL trait) to use a
+   mock that deterministically fails its health-test entry point.
+2. Boot the firmware under the test harness.
+3. Assert: firmware aborts at boot and does not enter the wake cycle.
+4. Assert: no WAKE frame is transmitted.
+
+> **Note:** This test requires a build where the RNG is injectable via the HAL
+> trait. On hardware-only builds without a mock RNG hook, record T-N927 as
+> "Not Applicable" in the validation report.
+
+---
+
+### T-N928  Program image with map definitions and LDDW relocation
+
+**Validates:** ND-0501a
+
+**Procedure:**
+1. Ingest a BPF program image containing 2 map definitions.
+2. Transfer the image to the node via chunked transfer.
+3. Node loads the program.
+4. Assert: LDDW relocations resolve to valid map addresses.
+5. Assert: maps are allocated in RTC SRAM.
+
+---
+
+### T-N929  Write to read-only `sonde_context` rejected
+
+**Validates:** ND-0505
+
+**Procedure:**
+1. Load a BPF program that attempts to write to the `sonde_context` memory region.
+2. Execute the program.
+3. Assert: the `sonde_context` fields are unchanged after the write attempt.
+4. Assert: execution continues normally (program is not terminated for the attempt).
+
+---
+
+### T-N930  Helper ABI conformance
+
+**Validates:** ND-0600
+
+**Procedure:**
+1. Enumerate all exported BPF helper IDs and their function signatures from the firmware.
+2. Load the published helper spec from `bpf-environment.md`.
+3. Assert: every helper ID and signature in the firmware matches the published spec exactly.
+
+---
+
+### T-N931  Ephemeral program uses bus helpers
+
+**Validates:** ND-0601
+
+**Procedure:**
+1. Load an ephemeral BPF program that calls I2C, SPI, GPIO, and ADC bus helpers.
+2. Execute the ephemeral program.
+3. Assert: all bus helper calls succeed and return expected values.
+4. Assert: behavior is identical to the same calls from a resident program.
+
+---
+
+### T-N932  `map_lookup_elem` returns NULL for unwritten key
+
+**Validates:** ND-0603
+
+**Procedure:**
+1. Load a BPF program with a map.
+2. Call `map_lookup_elem` with a key that was never written.
+3. Assert: the helper returns NULL (0).
+
+---
+
+### T-N933  `delay_us()` rejects excessive duration
+
+**Validates:** ND-0604
+
+**Procedure:**
+1. Load a BPF program that calls `delay_us()` with a value exceeding the documented maximum.
+2. Execute the program.
+3. Assert: the firmware rejects or clamps the delay (does not delay for the full excessive duration).
+
+---
+
+### T-N934  Stack overflow terminates BPF program
+
+**Validates:** ND-0605
+
+**Procedure:**
+1. Load a BPF program that writes beyond the 512-byte per-frame stack boundary.
+2. Execute the program.
+3. Assert: the interpreter terminates the program with a stack violation error.
+
+---
+
+### T-N935  Map memory budget exceeded rejects program load
+
+**Validates:** ND-0606
+
+**Procedure:**
+1. Build a program image whose total map memory exceeds the RTC SRAM budget.
+2. Attempt to load the program on the node.
+3. Assert: the load is rejected.
+4. Assert: the program does not execute.
+
+---
+
+### T-N936  Chunked transfer inter-retry delay ≈ 100 ms
+
+**Validates:** ND-0701
+
+**Procedure:**
+1. Begin a chunked transfer.
+2. Simulate a missing-chunk scenario that triggers retries.
+3. Measure the delay between consecutive retry transmissions.
+4. Assert: the inter-retry delay is approximately 100 ms (±20 ms).
+
+---
+
+### T-N937  Response timeout boundary at 50 ms
+
+**Validates:** ND-0702
+
+**Procedure:**
+1. Node sends a request.
+2. Mock gateway responds at 40 ms after the request.
+3. Assert: node accepts the response (under timeout).
+4. Repeat: node sends a request; mock gateway responds at 60 ms.
+5. Assert: node treats the late response as a timeout.
+
+---
+
+### T-N938  Wrong-context known msg_type silently discarded
+
+**Validates:** ND-0801
+
+**Procedure:**
+1. Node is in the COMMAND-wait state (expecting a COMMAND response).
+2. Send a valid CHUNK frame (known msg_type, wrong context).
+3. Assert: the frame is silently discarded.
+4. Assert: no error response is transmitted.
+
+---
+
+### T-N939  BLE connection with MTU < 247 rejected
+
+**Validates:** ND-0904
+
+**Procedure:**
+1. Initiate a BLE connection to the node with an MTU lower than 247.
+2. Assert: the node drops (or refuses) the connection.
+
+---
+
+### T-N940  NODE_PROVISION with invalid `payload_len` rejected
+
+**Validates:** ND-0905
+
+**Procedure:**
+1. Send a NODE_PROVISION message where `payload_len` exceeds the remaining data in the buffer.
+2. Assert: the node rejects the message.
+3. Assert: the node does not read beyond the buffer boundary.
+
+---
+
+### T-N941  PEER_ACK with corrupted HMAC silently discarded
+
+**Validates:** ND-0912
+
+**Procedure:**
+1. Send a PEER_ACK with a valid nonce and registration proof but a corrupted HMAC.
+2. Assert: the node silently discards the frame.
+3. Assert: no error response is transmitted.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
 |---|---|
 | ND-0100 | T-N100 |
-| ND-0101 | T-N101 |
+| ND-0101 | T-N101, T-N919 |
 | ND-0102 | T-N102 |
-| ND-0103 | T-N103, T-N104 |
-| ND-0200 | T-N200, T-N201 |
+| ND-0103 | T-N103, T-N104, T-N920 |
+| ND-0200 | T-N200, T-N201, T-N921 |
 | ND-0201 | T-N202, T-N203 |
-| ND-0202 | T-N204, T-N205, T-N206, T-N207 |
-| ND-0203 | T-N205, T-N208, T-N209 |
+| ND-0202 | T-N204, T-N205, T-N206, T-N207, T-N922 |
+| ND-0203 | T-N205, T-N208, T-N209, T-N923 |
 | ND-0300 | T-N300 |
-| ND-0301 | T-N301 |
-| ND-0302 | T-N302, T-N303, T-N304 |
-| ND-0303 | T-N305 |
-| ND-0304 | T-N306 |
+| ND-0301 | T-N301, T-N924 |
+| ND-0302 | T-N302, T-N303, T-N304, T-N925 |
+| ND-0303 | T-N305, T-N926 |
+| ND-0304 | T-N306, T-N927 |
 | ND-0400 | T-N100, T-N400, T-N401 |
 | ND-0402 | T-N404 |
 | ND-0403 | *(verified by secure boot platform tests)* |
 | ND-0403a | *(verified by flash encryption platform tests)* |
 | ND-0500 | T-N500 |
 | ND-0501 | T-N501, T-N502 |
-| ND-0501a | T-N503 |
+| ND-0501a | T-N503, T-N928 |
 | ND-0502 | T-N504 |
 | ND-0503 | T-N505 |
 | ND-0504 | T-N506 |
-| ND-0505 | T-N507, T-N508, T-N509 |
+| ND-0505 | T-N507, T-N508, T-N509, T-N929 |
 | ND-0506 | T-N508, T-N510 |
-| ND-0600 | *(validated by automated helper ABI conformance test that asserts exported helper IDs and signatures match the published spec across firmware versions)* |
-| ND-0601 | T-N600, T-N601, T-N602, T-N603 |
+| ND-0600 | T-N930 |
+| ND-0601 | T-N600, T-N601, T-N602, T-N603, T-N931 |
 | ND-0602 | T-N604, T-N605, T-N606 |
-| ND-0603 | T-N607, T-N608, T-N609 |
-| ND-0604 | T-N610, T-N611, T-N612, T-N613 |
-| ND-0605 | T-N614, T-N615 |
-| ND-0606 | T-N616 |
+| ND-0603 | T-N607, T-N608, T-N609, T-N932 |
+| ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933 |
+| ND-0605 | T-N614, T-N615, T-N934 |
+| ND-0606 | T-N616, T-N935 |
 | ND-0700 | T-N201, T-N700 |
-| ND-0701 | T-N701 |
-| ND-0702 | T-N702 |
+| ND-0701 | T-N701, T-N936 |
+| ND-0702 | T-N702, T-N937 |
 | ND-0800 | T-N800 |
-| ND-0801 | T-N801 |
+| ND-0801 | T-N801, T-N938 |
 | ND-0802 | T-N802 |
 | ND-0900 | T-N900 |
 | ND-0901 | T-N901 |
 | ND-0902 | T-N902 |
 | ND-0903 | T-N902 |
-| ND-0904 | T-N903 |
-| ND-0905 | T-N904, T-N905, T-N906 |
+| ND-0904 | T-N903, T-N939 |
+| ND-0905 | T-N904, T-N905, T-N906, T-N940 |
 | ND-0906 | T-N904 |
 | ND-0907 | T-N905, T-N908 |
 | ND-0908 | T-N907 |
 | ND-0909 | T-N909 |
 | ND-0910 | T-N910 |
 | ND-0911 | T-N911 |
-| ND-0912 | T-N912, T-N913, T-N914 |
+| ND-0912 | T-N912, T-N913, T-N914, T-N941 |
 | ND-0913 | T-N915 |
 | ND-0914 | T-N916 |
 | ND-0915 | T-N917 |
@@ -1156,3 +1432,4 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 > test suite. T-N503 (map decoding with LDDW pointer resolution),
 > T-N616 (map memory budget enforcement), and T-N702 (response timeout — mock gateway delays
 > \> 50 ms) are host-testable but not yet implemented.
+> T-N919–T-N941: spec procedures added — implementation pending.

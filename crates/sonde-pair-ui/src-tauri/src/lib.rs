@@ -198,14 +198,21 @@ async fn pair_gateway(
 
     // PT-0601: check for existing pairing and require explicit confirmation.
     if !force.unwrap_or(false) {
-        let store = FilePairingStore::new().map_err(|e| e.to_string())?;
-        if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
+        let existing_identity = tokio::task::spawn_blocking(|| {
+            let store = FilePairingStore::new()?;
+            store.load_gateway_identity()
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))?
+        .map_err(|e| e.to_string())?;
+
+        if let Some(identity) = existing_identity {
             let gw_hex = hex::encode(identity.gateway_id);
             *state.phase.lock().unwrap() = format!(
-                "Error: Gateway already paired with ID {gw_hex}. Clear the existing pairing before pairing a new gateway."
+                "Error: Gateway already paired with ID {gw_hex}. To re-pair, confirm and retry with force=true to overwrite the existing pairing, or clear the existing pairing first."
             );
             return Err(format!(
-                "Gateway already paired with ID {gw_hex}. Clear the existing pairing before pairing a new gateway."
+                "Gateway already paired with ID {gw_hex}. To re-pair, confirm and retry with force=true to overwrite the existing pairing, or clear the existing pairing first."
             ));
         }
     }
@@ -410,10 +417,10 @@ async fn pair_gateway(
         if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
             let gw_hex = hex::encode(identity.gateway_id);
             *state.phase.lock().unwrap() = format!(
-                "Error: Gateway already paired with ID {gw_hex}. Clear the existing pairing before pairing a new gateway."
+                "Error: Gateway already paired with ID {gw_hex}. To re-pair, confirm and retry with force=true to overwrite the existing pairing, or clear the existing pairing first."
             );
             return Err(format!(
-                "Gateway already paired with ID {gw_hex}. Clear the existing pairing before pairing a new gateway."
+                "Gateway already paired with ID {gw_hex}. To re-pair, confirm and retry with force=true to overwrite the existing pairing, or clear the existing pairing first."
             ));
         }
     }

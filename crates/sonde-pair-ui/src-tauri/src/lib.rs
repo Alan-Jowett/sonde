@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
+use sonde_pair::phase1::PairingProgress;
 use sonde_pair::rng::OsRng;
 use sonde_pair::store::PairingStore;
 use sonde_pair::types::ScannedDevice;
@@ -41,8 +42,19 @@ struct AppState {
     scanner: Mutex<Option<DeviceScanner<AndroidBleTransport>>>,
     #[cfg(target_os = "android")]
     store: Mutex<Option<AndroidPairingStore>>,
-    phase: Mutex<String>,
+    phase: Arc<Mutex<String>>,
     logs: Arc<Mutex<Vec<String>>>,
+}
+
+/// Reports Phase 1 sub-phase transitions to the UI via the shared `phase` mutex.
+struct UiPairingProgress {
+    phase: Arc<Mutex<String>>,
+}
+
+impl PairingProgress for UiPairingProgress {
+    fn on_phase(&self, phase: &str) {
+        *self.phase.lock().unwrap() = phase.to_string();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -189,8 +201,12 @@ async fn pair_gateway(
         let store = FilePairingStore::new().map_err(|e| e.to_string())?;
         if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
             let gw_hex = hex::encode(identity.gateway_id);
-            *state.phase.lock().unwrap() = format!("Error: already_paired:{gw_hex}");
-            return Err(format!("already_paired:{gw_hex}"));
+            *state.phase.lock().unwrap() = format!(
+                "Error: Gateway already paired with ID {gw_hex}. Pass force=true to overwrite the existing pairing."
+            );
+            return Err(format!(
+                "Gateway already paired with ID {gw_hex}. Pass force=true to overwrite the existing pairing."
+            ));
         }
     }
 
@@ -202,14 +218,23 @@ async fn pair_gateway(
         }
     };
 
-    *state.phase.lock().unwrap() = "Connecting".into();
+    let phase = state.phase.clone();
+    let progress = UiPairingProgress { phase };
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = BtleplugTransport::new().await?;
             let mut store = FilePairingStore::new()?;
             let rng = OsRng;
-            phase1::pair_with_gateway(&mut transport, &mut store, &rng, &addr, &phone_label).await
+            phase1::pair_with_gateway(
+                &mut transport,
+                &mut store,
+                &rng,
+                &addr,
+                &phone_label,
+                Some(&progress),
+            )
+            .await
         })
     })
     .await
@@ -380,8 +405,12 @@ async fn pair_gateway(
         let store = guard.as_ref().unwrap();
         if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
             let gw_hex = hex::encode(identity.gateway_id);
-            *state.phase.lock().unwrap() = format!("Error: already_paired:{gw_hex}");
-            return Err(format!("already_paired:{gw_hex}"));
+            *state.phase.lock().unwrap() = format!(
+                "Error: Gateway already paired with ID {gw_hex}. Pass force=true to overwrite the existing pairing."
+            );
+            return Err(format!(
+                "Gateway already paired with ID {gw_hex}. Pass force=true to overwrite the existing pairing."
+            ));
         }
     }
 
@@ -393,14 +422,23 @@ async fn pair_gateway(
         }
     };
 
-    *state.phase.lock().unwrap() = "Connecting".into();
+    let phase = state.phase.clone();
+    let progress = UiPairingProgress { phase };
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = AndroidBleTransport::from_cached_vm()?;
             let mut store = AndroidPairingStore::from_cached_vm()?;
             let rng = OsRng;
-            phase1::pair_with_gateway(&mut transport, &mut store, &rng, &addr, &phone_label).await
+            phase1::pair_with_gateway(
+                &mut transport,
+                &mut store,
+                &rng,
+                &addr,
+                &phone_label,
+                Some(&progress),
+            )
+            .await
         })
     })
     .await
@@ -639,7 +677,7 @@ pub fn run() {
         scanner: Mutex::new(None),
         #[cfg(target_os = "android")]
         store: Mutex::new(None),
-        phase: Mutex::new("Idle".into()),
+        phase: Arc::new(Mutex::new("Idle".into())),
         logs,
     };
 

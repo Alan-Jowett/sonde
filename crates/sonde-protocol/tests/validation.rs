@@ -896,8 +896,10 @@ fn test_key_hint_from_psk() {
     let psk = [0x42u8; 32];
     let hint = key_hint_from_psk(&psk, &SoftwareSha256);
 
-    // Verify independently: SHA-256 of the PSK, then bytes [30..32] as BE u16.
-    let hash = SoftwareSha256.hash(&psk);
+    // Verify independently using the sha2 crate directly (not via SoftwareSha256).
+    let mut hasher = Sha256::new();
+    hasher.update(psk);
+    let hash = hasher.finalize();
     let expected = u16::from_be_bytes([hash[30], hash[31]]);
     assert_eq!(hint, expected);
 }

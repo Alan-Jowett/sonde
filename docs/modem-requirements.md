@@ -251,6 +251,7 @@ On `RESET`, the modem firmware MUST de-initialize ESP-NOW, clear the peer table,
 1. After `RESET`, the modem sends `MODEM_READY`.
 2. All counters (`tx_count`, `rx_count`, `tx_fail_count`) read zero in the next `STATUS`.
 3. The channel reverts to 1.
+4. The peer table is empty after `RESET`.
 
 ---
 
@@ -266,6 +267,7 @@ If the USB-CDC connection is lost, the modem firmware MUST continue running, dis
 
 1. Unplugging and re-plugging USB produces a new `MODEM_READY` on the re-opened port.
 2. The modem does not crash or require a power cycle after USB disconnection.
+3. ESP-NOW frames arriving during USB disconnection are silently discarded (not queued and flushed on reconnect).
 
 ---
 
@@ -392,6 +394,7 @@ The modem MUST support BLE LESC Numeric Comparison pairing as the default method
 1. LESC Numeric Comparison pairing completes successfully with a connecting phone.
 2. The resulting BLE link is encrypted.
 3. The 6-digit passkey is relayed to the gateway via `BLE_PAIRING_CONFIRM`.
+4. Just Works pairing completes successfully when the connecting phone does not support Numeric Comparison; no `BLE_PAIRING_CONFIRM` is sent.
 
 ---
 

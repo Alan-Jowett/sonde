@@ -220,6 +220,19 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0206  Ephemeral size budget exceeded at dispatch
+
+**Validates:** GW-0202
+
+**Procedure:**
+1. Queue an ephemeral program whose CBOR image exceeds 2 KB for a node.
+2. Send WAKE.
+3. Assert: gateway does NOT issue RUN_EPHEMERAL.
+4. Assert: error logged indicating size budget exceeded.
+5. Assert: on next WAKE, gateway falls through to next pending command (or NOP).
+
+---
+
 ## 5  Chunked transfer tests
 
 ### T-0300  Complete chunked transfer
@@ -262,6 +275,19 @@ A configurable stub handler process (or in-process mock) that:
 3. Assert: node's `current_program_hash` in registry is updated.
 4. Send WAKE with the new hash.
 5. Assert: COMMAND is NOP (no longer mismatched).
+
+---
+
+### T-0303  Invalid chunk_index in GET_CHUNK
+
+**Validates:** GW-0300
+
+**Procedure:**
+1. Complete WAKE → UPDATE_PROGRAM with `chunk_count=4`.
+2. Send GET_CHUNK with `chunk_index=4` (out of range).
+3. Assert: gateway silently discards the frame (no CHUNK response).
+4. Send GET_CHUNK with `chunk_index=3` (last valid).
+5. Assert: valid CHUNK response returned.
 
 ---
 
@@ -519,6 +545,59 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0514  Oversized handler message rejection
+
+**Validates:** GW-0502
+
+**Procedure:**
+1. Configure a mock handler that writes a DATA_REPLY with a length prefix of 2 MB (exceeding the 1 MB limit), then closes its stdout without sending any body bytes.
+2. Send APP_DATA to trigger the handler.
+3. Assert: gateway detects the oversized length prefix and rejects the reply based on the length prefix alone, without attempting to read the full body.
+4. Assert: no APP_DATA_REPLY sent to node.
+5. Assert: error logged.
+
+---
+
+### T-0515  Long-running handler persistence
+
+**Validates:** GW-0503
+
+**Procedure:**
+1. Configure a handler that stays alive across messages (long-running mode).
+2. Send APP_DATA → handler replies.
+3. Send another APP_DATA.
+4. Assert: same handler process receives the second message (no respawn).
+5. Assert: handler instance identity is stable across both messages (for example, same PID when using a subprocess, or the same test-assigned instance ID for an in-process mock).
+
+---
+
+### T-0516  Handler hang timeout
+
+**Validates:** GW-0503
+
+**Procedure:**
+1. Configure a handler that reads a DATA message but never writes a reply (hangs).
+2. Send APP_DATA.
+3. Wait for the handler reply timeout (`handler_timeout`).
+4. Assert: no APP_DATA_REPLY is sent to the node.
+5. Assert: the gateway does not block processing for other nodes.
+
+---
+
+### T-0517  Node timeout event
+
+**Validates:** GW-0507
+
+**Procedure:**
+1. Register a node with a known schedule (`interval_s = 10`).
+2. Ensure the gateway is configured with a known `node_timeout_multiplier` (default is 3× unless overridden).
+3. Send WAKE.
+4. Wait for `node_timeout_multiplier × interval_s` without sending another WAKE (e.g., 30 seconds when `node_timeout_multiplier = 3`).
+5. Assert: handler receives an EVENT message with `event_type = "node_timeout"`.
+6. Assert: event includes `last_seen` (matching the WAKE timestamp) and `expected_interval_s = 10`.
+
+---
+
 ## 8  Authentication and security tests
 
 ### T-0600  Valid HMAC accepted
@@ -770,6 +849,23 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0610  Key store encryption at rest
+
+**Validates:** GW-0601a
+
+**Procedure:**
+1. Create a `SqliteStorage` backed by a temporary file (not the in-memory mock) with a known master key.
+2. Register a node with a known PSK `[0x42; 32]`.
+3. Close the storage.
+4. Open the SQLite database file using a direct SQL connection (bypassing the `SqliteStorage` API) and query the row for the registered node from the key-store table, selecting only the `psk` column as raw bytes.
+5. Assert: the stored `psk` value is present, is not equal to the cleartext `[0x42; 32]` PSK, and matches the expected encrypted envelope shape/length (e.g., fixed-size ciphertext + metadata as defined by the key-store implementation).
+6. (Optional sanity check) Read the raw SQLite file bytes and assert that neither the 32-byte raw PSK value nor its 64-char hex encoding appears as a contiguous substring in the raw file.
+7. Re-open the database using `SqliteStorage` with the correct master key.
+8. Assert: the PSK is correctly retrieved via the storage API and matches the original `[0x42; 32]`.
+9. Attempt to open the same database with an incorrect master key and either (a) assert that opening or key lookup fails as designed, or (b) if the error is deferred to decryption time, attempt to retrieve the PSK and assert that decryption fails and does not yield the original `[0x42; 32]`.
+
+---
+
 ## 9  Node management tests
 
 ### T-0700  Node registry persistence
@@ -827,6 +923,35 @@ A configurable stub handler process (or in-process mock) that:
 2. Send WAKE.
 3. Assert: gateway does NOT issue UPDATE_PROGRAM (incompatible ABI).
 4. Assert: warning logged.
+
+---
+
+### T-0705  Battery historical data
+
+**Validates:** GW-0702
+
+**Procedure:**
+1. Send WAKE with `battery_mv = 3300`.
+2. Send WAKE with `battery_mv = 3100`.
+3. Send WAKE with `battery_mv = 2900`.
+4. Assert: storage retains all three readings (not just the latest).
+5. Assert: readings can be queried in chronological order for trend analysis.
+
+---
+
+### T-0706  Factory reset
+
+**Validates:** GW-0705
+
+**Procedure:**
+1. Provision a node with a known PSK `K_old` and deploy a program that writes non-zero data into node persistent state (e.g., a boot counter or stored configuration value).
+2. Assert (pre-reset): the gateway registry contains the node with PSK `K_old` and the assigned program. The node can successfully authenticate (WAKE accepted). Application data reflects non-default persistent state.
+3. Trigger a factory reset for this node via the admin API (e.g., `RemoveNode` plus any gateway action that causes the node to perform a factory reset on next contact, per design).
+4. Assert (gateway-side): the node's PSK and program assignment are removed from the gateway registry. No further commands or program updates are queued for the node.
+5. After the reset has completed on the node, send WAKE using the pre-reset credentials (`K_old`).
+6. Assert: WAKE frames using `K_old` are silently discarded (unknown/unauthenticated node). No authenticated session is established.
+7. Re-provision the same hardware as a new node via the normal pairing/provisioning flow.
+8. Assert (post-reset, after re-provisioning): the newly assigned PSK `K_new` differs from `K_old`. Any program assigned after re-provisioning must be explicitly (re)deployed; the previous program image is not implicitly restored. Application data that exposes persistent state (e.g., boot counter) has returned to its factory-default value, demonstrating that node-side persistent state was erased.
 
 ---
 
@@ -967,30 +1092,37 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-0811  Admin CLI JSON output
+### T-0811  Admin API local-only binding
 
-**Validates:** GW-0806
+**Validates:** GW-0800
 
 **Procedure:**
-1. Register a node and ingest a program.
-2. Run `sonde-admin node list --format json`.
-3. Assert: output is valid JSON containing the registered node.
-4. Run `sonde-admin program list --format json`.
-5. Assert: output is valid JSON containing the ingested program.
-6. Run `sonde-admin status <node-id> --format json`.
-7. Assert: output is valid JSON with expected status fields.
+1. Start the gateway.
+2. Assert: the admin API is bound to a local-only transport (Unix domain socket or Windows named pipe).
+3. Assert: no TCP listener is opened on any network interface.
+4. On Linux: verify the socket path exists as a UDS file.
+5. On Windows: verify the named pipe `\\.\pipe\sonde-admin` is created.
 
 ---
 
-### T-0812  Admin CLI error handling
+### T-0812  Admin CLI integration
 
 **Validates:** GW-0806
 
 **Procedure:**
-1. Run `sonde-admin node get nonexistent-node`.
-2. Assert: non-zero exit code and meaningful error message.
-3. Run `sonde-admin program assign <node-id> 0000000000000000000000000000000000000000000000000000000000000000`.
-4. Assert: non-zero exit code indicating program not found.
+1. Start a gateway instance (using the default admin socket, or pass `--socket PATH` consistently to both the gateway and `sonde-admin` if overriding).
+2. Run `sonde-admin --format json node list` against the admin socket.
+3. Assert: command exits successfully with valid JSON output.
+4. Register a node via `sonde-admin node register NODE_ID KEY_HINT PSK_HEX`, for example:
+   `sonde-admin node register node-0001 1 4242424242424242424242424242424242424242424242424242424242424242`
+5. Assert: command exits successfully.
+6. Run `sonde-admin --format json node list`.
+7. Assert: the new node `NODE_ID` appears in the output.
+8. Run `sonde-admin node remove NODE_ID`, for example:
+   `sonde-admin node remove node-0001`
+9. Assert: command exits successfully.
+10. Run `sonde-admin --format json node list`.
+11. Assert: the node `NODE_ID` is no longer listed.
 
 ---
 
@@ -1024,6 +1156,33 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Call `ScanModemChannels`.
 2. Assert: response contains, for each scanned channel, an AP count and a strongest RSSI value.
+
+---
+
+### T-0816  Admin CLI JSON output
+
+**Validates:** GW-0806
+
+**Procedure:**
+1. Register a node and ingest a program.
+2. Run `sonde-admin node list --format json`.
+3. Assert: output is valid JSON containing the registered node.
+4. Run `sonde-admin program list --format json`.
+5. Assert: output is valid JSON containing the ingested program.
+6. Run `sonde-admin status <node-id> --format json`.
+7. Assert: output is valid JSON with expected status fields.
+
+---
+
+### T-0817  Admin CLI error handling
+
+**Validates:** GW-0806
+
+**Procedure:**
+1. Run `sonde-admin node get nonexistent-node`.
+2. Assert: non-zero exit code and meaningful error message.
+3. Run `sonde-admin program assign <node-id> 0000000000000000000000000000000000000000000000000000000000000000`.
+4. Assert: non-zero exit code indicating program not found.
 
 ---
 
@@ -1087,6 +1246,21 @@ A configurable stub handler process (or in-process mock) that:
 2. Wait for session timeout (configurable, default 30s).
 3. Send APP_DATA with the session's sequence number.
 4. Assert: rejected (session expired).
+
+---
+
+### T-1005  Export plaintext key leakage
+
+**Validates:** GW-1001
+
+**Procedure:**
+1. Register nodes with known PSKs.
+2. Call `ExportState` with a known export passphrase (e.g., `test-export-passphrase`).
+3. Inspect the raw export bytes (encrypted bundle).
+4. Assert: no PSK value appears as a contiguous substring in the export payload.
+5. Attempt to import or use the export without the correct passphrase (e.g., omit the passphrase or supply an incorrect one). Assert: import is rejected with an authentication/invalid-passphrase error and the gateway state is unchanged (registered nodes are not restored and WAKE from those nodes is not accepted).
+6. Import the export into a fresh gateway using the correct export passphrase.
+7. Assert: nodes are restored and PSKs are functional (WAKE from registered node is accepted).
 
 ---
 
@@ -1208,6 +1382,22 @@ A configurable stub handler process (or in-process mock) that:
 4. Inject a `RECV_FRAME` containing a valid WAKE from the test node.
 5. Assert: the mock modem receives a `SEND_FRAME` containing a valid COMMAND response.
 6. Decode the COMMAND and verify it contains a valid `starting_seq` and `timestamp_ms`.
+
+---
+
+### T-1109  RESET recovery after ERROR
+
+**Validates:** GW-1103
+
+**Procedure:**
+1. Complete modem startup.
+2. Inject an `ERROR(ESPNOW_INIT_FAILED, "test")` message.
+3. Assert: error is logged.
+4. Mock modem: expect to receive a `RESET` command.
+5. Send `MODEM_READY` in response.
+6. Mock modem: expect `SET_CHANNEL`.
+7. Send `SET_CHANNEL_ACK`.
+8. Assert: modem transport is operational again (inject `RECV_FRAME`, call `recv()`, assert frame delivered).
 
 ---
 
@@ -1500,7 +1690,67 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1223  Phone listing via admin API
+### T-1223  Ed25519 seed replication
+
+**Validates:** GW-1203
+
+**Procedure:**
+1. Start gateway A; record its Ed25519 public key and `gateway_id`.
+2. Export the seed and `gateway_id` from gateway A.
+3. Start gateway B with an empty key store.
+4. Import the seed and `gateway_id` into gateway B.
+5. Assert: gateway B's Ed25519 public key matches gateway A's.
+6. Assert: gateway B's `gateway_id` matches gateway A's.
+7. Send `REQUEST_GW_INFO` to both gateways with the same challenge.
+8. Assert: both produce identical signatures.
+
+---
+
+### T-1224  BLE GATT server via modem relay
+
+**Validates:** GW-1204
+
+**Procedure:**
+1. Complete modem startup.
+2. Using a BLE test client, scan for the modem and connect to its GATT server.
+3. Discover services and assert: the Gateway Pairing Service UUID matches the value specified for GW-1204 in `ble-pairing-protocol.md`.
+4. Within the Gateway Pairing Service, discover characteristics and assert: the request/command and indication/response characteristic UUIDs match the values specified for GW-1204.
+5. Open a BLE pairing session via the admin API.
+6. Mock modem: inject a `BLE_RECV` message containing a `REQUEST_GW_INFO` command on the request characteristic.
+7. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem on the indication characteristic containing a valid `GW_INFO_RESPONSE`.
+8. Decode the indication payload and verify it contains `gw_public_key`, `gateway_id`, and `signature`.
+
+---
+
+### T-1225  ATT MTU and fragmentation via modem relay
+
+**Validates:** GW-1205
+
+**Procedure:**
+1. Complete modem startup.
+2. Open BLE pairing session.
+3. Assert: when the gateway sends a `BLE_INDICATE` message, the payload is a complete BLE envelope (the modem handles fragmentation per MD-0403).
+4. Arrange for the gateway to emit a BLE envelope whose payload exceeds `(ATT_MTU - 3)` bytes (for example, more than 244 bytes when the negotiated ATT MTU is 247), using either (a) a variable-length message type (for example, an `ERROR` with a long diagnostic string) or (b) a test-only response that includes explicit padding bytes for this validation.
+5. Assert: the gateway sends the oversized envelope in a single `BLE_INDICATE` message to the modem (delegation model — modem fragments, not gateway).
+
+---
+
+### T-1226  BLE_ENABLE/BLE_DISABLE signals on window open/close
+
+**Validates:** GW-1208
+
+**Procedure:**
+1. Open the registration window via admin API.
+2. Assert: mock modem receives a `BLE_ENABLE` message.
+3. Close the registration window explicitly via admin API.
+4. Assert: mock modem receives a `BLE_DISABLE` message.
+5. Open the window again with a 2s timeout.
+6. Wait for auto-close.
+7. Assert: mock modem receives `BLE_ENABLE` then `BLE_DISABLE` in order.
+
+---
+
+### T-1227  Phone listing via admin API
 
 **Validates:** GW-1223
 
@@ -1514,7 +1764,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1224  Phone revocation via admin API
+### T-1228  Phone revocation via admin API
 
 **Validates:** GW-1224
 
@@ -1538,10 +1788,10 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0104 | T-0106 |
 | GW-0200 | T-0200, T-0205 |
 | GW-0201 | T-0201, T-0205 |
-| GW-0202 | T-0202, T-0205 |
+| GW-0202 | T-0202, T-0205, T-0206 |
 | GW-0203 | T-0203, T-0205 |
 | GW-0204 | T-0204, T-0205 |
-| GW-0300 | T-0300 |
+| GW-0300 | T-0300, T-0303 |
 | GW-0301 | T-0301 |
 | GW-0302 | T-0302 |
 | GW-0400 | T-0400, T-0401 |
@@ -1550,50 +1800,50 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0403 | T-0407 |
 | GW-0500 | T-0500 |
 | GW-0501 | T-0501, T-0502, T-0503 |
-| GW-0502 | T-0504 |
-| GW-0503 | T-0505, T-0506 |
+| GW-0502 | T-0504, T-0514 |
+| GW-0503 | T-0505, T-0506, T-0515, T-0516 |
 | GW-0504 | T-0507, T-0508, T-0509 |
 | GW-0505 | T-0500 |
 | GW-0506 | T-0510, T-0511 |
-| GW-0507 | T-0512 |
+| GW-0507 | T-0512, T-0517 |
 | GW-0508 | T-0513 |
 | GW-0600 | T-0600, T-0601, T-0602 |
 | GW-0601 | T-0602, T-0603 |
-| GW-0601a | *(verified by storage implementation tests)* |
+| GW-0601a | T-0610 |
 | GW-0601b | T-0603a, T-0603b, T-0603c, T-0603d, T-0603e, T-0603f, T-0603g, T-0603h, T-0603i, T-0603j, T-0603k |
 | GW-0602 | T-0604, T-0605, T-0606, T-0607, T-1004 |
 | GW-0603 | T-0608 |
 | GW-0700 | T-0700 |
 | GW-0701 | T-0201, T-0701 |
-| GW-0702 | T-0702 |
+| GW-0702 | T-0702, T-0705 |
 | GW-0703 | T-0703, T-0704 |
-| GW-0705 | T-0802 |
-| GW-0800 | T-0800 |
+| GW-0705 | T-0802, T-0706 |
+| GW-0800 | T-0800, T-0811 |
 | GW-0801 | T-0801, T-0802 |
 | GW-0802 | T-0803, T-0804, T-0805 |
 | GW-0803 | T-0805, T-0806, T-0807, T-0808 |
 | GW-0804 | T-0809 |
 | GW-0805 | T-0810 |
-| GW-0806 | T-0811, T-0812 |
+| GW-0806 | T-0812, T-0816, T-0817 |
 | GW-0807 | T-0813, T-0814, T-0815 |
 | GW-1000 | T-1000 |
-| GW-1001 | T-1002 |
+| GW-1001 | T-1002, T-1005 |
 | GW-1002 | T-0609 |
 | GW-1003 | T-1003 |
 | GW-1004 | T-1001 |
 | GW-1100 | T-1100, T-1101, T-1102, T-1108 |
 | GW-1101 | T-1103, T-1104, T-1108 |
 | GW-1102 | T-1105, T-1106 |
-| GW-1103 | T-1107 |
+| GW-1103 | T-1107, T-1109 |
 | GW-1200 | T-1200 |
 | GW-1201 | T-1201 |
 | GW-1202 | T-1202 |
-| GW-1203 | *(validated by seed export/import integration tests)* |
-| GW-1204 | *(validated by BLE integration tests against physical hardware)* |
-| GW-1205 | *(validated by BLE integration tests against physical hardware)* |
+| GW-1203 | T-1223 |
+| GW-1204 | T-1224 |
+| GW-1205 | T-1225 |
 | GW-1206 | T-1203, T-1204 |
 | GW-1207 | T-1205 |
-| GW-1208 | T-1206 |
+| GW-1208 | T-1206, T-1226 |
 | GW-1209 | T-1207 |
 | GW-1210 | T-1208 |
 | GW-1211 | T-1209 |
@@ -1608,5 +1858,5 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1220 | T-1211, T-1213, T-1214, T-1215, T-1216, T-1217 |
 | GW-1221 | T-1220 |
 | GW-1222 | T-1221, T-1222 |
-| GW-1223 | T-1223 |
-| GW-1224 | T-1224 |
+| GW-1223 | T-1227 |
+| GW-1224 | T-1228 |

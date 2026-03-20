@@ -649,6 +649,206 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0623  Indication confirmation pacing
+
+**Validates:** MD-0403
+
+**Procedure:**
+1. Connect via BLE with MTU = 247. Complete LESC pairing.
+2. Send a `BLE_INDICATE` from the gateway containing a payload > 488 bytes
+   (at least 3 chunks at 244 bytes each).
+3. On the phone side, capture the timing of each received indication chunk.
+4. Assert: each chunk is received only after the phone's BLE stack has sent
+   the ATT Handle Value Confirmation for the previous chunk.
+5. Assert: no `"BLE: indication failed:"` errors appear in the modem log.
+6. Assert: reassembled message matches the original.
+
+---
+
+### T-0624  Indication pacing under slow client
+
+**Validates:** MD-0403
+
+**Procedure:**
+1. Connect via BLE with a long connection interval (e.g. 30 ms).
+2. Send a `BLE_INDICATE` from the gateway containing a payload requiring
+   ≥ 4 chunks.
+3. Assert: all chunks are delivered successfully (no `"indication failed"`
+   warnings in modem log).
+4. Assert: the modem does not burst-send multiple indications within a
+   single connection interval.
+
+---
+
+### T-0625  Send failure increments `tx_fail_count`
+
+**Validates:** MD-0202, MD-0303
+
+**Procedure:**
+1. Send `RESET`, wait for `MODEM_READY`.
+2. Send `GET_STATUS` and record baseline `tx_count_0` and `tx_fail_count_0`.
+3. Send `SEND_FRAME` to a peer MAC that is not present on the channel
+   (e.g. `02:00:00:00:00:01`, a locally administered unicast address,
+   on an empty channel).
+4. Poll `GET_STATUS` (e.g. every 50 ms, up to 500 ms) until
+   `tx_count` > `tx_count_0`.
+5. Assert: `tx_count` ≥ `tx_count_0 + 1` (send was attempted).
+6. Assert: `tx_fail_count` ≥ `tx_fail_count_0 + 1` (delivery failure was recorded).
+
+---
+
+### T-0626  Peer table cleared on channel change
+
+**Validates:** MD-0206
+
+**Procedure:**
+1. Send `RESET`, wait for `MODEM_READY`.
+2. Send `SEND_FRAME` messages to N distinct peer MACs, where N equals the
+   documented peer table capacity.
+3. Send `SET_CHANNEL(6)`, wait for `SET_CHANNEL_ACK(6)`.
+4. Send `SEND_FRAME` messages to N new, distinct peer MACs.
+5. Assert: all N sends in step 4 succeed without error (proving the table
+   had room for N new peers — i.e., it was emptied by the channel change).
+
+---
+
+### T-0627  ESP-NOW resumes after channel scan
+
+**Validates:** MD-0207
+
+**Procedure:**
+1. Send `RESET`, wait for `MODEM_READY`. Set channel to match the radio peer.
+2. Confirm baseline: have the radio peer send a frame; assert `RECV_FRAME`
+   received.
+3. Send `SCAN_CHANNELS`, wait for `SCAN_RESULT`.
+4. Have the radio peer send another frame on the original channel.
+5. Assert: `RECV_FRAME` is received (ESP-NOW is operational after scan).
+6. Send `SEND_FRAME` to the radio peer.
+7. Assert: the radio peer receives the frame (TX path also works after scan).
+
+---
+
+### T-0628  Peer table cleared on RESET
+
+**Validates:** MD-0300
+
+**Procedure:**
+1. Send `RESET`, wait for `MODEM_READY`.
+2. Send `SEND_FRAME` messages to N distinct peer MACs, where N equals the
+   documented peer table capacity.
+3. Send `RESET`, wait for `MODEM_READY`.
+4. Send `SEND_FRAME` messages to N new, distinct peer MACs.
+5. Assert: all N sends in step 4 succeed without error (proving the table
+   had room for N new peers — i.e., it was emptied by the RESET).
+
+---
+
+### T-0629  ESP-NOW frames discarded during USB disconnect
+
+**Validates:** MD-0301
+
+**Procedure:**
+1. Send `RESET`, wait for `MODEM_READY`. Set channel to match the radio peer.
+2. Close the host-side serial port (simulate USB-CDC link drop).
+3. Have the radio peer send 5 ESP-NOW frames to the modem.
+4. Wait 2 seconds, then re-open the serial port.
+5. Wait for `MODEM_READY`.
+6. Assert: no `RECV_FRAME` messages arrive for the 5 frames sent during
+   disconnection (they were discarded, not queued).
+7. Have the radio peer send 1 more frame.
+8. Assert: `RECV_FRAME` is received (normal operation resumed).
+
+---
+
+### T-0630  BLE relay boundary preservation under rapid writes
+
+**Validates:** MD-0401
+
+**Procedure:**
+1. Connect via BLE. Complete LESC pairing.
+2. Write 5 distinct test envelopes to the Gateway Command characteristic
+   in rapid succession (as fast as the phone BLE stack allows).
+3. Assert: exactly 5 `BLE_RECV` serial messages are received on the gateway
+   side — no merging, no splitting.
+4. Assert: each `BLE_RECV` payload matches the corresponding GATT write
+   byte-for-byte, in order.
+
+---
+
+### T-0631  Concurrent fragmented indications are not interleaved
+
+**Validates:** MD-0403
+
+**Procedure:**
+1. Connect via BLE with MTU = 247. Complete LESC pairing.
+2. Send two `BLE_INDICATE` messages from the gateway in rapid succession,
+   each requiring ≥ 2 chunks (each > 244 bytes).
+3. On the phone side, capture the order of received indication chunks.
+4. Assert: all chunks from the first message arrive before any chunk from
+   the second message (no interleaving).
+5. Assert: both reassembled messages match their originals.
+
+---
+
+### T-0632  Just Works BLE fallback
+
+**Validates:** MD-0404
+
+**Procedure:**
+1. Send `BLE_ENABLE`.
+2. Connect a BLE client that only supports Just Works pairing (no
+   display/keyboard IO capabilities).
+3. Assert: BLE pairing completes successfully without Numeric Comparison.
+4. Assert: the resulting link is encrypted.
+5. Assert: no `BLE_PAIRING_CONFIRM` is sent to the gateway (Just Works
+   does not involve operator confirmation).
+
+---
+
+### T-0633  BLE advertising off after RESET
+
+**Validates:** MD-0407, MD-0412
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Scan and confirm Gateway Pairing Service UUID is
+   advertised.
+2. Send `RESET`, wait for `MODEM_READY`.
+3. Scan for BLE advertisements.
+4. Assert: no Gateway Pairing Service UUID advertised (RESET disabled BLE).
+5. Send `BLE_ENABLE`.
+6. Scan for BLE advertisements.
+7. Assert: Gateway Pairing Service UUID is advertised again.
+
+---
+
+### T-0634  Write Long reassembly
+
+**Validates:** MD-0409
+
+**Procedure:**
+1. Connect via BLE with MTU = 247. Complete LESC pairing.
+2. From the phone, perform an ATT Write Long (Prepare Write + Execute Write)
+   to the Gateway Command characteristic with a payload > (MTU − 3) bytes.
+3. Assert: the modem forwards a single `BLE_RECV` serial message containing
+   the complete reassembled payload.
+4. Assert: the payload is byte-for-byte identical to what the phone sent.
+
+---
+
+### T-0635  BLE_ENABLE and BLE_DISABLE idempotency
+
+**Validates:** MD-0413
+
+**Procedure:**
+1. Send `BLE_ENABLE` twice in succession.
+2. Assert: no error or crash; modem is advertising normally.
+3. Connect a phone, complete LESC pairing, then disconnect.
+4. Assert: modem re-advertises (BLE still enabled).
+5. Send `BLE_DISABLE` twice in succession.
+6. Assert: no error or crash; modem is not advertising.
+
+---
+
 ## Appendix A  Test index
 
 | ID | Title | Validates |
@@ -701,3 +901,16 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0620 | Numeric Comparison pin relay | MD-0414 |
 | T-0621 | Numeric Comparison rejected | MD-0414 |
 | T-0622 | Numeric Comparison timeout | MD-0414 |
+| T-0623 | Indication confirmation pacing | MD-0403 |
+| T-0624 | Indication pacing under slow client | MD-0403 |
+| T-0625 | Send failure increments `tx_fail_count` | MD-0202, MD-0303 |
+| T-0626 | Peer table cleared on channel change | MD-0206 |
+| T-0627 | ESP-NOW resumes after channel scan | MD-0207 |
+| T-0628 | Peer table cleared on RESET | MD-0300 |
+| T-0629 | ESP-NOW frames discarded during USB disconnect | MD-0301 |
+| T-0630 | BLE relay boundary preservation under rapid writes | MD-0401 |
+| T-0631 | Concurrent fragmented indications are not interleaved | MD-0403 |
+| T-0632 | Just Works BLE fallback | MD-0404 |
+| T-0633 | BLE advertising off after RESET | MD-0407, MD-0412 |
+| T-0634 | Write Long reassembly | MD-0409 |
+| T-0635 | BLE_ENABLE and BLE_DISABLE idempotency | MD-0413 |

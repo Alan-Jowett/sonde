@@ -120,6 +120,72 @@ The design MUST clearly separate four layers: **protocol logic** (state machines
 
 ---
 
+### PT-0105  Android BLE runtime permissions
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.2
+
+**Description:**  
+On Android, BLE scanning and connection require **runtime permissions** that the OS does not grant automatically at install time.  The app MUST request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` (API 31+) or `ACCESS_FINE_LOCATION` (API 23–30) before the first BLE operation.  The user MUST see a system consent dialog; the app MUST NOT silently fail if permissions are not yet granted.
+
+**Acceptance criteria:**
+
+1. On first launch with no prior grants, the Android system permission dialog appears before any BLE operation is attempted.
+2. If the user grants the permissions, scanning and connection proceed normally.
+3. If the user denies the permissions, the app surfaces an actionable error message (not a silent failure or crash).
+4. On API 31+ the requested permissions are `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`; on API 23–30 the requested permission is `ACCESS_FINE_LOCATION`.
+
+---
+
+### PT-0106  LESC Numeric Comparison pairing
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.1, §9.2; security.md
+
+**Description:**  
+BLE connections to the modem MUST use **LE Secure Connections (LESC) with Numeric Comparison** as the pairing method.  This ensures mutual authentication and MITM protection during the BLE link establishment.  The app MUST NOT fall back to **Just Works** pairing silently; if the platform cannot complete Numeric Comparison (e.g., the modem does not support `DisplayYesNo` I/O capability), the connection MUST fail with an actionable error.
+
+**Acceptance criteria:**
+
+1. The modem is configured for LESC with `DisplayYesNo` I/O capability.
+2. The phone app triggers `createBond()` (Android) or equivalent platform API to initiate LESC pairing.
+3. A Numeric Comparison dialog is presented to the user for confirmation.
+4. If the user rejects the comparison or the pairing mode degrades to Just Works, the connection is terminated.
+
+---
+
+### PT-0107  Android activity lifecycle management
+
+**Priority:** Should  
+**Source:** ble-pairing-tool-design.md §9.2
+
+**Description:**  
+On Android, the BLE transport SHOULD disconnect cleanly when the hosting Activity is paused (e.g., user switches apps) and reconnect on resume if a pairing flow was in progress.  This prevents leaked BLE connections and stale GATT state.
+
+**Acceptance criteria:**
+
+1. Backgrounding the app mid-pairing disconnects the BLE link within 5 s.
+2. Returning to the app after a lifecycle-triggered disconnect surfaces an error or resumes the flow cleanly (no crash, no hang).
+3. No GATT connections remain open after the Activity is destroyed.
+
+---
+
+### PT-0108  JNI classloader caching
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.2 (implicit); Android JNI best practices
+
+**Description:**  
+On Android, the native library MUST cache `GlobalRef` references to app-defined Java classes (e.g., `BleHelper`, `SecureStore`) during `JNI_OnLoad` on the main thread.  Threads attached via `JavaVM::attach_current_thread()` (e.g., tokio worker threads) use the system classloader, which cannot find app-defined classes via `FindClass`.
+
+**Acceptance criteria:**
+
+1. `JNI_OnLoad` resolves and caches `GlobalRef` for every app-defined class used from Rust.
+2. BLE and storage operations succeed when invoked from tokio background threads.
+3. No `ClassNotFoundException` or `FindClass` failure occurs on non-main threads.
+
+---
+
 ## 4  Device discovery
 
 ### PT-0200  BLE scanning
@@ -668,6 +734,22 @@ Test code MUST use clearly non-zero keys (e.g., `[0x42u8; 32]`), not `[0u8; 32]`
 **Acceptance criteria:**
 
 1. No test uses `[0u8; 32]` as a PSK or key value.
+
+---
+
+### PT-0904  BLE link security mode
+
+**Priority:** Must  
+**Source:** security.md §2; ble-pairing-tool-design.md §9.1, §9.2
+
+**Description:**  
+The BLE link between the phone and modem MUST be established using LE Secure Connections (LESC) with authenticated pairing (Numeric Comparison).  Unauthenticated pairing modes (Just Works, passkey-only without confirmation) MUST NOT be accepted because the pairing exchange carries PSK material that an active MITM could intercept.
+
+**Acceptance criteria:**
+
+1. The modem advertises LESC capability with `DisplayYesNo` I/O.
+2. The phone verifies that the negotiated pairing method is Numeric Comparison before proceeding.
+3. A Just Works fallback is treated as a connection failure, not a silent degradation.
 
 ---
 

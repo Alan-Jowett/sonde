@@ -144,6 +144,138 @@ TestNode {
 
 ---
 
+### T-PT-105  BLE permission dialog shown on Android
+
+**Validates:** PT-0105
+
+**Procedure:**
+1. Install the app on an Android 12+ device with BLE permissions **not** pre-granted (fresh install or permissions revoked via Settings).
+2. Launch the app.
+3. Assert: the system permission dialog appears requesting `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`.
+4. Grant the permissions.
+5. Initiate a BLE scan.
+6. Assert: scan starts successfully with no permission errors.
+
+---
+
+### T-PT-106  BLE permission denial produces actionable error
+
+**Validates:** PT-0105
+
+**Procedure:**
+1. Install the app on an Android 12+ device with BLE permissions not pre-granted.
+2. Launch the app.
+3. When the system permission dialog appears, **deny** the permissions.
+4. Initiate a BLE scan.
+5. Assert: the UI displays an actionable error indicating BLE permissions are required.
+6. Assert: the app does not crash or silently fail.
+
+---
+
+### T-PT-107  BLE permissions on Android 6–11 (location)
+
+**Validates:** PT-0105
+
+**Procedure:**
+1. Install the app on an Android 6–11 (API 23–30) device with location permissions not pre-granted.
+2. Launch the app.
+3. Assert: the system permission dialog appears requesting `ACCESS_FINE_LOCATION`.
+4. Grant the permission.
+5. Initiate a BLE scan.
+6. Assert: scan starts successfully with no permission errors.
+
+---
+
+### T-PT-108  LESC Numeric Comparison pairing used
+
+**Validates:** PT-0106, PT-0904
+
+**Procedure:**
+1. Configure mock transport to simulate a modem advertising LESC with `DisplayYesNo` I/O capability.
+2. Initiate Phase 1 gateway pairing.
+3. Assert: the transport layer initiates `createBond()` (Android) or equivalent LESC pairing API.
+4. Assert: the pairing method negotiated is Numeric Comparison (not Just Works).
+5. Simulate user accepting the Numeric Comparison dialog.
+6. Assert: pairing completes and GATT operations proceed.
+
+---
+
+### T-PT-109  Just Works fallback rejected
+
+**Validates:** PT-0106, PT-0904
+
+**Procedure:**
+1. Configure mock transport to simulate a peripheral that only supports Just Works pairing (no `DisplayYesNo`).
+2. Initiate Phase 1 gateway pairing.
+3. Assert: the connection fails with an actionable error indicating that Numeric Comparison is required.
+4. Assert: no PSK material is exchanged over the unauthenticated link.
+
+---
+
+### T-PT-110  Minimum UI elements present
+
+**Validates:** PT-0700
+
+**Procedure:**
+1. Launch the pairing tool.
+2. Assert: all required UI elements are present: scan toggle, device list, device select, pair action, node ID input, status area, error display.
+3. Assert: the UI does not include management, monitoring, or telemetry features.
+
+---
+
+### T-PT-111  Phase indication updates
+
+**Validates:** PT-0701
+
+**Procedure:**
+1. Start a mock BLE scan.
+2. Assert: status shows "Scanning".
+3. Select a gateway device and initiate pairing.
+4. Assert: status transitions through "Connecting" → "Authenticating" → "Registering" → "Complete" (or "Error" on failure).
+5. Assert: phase transitions are immediate and unambiguous.
+
+---
+
+### T-PT-112  Verbose diagnostic mode
+
+**Validates:** PT-0702
+
+**Procedure:**
+1. Enable verbose diagnostic mode (toggle or flag).
+2. Run a complete Phase 1 pairing flow with mock transport.
+3. Assert: verbose output includes raw BLE event names, message types, and timing.
+4. Assert: verbose output does NOT include key material (PSKs, private keys, shared secrets).
+5. Disable verbose mode and repeat.
+6. Assert: no diagnostic output appears in default mode.
+
+---
+
+### T-PT-113  Android activity lifecycle disconnect
+
+**Validates:** PT-0107
+
+**Procedure:**
+1. Initiate Phase 1 on Android and establish a BLE connection.
+2. Simulate an Activity pause event (user switches to another app).
+3. Assert: the BLE connection is released within 5 s.
+4. Simulate an Activity resume event (user returns to the app).
+5. Assert: the app surfaces an error or returns to a scannable state (no crash, no hang).
+6. Assert: no orphaned GATT connections remain.
+
+---
+
+### T-PT-114  JNI classloader caching on background threads
+
+**Validates:** PT-0108
+
+**Procedure:**
+1. On Android, invoke `AndroidBleTransport::from_cached_vm()` from a tokio background thread (not the main thread).
+2. Assert: `BleHelper` is instantiated successfully (no `ClassNotFoundException`).
+3. Invoke `AndroidPairingStore::from_cached_vm()` from a different tokio background thread.
+4. Assert: `SecureStore` is instantiated successfully.
+
+---
+
 ## 4  Phase 1 — Gateway pairing tests
 
 ### T-PT-200  MTU negotiation ≥ 247
@@ -654,6 +786,31 @@ TestNode {
 
 ---
 
+### T-PT-604  Android secure storage uses EncryptedSharedPreferences
+
+**Validates:** PT-0801
+
+**Procedure:**
+1. On Android, instantiate `SecureStore` and write a test PSK `[0x42u8; 32]` under key `"phone_psk"`.
+2. Assert: `SecureStore` constructor calls `MasterKeys.getOrCreate()` (verifies Android Keystore integration).
+3. Assert: the backing `SharedPreferences` filename is `"sonde_pairing_store"` and is created via `EncryptedSharedPreferences.create()`.
+4. Read the raw XML file at the `SharedPreferences` path on disk.
+5. Assert: the stored value is **not** the plaintext hex of the PSK (encryption is applied).
+
+---
+
+### T-PT-605  Windows secure storage uses restricted file permissions
+
+**Validates:** PT-0801
+
+**Procedure:**
+1. On Windows, instantiate the Windows `PairingStore` and save test artifacts.
+2. Assert: the pairing file is written to `%APPDATA%\sonde\pairing.json`.
+3. Query the file ACL via `GetFileSecurity` / `icacls`.
+4. Assert: only the current user has read/write access (no `Everyone`, `Users`, or `BUILTIN` group entries).
+
+---
+
 ## 9  Security tests
 
 ### T-PT-700  No key material in default logs
@@ -739,6 +896,21 @@ TestNode {
 
 ---
 
+### T-PT-803  No implicit retries on protocol failure
+
+**Validates:** PT-1003
+
+**Procedure:**
+1. Configure mock transport to fail the first `write_characteristic` call with a timeout error.
+2. Initiate Phase 1.
+3. Assert: the error is returned immediately to the caller — no automatic retry of the write.
+4. Assert: mock transport's `write_characteristic` was called exactly **once** (not retried).
+5. Configure mock transport to fail `read_indication` with a timeout.
+6. Initiate Phase 1 again.
+7. Assert: the timeout error is surfaced immediately — no automatic retry of the read.
+
+---
+
 ## 11  Cryptographic tests
 
 ### T-PT-900  HKDF parameters correct for Phase 1
@@ -801,6 +973,16 @@ TestNode {
 | T-PT-102 | PT-0200 | Non-Sonde devices filtered from results |
 | T-PT-103 | PT-0201 | Device presentation (name, type, RSSI) |
 | T-PT-104 | PT-0202 | Scan timeout and stale device eviction |
+| T-PT-105 | PT-0105 | BLE permission dialog shown on Android |
+| T-PT-106 | PT-0105 | BLE permission denial produces actionable error |
+| T-PT-107 | PT-0105 | BLE permissions on Android 6–11 (location) |
+| T-PT-108 | PT-0106, PT-0904 | LESC Numeric Comparison pairing used |
+| T-PT-109 | PT-0106, PT-0904 | Just Works fallback rejected |
+| T-PT-110 | PT-0700 | Minimum UI elements present |
+| T-PT-111 | PT-0701 | Phase indication updates |
+| T-PT-112 | PT-0702 | Verbose diagnostic mode |
+| T-PT-113 | PT-0107 | Android activity lifecycle disconnect |
+| T-PT-114 | PT-0108 | JNI classloader caching on background threads |
 | T-PT-200 | PT-0300 | MTU negotiation ≥ 247 |
 | T-PT-201 | PT-0300 | MTU < 247 → disconnect + error |
 | T-PT-202 | PT-0301 | Gateway authentication happy path |
@@ -825,7 +1007,7 @@ TestNode {
 | T-PT-306 | PT-0403 | rf_channel validation |
 | T-PT-307 | PT-0404 | Phone HMAC authentication |
 | T-PT-308 | PT-0405 | Gateway public key encryption |
-| T-PT-309 | PT-0405 | Ed25519 → X25519 low-order point rejection |
+| T-PT-309 | PT-0405, PT-0902 | Ed25519 → X25519 low-order point rejection |
 | T-PT-310 | PT-0406 | Payload size > 202 bytes rejected |
 | T-PT-311 | PT-0407 | NODE_PROVISION happy path → NODE_ACK(0x00) |
 | T-PT-312 | PT-0407 | NODE_ACK(0x01) — already paired |
@@ -842,6 +1024,8 @@ TestNode {
 | T-PT-601 | PT-0802 | Storage abstraction (mock store works) |
 | T-PT-602 | PT-0803 | Corrupted store → error + reset offer |
 | T-PT-603 | PT-0804 | No node PSK persisted after provisioning |
+| T-PT-604 | PT-0801 | Android secure storage uses EncryptedSharedPreferences |
+| T-PT-605 | PT-0801 | Windows secure storage uses restricted file permissions |
 | T-PT-700 | PT-0900 | No key material in default logs |
 | T-PT-701 | PT-0900 | No key material in verbose logs |
 | T-PT-702 | PT-0901 | All randomness from injectable RNG provider |
@@ -849,6 +1033,7 @@ TestNode {
 | T-PT-800 | PT-1000 | Recovery from BLE disconnect mid-pairing |
 | T-PT-801 | PT-1001 | No resource leaks on failure |
 | T-PT-802 | PT-1002 | Timeout values match spec |
+| T-PT-803 | PT-1003 | No implicit retries on protocol failure |
 | T-PT-900 | PT-1101 | HKDF parameters correct for Phase 1 |
 | T-PT-901 | PT-1101 | HKDF parameters correct for Phase 2 |
 | T-PT-902 | PT-1102 | AES-GCM AAD = gateway_id |

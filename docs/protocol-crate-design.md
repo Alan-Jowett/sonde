@@ -410,3 +410,29 @@ pub fn get_chunk(image: &[u8], chunk_index: u32, chunk_size: u32) -> Option<&[u8
 ```
 
 These are pure functions — no state, no allocation. Used by the gateway for serving and by tests for verification.
+
+---
+
+## 10  Modem serial codec (`modem.rs`)
+
+Implements the length-prefixed framing protocol between the gateway and a USB-attached ESP-NOW radio modem, as defined in `modem-protocol.md`. The module is `no_std`-compatible and shared between `sonde-gateway` and `sonde-modem` to guarantee wire-format compatibility.
+
+**Public API:**
+
+- Constants: `SERIAL_LEN_SIZE`, `SERIAL_MAX_LEN`, `SERIAL_MAX_FRAME_SIZE`, `MAC_SIZE`, and message-type constants (`MODEM_MSG_*`).
+- `ModemMessage` — typed enum covering all gateway↔modem serial messages.
+- `encode_modem_frame` / `decode_modem_frame` — functions for encoding and decoding individual modem frames.
+- `FrameDecoder` — streaming decoder that buffers partial reads and yields complete `ModemMessage`s via a `push(&[u8])` + `decode()` API.
+
+---
+
+## 11  BLE envelope codec (`ble_envelope.rs`)
+
+Implements a minimal Type-Length-Value envelope used for BLE GATT messages in the pairing protocol (see `ble-pairing-protocol.md` §4).
+
+**Wire format:** `TYPE (1 byte) | LEN (2 bytes, big-endian) | BODY (LEN bytes)`.
+
+**Public API:**
+
+- `parse_ble_envelope(&[u8]) -> Option<(u8, &[u8])>` — parse a complete envelope, returning `(msg_type, body)`. Rejects truncated or trailing-byte inputs.
+- `encode_ble_envelope(msg_type: u8, body: &[u8]) -> Option<Vec<u8>>` — encode a BLE envelope. Returns `None` if `body` exceeds `u16::MAX`.

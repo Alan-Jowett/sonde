@@ -243,11 +243,8 @@ impl GatewayMessage {
                 timestamp_ms,
                 payload,
             } => {
-                let mut p = alloc::vec![
-                    (KEY_COMMAND_TYPE, u8_val(payload.command_type())),
-                    (KEY_STARTING_SEQ, uint_val(*starting_seq)),
-                    (KEY_TIMESTAMP_MS, uint_val(*timestamp_ms)),
-                ];
+                // Deterministic CBOR (RFC 8949 §4.2): keys present in the map must be in ascending order.
+                // KEY_COMMAND_TYPE=4, KEY_PAYLOAD=5 (optional for Nop/Reboot), KEY_STARTING_SEQ=13, KEY_TIMESTAMP_MS=14
                 let payload_val = match payload {
                     CommandPayload::Nop | CommandPayload::Reboot => None,
                     CommandPayload::UpdateProgram {
@@ -287,9 +284,12 @@ impl GatewayMessage {
                         Some(Value::Map(inner))
                     }
                 };
+                let mut p = alloc::vec![(KEY_COMMAND_TYPE, u8_val(payload.command_type())),];
                 if let Some(pv) = payload_val {
                     p.push((KEY_PAYLOAD, pv));
                 }
+                p.push((KEY_STARTING_SEQ, uint_val(*starting_seq)));
+                p.push((KEY_TIMESTAMP_MS, uint_val(*timestamp_ms)));
                 p
             }
             GatewayMessage::Chunk {

@@ -116,7 +116,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0200  Frame forwarding — radio to USB
 
-**Validates:** MD-0201, MD-0205
+**Validates:** MD-0200, MD-0201, MD-0205
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -212,12 +212,14 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
-2. Send `SET_CHANNEL(6)`.
-3. Assert: `SET_CHANNEL_ACK(6)` is received.
-4. Have the radio peer send a frame on channel 6.
-5. Assert: `RECV_FRAME` is received.
-6. Have the radio peer send a frame on channel 1.
-7. Assert: no `RECV_FRAME` is received (modem is on channel 6).
+2. Send `SEND_FRAME` to a known radio peer (to populate the peer table).
+3. Send `SET_CHANNEL(6)`.
+4. Assert: `SET_CHANNEL_ACK(6)` is received.
+5. Send `GET_STATUS`. Assert: `peer_count` = 0 (peer table cleared on channel change).
+6. Have the radio peer send a frame on channel 6.
+7. Assert: `RECV_FRAME` is received.
+8. Have the radio peer send a frame on channel 1.
+9. Assert: no `RECV_FRAME` is received (modem is on channel 6).
 
 ---
 
@@ -251,6 +253,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 6. Send `GET_STATUS`.
 7. Assert: `tx_count` = 0, `rx_count` = 0, `tx_fail_count` = 0.
 8. Assert: `channel` = 1 (reverted to default).
+9. Assert: `uptime_s` < 3 (near-zero after `RESET`).
 
 ---
 
@@ -299,11 +302,26 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0304  Watchdog triggers on stalled main loop
+
+**Validates:** MD-0302
+
+**Procedure:**
+1. Flash a test firmware build that stalls the main loop after a trigger command (e.g., stops calling `feed_watchdog()` on a specific `GET_STATUS` sequence).
+2. Send the trigger command.
+3. Wait up to 15 seconds.
+4. Assert: the modem reboots (watchdog hardware reset) and sends `MODEM_READY` on the serial port.
+5. Assert: modem is fully operational after the watchdog-triggered reboot.
+
+> **Note:** This test requires a special test firmware build and real hardware. It cannot be validated via PTY mock. The 10-second watchdog timeout plus reboot time should complete within 15 seconds.
+
+---
+
 ## 6  Error handling tests
 
 ### T-0400  SEND_FRAME with body too short
 
-**Validates:** modem-protocol.md §6.1
+**Validates:** MD-0208
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -316,7 +334,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0401  SET_CHANNEL with invalid channel
 
-**Validates:** modem-protocol.md §6.1
+**Validates:** MD-0209
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -345,7 +363,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ### T-0500  Modem does not interpret frame contents
 
-**Validates:** §6 Non-requirements
+**Validates:** MD-0205
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
@@ -858,7 +876,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0102 | Serial framing — valid frame and max length | MD-0101, MD-0102 |
 | T-0103 | Serial framing — oversized len | MD-0102 |
 | T-0104 | Unknown message type | MD-0103 |
-| T-0200 | Frame forwarding — radio to USB | MD-0201, MD-0205 |
+| T-0200 | Frame forwarding — radio to USB | MD-0200, MD-0201, MD-0205 |
 | T-0201 | Frame transmission — USB to radio | MD-0202 |
 | T-0202 | Automatic peer registration | MD-0203 |
 | T-0203 | Peer table LRU eviction | MD-0204 |
@@ -870,10 +888,11 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0301 | USB-CDC serial link drop and reconnection | MD-0301 |
 | T-0302 | Status counter accuracy | MD-0303 |
 | T-0303 | MODEM_READY after RESET | MD-0300, MD-0104 |
-| T-0400 | SEND_FRAME with body too short | modem-protocol.md §6.1 |
-| T-0401 | SET_CHANNEL with invalid channel | modem-protocol.md §6.1 |
+| T-0304 | Watchdog triggers on stalled main loop | MD-0302 |
+| T-0400 | SEND_FRAME with body too short | MD-0208 |
+| T-0401 | SET_CHANNEL with invalid channel | MD-0209 |
 | T-0402 | Framing error recovery | MD-0102 |
-| T-0500 | Modem does not interpret frame contents | §6 Non-requirements |
+| T-0500 | Modem does not interpret frame contents | MD-0205 |
 | T-0600 | Gateway Pairing Service lifecycle | MD-0407, MD-0412, MD-0413 |
 | T-0601 | BLE GATT characteristic setup | MD-0400 |
 | T-0602 | MTU negotiation ≥ 247 | MD-0402 |

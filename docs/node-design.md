@@ -70,13 +70,14 @@ The node firmware is divided into eight functional modules arranged in two tiers
 | **Transport** | ESP-NOW send/receive, frame size enforcement | ND-0100, ND-0103 |
 | **Protocol Codec** | Frame serialization/deserialization, CBOR encoding | ND-0101, ND-0102 |
 | **Wake Cycle Engine** | State machine: WAKE → COMMAND → transfer/execute → sleep | ND-0200–0203, ND-0700–0702 |
-| **Key Store** | PSK storage in dedicated flash partition, pairing, factory reset | ND-0400–0402 |
+| **Key Store** | PSK storage in dedicated flash partition, pairing, factory reset | ND-0400, ND-0402 |
 | **Program Store** | A/B flash partitions, program image decoding, LDDW resolution | ND-0500–0503, ND-0501a |
 | **BPF Runtime** | `sonde-bpf` interpreter, helper dispatch, execution constraints | ND-0504–0506, ND-0600–0606 |
 | **Map Storage** | Sleep-persistent maps in RTC slow SRAM | ND-0603, ND-0606 |
 | **HAL** | I2C, SPI, GPIO, ADC bus access for BPF helpers | ND-0601 |
 | **Sleep Manager** | Deep sleep entry, wake interval, RTC memory management | ND-0203 |
 | **Auth** | HMAC-SHA256 (hardware), nonce generation, response verification | ND-0300–0304 |
+| **BLE Pairing** | NimBLE stack, GATT provisioning service, PEER_REQUEST registration | ND-0900–0918 |
 
 ---
 
@@ -86,15 +87,18 @@ The wake cycle engine is the central state machine. It runs once per wake and th
 
 ### 4.1  State machine
 
-The state machine has five main states. Starting from BOOT, the node reads the PSK from the key store; if no PSK is present it sleeps indefinitely. Otherwise it enters WAKE SEND, which transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
+The state machine has five main states plus two alternate boot paths. Starting from BOOT, the node checks the PSK and `reg_complete` flag to determine the boot path (ND-0900): (1) no PSK in NVS or pairing button held ≥ 500 ms → enter BLE pairing mode (§15); (2) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (3) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
 
 ```
 ┌─────────┐
 │  BOOT   │
 └────┬────┘
-     │ read PSK from key store
-     │ (if no PSK → sleep indefinitely)
-     ▼
+     │ check PSK + reg_complete (ND-0900)
+     │
+     ├── no PSK OR button held → BLE pairing mode (§15)
+     ├── PSK + no reg_complete → PEER_REQUEST (§15.7)
+     │
+     ▼ PSK + reg_complete
 ┌─────────┐     no response     ┌─────────┐
 │  WAKE   │────(retry ≤ 3)────►│  SLEEP  │
 │  SEND   │                     └─────────┘
@@ -124,7 +128,7 @@ The state machine has five main states. Starting from BOOT, the node reads the P
 
 ### 4.2  Wake sequence (detailed)
 
-1. **Boot/wake**: Initialize hardware. Read PSK from key store. If no PSK, sleep indefinitely.
+1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) no PSK or button held → BLE pairing mode, (2) PSK + no `reg_complete` → PEER_REQUEST registration, (3) PSK + `reg_complete` → proceed to step 2.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
 3. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`). HMAC-sign. Transmit via ESP-NOW.
 4. **Await COMMAND**: Wait up to 50 ms. If no response, retry (up to 3 times, 100 ms between). If all retries fail, sleep.
@@ -209,7 +213,7 @@ The magic bytes in the key partition indicate whether a PSK is provisioned. An e
 
 ### 6.2  Factory reset
 
-Factory reset erases:
+Factory reset (ND-0402, ND-0917) erases:
 1. `key` partition (PSK + key_hint + magic → all 0xFF).
 2. RTC slow SRAM (map data → zeroed).
 3. Both program partitions (`program_a`, `program_b` → erased).
@@ -463,12 +467,12 @@ All inbound protocol errors result in **silent discard** — the node does not s
 |---|---|
 | HMAC verification failure | Discard frame. |
 | Echoed nonce/seq mismatch | Discard frame. |
-| Malformed CBOR | Discard frame. |
-| Unexpected `msg_type` | Discard frame. |
-| Mismatched `chunk_index` | Discard frame, retry GET_CHUNK. |
+| Malformed CBOR (ND-0800) | Discard frame. |
+| Unexpected `msg_type` (ND-0801) | Discard frame. |
+| Mismatched `chunk_index` (ND-0802) | Discard frame, retry GET_CHUNK. |
 | Program hash mismatch after transfer | Discard program, sleep. |
 | Map budget exceeded on install | Reject installation, keep existing program, sleep. |
-| No PSK (unpaired) | Sleep indefinitely. |
+| No PSK (unpaired) | Enter BLE pairing mode (ND-0900). |
 | BPF instruction budget exceeded | Terminate program, sleep. |
 | BPF call depth exceeded | Terminate program, sleep. |
 | HAL error (bus timeout, NACK) | Return negative to BPF program. |
@@ -484,22 +488,26 @@ All inbound protocol errors result in **silent discard** — the node does not s
 | Flash (program) | 8 KB (2 × 4 KB) | — | 4 KB per program image |
 | BPF stack | 4 KB | — | 512 B × 8 frames |
 | Ephemeral program | — | — | Allocated from heap (≤ 2 KB) |
+| Main task stack (ND-0918) | 16 KB | — | `CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384` |
 
 ---
 
 ## 14  Boot sequence
 
 1. ESP-IDF initialization (clocks, peripherals, wifi/ESP-NOW).
-2. Read key partition: check magic bytes.
-   - No magic → unpaired. Log. Sleep indefinitely.
-   - Magic present → load PSK and key_hint.
-3. Read schedule partition: load base interval and active program partition flag.
-4. Read active program partition: decode CBOR image header, extract program hash.
+2. Sample pairing button GPIO for 500 ms (ND-0901).
+3. Read key partition: check magic bytes and load credentials if present.
+4. Determine boot path (ND-0900):
+   a. No PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.
+   b. PSK present, `reg_complete` flag NOT set → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
+   c. PSK present, `reg_complete` flag set → continue to step 5 (normal WAKE cycle).
+5. Read schedule partition: load base interval and active program partition flag.
+6. Read active program partition: decode CBOR image header, extract program hash.
    - No program → set `program_hash` to zero-length.
-5. Initialize HAL (I2C buses, SPI buses, GPIO, ADC).
-6. Allocate map storage in RTC SRAM from program's map definitions (if maps survived sleep, data is preserved; if new program, zero-initialize).
-7. Resolve LDDW `src=1` instructions in bytecode to runtime map pointers.
-8. Enter wake cycle engine.
+7. Initialize HAL (I2C buses, SPI buses, GPIO, ADC).
+8. Allocate map storage in RTC SRAM from program's map definitions (if maps survived sleep, data is preserved; if new program, zero-initialize).
+9. Resolve LDDW `src=1` instructions in bytecode to runtime map pointers.
+10. Enter wake cycle engine.
 
 ---
 
@@ -534,7 +542,7 @@ GATT writes are rejected until LESC pairing completes and the negotiated ATT MTU
 Security is configured as LESC Just Works:
 
 - `AuthReq::all()` — requests SC (Secure Connections) + Bond + MITM.
-- `SecurityIOCap::NoInputNoOutput` — downgrades MITM to Just Works while keeping LESC.
+- `SecurityIOCap::NoInputNoOutput` — downgrades MITM to Just Works while keeping LESC. The effective pairing mode is LESC Just Works (ND-0904); `AuthReq::all()` requests the maximum security level, which is then constrained by the `NoInputNoOutput` I/O capability per BT Core Spec Vol 3 Part H §2.3.5.1.
 
 This matches the modem's BLE configuration so that the same phone app can pair with both gateway and node endpoints.
 
@@ -558,7 +566,50 @@ The main loop polls for pending GATT writes and disconnection events at 100 ms i
 
 ### 15.6  Platform-independent handler
 
-The GATT write payload is parsed and handled by `handle_node_provision()` in the platform-independent `ble_pairing` module. This keeps provisioning logic testable on the host (see T-N904–T-N907). The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
+The GATT write payload is parsed and handled by `handle_node_provision()` in the platform-independent `ble_pairing` module (ND-0905, ND-0906, ND-0908). The handler parses the five NODE_PROVISION fields (`node_key_hint`, `node_psk`, `rf_channel`, `payload_len`, `encrypted_payload`), validates `payload_len` before reading `encrypted_payload`, and persists credentials to NVS under the keys defined in ND-0916 (`psk`, `key_hint`, `channel`, `peer_payload`). The `reg_complete` flag is cleared on successful provision. If any NVS write fails, the handler responds with NODE_ACK(0x02) (ND-0908). This keeps provisioning logic testable on the host (see T-N904–T-N907). The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
+
+### 15.7  Post-provisioning registration (PEER_REQUEST / PEER_ACK)
+
+When the node boots with a PSK stored but the `reg_complete` flag not set (boot path 2, ND-0900), it enters the PEER_REQUEST registration sub-protocol. This completes the pairing handshake by registering the node with the gateway via the modem.
+
+**Frame construction (ND-0909):**
+
+1. Initialise ESP-NOW on the RF channel stored during provisioning (NVS key `channel`).
+2. Load the encrypted payload from NVS (key `peer_payload`).
+3. Build a PEER_REQUEST frame:
+   - `msg_type` = 0x05.
+   - `nonce` = fresh 8-byte random value from the hardware RNG.
+   - CBOR payload: `{1: encrypted_payload}`.
+   - HMAC-SHA256 computed with `node_psk` (NVS key `psk`) over header + payload.
+
+**Transmission and retransmission (ND-0910):**
+
+The node transmits PEER_REQUEST on each boot where `reg_complete` is not set. The retransmission interval follows the normal wake cycle schedule (default 60 s). Each wake cycle re-sends PEER_REQUEST until a valid PEER_ACK is received.
+
+**Listen window (ND-0911):**
+
+After transmitting PEER_REQUEST, the node listens for a PEER_ACK for at least 10 seconds. If no valid PEER_ACK arrives within the listen window, the node enters deep sleep and retries on the next wake.
+
+**PEER_ACK verification (ND-0912):**
+
+On receiving a candidate PEER_ACK frame, the node:
+
+1. Verifies the frame HMAC using `node_psk`.
+2. Verifies that the echoed `nonce` matches the nonce sent in the PEER_REQUEST.
+3. Computes the expected `registration_proof` as `HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)`.
+4. Discards the frame if any check fails.
+
+**Registration completion (ND-0913):**
+
+On receiving a valid PEER_ACK, the node sets the `reg_complete` flag in NVS. The `peer_payload` NVS key is retained until the first successful WAKE/COMMAND exchange (ND-0914).
+
+**Deferred payload erasure (ND-0914):**
+
+After the first successful WAKE/COMMAND exchange (the gateway responds with a valid COMMAND), the node erases the `peer_payload` from NVS.
+
+**Self-healing on WAKE failure (ND-0915):**
+
+If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state.
 
 ---
 

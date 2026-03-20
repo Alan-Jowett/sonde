@@ -182,9 +182,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P019c  Type-mismatched CBOR field
 
 **Procedure:**
-1. Build CBOR where a field expected to be uint is instead a text string.
-2. Decode.
-3. Assert: returns `DecodeError::InvalidFieldType`.
+1. Build CBOR where a field expected to be uint is instead a text string (e.g., set `KEY_BATTERY_MV` to `"hello"` in a Wake message).
+2. Decode with `NodeMessage::decode()`.
+3. Assert: returns `DecodeError::InvalidFieldType(KEY_BATTERY_MV)`.
 
 ---
 
@@ -311,31 +311,32 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P033  ProgramAck round-trip
 
 **Procedure:**
-1. Choose a fixed 32-byte test hash (e.g., `let program_hash = [0xABu8; 32];`).
-2. Create `NodeMessage::ProgramAck { program_hash }`.
+1. Choose a fixed 32-byte test hash: `let program_hash = vec![0xABu8; 32];`.
+2. Create `NodeMessage::ProgramAck { program_hash: program_hash.clone() }`.
 3. Encode to CBOR.
-4. Decode back.
-5. Assert: decoded `program_hash` field exactly matches the original `program_hash` bytes.
+4. Decode back with `msg_type = MSG_PROGRAM_ACK`.
+5. Assert: decoded `program_hash` field exactly matches the original bytes.
 
 ---
 
 ### T-P034  Cmd(RunEphemeral) round-trip
 
 **Procedure:**
-1. Create `GatewayMessage::Command` with `CommandPayload::RunEphemeral { program_hash, program_size: 4000, chunk_size: 190, chunk_count: 22 }`.
+1. Create `GatewayMessage::Command { starting_seq: 100, timestamp_ms: 1700000000, payload: CommandPayload::RunEphemeral { program_hash: vec![0xBBu8; 32], program_size: 4000, chunk_size: 190, chunk_count: 22 } }`.
 2. Encode to CBOR.
-3. Decode back.
-4. Assert: `command_type` discriminator is `0x02` and all fields match.
+3. Decode back with `msg_type = MSG_COMMAND`.
+4. Assert: decoded payload variant is `RunEphemeral` and all fields (`program_hash`, `program_size`, `chunk_size`, `chunk_count`, `starting_seq`, `timestamp_ms`) match.
 
 ---
 
 ### T-P035  Cmd(Reboot) round-trip
 
 **Procedure:**
-1. Create `GatewayMessage::Command` with `CommandPayload::Reboot`.
+1. Create `GatewayMessage::Command { starting_seq: 1, timestamp_ms: 1700000000, payload: CommandPayload::Reboot }`.
 2. Encode to CBOR.
-3. Decode back.
-4. Assert: `command_type` is `0x04` and no payload key is present in the CBOR.
+3. Inspect raw CBOR bytes: assert `KEY_COMMAND_TYPE` is present with value `0x04` and no `KEY_PAYLOAD` key exists.
+4. Decode back with `msg_type = MSG_COMMAND`.
+5. Assert: decoded payload variant is `Reboot`.
 
 ---
 
@@ -343,9 +344,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 **Procedure:**
 1. For each of Command, GetChunk, Chunk, ProgramAck, AppData, AppDataReply: encode valid CBOR.
-2. Remove one required field from each encoded message.
+2. For each message type, remove one required field (e.g., remove `KEY_STARTING_SEQ` from Command, `KEY_PROGRAM_HASH` from ProgramAck, `KEY_BLOB` from AppData).
 3. Decode each.
-4. Assert: returns `DecodeError::MissingField` for each message type.
+4. Assert: returns `DecodeError::MissingField(key)` where `key` matches the removed field's CBOR key constant.
 
 ---
 
@@ -580,38 +581,42 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P063  Direction-bit cross-direction rejection
 
 **Procedure:**
-1. Encode a `NodeMessage::Wake` with its correct `msg_type` (`0x01`).
-2. Attempt to decode with `GatewayMessage::decode()`.
-3. Assert: fails (wrong direction range).
-4. Encode a `GatewayMessage::Command` with its correct `msg_type`.
-5. Attempt to decode with `NodeMessage::decode()`.
-6. Assert: fails (wrong direction range).
+1. Encode a `NodeMessage::Wake` to CBOR.
+2. Pass the CBOR bytes and `msg_type = MSG_WAKE` (0x01, node→gateway range) to `GatewayMessage::decode()`.
+3. Assert: returns an error (msg_type 0x01 is outside the gateway message range 0x80–0xFF).
+4. Encode a `GatewayMessage::Command` to CBOR.
+5. Pass the CBOR bytes and `msg_type = MSG_COMMAND` (0x80, gateway→node range) to `NodeMessage::decode()`.
+6. Assert: returns an error (msg_type 0x80 is outside the node message range 0x01–0x7F).
 
 ---
 
 ### T-P064  Nonce echo verification in request-response pair
 
 **Procedure:**
-1. Encode a WAKE with nonce N.
-2. Encode a COMMAND echoing nonce N.
-3. Assert: nonces match.
-4. Encode a COMMAND with a different nonce.
-5. Assert: mismatch is detectable.
+1. Build a `FrameHeader` with `nonce = 0x1234567890ABCDEF`. Encode a WAKE frame.
+2. Call `decode_frame()` on the result. Assert: decoded header `nonce` is `0x1234567890ABCDEF`.
+3. Build a COMMAND frame reusing the same `nonce` value. Decode it.
+4. Assert: decoded header `nonce` matches `0x1234567890ABCDEF`.
+5. Build a COMMAND frame with a different `nonce` (e.g., `0xFFFFFFFFFFFFFFFF`). Decode it.
+6. Assert: decoded nonce is `0xFFFFFFFFFFFFFFFF` (different from the WAKE nonce — mismatch is detectable by comparing decoded header fields).
 
 ---
 
 ### T-P065  Multiple APP_DATA with incrementing sequences
 
 **Procedure:**
-1. Encode 3 `NodeMessage::AppData` messages with sequence numbers 1, 2, 3.
-2. Frame each with `encode_frame()`.
-3. Decode each frame.
-4. Assert: each frame decodes to the correct sequence number and payloads are independent.
+1. Encode 3 `NodeMessage::AppData { blob: ... }` messages with distinct payloads.
+2. Frame each with `encode_frame()` using `FrameHeader { nonce: 1, ... }`, `nonce: 2`, `nonce: 3` respectively.
+3. Decode each frame with `decode_frame()`.
+4. Assert: each decoded `FrameHeader.nonce` matches its expected sequence (1, 2, 3).
+5. Assert: each decoded `AppData.blob` matches its original payload.
 
 ---
 
 ### T-P066  HMAC constant-time comparison structural test
 
 **Procedure:**
-1. Verify that `SoftwareHmac::verify()` (or equivalent) uses `subtle::ConstantTimeEq` or `hmac::Mac::verify_slice` rather than a naive `==` comparison.
-2. Assert: the verify implementation does not contain direct byte equality checks (code-grep assertion).
+1. Inspect `SoftwareHmac::verify()` implementation in the protocol crate.
+2. Assert: the implementation delegates to `hmac::Mac::verify_slice()` (which uses constant-time comparison internally), or uses `subtle::ConstantTimeEq`.
+3. Assert: the implementation does NOT use `==`, `PartialEq`, or `[u8]::eq()` to compare HMAC digests.
+4. This may be implemented as a `#[test]` that calls `verify()` with a valid and an invalid tag and asserts correct accept/reject behavior, combined with a code-review checklist item verifying the constant-time property.

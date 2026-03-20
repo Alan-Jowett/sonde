@@ -680,31 +680,64 @@ fn load_battery_history(conn: &Connection, node_id: &str) -> rusqlite::Result<Ve
     Ok(history)
 }
 
-/// Persist battery readings for a node, pruning to the most recent 100.
+/// Persist battery readings for a node incrementally, pruning to the most
+/// recent 100. Only new readings (those with a timestamp newer than the
+/// latest stored entry) are inserted, and excess older rows are pruned
+/// afterwards. This avoids a full delete-and-rewrite on every upsert.
 fn save_battery_history(
     conn: &Connection,
     node_id: &str,
     history: &[BatteryReading],
 ) -> Result<(), StorageError> {
-    conn.execute(
-        "DELETE FROM battery_readings WHERE node_id = ?1",
-        params![node_id],
-    )
-    .map_err(map_err)?;
+    // Determine the latest timestamp already stored so we can skip duplicates.
+    let max_ts: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(timestamp_epoch_s) FROM battery_readings WHERE node_id = ?1",
+            params![node_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_err)?
+        // `optional()` returns `None` when no rows match; `row.get(0)` may
+        // return `Ok(None)` when the MAX is NULL (no rows), so flatten.
+        .flatten();
+
     let mut stmt = conn
         .prepare(
             "INSERT INTO battery_readings (node_id, timestamp_epoch_s, battery_mv) \
              VALUES (?1, ?2, ?3)",
         )
         .map_err(map_err)?;
-    // Only persist the most recent 100 readings.
+
+    // Only persist the most recent 100 readings from the in-memory history,
+    // and skip any that are already stored.
     const MAX: usize = 100;
     let start = history.len().saturating_sub(MAX);
     for reading in &history[start..] {
         let ts = system_time_to_epoch_s(&reading.timestamp);
-        stmt.execute(params![node_id, ts, reading.battery_mv])
-            .map_err(map_err)?;
+        if max_ts.is_none_or(|max| ts > max) {
+            stmt.execute(params![node_id, ts, reading.battery_mv])
+                .map_err(map_err)?;
+        }
     }
+
+    // Prune older rows so that at most 100 readings remain for this node.
+    conn.execute(
+        "DELETE FROM battery_readings \
+          WHERE node_id = ?1 \
+            AND timestamp_epoch_s < ( \
+              SELECT MIN(timestamp_epoch_s) FROM ( \
+                SELECT timestamp_epoch_s \
+                  FROM battery_readings \
+                 WHERE node_id = ?1 \
+                 ORDER BY timestamp_epoch_s DESC \
+                 LIMIT 100 \
+              ) \
+            )",
+        params![node_id],
+    )
+    .map_err(map_err)?;
+
     Ok(())
 }
 
@@ -1898,5 +1931,58 @@ mod tests {
             assert_eq!(blob.len(), ENCRYPTED_PSK_LEN);
             assert_ne!(&blob[12..44], psk_bytes.as_slice());
         }
+    }
+
+    #[tokio::test]
+    async fn test_battery_history_roundtrip_and_pruning() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        let mut node = make_node("batt1", 0xBB);
+
+        // Populate history with 3 readings.
+        let ts_base = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        node.battery_history = vec![
+            BatteryReading {
+                timestamp: ts_base,
+                battery_mv: 3300,
+            },
+            BatteryReading {
+                timestamp: ts_base + Duration::from_secs(60),
+                battery_mv: 3250,
+            },
+            BatteryReading {
+                timestamp: ts_base + Duration::from_secs(120),
+                battery_mv: 3200,
+            },
+        ];
+
+        store.upsert_node(&node).await.unwrap();
+
+        // Reload and verify round-trip.
+        let loaded = store.get_node("batt1").await.unwrap().unwrap();
+        assert_eq!(loaded.battery_history.len(), 3);
+        assert_eq!(loaded.battery_history[0].battery_mv, 3300);
+        assert_eq!(loaded.battery_history[2].battery_mv, 3200);
+        // Ordering must be ascending by timestamp.
+        assert!(loaded.battery_history[0].timestamp < loaded.battery_history[1].timestamp);
+        assert!(loaded.battery_history[1].timestamp < loaded.battery_history[2].timestamp);
+
+        // Now verify pruning: insert 105 readings, only the most recent 100
+        // should survive.
+        node.battery_history = (0..105)
+            .map(|i| BatteryReading {
+                timestamp: ts_base + Duration::from_secs(200 + i * 10),
+                battery_mv: 3000 + i as u32,
+            })
+            .collect();
+
+        store.upsert_node(&node).await.unwrap();
+
+        let loaded = store.get_node("batt1").await.unwrap().unwrap();
+        assert_eq!(loaded.battery_history.len(), 100);
+        // The first reading should correspond to index 5 of the original 105
+        // (the oldest 5 were pruned).
+        assert_eq!(loaded.battery_history[0].battery_mv, 3005);
+        assert_eq!(loaded.battery_history[99].battery_mv, 3104);
     }
 }

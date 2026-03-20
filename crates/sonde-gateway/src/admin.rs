@@ -193,15 +193,18 @@ impl GatewayAdmin for AdminService {
     ) -> Result<Response<Empty>, Status> {
         let node_id = &request.get_ref().node_id;
         // Verify the node exists before attempting deletion.
-        // Note: zeroizing the local copy returned by `get_node()` does not
-        // erase the stored PSK — the storage backend drops it on delete.
-        // True key-material erasure must happen inside the storage backend.
-        let _node = self
-            .storage
-            .get_node(node_id)
-            .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        // We load the full record to check existence (the Storage trait has no
+        // lightweight exists query), so zeroize the PSK copy immediately.
+        {
+            use zeroize::Zeroize;
+            let mut node = self
+                .storage
+                .get_node(node_id)
+                .await
+                .map_err(storage_err)?
+                .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+            node.psk.zeroize();
+        }
 
         // TODO: GW-0705 / T-0706 require a node-side factory reset (erase
         // PSK, persistent maps, and resident program) before removing the

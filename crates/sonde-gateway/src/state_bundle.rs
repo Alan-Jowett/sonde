@@ -1309,25 +1309,36 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
                 Some(HANDLER_KEY_MATCHERS) => {
                     if let Value::Array(arr) = v {
                         for item in arr {
-                            if let Value::Text(s) = item {
-                                if s == "*" {
-                                    matchers.push(ProgramMatcher::Any);
-                                } else {
-                                    let bytes = parse_hex_str(&s).map_err(|e| {
-                                        BundleError::Decode(format!(
-                                            "invalid hex in handler matcher: {e}"
-                                        ))
-                                    })?;
-                                    if bytes.len() != 32 {
-                                        return Err(BundleError::Decode(format!(
-                                            "handler matcher hash must be 32 bytes, got {}",
-                                            bytes.len()
-                                        )));
+                            match item {
+                                Value::Text(s) => {
+                                    if s == "*" {
+                                        matchers.push(ProgramMatcher::Any);
+                                    } else {
+                                        let bytes = parse_hex_str(&s).map_err(|e| {
+                                            BundleError::Decode(format!(
+                                                "invalid hex in handler matcher: {e}"
+                                            ))
+                                        })?;
+                                        if bytes.len() != 32 {
+                                            return Err(BundleError::Decode(format!(
+                                                "handler matcher hash must be 32 bytes, got {}",
+                                                bytes.len()
+                                            )));
+                                        }
+                                        matchers.push(ProgramMatcher::Hash(bytes));
                                     }
-                                    matchers.push(ProgramMatcher::Hash(bytes));
+                                }
+                                _ => {
+                                    return Err(BundleError::Decode(
+                                        "handler matcher entries must be text values".into(),
+                                    ));
                                 }
                             }
                         }
+                    } else {
+                        return Err(BundleError::Decode(
+                            "handler matchers field must be an array".into(),
+                        ));
                     }
                 }
                 Some(HANDLER_KEY_COMMAND) => {
@@ -1633,7 +1644,7 @@ mod tests {
         assert_eq!(loaded[0].command, "/usr/bin/handler");
         assert_eq!(loaded[0].args, vec!["--verbose"]);
         assert_eq!(loaded[0].matchers.len(), 1);
-        assert!(matches!(&loaded[0].matchers[0], ProgramMatcher::Hash(h) if *h == hash));
+        assert!(matches!(&loaded[0].matchers[0], ProgramMatcher::Hash(h) if h == &hash));
 
         assert_eq!(loaded[1].command, "/usr/bin/catch-all");
         assert!(loaded[1].args.is_empty());

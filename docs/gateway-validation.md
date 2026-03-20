@@ -857,10 +857,12 @@ A configurable stub handler process (or in-process mock) that:
 1. Create a `SqliteStorage` backed by a temporary file (not the in-memory mock) with a known master key.
 2. Register a node with a known PSK `[0x42; 32]`.
 3. Close the storage.
-4. Read the raw SQLite database file bytes.
-5. Assert: neither the 32-byte raw PSK value nor its 64-char hex encoding appears as a contiguous substring in the raw file.
-6. Open the database with the correct master key.
-7. Assert: the PSK is correctly retrieved via the storage API.
+4. Open the SQLite database file using a direct SQL connection (bypassing the `SqliteStorage` API) and query the row for the registered node from the key-store table, selecting only the `psk` column as raw bytes.
+5. Assert: the stored `psk` value is present, is not equal to the cleartext `[0x42; 32]` PSK, and matches the expected encrypted envelope shape/length (e.g., fixed-size ciphertext + metadata as defined by the key-store implementation).
+6. (Optional sanity check) Read the raw SQLite file bytes and assert that neither the 32-byte raw PSK value nor its 64-char hex encoding appears as a contiguous substring in the raw file.
+7. Re-open the database using `SqliteStorage` with the correct master key.
+8. Assert: the PSK is correctly retrieved via the storage API and matches the original `[0x42; 32]`.
+9. Attempt to open the same database with an incorrect master key and either (a) assert that opening or key lookup fails as designed, or (b) if the error is deferred to decryption time, attempt to retrieve the PSK and assert that decryption fails and does not yield the original `[0x42; 32]`.
 
 ---
 
@@ -942,11 +944,14 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0705
 
 **Procedure:**
-1. Register a node with a known PSK.
-2. Trigger node removal via admin API (`RemoveNode`).
-3. Assert: the node's PSK is removed from the gateway registry.
-4. Send WAKE from the removed node.
-5. Assert: silently discarded (unknown node).
+1. Provision a node with a known PSK `K_old` and deploy a program that writes non-zero data into node persistent state (e.g., a boot counter or stored configuration value).
+2. Assert (pre-reset): the gateway registry contains the node with PSK `K_old` and the assigned program. The node can successfully authenticate (WAKE accepted). Application data reflects non-default persistent state.
+3. Trigger a factory reset for this node via the admin API (e.g., `RemoveNode` plus any gateway action that causes the node to perform a factory reset on next contact, per design).
+4. Assert (gateway-side): the node's PSK and program assignment are removed from the gateway registry. No further commands or program updates are queued for the node.
+5. After the reset has completed on the node, send WAKE using the pre-reset credentials (`K_old`).
+6. Assert: WAKE frames using `K_old` are silently discarded (unknown/unauthenticated node). No authenticated session is established.
+7. Re-provision the same hardware as a new node via the normal pairing/provisioning flow.
+8. Assert (post-reset, after re-provisioning): the newly assigned PSK `K_new` differs from `K_old`. Any program assigned after re-provisioning must be explicitly (re)deployed; the previous program image is not implicitly restored. Application data that exposes persistent state (e.g., boot counter) has returned to its factory-default value, demonstrating that node-side persistent state was erased.
 
 ---
 
@@ -1188,11 +1193,12 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Register nodes with known PSKs.
-2. Call `ExportState`.
-3. Inspect the raw export bytes.
+2. Call `ExportState` with a known export passphrase (e.g., `test-export-passphrase`).
+3. Inspect the raw export bytes (encrypted bundle).
 4. Assert: no PSK value appears as a contiguous substring in the export payload.
-5. Import the export into a fresh gateway.
-6. Assert: nodes are restored and PSKs are functional (WAKE from registered node is accepted).
+5. Attempt to import or use the export without the correct passphrase (e.g., omit the passphrase or supply an incorrect one). Assert: import is rejected or the resulting state does not accept WAKE from the registered nodes (PSKs cannot be recovered/used).
+6. Import the export into a fresh gateway using the correct export passphrase.
+7. Assert: nodes are restored and PSKs are functional (WAKE from registered node is accepted).
 
 ---
 

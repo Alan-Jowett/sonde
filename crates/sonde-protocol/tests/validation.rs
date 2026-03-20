@@ -912,13 +912,13 @@ fn test_key_hint_from_psk_different_keys() {
     // without assuming different PSKs must produce different 16-bit hints.
     let expected_a = {
         let mut hasher = Sha256::new();
-        hasher.update(&psk_a);
+        hasher.update(psk_a);
         let hash = hasher.finalize();
         u16::from_be_bytes([hash[30], hash[31]])
     };
     let expected_b = {
         let mut hasher = Sha256::new();
-        hasher.update(&psk_b);
+        hasher.update(psk_b);
         let hash = hasher.finalize();
         u16::from_be_bytes([hash[30], hash[31]])
     };
@@ -946,8 +946,7 @@ fn test_command_cbor_key_order() {
     let cbor = cmd.encode().unwrap();
 
     // Decode raw CBOR and verify integer keys are in ascending order.
-    let value: ciborium::Value =
-        ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
+    let value: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
     if let ciborium::Value::Map(pairs) = value {
         let keys: Vec<u64> = pairs
             .iter()
@@ -957,11 +956,7 @@ fn test_command_cbor_key_order() {
             .collect();
         // Must be strictly ascending: {4, 5, 13, 14}
         for w in keys.windows(2) {
-            assert!(
-                w[0] < w[1],
-                "CBOR keys not in ascending order: {:?}",
-                keys
-            );
+            assert!(w[0] < w[1], "CBOR keys not in ascending order: {:?}", keys);
         }
         assert_eq!(keys, vec![4, 5, 13, 14]);
     } else {

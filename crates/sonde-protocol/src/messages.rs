@@ -284,9 +284,7 @@ impl GatewayMessage {
                         Some(Value::Map(inner))
                     }
                 };
-                let mut p = alloc::vec![
-                    (KEY_COMMAND_TYPE, u8_val(payload.command_type())),
-                ];
+                let mut p = alloc::vec![(KEY_COMMAND_TYPE, u8_val(payload.command_type())),];
                 if let Some(pv) = payload_val {
                     p.push((KEY_PAYLOAD, pv));
                 }

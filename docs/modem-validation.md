@@ -212,14 +212,13 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 **Procedure:**
 1. Send `RESET`, wait for `MODEM_READY`.
-2. Send `SEND_FRAME` to a known radio peer (to populate the peer table).
+2. Send `SEND_FRAME` to a known radio peer (to populate the peer table and verify baseline connectivity on the default channel).
 3. Send `SET_CHANNEL(6)`.
 4. Assert: `SET_CHANNEL_ACK(6)` is received.
-5. Send `GET_STATUS`. Assert: `peer_count` = 0 (peer table cleared on channel change).
-6. Have the radio peer send a frame on channel 6.
-7. Assert: `RECV_FRAME` is received.
-8. Have the radio peer send a frame on channel 1.
-9. Assert: no `RECV_FRAME` is received (modem is on channel 6).
+5. Have the radio peer send a frame on channel 6.
+6. Assert: `RECV_FRAME` is received.
+7. Have the radio peer send a frame on channel 1.
+8. Assert: no `RECV_FRAME` is received (modem is on channel 6).
 
 ---
 

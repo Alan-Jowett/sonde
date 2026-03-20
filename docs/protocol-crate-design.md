@@ -294,7 +294,7 @@ The `command_type` field (CBOR key 4) in the COMMAND payload is the authoritativ
 - **`encode()`** derives `command_type` from the `CommandPayload` variant — callers never set it manually.
 - **`decode()`** reads `command_type` from the CBOR map, selects the corresponding `CommandPayload` variant, and validates that the nested `payload` (key 5) structure is consistent (e.g., `CMD_NOP` and `CMD_REBOOT` must not contain key 5; `CMD_UPDATE_PROGRAM` must contain key 5 with the required sub-fields).
 
-This makes the `command_type` field in `GatewayMessage::Command` derivable, but it is retained in the struct for explicit pattern matching and logging without re-inspecting the payload variant.
+Because `command_type` is fully determined by the `CommandPayload` variant, the public `GatewayMessage::Command` API is defined in terms of the payload only; implementations may cache the derived `command_type` internally for pattern matching and logging, but callers do not read or write it directly.
 
 ### 6.4  CBOR encoding rules
 

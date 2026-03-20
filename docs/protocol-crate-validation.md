@@ -257,7 +257,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol.md §5.2 (COMMAND — NOP command type)
 
 **Procedure:**
-1. Create `GatewayMessage::Command { command_type: CMD_NOP, starting_seq: 42, timestamp_ms: 1710000000000, payload: CommandPayload::Nop }`.
+1. Create a COMMAND with `CommandPayload::Nop`, `starting_seq: 42`, `timestamp_ms: 1710000000000`.
 2. Round-trip.
 3. Assert: all fields match.
 

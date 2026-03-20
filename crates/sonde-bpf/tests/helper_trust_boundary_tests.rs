@@ -16,7 +16,8 @@
 
 use sonde_bpf::ebpf;
 use sonde_bpf::interpreter::{
-    execute_program, BpfError, HelperDescriptor, HelperReturn, MapRegion, UNLIMITED_BUDGET,
+    execute_program, execute_program_no_maps, BpfError, HelperDescriptor, HelperReturn, MapRegion,
+    UNLIMITED_BUDGET,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -95,7 +96,7 @@ fn test_ld_dw_imm_src1_negative_imm() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &[], false, UNLIMITED_BUDGET) };
+    let result = execute_program_no_maps(&prog, &mut ctx, &[], false, UNLIMITED_BUDGET);
     assert!(
         matches!(result, Err(BpfError::InvalidMapIndex { index: -1, .. })),
         "negative imm must yield InvalidMapIndex, got: {result:?}"
@@ -133,7 +134,7 @@ fn test_ld_dw_imm_src1_zero_maps() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
-    let result = unsafe { execute_program(&prog, &mut ctx, &[], &[], false, UNLIMITED_BUDGET) };
+    let result = execute_program_no_maps(&prog, &mut ctx, &[], false, UNLIMITED_BUDGET);
     assert!(
         matches!(result, Err(BpfError::InvalidMapIndex { index: 0, .. })),
         "map index 0 with no maps must yield InvalidMapIndex, got: {result:?}"
@@ -224,7 +225,7 @@ fn test_map_value_or_null_returns_valid_ptr_is_map_value() {
     );
     // Verify the store actually wrote through the pointer.
     assert_eq!(
-        u64::from_le_bytes(backing[..8].try_into().unwrap()),
+        u64::from_ne_bytes(backing[..8].try_into().unwrap()),
         0xBEEF,
         "store through MapValue pointer must write to backing storage"
     );
@@ -460,13 +461,16 @@ fn test_invalid_helper_argument_map_value_for_map_descriptor() {
 
 #[test]
 fn test_helper_call_clobbers_r1_r5_tags() {
-    // After a helper call, R1-R5 must lose their tags (become scalar).
-    // We load a MapDescriptor into R1, call a Scalar helper, then try to
-    // use R1 as map_arg for a MapValueOrNull helper. The second call must
-    // fail because R1's MapDescriptor tag was clobbered.
+    // After a helper call, R1-R5 must lose their tags (become scalar)
+    // while their values are preserved. Strategy:
+    //   1. Load MapDescriptor into R1 via LD_DW_IMM src=1
+    //   2. Call a Scalar helper (clobbers R1 tag, preserves value)
+    //   3. Call a MapValueOrNull helper with map_arg=1
+    // The second helper returns R1.value (non-zero relocated_ptr), which
+    // triggers the MapDescriptor tag check. Since R1's tag was clobbered
+    // to scalar by step 2, this must fail with InvalidHelperArgument.
     let mut backing = [0u8; 64];
     let map = make_map(&mut backing, 8);
-    let valid_ptr = backing.as_mut_ptr() as u64;
 
     fn helper_noop(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
         42
@@ -485,18 +489,12 @@ fn test_helper_call_clobbers_r1_r5_tags() {
         },
     ];
 
-    let imm_lo = valid_ptr as u32 as i32;
-    let imm_hi = (valid_ptr >> 32) as u32 as i32;
-
     let prog = prog_from(&[
-        insn(ebpf::LD_DW_IMM, 1, 1, 0, 0), // r1 = map_descriptor(0)
+        insn(ebpf::LD_DW_IMM, 1, 1, 0, 0), // r1 = map_descriptor(0) [tagged]
         insn(0, 0, 0, 0, 0),
-        insn(ebpf::CALL, 0, 0, 0, 1), // call scalar helper → clobbers R1 tag
-        // R1 still holds the old value but tag is now None (scalar)
-        insn(ebpf::LD_DW_IMM, 3, 0, 0, imm_lo), // r3 = valid_ptr (will become r1)
-        insn(0, 0, 0, 0, imm_hi),
-        insn(ebpf::MOV64_REG, 1, 3, 0, 0), // r1 = r3 (scalar value, was ptr value)
-        insn(ebpf::CALL, 0, 0, 0, 2),      // call MapValueOrNull(map_arg=1), R1 is scalar
+        insn(ebpf::CALL, 0, 0, 0, 1), // call scalar helper → clobbers R1 tag, value preserved
+        // R1.value = relocated_ptr (non-zero), R1.region = None
+        insn(ebpf::CALL, 0, 0, 0, 2), // call MapValueOrNull(map_arg=1) — R1 is scalar now
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
@@ -557,11 +555,7 @@ fn test_map_descriptor_not_dereferenceable() {
     let mut ctx = [];
     let result = unsafe { execute_program(&prog, &mut ctx, &[], &[map], false, UNLIMITED_BUDGET) };
     assert!(
-        matches!(
-            result,
-            Err(BpfError::NonDereferenceableAccess { .. })
-                | Err(BpfError::MemoryAccessViolation { .. })
-        ),
+        matches!(result, Err(BpfError::NonDereferenceableAccess { .. })),
         "dereferencing MapDescriptor must fail, got: {result:?}"
     );
 }

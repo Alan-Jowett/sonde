@@ -208,7 +208,7 @@ The node MUST verify the HMAC on every inbound frame using its own PSK. Frames t
 **Acceptance criteria:**
 
 1. Inbound frames with an invalid HMAC are discarded without processing.
-2. No error response is sent for invalid frames.
+2. No error response or diagnostic frame is transmitted in response to an invalid HMAC — the frame is silently discarded.
 
 ---
 
@@ -241,6 +241,7 @@ After receiving a valid COMMAND response, the node MUST use the `starting_seq` v
 1. The first post-WAKE message uses `starting_seq` as its `nonce` field value.
 2. Each subsequent message increments the sequence by one.
 3. No sequence state is persisted across deep sleep.
+4. Sequence numbers from a previous wake cycle do not carry over; each cycle starts fresh from the gateway-provided `starting_seq`.
 
 ---
 
@@ -438,6 +439,7 @@ The firmware MUST populate a read-only `sonde_context` structure before each BPF
 3. `firmware_abi_version` matches the firmware's actual ABI.
 4. `wake_reason` is set correctly: `WAKE_SCHEDULED` (0x00) for normal wake, `WAKE_EARLY` (0x01) when woken early due to `set_next_wake()`, `WAKE_PROGRAM_UPDATE` (0x02) on first execution after a program update.
 5. The context is read-only — the BPF program cannot modify it.
+6. Any attempt by a BPF program to write to the read-only context MUST have no effect on `sonde_context`, and the program MUST continue execution.
 
 ---
 
@@ -554,6 +556,7 @@ The firmware MUST enforce BPF execution constraints: 512-byte stack per call fra
 1. A program exceeding the instruction budget is terminated.
 2. A program exceeding the call depth is terminated.
 3. Stack-unsafe programs are rejected during gateway-side verification, and the node firmware enforces per-frame stack and call-depth limits at runtime.
+4. A BPF program that writes beyond the 512-byte per-frame stack boundary is terminated with a stack violation.
 
 ---
 

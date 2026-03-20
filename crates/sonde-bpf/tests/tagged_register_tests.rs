@@ -7,6 +7,8 @@
 //! `docs/safe-bpf-interpreter.md` §2–§8, following the test procedures in
 //! `docs/safe-bpf-interpreter-validation.md`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use sonde_bpf::ebpf;
 use sonde_bpf::interpreter::{
     execute_program, execute_program_no_maps, BpfError, HelperDescriptor, HelperReturn, MapRegion,
@@ -560,10 +562,9 @@ fn t_bpf_025_map_value_or_null_returns_valid() {
 
     // Helper returns pointer to start of map data.
     let helper_func: fn(u64, u64, u64, u64, u64) -> u64 = {
-        // We can't capture map_ptr in a fn pointer, so we use a static.
-        static mut MAP_DATA_PTR: u64 = 0;
-        unsafe { MAP_DATA_PTR = map_ptr };
-        |_: u64, _: u64, _: u64, _: u64, _: u64| -> u64 { unsafe { MAP_DATA_PTR } }
+        static MAP_DATA_PTR: AtomicU64 = AtomicU64::new(0);
+        MAP_DATA_PTR.store(map_ptr, Ordering::SeqCst);
+        |_: u64, _: u64, _: u64, _: u64, _: u64| -> u64 { MAP_DATA_PTR.load(Ordering::SeqCst) }
     };
 
     let prog = prog_from(&[
@@ -598,9 +599,9 @@ fn t_bpf_026_helper_returns_oob_pointer() {
 
     // Helper returns pointer before map data region.
     let helper_func: fn(u64, u64, u64, u64, u64) -> u64 = {
-        static mut OOB_PTR: u64 = 0;
-        unsafe { OOB_PTR = map_ptr.wrapping_sub(1) };
-        |_: u64, _: u64, _: u64, _: u64, _: u64| -> u64 { unsafe { OOB_PTR } }
+        static OOB_PTR: AtomicU64 = AtomicU64::new(0);
+        OOB_PTR.store(map_ptr.wrapping_sub(1), Ordering::SeqCst);
+        |_: u64, _: u64, _: u64, _: u64, _: u64| -> u64 { OOB_PTR.load(Ordering::SeqCst) }
     };
 
     let prog = prog_from(&[
@@ -723,7 +724,7 @@ fn t_bpf_029_ld_dw_imm_out_of_bounds_map_index() {
     );
 }
 
-/// T-BPF-030: LD_DW_IMM src=1 happy path — R0 tagged MapDescriptor
+/// T-BPF-030: LD_DW_IMM src=1 happy path — R1 tagged MapDescriptor
 #[test]
 fn t_bpf_030_ld_dw_imm_map_descriptor_happy_path() {
     fn map_lookup(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {

@@ -545,7 +545,7 @@ After successful Phase 1, the following artifacts are persisted (PT-0800):
 - The `SecretServicePskProtector` (enabled via the `secret-service-store` Cargo feature) stores and retrieves the 32-byte PSK through D-Bus using GNOME Keyring, KWallet, or any other freedesktop.org Secret Service-compatible backend
 - The PSK is stored as a binary secret under attributes `service = "sonde-pair"` and `account = "sonde-pair-phone-psk"` (configurable label)
 - On `protect()`, the PSK is written to the keyring and the label is returned as opaque bytes for the JSON file; on `unprotect()`, the label is used to look up the PSK from the keyring
-- If no Secret Service provider is available at runtime, `FilePairingStore` falls back to plaintext hex PSK storage with restricted file permissions
+- When the `secret-service-store` feature is enabled but no Secret Service provider is available or the keyring cannot be accessed/unlocked at runtime, pairing operations that need the `phone_psk` return an error rather than silently falling back to plaintext storage
 
 #### Plaintext-to-encrypted storage migration
 

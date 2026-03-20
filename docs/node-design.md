@@ -592,7 +592,7 @@ When the node boots with a PSK stored but the `reg_complete` flag not set (boot 
    - `msg_type` = 0x05.
    - `nonce` = fresh 8-byte random value from the hardware RNG.
    - CBOR payload: `{1: encrypted_payload}`.
-   - HMAC-SHA256 computed with `node_psk` (NVS key `psk`) over header + payload.
+   - HMAC-SHA256 computed with `node_psk` (loaded from the key store — see §6.1, §6.1a) over header + payload.
 
 **Transmission and retransmission (ND-0910):**
 

@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 41 test cases total.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 60 test cases total.
 
 ### Test HMAC/SHA providers
 
@@ -161,6 +161,33 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
+### T-P019a  decode_frame with >250 raw bytes
+
+**Procedure:**
+1. Construct a 251-byte buffer.
+2. Call `decode_frame()`.
+3. Assert: returns `DecodeError::TooLong`.
+
+---
+
+### T-P019b  Invalid CBOR payload
+
+**Procedure:**
+1. Build a frame with valid header and HMAC but payload bytes `[0xFF, 0xFF]`.
+2. Call message decode.
+3. Assert: returns `DecodeError::CborError`.
+
+---
+
+### T-P019c  Type-mismatched CBOR field
+
+**Procedure:**
+1. Build CBOR where a field expected to be uint is instead a text string.
+2. Decode.
+3. Assert: returns `DecodeError::InvalidFieldType`.
+
+---
+
 ## 4  Message encoding tests
 
 ### T-P020  Wake encode/decode round-trip
@@ -281,6 +308,75 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
+### T-P033  ProgramAck round-trip
+
+**Procedure:**
+1. Create `NodeMessage::ProgramAck { status: 0x00 }`.
+2. Encode to CBOR.
+3. Decode back.
+4. Assert: `status` field matches `0x00`.
+
+---
+
+### T-P034  Cmd(RunEphemeral) round-trip
+
+**Procedure:**
+1. Create `GatewayMessage::Command` with `CommandPayload::RunEphemeral { program_hash, program_size: 4000, chunk_size: 190, chunk_count: 22 }`.
+2. Encode to CBOR.
+3. Decode back.
+4. Assert: `command_type` discriminator is `0x02` and all fields match.
+
+---
+
+### T-P035  Cmd(Reboot) round-trip
+
+**Procedure:**
+1. Create `GatewayMessage::Command` with `CommandPayload::Reboot`.
+2. Encode to CBOR.
+3. Decode back.
+4. Assert: `command_type` is `0x04` and no payload key is present in the CBOR.
+
+---
+
+### T-P036  Missing-field detection for non-Wake types
+
+**Procedure:**
+1. For each of Command, GetChunk, Chunk, ProgramAck, AppData, AppDataReply: encode valid CBOR.
+2. Remove one required field from each encoded message.
+3. Decode each.
+4. Assert: returns `DecodeError::MissingField` for each message type.
+
+---
+
+### T-P037  Unknown CBOR keys ignored in non-Wake messages
+
+**Procedure:**
+1. For each of Command, GetChunk, Chunk, AppData, AppDataReply: add an extra CBOR key (e.g., key 99) to valid encoded bytes.
+2. Decode each.
+3. Assert: decoding succeeds and the unknown key is silently ignored.
+
+---
+
+### T-P038  COMMAND nested payload CBOR byte inspection
+
+**Procedure:**
+1. Encode a `GatewayMessage::Command` with `CommandPayload::UpdateProgram`.
+2. Inspect raw CBOR bytes.
+3. Assert: the command envelope and payload are structured as nested maps (not flattened), matching the wire format in protocol.md §5.2.
+
+---
+
+### T-P039  Large u64 values round-trip
+
+**Procedure:**
+1. Encode a Wake with `battery_mv = u32::MAX`.
+2. Encode a Command with `starting_seq = u64::MAX` and `timestamp_ms = u64::MAX`.
+3. Decode both.
+4. Assert: values round-trip without truncation.
+5. Inspect CBOR bytes to confirm 8-byte integer encoding is used.
+
+---
+
 ## 5  Program image tests
 
 ### T-P040  ProgramImage encode/decode round-trip
@@ -349,6 +445,35 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
+### T-P047  ProgramImage with empty bytecode
+
+**Procedure:**
+1. Create `ProgramImage { bytecode: vec![], maps: vec![] }`.
+2. Encode.
+3. Assert: encoding succeeds.
+4. Decode.
+5. Assert: decoded `bytecode` is empty.
+
+---
+
+### T-P048  Deterministic CBOR minimal-length integer encoding
+
+**Procedure:**
+1. Encode a `ProgramImage` with a map having `max_entries = 23` (fits in 1-byte CBOR int) and another with `max_entries = 256` (requires 2-byte CBOR int).
+2. Inspect raw bytes.
+3. Assert: 23 is encoded as single byte `0x17`, 256 is encoded as `0x19 0x01 0x00` (minimal-length per RFC 8949 §4.2).
+
+---
+
+### T-P049  ProgramImage::decode() with malformed CBOR
+
+**Procedure:**
+1. Feed truncated CBOR bytes (e.g., first half of a valid encoding) to `ProgramImage::decode()`. Assert: returns an error (not panic).
+2. Feed CBOR with missing `bytecode` field. Assert: returns an error.
+3. Feed CBOR with `bytecode` as a text string instead of byte string. Assert: returns an error.
+
+---
+
 ## 6  Chunking helper tests
 
 ### T-P050  chunk_count calculation
@@ -394,6 +519,22 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
+### T-P054  get_chunk with chunk_size = 0
+
+**Procedure:**
+1. Call `get_chunk(data, 0, 0)` with non-empty data.
+2. Assert: returns `None` (not an empty slice or panic).
+
+---
+
+### T-P055  chunk_count arithmetic overflow
+
+**Procedure:**
+1. Call `chunk_count(usize::MAX, 1)`. Assert: returns `Some(usize::MAX)` or handles overflow gracefully (no panic).
+2. Call `chunk_count(usize::MAX, usize::MAX)`. Assert: returns `Some(1)`.
+
+---
+
 ## 7  Full integration tests
 
 ### T-P060  Complete frame encode → verify → decode message
@@ -431,3 +572,44 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 7. Assert: hashes match.
 8. Decode reassembled CBOR.
 9. Assert: decoded `ProgramImage` matches original.
+
+---
+
+### T-P063  Direction-bit cross-direction rejection
+
+**Procedure:**
+1. Encode a `NodeMessage::Wake` with its correct `msg_type` (`0x01`).
+2. Attempt to decode with `GatewayMessage::decode()`.
+3. Assert: fails (wrong direction range).
+4. Encode a `GatewayMessage::Command` with its correct `msg_type`.
+5. Attempt to decode with `NodeMessage::decode()`.
+6. Assert: fails (wrong direction range).
+
+---
+
+### T-P064  Nonce echo verification in request-response pair
+
+**Procedure:**
+1. Encode a WAKE with nonce N.
+2. Encode a COMMAND echoing nonce N.
+3. Assert: nonces match.
+4. Encode a COMMAND with a different nonce.
+5. Assert: mismatch is detectable.
+
+---
+
+### T-P065  Multiple APP_DATA with incrementing sequences
+
+**Procedure:**
+1. Encode 3 `NodeMessage::AppData` messages with sequence numbers 1, 2, 3.
+2. Frame each with `encode_frame()`.
+3. Decode each frame.
+4. Assert: each frame decodes to the correct sequence number and payloads are independent.
+
+---
+
+### T-P066  HMAC constant-time comparison structural test
+
+**Procedure:**
+1. Verify that `SoftwareHmac::verify()` (or equivalent) uses `subtle::ConstantTimeEq` or `hmac::Mac::verify_slice` rather than a naive `==` comparison.
+2. Assert: the verify implementation does not contain direct byte equality checks (code-grep assertion).

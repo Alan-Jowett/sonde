@@ -202,10 +202,10 @@ async fn pair_gateway(
         if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
             let gw_hex = hex::encode(identity.gateway_id);
             *state.phase.lock().unwrap() = format!(
-                "Error: Gateway already paired with ID {gw_hex}. Pass force=true to overwrite the existing pairing."
+                "Error: Gateway already paired with ID {gw_hex}. Clear the existing pairing before pairing a new gateway."
             );
             return Err(format!(
-                "Gateway already paired with ID {gw_hex}. Pass force=true to overwrite the existing pairing."
+                "Gateway already paired with ID {gw_hex}. Clear the existing pairing before pairing a new gateway."
             ));
         }
     }
@@ -217,6 +217,10 @@ async fn pair_gateway(
             return Err(e);
         }
     };
+
+    // Set an immediate initial phase so the UI doesn't show stale state
+    // while the blocking task is being spawned.
+    *state.phase.lock().unwrap() = "Connecting".into();
 
     let phase = state.phase.clone();
     let progress = UiPairingProgress { phase };
@@ -406,10 +410,10 @@ async fn pair_gateway(
         if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
             let gw_hex = hex::encode(identity.gateway_id);
             *state.phase.lock().unwrap() = format!(
-                "Error: Gateway already paired with ID {gw_hex}. Pass force=true to overwrite the existing pairing."
+                "Error: Gateway already paired with ID {gw_hex}. Clear the existing pairing before pairing a new gateway."
             );
             return Err(format!(
-                "Gateway already paired with ID {gw_hex}. Pass force=true to overwrite the existing pairing."
+                "Gateway already paired with ID {gw_hex}. Clear the existing pairing before pairing a new gateway."
             ));
         }
     }
@@ -421,6 +425,10 @@ async fn pair_gateway(
             return Err(e);
         }
     };
+
+    // Set an immediate initial phase so the UI doesn't show stale state
+    // while the blocking task is being spawned.
+    *state.phase.lock().unwrap() = "Connecting".into();
 
     let phase = state.phase.clone();
     let progress = UiPairingProgress { phase };

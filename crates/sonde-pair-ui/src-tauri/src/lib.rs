@@ -188,12 +188,9 @@ async fn pair_gateway(
     if !force.unwrap_or(false) {
         let store = FilePairingStore::new().map_err(|e| e.to_string())?;
         if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
-            let msg = format!(
-                "already paired with gateway {} — pass force=true to re-pair",
-                hex::encode(identity.gateway_id),
-            );
-            *state.phase.lock().unwrap() = format!("Error: {msg}");
-            return Err(msg);
+            let gw_hex = hex::encode(identity.gateway_id);
+            *state.phase.lock().unwrap() = format!("Error: already_paired:{gw_hex}");
+            return Err(format!("already_paired:{gw_hex}"));
         }
     }
 
@@ -247,8 +244,6 @@ async fn provision_node(
             return Err(e);
         }
     };
-
-    *state.phase.lock().unwrap() = "Connecting".into();
 
     *state.phase.lock().unwrap() = "Provisioning".into();
 
@@ -384,12 +379,9 @@ async fn pair_gateway(
         let guard = get_or_init_store(&state.store)?;
         let store = guard.as_ref().unwrap();
         if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
-            let msg = format!(
-                "already paired with gateway {} — pass force=true to re-pair",
-                hex::encode(identity.gateway_id),
-            );
-            *state.phase.lock().unwrap() = format!("Error: {msg}");
-            return Err(msg);
+            let gw_hex = hex::encode(identity.gateway_id);
+            *state.phase.lock().unwrap() = format!("Error: already_paired:{gw_hex}");
+            return Err(format!("already_paired:{gw_hex}"));
         }
     }
 
@@ -443,8 +435,6 @@ async fn provision_node(
             return Err(e);
         }
     };
-
-    *state.phase.lock().unwrap() = "Connecting".into();
 
     *state.phase.lock().unwrap() = "Provisioning".into();
 

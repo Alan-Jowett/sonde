@@ -707,7 +707,7 @@ sonde-admin program remove <program-hash>
 
 sonde-admin schedule set <node-id> <interval-seconds>
 sonde-admin reboot <node-id>
-sonde-admin ephemeral <node-id> <elf-file>
+sonde-admin ephemeral <node-id> <program-hash>
 
 sonde-admin state export <file> [--passphrase <pass>]
 sonde-admin state import <file> [--passphrase <pass>]

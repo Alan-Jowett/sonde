@@ -1772,7 +1772,7 @@ A configurable stub handler process (or in-process mock) that:
 1. Register a phone via the BLE pairing flow.
 2. Call `RevokePhone` with the phone's ID.
 3. Assert: success response.
-4. Submit a `PEER_REQUEST` signed with the revoked phone's PSK.
+4. Submit a `PEER_REQUEST` with a phone HMAC computed using the revoked phone PSK.
 5. Assert: gateway silently discards the request (HMAC verification fails per GW-1213).
 
 ---

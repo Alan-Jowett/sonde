@@ -177,6 +177,7 @@ The node MUST sleep for the configured wake interval after completing a wake cyc
 1. The node sleeps for the base interval in the absence of any `set_next_wake()` request (within platform timer accuracy).
 2. For the next wake only, a resident BPF program MAY call `set_next_wake()` to request an earlier wake; the firmware MUST apply `min(requested, base interval)` and MUST NOT allow `set_next_wake()` to extend the interval beyond the base or change the persisted base interval.
 3. The base interval, as last set by `UPDATE_SCHEDULE`, survives deep sleep.
+4. The node MUST enforce a minimum sleep interval of 1 second. Any computed sleep duration below 1 second MUST be clamped to 1 second.
 
 ---
 
@@ -341,6 +342,7 @@ The node MUST support receiving programs via the chunked transfer sub-protocol. 
 1. The node requests chunks in order from index 0 to `chunk_count − 1`.
 2. Each `GET_CHUNK` uses an incrementing sequence number in the `nonce` header field.
 3. The node reassembles chunks into the complete CBOR program image.
+4. Resident program images MUST NOT exceed 4096 bytes. Ephemeral program images MUST NOT exceed 2048 bytes. The node MUST reject any program image that exceeds the applicable size cap.
 
 ---
 
@@ -405,6 +407,7 @@ Ephemeral programs MUST be stored in RAM (not flash). They are executed once and
 1. Ephemeral programs are not written to flash.
 2. Ephemeral programs are discarded after execution.
 3. The resident program is unaffected by ephemeral execution.
+4. Ephemeral program images that declare maps MUST be rejected. Ephemeral programs are read-only and MUST NOT allocate map storage.
 
 ---
 
@@ -844,6 +847,7 @@ The node MUST transmit PEER_REQUEST on each boot until it receives a valid PEER_
 
 1. Each wake cycle re-sends PEER_REQUEST when `reg_complete` is not set.
 2. The interval between retransmissions matches the configured wake interval.
+3. If the `peer_payload` is malformed (cannot be used to construct a valid PEER_REQUEST), the node MUST attempt to erase the `peer_payload` from NVS to break retry loops; if the erase fails, the node MUST treat the stored `peer_payload` as permanently invalid and MUST NOT continue retransmitting it.
 
 ---
 

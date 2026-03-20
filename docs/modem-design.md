@@ -77,7 +77,7 @@ The ESP32-S3 has a native USB peripheral (not USB-over-JTAG). The firmware uses 
 
 The CDC receive callback is invoked when the host writes data. Received bytes are appended to a ring buffer that the serial codec reads from in the main loop.
 
-> **ESP-NOW RX ring buffer (D9-1):** The ESP-NOW receive callback stores inbound frames in a pre-allocated, fixed-capacity ring buffer (`RX_RING_CAP = 16` slots). When the ring is full, incoming frames are silently dropped and a `drop_count` counter is incremented. Frames are also dropped if the WiFi-task callback cannot acquire the ring mutex (contention with the main loop draining the buffer). This is intentional — the callback runs in the WiFi task context where heap allocation and blocking are unsafe.
+> **USB-CDC RX ring buffer (D9-1):** The USB-CDC receive callback stores inbound bytes in a pre-allocated, fixed-capacity ring buffer (e.g., `USB_RX_RING_CAP` slots). When the ring is full, incoming bytes are silently dropped and a `drop_count` counter is incremented. Bytes may also be dropped if the USB/TinyUSB task callback cannot acquire the ring mutex (contention with the main loop draining the buffer). This is intentional — the callback runs in the USB task context where heap allocation and blocking are unsafe; only the main loop drains the ring into the serial codec.
 
 ### 4.3  Write path
 
@@ -144,7 +144,9 @@ The ESP-NOW receive callback is invoked from the WiFi task. It receives:
 - `data`: frame payload (up to 250 bytes).
 - `rssi`: signal strength (from the `esp_now_recv_info_t` struct).
 
-The callback constructs a `RECV_FRAME` message and writes it to the USB-CDC TX path. The `rx_count` counter is incremented.
+The callback copies the frame into the ESP-NOW RX ring buffer; the main loop drains the ring and writes `RECV_FRAME` messages to USB. The `rx_count` counter is incremented.
+
+> **ESP-NOW RX ring buffer (D9-1):** The ESP-NOW receive callback stores inbound frames in a pre-allocated, fixed-capacity ring buffer (`RX_RING_CAP = 16` slots). When the ring is full (or a push into the ring fails), incoming frames are silently dropped and a `drop_count` counter is incremented. If the WiFi-task callback cannot acquire the ring mutex (contention with the main loop draining the buffer), the frame is also dropped, and this is recorded separately via an atomic `contention_drops` counter. This is intentional — the callback runs in the WiFi task context where heap allocation and blocking are unsafe.
 
 ### 6.3  Send path
 
@@ -238,11 +240,11 @@ loop {
 }
 ```
 
-The main loop polls the USB receive buffer. ESP-NOW frames arrive via callback and are written to USB from the callback context (or queued if contention exists).
+The main loop polls the USB receive buffer and drains the ESP-NOW RX ring buffer. ESP-NOW frames arrive via callback into the ring; the main loop constructs `RECV_FRAME` messages and writes them to USB.
 
 > **Per-poll processing caps (D9-2):** BLE events are drained up to `MAX_BLE_EVENTS_PER_POLL` (16) per main-loop iteration to prevent sustained BLE traffic from starving serial decode and ESP-NOW radio processing.
 
-> **Queue size limits (D9-3):** The BLE driver uses a bounded event queue (`MAX_BLE_EVENT_QUEUE = 32`). Events arriving when the queue is full are silently dropped. Outbound BLE indication fragments are also bounded (`MAX_INDICATION_CHUNKS = 64`); `BLE_INDICATE` messages that would exceed this limit are rejected. These caps prevent unbounded memory growth on the constrained ESP32-S3.
+> **Queue size limits (D9-3):** The BLE driver uses a bounded event queue (`MAX_BLE_EVENT_QUEUE = 32`). Events arriving when the queue is full are dropped; the firmware emits warnings for some drop conditions (for example, GATT writes rejected when not authenticated or when the event queue is full, and indication queue overflow). Outbound BLE indication fragments are also bounded (`MAX_INDICATION_CHUNKS = 64`); `BLE_INDICATE` messages that would exceed this limit are rejected. These caps prevent unbounded memory growth on the constrained ESP32-S3.
 
 ---
 
@@ -272,7 +274,7 @@ The firmware uses the ESP-IDF task watchdog (`esp_task_wdt`):
 - If the main loop stalls (e.g., deadlock, infinite loop), the watchdog triggers a hardware reset (`CONFIG_ESP_TASK_WDT_PANIC=y`).
 - After reset, the firmware boots normally and sends `MODEM_READY`.
 
-> **sdkconfig note (D9-6):** The root `sdkconfig.defaults.esp32s3` sets `CONFIG_ESP_TASK_WDT_TIMEOUT_S=10`, but the modem crate's own `crates/sonde-modem/sdkconfig.defaults` overrides this to 35 seconds. The crate-level file takes precedence during the modem build. The longer timeout accommodates BLE stack operations (pairing, indication pacing) which can stall the main loop longer than the node firmware's radio-only workload.
+> **sdkconfig note (D9-6):** The root `sdkconfig.defaults.esp32s3` sets `CONFIG_ESP_TASK_WDT_TIMEOUT_S=10`, and the modem crate's `crates/sonde-modem/sdkconfig.defaults` sets it to 35. During the modem build, both files are passed to ESP-IDF via `ESP_IDF_SDKCONFIG_DEFAULTS` in this order: first `sdkconfig.defaults.esp32s3`, then `crates/sonde-modem/sdkconfig.defaults`. ESP-IDF applies overrides in list order, so for a given key the **last** value wins; therefore, the effective watchdog timeout for the modem is 35 seconds. The longer timeout accommodates BLE stack operations (pairing, indication pacing) which can stall the main loop longer than the node firmware's radio-only workload.
 
 ---
 
@@ -379,9 +381,9 @@ The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-040
 
 1. The NimBLE stack generates a 6-digit passkey.
 2. The modem sends `BLE_PAIRING_CONFIRM` to the gateway with the passkey.
-3. The modem waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`).
+3. The BLE stack proceeds with LESC key exchange immediately (see D9-5 below — `on_confirm_pin` cannot block). The modem then waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`) — before setting the `authenticated` flag and emitting `BLE_CONNECTED`.
 4. If no reply arrives within 30 seconds, the modem rejects the pairing (MD-0414).
-5. On successful pairing, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
+5. On successful pairing and operator acceptance, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
 
 Just Works remains available as a fallback when the phone does not support Numeric Comparison (MD-0404).
 

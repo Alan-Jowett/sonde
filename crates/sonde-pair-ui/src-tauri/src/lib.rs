@@ -209,10 +209,10 @@ async fn pair_gateway(
         if let Some(identity) = existing_identity {
             let gw_hex = hex::encode(identity.gateway_id);
             *state.phase.lock().unwrap() = format!(
-                "Error: Gateway already paired with ID {gw_hex}. To re-pair, confirm and retry with force=true to overwrite the existing pairing, or clear the existing pairing first."
+                "Error: Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
             );
             return Err(format!(
-                "Gateway already paired with ID {gw_hex}. To re-pair, confirm and retry with force=true to overwrite the existing pairing, or clear the existing pairing first."
+                "Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
             ));
         }
     }
@@ -417,10 +417,10 @@ async fn pair_gateway(
         if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
             let gw_hex = hex::encode(identity.gateway_id);
             *state.phase.lock().unwrap() = format!(
-                "Error: Gateway already paired with ID {gw_hex}. To re-pair, confirm and retry with force=true to overwrite the existing pairing, or clear the existing pairing first."
+                "Error: Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
             );
             return Err(format!(
-                "Gateway already paired with ID {gw_hex}. To re-pair, confirm and retry with force=true to overwrite the existing pairing, or clear the existing pairing first."
+                "Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
             ));
         }
     }

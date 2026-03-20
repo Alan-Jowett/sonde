@@ -843,4 +843,130 @@ mod tests {
         assert!(existing.is_some(), "should detect existing pairing");
         assert_eq!(existing.unwrap(), identity);
     }
+
+    // --- PT-0701: Phase 1 sub-phase progress reporting ---
+
+    /// Mock progress callback that records the phases it receives.
+    struct RecordingProgress {
+        phases: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingProgress {
+        fn new() -> Self {
+            Self {
+                phases: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn phases(&self) -> Vec<String> {
+            self.phases.lock().unwrap().clone()
+        }
+    }
+
+    impl PairingProgress for RecordingProgress {
+        fn on_phase(&self, phase: &str) {
+            self.phases.lock().unwrap().push(phase.to_string());
+        }
+    }
+
+    /// Validates: PT-0701
+    ///
+    /// A successful Phase 1 run must invoke the progress callback in order:
+    /// Connecting → Authenticating → Registering.
+    #[test]
+    fn t_pt_701_progress_reports_phases_in_order() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+            let eph_public = predicted_eph_public(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+            let progress = RecordingProgress::new();
+
+            let result = pair_with_gateway(
+                &mut transport,
+                &mut store,
+                &rng,
+                &device_addr,
+                "test",
+                Some(&progress),
+            )
+            .await;
+            result.unwrap();
+
+            assert_eq!(
+                progress.phases(),
+                vec!["Connecting", "Authenticating", "Registering"],
+            );
+        });
+    }
+
+    /// Validates: PT-0701 (None case)
+    ///
+    /// When `progress` is `None`, the pairing succeeds without invoking any
+    /// callback — no panic or error from the absent observer.
+    #[test]
+    fn t_pt_701_progress_none_succeeds() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+            let eph_public = predicted_eph_public(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            // None progress — should succeed without any callback issues.
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "test", None)
+                    .await;
+            result.unwrap();
+        });
+    }
 }

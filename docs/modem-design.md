@@ -144,7 +144,7 @@ The ESP-NOW receive callback is invoked from the WiFi task. It receives:
 - `data`: frame payload (up to 250 bytes).
 - `rssi`: signal strength (from the `esp_now_recv_info_t` struct).
 
-The callback copies the frame into the ESP-NOW RX ring buffer; the main loop drains the ring and writes `RECV_FRAME` messages to USB. The `rx_count` counter is incremented.
+The callback copies the frame into the ESP-NOW RX ring buffer; the main loop drains the ring and writes `RECV_FRAME` messages to USB. For each frame that is successfully forwarded to USB, the `rx_count` counter is incremented.
 
 > **ESP-NOW RX ring buffer (D9-1):** The ESP-NOW receive callback stores inbound frames in a pre-allocated, fixed-capacity ring buffer (`RX_RING_CAP = 16` slots). When the ring is full (or a push into the ring fails), incoming frames are silently dropped and a `drop_count` counter is incremented. If the WiFi-task callback cannot acquire the ring mutex (contention with the main loop draining the buffer), the frame is also dropped, and this is recorded separately via an atomic `contention_drops` counter. This is intentional — the callback runs in the WiFi task context where heap allocation and blocking are unsafe.
 

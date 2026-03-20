@@ -679,8 +679,8 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |
 | Set schedule | `SetSchedule` | Queues an UPDATE_SCHEDULE for a node's next WAKE. |
 | Node status | `GetNodeStatus` | Returns latest known state for a node (program hash, battery, ABI version, last seen, active session). |
-| Export state | `ExportState` | Serializes the full gateway state (node registry, program library, and handler routing configuration). Encrypted with AES-256-GCM using an operator-supplied passphrase. |
-| Import state | `ImportState` | Restores node registry, program library, and handler routing configuration from a previously exported, encrypted bundle. |
+| Export state | `ExportState` | Serializes gateway state (node registry, program library, and registered identity/phone PSKs, if applicable). Does not include handler routing configuration (deferred). Encrypted with AES-256-GCM using an operator-supplied passphrase. |
+| Import state | `ImportState` | Restores node registry, program library, and registered identity/phone PSKs from a previously exported, encrypted bundle. Handler routing configuration is not restored (deferred and not part of the bundle). |
 | Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |
 | Set modem channel | `SetModemChannel` | Sets the ESP-NOW radio channel (1–14). |
 | Scan channels | `ScanModemChannels` | Scans all WiFi channels for AP activity, returns AP counts and RSSI per channel. |

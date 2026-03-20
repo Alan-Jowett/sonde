@@ -797,6 +797,23 @@ A CLI tool (`sonde-admin` or equivalent) MUST be provided that wraps the gRPC ad
 
 ---
 
+### GW-0807  Admin API — modem management
+
+**Priority:** Must  
+**Source:** GW-1100, modem-protocol.md
+
+**Description:**  
+The admin API MUST support querying modem status (radio channel, TX/RX/fail counters, uptime), setting the ESP-NOW radio channel (1–14), and scanning all WiFi channels for AP activity.
+
+**Acceptance criteria:**
+
+1. `GetModemStatus` returns the current modem status.
+2. `SetModemChannel` changes the ESP-NOW radio channel.
+3. `ScanModemChannels` returns AP counts and RSSI per channel.
+4. `sonde-admin modem status`, `modem set-channel`, and `modem scan` CLI commands invoke the corresponding RPCs.
+
+---
+
 ## 10  Operational requirements
 
 ### GW-1000  Gateway failover / replaceability
@@ -1339,23 +1356,6 @@ The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pa
 
 ---
 
-### GW-0807  Admin API — modem management
-
-**Priority:** Must  
-**Source:** GW-1100, modem-protocol.md
-
-**Description:**  
-The admin API MUST support querying modem status (radio channel, TX/RX/fail counters, uptime), setting the ESP-NOW radio channel (1–14), and scanning all WiFi channels for AP activity.
-
-**Acceptance criteria:**
-
-1. `GetModemStatus` returns the current modem status.
-2. `SetModemChannel` changes the ESP-NOW radio channel.
-3. `ScanModemChannels` returns AP counts and RSSI per channel.
-4. `sonde-admin modem status`, `modem set-channel`, and `modem scan` CLI commands invoke the corresponding RPCs.
-
----
-
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1404,6 +1404,7 @@ The admin API MUST support querying modem status (radio channel, TX/RX/fail coun
 | GW-0804 | Admin API — node status | Should |
 | GW-0805 | Admin API — state export/import | Should |
 | GW-0806 | Admin CLI tool | Must |
+| GW-0807 | Admin API — modem management | Must |
 | GW-1000 | Gateway failover / replaceability | Must |
 | GW-1004 | Program hash consistency across failover group | Must |
 | GW-1001 | Exportable / importable state | Should |
@@ -1438,4 +1439,3 @@ The admin API MUST support querying modem status (radio channel, TX/RX/fail coun
 | GW-1222 | Admin API — BLE pairing session | Must |
 | GW-1223 | Admin API — phone listing | Must |
 | GW-1224 | Admin API — phone revocation | Must |
-| GW-0807 | Admin API — modem management | Must |

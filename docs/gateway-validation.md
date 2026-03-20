@@ -967,6 +967,66 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0811  Admin CLI JSON output
+
+**Validates:** GW-0806
+
+**Procedure:**
+1. Register a node and ingest a program.
+2. Run `sonde-admin node list --format json`.
+3. Assert: output is valid JSON containing the registered node.
+4. Run `sonde-admin program list --format json`.
+5. Assert: output is valid JSON containing the ingested program.
+6. Run `sonde-admin status <node-id> --format json`.
+7. Assert: output is valid JSON with expected status fields.
+
+---
+
+### T-0812  Admin CLI error handling
+
+**Validates:** GW-0806
+
+**Procedure:**
+1. Run `sonde-admin node get nonexistent-node`.
+2. Assert: non-zero exit code and meaningful error message.
+3. Run `sonde-admin program assign <node-id> 0000000000000000000000000000000000000000000000000000000000000000`.
+4. Assert: non-zero exit code indicating program not found.
+
+---
+
+### T-0813  Modem status via admin API
+
+**Validates:** GW-0807
+
+**Procedure:**
+1. Start gateway with modem connected.
+2. Call `GetModemStatus`.
+3. Assert: response contains radio channel, counters, and uptime.
+
+---
+
+### T-0814  Modem channel change via admin API
+
+**Validates:** GW-0807
+
+**Procedure:**
+1. Call `SetModemChannel` with channel 6.
+2. Assert: success response.
+3. Call `GetModemStatus`.
+4. Assert: reported channel is 6.
+
+---
+
+### T-0815  Modem channel scan via admin API
+
+**Validates:** GW-0807
+
+**Procedure:**
+1. Call `ScanModemChannels`.
+2. Assert: response contains, for each scanned channel, an AP count and a strongest RSSI value.
+
+---
+
 ## 10  Operational tests
 
 ### T-1000  Gateway failover
@@ -1464,66 +1524,6 @@ A configurable stub handler process (or in-process mock) that:
 3. Assert: success response.
 4. Submit a `PEER_REQUEST` signed with the revoked phone's PSK.
 5. Assert: gateway silently discards the request (HMAC verification fails per GW-1213).
-
----
-
-### T-0811  Admin CLI JSON output
-
-**Validates:** GW-0806
-
-**Procedure:**
-1. Register a node and ingest a program.
-2. Run `sonde-admin node list --format json`.
-3. Assert: output is valid JSON containing the registered node.
-4. Run `sonde-admin program list --format json`.
-5. Assert: output is valid JSON containing the ingested program.
-6. Run `sonde-admin status <node-id> --format json`.
-7. Assert: output is valid JSON with expected status fields.
-
----
-
-### T-0812  Admin CLI error handling
-
-**Validates:** GW-0806
-
-**Procedure:**
-1. Run `sonde-admin node get nonexistent-node`.
-2. Assert: non-zero exit code and meaningful error message.
-3. Run `sonde-admin program assign <node-id> 0000000000000000000000000000000000000000000000000000000000000000`.
-4. Assert: non-zero exit code indicating program not found.
-
----
-
-### T-0813  Modem status via admin API
-
-**Validates:** GW-0807
-
-**Procedure:**
-1. Start gateway with modem connected.
-2. Call `GetModemStatus`.
-3. Assert: response contains radio channel, counters, and uptime.
-
----
-
-### T-0814  Modem channel change via admin API
-
-**Validates:** GW-0807
-
-**Procedure:**
-1. Call `SetModemChannel` with channel 6.
-2. Assert: success response.
-3. Call `GetModemStatus`.
-4. Assert: reported channel is 6.
-
----
-
-### T-0815  Modem channel scan via admin API
-
-**Validates:** GW-0807
-
-**Procedure:**
-1. Call `ScanModemChannels`.
-2. Assert: response contains per-channel AP counts and RSSI values.
 
 ---
 

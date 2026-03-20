@@ -66,6 +66,9 @@ const BLE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
 /// the single-connection slot indefinitely.
 const BLE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// BLE GAP device name used in both the GAP record and advertising payload.
+const BLE_DEVICE_NAME: &str = "sonde-modem";
+
 /// Maximum ATT payload per indication fragment = MTU - 3.
 ///
 /// A minimum of 1 byte is enforced so that `data.chunks(chunk_size)` never
@@ -164,6 +167,12 @@ impl EspBleDriver {
     /// LESC Numeric Comparison security (MD-0404).
     pub fn new() -> Self {
         let ble_device = BLEDevice::take();
+
+        // Set the GAP device name so connected clients (e.g. Android) see
+        // "sonde-modem" instead of the NimBLE default ("nimble").
+        if let Err(e) = BLEDevice::set_device_name(BLE_DEVICE_NAME) {
+            warn!("failed to set BLE GAP device name, continuing with default: {e}");
+        }
 
         // Configure LESC Numeric Comparison security (MD-0404).
         ble_device
@@ -424,7 +433,7 @@ impl Ble for EspBleDriver {
         let ble_advertising = ble_device.get_advertising();
 
         let mut adv_data = BLEAdvertisementData::new();
-        adv_data.name("sonde-modem");
+        adv_data.name(BLE_DEVICE_NAME);
         adv_data.add_service_uuid(GATEWAY_SERVICE_UUID);
 
         if let Err(e) = ble_advertising.lock().set_data(&mut adv_data) {

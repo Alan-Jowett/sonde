@@ -469,9 +469,14 @@ impl Ble for EspBleDriver {
                     return;
                 }
                 s.pairing_pending = false;
-                s.authenticated = true;
-                s.connection_start = None;
+                // Only mark the link as authenticated and clear the pairing
+                // timeout once we know pairing has fully completed (i.e.,
+                // when a deferred connection is present).  If the operator
+                // accepts before SMP finishes, on_authentication_complete
+                // will handle promotion via the !pairing_pending else-branch.
                 if let Some((peer_addr, mtu)) = s.deferred_connected.take() {
+                    s.authenticated = true;
+                    s.connection_start = None;
                     s.events.push_back(BleEvent::Connected { peer_addr, mtu });
                 }
             }

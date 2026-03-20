@@ -1126,6 +1126,66 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0813  Modem status via admin API
+
+**Validates:** GW-0807
+
+**Procedure:**
+1. Start gateway with modem connected.
+2. Call `GetModemStatus`.
+3. Assert: response contains radio channel, counters, and uptime.
+
+---
+
+### T-0814  Modem channel change via admin API
+
+**Validates:** GW-0807
+
+**Procedure:**
+1. Call `SetModemChannel` with channel 6.
+2. Assert: success response.
+3. Call `GetModemStatus`.
+4. Assert: reported channel is 6.
+
+---
+
+### T-0815  Modem channel scan via admin API
+
+**Validates:** GW-0807
+
+**Procedure:**
+1. Call `ScanModemChannels`.
+2. Assert: response contains, for each scanned channel, an AP count and a strongest RSSI value.
+
+---
+
+### T-0816  Admin CLI JSON output
+
+**Validates:** GW-0806
+
+**Procedure:**
+1. Register a node and ingest a program.
+2. Run `sonde-admin node list --format json`.
+3. Assert: output is valid JSON containing the registered node.
+4. Run `sonde-admin program list --format json`.
+5. Assert: output is valid JSON containing the ingested program.
+6. Run `sonde-admin status <node-id> --format json`.
+7. Assert: output is valid JSON with expected status fields.
+
+---
+
+### T-0817  Admin CLI error handling
+
+**Validates:** GW-0806
+
+**Procedure:**
+1. Run `sonde-admin node get nonexistent-node`.
+2. Assert: non-zero exit code and meaningful error message.
+3. Run `sonde-admin program assign <node-id> 0000000000000000000000000000000000000000000000000000000000000000`.
+4. Assert: non-zero exit code indicating program not found.
+
+---
+
 ## 10  Operational tests
 
 ### T-1000  Gateway failover
@@ -1690,6 +1750,33 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1227  Phone listing via admin API
+
+**Validates:** GW-1223
+
+**Procedure:**
+1. Register two phones via the BLE pairing flow.
+2. Call `ListPhones` via admin API.
+3. Assert: both phones appear with correct metadata (phone ID, key hint, label, issue time).
+4. Revoke one phone.
+5. Call `ListPhones` again.
+6. Assert: revoked phone shows revoked status.
+
+---
+
+### T-1228  Phone revocation via admin API
+
+**Validates:** GW-1224
+
+**Procedure:**
+1. Register a phone via the BLE pairing flow.
+2. Call `RevokePhone` with the phone's ID.
+3. Assert: success response.
+4. Submit a `PEER_REQUEST` signed with the revoked phone's PSK.
+5. Assert: gateway silently discards the request (HMAC verification fails per GW-1213).
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -1737,7 +1824,8 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0803 | T-0805, T-0806, T-0807, T-0808 |
 | GW-0804 | T-0809 |
 | GW-0805 | T-0810 |
-| GW-0806 | T-0812 |
+| GW-0806 | T-0812, T-0816, T-0817 |
+| GW-0807 | T-0813, T-0814, T-0815 |
 | GW-1000 | T-1000 |
 | GW-1001 | T-1002, T-1005 |
 | GW-1002 | T-0609 |
@@ -1770,3 +1858,5 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1220 | T-1211, T-1213, T-1214, T-1215, T-1216, T-1217 |
 | GW-1221 | T-1220 |
 | GW-1222 | T-1221, T-1222 |
+| GW-1223 | T-1227 |
+| GW-1224 | T-1228 |

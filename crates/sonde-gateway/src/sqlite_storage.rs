@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 use crate::gateway_identity::GatewayIdentity;
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
-use crate::registry::{NodeRecord, SensorDescriptor};
+use crate::registry::{BatteryReading, NodeRecord, SensorDescriptor};
 use crate::storage::{Storage, StorageError};
 
 /// Encrypted PSK blob length: 12-byte nonce + 32-byte ciphertext + 16-byte GCM tag = 60 bytes.
@@ -408,6 +408,12 @@ CREATE TABLE IF NOT EXISTS phone_psks (
     status TEXT NOT NULL DEFAULT 'active'
 );
 CREATE INDEX IF NOT EXISTS idx_phone_psks_key_hint ON phone_psks(phone_key_hint);
+CREATE TABLE IF NOT EXISTS battery_readings (
+    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+    timestamp_epoch_s INTEGER NOT NULL,
+    battery_mv INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_battery_readings_node ON battery_readings(node_id, timestamp_epoch_s);
 ";
 
 /// SQLite-backed persistent storage for the gateway.
@@ -642,10 +648,64 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
             .map(|j| sensors_from_json(&j))
             .unwrap_or_default(),
         registered_by_phone_id,
-        // Battery history is not persisted in SQLite; it is an in-memory
-        // feature populated on each WAKE and included in state exports.
+        // Battery history is loaded separately from the battery_readings table.
         battery_history: Vec::new(),
     })
+}
+
+/// Load battery history for a node from the `battery_readings` table,
+/// ordered oldest-first, capped to the most recent 100 entries.
+fn load_battery_history(conn: &Connection, node_id: &str) -> rusqlite::Result<Vec<BatteryReading>> {
+    let mut stmt = conn.prepare(
+        "SELECT timestamp_epoch_s, battery_mv FROM battery_readings \
+         WHERE node_id = ?1 ORDER BY timestamp_epoch_s ASC",
+    )?;
+    let rows = stmt.query_map(params![node_id], |row| {
+        let ts: i64 = row.get(0)?;
+        let mv: u32 = row.get(1)?;
+        Ok(BatteryReading {
+            timestamp: epoch_s_to_system_time(ts),
+            battery_mv: mv,
+        })
+    })?;
+    let mut history = Vec::new();
+    for r in rows {
+        history.push(r?);
+    }
+    // Keep only the most recent MAX entries (matches runtime cap).
+    const MAX: usize = 100;
+    if history.len() > MAX {
+        history.drain(..history.len() - MAX);
+    }
+    Ok(history)
+}
+
+/// Persist battery readings for a node, pruning to the most recent 100.
+fn save_battery_history(
+    conn: &Connection,
+    node_id: &str,
+    history: &[BatteryReading],
+) -> Result<(), StorageError> {
+    conn.execute(
+        "DELETE FROM battery_readings WHERE node_id = ?1",
+        params![node_id],
+    )
+    .map_err(map_err)?;
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO battery_readings (node_id, timestamp_epoch_s, battery_mv) \
+             VALUES (?1, ?2, ?3)",
+        )
+        .map_err(map_err)?;
+    // Only persist the most recent 100 readings.
+    const MAX: usize = 100;
+    let start = history.len().saturating_sub(MAX);
+    for reading in &history[start..] {
+        let ts = system_time_to_epoch_s(&reading.timestamp);
+        stmt.execute(params![node_id, ts, reading.battery_mv])
+            .map_err(map_err)?;
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -668,7 +728,10 @@ impl Storage for SqliteStorage {
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
-                nodes.push(row.map_err(map_err)?);
+                let mut node = row.map_err(map_err)?;
+                node.battery_history =
+                    load_battery_history(conn, &node.node_id).map_err(map_err)?;
+                nodes.push(node);
             }
             Ok(nodes)
         })
@@ -679,16 +742,24 @@ impl Storage for SqliteStorage {
         let node_id = node_id.to_string();
         let mk = self.master_key.clone();
         self.with_conn(move |conn| {
-            conn.query_row(
-                "SELECT node_id, key_hint, psk, assigned_program_hash, \
-                 current_program_hash, schedule_interval_s, firmware_abi_version, \
-                 last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                 registered_by_phone_id FROM nodes WHERE node_id = ?1",
-                params![node_id],
-                |row| row_to_node(row, &mk),
-            )
-            .optional()
-            .map_err(map_err)
+            let maybe_node = conn
+                .query_row(
+                    "SELECT node_id, key_hint, psk, assigned_program_hash, \
+                     current_program_hash, schedule_interval_s, firmware_abi_version, \
+                     last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
+                     registered_by_phone_id FROM nodes WHERE node_id = ?1",
+                    params![node_id],
+                    |row| row_to_node(row, &mk),
+                )
+                .optional()
+                .map_err(map_err)?;
+            if let Some(mut node) = maybe_node {
+                node.battery_history =
+                    load_battery_history(conn, &node.node_id).map_err(map_err)?;
+                Ok(Some(node))
+            } else {
+                Ok(None)
+            }
         })
         .await
     }
@@ -709,7 +780,10 @@ impl Storage for SqliteStorage {
                 .map_err(map_err)?;
             let mut nodes = Vec::new();
             for row in rows {
-                nodes.push(row.map_err(map_err)?);
+                let mut node = row.map_err(map_err)?;
+                node.battery_history =
+                    load_battery_history(conn, &node.node_id).map_err(map_err)?;
+                nodes.push(node);
             }
             Ok(nodes)
         })
@@ -723,7 +797,8 @@ impl Storage for SqliteStorage {
             let last_seen_epoch = record.last_seen.as_ref().map(system_time_to_epoch_s);
             let encrypted_psk = encrypt_psk(&mk, &record.node_id, &record.psk)?;
             let sensors_json = sensors_to_json(&record.sensors);
-            conn.execute(
+            let tx = conn.unchecked_transaction().map_err(map_err)?;
+            tx.execute(
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \
                  last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
@@ -757,6 +832,8 @@ impl Storage for SqliteStorage {
                 ],
             )
             .map_err(map_err)?;
+            save_battery_history(&tx, &record.node_id, &record.battery_history)?;
+            tx.commit().map_err(map_err)?;
             Ok(())
         })
         .await

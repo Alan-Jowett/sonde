@@ -192,18 +192,21 @@ impl GatewayAdmin for AdminService {
         request: Request<RemoveNodeRequest>,
     ) -> Result<Response<Empty>, Status> {
         let node_id = &request.get_ref().node_id;
-        let mut node = self
+        // Verify the node exists before attempting deletion.
+        // Note: zeroizing the local copy returned by `get_node()` does not
+        // erase the stored PSK — the storage backend drops it on delete.
+        // True key-material erasure must happen inside the storage backend.
+        let _node = self
             .storage
             .get_node(node_id)
             .await
             .map_err(storage_err)?
             .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
 
-        // GW-0705: Zero PSK key material before removing from storage so
-        // it is not left in freed heap memory.
-        use zeroize::Zeroize;
-        node.psk.zeroize();
-
+        // TODO: GW-0705 / T-0706 require a node-side factory reset (erase
+        // PSK, persistent maps, and resident program) before removing the
+        // key from the registry. This needs a protocol-level reset command
+        // sent while the node is still authenticated — not yet implemented.
         self.storage
             .delete_node(node_id)
             .await
@@ -229,10 +232,20 @@ impl GatewayAdmin for AdminService {
             self.program_library
                 .ingest_elf(&req.image_data, profile)
                 .map_err(|e| Status::invalid_argument(e.to_string()))?
-        } else {
+        } else if cfg!(debug_assertions) {
+            // In debug builds, allow ingestion of pre-encoded CBOR program images
+            // without Prevail verification. This path is disabled in release builds
+            // to enforce GW-0401 (all stored programs must be verified).
             self.program_library
                 .ingest_unverified(req.image_data, profile)
                 .map_err(|e| Status::invalid_argument(e.to_string()))?
+        } else {
+            // In release/production builds, reject non-ELF inputs to avoid
+            // storing unverified programs via the admin API.
+            return Err(Status::invalid_argument(
+                "non-ELF program images are not accepted in this build; \
+                submit an ELF binary so the gateway can verify it with Prevail",
+            ));
         };
 
         record.abi_version = req.abi_version;
@@ -437,6 +450,9 @@ impl GatewayAdmin for AdminService {
 
     /// Export gateway state (nodes + programs) as an AES-256-GCM-encrypted
     /// CBOR bundle.
+    ///
+    /// Note: Handler routing configuration is not included in this export.
+    /// Only node registry entries and program images are bundled.
     ///
     /// The passphrase is used to derive the encryption key via
     /// PBKDF2-HMAC-SHA256.

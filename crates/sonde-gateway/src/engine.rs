@@ -144,7 +144,10 @@ impl Gateway {
         let candidates = self.storage.get_nodes_by_key_hint(key_hint).await.ok()?;
         if candidates.is_empty() {
             // GW-1002: log discard of frames from unknown nodes.
-            warn!(key_hint, "discarding frame from unknown node (no key_hint match)");
+            warn!(
+                key_hint,
+                "discarding frame from unknown node (no key_hint match)"
+            );
             return None;
         }
 

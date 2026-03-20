@@ -70,7 +70,10 @@ enum VerificationProfile {
 
 // `image_data` accepts either a raw ELF binary or a pre-encoded CBOR program
 // image. ELF inputs are auto-detected via the \x7fELF magic and verified
-// with Prevail before conversion to CBOR (GW-0400, GW-0401).
+// with Prevail before conversion to CBOR (GW-0400, GW-0401). Pre-encoded CBOR
+// inputs are accepted as-is, WITHOUT Prevail verification, and are intended
+// for test-only / development use (e.g., injecting known-good images); do not
+// use the CBOR path for untrusted programs in production.
 message IngestProgramRequest { bytes image_data = 1; VerificationProfile verification_profile = 2; optional uint32 abi_version = 3; }
 message IngestProgramResponse { bytes program_hash = 1; uint32 program_size = 2; }
 message ListProgramsResponse { repeated ProgramInfo programs = 1; }

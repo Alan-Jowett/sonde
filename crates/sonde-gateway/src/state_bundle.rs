@@ -873,23 +873,22 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                 },
                 Some(NODE_KEY_BATTERY_HISTORY) => {
                     if let Value::Array(arr) = v {
-                        for item in arr {
+                        // Cap imported history to the same limit used at runtime
+                        // to avoid excessive memory usage from large/modified bundles.
+                        const MAX_BATTERY_HISTORY: usize = 100;
+                        let start = arr.len().saturating_sub(MAX_BATTERY_HISTORY);
+                        for item in &arr[start..] {
                             if let Value::Array(pair) = item {
                                 if pair.len() == 2 {
-                                    if let (
-                                        Value::Integer(ts_int),
-                                        Value::Integer(mv_int),
-                                    ) = (&pair[0], &pair[1])
+                                    if let (Value::Integer(ts_int), Value::Integer(mv_int)) =
+                                        (&pair[0], &pair[1])
                                     {
-                                        if let (Ok(ts), Ok(mv)) = (
-                                            i64::try_from(*ts_int),
-                                            u32::try_from(*mv_int),
-                                        ) {
+                                        if let (Ok(ts), Ok(mv)) =
+                                            (i64::try_from(*ts_int), u32::try_from(*mv_int))
+                                        {
                                             if ts >= 0 {
-                                                if let Some(t) =
-                                                    UNIX_EPOCH.checked_add(Duration::from_secs(
-                                                        ts as u64,
-                                                    ))
+                                                if let Some(t) = UNIX_EPOCH
+                                                    .checked_add(Duration::from_secs(ts as u64))
                                                 {
                                                     battery_history.push(BatteryReading {
                                                         timestamp: t,
@@ -1335,9 +1334,7 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
                     command = Some(match v {
                         Value::Text(s) => s,
                         _ => {
-                            return Err(BundleError::Decode(
-                                "handler command must be text".into(),
-                            ))
+                            return Err(BundleError::Decode("handler command must be text".into()))
                         }
                     });
                 }
@@ -1629,8 +1626,7 @@ mod tests {
             },
         ];
 
-        let bundle =
-            encrypt_state_full(&[], &[], None, &[], &configs, "handler-pass").unwrap();
+        let bundle = encrypt_state_full(&[], &[], None, &[], &configs, "handler-pass").unwrap();
         let (_, _, _, _, loaded) = decrypt_state_full(&bundle, "handler-pass").unwrap();
 
         assert_eq!(loaded.len(), 2);

@@ -3,6 +3,18 @@
 
 use std::time::SystemTime;
 
+/// Maximum number of battery readings to retain per node (GW-0702 AC2).
+const MAX_BATTERY_HISTORY: usize = 100;
+
+/// A timestamped battery voltage reading.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatteryReading {
+    /// When the reading was taken.
+    pub timestamp: SystemTime,
+    /// Battery voltage in millivolts.
+    pub battery_mv: u32,
+}
+
 /// Sensor descriptor for a node's attached peripherals.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SensorDescriptor {
@@ -36,6 +48,8 @@ pub struct NodeRecord {
     pub sensors: Vec<SensorDescriptor>,
     /// Phone ID that registered this node (audit trail). Set during BLE pairing.
     pub registered_by_phone_id: Option<u32>,
+    /// Historical battery voltage readings (GW-0702 AC2). Most recent last.
+    pub battery_history: Vec<BatteryReading>,
 }
 
 impl NodeRecord {
@@ -54,6 +68,7 @@ impl NodeRecord {
             rf_channel: None,
             sensors: Vec::new(),
             registered_by_phone_id: None,
+            battery_history: Vec::new(),
         }
     }
 
@@ -61,7 +76,18 @@ impl NodeRecord {
     pub fn update_telemetry(&mut self, battery_mv: u32, firmware_abi_version: u32) {
         self.last_battery_mv = Some(battery_mv);
         self.firmware_abi_version = Some(firmware_abi_version);
-        self.last_seen = Some(SystemTime::now());
+        let now = SystemTime::now();
+        self.last_seen = Some(now);
+
+        // GW-0702 AC2: maintain battery history, capped at MAX_BATTERY_HISTORY.
+        self.battery_history.push(BatteryReading {
+            timestamp: now,
+            battery_mv,
+        });
+        if self.battery_history.len() > MAX_BATTERY_HISTORY {
+            let excess = self.battery_history.len() - MAX_BATTERY_HISTORY;
+            self.battery_history.drain(..excess);
+        }
     }
 
     /// Mark the node's current program hash (called on PROGRAM_ACK).

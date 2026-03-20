@@ -27,8 +27,7 @@
 //!
 //! The key is derived from the operator passphrase with PBKDF2-HMAC-SHA256 at
 //! 100 000 iterations.  The CBOR plaintext contains the full node registry
-//! (including PSKs) and program library.  Handler routing configuration is not
-//! included and must be restored separately (deferred per Phase 2C-iii).
+//! (including PSKs), program library, and handler routing configuration.
 
 use std::fmt;
 use std::time::{Duration, UNIX_EPOCH};
@@ -40,9 +39,10 @@ use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use crate::gateway_identity::GatewayIdentity;
+use crate::handler::{HandlerConfig, ProgramMatcher};
 use crate::phone_trust::{PhonePskRecord, PhonePskStatus};
 use crate::program::{ProgramRecord, VerificationProfile};
-use crate::registry::{NodeRecord, SensorDescriptor};
+use crate::registry::{BatteryReading, NodeRecord, SensorDescriptor};
 
 // ── Bundle constants ─────────────────────────────────────────────────────────
 
@@ -63,6 +63,7 @@ const ROOT_KEY_NODES: i64 = 2;
 const ROOT_KEY_PROGRAMS: i64 = 3;
 const ROOT_KEY_IDENTITY: i64 = 4;
 const ROOT_KEY_PHONE_PSKS: i64 = 5;
+const ROOT_KEY_HANDLERS: i64 = 6;
 
 // ── CBOR key IDs (node map) ─────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ const NODE_KEY_LAST_SEEN: i64 = 9;
 const NODE_KEY_RF_CHANNEL: i64 = 10;
 const NODE_KEY_SENSORS: i64 = 11;
 const NODE_KEY_REGISTERED_BY: i64 = 12;
+const NODE_KEY_BATTERY_HISTORY: i64 = 13;
 
 // ── CBOR key IDs (program map) ──────────────────────────────────────────────
 
@@ -99,6 +101,12 @@ const PHONE_KEY_PSK: i64 = 2;
 const PHONE_KEY_LABEL: i64 = 3;
 const PHONE_KEY_ISSUED_AT: i64 = 4;
 const PHONE_KEY_STATUS: i64 = 5;
+
+// ── CBOR key IDs (handler routing map) ──────────────────────────────────────
+
+const HANDLER_KEY_MATCHERS: i64 = 1;
+const HANDLER_KEY_COMMAND: i64 = 2;
+const HANDLER_KEY_ARGS: i64 = 3;
 
 // ── Error type ───────────────────────────────────────────────────────────────
 
@@ -148,12 +156,14 @@ impl fmt::Display for BundleError {
 
 impl std::error::Error for BundleError {}
 
-/// Full state bundle contents including gateway identity and phone PSKs.
+/// Full state bundle contents including gateway identity, phone PSKs,
+/// and handler routing configuration.
 type FullState = (
     Vec<NodeRecord>,
     Vec<ProgramRecord>,
     Option<GatewayIdentity>,
     Vec<PhonePskRecord>,
+    Vec<HandlerConfig>,
 );
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -162,31 +172,35 @@ type FullState = (
 ///
 /// `passphrase` must be non-empty; it is used to derive the AES-256 encryption
 /// key via PBKDF2-HMAC-SHA256 with a random 16-byte salt.
-///
-/// Handler routing configuration is not included in the bundle (deferred to
-/// Phase 2C-iii).
 pub fn encrypt_state(
     nodes: &[NodeRecord],
     programs: &[ProgramRecord],
     passphrase: &str,
 ) -> Result<Vec<u8>, BundleError> {
-    encrypt_state_full(nodes, programs, None, &[], passphrase)
+    encrypt_state_full(nodes, programs, None, &[], &[], passphrase)
 }
 
-/// Extended version of [`encrypt_state`] that also includes gateway identity
-/// and phone PSKs (GW-1203, GW-1210).
+/// Extended version of [`encrypt_state`] that also includes gateway identity,
+/// phone PSKs, and handler routing configuration (GW-0805, GW-1001, GW-1203, GW-1210).
 pub fn encrypt_state_full(
     nodes: &[NodeRecord],
     programs: &[ProgramRecord],
     identity: Option<&GatewayIdentity>,
     phone_psks: &[PhonePskRecord],
+    handler_configs: &[HandlerConfig],
     passphrase: &str,
 ) -> Result<Vec<u8>, BundleError> {
     if passphrase.is_empty() {
         return Err(BundleError::EmptyPassphrase);
     }
 
-    let plaintext = Zeroizing::new(encode_cbor(nodes, programs, identity, phone_psks)?);
+    let plaintext = Zeroizing::new(encode_cbor(
+        nodes,
+        programs,
+        identity,
+        phone_psks,
+        handler_configs,
+    )?);
 
     // Random salt and nonce via OS CSPRNG — unique per export to prevent
     // key/nonce reuse.
@@ -277,6 +291,7 @@ fn encode_cbor(
     programs: &[ProgramRecord],
     identity: Option<&GatewayIdentity>,
     phone_psks: &[PhonePskRecord],
+    handler_configs: &[HandlerConfig],
 ) -> Result<Vec<u8>, BundleError> {
     use ciborium::value::Value;
 
@@ -310,6 +325,15 @@ fn encode_cbor(
         root_entries.push((
             Value::Integer(ROOT_KEY_PHONE_PSKS.into()),
             Value::Array(phone_values),
+        ));
+    }
+
+    if !handler_configs.is_empty() {
+        let handler_values: Vec<Value> =
+            handler_configs.iter().map(handler_config_to_cbor).collect();
+        root_entries.push((
+            Value::Integer(ROOT_KEY_HANDLERS.into()),
+            Value::Array(handler_values),
         ));
     }
 
@@ -410,6 +434,30 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
                 None => Value::Null,
             },
         ),
+        (
+            Value::Integer(NODE_KEY_BATTERY_HISTORY.into()),
+            if n.battery_history.is_empty() {
+                Value::Null
+            } else {
+                Value::Array(
+                    n.battery_history
+                        .iter()
+                        .map(|r| {
+                            let ts: i64 = r
+                                .timestamp
+                                .duration_since(UNIX_EPOCH)
+                                .ok()
+                                .and_then(|d| i64::try_from(d.as_secs()).ok())
+                                .unwrap_or(0);
+                            Value::Array(vec![
+                                Value::Integer(ts.into()),
+                                Value::Integer(r.battery_mv.into()),
+                            ])
+                        })
+                        .collect(),
+                )
+            },
+        ),
     ])
 }
 
@@ -494,6 +542,46 @@ fn phone_psk_to_cbor(p: &PhonePskRecord) -> ciborium::value::Value {
     ])
 }
 
+fn handler_config_to_cbor(h: &HandlerConfig) -> ciborium::value::Value {
+    use ciborium::value::Value;
+    use std::fmt::Write;
+
+    let matcher_values: Vec<Value> = h
+        .matchers
+        .iter()
+        .map(|m| match m {
+            ProgramMatcher::Any => Value::Text("*".into()),
+            ProgramMatcher::Hash(bytes) => {
+                let mut s = String::with_capacity(bytes.len() * 2);
+                for b in bytes {
+                    let _ = write!(s, "{b:02x}");
+                }
+                Value::Text(s)
+            }
+        })
+        .collect();
+
+    let mut entries = vec![
+        (
+            Value::Integer(HANDLER_KEY_MATCHERS.into()),
+            Value::Array(matcher_values),
+        ),
+        (
+            Value::Integer(HANDLER_KEY_COMMAND.into()),
+            Value::Text(h.command.clone()),
+        ),
+    ];
+
+    if !h.args.is_empty() {
+        entries.push((
+            Value::Integer(HANDLER_KEY_ARGS.into()),
+            Value::Array(h.args.iter().map(|a| Value::Text(a.clone())).collect()),
+        ));
+    }
+
+    Value::Map(entries)
+}
+
 fn opt_bytes_val(v: &Option<Vec<u8>>) -> ciborium::value::Value {
     match v {
         Some(b) => ciborium::value::Value::Bytes(b.clone()),
@@ -557,6 +645,7 @@ fn decode_cbor(data: &[u8]) -> Result<FullState, BundleError> {
     let mut programs_opt: Option<Vec<Value>> = None;
     let mut identity_opt: Option<Value> = None;
     let mut phone_psks_opt: Option<Vec<Value>> = None;
+    let mut handlers_opt: Option<Vec<Value>> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -587,6 +676,12 @@ fn decode_cbor(data: &[u8]) -> Result<FullState, BundleError> {
                     phone_psks_opt = Some(match v {
                         Value::Array(a) => a,
                         _ => return Err(BundleError::Decode("phone_psks must be array".into())),
+                    });
+                }
+                Some(ROOT_KEY_HANDLERS) => {
+                    handlers_opt = Some(match v {
+                        Value::Array(a) => a,
+                        _ => return Err(BundleError::Decode("handlers must be array".into())),
                     });
                 }
                 _ => {} // ignore unknown keys for forward compatibility
@@ -620,7 +715,13 @@ fn decode_cbor(data: &[u8]) -> Result<FullState, BundleError> {
         .map(phone_psk_from_cbor)
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok((nodes, programs, identity, phone_psks))
+    let handler_configs = handlers_opt
+        .unwrap_or_default()
+        .into_iter()
+        .map(handler_config_from_cbor)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((nodes, programs, identity, phone_psks, handler_configs))
 }
 
 fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> {
@@ -643,6 +744,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let mut rf_channel: Option<u8> = None;
     let mut sensors: Vec<SensorDescriptor> = Vec::new();
     let mut registered_by_phone_id: Option<u32> = None;
+    let mut battery_history: Vec<BatteryReading> = Vec::new();
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -769,6 +871,38 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                         ))
                     }
                 },
+                Some(NODE_KEY_BATTERY_HISTORY) => {
+                    if let Value::Array(arr) = v {
+                        // Cap imported history to the same limit used at runtime
+                        // to avoid excessive memory usage from large/modified bundles.
+                        const MAX_BATTERY_HISTORY: usize = 100;
+                        let start = arr.len().saturating_sub(MAX_BATTERY_HISTORY);
+                        for item in &arr[start..] {
+                            if let Value::Array(pair) = item {
+                                if pair.len() == 2 {
+                                    if let (Value::Integer(ts_int), Value::Integer(mv_int)) =
+                                        (&pair[0], &pair[1])
+                                    {
+                                        if let (Ok(ts), Ok(mv)) =
+                                            (i64::try_from(*ts_int), u32::try_from(*mv_int))
+                                        {
+                                            if ts >= 0 {
+                                                if let Some(t) = UNIX_EPOCH
+                                                    .checked_add(Duration::from_secs(ts as u64))
+                                                {
+                                                    battery_history.push(BatteryReading {
+                                                        timestamp: t,
+                                                        battery_mv: mv,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {} // ignore unknown fields for forward compatibility
             }
         }
@@ -817,6 +951,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         rf_channel,
         sensors,
         registered_by_phone_id,
+        battery_history,
     })
 }
 
@@ -1135,6 +1270,109 @@ fn phone_psk_from_cbor(v: ciborium::value::Value) -> Result<PhonePskRecord, Bund
     })
 }
 
+/// Parse a hex string into bytes.
+fn parse_hex_str(s: &str) -> Result<Vec<u8>, String> {
+    if !s.is_ascii() {
+        return Err(format!("hex string contains non-ASCII characters: {s}"));
+    }
+    if !s.len().is_multiple_of(2) {
+        return Err(format!("hex string has odd length: {s}"));
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|_| format!("invalid hex character in: {s}"))
+        })
+        .collect()
+}
+
+fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, BundleError> {
+    use ciborium::value::Value;
+
+    let map = match v {
+        Value::Map(m) => m,
+        _ => {
+            return Err(BundleError::Decode(
+                "handler entry must be a CBOR map".into(),
+            ))
+        }
+    };
+
+    let mut matchers: Vec<ProgramMatcher> = Vec::new();
+    let mut command: Option<String> = None;
+    let mut args: Vec<String> = Vec::new();
+
+    for (k, v) in map {
+        if let Value::Integer(key_int) = k {
+            match i64::try_from(key_int).ok() {
+                Some(HANDLER_KEY_MATCHERS) => {
+                    if let Value::Array(arr) = v {
+                        for item in arr {
+                            match item {
+                                Value::Text(s) => {
+                                    if s == "*" {
+                                        matchers.push(ProgramMatcher::Any);
+                                    } else {
+                                        let bytes = parse_hex_str(&s).map_err(|e| {
+                                            BundleError::Decode(format!(
+                                                "invalid hex in handler matcher: {e}"
+                                            ))
+                                        })?;
+                                        if bytes.len() != 32 {
+                                            return Err(BundleError::Decode(format!(
+                                                "handler matcher hash must be 32 bytes, got {}",
+                                                bytes.len()
+                                            )));
+                                        }
+                                        matchers.push(ProgramMatcher::Hash(bytes));
+                                    }
+                                }
+                                _ => {
+                                    return Err(BundleError::Decode(
+                                        "handler matcher entries must be text values".into(),
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        return Err(BundleError::Decode(
+                            "handler matchers field must be an array".into(),
+                        ));
+                    }
+                }
+                Some(HANDLER_KEY_COMMAND) => {
+                    command = Some(match v {
+                        Value::Text(s) => s,
+                        _ => {
+                            return Err(BundleError::Decode("handler command must be text".into()))
+                        }
+                    });
+                }
+                Some(HANDLER_KEY_ARGS) => {
+                    if let Value::Array(arr) = v {
+                        for item in arr {
+                            if let Value::Text(s) = item {
+                                args.push(s);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let command =
+        command.ok_or_else(|| BundleError::Decode("missing command in handler entry".into()))?;
+
+    Ok(HandlerConfig {
+        matchers,
+        command,
+        args,
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1343,11 +1581,12 @@ mod tests {
             &[],
             Some(&identity),
             &[phone.clone(), phone_revoked.clone()],
+            &[],
             "id-pass",
         )
         .unwrap();
 
-        let (nodes, programs, loaded_id, loaded_phones) =
+        let (nodes, programs, loaded_id, loaded_phones, loaded_handlers) =
             decrypt_state_full(&bundle, "id-pass").unwrap();
 
         assert!(nodes.is_empty());
@@ -1367,14 +1606,74 @@ mod tests {
         assert_eq!(loaded_phones[0].status, PhonePskStatus::Active);
         assert_eq!(loaded_phones[1].phone_key_hint, 0x5678);
         assert_eq!(loaded_phones[1].status, PhonePskStatus::Revoked);
+        assert!(loaded_handlers.is_empty());
     }
 
     #[test]
     fn backward_compatible_bundle_without_identity() {
-        // A bundle without identity/phone PSKs (old format) still decodes.
+        // A bundle without identity/phone PSKs/handlers (old format) still decodes.
         let bundle = encrypt_state(&[], &[], "compat").unwrap();
-        let (_, _, identity, phones) = decrypt_state_full(&bundle, "compat").unwrap();
+        let (_, _, identity, phones, handlers) = decrypt_state_full(&bundle, "compat").unwrap();
         assert!(identity.is_none());
         assert!(phones.is_empty());
+        assert!(handlers.is_empty());
+    }
+
+    #[test]
+    fn roundtrip_handler_configs() {
+        use crate::handler::{HandlerConfig, ProgramMatcher};
+
+        let hash = vec![0x42u8; 32];
+        let configs = vec![
+            HandlerConfig {
+                matchers: vec![ProgramMatcher::Hash(hash.clone())],
+                command: "/usr/bin/handler".to_string(),
+                args: vec!["--verbose".to_string()],
+            },
+            HandlerConfig {
+                matchers: vec![ProgramMatcher::Any],
+                command: "/usr/bin/catch-all".to_string(),
+                args: Vec::new(),
+            },
+        ];
+
+        let bundle = encrypt_state_full(&[], &[], None, &[], &configs, "handler-pass").unwrap();
+        let (_, _, _, _, loaded) = decrypt_state_full(&bundle, "handler-pass").unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].command, "/usr/bin/handler");
+        assert_eq!(loaded[0].args, vec!["--verbose"]);
+        assert_eq!(loaded[0].matchers.len(), 1);
+        assert!(matches!(&loaded[0].matchers[0], ProgramMatcher::Hash(h) if h == &hash));
+
+        assert_eq!(loaded[1].command, "/usr/bin/catch-all");
+        assert!(loaded[1].args.is_empty());
+        assert!(matches!(loaded[1].matchers[0], ProgramMatcher::Any));
+    }
+
+    #[test]
+    fn roundtrip_battery_history() {
+        use crate::registry::BatteryReading;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let mut node = make_node("batt-node", 0xAAAA);
+        node.battery_history = vec![
+            BatteryReading {
+                timestamp: UNIX_EPOCH + Duration::from_secs(1700000000),
+                battery_mv: 3300,
+            },
+            BatteryReading {
+                timestamp: UNIX_EPOCH + Duration::from_secs(1700001000),
+                battery_mv: 3250,
+            },
+        ];
+
+        let bundle = encrypt_state(&[node], &[], "batt-pass").unwrap();
+        let (nodes, _) = decrypt_state(&bundle, "batt-pass").unwrap();
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].battery_history.len(), 2);
+        assert_eq!(nodes[0].battery_history[0].battery_mv, 3300);
+        assert_eq!(nodes[0].battery_history[1].battery_mv, 3250);
     }
 }

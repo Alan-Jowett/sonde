@@ -192,11 +192,24 @@ impl GatewayAdmin for AdminService {
         request: Request<RemoveNodeRequest>,
     ) -> Result<Response<Empty>, Status> {
         let node_id = &request.get_ref().node_id;
-        self.storage
-            .get_node(node_id)
-            .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+        // Verify the node exists before attempting deletion.
+        // We load the full record to check existence (the Storage trait has no
+        // lightweight exists query), so zeroize the PSK copy immediately.
+        {
+            use zeroize::Zeroize;
+            let mut node = self
+                .storage
+                .get_node(node_id)
+                .await
+                .map_err(storage_err)?
+                .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+            node.psk.zeroize();
+        }
+
+        // TODO: GW-0705 / T-0706 require a node-side factory reset (erase
+        // PSK, persistent maps, and resident program) before removing the
+        // key from the registry. This needs a protocol-level reset command
+        // sent while the node is still authenticated — not yet implemented.
         self.storage
             .delete_node(node_id)
             .await
@@ -204,18 +217,40 @@ impl GatewayAdmin for AdminService {
         Ok(Response::new(Empty {}))
     }
 
-    /// Ingest a CBOR-encoded program image. ELF→CBOR extraction/verification
-    /// will be added in a future phase; callers must supply pre-encoded CBOR for now.
+    /// Ingest a program image (GW-0400).
+    ///
+    /// Accepts either an ELF binary (auto-detected via the `\x7fELF` magic)
+    /// or a pre-encoded CBOR program image. ELF binaries are parsed,
+    /// verified with Prevail, and converted to CBOR automatically.
     async fn ingest_program(
         &self,
         request: Request<IngestProgramRequest>,
     ) -> Result<Response<IngestProgramResponse>, Status> {
         let req = request.into_inner();
         let profile = parse_profile(req.verification_profile)?;
-        let mut record = self
-            .program_library
-            .ingest_unverified(req.image_data, profile)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let is_elf = req.image_data.len() >= 4 && &req.image_data[..4] == b"\x7fELF";
+
+        let mut record = if is_elf {
+            self.program_library
+                .ingest_elf(&req.image_data, profile)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?
+        } else if cfg!(debug_assertions) {
+            // In debug builds, allow ingestion of pre-encoded CBOR program images
+            // without Prevail verification. This path is disabled in release builds
+            // to enforce GW-0401 (all stored programs must be verified).
+            self.program_library
+                .ingest_unverified(req.image_data, profile)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?
+        } else {
+            // In release/production builds, reject non-ELF inputs to avoid
+            // storing unverified programs via the admin API.
+            return Err(Status::invalid_argument(
+                "non-ELF program images are not accepted in this build; \
+                submit an ELF binary so the gateway can verify it with Prevail",
+            ));
+        };
+
         record.abi_version = req.abi_version;
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
@@ -419,9 +454,11 @@ impl GatewayAdmin for AdminService {
     /// Export gateway state (nodes + programs) as an AES-256-GCM-encrypted
     /// CBOR bundle.
     ///
+    /// Note: Handler routing configuration is not included in this export.
+    /// Only node registry entries and program images are bundled.
+    ///
     /// The passphrase is used to derive the encryption key via
-    /// PBKDF2-HMAC-SHA256.  Handler routing configuration is not included
-    /// in the bundle (deferred to Phase 2C-iii).
+    /// PBKDF2-HMAC-SHA256.
     ///
     /// **Security note:** This RPC returns PSK material (encrypted with the
     /// operator passphrase).  The admin gRPC endpoint MUST be bound to a

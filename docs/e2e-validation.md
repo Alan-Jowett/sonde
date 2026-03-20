@@ -215,14 +215,14 @@ impl E2eNode {
 
 #### T-E2E-002b  Consecutive wake cycles
 
-**Validates:** GW-0600, ND-0300, ND-0301.
+**Validates:** GW-0600, ND-0300, ND-0301, ND-0304.
 
 **Preconditions:**
 1. Node registered with PSK `[0x55; 32]`.
 
 **Procedure:**
 1. Run a full wake cycle on a `NodeProxy` — verify it completes with `Sleep { seconds: 60 }`.
-2. Run a second wake cycle on the **same** `NodeProxy` (same storage, same RNG state).
+2. Run a second wake cycle on the **same** `NodeProxy` (same storage, same RNG instance — internal state advances).
 3. Collect the WAKE nonces from both cycles.
 
 **Assertions:**
@@ -485,7 +485,7 @@ impl E2eNode {
 
 #### T-E2E-052  Consecutive wake cycles through modem bridge
 
-**Validates:** GW-1100, modem protocol, ND-0300.
+**Validates:** GW-1100, modem protocol, ND-0300, ND-0304.
 
 **Preconditions:**
 1. Gateway transport and modem bridge operational.
@@ -766,7 +766,7 @@ impl E2eNode {
 
 #### T-E2E-081  E2E ephemeral program restrictions
 
-**Validates:** bpf-environment.md §2.2, ND-0503.
+**Validates:** bpf-environment.md §2.2, ND-0603, ND-0604.
 
 **Preconditions:**
 1. Node registered with a PSK.
@@ -830,7 +830,7 @@ impl E2eNode {
 |---------|-------------|
 | T-E2E-001 | GW-0100, GW-0102, GW-0103, ND-0200, ND-0201 |
 | T-E2E-002 | GW-0600, ND-0300, ND-0301 |
-| T-E2E-002b | GW-0600, ND-0300, ND-0301 |
+| T-E2E-002b | GW-0600, ND-0300, ND-0301, ND-0304 |
 | T-E2E-003 | GW-0601, GW-1002, ND-0301 |
 | T-E2E-010 | GW-0201, GW-0300, GW-0302, ND-0500, ND-0501, ND-0506 |
 | T-E2E-011 | GW-0200 |
@@ -843,7 +843,7 @@ impl E2eNode {
 | T-E2E-041 | GW-0602, ND-0303 |
 | T-E2E-050 | GW-1100, GW-1101 |
 | T-E2E-051 | GW-1100, modem protocol |
-| T-E2E-052 | GW-1100, modem protocol, ND-0300 |
+| T-E2E-052 | GW-1100, modem protocol, ND-0300, ND-0304 |
 | T-E2E-053 | GW-0601, GW-1002, ND-0301 |
 | T-E2E-054 | GW-0201, GW-0300, GW-1100, ND-0500, ND-0501 |
 | T-E2E-060 | GW-1200, GW-1201 |
@@ -858,7 +858,7 @@ impl E2eNode {
 | T-E2E-069 | GW-1216 |
 | T-E2E-070 | GW-1200, GW-1206, GW-1209, GW-1211, GW-1218, ND-0905, ND-0909, ND-0914, ND-0602 |
 | T-E2E-080 | bpf-environment.md §5, ND-0603 |
-| T-E2E-081 | bpf-environment.md §2.2, ND-0503 |
+| T-E2E-081 | bpf-environment.md §2.2, ND-0603, ND-0604 |
 | T-E2E-082 | ND-0501, ND-0502 |
 | T-E2E-083 | bpf-environment.md §3.3, ND-0605 |
 
@@ -875,7 +875,7 @@ crates/sonde-e2e/
 ├── Cargo.toml          # depends on sonde-gateway, sonde-node, sonde-modem, sonde-protocol, sonde-pair
 └── tests/
     ├── harness.rs      # shared test setup (ChannelRadio, ChannelTransport, E2eNode, BLE pairing helpers, etc.)
-    └── e2e_tests.rs    # test cases T-E2E-001 through T-E2E-083
+    └── e2e_tests.rs    # test cases T-E2E-001 through T-E2E-070 (T-E2E-080..083 are spec-only, not yet implemented)
 ```
 
 ### 6.2  Async ↔ sync bridge

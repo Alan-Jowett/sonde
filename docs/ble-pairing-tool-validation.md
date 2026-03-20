@@ -17,6 +17,33 @@ This document defines test cases that validate the BLE pairing tool against the 
 
 **Test harness:** All CI tests use a **mock BLE transport** (in-process implementation of the `BleTransport` trait) and a **mock pairing store** (in-memory implementation of the `PairingStore` trait). No real BLE hardware is needed. Manual tests against physical hardware are specified separately.
 
+**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), PT-0104 (separation of concerns), and PT-1004 (reusable core) are structural constraints validated by CI build targets (Android `aarch64-linux-android`, Windows `x86_64-pc-windows-msvc`) and code review of `Cargo.toml` dependency graphs.  They do not have runtime test cases in this document.
+
+**Testing meta-requirement traceability:** The following mapping shows how requirements PT-1200–PT-1206 are satisfied by the test suites in this document:
+
+| Meta-requirement | Description | Satisfied by |
+|---|---|---|
+| PT-1200 | Mocked BLE transport for CI | Test harness infrastructure (§2); all CI tests use `MockBleTransport` |
+| PT-1201 | Phase 1 happy path | T-PT-208 |
+| PT-1202 | Phase 1 error paths | T-PT-203, T-PT-204, T-PT-206, T-PT-209, T-PT-210, T-PT-211, T-PT-212 |
+| PT-1203 | Phase 2 happy path | T-PT-311 |
+| PT-1204 | Phase 2 error paths | T-PT-300, T-PT-310, T-PT-312, T-PT-313, T-PT-314 |
+| PT-1205 | Input validation | T-PT-303, T-PT-304, T-PT-305, T-PT-306 |
+| PT-1206 | Manual testing on physical hardware | Manual test procedures in §10 (T-PT-800–T-PT-807) |
+
+**Cryptographic primitive coverage (PT-1100):** PT-1100 requires all eight cryptographic primitives to be implemented.  Rather than a single aggregate test, coverage is provided structurally by the test suite's dependency on each primitive:
+
+| Primitive | Test(s) exercising it |
+|---|---|
+| Ed25519 signature verification | T-PT-202, T-PT-203 |
+| X25519 ECDH | T-PT-208, T-PT-308 |
+| Ed25519 → X25519 conversion | T-PT-309 |
+| HKDF-SHA256 | T-PT-900, T-PT-901 |
+| AES-256-GCM | T-PT-212, T-PT-902 |
+| HMAC-SHA256 | T-PT-307 |
+| SHA-256 | T-PT-303 |
+| CSPRNG | T-PT-302, T-PT-702 |
+
 ---
 
 ## 2  Test environment

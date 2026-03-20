@@ -11,7 +11,11 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 60 test cases total.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 66 test cases total.
+
+### Traceability note
+
+The protocol specification (`protocol.md`) uses prose-based assertions without formal requirement IDs (e.g., `[PR-NNNN]`). Test cases in this document reference `protocol.md` section numbers for traceability (e.g., `**Validates:** protocol.md §3.1`). A future pass should add formal requirement identifiers to `protocol.md` to enable precise requirement-to-test mapping.
 
 ### Test HMAC/SHA providers
 
@@ -29,6 +33,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P001  Header round-trip
 
+**Validates:** protocol.md §3.1 (Header fields — fixed binary layout)
+
 **Procedure:**
 1. Create `FrameHeader { key_hint: 0x1234, msg_type: 0x01, nonce: 0xDEADBEEFCAFEBABE }`.
 2. Serialize to bytes.
@@ -38,6 +44,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P002  Header byte layout
+
+**Validates:** protocol.md §3.1 (Header encoding — fixed byte offsets, big-endian)
 
 **Procedure:**
 1. Create header with known values.
@@ -51,6 +59,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P003  Header zero values
 
+**Validates:** protocol.md §3.1 (Header fields — boundary values)
+
 **Procedure:**
 1. Create header with all fields = 0.
 2. Serialize, deserialize.
@@ -59,6 +69,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P004  Header max values
+
+**Validates:** protocol.md §3.1 (Header fields — boundary values)
 
 **Procedure:**
 1. Create header with `key_hint = 0xFFFF`, `msg_type = 0xFF`, `nonce = u64::MAX`.
@@ -71,6 +83,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P010  Encode and decode round-trip
 
+**Validates:** protocol.md §3 (Frame format — header ∥ payload ∥ HMAC layout)
+
 **Procedure:**
 1. Create a header and CBOR payload.
 2. Encode with `encode_frame()`.
@@ -81,6 +95,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P011  HMAC verification — valid
 
+**Validates:** protocol.md §7.1 (HMAC computation)
+
 **Procedure:**
 1. Encode a frame with PSK_A.
 2. Decode and verify with PSK_A.
@@ -90,6 +106,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P012  HMAC verification — wrong key
 
+**Validates:** protocol.md §7.1 (HMAC computation — key mismatch)
+
 **Procedure:**
 1. Encode a frame with PSK_A.
 2. Decode and verify with PSK_B.
@@ -98,6 +116,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P013  HMAC verification — tampered payload
+
+**Validates:** protocol.md §3.2 (HMAC covers header + payload), §7.1
 
 **Procedure:**
 1. Encode a frame.
@@ -109,6 +129,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P014  HMAC verification — tampered header
 
+**Validates:** protocol.md §3.2 (HMAC covers header + payload), §7.1
+
 **Procedure:**
 1. Encode a frame.
 2. Flip one bit in the header portion (e.g., msg_type).
@@ -118,6 +140,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P015  HMAC verification — tampered HMAC
+
+**Validates:** protocol.md §7.1 (HMAC computation — tag integrity)
 
 **Procedure:**
 1. Encode a frame.
@@ -129,6 +153,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P016  Frame too short
 
+**Validates:** protocol.md §3.3 (Frame size budget — minimum frame size)
+
 **Procedure:**
 1. Call `decode_frame()` with 42 bytes (less than MIN_FRAME_SIZE).
 2. Assert: `DecodeError::TooShort`.
@@ -136,6 +162,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P017  Frame exactly minimum size
+
+**Validates:** protocol.md §3.3 (Frame size budget — minimum frame size)
 
 **Procedure:**
 1. Encode a frame with empty payload.
@@ -146,6 +174,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P018  Frame too large
 
+**Validates:** protocol.md §3.3 (Frame size budget — 250-byte maximum)
+
 **Procedure:**
 1. Call `encode_frame()` with a payload that would make the total exceed 250 bytes.
 2. Assert: `EncodeError::FrameTooLarge`.
@@ -153,6 +183,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P019  Frame exactly max size
+
+**Validates:** protocol.md §3.3 (Frame size budget — 250-byte maximum, 207-byte payload)
 
 **Procedure:**
 1. Encode a frame with payload exactly 207 bytes.
@@ -163,6 +195,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P019a  decode_frame with >250 raw bytes
 
+**Validates:** protocol.md §3.3 (Frame size budget — 250-byte maximum)
+
 **Procedure:**
 1. Construct a 251-byte buffer.
 2. Call `decode_frame()`.
@@ -171,6 +205,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P019b  Invalid CBOR payload
+
+**Validates:** protocol.md §8 (Error handling — malformed CBOR)
 
 **Procedure:**
 1. Construct an invalid CBOR payload (e.g., raw bytes `[0xFF, 0xFF]`).
@@ -181,6 +217,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P019c  Type-mismatched CBOR field
+
+**Validates:** protocol.md §8 (Error handling — malformed CBOR)
 
 **Procedure:**
 1. Build CBOR where a field expected to be uint is instead a text string (e.g., set `KEY_BATTERY_MV` to `"hello"` in a Wake message).
@@ -193,6 +231,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P020  Wake encode/decode round-trip
 
+**Validates:** protocol.md §5.1 (WAKE message fields)
+
 **Procedure:**
 1. Create `NodeMessage::Wake { firmware_abi_version: 1, program_hash: vec![0xAA; 32], battery_mv: 3300 }`.
 2. Encode to CBOR.
@@ -203,6 +243,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P021  Wake with empty program hash
 
+**Validates:** protocol.md §5.1 (WAKE — zero-length `program_hash` when no program installed)
+
 **Procedure:**
 1. Create Wake with `program_hash: vec![]` (no program installed).
 2. Round-trip.
@@ -212,14 +254,18 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P022  Command NOP round-trip
 
+**Validates:** protocol.md §5.2 (COMMAND — NOP command type)
+
 **Procedure:**
-1. Create `GatewayMessage::Command { command_type: CMD_NOP, starting_seq: 42, timestamp_ms: 1710000000000, payload: CommandPayload::Nop }`.
+1. Create a COMMAND with `CommandPayload::Nop`, `starting_seq: 42`, `timestamp_ms: 1710000000000`.
 2. Round-trip.
 3. Assert: all fields match.
 
 ---
 
 ### T-P023  Command UPDATE_PROGRAM round-trip
+
+**Validates:** protocol.md §5.2.1 (UPDATE_PROGRAM payload fields)
 
 **Procedure:**
 1. Create Command with `CommandPayload::UpdateProgram { program_hash, program_size: 4000, chunk_size: 190, chunk_count: 22 }`.
@@ -230,6 +276,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P024  Command UPDATE_SCHEDULE round-trip
 
+**Validates:** protocol.md §5.2.2 (UPDATE_SCHEDULE payload fields)
+
 **Procedure:**
 1. Create Command with `CommandPayload::UpdateSchedule { interval_s: 300 }`.
 2. Round-trip.
@@ -238,6 +286,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P025  GetChunk round-trip
+
+**Validates:** protocol.md §5.3 (GET_CHUNK message fields)
 
 **Procedure:**
 1. Create `NodeMessage::GetChunk { chunk_index: 7 }`.
@@ -248,6 +298,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P026  Chunk round-trip
 
+**Validates:** protocol.md §5.4 (CHUNK message fields)
+
 **Procedure:**
 1. Create `GatewayMessage::Chunk { chunk_index: 7, chunk_data: vec![0x55; 190] }`.
 2. Round-trip.
@@ -256,6 +308,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P027  AppData round-trip
+
+**Validates:** protocol.md §5.6 (APP_DATA message fields)
 
 **Procedure:**
 1. Create `NodeMessage::AppData { blob: vec![1, 2, 3, 4, 5] }`.
@@ -266,6 +320,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P028  AppDataReply round-trip
 
+**Validates:** protocol.md §5.7 (APP_DATA_REPLY message fields)
+
 **Procedure:**
 1. Create `GatewayMessage::AppDataReply { blob: vec![0xAA, 0xBB] }`.
 2. Round-trip.
@@ -274,6 +330,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P029  Unknown CBOR keys ignored
+
+**Validates:** protocol.md §5 (CBOR key mapping — forward compatibility)
 
 **Procedure:**
 1. Encode a Wake message.
@@ -285,6 +343,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P030  Missing required field
 
+**Validates:** protocol.md §5.1 (WAKE — required fields)
+
 **Procedure:**
 1. Manually construct CBOR for a Wake with `battery_mv` omitted.
 2. Decode.
@@ -294,6 +354,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P031  Invalid msg_type
 
+**Validates:** protocol.md §4 (Message types — direction-bit discriminator)
+
 **Procedure:**
 1. Call `NodeMessage::decode(0xFF, &valid_cbor)`.
 2. Assert: `DecodeError::InvalidMsgType(0xFF)`.
@@ -301,6 +363,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P032  CBOR integer keys used on wire
+
+**Validates:** protocol.md §5 (CBOR key mapping — integer keys for compactness)
 
 **Procedure:**
 1. Encode a Wake message.
@@ -310,6 +374,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P033  ProgramAck round-trip
+
+**Validates:** protocol.md §5.5 (PROGRAM_ACK message fields)
 
 **Procedure:**
 1. Choose a fixed 32-byte test hash: `let program_hash = vec![0xABu8; 32];`.
@@ -322,6 +388,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P034  Cmd(RunEphemeral) round-trip
 
+**Validates:** protocol.md §5.2.1 (RUN_EPHEMERAL payload fields)
+
 **Procedure:**
 1. Create `GatewayMessage::Command { starting_seq: 100, timestamp_ms: 1_710_000_000_000, payload: CommandPayload::RunEphemeral { program_hash: vec![0xBBu8; 32], program_size: 4000, chunk_size: 190, chunk_count: 22 } }`.
 2. Encode to CBOR.
@@ -331,6 +399,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P035  Cmd(Reboot) round-trip
+
+**Validates:** protocol.md §5.2 (COMMAND — REBOOT command type, key 5 omitted)
 
 **Procedure:**
 1. Create `GatewayMessage::Command { starting_seq: 1, timestamp_ms: 1_710_000_000_000, payload: CommandPayload::Reboot }`.
@@ -343,6 +413,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P036  Missing-field detection for non-Wake types
 
+**Validates:** protocol.md §5.2–§5.7 (Required fields across all message types)
+
 **Procedure:**
 1. For each of Command, GetChunk, Chunk, ProgramAck, AppData, AppDataReply: encode valid CBOR.
 2. For each message type, remove one required field (e.g., remove `KEY_STARTING_SEQ` from Command, `KEY_PROGRAM_HASH` from ProgramAck, `KEY_BLOB` from AppData).
@@ -353,6 +425,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P037  Unknown CBOR keys ignored in non-Wake messages
 
+**Validates:** protocol.md §5 (CBOR key mapping — forward compatibility across all message types)
+
 **Procedure:**
 1. For each of Command, GetChunk, Chunk, ProgramAck, AppData, AppDataReply: add an extra CBOR key (e.g., key 99) to valid encoded bytes.
 2. Decode each.
@@ -362,14 +436,25 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P038  COMMAND nested payload CBOR byte inspection
 
+**Validates:** protocol.md §5.2 (COMMAND structure — nested payload map)
+
 **Procedure:**
 1. Encode a `GatewayMessage::Command` with `CommandPayload::UpdateProgram`.
 2. Inspect raw CBOR bytes.
-3. Assert: the command envelope and payload are structured as nested maps (not flattened), matching the wire format in protocol.md §5.2.
+3. Assert: the top-level CBOR map contains keys {4, 5, 13, 14} (`command_type`, `payload`, `starting_seq`, `timestamp_ms`).
+4. Assert: key 5 (`payload`) contains a nested CBOR map with the `UpdateProgram` sub-fields (keys 2, 6, 7, 8).
+5. Encode a `GatewayMessage::Command` with `CommandPayload::Nop`.
+6. Inspect raw CBOR bytes.
+7. Assert: the top-level CBOR map contains keys {4, 13, 14} only — key 5 (`payload`) is absent.
+8. Encode a `GatewayMessage::Command` with `CommandPayload::Reboot`.
+9. Inspect raw CBOR bytes.
+10. Assert: the top-level CBOR map contains keys {4, 13, 14} only — key 5 (`payload`) is absent.
 
 ---
 
 ### T-P039  Large u64 values round-trip
+
+**Validates:** protocol.md §5 (CBOR encoding — integer types)
 
 **Procedure:**
 1. Encode a Wake with `battery_mv = u32::MAX`.
@@ -386,6 +471,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P040  ProgramImage encode/decode round-trip
 
+**Validates:** protocol.md §5 (Program image format — CBOR structure)
+
 **Procedure:**
 1. Create `ProgramImage { bytecode: vec![0x18, 0x01, ...], maps: vec![MapDef { map_type: 1, key_size: 4, value_size: 64, max_entries: 16 }] }`.
 2. Encode with `encode_deterministic()`.
@@ -396,6 +483,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P041  ProgramImage empty maps
 
+**Validates:** protocol.md §5 (Program image format — empty maps array)
+
 **Procedure:**
 1. Create image with `maps: vec![]`.
 2. Round-trip.
@@ -405,6 +494,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P042  ProgramImage deterministic encoding
 
+**Validates:** protocol.md §5 (Program image format — deterministic encoding per RFC 8949 §4.2)
+
 **Procedure:**
 1. Create the same ProgramImage twice (independent construction).
 2. Encode both with `encode_deterministic()`.
@@ -413,6 +504,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P043  ProgramImage hash stability
+
+**Validates:** protocol.md §5 (Program image format — `program_hash` = SHA-256 of CBOR image)
 
 **Procedure:**
 1. Create a ProgramImage.
@@ -424,6 +517,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P044  Different maps produce different hashes
 
+**Validates:** protocol.md §5 (Program image format — hash covers both bytecode and map definitions)
+
 **Procedure:**
 1. Create image A with `max_entries: 16`.
 2. Create image B with identical bytecode but `max_entries: 32`.
@@ -434,6 +529,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P045  Different bytecode produces different hashes
 
+**Validates:** protocol.md §5 (Program image format — hash covers both bytecode and map definitions)
+
 **Procedure:**
 1. Create two images with different bytecode but same maps.
 2. Hash both.
@@ -443,6 +540,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P046  ProgramImage deterministic encoding — key ordering
 
+**Validates:** protocol.md §5 (Program image format — deterministic encoding, RFC 8949 §4.2 key ordering)
+
 **Procedure:**
 1. Encode a ProgramImage.
 2. Inspect CBOR bytes.
@@ -451,6 +550,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P047  ProgramImage with empty bytecode
+
+**Validates:** protocol.md §5 (Program image format — boundary: empty bytecode)
 
 **Procedure:**
 1. Create `ProgramImage { bytecode: vec![], maps: vec![] }`.
@@ -463,6 +564,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P048  Deterministic CBOR minimal-length integer encoding
 
+**Validates:** protocol.md §5 (Program image format — deterministic encoding, RFC 8949 §4.2 minimal-length integers)
+
 **Procedure:**
 1. Encode a `ProgramImage` with a map having `max_entries = 23` (fits in 1-byte CBOR int) and another with `max_entries = 256` (requires 2-byte CBOR int).
 2. Inspect raw bytes.
@@ -471,6 +574,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P049  ProgramImage::decode() with malformed CBOR
+
+**Validates:** protocol.md §8 (Error handling — malformed CBOR)
 
 **Procedure:**
 1. Feed truncated CBOR bytes (e.g., first half of a valid encoding) to `ProgramImage::decode()`. Assert: returns an error (not panic).
@@ -482,6 +587,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ## 6  Chunking helper tests
 
 ### T-P050  chunk_count calculation
+
+**Validates:** protocol.md §5.2.1 (UPDATE_PROGRAM — `chunk_count` derivation from `program_size` and `chunk_size`)
 
 **Procedure:**
 1. `chunk_count(4000, 190)` → assert `Some(22)`.
@@ -495,6 +602,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P051  get_chunk — valid indices
 
+**Validates:** protocol.md §5.4 (CHUNK — chunked transfer data retrieval)
+
 **Procedure:**
 1. Create a 400-byte image, chunk_size = 190.
 2. `get_chunk(image, 0, 190)` → first 190 bytes.
@@ -505,6 +614,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P052  get_chunk — out of range
 
+**Validates:** protocol.md §8 (Error handling — `chunk_index` out of range)
+
 **Procedure:**
 1. 400-byte image, chunk_size = 190.
 2. `get_chunk(image, 3, 190)` → None.
@@ -513,6 +624,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P053  Reassembled chunks match original
+
+**Validates:** protocol.md §6.2 (Program update — chunked transfer reassembly and hash verification)
 
 **Procedure:**
 1. Create a program image, encode it.
@@ -526,6 +639,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P054  get_chunk with chunk_size = 0
 
+**Validates:** protocol.md §5.2.1 (UPDATE_PROGRAM — `chunk_size` boundary)
+
 **Procedure:**
 1. Call `get_chunk(data, 0, 0)` with non-empty data.
 2. Assert: returns `None` (not an empty slice or panic).
@@ -533,6 +648,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P055  chunk_count arithmetic overflow
+
+**Validates:** protocol.md §5.2.1 (UPDATE_PROGRAM — `chunk_count` arithmetic safety)
 
 **Procedure:**
 1. Call `chunk_count(usize::MAX, 1)`. Assert: returns `None` because the required chunk count does not fit in `u32` (no panic).
@@ -544,6 +661,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ## 7  Full integration tests
 
 ### T-P060  Complete frame encode → verify → decode message
+
+**Validates:** protocol.md §3 (Frame format), §7.1 (HMAC computation), §5.1 (WAKE)
 
 **Procedure:**
 1. Create a `NodeMessage::Wake`.
@@ -558,6 +677,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P061  Gateway Command full round-trip
 
+**Validates:** protocol.md §5.2 (COMMAND), §5.2.1 (UPDATE_PROGRAM payload), §7.1 (HMAC)
+
 **Procedure:**
 1. Create a `GatewayMessage::Command` with `UpdateProgram` payload.
 2. Encode CBOR, build frame, encode frame.
@@ -567,6 +688,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P062  Program image → chunk → reassemble → hash → decode
+
+**Validates:** protocol.md §5 (Program image format), §6.2 (Program update — chunked transfer)
 
 **Procedure:**
 1. Create `ProgramImage` with bytecode and 3 maps.
@@ -583,6 +706,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P063  Direction-bit cross-direction rejection
 
+**Validates:** protocol.md §4 (Message types — direction bit 0x01–0x7F vs 0x80–0xFF)
+
 **Procedure:**
 1. Encode a `NodeMessage::Wake` to CBOR.
 2. Pass the CBOR bytes and `msg_type = MSG_WAKE` (0x01, node→gateway range) to `GatewayMessage::decode()`.
@@ -594,6 +719,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P064  Nonce echo verification in request-response pair
+
+**Validates:** protocol.md §7.3 (Verification procedure — nonce echo matching)
 
 **Procedure:**
 1. Build a `FrameHeader` with `nonce = 0x1234567890ABCDEF`. Encode a WAKE frame.
@@ -607,6 +734,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P065  Multiple APP_DATA with incrementing sequences
 
+**Validates:** protocol.md §5.6 (APP_DATA — incrementing sequence numbers), §7.4 (Replay protection)
+
 **Procedure:**
 1. Encode 3 `NodeMessage::AppData { blob: ... }` messages with distinct payloads.
 2. Frame each with `encode_frame()` using `FrameHeader { nonce: 1, ... }`, `nonce: 2`, `nonce: 3` respectively.
@@ -617,6 +746,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ---
 
 ### T-P066  HMAC constant-time comparison behavior
+
+**Validates:** protocol.md §7.1 (HMAC computation — constant-time comparison)
 
 **Procedure:**
 1. Construct a message and compute its HMAC tag using `SoftwareHmac`.

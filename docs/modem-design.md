@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-The modem firmware is a simple bidirectional bridge between USB-CDC and ESP-NOW. It runs on an ESP32-S3 and has no awareness of the Sonde node–gateway protocol — it relays opaque byte frames, adding only peer MAC address and RSSI metadata.
+The modem firmware is a tri-directional bridge between USB-CDC, ESP-NOW, and BLE GATT. It runs on an ESP32-S3 and has no awareness of the Sonde node–gateway protocol — it relays opaque byte frames, adding only peer MAC address and RSSI metadata. BLE is used exclusively for the Gateway Pairing Service, which relays pairing messages between a phone and the gateway.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -20,16 +20,16 @@ The modem firmware is a simple bidirectional bridge between USB-CDC and ESP-NOW.
 │  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
 │  │ USB-CDC  │──│  Serial  │──│  Bridge   │──│  ESP-NOW   │  │
 │  │ Driver   │  │  Codec   │  │  Logic    │  │  Driver    │  │
+│  └──────────┘  └──────────┘  └─────┬─────┘  └────────────┘  │
+│                                    │                         │
+│  ┌──────────┐  ┌──────────┐  ┌─────┴─────┐  ┌────────────┐  │
+│  │ Counters │  │ Peer     │  │ BLE GATT  │──│  BLE       │  │
+│  │ & Status │  │ Table    │  │ Service   │  │  Driver    │  │
 │  └──────────┘  └──────────┘  └───────────┘  └────────────┘  │
-│                                                              │
-│  ┌──────────┐  ┌──────────┐                                  │
-│  │ Counters │  │ Peer     │                                  │
-│  │ & Status │  │ Table    │                                  │
-│  └──────────┘  └──────────┘                                  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The firmware is intentionally minimal — no crypto, no CBOR parsing, no sessions, no OTA updates.
+The firmware is intentionally minimal — no application- or protocol-layer crypto (all BLE link security is handled inside the BLE stack), no CBOR parsing, no OTA updates. The modem does not interpret message contents on any transport. BLE connection state is managed only for the GATT pairing relay; the modem holds no protocol-level sessions.
 
 ---
 
@@ -52,10 +52,14 @@ The firmware is intentionally minimal — no crypto, no CBOR parsing, no session
 |--------|---------------|---------------------|
 | **USB-CDC driver** | USB-CDC ACM device initialization, byte-level read/write | MD-0100 |
 | **Serial codec** | Length-prefixed frame encode/decode, message type dispatch | MD-0101, MD-0102, MD-0103 |
-| **Bridge logic** | Routes messages between USB and ESP-NOW, command dispatch | MD-0201, MD-0202, MD-0205 |
+| **Bridge logic** | Routes messages between USB, ESP-NOW, and BLE; command dispatch; reset orchestration | MD-0201, MD-0202, MD-0205, MD-0208, MD-0209, MD-0300 |
 | **ESP-NOW driver** | WiFi/ESP-NOW init, send, receive callback, channel config | MD-0200, MD-0206, MD-0207 |
 | **Peer table** | Auto-registration and LRU eviction of ESP-NOW peers | MD-0203, MD-0204 |
 | **Counters & status** | `tx_count`, `rx_count`, `tx_fail_count`, `uptime_s` tracking | MD-0303 |
+| **BLE driver** | NimBLE stack init, advertising start/stop, GATT server, LESC pairing | MD-0402, MD-0404, MD-0407, MD-0412 |
+| **BLE GATT service** | Gateway Pairing Service + Gateway Command characteristic; indication pacing; Write Long reassembly | MD-0400, MD-0401, MD-0403, MD-0408, MD-0409 |
+| **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414 |
+| **Watchdog** *(cross-cutting)* | Task watchdog feed in main loop; hardware reset on stall | MD-0302 |
 
 ---
 
@@ -246,7 +250,10 @@ On `RESET` command or USB reconnection:
 4. `esp_now_init()` on channel 1.
 5. Re-register callbacks.
 6. Reset the serial codec's inbound parser state.
-7. Send `MODEM_READY`.
+7. If BLE is enabled, perform the same internal disable logic as handling `BLE_DISABLE`: stop advertising and disconnect any active BLE client.
+8. Send `MODEM_READY`.
+
+`MODEM_READY` MUST be sent within 2 seconds of USB enumeration (or re-enumeration after reconnection) per MD-0104. This deadline applies to both initial boot and `RESET`-triggered reinitialisation.
 
 ---
 
@@ -341,3 +348,85 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 `CONFIG_ESPTOOLPY_FLASHFREQ_80M=y` sets the SPI flash clock to 80 MHz, which is the maximum supported by the ESP32-S3 in DIO mode and improves firmware load performance.
 
 `CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y` declares the installed flash capacity. This must match the actual hardware. The partition table is sized accordingly; using a mismatched value causes the bootloader to reject the partition table at boot.
+
+---
+
+## 15  BLE pairing relay
+
+The modem hosts the BLE Gateway Pairing Service, enabling phones to discover and pair with the gateway over Bluetooth Low Energy. The modem acts as an opaque relay — it forwards BLE messages to/from the gateway via dedicated serial message types (`BLE_RECV`, `BLE_INDICATE`) without interpreting payload contents.
+
+### 15.1  GATT service setup
+
+The modem registers a single GATT service using the NimBLE stack (MD-0400):
+
+- **Service UUID:** `0000FE60-0000-1000-8000-00805F9B34FB` (Gateway Pairing Service)
+- **Characteristic UUID:** `0000FE61-0000-1000-8000-00805F9B34FB` (Gateway Command)
+- **Properties:** Write + Indicate
+
+The characteristic supports Write for phone→gateway messages and Indicate (with ATT Handle Value Confirmation) for gateway→phone messages (MD-0401).
+
+### 15.2  LESC pairing
+
+The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-0402, MD-0404). During pairing:
+
+1. The NimBLE stack generates a 6-digit passkey.
+2. The modem sends `BLE_PAIRING_CONFIRM` to the gateway with the passkey.
+3. The modem waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`).
+4. If no reply arrives within 30 seconds, the modem rejects the pairing (MD-0414).
+5. On successful pairing, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
+
+Just Works remains available as a fallback when the phone does not support Numeric Comparison (MD-0404).
+
+### 15.3  ATT MTU and indication pacing
+
+The modem negotiates ATT MTU ≥ 247 with the connecting client. If the negotiated MTU is below 247, the modem disconnects the client (MD-0402).
+
+When sending indications larger than (MTU − 3) bytes, the modem fragments the message into chunks of at most (MTU − 3) bytes and sends each chunk as a separate ATT indication (MD-0403). The modem MUST wait for an ATT Handle Value Confirmation before sending the next chunk. Messages from different `BLE_INDICATE` commands are never interleaved.
+
+### 15.4  BLE connection lifecycle
+
+Only one BLE client may be connected at a time (MD-0405). On connection:
+
+- The modem sends `BLE_CONNECTED` (0xA1) with the peer BLE address and negotiated MTU (MD-0410).
+
+On disconnection:
+
+- The modem sends `BLE_DISCONNECTED` (0xA2) with the peer address and HCI reason code (MD-0411).
+- All GATT state is cleaned up; subsequent connections start fresh (MD-0405).
+
+BLE pairing operations do not interfere with concurrent ESP-NOW radio operations (MD-0405).
+
+### 15.5  Write Long reassembly
+
+GATT Write Long (Prepare Write + Execute Write) payloads are reassembled by the NimBLE stack before the modem forwards the complete payload as a single `BLE_RECV` (0xA0) serial message (MD-0409). Empty GATT writes are silently discarded.
+
+### 15.6  Serial message flow
+
+Two serial message types carry BLE traffic:
+
+| Direction | Type | Code | Description |
+|-----------|------|------|-------------|
+| Gateway → modem | `BLE_INDICATE` | 0x20 | Delivers `ble_data` as a GATT indication to the connected phone (MD-0408) |
+| Modem → gateway | `BLE_RECV` | 0xA0 | Forwards a GATT write from the phone to the gateway (MD-0409) |
+
+If no BLE client is connected when `BLE_INDICATE` arrives, the message is silently discarded. Empty `BLE_INDICATE` frames (no `ble_data`) are also silently discarded (MD-0408).
+
+### 15.7  Advertising control
+
+BLE advertising is **off by default** after boot and after `RESET` (MD-0407, MD-0412). The gateway controls advertising via:
+
+- `BLE_ENABLE` — starts advertising the Gateway Pairing Service UUID so phones can discover the modem (MD-0413).
+- `BLE_DISABLE` — stops advertising and disconnects any active BLE client, triggering `BLE_DISCONNECTED` (MD-0413).
+
+Both commands are idempotent. When no client is connected and BLE is enabled, the modem advertises continuously.
+
+### 15.8  Disconnection cleanup
+
+On BLE client disconnection (MD-0405, MD-0413, MD-0414):
+
+1. Pending indication fragments are discarded.
+2. GATT characteristic state is reset.
+3. `BLE_DISCONNECTED` is sent to the gateway (MD-0411).
+4. If BLE is still enabled, advertising resumes (MD-0407).
+
+On `BLE_DISABLE`, the modem disconnects the active client (if any) and stops advertising. On `RESET`, BLE is disabled as part of the full reinitialisation sequence.

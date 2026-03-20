@@ -236,6 +236,38 @@ On `SCAN_CHANNELS`, the modem firmware MUST perform a WiFi AP scan across all ch
 
 ---
 
+### MD-0208  SEND_FRAME body validation
+
+**Priority:** Must
+**Source:** modem-protocol.md §6.1
+
+**Description:**
+The modem firmware MUST silently discard `SEND_FRAME` messages whose body is shorter than 7 bytes (6-byte peer MAC + at least 1 byte of frame data). No `ERROR` is sent; the modem continues processing subsequent frames normally.
+
+**Acceptance criteria:**
+
+1. A `SEND_FRAME` with fewer than 7 body bytes is silently discarded.
+2. `tx_count` is not incremented for the discarded frame.
+3. The modem remains operational after the discard.
+
+---
+
+### MD-0209  SET_CHANNEL error reporting
+
+**Priority:** Must
+**Source:** modem-protocol.md §6.1
+
+**Description:**
+The modem firmware MUST respond with `ERROR(CHANNEL_SET_FAILED)` when `SET_CHANNEL` specifies an invalid channel number (e.g., 0 or > 14). The current channel MUST remain unchanged.
+
+**Acceptance criteria:**
+
+1. `SET_CHANNEL(0)` produces `ERROR(CHANNEL_SET_FAILED)`.
+2. `SET_CHANNEL(15)` produces `ERROR(CHANNEL_SET_FAILED)`.
+3. The operating channel is unchanged after a failed `SET_CHANNEL`.
+
+---
+
 ## 5  Reliability and reset
 
 ### MD-0300  Reset command
@@ -569,6 +601,8 @@ During BLE LESC Numeric Comparison pairing, the modem MUST send `BLE_PAIRING_CON
 | MD-0205 | Frame ordering | Must |
 | MD-0206 | Channel change | Must |
 | MD-0207 | Channel scanning | Must |
+| MD-0208 | SEND_FRAME body validation | Must |
+| MD-0209 | SET_CHANNEL error reporting | Must |
 | MD-0300 | Reset command | Must |
 | MD-0301 | USB disconnection handling | Must |
 | MD-0302 | Watchdog timer | Should |

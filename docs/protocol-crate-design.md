@@ -188,6 +188,19 @@ pub fn verify_frame(
 
 Recomputes HMAC over the header + payload bytes and compares with `frame.hmac`.
 
+### 5.5  `key_hint` derivation
+
+```rust
+/// Derive the 2-byte key hint from a PSK.
+/// key_hint = u16::from_be_bytes(SHA-256(PSK)[30..32])
+pub fn key_hint_from_psk(psk: &[u8; 32], sha: &impl Sha256Provider) -> u16 {
+    let hash = sha.hash(psk);
+    u16::from_be_bytes([hash[30], hash[31]])
+}
+```
+
+This consolidates the `key_hint` derivation formula that the gateway and node otherwise implement independently. The derivation takes the **lower** 16 bits (bytes 30–31) of the SHA-256 hash of the PSK, interpreted as a big-endian `u16`. See protocol.md §3.1.1 for `key_hint` semantics.
+
 ---
 
 ## 6  Message types
@@ -266,7 +279,24 @@ impl GatewayMessage {
 }
 ```
 
-### 6.3  CBOR encoding rules
+### 6.3  `command_type` / `CommandPayload` consistency invariant
+
+The `command_type` field (CBOR key 4) in the COMMAND payload is the authoritative wire-format discriminator. It MUST match the `CommandPayload` variant in `GatewayMessage::Command`:
+
+| `command_type` | `CommandPayload` variant |
+|---|---|
+| `CMD_NOP` (0x00) | `Nop` |
+| `CMD_UPDATE_PROGRAM` (0x01) | `UpdateProgram { .. }` |
+| `CMD_RUN_EPHEMERAL` (0x02) | `RunEphemeral { .. }` |
+| `CMD_UPDATE_SCHEDULE` (0x03) | `UpdateSchedule { .. }` |
+| `CMD_REBOOT` (0x04) | `Reboot` |
+
+- **`encode()`** derives `command_type` from the `CommandPayload` variant — callers never set it manually.
+- **`decode()`** reads `command_type` from the CBOR map, selects the corresponding `CommandPayload` variant, and validates that the nested `payload` (key 5) structure is consistent (e.g., `CMD_NOP` and `CMD_REBOOT` must not contain key 5; `CMD_UPDATE_PROGRAM` must contain key 5 with the required sub-fields).
+
+Because `command_type` is fully determined by the `CommandPayload` variant, the public `GatewayMessage::Command` API is defined in terms of the payload only; implementations may cache the derived `command_type` internally for pattern matching and logging, but callers do not read or write it directly.
+
+### 6.4  CBOR encoding rules
 
 - All payloads are CBOR maps with integer keys (§3 constants).
 - Unknown keys in inbound messages are ignored (forward compatibility).

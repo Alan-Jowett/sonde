@@ -414,7 +414,7 @@ The tool MUST encrypt the authenticated request using ECDH + HKDF-SHA256 + AES-2
 **Acceptance criteria:**
 
 1. A fresh ephemeral X25519 keypair is generated for each provisioning attempt.
-2. Ed25519 → X25519 conversion rejects low-order points.
+2. Ed25519 → X25519 conversion rejects low-order points.  *(This criterion overlaps with PT-0902, which is the authoritative requirement for Ed25519 → X25519 low-order point rejection.)*
 3. The HKDF salt is `gateway_id` and info is `"sonde-node-pair-v1"`.
 4. AES-256-GCM AAD is `gateway_id`.
 5. The encrypted payload assembles as `eph_public ‖ nonce ‖ ciphertext`.

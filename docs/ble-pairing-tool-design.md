@@ -274,8 +274,11 @@ pub trait BleTransport: Send + Sync {
     async fn get_scan_results(&self) -> Result<Vec<ScannedDevice>, PairingError>;
 
     /// Connect to a device. Returns the negotiated ATT MTU.
-    /// The implementation handles LESC pairing (Numeric Comparison
-    /// for gateway, Just Works for node).
+    /// The implementation handles LESC pairing: Numeric Comparison
+    /// is required for gateway connections (PT-0300) — a Just Works
+    /// fallback MUST be treated as a connection failure.  Just Works
+    /// is acceptable only for node provisioning connections.
+    /// Connection establishment MUST time out after 10 seconds (PT-1002).
     async fn connect(&self, device: &DeviceId) -> Result<u16, PairingError>;
 
     /// Disconnect from the currently connected device.
@@ -672,7 +675,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 
 - **BLE library:** `btleplug` uses the WinRT Bluetooth API via `windows` crate bindings.
 - **MTU negotiation:** WinRT handles ATT MTU exchange during connection.  The negotiated MTU is available via `BluetoothLEDevice.MaxPduSize`.  Note that WinRT may negotiate a lower MTU than requested; the protocol layer handles the < 247 rejection.
-- **Numeric Comparison:** The WinRT pairing ceremony handles the Numeric Comparison passkey display.  The `btleplug` integration receives pairing events and can surface the 6-digit passkey to the UI.
+- **Numeric Comparison:** The WinRT pairing ceremony handles the Numeric Comparison passkey display.  The `btleplug` integration receives pairing events and can surface the 6-digit passkey to the UI.  A Just Works fallback for gateway connections MUST be treated as a connection failure (PT-0300).
 - **Storage:** `%APPDATA%\sonde\pairing.json` with restricted file permissions (ACL: user-only read/write).
 - **Known issues:** Some Windows BLE drivers have limited Write Long support.  The transport should fall back to standard writes if the payload fits within (MTU − 3) bytes and only use Write Long for larger messages.
 

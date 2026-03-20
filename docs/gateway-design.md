@@ -40,7 +40,7 @@ The gateway is **stateless with respect to replay protection** — active sessio
 
 ## 3  Module architecture
 
-The gateway is composed of eight functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), and Handler Process (handler stdin/stdout management). Node Registry and Program Library share a common Storage trait abstraction at the bottom.
+The gateway is composed of ten functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), and BLE Pairing Handler (pairing protocol logic via modem relay). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API and BLE Pairing Handler are described in §13 and §17 respectively.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -67,7 +67,7 @@ The gateway is composed of eight functional modules grouped in two tiers. The up
 
 | Module | Responsibility | Requirements covered |
 |---|---|---|
-| **Transport** | Send/receive raw frames | GW-0100, GW-0104 |
+| **Transport** | Send/receive raw frames | GW-0100, GW-0104, GW-1100 |
 | **Protocol Codec** | Serialize/deserialize frames (header, CBOR, HMAC) | GW-0101, GW-0102, GW-0103, GW-0600, GW-0603 |
 | **Session Manager** | Per-node session lifecycle, sequence tracking, command dispatch | GW-0200–0204, GW-0602, GW-1002, GW-1003 |
 | **Node Registry** | PSK lookup, node metadata, battery/ABI tracking | GW-0601, GW-0700, GW-0701, GW-0702, GW-0703 |
@@ -75,6 +75,8 @@ The gateway is composed of eight functional modules grouped in two tiers. The up
 | **Handler Router** | Route APP_DATA to handler processes by program_hash | GW-0500, GW-0501, GW-0504–0508 |
 | **Handler Process** | Manage handler stdin/stdout lifecycle | GW-0502, GW-0503, GW-0506 |
 | **Storage** | Persist node registry, program library, configuration | GW-0700, GW-1000, GW-1001 |
+| **Admin API** | gRPC admin interface, CLI tool | GW-0800, GW-0801, GW-0802, GW-0803, GW-0804, GW-0805, GW-0806 |
+| **BLE Pairing Handler** | BLE pairing protocol logic via modem relay | GW-1200–GW-1222 |
 
 ---
 
@@ -110,7 +112,7 @@ The ESP-NOW adapter wraps the platform's ESP-NOW API:
 - `send()` transmits one ESP-NOW frame to the specified MAC address. The ESP-NOW peer is registered on first use.
 - The 250-byte frame size constraint (GW-0104) is enforced by ESP-NOW itself.
 
-### 4.2  USB modem adapter (`UsbEspNowTransport`)
+### 4.2  USB modem adapter (`UsbEspNowTransport`) (GW-1100)
 
 When the gateway runs on a host without ESP-NOW hardware, a USB-attached ESP32-S3 radio modem provides the radio link. The `UsbEspNowTransport` implements the `Transport` trait by speaking the modem serial protocol defined in [modem-protocol.md](modem-protocol.md).
 
@@ -622,7 +624,9 @@ All protocol errors result in **silent discard** — no error response is sent t
 
 ## 13  Admin API
 
-The gateway exposes a local gRPC API for administrative operations. A CLI tool (`sonde-admin`) wraps the API for operator use.
+> **Requirements:** GW-0800 (gRPC API), GW-0801 (node management), GW-0802 (program management), GW-0803 (operational commands), GW-0804 (node status), GW-0805 (state export/import), GW-0806 (CLI tool).
+
+The gateway exposes a local gRPC API for administrative operations (GW-0800). A CLI tool (`sonde-admin`) wraps the API for operator use (GW-0806).
 
 ### 13.1  gRPC service definition
 
@@ -767,3 +771,52 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 4. Flush any pending storage writes.
 5. Close transport.
 6. Exit.
+
+---
+
+## 17  BLE pairing protocol handler
+
+> **Requirements:** GW-1200–GW-1222.
+
+The gateway implements the pairing protocol logic defined in [ble-pairing-protocol.md](ble-pairing-protocol.md). The physical BLE layer (GATT service, advertising, ATT MTU negotiation, indication fragmentation) is hosted by the USB modem (GW-1204, GW-1205); the gateway processes pairing messages relayed over the modem serial protocol: inbound messages arrive as `BLE_RECV` and responses are sent as `BLE_INDICATE` (see §4.2 `UsbEspNowTransport`). `PEER_REQUEST` / `PEER_ACK` frames travel over ESP-NOW, not BLE, and follow the standard transport path.
+
+### 17.1  Gateway identity
+
+On first startup, the gateway generates an Ed25519 keypair from OS CSPRNG and persists the 32-byte seed encrypted at rest using the master key (GW-1200, GW-0601a). A random 16-byte `gateway_id` is generated alongside the keypair and persisted with it (GW-1201). Both values are stable across restarts. The Ed25519 key is converted to X25519 via the standard birational map for ECDH key agreement; low-order points are rejected (GW-1202). The seed and `gateway_id` can be exported and imported via the admin API (`ExportState` / `ImportState`) so that all members of a failover group share the same identity (GW-1203).
+
+### 17.2  BLE message relay
+
+The modem hosts the Gateway Pairing Service GATT service (UUID `0000FE60-…`) and controls BLE advertising. The gateway controls advertising lifetime by sending `BLE_ENABLE` / `BLE_DISABLE` to the modem when the registration window opens or closes (GW-1208). When a phone writes to the Gateway Command characteristic, the modem forwards the raw bytes to the gateway as a `BLE_RECV` serial message. The gateway processes the command and sends any response back via `BLE_INDICATE`; the modem handles fragmentation to fit within the negotiated ATT MTU (GW-1205). Numeric Comparison passkeys are relayed from the modem via `BLE_PAIRING_CONFIRM` and surfaced to the operator through the admin API streaming RPC (GW-1222).
+
+### 17.3  `REQUEST_GW_INFO` handling
+
+On receiving a `REQUEST_GW_INFO` command (BLE command `0x01`) via `BLE_RECV`, the gateway signs (`challenge` ‖ `gateway_id`) with its Ed25519 private key and returns a `GW_INFO_RESPONSE` containing `gw_public_key`, `gateway_id`, and `signature` via `BLE_INDICATE` (GW-1206). This allows the phone to verify gateway identity before proceeding with registration.
+
+### 17.4  Registration window and `REGISTER_PHONE`
+
+The registration window is opened by a physical button hold (≥ 2 s) or by the admin API `OpenBlePairing` RPC. Opening sends `BLE_ENABLE` to the modem; closing (explicit or auto-close after a configurable duration, default 120 s) sends `BLE_DISABLE` (GW-1207, GW-1208). `REGISTER_PHONE` commands received while the window is closed are rejected with `ERROR(0x02)` (GW-1207).
+
+When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: generates a 256-bit phone PSK from OS CSPRNG; derives `phone_key_hint` = `u16::from_be_bytes(SHA-256(psk)[30..32])` (big-endian u16 from the last two bytes of the hash); performs ECDH with the phone's ephemeral X25519 public key; derives an AES key via HKDF-SHA256 (salt = `gateway_id`, info = `"sonde-phone-reg-v1"`); encrypts the response (containing the phone PSK, `phone_key_hint`, and RF channel) with AES-256-GCM (AAD = `gateway_id`); and returns the encrypted `PHONE_REGISTERED` response via `BLE_INDICATE` (GW-1209). The phone PSK is stored with a label, issuance timestamp, and active status. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from HMAC verification (GW-1210).
+
+### 17.5  `PEER_REQUEST` processing
+
+`PEER_REQUEST` frames (msg_type `0x05`) arrive over ESP-NOW through the standard transport path, not BLE. Processing follows a multi-stage verification pipeline; any failure at any stage results in silent discard with no `PEER_ACK` sent (GW-1220). The gateway does not apply sequence-number anti-replay checks to `PEER_REQUEST` / `PEER_ACK` frames — these use random nonces (GW-1221).
+
+**Pipeline:**
+
+1. **Key-hint bypass** — For msg_type `0x05`, the gateway bypasses the normal `key_hint` → PSK fast-path lookup and proceeds directly to CBOR parsing (GW-1211).
+2. **Decryption** — The `encrypted_payload` is decrypted using ECDH (phone's ephemeral public key + gateway X25519 key) + HKDF-SHA256 (salt = `gateway_id`, info = `"sonde-node-pair-v1"`) + AES-256-GCM (AAD = `gateway_id`). GCM tag failure → discard (GW-1212).
+3. **Phone HMAC verification** — The gateway looks up all non-revoked phone PSKs matching `phone_key_hint` and tries each until one produces a valid HMAC. No match → discard (GW-1213).
+4. **Frame HMAC verification** — The frame HMAC is verified using the extracted `node_psk`. Mismatch → discard (GW-1214).
+5. **Timestamp validation** — The `PairingRequest` timestamp must be within ± 86 400 s of current time. Out of range → discard (GW-1215).
+6. **Node ID uniqueness** — The `node_id` must not already be registered. Duplicate → discard (GW-1216).
+7. **Key-hint consistency** — The frame header `key_hint` must match the CBOR `node_key_hint`. Mismatch → discard (GW-1217).
+8. **Node registration** — The node is registered with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (GW-1218). The node registry (§7) stores the new record through the storage trait.
+
+### 17.6  `PEER_ACK` generation
+
+After successful registration, the gateway computes `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1"` ‖ `encrypted_payload`), builds a `PEER_ACK` CBOR message `{1: 0, 2: registration_proof}`, HMACs the frame with `node_psk`, and echoes the `nonce` from the `PEER_REQUEST` header (GW-1219).
+
+### 17.7  Admin session
+
+The admin API exposes `OpenBlePairing` (server-streaming RPC) to open the registration window and enable BLE advertising, `CloseBlePairing` to close it, `ConfirmBlePairing` for Numeric Comparison passkey confirmation, `ListPhones` to enumerate registered phones, and `RevokePhone` to revoke a phone PSK (GW-1222). See §13 for the full gRPC service definition.

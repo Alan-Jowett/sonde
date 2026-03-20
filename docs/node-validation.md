@@ -304,6 +304,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Mock gateway assigns `starting_seq = 1000`.
 2. Node sends GET_CHUNK (seq=1000), APP_DATA (seq=1001), APP_DATA (seq=1002).
 3. Assert: sequence numbers increment by 1 for each outbound message.
+4. Node sleeps. On next wake, mock gateway assigns `starting_seq = 5000`.
+5. Assert: the first outbound message in the second wake cycle uses seq=5000, not a continuation from the first cycle.
+6. Assert: no sequence state is persisted across deep sleep (ND-0303 AC3).
 
 ---
 
@@ -338,7 +341,37 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Erase the key partition.
 2. Boot the node.
-3. Assert: no frames transmitted. Node enters deep sleep with radio off.
+3. Assert: no ESP-NOW frames transmitted. Node enters BLE pairing mode (ND-0900 boot path 1).
+
+---
+
+### T-N402  Full onboarding to wake cycle
+
+**Validates:** ND-0900, ND-0906, ND-0909, ND-0913, ND-0914
+
+**Procedure:**
+1. Boot an unpaired node; assert it enters BLE pairing mode (boot path 1).
+2. Provision the node via NODE_PROVISION with valid credentials; assert NODE_ACK(0x00).
+3. Disconnect BLE; node reboots.
+4. Assert: node enters PEER_REQUEST path (boot path 2 — PSK stored, `reg_complete` not set).
+5. Mock gateway responds with a valid PEER_ACK; assert `reg_complete` is set in NVS.
+6. Node reboots; assert it enters normal WAKE cycle (boot path 3).
+7. Mock gateway responds with a valid COMMAND.
+8. Assert: `peer_payload` is erased from NVS after the first successful WAKE/COMMAND exchange (ND-0914).
+
+---
+
+### T-N403  Same-session re-provision overwrites credentials
+
+**Validates:** ND-0905, ND-0907
+
+**Procedure:**
+1. Boot an unpaired node into BLE pairing mode.
+2. Send NODE_PROVISION with credentials A; assert NODE_ACK(0x00).
+3. Without disconnecting, send NODE_PROVISION with credentials B on the same BLE connection.
+4. Assert: NODE_ACK(0x00) returned for the second provision.
+5. Assert: NVS contains credentials B (credentials A are overwritten).
+6. Assert: `reg_complete` flag is cleared (ready for PEER_REQUEST on next boot).
 
 ---
 

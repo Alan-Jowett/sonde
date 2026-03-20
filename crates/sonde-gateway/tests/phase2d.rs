@@ -18,6 +18,7 @@ use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
 };
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tracing_test::traced_test;
 
 // ─── Modem test helpers ────────────────────────────────────────────────
 
@@ -260,7 +261,7 @@ fn write_handler_script(dir: &std::path::Path, name: &str, script: &str) -> Stri
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(script.as_bytes()).unwrap();
     f.flush().unwrap();
-    path.to_str().unwrap().to_string()
+    path.to_string_lossy().into_owned()
 }
 
 /// Find Python 3 executable name.
@@ -472,6 +473,7 @@ while True:
 /// The handler writes a LOG message upon receiving the event, which the
 /// gateway captures via tracing. Validates GW-0507 AC3.
 #[tokio::test]
+#[traced_test]
 async fn t0507b_node_timeout_event_delivered_to_handler() {
     require_python!();
     let tmp = tempfile::tempdir().unwrap();
@@ -498,15 +500,17 @@ async fn t0507b_node_timeout_event_delivered_to_handler() {
 
     // check_node_timeouts should detect the timed-out node and deliver
     // a node_timeout EVENT to the handler. The handler writes a LOG message
-    // which the gateway drains from stdout.
+    // which the gateway drains from stdout and emits via tracing.
     gw.check_node_timeouts(3).await;
 
     // Allow time for the handler to process the event and write the LOG.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Success criteria: the gateway did not panic, and the handler process
-    // was spawned, received the EVENT, and responded with a LOG message.
-    // (The LOG message is captured by gateway tracing, but we cannot easily
-    // assert on tracing output here without #[traced_test]; the key guarantee
-    // is that the event was routed to a real handler process without error.)
+    // The handler responds to node_timeout with a LOG message containing
+    // "received node_timeout event". The gateway reads this LOG from stdout
+    // and emits it via the tracing system.
+    assert!(
+        logs_contain("received node_timeout event"),
+        "handler must receive and log node_timeout EVENT"
+    );
 }

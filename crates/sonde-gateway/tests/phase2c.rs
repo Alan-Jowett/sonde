@@ -1851,7 +1851,8 @@ async fn t0503b_handler_persistence_across_messages() {
 
 /// T-0503c: Handler that hangs indefinitely — gateway must time out and return
 /// no reply. Validates GW-0503 AC2/AC3 (timeout kills handler, no reply sent).
-#[tokio::test]
+/// Uses `start_paused = true` + `tokio::time::advance` to avoid a real 30s wait.
+#[tokio::test(start_paused = true)]
 async fn t0503c_handler_reply_timeout() {
     require_python!();
     let tmp = tempfile::tempdir().unwrap();
@@ -1873,10 +1874,22 @@ async fn t0503c_handler_reply_timeout() {
     let (starting_seq, _, _) = do_wake(&gw, &node, 5301, &program_hash).await;
 
     // Send APP_DATA — handler will read it but never reply.
-    // Gateway must time out (30s) and return None.
+    // Use tokio::join! to advance virtual time past the 30s handler timeout
+    // while process_frame is blocked waiting for a reply.
     let blob = vec![0x01];
     let app_frame = node.build_app_data(starting_seq, &blob);
-    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
+    let peer = node.peer_address();
+
+    let (resp, _) = tokio::join!(gw.process_frame(&app_frame, peer), async {
+        // Yield to let process_frame progress: write DATA to handler stdin
+        // and start the timeout(read) loop.
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        // Advance virtual clock past the 30s handler timeout.
+        tokio::time::advance(Duration::from_secs(31)).await;
+    });
+
     assert!(
         resp.is_none(),
         "hung handler must produce no reply after timeout"

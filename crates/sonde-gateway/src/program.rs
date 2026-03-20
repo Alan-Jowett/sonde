@@ -78,7 +78,7 @@ impl std::error::Error for ProgramError {}
 /// Maximum CBOR image sizes per profile (GW-0403).
 const MAX_RESIDENT_SIZE: u32 = 4096;
 /// Maximum CBOR image size for ephemeral programs (GW-0202 AC3).
-pub const MAX_EPHEMERAL_SIZE: u32 = 2048;
+pub(crate) const MAX_EPHEMERAL_SIZE: u32 = 2048;
 
 /// Program library: stores verified programs and serves chunks.
 pub struct ProgramLibrary {

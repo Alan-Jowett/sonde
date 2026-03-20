@@ -553,7 +553,7 @@ If the node sends `GET_CHUNK` and receives no `CHUNK` response:
 |---|---|
 | Retry count | 3 per chunk |
 | Retry delay | Fixed, 100 ms between attempts |
-| Sequence numbers | Each `GET_CHUNK` retry MUST use the next sequence number (not reuse the original). This ensures every retransmission has a unique frame for replay protection. |
+| Sequence numbers | Each `GET_CHUNK` retry MUST use the next sequence number (not reuse the original). This maintains strict session sequencing and lets the gateway reject duplicates when the original request was received but the response was lost; it also provides replay protection as a secondary benefit. |
 | After max retries | Abort transfer, sleep. Retry from chunk 0 on next wake. |
 
 ### 9.3  Response timeout

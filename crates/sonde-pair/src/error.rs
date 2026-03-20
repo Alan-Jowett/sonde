@@ -7,13 +7,17 @@ use crate::types::NodeAckStatus;
 #[derive(Debug, thiserror::Error)]
 pub enum PairingError {
     // Device errors
-    #[error("no Bluetooth adapter found — check that BLE hardware is present and drivers are installed")]
+    #[error(
+        "no Bluetooth adapter found — check that BLE hardware is present and drivers are installed"
+    )]
     AdapterNotFound,
 
     #[error("Bluetooth is disabled — enable Bluetooth in system settings and retry")]
     BluetoothDisabled,
 
-    #[error("target device not found during scan — check that the modem is powered on and in range")]
+    #[error(
+        "target device not found during scan — check that the modem is powered on and in range"
+    )]
     DeviceNotFound,
 
     #[error("target device is out of BLE range — move closer and retry")]
@@ -41,7 +45,9 @@ pub enum PairingError {
     #[error("GATT read failed: {0} — check the BLE connection and retry")]
     GattReadFailed(String),
 
-    #[error("indication not received before timeout — check that the modem is powered on and in range")]
+    #[error(
+        "indication not received before timeout — check that the modem is powered on and in range"
+    )]
     IndicationTimeout,
 
     // Protocol errors

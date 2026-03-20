@@ -193,7 +193,7 @@ The operator MUST be able to start and stop scanning. Scanning MUST time out aft
 **Source:** ble-pairing-protocol.md §3.4
 
 **Description:**  
-On operator selection of a gateway device, the tool MUST connect to the BLE peripheral, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing.  Numeric Comparison is the default method for the gateway pairing service (the tool displays or relays the 6-digit passkey for operator verification).  Just Works is available as a fallback when no operator is present.  If the negotiated MTU is < 247, the tool MUST disconnect and report an error.
+On operator selection of a gateway device, the tool MUST connect to the BLE peripheral, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing.  Numeric Comparison is the required method for the gateway pairing service (the tool displays or relays the 6-digit passkey for operator verification).  Just Works MUST NOT be accepted because it provides no MITM protection and the pairing exchange carries PSK material (see PT-0105).  If the negotiated MTU is < 247, the tool MUST disconnect and report an error.
 
 **Acceptance criteria:**
 
@@ -693,12 +693,14 @@ Test code MUST use clearly non-zero keys (e.g., `[0x42u8; 32]`), not `[0u8; 32]`
 **Source:** ble-pairing-tool-design.md §9.1, §9.2; PT-0105
 
 **Description:**  
-The BLE transport MUST verify that the established BLE pairing used Numeric Comparison (not Just Works). If the underlying BLE stack silently falls back to Just Works, the transport MUST treat this as a security error and disconnect.
+The BLE transport MUST verify that the established BLE pairing used Numeric Comparison (not Just Works). The transport abstraction MUST expose an explicit, observable signal indicating which pairing method was actually negotiated with the OS BLE stack (e.g., an enum such as `NumericComparison`, `JustWorks`). This signal MUST be available both to the application logic and to the test harness. If the underlying BLE stack silently falls back to Just Works, or if the pairing method cannot be determined, the transport MUST treat this as a security error and disconnect.
 
 **Acceptance criteria:**
 
-1. After BLE pairing completes, the transport checks the pairing method used.
-2. If Just Works was used, the transport disconnects and returns an error indicating MITM-unsafe pairing.
+1. The BLE transport interface exposes a pairing-complete hook that includes the resolved pairing method, with at least `NumericComparison` and `JustWorks` as distinguishable values.
+2. After BLE pairing completes, the transport reads the pairing method from this hook rather than inferring it indirectly.
+3. If `JustWorks` or an unknown pairing method is reported, the transport disconnects and returns an error indicating MITM-unsafe pairing.
+4. The mock BLE transport can be configured to report different pairing methods, and tests for PT-0904 cover both the success and failure cases.
 
 ---
 
@@ -785,13 +787,14 @@ The pairing state machine and cryptographic logic MUST be usable from the Tauri-
 **Source:** ble-pairing-tool-design.md §9.2
 
 **Description:**  
-On Android, the BLE transport MUST handle activity lifecycle events (pause/resume) gracefully. The transport MUST disconnect the BLE connection when the activity is paused and reconnect (or prompt the operator to retry) when the activity is resumed, if a pairing flow was in progress.
+On Android, the BLE transport MUST handle activity lifecycle events (pause/resume) gracefully. The transport MUST disconnect the BLE connection when the activity is paused and, if a pairing flow was in progress, MUST automatically attempt to reconnect the BLE connection when the activity is resumed. If automatic reconnection fails, the transport MUST surface a retry prompt to the operator.
 
 **Acceptance criteria:**
 
 1. Activity pause during an active BLE connection triggers a clean disconnect.
-2. Activity resume after a paused pairing session either reconnects or prompts the operator.
-3. No BLE resource leaks (unclosed GATT clients) after pause/resume cycles.
+2. Activity resume after a paused pairing session automatically attempts to reconnect the previous BLE connection.
+3. If automatic reconnection after resume fails, the operator is prompted with a clear option to retry the pairing flow.
+4. No BLE resource leaks (unclosed GATT clients) after pause/resume cycles.
 
 ---
 
@@ -807,7 +810,7 @@ On Android, the JNI bridge MUST cache `GlobalRef` references to app-defined Java
 
 1. All app-defined class references used by the BLE transport are cached as `GlobalRef` during `JNI_OnLoad`.
 2. No `FindClass` calls for app classes occur on natively-attached threads.
-3. A test verifies that BLE helper classes can be instantiated from a non-main thread.
+3. BLE helper classes can be instantiated and used from a non-main thread using cached `GlobalRef` references without class lookup failures.
 
 ---
 

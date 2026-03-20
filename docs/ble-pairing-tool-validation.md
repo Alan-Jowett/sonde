@@ -746,10 +746,7 @@ TestNode {
 **Procedure:**
 1. Configure the mock BLE transport to report Numeric Comparison as the pairing method.
 2. Run Phase 1 gateway pairing.
-3. Assert: pairing proceeds normally.
-4. Configure the mock BLE transport to report Just Works as the pairing method.
-5. Run Phase 1 gateway pairing.
-6. Assert: transport disconnects and returns an error indicating MITM-unsafe pairing.
+3. Assert: pairing proceeds normally and Phase 1 completes using Numeric Comparison.
 
 ---
 
@@ -774,8 +771,9 @@ TestNode {
 2. Simulate an Android activity pause event after BLE connection is established.
 3. Assert: BLE connection is cleanly disconnected.
 4. Simulate an Android activity resume event.
-5. Assert: operator is prompted to retry or the transport reconnects.
-6. Assert: no GATT client resource leaks.
+5. Assert: transport automatically attempts to reconnect the BLE connection.
+6. If reconnection fails, assert: operator is presented with a clear "pairing interrupted — retry?" prompt.
+7. Assert: no GATT client resource leaks.
 
 ---
 

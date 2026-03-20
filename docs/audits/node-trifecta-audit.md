@@ -2,6 +2,8 @@
   Copyright (c) 2026 sonde contributors -->
 # Node Specification Trifecta Audit — Investigation Report
 
+> **Note:** This report is a pre-remediation snapshot. Several findings have been resolved by subsequent changes to the specification documents. See the PR that introduced this report for the resolution status of each finding.
+
 ## 1. Executive Summary
 
 The node specification trifecta (requirements, design, validation) is well-structured and largely consistent, with **93.0% of requirements covered by concrete test cases** and **100% backward traceability** (no orphaned test references). However, the audit found **18 requirements not explicitly traced in the design document** (mostly BLE pairing/registration requirements ND-0905–ND-0918), **4 requirements lacking concrete test cases**, **1 numbering gap** (ND-0401), and **2 phantom test IDs** (T-N402, T-N403) that appear in Appendix B but have no corresponding test case definitions. Remediation is low-effort and primarily involves adding explicit ND-reference annotations to the design document's BLE pairing section and writing deferred test case definitions for ND-0403/ND-0403a.

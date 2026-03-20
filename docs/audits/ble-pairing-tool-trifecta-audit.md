@@ -2,6 +2,8 @@
   Copyright (c) 2026 sonde contributors -->
 # BLE Pairing Tool Specification Trifecta Audit — Investigation Report
 
+> **Note:** This report is a pre-remediation snapshot. Several findings have been resolved by subsequent changes to the specification documents. See the PR that introduced this report for the resolution status of each finding.
+
 ## 1. Executive Summary
 
 This audit examines forward and backward traceability across the BLE pairing

@@ -2,6 +2,8 @@
      Copyright (c) 2026 sonde contributors -->
 # Modem Specification Trifecta Audit — Investigation Report
 
+> **Note:** This report is a pre-remediation snapshot. Several findings have been resolved by subsequent changes to the specification documents. See the PR that introduced this report for the resolution status of each finding.
+
 ## 1. Executive Summary
 
 This report documents a systematic traceability audit of the modem specification trifecta: requirements (`modem-requirements.md`), design (`modem-design.md`), and validation (`modem-validation.md`). The audit uncovered **13 findings** spanning all seven defect categories.

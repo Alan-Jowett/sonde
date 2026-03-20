@@ -29,7 +29,7 @@ The modem firmware is a tri-directional bridge between USB-CDC, ESP-NOW, and BLE
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The firmware is intentionally minimal — no crypto, no CBOR parsing, no OTA updates. The modem does not interpret message contents on any transport. BLE connection state is managed only for the GATT pairing relay; the modem holds no protocol-level sessions.
+The firmware is intentionally minimal — no application- or protocol-layer crypto (all BLE link security is handled inside the BLE stack), no CBOR parsing, no OTA updates. The modem does not interpret message contents on any transport. BLE connection state is managed only for the GATT pairing relay; the modem holds no protocol-level sessions.
 
 ---
 
@@ -250,7 +250,7 @@ On `RESET` command or USB reconnection:
 4. `esp_now_init()` on channel 1.
 5. Re-register callbacks.
 6. Reset the serial codec's inbound parser state.
-7. If BLE is enabled, call `BLE_DISABLE` (stop advertising, disconnect any active BLE client).
+7. If BLE is enabled, perform the same internal disable logic as handling `BLE_DISABLE`: stop advertising and disconnect any active BLE client.
 8. Send `MODEM_READY`.
 
 `MODEM_READY` MUST be sent within 2 seconds of USB enumeration (or re-enumeration after reconnection) per MD-0104. This deadline applies to both initial boot and `RESET`-triggered reinitialisation.

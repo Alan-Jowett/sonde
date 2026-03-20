@@ -2,6 +2,8 @@
   Copyright (c) 2026 sonde contributors -->
 # Gateway Specification Trifecta Audit — Investigation Report
 
+> **Note:** This report is a pre-remediation snapshot. Several findings have been resolved by subsequent changes to the specification documents. See the PR that introduced this report for the resolution status of each finding.
+
 ## 1. Executive Summary
 
 A systematic traceability audit of the Sonde gateway specification trifecta (76 requirements, design document, 112 test cases) reveals **moderate specification integrity** with two systemic gaps. First, 23 BLE pairing requirements (GW-1200–GW-1222) have **no design realization** in `gateway-design.md` — the design doc does not describe how the gateway processes any BLE pairing protocol messages. Second, 9 admin API and key-protection requirements are **functionally addressed** in design sections 10a and 13 but **not traced by requirement ID**, creating broken traceability links. Five requirements (GW-0601a, GW-0806, GW-1203, GW-1204, GW-1205) have **no concrete test case** — the validation plan defers them to unspecified external tests. Forward traceability to validation is strong at 93%, but design traceability is only 58% explicit (70% including implicit coverage). **Recommended action:** Add a BLE pairing design section (§17), insert explicit GW-ID cross-references in sections 10a and 13, and define concrete test cases for the 5 deferred requirements.

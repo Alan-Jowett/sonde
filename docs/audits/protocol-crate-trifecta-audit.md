@@ -2,6 +2,8 @@
   Copyright (c) 2026 sonde contributors -->
 # Protocol Crate Specification Audit — Investigation Report
 
+> **Note:** This report is a pre-remediation snapshot captured before fixes were applied. Several findings (F-003 through F-009, F-012 through F-014) have been resolved by subsequent changes to the specification documents in this repository. See the PR that introduced this report for the resolution status of each finding.
+
 ## 1. Executive Summary
 
 This report presents a systematic traceability audit of the Sonde **protocol crate** specification set: the protocol specification (`protocol.md`, serving as requirements), the crate design (`protocol-crate-design.md`), and the validation plan (`protocol-crate-validation.md`).

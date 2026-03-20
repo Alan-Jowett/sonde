@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 60 test cases total.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 66 test cases total.
 
 ### Traceability note
 

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa).
+# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa) and run
+# a Wokwi boot test that asserts the Rust application actually starts on UART.
 
 name: ESP32-S3 Modem Firmware CI
 
@@ -25,7 +26,7 @@ concurrency:
 
 jobs:
   esp32s3-modem-build:
-    name: Build ESP32-S3 modem firmware
+    name: Build ESP32-S3 modem firmware and Wokwi boot test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,6 +36,9 @@ jobs:
       # Pre-built ESP32 dev container with Rust stable, ESP Rust toolchain,
       # and ldproxy pre-installed. Published by esp-dev-container.yml.
       image: ghcr.io/alan-jowett/sonde-esp-dev:latest
+
+    env:
+      HAS_WOKWI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN != '' }}
 
     steps:
       - name: Checkout
@@ -152,6 +156,39 @@ jobs:
             0x10000 "$TARGET_DIR/modem.bin"
 
           echo "flash_image.bin created ($(wc -c < flash_image.bin) bytes)"
+
+      # ------------------------------------------------------------------ #
+      # Wokwi boot test
+      # ------------------------------------------------------------------ #
+
+      - name: Wokwi boot test
+        # Wokwi provides full ESP32-S3 peripheral emulation (including
+        # systimer), so FreeRTOS ticks and app_main() actually runs.
+        # This validates the Rust application starts — not just the
+        # bootloader.  See #227, #223.
+        if: ${{ env.HAS_WOKWI_TOKEN == 'true' }}
+        uses: wokwi/wokwi-ci-action@8d0e92eca93c6fc7832c805bfdc0d50bacff7558 # v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: crates/sonde-modem
+          timeout: 15000
+          expect_text: 'sonde-modem firmware starting'
+          fail_text: 'panic'
+          serial_log_file: wokwi-serial.log
+
+      - name: Print Wokwi serial log
+        if: ${{ env.HAS_WOKWI_TOKEN == 'true' && always() }}
+        run: |
+          LOG="crates/sonde-modem/wokwi-serial.log"
+          if [ -f "$LOG" ]; then
+            echo "=== Wokwi UART output ==="
+            cat "$LOG"
+            echo "========================="
+          fi
+
+      - name: Skip notice (no WOKWI_CLI_TOKEN)
+        if: ${{ env.HAS_WOKWI_TOKEN != 'true' }}
+        run: echo "::warning::Wokwi boot test skipped — WOKWI_CLI_TOKEN secret is not set."
 
       # ------------------------------------------------------------------ #
       # Upload firmware artifact

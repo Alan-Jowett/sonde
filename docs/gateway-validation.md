@@ -550,9 +550,9 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0502
 
 **Procedure:**
-1. Configure a mock handler that writes a DATA_REPLY with a length prefix of 2 MB (exceeding 1 MB limit).
+1. Configure a mock handler that writes a DATA_REPLY with a length prefix of 2 MB (exceeding the 1 MB limit), then closes its stdout without sending any body bytes.
 2. Send APP_DATA to trigger the handler.
-3. Assert: gateway rejects the oversized reply.
+3. Assert: gateway detects the oversized length prefix and rejects the reply based on the length prefix alone, without attempting to read the full body.
 4. Assert: no APP_DATA_REPLY sent to node.
 5. Assert: error logged.
 
@@ -578,7 +578,7 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Configure a handler that reads a DATA message but never writes a reply (hangs).
 2. Send APP_DATA.
-3. Wait for the wake cycle timeout (`session_timeout`).
+3. Wait for the handler reply timeout (`handler_timeout`).
 4. Assert: no APP_DATA_REPLY is sent to the node.
 5. Assert: the gateway does not block processing for other nodes.
 
@@ -590,10 +590,11 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Register a node with a known schedule (`interval_s = 10`).
-2. Send WAKE.
-3. Wait for 2× the expected interval without sending another WAKE.
-4. Assert: handler receives an EVENT message with `event_type = "node_timeout"`.
-5. Assert: event includes `last_seen` (matching the WAKE timestamp) and `expected_interval_s = 10`.
+2. Ensure the gateway is configured with a known `node_timeout_multiplier` (default is 3× unless overridden).
+3. Send WAKE.
+4. Wait for `node_timeout_multiplier × interval_s` without sending another WAKE (e.g., 30 seconds when `node_timeout_multiplier = 3`).
+5. Assert: handler receives an EVENT message with `event_type = "node_timeout"`.
+6. Assert: event includes `last_seen` (matching the WAKE timestamp) and `expected_interval_s = 10`.
 
 ---
 
@@ -853,12 +854,13 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0601a
 
 **Procedure:**
-1. Register a node with a known PSK `[0x42; 32]`.
-2. Close the storage.
-3. Read the raw SQLite database file bytes.
-4. Assert: the 32-byte PSK value does not appear as a contiguous substring in the raw file.
-5. Open the database with the correct master key.
-6. Assert: the PSK is correctly retrieved via the storage API.
+1. Create a `SqliteStorage` backed by a temporary file (not the in-memory mock) with a known master key.
+2. Register a node with a known PSK `[0x42; 32]`.
+3. Close the storage.
+4. Read the raw SQLite database file bytes.
+5. Assert: neither the 32-byte raw PSK value nor its 64-char hex encoding appears as a contiguous substring in the raw file.
+6. Open the database with the correct master key.
+7. Assert: the PSK is correctly retrieved via the storage API.
 
 ---
 
@@ -941,11 +943,10 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Register a node with a known PSK.
-2. Trigger factory reset via admin API (`FactoryReset` or `RemoveNode` with reset flag).
-3. Assert: the factory reset command was sent to the node (captured by mock transport) before registry removal.
-4. Assert: the node's PSK is removed from the gateway registry.
-5. Send WAKE from the reset node.
-6. Assert: silently discarded (unknown node).
+2. Trigger node removal via admin API (`RemoveNode`).
+3. Assert: the node's PSK is removed from the gateway registry.
+4. Send WAKE from the removed node.
+5. Assert: silently discarded (unknown node).
 
 ---
 
@@ -1105,15 +1106,15 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Start a gateway instance.
-2. Run `sonde-admin list-nodes --json` against the admin socket.
+2. Run `sonde-admin --format json node list` against the admin socket.
 3. Assert: command exits successfully with valid JSON output.
-4. Register a node via `sonde-admin register-node`.
+4. Register a node via `sonde-admin node register`.
 5. Assert: command exits successfully.
-6. Run `sonde-admin list-nodes --json`.
+6. Run `sonde-admin --format json node list`.
 7. Assert: the new node appears in the output.
-8. Run `sonde-admin remove-node`.
+8. Run `sonde-admin node remove`.
 9. Assert: command exits successfully.
-10. Run `sonde-admin list-nodes --json`.
+10. Run `sonde-admin --format json node list`.
 11. Assert: the node is no longer listed.
 
 ---
@@ -1658,8 +1659,8 @@ A configurable stub handler process (or in-process mock) that:
 1. Complete modem startup.
 2. Open BLE pairing session.
 3. Assert: when the gateway sends a `BLE_INDICATE` message, the payload is a complete BLE envelope (the modem handles fragmentation per MD-0403).
-4. Construct a `GW_INFO_RESPONSE` that exceeds 244 bytes (e.g., by using a large `gateway_id` or padding).
-5. Assert: the gateway sends the full envelope in a single `BLE_INDICATE` message to the modem (delegation model — modem fragments, not gateway).
+4. Arrange for the gateway to emit a BLE envelope whose payload exceeds 244 bytes, using either (a) a variable-length message type (for example, an `ERROR` with a long diagnostic string) or (b) a test-only response that includes explicit padding bytes for this validation.
+5. Assert: the gateway sends the oversized envelope in a single `BLE_INDICATE` message to the modem (delegation model — modem fragments, not gateway).
 
 ---
 

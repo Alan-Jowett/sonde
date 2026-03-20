@@ -31,7 +31,7 @@ use esp32_nimble::utilities::BleUuid;
 use esp32_nimble::{
     enums::{AuthReq, SecurityIOCap},
     utilities::mutex::Mutex as NimbleMutex,
-    BLEAdvertisementData, BLECharacteristic, BLEDevice, NimbleProperties,
+    BLEAdvertisementData, BLECharacteristic, BLEDevice, NimbleProperties, NotifyTxStatus,
 };
 use log::{info, warn};
 use sonde_protocol::modem::BLE_MTU_MIN;
@@ -333,6 +333,36 @@ impl EspBleDriver {
             }
         });
 
+        // ATT Handle Value Confirmation callback (MD-0403 / T-0623).
+        //
+        // NimBLE fires this when the BLE client ACKs an indication.  We
+        // clear `awaiting_confirm` so that `advance_indication()` can send
+        // the next queued chunk.  This ensures true confirmation-driven
+        // pacing — one indication per ATT round-trip — regardless of the
+        // client's connection interval.
+        let state_notify = Arc::clone(&state);
+        gateway_cmd_char.lock().on_notify_tx(move |notify_tx| {
+            match notify_tx.status() {
+                NotifyTxStatus::SuccessIndicate => {
+                    let mut s = state_notify.lock().unwrap_or_else(|p| p.into_inner());
+                    s.awaiting_confirm = false;
+                }
+                NotifyTxStatus::ErrorIndicateTimeout => {
+                    warn!("BLE: indication ACK timeout — clearing queue");
+                    let mut s = state_notify.lock().unwrap_or_else(|p| p.into_inner());
+                    s.indication_queue.clear();
+                    s.awaiting_confirm = false;
+                }
+                NotifyTxStatus::ErrorIndicateFailure => {
+                    warn!("BLE: indication ACK failed — clearing queue");
+                    let mut s = state_notify.lock().unwrap_or_else(|p| p.into_inner());
+                    s.indication_queue.clear();
+                    s.awaiting_confirm = false;
+                }
+                _ => {} // SuccessNotify — not used (we only send indications)
+            }
+        });
+
         info!("BLE GATT Gateway Pairing Service registered (UUID 0xFE60)");
 
         Self {
@@ -459,20 +489,15 @@ impl Ble for EspBleDriver {
 
     /// Advance the indication queue by one chunk.
     ///
-    /// Called once per bridge poll cycle (not per `drain_event()` call)
-    /// to ensure at most one indication fragment is sent per poll.
+    /// Called once per bridge poll cycle.  The `awaiting_confirm` flag is
+    /// cleared by the `on_notify_tx` callback when the BLE client ACKs
+    /// the previous indication (MD-0403 / T-0623).  This method only
+    /// sends the next chunk if the flag has already been cleared.
     fn advance_indication(&self) {
-        let (pending, awaiting) = {
+        let pending = {
             let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            (!s.indication_queue.is_empty(), s.awaiting_confirm)
+            !s.indication_queue.is_empty() && !s.awaiting_confirm
         };
-        if awaiting {
-            // Previous chunk was sent — clear the flag so send_next_chunk
-            // can proceed.
-            if let Ok(mut s) = self.state.lock() {
-                s.awaiting_confirm = false;
-            }
-        }
         if pending {
             self.send_next_chunk();
         }
@@ -488,8 +513,10 @@ impl EspBleDriver {
     /// Send the next indication chunk from the queue, if any.
     ///
     /// Uses `notify_with()` which queues the indication via
-    /// `ble_gatts_indicate_custom` (non-blocking).  NimBLE handles ATT
-    /// Handle Value Confirmation pacing internally.
+    /// `ble_gatts_indicate_custom` (non-blocking).  The `on_notify_tx`
+    /// callback clears `awaiting_confirm` when the BLE client sends the
+    /// ATT Handle Value Confirmation, ensuring true confirmation-driven
+    /// pacing (MD-0403).
     fn send_next_chunk(&self) {
         let (chunk, conn_handle) = {
             let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -502,16 +529,15 @@ impl EspBleDriver {
         };
 
         // notify_with() queues the indication via ble_gatts_indicate_custom
-        // (non-blocking).  We keep awaiting_confirm = true so that
-        // advance_indication() sends at most one chunk per poll cycle,
-        // avoiding NimBLE resource exhaustion from burst-sending all
-        // fragments.
+        // (non-blocking).  We keep awaiting_confirm = true; the on_notify_tx
+        // callback clears it when the client ACKs, ensuring one indication
+        // per ATT round-trip (MD-0403 / T-0623).
         let chr = self.gateway_cmd_char.lock();
         match chr.notify_with(&chunk, conn_handle) {
             Ok(()) => {
                 // Indication queued — awaiting_confirm stays true.
-                // advance_indication() will clear it on the next poll
-                // cycle, naturally pacing one chunk per bridge iteration.
+                // on_notify_tx callback will clear it when the client
+                // ACKs, then advance_indication() sends the next chunk.
             }
             Err(e) => {
                 warn!("BLE: indication failed: {:?}", e);

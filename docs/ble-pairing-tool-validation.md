@@ -195,7 +195,7 @@ TestNode {
 **Type:** Manual / platform test (runs against real BLE hardware)
 
 **Procedure:**
-1. Connect the pairing tool to a modem (or test peripheral) that advertises LESC with `DisplayYesNo` I/O capability.
+1. Connect the pairing tool to a modem (or test peripheral) configured for LESC with `DisplayYesNo` I/O capability.
 2. Initiate Phase 1 gateway pairing from the pairing tool UI.
 3. Observe the platform pairing UX and/or system logs:
    - Assert: the platform initiates LESC bonding (e.g., Android `createBond()` or equivalent).
@@ -208,7 +208,7 @@ TestNode {
 ### T-PT-109  Just Works fallback rejected
 
 **Validates:** PT-0106, PT-0904  
-**Type:** Manual / platform test (runs against real BLE hardware)
+**Type:** CI / mock transport test
 
 **Procedure:**
 1. Configure the mock `BleTransport` to simulate a peripheral that only supports Just Works pairing (no `DisplayYesNo` I/O capability), and to fail the secure connection / bonding attempt (for example, make `connect()` or the platform-specific bond API return an error) **before** any GATT characteristic writes are permitted.

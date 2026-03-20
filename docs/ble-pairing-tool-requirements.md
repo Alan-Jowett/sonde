@@ -147,7 +147,7 @@ BLE connections to the modem MUST use **LE Secure Connections (LESC) with Numeri
 
 **Acceptance criteria:**
 
-1. The modem is configured for LESC with `DisplayYesNo` I/O capability.
+1. **Precondition:** the modem is configured for LESC with `DisplayYesNo` I/O capability (see modem requirements).
 2. The phone app triggers `createBond()` (Android) or equivalent platform API to initiate LESC pairing.
 3. A Numeric Comparison dialog is presented to the user for confirmation.
 4. If the user rejects the comparison or the pairing mode degrades to Just Works, the connection is terminated.
@@ -747,7 +747,7 @@ The BLE link between the phone and modem MUST be established using LE Secure Con
 
 **Acceptance criteria:**
 
-1. The modem advertises LESC capability with `DisplayYesNo` I/O.
+1. **Precondition:** the modem is configured for LESC with `DisplayYesNo` I/O capability (verified by modem validation, not the pairing tool).
 2. The phone verifies that the negotiated pairing method is Numeric Comparison before proceeding.
 3. A Just Works fallback is treated as a connection failure, not a silent degradation.
 

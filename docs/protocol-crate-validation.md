@@ -173,9 +173,10 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P019b  Invalid CBOR payload
 
 **Procedure:**
-1. Build a frame with valid header and HMAC but payload bytes `[0xFF, 0xFF]`.
-2. Call message decode.
-3. Assert: returns `DecodeError::CborError`.
+1. Construct an invalid CBOR payload (e.g., raw bytes `[0xFF, 0xFF]`).
+2. Build a frame for a WAKE message (`msg_type = MSG_WAKE`) with a valid header and a valid HMAC computed over the header + these invalid CBOR bytes, so that `decode_frame()` succeeds and yields `MSG_WAKE` and the payload unchanged.
+3. Call `NodeMessage::decode(MSG_WAKE, &payload)`.
+4. Assert: returns `DecodeError::CborError`.
 
 ---
 
@@ -322,7 +323,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P034  Cmd(RunEphemeral) round-trip
 
 **Procedure:**
-1. Create `GatewayMessage::Command { starting_seq: 100, timestamp_ms: 1700000000, payload: CommandPayload::RunEphemeral { program_hash: vec![0xBBu8; 32], program_size: 4000, chunk_size: 190, chunk_count: 22 } }`.
+1. Create `GatewayMessage::Command { starting_seq: 100, timestamp_ms: 1_710_000_000_000, payload: CommandPayload::RunEphemeral { program_hash: vec![0xBBu8; 32], program_size: 4000, chunk_size: 190, chunk_count: 22 } }`.
 2. Encode to CBOR.
 3. Decode back with `msg_type = MSG_COMMAND`.
 4. Assert: decoded payload variant is `RunEphemeral` and all fields (`program_hash`, `program_size`, `chunk_size`, `chunk_count`, `starting_seq`, `timestamp_ms`) match.
@@ -332,7 +333,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P035  Cmd(Reboot) round-trip
 
 **Procedure:**
-1. Create `GatewayMessage::Command { starting_seq: 1, timestamp_ms: 1700000000, payload: CommandPayload::Reboot }`.
+1. Create `GatewayMessage::Command { starting_seq: 1, timestamp_ms: 1_710_000_000_000, payload: CommandPayload::Reboot }`.
 2. Encode to CBOR.
 3. Inspect raw CBOR bytes: assert `KEY_COMMAND_TYPE` is present with value `0x04` and no `KEY_PAYLOAD` key exists.
 4. Decode back with `msg_type = MSG_COMMAND`.
@@ -375,7 +376,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 2. Encode a Command with `starting_seq = u64::MAX` and `timestamp_ms = u64::MAX`.
 3. Decode both.
 4. Assert: values round-trip without truncation.
-5. Inspect CBOR bytes to confirm 8-byte integer encoding is used.
+5. Inspect CBOR bytes and assert:
+   - `battery_mv` (`u32::MAX`) is encoded as a 4-byte unsigned integer (major type 0, additional info 26).
+   - `starting_seq` and `timestamp_ms` (`u64::MAX`) are encoded as 8-byte unsigned integers (major type 0, additional info 27).
 
 ---
 
@@ -585,8 +588,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 2. Pass the CBOR bytes and `msg_type = MSG_WAKE` (0x01, node→gateway range) to `GatewayMessage::decode()`.
 3. Assert: returns an error (msg_type 0x01 is outside the gateway message range 0x80–0xFF).
 4. Encode a `GatewayMessage::Command` to CBOR.
-5. Pass the CBOR bytes and `msg_type = MSG_COMMAND` (0x80, gateway→node range) to `NodeMessage::decode()`.
-6. Assert: returns an error (msg_type 0x80 is outside the node message range 0x01–0x7F).
+5. Pass the CBOR bytes and `msg_type = MSG_COMMAND` (0x81, gateway→node range) to `NodeMessage::decode()`.
+6. Assert: returns an error (msg_type 0x81 is outside the node message range 0x01–0x7F).
 
 ---
 
@@ -613,10 +616,11 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
-### T-P066  HMAC constant-time comparison structural test
+### T-P066  HMAC constant-time comparison behavior
 
 **Procedure:**
-1. Inspect `SoftwareHmac::verify()` implementation in the protocol crate.
-2. Assert: the implementation delegates to `hmac::Mac::verify_slice()` (which uses constant-time comparison internally), or uses `subtle::ConstantTimeEq`.
-3. Assert: the implementation does NOT use `==`, `PartialEq`, or `[u8]::eq()` to compare HMAC digests.
-4. This may be implemented as a `#[test]` that calls `verify()` with a valid and an invalid tag and asserts correct accept/reject behavior, combined with a code-review checklist item verifying the constant-time property.
+1. Construct a message and compute its HMAC tag using `SoftwareHmac`.
+2. Call `SoftwareHmac::verify()` with the correct tag and assert that verification **succeeds**.
+3. Call `SoftwareHmac::verify()` with an incorrect tag (e.g., flip one bit in the tag) and assert that verification **fails**.
+
+**Implementation requirement (non-test):** `SoftwareHmac::verify()` must internally use a constant-time comparison primitive (e.g., delegate to `hmac::Mac::verify_slice()` or `subtle::ConstantTimeEq`) and must not compare HMAC digests using `==`, `PartialEq`, or `[u8]::eq()`. This requirement is enforced via code review, not automated tests.

@@ -243,8 +243,8 @@ impl GatewayMessage {
                 timestamp_ms,
                 payload,
             } => {
-                // Deterministic CBOR (RFC 8949 §4.2): keys in ascending order.
-                // KEY_COMMAND_TYPE=4, KEY_PAYLOAD=5, KEY_STARTING_SEQ=13, KEY_TIMESTAMP_MS=14
+                // Deterministic CBOR (RFC 8949 §4.2): keys present in the map must be in ascending order.
+                // KEY_COMMAND_TYPE=4, KEY_PAYLOAD=5 (optional for Nop/Reboot), KEY_STARTING_SEQ=13, KEY_TIMESTAMP_MS=14
                 let payload_val = match payload {
                     CommandPayload::Nop | CommandPayload::Reboot => None,
                     CommandPayload::UpdateProgram {

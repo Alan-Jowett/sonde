@@ -165,6 +165,10 @@ impl EspBleDriver {
     pub fn new() -> Self {
         let ble_device = BLEDevice::take();
 
+        // Set the GAP device name so connected clients (e.g. Android) see
+        // "sonde-modem" instead of the NimBLE default ("nimble").
+        BLEDevice::set_device_name("sonde-modem").expect("failed to set BLE GAP device name");
+
         // Configure LESC Numeric Comparison security (MD-0404).
         ble_device
             .security()

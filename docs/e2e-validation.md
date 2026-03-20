@@ -213,6 +213,25 @@ impl E2eNode {
 
 ---
 
+#### T-E2E-002b  Consecutive wake cycles
+
+**Validates:** GW-0600, ND-0300, ND-0301, ND-0304.
+
+**Preconditions:**
+1. Node registered with PSK `[0x55; 32]`.
+
+**Procedure:**
+1. Run a full wake cycle on a `NodeProxy` — verify it completes with `Sleep { seconds: 60 }`.
+2. Run a second wake cycle on the **same** `NodeProxy` (same storage, same RNG instance — internal state advances).
+3. Collect the WAKE nonces from both cycles.
+
+**Assertions:**
+- Both cycles complete with `Sleep { seconds: 60 }` and receive gateway responses.
+- WAKE nonces differ between the two cycles (RNG state advances).
+- Gateway's `NodeRecord.last_seen` is updated after both cycles.
+
+---
+
 #### T-E2E-003  Wrong PSK rejected silently
 
 **Validates:** GW-0601 (wrong key → silent discard), ND-0301.
@@ -462,6 +481,70 @@ impl E2eNode {
 - Response arrives at node intact.
 - Modem framing (length prefix, type byte, body) correctly encoded/decoded at both ends.
 
+---
+
+#### T-E2E-052  Consecutive wake cycles through modem bridge
+
+**Validates:** GW-1100, modem protocol, ND-0300, ND-0304.
+
+**Preconditions:**
+1. Gateway transport and modem bridge operational.
+2. Node registered with PSK `[0x52; 32]`.
+
+**Procedure:**
+1. Run a full wake cycle on a `NodeProxy` through the modem bridge — verify it completes.
+2. Run a second wake cycle on the **same** `NodeProxy` through the modem bridge.
+3. Collect the WAKE nonces from both cycles.
+
+**Assertions:**
+- Both cycles complete with `Sleep { seconds: 60 }`.
+- WAKE nonces are disjoint across cycles (no RNG collision).
+
+---
+
+#### T-E2E-053  Wrong PSK through modem bridge
+
+**Validates:** GW-0601, GW-1002, ND-0301.
+
+**Preconditions:**
+1. Gateway transport and modem bridge operational.
+2. Node registered with PSK `[0xAA; 32]`.
+3. Node configured with PSK `[0xBB; 32]` (mismatch).
+
+**Procedure:**
+1. Node sends WAKE through the modem bridge with the wrong PSK.
+2. Gateway silently discards the frame.
+3. Node exhausts retries and sleeps.
+
+**Assertions:**
+- `run_wake_cycle()` returns `Sleep { seconds: 60 }`.
+- Gateway's `NodeRecord.last_seen` is `None` (WAKE was never processed).
+
+---
+
+#### T-E2E-054  Program update through modem bridge
+
+**Validates:** GW-0201, GW-0300, GW-1100, ND-0500, ND-0501.
+
+**Preconditions:**
+1. Gateway transport and modem bridge operational.
+2. Node registered with no current program.
+3. Program ingested and assigned to the node.
+
+**Procedure:**
+1. Node sends WAKE through the modem bridge with `program_hash = []`.
+2. Gateway responds with COMMAND(UPDATE_PROGRAM) through the bridge.
+3. Node sends GET_CHUNK for each chunk index through the bridge.
+4. Gateway responds with CHUNK data through the bridge.
+5. Node sends PROGRAM_ACK through the bridge.
+
+**Assertions:**
+- `run_wake_cycle()` returns `Sleep { seconds: 60 }`.
+- Node sent at least one GET_CHUNK and exactly one PROGRAM_ACK through the bridge.
+- Gateway's `NodeRecord.current_program_hash` matches the assigned hash.
+
+---
+
 ### 4.7  BLE pairing / onboarding
 
 #### T-E2E-060  Gateway Ed25519 identity persistence
@@ -657,12 +740,97 @@ impl E2eNode {
 
 ---
 
+### 4.8  BPF execution
+
+#### T-E2E-080  E2E map access through full stack
+
+**Validates:** bpf-environment.md §5, ND-0603.
+
+**Preconditions:**
+1. Node registered with a PSK.
+2. A BPF program that calls `map_lookup_elem` and `map_update_elem` ingested and assigned.
+
+**Procedure:**
+1. Deploy the BPF program through the gateway→node chunked transfer.
+2. Run a wake cycle with the real `SondeBpfInterpreter`.
+3. Verify the program executes successfully and map side-effects are recorded.
+4. Run a second wake cycle on the same node.
+5. Verify map data persists across wake cycles.
+
+**Assertions:**
+- Both wake cycles complete with `Sleep`.
+- Map writes from the first cycle are visible in the second cycle via `map_lookup_elem`.
+- No interpreter errors or panics.
+
+---
+
+#### T-E2E-081  E2E ephemeral program restrictions
+
+**Validates:** bpf-environment.md §2.2, ND-0603, ND-0604.
+
+**Preconditions:**
+1. Node registered with a PSK.
+2. An ephemeral BPF program that attempts `map_update_elem` and `set_next_wake` ingested and deployed.
+
+**Procedure:**
+1. Deploy the ephemeral program via COMMAND(RUN_EPHEMERAL).
+2. Run a wake cycle with the real `SondeBpfInterpreter`.
+
+**Assertions:**
+- `map_update_elem` is rejected (returns error code).
+- `set_next_wake` is rejected (returns error code).
+- The node does not crash and returns to sleep normally.
+
+---
+
+#### T-E2E-082  E2E chunked transfer corruption recovery
+
+**Validates:** ND-0501, ND-0502.
+
+**Preconditions:**
+1. Node registered with no current program.
+2. Program ingested and assigned to the node.
+
+**Procedure:**
+1. Node sends WAKE with `program_hash = []`.
+2. Gateway responds with COMMAND(UPDATE_PROGRAM).
+3. Node sends GET_CHUNK requests.
+4. Inject a corrupted chunk (wrong data bytes) in one CHUNK response.
+5. Node reassembles image and computes SHA-256 hash.
+
+**Assertions:**
+- Node detects hash mismatch and does not install the corrupted image.
+- Node does not send PROGRAM_ACK.
+- `run_wake_cycle()` returns `Sleep` (node recovers gracefully).
+
+---
+
+#### T-E2E-083  E2E instruction budget enforcement
+
+**Validates:** bpf-environment.md §3.3, ND-0605.
+
+**Preconditions:**
+1. Node registered with a PSK.
+2. A BPF program that exceeds the instruction budget (infinite loop or very long computation) ingested and assigned.
+
+**Procedure:**
+1. Deploy the program through the gateway→node chunked transfer.
+2. Run a wake cycle with the real `SondeBpfInterpreter`.
+
+**Assertions:**
+- The interpreter terminates execution when the budget is exhausted.
+- The node returns to sleep normally (`Sleep`).
+- No crash, hang, or panic.
+
+---
+
 ## 5  Test-to-requirement traceability
 
 | Test ID | Requirements |
 |---------|-------------|
 | T-E2E-001 | GW-0100, GW-0102, GW-0103, ND-0200, ND-0201 |
 | T-E2E-002 | GW-0600, ND-0300, ND-0301 |
+| T-E2E-002b | GW-0600, ND-0300, ND-0301, ND-0304 |
 | T-E2E-003 | GW-0601, GW-1002, ND-0301 |
 | T-E2E-010 | GW-0201, GW-0300, GW-0302, ND-0500, ND-0501, ND-0506 |
 | T-E2E-011 | GW-0200 |
@@ -675,7 +843,9 @@ impl E2eNode {
 | T-E2E-041 | GW-0602, ND-0303 |
 | T-E2E-050 | GW-1100, GW-1101 |
 | T-E2E-051 | GW-1100, modem protocol |
-| T-E2E-058 | ND-0200, ND-0300, ND-0900 |
+| T-E2E-052 | GW-1100, modem protocol, ND-0300, ND-0304 |
+| T-E2E-053 | GW-0601, GW-1002, ND-0301 |
+| T-E2E-054 | GW-0201, GW-0300, GW-1100, ND-0500, ND-0501 |
 | T-E2E-060 | GW-1200, GW-1201 |
 | T-E2E-061 | GW-1206, GW-1207, GW-1208, GW-1209, GW-1210 |
 | T-E2E-062 | ND-0905, ND-0906, ND-0907, ND-0908 |
@@ -687,6 +857,10 @@ impl E2eNode {
 | T-E2E-068 | ND-0917 |
 | T-E2E-069 | GW-1216 |
 | T-E2E-070 | GW-1200, GW-1206, GW-1209, GW-1211, GW-1218, ND-0905, ND-0909, ND-0914, ND-0602 |
+| T-E2E-080 | bpf-environment.md §5, ND-0603 |
+| T-E2E-081 | bpf-environment.md §2.2, ND-0603, ND-0604 |
+| T-E2E-082 | ND-0501, ND-0502 |
+| T-E2E-083 | bpf-environment.md §3.3, ND-0605 |
 
 ---
 
@@ -701,7 +875,7 @@ crates/sonde-e2e/
 ├── Cargo.toml          # depends on sonde-gateway, sonde-node, sonde-modem, sonde-protocol, sonde-pair
 └── tests/
     ├── harness.rs      # shared test setup (ChannelRadio, ChannelTransport, E2eNode, BLE pairing helpers, etc.)
-    └── e2e_tests.rs    # test cases T-E2E-001 through T-E2E-070
+    └── e2e_tests.rs    # test cases T-E2E-001 through T-E2E-070 (T-E2E-080..083 are spec-only, not yet implemented)
 ```
 
 ### 6.2  Async ↔ sync bridge

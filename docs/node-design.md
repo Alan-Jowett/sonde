@@ -498,7 +498,7 @@ All inbound protocol errors result in **silent discard** — the node does not s
 2. Sample pairing button GPIO for 500 ms (ND-0901).
 3. Read key partition: check magic bytes and load credentials if present.
 4. Determine boot path (ND-0900):
-   a. No PSK in NVS OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.
+   a. No valid PSK in key partition OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.
    b. PSK present, `reg_complete` flag NOT set → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
    c. PSK present, `reg_complete` flag set → continue to step 5 (normal WAKE cycle).
 5. Read schedule partition: load base interval and active program partition flag.

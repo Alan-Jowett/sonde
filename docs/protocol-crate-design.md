@@ -194,7 +194,7 @@ Recomputes HMAC over the header + payload bytes and compares with `frame.hmac`.
 /// Derive the 2-byte key hint from a PSK.
 /// key_hint = u16::from_be_bytes(SHA-256(PSK)[30..32])
 pub fn key_hint_from_psk(psk: &[u8; 32], sha: &impl Sha256Provider) -> u16 {
-    let hash = sha.digest(psk);
+    let hash = sha.hash(psk);
     u16::from_be_bytes([hash[30], hash[31]])
 }
 ```

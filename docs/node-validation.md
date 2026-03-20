@@ -341,7 +341,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Erase the key partition.
 2. Boot the node.
-3. Assert: no frames transmitted. Node enters deep sleep with radio off.
+3. Assert: no ESP-NOW frames transmitted. Node enters BLE pairing mode (ND-0900 boot path 1).
 
 ---
 

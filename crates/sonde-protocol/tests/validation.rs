@@ -537,6 +537,124 @@ fn test_p032() {
 }
 
 // ---------------------------------------------------------------------------
+// T-P033  ProgramAck round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p033() {
+    let program_hash = vec![0xABu8; 32];
+    let msg = NodeMessage::ProgramAck {
+        program_hash: program_hash.clone(),
+    };
+    let cbor = msg.encode().unwrap();
+    let decoded = NodeMessage::decode(MSG_PROGRAM_ACK, &cbor).unwrap();
+    match decoded {
+        NodeMessage::ProgramAck { program_hash: ph } => {
+            assert_eq!(ph, program_hash);
+        }
+        _ => panic!("expected ProgramAck"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-P034  Cmd(RunEphemeral) round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p034() {
+    let hash = vec![0xBBu8; 32];
+    let msg = GatewayMessage::Command {
+        starting_seq: 100,
+        timestamp_ms: 1_710_000_000_000,
+        payload: CommandPayload::RunEphemeral {
+            program_hash: hash.clone(),
+            program_size: 4000,
+            chunk_size: 190,
+            chunk_count: 22,
+        },
+    };
+    let cbor = msg.encode().unwrap();
+    let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
+    match decoded {
+        GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload:
+                CommandPayload::RunEphemeral {
+                    program_hash,
+                    program_size,
+                    chunk_size,
+                    chunk_count,
+                },
+        } => {
+            assert_eq!(starting_seq, 100);
+            assert_eq!(timestamp_ms, 1_710_000_000_000);
+            assert_eq!(program_hash, hash);
+            assert_eq!(program_size, 4000);
+            assert_eq!(chunk_size, 190);
+            assert_eq!(chunk_count, 22);
+        }
+        _ => panic!("expected Command/RunEphemeral"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-P035  Cmd(Reboot) round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p035() {
+    let msg = GatewayMessage::Command {
+        starting_seq: 1,
+        timestamp_ms: 1_710_000_000_000,
+        payload: CommandPayload::Reboot,
+    };
+    let cbor = msg.encode().unwrap();
+
+    // Inspect raw CBOR: KEY_COMMAND_TYPE present with value 0x04, no KEY_PAYLOAD
+    let raw: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
+    if let ciborium::Value::Map(pairs) = &raw {
+        let keys: Vec<u64> = pairs
+            .iter()
+            .filter_map(|(k, _)| k.as_integer().and_then(|i| u64::try_from(i).ok()))
+            .collect();
+        // Must have KEY_COMMAND_TYPE (4), KEY_STARTING_SEQ (13), KEY_TIMESTAMP_MS (14)
+        assert!(keys.contains(&KEY_COMMAND_TYPE));
+        // Must NOT have KEY_PAYLOAD (5)
+        assert!(!keys.contains(&KEY_PAYLOAD));
+        // Verify command_type value is 0x04 (REBOOT)
+        let cmd_type_val = pairs
+            .iter()
+            .find(|(k, _)| {
+                k.as_integer().and_then(|i| u64::try_from(i).ok()) == Some(KEY_COMMAND_TYPE)
+            })
+            .map(|(_, v)| v)
+            .expect("KEY_COMMAND_TYPE present");
+        let cmd_type: u64 = cmd_type_val
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .expect("integer value");
+        assert_eq!(cmd_type, CMD_REBOOT as u64);
+    } else {
+        panic!("expected CBOR map");
+    }
+
+    let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
+    match decoded {
+        GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload,
+        } => {
+            assert_eq!(starting_seq, 1);
+            assert_eq!(timestamp_ms, 1_710_000_000_000);
+            assert!(matches!(payload, CommandPayload::Reboot));
+        }
+        _ => panic!("expected Command/Reboot"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 5  Program image tests
 // ---------------------------------------------------------------------------
 

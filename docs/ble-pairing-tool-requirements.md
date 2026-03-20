@@ -243,7 +243,7 @@ The operator MUST be able to start and stop scanning. Scanning MUST time out aft
 **Source:** ble-pairing-protocol.md §3.4
 
 **Description:**  
-On operator selection of a gateway device, the tool MUST connect to the BLE peripheral, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing.  Numeric Comparison is the default method for the gateway pairing service (the tool displays or relays the 6-digit passkey for operator verification).  Just Works is available as a fallback when no operator is present.  If the negotiated MTU is < 247, the tool MUST disconnect and report an error.
+On operator selection of a gateway device, the tool MUST connect to the BLE peripheral, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing.  Numeric Comparison is the required method for the gateway pairing service (the tool displays or relays the 6-digit passkey for operator verification).  Just Works MUST NOT be accepted because it provides no MITM protection and the pairing exchange carries PSK material (see PT-0106).  If the negotiated MTU is < 247, the tool MUST disconnect and report an error.
 
 **Acceptance criteria:**
 
@@ -737,19 +737,21 @@ Test code MUST use clearly non-zero keys (e.g., `[0x42u8; 32]`), not `[0u8; 32]`
 
 ---
 
-### PT-0904  BLE link security mode
+### PT-0904  BLE pairing mode enforcement
 
 **Priority:** Must  
-**Source:** security.md §2; ble-pairing-tool-design.md §9.1, §9.2
+**Source:** security.md §2; ble-pairing-tool-design.md §9.1, §9.2; PT-0106
 
 **Description:**  
-The BLE link between the phone and modem MUST be established using LE Secure Connections (LESC) with authenticated pairing (Numeric Comparison).  Unauthenticated pairing modes (Just Works, passkey-only without confirmation) MUST NOT be accepted because the pairing exchange carries PSK material that an active MITM could intercept.
+The BLE link between the phone and modem MUST be established using LE Secure Connections (LESC) with authenticated pairing (Numeric Comparison). Unauthenticated pairing modes (Just Works, passkey-only without confirmation) MUST NOT be accepted because the pairing exchange carries PSK material that an active MITM could intercept. The transport abstraction MUST expose an explicit, observable signal indicating which pairing method was actually negotiated with the OS BLE stack (e.g., an enum such as `NumericComparison`, `JustWorks`). This signal MUST be available both to the application logic and to the test harness.
 
 **Acceptance criteria:**
 
 1. **Precondition:** the modem is configured for LESC with `DisplayYesNo` I/O capability (verified by modem validation, not the pairing tool).
-2. The phone verifies that the negotiated pairing method is Numeric Comparison before proceeding.
-3. A Just Works fallback is treated as a connection failure, not a silent degradation.
+2. The BLE transport interface exposes a pairing-complete hook that includes the resolved pairing method, with at least `NumericComparison` and `JustWorks` as distinguishable values.
+3. The phone verifies that the negotiated pairing method is Numeric Comparison before proceeding.
+4. A Just Works fallback is treated as a connection failure, not a silent degradation.
+5. The mock BLE transport can be configured to report different pairing methods, and tests for PT-0904 cover both the success and failure cases.
 
 ---
 

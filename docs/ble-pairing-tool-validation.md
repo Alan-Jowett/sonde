@@ -922,6 +922,56 @@ TestNode {
 
 ---
 
+### T-PT-804  LESC Numeric Comparison enforced
+
+**Validates:** PT-0106, PT-0904
+
+**Procedure:**
+1. Configure the mock BLE transport to report Numeric Comparison as the pairing method.
+2. Run Phase 1 gateway pairing.
+3. Assert: pairing proceeds normally and Phase 1 completes using Numeric Comparison.
+
+---
+
+### T-PT-805  Just Works fallback rejected
+
+**Validates:** PT-0904
+
+**Procedure:**
+1. Configure the mock BLE transport to silently fall back to Just Works (no passkey displayed).
+2. Attempt Phase 1 gateway pairing.
+3. Assert: transport rejects the connection before proceeding to `REQUEST_GW_INFO`.
+4. Assert: error message indicates the pairing mode is insecure.
+
+---
+
+### T-PT-806  Android lifecycle pause/resume during pairing
+
+**Validates:** PT-0107
+
+**Procedure:**
+1. Start Phase 1 gateway pairing on the mock transport.
+2. Simulate an Android activity pause event after BLE connection is established.
+3. Assert: BLE connection is cleanly disconnected.
+4. Simulate an Android activity resume event.
+5. Assert: transport automatically attempts to reconnect the BLE connection.
+6. If reconnection fails, assert: operator is presented with a clear "pairing interrupted — retry?" prompt.
+7. Assert: no GATT client resource leaks.
+
+---
+
+### T-PT-807  JNI classloader caching on background thread
+
+**Validates:** PT-0108
+
+**Procedure:**
+1. Spawn a new thread (simulating a tokio worker thread, not the main/JNI_OnLoad thread).
+2. From that thread, attempt to instantiate the BLE helper class using the cached `GlobalRef`.
+3. Assert: instantiation succeeds without `ClassNotFoundException`.
+4. Assert: BLE operations can be invoked from the background thread.
+
+---
+
 ## 11  Cryptographic tests
 
 ### T-PT-900  HKDF parameters correct for Phase 1
@@ -1045,6 +1095,10 @@ TestNode {
 | T-PT-801 | PT-1001 | No resource leaks on failure |
 | T-PT-802 | PT-1002 | Timeout values match spec |
 | T-PT-803 | PT-1003 | No implicit retries on protocol failure |
+| T-PT-804 | PT-0106, PT-0904 | LESC Numeric Comparison enforced |
+| T-PT-805 | PT-0904 | Just Works fallback rejected |
+| T-PT-806 | PT-0107 | Android lifecycle pause/resume during pairing |
+| T-PT-807 | PT-0108 | JNI classloader caching on background thread |
 | T-PT-900 | PT-1101 | HKDF parameters correct for Phase 1 |
 | T-PT-901 | PT-1101 | HKDF parameters correct for Phase 2 |
 | T-PT-902 | PT-1102 | AES-GCM AAD = gateway_id |

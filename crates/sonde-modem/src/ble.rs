@@ -106,6 +106,10 @@ struct BleState {
     /// from holding the connection slot indefinitely (MD-0414 AC#4).
     /// Cleared once authentication completes successfully.
     connection_start: Option<Instant>,
+    /// Set once the pairing timeout fires.  Suppresses repeated log messages
+    /// while `check_pairing_timeout()` retries `disconnect()` on subsequent
+    /// polls until `on_disconnect` clears `conn_handle`.
+    timeout_fired: bool,
 }
 
 impl BleState {
@@ -121,6 +125,7 @@ impl BleState {
             deferred_connected: None,
             authenticated: false,
             connection_start: None,
+            timeout_fired: false,
         }
     }
 }
@@ -224,6 +229,7 @@ impl EspBleDriver {
                 s.deferred_connected = None;
                 s.authenticated = false;
                 s.connection_start = None;
+                s.timeout_fired = false;
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::Disconnected {
                         peer_addr,
@@ -414,6 +420,7 @@ impl Ble for EspBleDriver {
             s.deferred_connected = None;
             s.authenticated = false;
             s.connection_start = None;
+            s.timeout_fired = false;
         }
         info!("BLE advertising stopped (MD-0407)");
     }
@@ -520,7 +527,12 @@ impl Ble for EspBleDriver {
         // Compute the decision while holding the lock, then release before
         // calling NimBLE to avoid deadlock if NimBLE invokes on_disconnect
         // synchronously.
-        let timed_out_handle = {
+        //
+        // We keep `connection_start` intact so that timeout enforcement
+        // retries `disconnect()` on subsequent polls until `on_disconnect`
+        // clears `conn_handle`.  The `timeout_fired` flag suppresses
+        // repeated log messages after the first warning.
+        let action = {
             let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
             // Enforce the timeout whenever a connection exists but has not
             // yet completed authentication.  This covers both the
@@ -529,16 +541,17 @@ impl Ble for EspBleDriver {
             if s.conn_handle.is_some() && !s.authenticated {
                 if let (Some(handle), Some(start)) = (s.conn_handle, s.connection_start) {
                     if start.elapsed() >= BLE_PAIRING_TIMEOUT {
-                        // Clear pairing/timeout state so we don't repeatedly
-                        // log and attempt disconnect on subsequent polls if
-                        // the disconnect is slow or fails.  Also clear
-                        // deferred_connected to prevent a late
-                        // pairing_confirm_reply from emitting a stale
-                        // BleEvent::Connected.
+                        // Clear pairing state so we don't emit a stale
+                        // BleEvent::Connected from a late
+                        // pairing_confirm_reply, but keep connection_start
+                        // so that timeout enforcement continues on
+                        // subsequent polls until conn_handle is cleared by
+                        // on_disconnect.
                         s.pairing_pending = false;
-                        s.connection_start = None;
                         s.deferred_connected = None;
-                        Some(handle)
+                        let first = !s.timeout_fired;
+                        s.timeout_fired = true;
+                        Some((handle, first))
                     } else {
                         None
                     }
@@ -549,11 +562,13 @@ impl Ble for EspBleDriver {
                 None
             }
         };
-        if let Some(handle) = timed_out_handle {
-            warn!(
-                "BLE: pairing timeout ({} s) exceeded — disconnecting (MD-0414 AC#4)",
-                BLE_PAIRING_TIMEOUT.as_secs()
-            );
+        if let Some((handle, first)) = action {
+            if first {
+                warn!(
+                    "BLE: pairing timeout ({} s) exceeded — disconnecting (MD-0414 AC#4)",
+                    BLE_PAIRING_TIMEOUT.as_secs()
+                );
+            }
             let _ = BLEDevice::take().get_server().disconnect(handle);
         }
     }

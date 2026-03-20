@@ -886,3 +886,72 @@ fn test_p062() {
     assert_eq!(decoded.maps[1].max_entries, 64);
     assert_eq!(decoded.maps[2].max_entries, 8);
 }
+
+// ---------------------------------------------------------------------------
+// key_hint_from_psk tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_key_hint_from_psk() {
+    let psk = [0x42u8; 32];
+    let hint = key_hint_from_psk(&psk, &SoftwareSha256);
+
+    // Verify independently: SHA-256 of the PSK, then bytes [30..32] as BE u16.
+    let hash = SoftwareSha256.hash(&psk);
+    let expected = u16::from_be_bytes([hash[30], hash[31]]);
+    assert_eq!(hint, expected);
+    // Ensure it's not trivially zero (overwhelmingly unlikely for this input).
+    assert_ne!(hint, 0);
+}
+
+#[test]
+fn test_key_hint_from_psk_different_keys() {
+    let psk_a = [0x42u8; 32];
+    let psk_b = [0xAAu8; 32];
+    let hint_a = key_hint_from_psk(&psk_a, &SoftwareSha256);
+    let hint_b = key_hint_from_psk(&psk_b, &SoftwareSha256);
+    // Different PSKs should (almost certainly) produce different hints.
+    assert_ne!(hint_a, hint_b);
+}
+
+// ---------------------------------------------------------------------------
+// COMMAND CBOR key ordering test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_command_cbor_key_order() {
+    let cmd = GatewayMessage::Command {
+        starting_seq: 100,
+        timestamp_ms: 999,
+        payload: CommandPayload::UpdateProgram {
+            program_hash: vec![0xABu8; 32],
+            program_size: 512,
+            chunk_size: 190,
+            chunk_count: 3,
+        },
+    };
+    let cbor = cmd.encode().unwrap();
+
+    // Decode raw CBOR and verify integer keys are in ascending order.
+    let value: ciborium::Value =
+        ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
+    if let ciborium::Value::Map(pairs) = value {
+        let keys: Vec<u64> = pairs
+            .iter()
+            .map(|(k, _)| {
+                u64::try_from(k.as_integer().expect("integer key")).expect("non-negative")
+            })
+            .collect();
+        // Must be strictly ascending: {4, 5, 13, 14}
+        for w in keys.windows(2) {
+            assert!(
+                w[0] < w[1],
+                "CBOR keys not in ascending order: {:?}",
+                keys
+            );
+        }
+        assert_eq!(keys, vec![4, 5, 13, 14]);
+    } else {
+        panic!("Expected CBOR map");
+    }
+}

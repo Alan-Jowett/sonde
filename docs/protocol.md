@@ -111,6 +111,7 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 | `0x02` | `GET_CHUNK` | Request a program chunk during chunked transfer. |
 | `0x03` | `PROGRAM_ACK` | Confirm successful program installation. |
 | `0x04` | `APP_DATA` | Application data blob from the BPF program. |
+| `0x05` | `PEER_REQUEST` | BLE pairing peer request. See `ble-pairing-protocol.md`. |
 
 ### 4.2  Gateway → Node
 
@@ -119,6 +120,7 @@ This makes direction unambiguous from `msg_type` alone, simplifying routing, log
 | `0x81` | `COMMAND` | Response to `WAKE`. Contains a command for the node. |
 | `0x82` | `CHUNK` | Response to `GET_CHUNK`. Contains one program chunk. |
 | `0x83` | `APP_DATA_REPLY` | Response to `APP_DATA`. Opaque blob from the gateway application. |
+| `0x84` | `PEER_ACK` | BLE pairing peer acknowledgement. See `ble-pairing-protocol.md`. |
 
 ---
 

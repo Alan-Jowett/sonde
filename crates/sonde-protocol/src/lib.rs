@@ -25,3 +25,14 @@ pub use header::FrameHeader;
 pub use messages::{CommandPayload, GatewayMessage, NodeMessage};
 pub use program_image::{program_hash, MapDef, ProgramImage};
 pub use traits::{HmacProvider, Sha256Provider};
+
+/// Derive the 2-byte key hint from a PSK.
+///
+/// `key_hint = u16::from_be_bytes(SHA-256(PSK)[30..32])`
+///
+/// This consolidates the derivation formula so the gateway and node
+/// do not implement it independently.
+pub fn key_hint_from_psk(psk: &[u8; 32], sha: &impl Sha256Provider) -> u16 {
+    let hash = sha.hash(psk);
+    u16::from_be_bytes([hash[30], hash[31]])
+}

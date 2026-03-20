@@ -120,19 +120,69 @@ The design MUST clearly separate four layers: **protocol logic** (state machines
 
 ---
 
-### PT-0105  LESC Numeric Comparison BLE pairing
+### PT-0105  Android BLE runtime permissions
 
 **Priority:** Must  
-**Source:** ble-pairing-tool-design.md §9.1, §9.2
+**Source:** ble-pairing-tool-design.md §9.2
 
 **Description:**  
-The BLE transport MUST use LESC (LE Secure Connections) Numeric Comparison as the BLE pairing mode when connecting to the modem's Gateway Pairing Service. Just Works pairing MUST NOT be accepted because it provides no MITM protection, and the pairing exchange carries PSK material.
+On Android, BLE scanning and connection require **runtime permissions** that the OS does not grant automatically at install time.  The app MUST request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` (API 31+) or `ACCESS_FINE_LOCATION` (API 23–30) before the first BLE operation.  The user MUST see a system consent dialog; the app MUST NOT silently fail if permissions are not yet granted.
 
 **Acceptance criteria:**
 
-1. On Windows, the WinRT pairing ceremony uses Numeric Comparison (6-digit passkey displayed for user confirmation).
-2. On Android, the system pairing dialog uses Numeric Comparison.
-3. If the BLE stack falls back to Just Works (no user confirmation), the transport rejects the connection and returns an error.
+1. On first launch with no prior grants, the Android system permission dialog appears before any BLE operation is attempted.
+2. If the user grants the permissions, scanning and connection proceed normally.
+3. If the user denies the permissions, the app surfaces an actionable error message (not a silent failure or crash).
+4. On API 31+ the requested permissions are `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`; on API 23–30 the requested permission is `ACCESS_FINE_LOCATION`.
+
+---
+
+### PT-0106  LESC Numeric Comparison pairing
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.1, §9.2; security.md
+
+**Description:**  
+BLE connections to the modem MUST use **LE Secure Connections (LESC) with Numeric Comparison** as the pairing method.  This ensures mutual authentication and MITM protection during the BLE link establishment.  The app MUST NOT fall back to **Just Works** pairing silently; if the platform cannot complete Numeric Comparison (e.g., the modem does not support `DisplayYesNo` I/O capability), the connection MUST fail with an actionable error.
+
+**Acceptance criteria:**
+
+1. **Precondition:** the modem is configured for LESC with `DisplayYesNo` I/O capability (see modem requirements).
+2. The phone app triggers `createBond()` (Android) or equivalent platform API to initiate LESC pairing.
+3. A Numeric Comparison dialog is presented to the user for confirmation.
+4. If the user rejects the comparison or the pairing mode degrades to Just Works, the connection is terminated.
+
+---
+
+### PT-0107  Android activity lifecycle management
+
+**Priority:** Should  
+**Source:** ble-pairing-tool-design.md §9.2
+
+**Description:**  
+On Android, the BLE transport SHOULD disconnect cleanly when the hosting Activity is paused (e.g., user switches apps) and reconnect on resume if a pairing flow was in progress.  This prevents leaked BLE connections and stale GATT state.
+
+**Acceptance criteria:**
+
+1. Backgrounding the app mid-pairing disconnects the BLE link within 5 s.
+2. Returning to the app after a lifecycle-triggered disconnect surfaces an error or resumes the flow cleanly (no crash, no hang).
+3. No GATT connections remain open after the Activity is destroyed.
+
+---
+
+### PT-0108  JNI classloader caching
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.2 (implicit); Android JNI best practices
+
+**Description:**  
+On Android, the native library MUST cache `GlobalRef` references to app-defined Java classes (e.g., `BleHelper`, `SecureStore`) during `JNI_OnLoad` (or another Java-attached thread with the application classloader).  Threads attached via `JavaVM::attach_current_thread()` (e.g., tokio worker threads) use the system classloader, which cannot find app-defined classes via `FindClass`.
+
+**Acceptance criteria:**
+
+1. `JNI_OnLoad` resolves and caches `GlobalRef` for every app-defined class used from Rust.
+2. BLE and storage operations succeed when invoked from tokio background threads.
+3. No `ClassNotFoundException` or `FindClass` failure occurs on non-main threads.
 
 ---
 
@@ -193,7 +243,7 @@ The operator MUST be able to start and stop scanning. Scanning MUST time out aft
 **Source:** ble-pairing-protocol.md §3.4
 
 **Description:**  
-On operator selection of a gateway device, the tool MUST connect to the BLE peripheral, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing.  Numeric Comparison is the required method for the gateway pairing service (the tool displays or relays the 6-digit passkey for operator verification).  Just Works MUST NOT be accepted because it provides no MITM protection and the pairing exchange carries PSK material (see PT-0105).  If the negotiated MTU is < 247, the tool MUST disconnect and report an error.
+On operator selection of a gateway device, the tool MUST connect to the BLE peripheral, negotiate ATT MTU ≥ 247, and accept BLE LESC pairing.  Numeric Comparison is the required method for the gateway pairing service (the tool displays or relays the 6-digit passkey for operator verification).  Just Works MUST NOT be accepted because it provides no MITM protection and the pairing exchange carries PSK material (see PT-0106).  If the negotiated MTU is < 247, the tool MUST disconnect and report an error.
 
 **Acceptance criteria:**
 
@@ -690,17 +740,18 @@ Test code MUST use clearly non-zero keys (e.g., `[0x42u8; 32]`), not `[0u8; 32]`
 ### PT-0904  BLE pairing mode enforcement
 
 **Priority:** Must  
-**Source:** ble-pairing-tool-design.md §9.1, §9.2; PT-0105
+**Source:** security.md §2; ble-pairing-tool-design.md §9.1, §9.2; PT-0106
 
 **Description:**  
-The BLE transport MUST verify that the established BLE pairing used Numeric Comparison (not Just Works). The transport abstraction MUST expose an explicit, observable signal indicating which pairing method was actually negotiated with the OS BLE stack (e.g., an enum such as `NumericComparison`, `JustWorks`). This signal MUST be available both to the application logic and to the test harness. If the underlying BLE stack silently falls back to Just Works, or if the pairing method cannot be determined, the transport MUST treat this as a security error and disconnect.
+The BLE link between the phone and modem MUST be established using LE Secure Connections (LESC) with authenticated pairing (Numeric Comparison). Unauthenticated pairing modes (Just Works, passkey-only without confirmation) MUST NOT be accepted because the pairing exchange carries PSK material that an active MITM could intercept. The transport abstraction MUST expose an explicit, observable signal indicating which pairing method was actually negotiated with the OS BLE stack (e.g., an enum such as `NumericComparison`, `JustWorks`). This signal MUST be available both to the application logic and to the test harness.
 
 **Acceptance criteria:**
 
-1. The BLE transport interface exposes a pairing-complete hook that includes the resolved pairing method, with at least `NumericComparison` and `JustWorks` as distinguishable values.
-2. After BLE pairing completes, the transport reads the pairing method from this hook rather than inferring it indirectly.
-3. If `JustWorks` or an unknown pairing method is reported, the transport disconnects and returns an error indicating MITM-unsafe pairing.
-4. The mock BLE transport can be configured to report different pairing methods, and tests for PT-0904 cover both the success and failure cases.
+1. **Precondition:** the modem is configured for LESC with `DisplayYesNo` I/O capability (verified by modem validation, not the pairing tool).
+2. The BLE transport interface exposes a pairing-complete hook that includes the resolved pairing method, with at least `NumericComparison` and `JustWorks` as distinguishable values.
+3. The phone verifies that the negotiated pairing method is Numeric Comparison before proceeding.
+4. A Just Works fallback is treated as a connection failure, not a silent degradation.
+5. The mock BLE transport can be configured to report different pairing methods, and tests for PT-0904 cover both the success and failure cases.
 
 ---
 
@@ -778,39 +829,6 @@ The pairing state machine and cryptographic logic MUST be usable from the Tauri-
 
 1. The core crate has no UI or platform dependencies.
 2. The core crate is used by at least two consumers: the application frontend and the test suite.
-
----
-
-### PT-1005  Android activity lifecycle management
-
-**Priority:** Must  
-**Source:** ble-pairing-tool-design.md §9.2
-
-**Description:**  
-On Android, the BLE transport MUST handle activity lifecycle events (pause/resume) gracefully. The transport MUST disconnect the BLE connection when the activity is paused and, if a pairing flow was in progress, MUST automatically attempt to reconnect the BLE connection when the activity is resumed. If automatic reconnection fails, the transport MUST surface a retry prompt to the operator.
-
-**Acceptance criteria:**
-
-1. Activity pause during an active BLE connection triggers a clean disconnect.
-2. Activity resume after a paused pairing session automatically attempts to reconnect the previous BLE connection.
-3. If automatic reconnection after resume fails, the operator is prompted with a clear option to retry the pairing flow.
-4. No BLE resource leaks (unclosed GATT clients) after pause/resume cycles.
-
----
-
-### PT-1006  JNI classloader caching
-
-**Priority:** Must  
-**Source:** ble-pairing-tool-design.md §9.2 (implicit); Android JNI best practices
-
-**Description:**  
-On Android, the JNI bridge MUST cache `GlobalRef` references to app-defined Java classes during `JNI_OnLoad` (on the main thread). Threads attached to the JVM via `AttachCurrentThread` (e.g., tokio worker threads) may only have access to the system classloader, causing `FindClass` for app classes to fail.
-
-**Acceptance criteria:**
-
-1. All app-defined class references used by the BLE transport are cached as `GlobalRef` during `JNI_OnLoad`.
-2. No `FindClass` calls for app classes occur on natively-attached threads.
-3. BLE helper classes can be instantiated and used from a non-main thread using cached `GlobalRef` references without class lookup failures.
 
 ---
 

@@ -679,11 +679,12 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 ### 9.2  Android (Android BLE API)
 
 - **BLE library:** Android BLE API accessed via JNI bridge (Tauri Mobile).  `btleplug` does not support Android, so the `BleTransport` trait implementation calls the Android `BluetoothGatt` API through JNI.
-- **Permissions:** The Android manifest must declare `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, and `ACCESS_FINE_LOCATION` (required for BLE scanning on Android 12+).  The app must request runtime permissions before starting a scan.
+- **Permissions:** The Android manifest must declare `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` for Android 12+ (API 31+) BLE scanning.  For pre-31 devices, BLE scanning requires a location permission such as `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`.  The app must request the relevant runtime permissions before starting a scan (PT-0105).
 - **MTU negotiation:** Call `BluetoothGatt.requestMtu(247)` after connection.  The actual negotiated MTU is reported via `onMtuChanged()`.
-- **Just Works / Numeric Comparison:** Android handles LESC pairing via the system pairing dialog.  Numeric Comparison displays a 6-digit passkey for user confirmation.  Just Works proceeds without user interaction.
+- **Just Works / Numeric Comparison:** Android handles LESC pairing via the system pairing dialog.  Numeric Comparison displays a 6-digit passkey for user confirmation.  Just Works proceeds without user interaction.  The app must verify that LESC Numeric Comparison was used; a Just Works fallback must be treated as a connection failure (PT-0106, PT-0904).
 - **Storage:** `EncryptedSharedPreferences` backed by the Android Keystore for PSK protection.
-- **Lifecycle:** The BLE connection must be managed carefully around Android activity lifecycle events (pause/resume).  The transport implementation should disconnect on pause and reconnect on resume if a pairing flow was in progress.
+- **Lifecycle:** The BLE connection must be managed carefully around Android activity lifecycle events (pause/resume).  The transport implementation should disconnect on pause and reconnect on resume if a pairing flow was in progress (PT-0107).
+- **JNI classloader caching:** App-defined Java classes (`BleHelper`, `SecureStore`) must be resolved and cached as `GlobalRef` from `JNI_OnLoad` or another Java-attached thread that uses the application classloader.  Tokio worker threads use the system classloader, which cannot find app-defined classes via `FindClass` (PT-0108).
 
 ### 9.3  Cross-platform considerations
 
@@ -864,7 +865,7 @@ Platform-specific BLE transport and storage implementations, plus the Tauri UI s
 | §6 Cryptographic operations | PT-0301, PT-0304, PT-0402, PT-0404, PT-0405, PT-0408, PT-0900, PT-0901, PT-0902, PT-1100–PT-1103 |
 | §7 Persistence | PT-0800–PT-0804 |
 | §8 Error handling | PT-0500–PT-0502, PT-1000, PT-1003 |
-| §9 Platform-specific | PT-0100, PT-0300, PT-0801 |
+| §9 Platform-specific | PT-0100, PT-0105, PT-0106, PT-0107, PT-0108, PT-0300, PT-0801, PT-0904 |
 | §10 BLE message envelope | PT-0301, PT-0303, PT-0407 |
 | §11 RNG provider | PT-0901, PT-0903 |
 | §12 Input validation | PT-0403, PT-0406 |

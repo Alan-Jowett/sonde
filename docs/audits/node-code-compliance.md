@@ -127,7 +127,7 @@
 
 ## 2  D8 Findings (Unimplemented Requirements)
 
-**No D8 findings.** All 43 requirements (40 Must + 2 Should + 1 Must) are traced to implementing code.
+**No D8 findings.** All 43 requirements (40 Must + 2 Should + 1 May) are traced to implementing code.
 
 The two **Should**-priority requirements (ND-0403 secure boot, ND-0403a flash encryption) are not enforced in firmware code but are ESP-IDF configuration concerns. They do not represent implementation gaps at the firmware level.
 

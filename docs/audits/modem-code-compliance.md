@@ -6,7 +6,7 @@
 > **Spec baseline:** `modem-requirements.md` (27 active requirements, MD-0100 – MD-0414)
 > **Code snapshot:** `crates/sonde-modem/src/` (bridge.rs, ble.rs, espnow.rs, usb\_cdc.rs, peer\_table.rs, status.rs, bin/modem.rs)
 > **Protocol codec:** `crates/sonde-protocol/src/modem.rs`
-> **Date:** 2025-07-17
+> **Date:** 2026-03-20
 
 ---
 

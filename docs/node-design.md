@@ -87,7 +87,7 @@ The wake cycle engine is the central state machine. It runs once per wake and th
 
 ### 4.1  State machine
 
-The state machine has five main states plus two alternate boot paths. Starting from BOOT, the node reads the key store (dedicated `key` flash partition — see §6.1) and checks the PSK and `reg_complete` flag to determine the boot path (ND-0900): (1) no PSK in key store or pairing button held ≥ 500 ms → enter BLE pairing mode (§15); (2) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (3) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
+The state machine has five main states plus two alternate boot paths. Starting from BOOT, the node reads credentials from the `key` flash partition (§6.1) and the `reg_complete` flag from NVS (§6.1a) to determine the boot path (ND-0900): (1) no PSK in key partition or pairing button held ≥ 500 ms → enter BLE pairing mode (§15); (2) PSK present but `reg_complete` not set → enter PEER_REQUEST registration (§15.7); (3) PSK present and `reg_complete` set → enter WAKE SEND. WAKE SEND transmits a WAKE frame and waits for a COMMAND response (retrying up to 3 times); if all retries fail it goes directly to SLEEP. On receiving a COMMAND, the node enters DISPATCH COMMAND, which branches on the command type: NOP proceeds to BPF execution; UPDATE_PROGRAM or RUN_EPHEMERAL initiates chunked transfer before BPF execution; UPDATE_SCHEDULE stores the new interval and proceeds to BPF execution; REBOOT restarts the firmware. After BPF execution — which may perform APP_DATA exchanges with the gateway — the node enters SLEEP.
 
 ```
 ┌─────────┐
@@ -215,11 +215,23 @@ The magic bytes in the key partition indicate whether a PSK is provisioned. An e
 
 Factory reset (ND-0402, ND-0917) erases:
 1. `key` partition (PSK + key_hint + magic → all 0xFF).
-2. RTC slow SRAM (map data → zeroed).
-3. Both program partitions (`program_a`, `program_b` → erased).
-4. Schedule partition → reset to default interval.
+2. NVS pairing keys (`peer_payload`, `reg_complete` → erased).
+3. RTC slow SRAM (map data → zeroed).
+4. Both program partitions (`program_a`, `program_b` → erased).
+5. Schedule partition → reset to default interval.
 
 After reset, the magic bytes are missing → firmware detects unpaired state → enters BLE pairing mode on next boot.
+
+### 6.1a  NVS layout for BLE pairing (ND-0916)
+
+BLE pairing artifacts are stored in NVS. ND-0916 defines the complete NVS layout including both pre-existing keys (`magic`, `key_hint`, `psk`, `channel`, `interval`, `active_p`, `prog_a`, `prog_b`) and pairing-specific keys:
+
+| NVS key | Type | Contents |
+|---|---|---|
+| `peer_payload` | blob | Encrypted payload for PEER_REQUEST (erased after first WAKE/COMMAND) |
+| `reg_complete` | u32 | Registration complete flag (1 = registered with gateway) |
+
+> **Note:** The `key` partition layout in §6.1 is the original design-level storage for PSK/key_hint/magic. The requirements (ND-0916) describe all credential fields as NVS keys. Implementations may use either raw flash partitions or NVS for the core credentials — the Key Store trait (§3.1) abstracts this choice. The BLE-specific keys (`peer_payload`, `reg_complete`) always use NVS. Factory reset erases both (§6.2).
 
 ---
 
@@ -496,11 +508,11 @@ All inbound protocol errors result in **silent discard** — the node does not s
 
 1. ESP-IDF initialization (clocks, peripherals, wifi/ESP-NOW).
 2. Sample pairing button GPIO for 500 ms (ND-0901).
-3. Read key partition: check magic bytes and load credentials if present.
+3. Read key partition: check magic bytes and load credentials if present. Read NVS `reg_complete` flag (§6.1a).
 4. Determine boot path (ND-0900):
    a. No valid PSK in key partition OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.
-   b. PSK present, `reg_complete` flag NOT set → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
-   c. PSK present, `reg_complete` flag set → continue to step 5 (normal WAKE cycle).
+   b. PSK present in key partition, `reg_complete` NOT set in NVS → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
+   c. PSK present in key partition, `reg_complete` set in NVS → continue to step 5 (normal WAKE cycle).
 5. Read schedule partition: load base interval and active program partition flag.
 6. Read active program partition: decode CBOR image header, extract program hash.
    - No program → set `program_hash` to zero-length.
@@ -566,7 +578,7 @@ The main loop polls for pending GATT writes and disconnection events at 100 ms i
 
 ### 15.6  Platform-independent handler
 
-The GATT write payload is parsed and handled by `handle_node_provision()` in the platform-independent `ble_pairing` module (ND-0905, ND-0906, ND-0908). The handler parses the five NODE_PROVISION fields (`node_key_hint`, `node_psk`, `rf_channel`, `payload_len`, `encrypted_payload`), validates `payload_len` before reading `encrypted_payload`, and persists credentials to NVS under the keys defined in ND-0916 (`psk`, `key_hint`, `channel`, `peer_payload`). The `reg_complete` flag is cleared on successful provision. If any NVS write fails, the handler responds with NODE_ACK(0x02) (ND-0908). This keeps provisioning logic testable on the host (see T-N904–T-N907). The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
+The GATT write payload is parsed and handled by `handle_node_provision()` in the platform-independent `ble_pairing` module (ND-0905, ND-0906, ND-0908). The handler parses the five NODE_PROVISION fields (`node_key_hint`, `node_psk`, `rf_channel`, `payload_len`, `encrypted_payload`), validates `payload_len` before reading `encrypted_payload`, and persists credentials: PSK and key_hint to the `key` flash partition (§6.1), and `channel`, `peer_payload`, `reg_complete` to NVS (§6.1a, ND-0916). The `reg_complete` flag is cleared on successful provision. If any write fails, the handler responds with NODE_ACK(0x02) (ND-0908). This keeps provisioning logic testable on the host (see T-N904–T-N907). The ESP-specific `esp_ble_pairing` module handles only NimBLE initialization, GATT plumbing, and the event loop.
 
 ### 15.7  Post-provisioning registration (PEER_REQUEST / PEER_ACK)
 

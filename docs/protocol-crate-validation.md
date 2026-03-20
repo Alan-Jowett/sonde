@@ -311,10 +311,11 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P033  ProgramAck round-trip
 
 **Procedure:**
-1. Create `NodeMessage::ProgramAck { status: 0x00 }`.
-2. Encode to CBOR.
-3. Decode back.
-4. Assert: `status` field matches `0x00`.
+1. Choose a fixed 32-byte test hash (e.g., `let program_hash = [0xABu8; 32];`).
+2. Create `NodeMessage::ProgramAck { program_hash }`.
+3. Encode to CBOR.
+4. Decode back.
+5. Assert: decoded `program_hash` field exactly matches the original `program_hash` bytes.
 
 ---
 
@@ -351,7 +352,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P037  Unknown CBOR keys ignored in non-Wake messages
 
 **Procedure:**
-1. For each of Command, GetChunk, Chunk, AppData, AppDataReply: add an extra CBOR key (e.g., key 99) to valid encoded bytes.
+1. For each of Command, GetChunk, Chunk, ProgramAck, AppData, AppDataReply: add an extra CBOR key (e.g., key 99) to valid encoded bytes.
 2. Decode each.
 3. Assert: decoding succeeds and the unknown key is silently ignored.
 
@@ -530,8 +531,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 ### T-P055  chunk_count arithmetic overflow
 
 **Procedure:**
-1. Call `chunk_count(usize::MAX, 1)`. Assert: returns `Some(usize::MAX)` or handles overflow gracefully (no panic).
-2. Call `chunk_count(usize::MAX, usize::MAX)`. Assert: returns `Some(1)`.
+1. Call `chunk_count(usize::MAX, 1)`. Assert: returns `None` because the required chunk count does not fit in `u32` (no panic).
+2. Call `chunk_count(u32::MAX as usize, 1)`. Assert: returns `Some(u32::MAX)` (maximum chunk count that still fits in `u32`).
+3. Call `chunk_count(usize::MAX, usize::MAX)`. Assert: returns `Some(1)`.
 
 ---
 

@@ -192,11 +192,18 @@ impl GatewayAdmin for AdminService {
         request: Request<RemoveNodeRequest>,
     ) -> Result<Response<Empty>, Status> {
         let node_id = &request.get_ref().node_id;
-        self.storage
+        let mut node = self
+            .storage
             .get_node(node_id)
             .await
             .map_err(storage_err)?
             .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+
+        // GW-0705: Zero PSK key material before removing from storage so
+        // it is not left in freed heap memory.
+        use zeroize::Zeroize;
+        node.psk.zeroize();
+
         self.storage
             .delete_node(node_id)
             .await
@@ -204,18 +211,30 @@ impl GatewayAdmin for AdminService {
         Ok(Response::new(Empty {}))
     }
 
-    /// Ingest a CBOR-encoded program image. ELF→CBOR extraction/verification
-    /// will be added in a future phase; callers must supply pre-encoded CBOR for now.
+    /// Ingest a program image (GW-0400).
+    ///
+    /// Accepts either an ELF binary (auto-detected via the `\x7fELF` magic)
+    /// or a pre-encoded CBOR program image. ELF binaries are parsed,
+    /// verified with Prevail, and converted to CBOR automatically.
     async fn ingest_program(
         &self,
         request: Request<IngestProgramRequest>,
     ) -> Result<Response<IngestProgramResponse>, Status> {
         let req = request.into_inner();
         let profile = parse_profile(req.verification_profile)?;
-        let mut record = self
-            .program_library
-            .ingest_unverified(req.image_data, profile)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let is_elf = req.image_data.len() >= 4 && &req.image_data[..4] == b"\x7fELF";
+
+        let mut record = if is_elf {
+            self.program_library
+                .ingest_elf(&req.image_data, profile)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?
+        } else {
+            self.program_library
+                .ingest_unverified(req.image_data, profile)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?
+        };
+
         record.abi_version = req.abi_version;
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
@@ -420,8 +439,7 @@ impl GatewayAdmin for AdminService {
     /// CBOR bundle.
     ///
     /// The passphrase is used to derive the encryption key via
-    /// PBKDF2-HMAC-SHA256.  Handler routing configuration is not included
-    /// in the bundle (deferred to Phase 2C-iii).
+    /// PBKDF2-HMAC-SHA256.
     ///
     /// **Security note:** This RPC returns PSK material (encrypted with the
     /// operator passphrase).  The admin gRPC endpoint MUST be bound to a

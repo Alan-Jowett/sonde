@@ -642,6 +642,9 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
             .map(|j| sensors_from_json(&j))
             .unwrap_or_default(),
         registered_by_phone_id,
+        // Battery history is not persisted in SQLite; it is an in-memory
+        // feature populated on each WAKE and included in state exports.
+        battery_history: Vec::new(),
     })
 }
 
@@ -1276,6 +1279,7 @@ mod tests {
             rf_channel: None,
             sensors: Vec::new(),
             registered_by_phone_id: None,
+            battery_history: Vec::new(),
         }
     }
 

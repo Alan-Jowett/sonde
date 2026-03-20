@@ -28,7 +28,7 @@ pub use handler::{
 };
 pub use phone_trust::{PhonePskRecord, PhonePskStatus};
 pub use program::{ProgramLibrary, ProgramRecord, VerificationProfile};
-pub use registry::{NodeRecord, SensorDescriptor};
+pub use registry::{BatteryReading, NodeRecord, SensorDescriptor};
 pub use session::{Session, SessionManager, SessionState};
 pub use sqlite_storage::SqliteStorage;
 pub use storage::{InMemoryStorage, Storage, StorageError};

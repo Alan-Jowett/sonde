@@ -143,6 +143,8 @@ impl Gateway {
         // 3. Lookup candidate nodes by key_hint
         let candidates = self.storage.get_nodes_by_key_hint(key_hint).await.ok()?;
         if candidates.is_empty() {
+            // GW-1002: log discard of frames from unknown nodes.
+            warn!(key_hint, "discarding frame from unknown node (no key_hint match)");
             return None;
         }
 
@@ -472,7 +474,16 @@ impl Gateway {
                     program_hash,
                     battery_mv,
                 }) => (firmware_abi_version, program_hash, battery_mv),
-                _ => return None,
+                Ok(_) => return None,
+                Err(e) => {
+                    // GW-0101 AC3: log malformed inbound CBOR.
+                    warn!(
+                        node_id = %node.node_id,
+                        error = %e,
+                        "discarding WAKE with malformed CBOR payload"
+                    );
+                    return None;
+                }
             };
 
         // 2. Create/replace session (random starting_seq, current timestamp_ms)
@@ -596,7 +607,19 @@ impl Gateway {
         payload: &[u8],
     ) -> Option<Vec<u8>> {
         // 1. Pre-decode: validate the message payload before touching session state
-        let msg = NodeMessage::decode(header.msg_type, payload).ok()?;
+        let msg = match NodeMessage::decode(header.msg_type, payload) {
+            Ok(m) => m,
+            Err(e) => {
+                // GW-0101 AC3: log malformed inbound CBOR.
+                warn!(
+                    node_id = %node.node_id,
+                    msg_type = header.msg_type,
+                    error = %e,
+                    "discarding post-WAKE message with malformed CBOR payload"
+                );
+                return None;
+            }
+        };
 
         // 2. Atomically verify session + sequence and advance counter
         self.session_manager

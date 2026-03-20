@@ -601,9 +601,7 @@ impl Ble for EspBleDriver {
         };
         if let Some((handle, first)) = action {
             if first {
-                warn!(
-                    "BLE: pairing timeout exceeded — disconnecting (MD-0414 AC#4)"
-                );
+                warn!("BLE: pairing timeout exceeded — disconnecting (MD-0414 AC#4)");
             }
             let _ = BLEDevice::take().get_server().disconnect(handle);
         }

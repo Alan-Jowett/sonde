@@ -292,7 +292,13 @@ impl EspBleDriver {
                     if current_mtu > 0 {
                         s.mtu = current_mtu;
                     }
-                    if s.mtu < BLE_MTU_MIN {
+                    if s.timeout_fired {
+                        // Timeout already triggered a disconnect — reject the
+                        // late SMP completion to prevent bypassing operator
+                        // approval (MD-0414 AC#4).
+                        warn!("BLE: ignoring late SMP completion after pairing timeout");
+                        true
+                    } else if s.mtu < BLE_MTU_MIN {
                         warn!(
                             "BLE: pairing complete but MTU too low ({}); disconnecting (MD-0402)",
                             s.mtu

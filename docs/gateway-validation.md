@@ -567,7 +567,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Send APP_DATA → handler replies.
 3. Send another APP_DATA.
 4. Assert: same handler process receives the second message (no respawn).
-5. Assert: handler PID is identical across both messages.
+5. Assert: handler instance identity is stable across both messages (for example, same PID when using a subprocess, or the same test-assigned instance ID for an in-process mock).
 
 ---
 
@@ -1110,17 +1110,19 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0806
 
 **Procedure:**
-1. Start a gateway instance.
+1. Start a gateway instance (using the default admin socket, or pass `--socket PATH` consistently to both the gateway and `sonde-admin` if overriding).
 2. Run `sonde-admin --format json node list` against the admin socket.
 3. Assert: command exits successfully with valid JSON output.
-4. Register a node via `sonde-admin node register`.
+4. Register a node via `sonde-admin node register NODE_ID KEY_HINT PSK_HEX`, for example:
+   `sonde-admin node register node-0001 1 4242424242424242424242424242424242424242424242424242424242424242`
 5. Assert: command exits successfully.
 6. Run `sonde-admin --format json node list`.
-7. Assert: the new node appears in the output.
-8. Run `sonde-admin node remove`.
+7. Assert: the new node `NODE_ID` appears in the output.
+8. Run `sonde-admin node remove NODE_ID`, for example:
+   `sonde-admin node remove node-0001`
 9. Assert: command exits successfully.
 10. Run `sonde-admin --format json node list`.
-11. Assert: the node is no longer listed.
+11. Assert: the node `NODE_ID` is no longer listed.
 
 ---
 
@@ -1196,7 +1198,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Call `ExportState` with a known export passphrase (e.g., `test-export-passphrase`).
 3. Inspect the raw export bytes (encrypted bundle).
 4. Assert: no PSK value appears as a contiguous substring in the export payload.
-5. Attempt to import or use the export without the correct passphrase (e.g., omit the passphrase or supply an incorrect one). Assert: import is rejected or the resulting state does not accept WAKE from the registered nodes (PSKs cannot be recovered/used).
+5. Attempt to import or use the export without the correct passphrase (e.g., omit the passphrase or supply an incorrect one). Assert: import is rejected with an authentication/invalid-passphrase error and the gateway state is unchanged (registered nodes are not restored and WAKE from those nodes is not accepted).
 6. Import the export into a fresh gateway using the correct export passphrase.
 7. Assert: nodes are restored and PSKs are functional (WAKE from registered node is accepted).
 
@@ -1650,10 +1652,13 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Complete modem startup.
-2. Open BLE pairing session via admin API.
-3. Mock modem: inject a `BLE_RECV` message containing a `REQUEST_GW_INFO` command.
-4. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem containing a valid `GW_INFO_RESPONSE`.
-5. Decode the indication payload and verify it contains `gw_public_key`, `gateway_id`, and `signature`.
+2. Using a BLE test client, scan for the modem and connect to its GATT server.
+3. Discover services and assert: the Gateway Pairing Service UUID matches the value specified for GW-1204 in `ble-pairing-protocol.md`.
+4. Within the Gateway Pairing Service, discover characteristics and assert: the request/command and indication/response characteristic UUIDs match the values specified for GW-1204.
+5. Open a BLE pairing session via the admin API.
+6. Mock modem: inject a `BLE_RECV` message containing a `REQUEST_GW_INFO` command on the request characteristic.
+7. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem on the indication characteristic containing a valid `GW_INFO_RESPONSE`.
+8. Decode the indication payload and verify it contains `gw_public_key`, `gateway_id`, and `signature`.
 
 ---
 
@@ -1665,7 +1670,7 @@ A configurable stub handler process (or in-process mock) that:
 1. Complete modem startup.
 2. Open BLE pairing session.
 3. Assert: when the gateway sends a `BLE_INDICATE` message, the payload is a complete BLE envelope (the modem handles fragmentation per MD-0403).
-4. Arrange for the gateway to emit a BLE envelope whose payload exceeds 244 bytes, using either (a) a variable-length message type (for example, an `ERROR` with a long diagnostic string) or (b) a test-only response that includes explicit padding bytes for this validation.
+4. Arrange for the gateway to emit a BLE envelope whose payload exceeds `(ATT_MTU - 3)` bytes (for example, more than 244 bytes when the negotiated ATT MTU is 247), using either (a) a variable-length message type (for example, an `ERROR` with a long diagnostic string) or (b) a test-only response that includes explicit padding bytes for this validation.
 5. Assert: the gateway sends the oversized envelope in a single `BLE_INDICATE` message to the modem (delegation model — modem fragments, not gateway).
 
 ---

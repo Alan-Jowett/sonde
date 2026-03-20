@@ -847,7 +847,7 @@ The node MUST transmit PEER_REQUEST on each boot until it receives a valid PEER_
 
 1. Each wake cycle re-sends PEER_REQUEST when `reg_complete` is not set.
 2. The interval between retransmissions matches the configured wake interval.
-3. If the `peer_payload` is malformed (cannot be used to construct a valid PEER_REQUEST), the node SHOULD erase the `peer_payload` from NVS to break retry loops.
+3. If the `peer_payload` is malformed (cannot be used to construct a valid PEER_REQUEST), the node MUST attempt to erase the `peer_payload` from NVS to break retry loops; if the erase fails, the node MUST treat the stored `peer_payload` as permanently invalid and MUST NOT continue retransmitting it.
 
 ---
 

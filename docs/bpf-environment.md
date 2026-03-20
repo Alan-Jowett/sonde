@@ -367,7 +367,7 @@ Send an `APP_DATA` message and block until `APP_DATA_REPLY` arrives or the timeo
 | `len` | Length of the outbound data in bytes. |
 | `reply_buf` | Buffer to write the reply into. |
 | `reply_len` | Size of the reply buffer in bytes. |
-| `timeout_ms` | How long to wait for the reply in milliseconds. Maximum value is 5,000 ms (5 seconds). Values above the cap are clamped. |
+| `timeout_ms` | How long to wait for the reply in milliseconds. Maximum value is 5,000 ms (5 seconds); values above the cap are clamped. A value of 0 selects the node's default application timeout instead of an immediate timeout. |
 
 **Returns:** Number of bytes received on success (may be 0 for an empty reply), negative on timeout or error.
 
@@ -446,9 +446,9 @@ Busy-wait for the specified number of microseconds. Used for sensor timing requi
 
 | Parameter | Description |
 |---|---|
-| `microseconds` | Duration to wait. Maximum value is 1,000,000 µs (1 second). Values above the cap are clamped. |
+| `microseconds` | Duration to wait. Maximum value is 1,000,000 µs (1 second). Values above the cap return an error. |
 
-**Returns:** `0` on success.
+**Returns:** `0` on success, `-1` if `microseconds` exceeds the maximum.
 
 **Availability:** Resident and ephemeral. The firmware enforces a maximum `delay_us` duration of 1,000,000 µs (1 second) to prevent BPF programs from monopolizing the CPU.
 

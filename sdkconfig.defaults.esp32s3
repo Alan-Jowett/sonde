@@ -59,6 +59,6 @@ CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
 # not rely on persistent BLE bonds.
 CONFIG_BT_NIMBLE_NVS_PERSIST=n
 # ATT preferred MTU (MD-0402).
-# MD-0402 requires ATT MTU >= 247.  We pin 512 to allow larger payloads
-# while staying within NimBLE's supported range.
-CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
+# MD-0402 requires ATT MTU >= 247.  We pin 247 to satisfy the requirement
+# while keeping worst-case BLE heap usage bounded on the ESP32-S3.
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247

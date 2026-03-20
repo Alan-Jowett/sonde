@@ -56,11 +56,15 @@ const MAX_BLE_EVENT_QUEUE: usize = 32;
 /// Maximum queued indication chunks before new indications are rejected.
 const MAX_INDICATION_CHUNKS: usize = 64;
 
-/// Maximum time allowed for a BLE connection to complete the full pairing flow.
-/// If pairing has not successfully completed before this duration elapses,
-/// the connection is force-disconnected to prevent resource exhaustion from stalled
-/// or malicious clients.
+/// Maximum time allowed for the operator to reply after `BLE_PAIRING_CONFIRM`
+/// is sent.  If no `BLE_PAIRING_CONFIRM_REPLY` arrives within this duration,
+/// the pairing is rejected (MD-0414 AC#4 / T-0622).
 const BLE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum time a BLE connection may remain without initiating pairing.
+/// Prevents a client that connects but never starts LESC pairing from holding
+/// the single-connection slot indefinitely.
+const BLE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Maximum ATT payload per indication fragment = MTU - 3.
 ///
@@ -101,11 +105,15 @@ struct BleState {
     /// preventing data relay before the session is fully approved (MD-0414).
     authenticated: bool,
     /// Monotonic timestamp recorded when a client connects.  Used by
-    /// `check_pairing_timeout()` to enforce `BLE_PAIRING_TIMEOUT` from the
-    /// moment of connection, preventing clients that never initiate pairing
-    /// from holding the connection slot indefinitely (MD-0414 AC#4).
+    /// `check_pairing_timeout()` to enforce `BLE_IDLE_TIMEOUT` for clients
+    /// that connect but never initiate pairing.
     /// Cleared once authentication completes successfully.
     connection_start: Option<Instant>,
+    /// Monotonic timestamp recorded when `BLE_PAIRING_CONFIRM` is sent to the
+    /// gateway (in `on_confirm_pin`).  Used by `check_pairing_timeout()` to
+    /// enforce the 30 s `BLE_PAIRING_TIMEOUT` per MD-0414 AC#4 / T-0622.
+    /// Cleared once authentication completes or pairing is confirmed.
+    confirm_sent_at: Option<Instant>,
     /// Set once the pairing timeout fires.  Suppresses repeated log messages
     /// while `check_pairing_timeout()` retries `disconnect()` on subsequent
     /// polls until `on_disconnect` clears `conn_handle`.
@@ -125,6 +133,7 @@ impl BleState {
             deferred_connected: None,
             authenticated: false,
             connection_start: None,
+            confirm_sent_at: None,
             timeout_fired: false,
         }
     }
@@ -196,9 +205,9 @@ impl EspBleDriver {
                 s.advertising = false;
                 s.mtu = mtu;
                 s.conn_handle = Some(desc.conn_handle());
-                // Start the pairing timeout clock at connection time so that a
-                // client that never initiates pairing cannot hold the slot
-                // indefinitely (MD-0414 AC#4).
+                // Record the connection timestamp for idle-timeout enforcement.
+                // The 30 s pairing timer (MD-0414 / T-0622) is started later,
+                // when BLE_PAIRING_CONFIRM is sent in on_confirm_pin.
                 s.connection_start = Some(Instant::now());
             }
         });
@@ -229,6 +238,7 @@ impl EspBleDriver {
                 s.deferred_connected = None;
                 s.authenticated = false;
                 s.connection_start = None;
+                s.confirm_sent_at = None;
                 s.timeout_fired = false;
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::Disconnected {
@@ -271,6 +281,8 @@ impl EspBleDriver {
             info!("BLE: Numeric Comparison passkey = {:06}", passkey);
             if let Ok(mut s) = state_confirm.lock() {
                 s.pairing_pending = true;
+                // Start the 30 s pairing timeout clock (MD-0414 / T-0622).
+                s.confirm_sent_at = Some(Instant::now());
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::PairingConfirm { passkey });
                 }
@@ -312,6 +324,7 @@ impl EspBleDriver {
                         info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
                         s.authenticated = true;
                         s.connection_start = None;
+                        s.confirm_sent_at = None;
                         let mtu = s.mtu;
                         if s.events.len() < MAX_BLE_EVENT_QUEUE {
                             s.events.push_back(BleEvent::Connected {
@@ -426,6 +439,7 @@ impl Ble for EspBleDriver {
             s.deferred_connected = None;
             s.authenticated = false;
             s.connection_start = None;
+            s.confirm_sent_at = None;
             s.timeout_fired = false;
         }
         info!("BLE advertising stopped (MD-0407)");
@@ -483,6 +497,7 @@ impl Ble for EspBleDriver {
                 if let Some((peer_addr, mtu)) = s.deferred_connected.take() {
                     s.authenticated = true;
                     s.connection_start = None;
+                    s.confirm_sent_at = None;
                     s.events.push_back(BleEvent::Connected { peer_addr, mtu });
                 }
             }
@@ -539,22 +554,35 @@ impl Ble for EspBleDriver {
         // calling NimBLE to avoid deadlock if NimBLE invokes on_disconnect
         // synchronously.
         //
-        // We keep `connection_start` intact so that timeout enforcement
-        // retries `disconnect()` on subsequent polls until `on_disconnect`
-        // clears `conn_handle`.  The `timeout_fired` flag suppresses
-        // repeated log messages after the first warning.
+        // Two independent timers apply:
+        //   1. `confirm_sent_at` — 30 s pairing timeout (MD-0414 / T-0622),
+        //      measured from when BLE_PAIRING_CONFIRM is sent.
+        //   2. `connection_start` — idle timeout for clients that connect
+        //      but never initiate pairing.
+        //
+        // We keep the timestamps intact so that timeout enforcement retries
+        // `disconnect()` on subsequent polls until `on_disconnect` clears
+        // `conn_handle`.  The `timeout_fired` flag suppresses repeated log
+        // messages after the first warning.
         let action = {
             let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            // Enforce the timeout whenever a connection exists but has not
-            // yet completed authentication.  This covers both the
-            // pairing-pending phase and the pre-pairing phase (a client
-            // that connects but never initiates pairing).
-            if s.conn_handle.is_some() && !s.authenticated {
-                if let (Some(handle), Some(start)) = (s.conn_handle, s.connection_start) {
-                    if start.elapsed() >= BLE_PAIRING_TIMEOUT {
+            if let Some(handle) = s.conn_handle {
+                if s.authenticated {
+                    None
+                } else {
+                    // Check the pairing timer first (30 s from confirm).
+                    let timed_out = if let Some(sent_at) = s.confirm_sent_at {
+                        sent_at.elapsed() >= BLE_PAIRING_TIMEOUT
+                    } else if let Some(start) = s.connection_start {
+                        // No pairing initiated yet — apply idle timeout.
+                        start.elapsed() >= BLE_IDLE_TIMEOUT
+                    } else {
+                        false
+                    };
+                    if timed_out {
                         // Clear pairing state so we don't emit a stale
                         // BleEvent::Connected from a late
-                        // pairing_confirm_reply, but keep connection_start
+                        // pairing_confirm_reply, but keep timestamps
                         // so that timeout enforcement continues on
                         // subsequent polls until conn_handle is cleared by
                         // on_disconnect.
@@ -566,8 +594,6 @@ impl Ble for EspBleDriver {
                     } else {
                         None
                     }
-                } else {
-                    None
                 }
             } else {
                 None
@@ -576,8 +602,7 @@ impl Ble for EspBleDriver {
         if let Some((handle, first)) = action {
             if first {
                 warn!(
-                    "BLE: pairing timeout ({} s) exceeded — disconnecting (MD-0414 AC#4)",
-                    BLE_PAIRING_TIMEOUT.as_secs()
+                    "BLE: pairing timeout exceeded — disconnecting (MD-0414 AC#4)"
                 );
             }
             let _ = BLEDevice::take().get_server().disconnect(handle);

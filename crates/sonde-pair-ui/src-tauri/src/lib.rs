@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
+use sonde_pair::phase1::PairingProgress;
 use sonde_pair::rng::OsRng;
 use sonde_pair::store::PairingStore;
 use sonde_pair::types::ScannedDevice;
@@ -41,8 +42,19 @@ struct AppState {
     scanner: Mutex<Option<DeviceScanner<AndroidBleTransport>>>,
     #[cfg(target_os = "android")]
     store: Mutex<Option<AndroidPairingStore>>,
-    phase: Mutex<String>,
+    phase: Arc<Mutex<String>>,
     logs: Arc<Mutex<Vec<String>>>,
+}
+
+/// Reports Phase 1 sub-phase transitions to the UI via the shared `phase` mutex.
+struct UiPairingProgress {
+    phase: Arc<Mutex<String>>,
+}
+
+impl PairingProgress for UiPairingProgress {
+    fn on_phase(&self, phase: &str) {
+        *self.phase.lock().unwrap() = phase.to_string();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,18 +192,60 @@ async fn pair_gateway(
     state: tauri::State<'_, AppState>,
     address: String,
     phone_label: String,
+    force: Option<bool>,
 ) -> Result<(), String> {
     *state.scanner.lock().unwrap() = None;
-    *state.phase.lock().unwrap() = "Pairing".into();
 
-    let addr = parse_address(&address)?;
+    // PT-0601: check for existing pairing and require explicit confirmation.
+    if !force.unwrap_or(false) {
+        let existing_identity = tokio::task::spawn_blocking(|| {
+            let store = FilePairingStore::new()?;
+            store.load_gateway_identity()
+        })
+        .await
+        .map_err(|e| format!("task panicked: {e}"))?
+        .map_err(|e| e.to_string())?;
+
+        if let Some(identity) = existing_identity {
+            let gw_hex = hex::encode(identity.gateway_id);
+            *state.phase.lock().unwrap() = format!(
+                "Error: Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
+            );
+            return Err(format!(
+                "Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
+            ));
+        }
+    }
+
+    let addr = match parse_address(&address) {
+        Ok(a) => a,
+        Err(e) => {
+            *state.phase.lock().unwrap() = format!("Error: {e}");
+            return Err(e);
+        }
+    };
+
+    // Set an immediate initial phase so the UI doesn't show stale state
+    // while the blocking task is being spawned.
+    *state.phase.lock().unwrap() = "Connecting".into();
+
+    let phase = state.phase.clone();
+    let progress = UiPairingProgress { phase };
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = BtleplugTransport::new().await?;
             let mut store = FilePairingStore::new()?;
             let rng = OsRng;
-            phase1::pair_with_gateway(&mut transport, &mut store, &rng, &addr, &phone_label).await
+            phase1::pair_with_gateway(
+                &mut transport,
+                &mut store,
+                &rng,
+                &addr,
+                &phone_label,
+                Some(&progress),
+            )
+            .await
         })
     })
     .await
@@ -218,9 +272,16 @@ async fn provision_node(
     node_id: String,
 ) -> Result<String, String> {
     *state.scanner.lock().unwrap() = None;
-    *state.phase.lock().unwrap() = "Provisioning".into();
 
-    let addr = parse_address(&address)?;
+    let addr = match parse_address(&address) {
+        Ok(a) => a,
+        Err(e) => {
+            *state.phase.lock().unwrap() = format!("Error: {e}");
+            return Err(e);
+        }
+    };
+
+    *state.phase.lock().unwrap() = "Provisioning".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
@@ -345,18 +406,54 @@ async fn pair_gateway(
     state: tauri::State<'_, AppState>,
     address: String,
     phone_label: String,
+    force: Option<bool>,
 ) -> Result<(), String> {
     *state.scanner.lock().unwrap() = None;
-    *state.phase.lock().unwrap() = "Pairing".into();
 
-    let addr = parse_address(&address)?;
+    // PT-0601: check for existing pairing and require explicit confirmation.
+    if !force.unwrap_or(false) {
+        let guard = get_or_init_store(&state.store)?;
+        let store = guard.as_ref().unwrap();
+        if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
+            let gw_hex = hex::encode(identity.gateway_id);
+            *state.phase.lock().unwrap() = format!(
+                "Error: Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
+            );
+            return Err(format!(
+                "Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
+            ));
+        }
+    }
+
+    let addr = match parse_address(&address) {
+        Ok(a) => a,
+        Err(e) => {
+            *state.phase.lock().unwrap() = format!("Error: {e}");
+            return Err(e);
+        }
+    };
+
+    // Set an immediate initial phase so the UI doesn't show stale state
+    // while the blocking task is being spawned.
+    *state.phase.lock().unwrap() = "Connecting".into();
+
+    let phase = state.phase.clone();
+    let progress = UiPairingProgress { phase };
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = AndroidBleTransport::from_cached_vm()?;
             let mut store = AndroidPairingStore::from_cached_vm()?;
             let rng = OsRng;
-            phase1::pair_with_gateway(&mut transport, &mut store, &rng, &addr, &phone_label).await
+            phase1::pair_with_gateway(
+                &mut transport,
+                &mut store,
+                &rng,
+                &addr,
+                &phone_label,
+                Some(&progress),
+            )
+            .await
         })
     })
     .await
@@ -383,9 +480,16 @@ async fn provision_node(
     node_id: String,
 ) -> Result<String, String> {
     *state.scanner.lock().unwrap() = None;
-    *state.phase.lock().unwrap() = "Provisioning".into();
 
-    let addr = parse_address(&address)?;
+    let addr = match parse_address(&address) {
+        Ok(a) => a,
+        Err(e) => {
+            *state.phase.lock().unwrap() = format!("Error: {e}");
+            return Err(e);
+        }
+    };
+
+    *state.phase.lock().unwrap() = "Provisioning".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
@@ -588,7 +692,7 @@ pub fn run() {
         scanner: Mutex::new(None),
         #[cfg(target_os = "android")]
         store: Mutex::new(None),
-        phase: Mutex::new("Idle".into()),
+        phase: Arc::new(Mutex::new("Idle".into())),
         logs,
     };
 

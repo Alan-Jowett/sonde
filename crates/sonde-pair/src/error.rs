@@ -7,54 +7,60 @@ use crate::types::NodeAckStatus;
 #[derive(Debug, thiserror::Error)]
 pub enum PairingError {
     // Device errors
-    #[error("no Bluetooth adapter found")]
+    #[error(
+        "no Bluetooth adapter found — check that BLE hardware is present and drivers are installed"
+    )]
     AdapterNotFound,
 
-    #[error("Bluetooth is disabled")]
+    #[error("Bluetooth is disabled — enable Bluetooth in system settings and retry")]
     BluetoothDisabled,
 
-    #[error("target device not found during scan")]
+    #[error(
+        "target device not found during scan — check that the modem is powered on and in range"
+    )]
     DeviceNotFound,
 
-    #[error("target device is out of BLE range")]
+    #[error("target device is out of BLE range — move closer and retry")]
     DeviceOutOfRange,
 
     // Transport errors
-    #[error("BLE connection failed: {0}")]
+    #[error("BLE connection failed: {0} — check that the modem is powered on and not paired to another device")]
     ConnectionFailed(String),
 
-    #[error("BLE connection dropped unexpectedly")]
+    #[error("BLE connection dropped unexpectedly — check that the modem is powered on and in range, then retry")]
     ConnectionDropped,
 
-    #[error("negotiated MTU {negotiated} is below required minimum {required}")]
+    #[error("negotiated MTU {negotiated} is below required minimum {required} — the BLE adapter or modem firmware may need updating")]
     MtuTooLow { negotiated: u16, required: u16 },
 
-    #[error("{operation} timed out after {duration_secs}s")]
+    #[error("{operation} timed out after {duration_secs}s — check that the modem is powered on and in range")]
     Timeout {
         operation: &'static str,
         duration_secs: u64,
     },
 
-    #[error("GATT write failed: {0}")]
+    #[error("GATT write failed: {0} — check the BLE connection and retry")]
     GattWriteFailed(String),
 
-    #[error("GATT read failed: {0}")]
+    #[error("GATT read failed: {0} — check the BLE connection and retry")]
     GattReadFailed(String),
 
-    #[error("indication not received before timeout")]
+    #[error(
+        "indication not received before timeout — check that the modem is powered on and in range"
+    )]
     IndicationTimeout,
 
     // Protocol errors
-    #[error("gateway authentication failed: {0}")]
+    #[error("gateway authentication failed: {0} — verify the gateway is running and the registration window is open")]
     GatewayAuthFailed(String),
 
-    #[error("Ed25519 signature verification failed")]
+    #[error("Ed25519 signature verification failed — the gateway identity may have changed or data was corrupted")]
     SignatureVerificationFailed,
 
-    #[error("gateway public key does not match stored identity (TOFU violation)")]
+    #[error("gateway public key does not match stored identity (TOFU violation) — if the gateway was re-keyed, clear local pairing first")]
     PublicKeyMismatch,
 
-    #[error("gateway registration window is closed")]
+    #[error("gateway registration window is closed — open the registration window on the gateway and retry")]
     RegistrationWindowClosed,
 
     #[error("AES-GCM decryption failed — wrong key or corrupted ciphertext")]
@@ -114,7 +120,7 @@ pub enum PairingError {
     #[error("encryption failed: {0}")]
     EncryptionFailed(String),
 
-    #[error("not paired — run Phase 1 (gateway pairing) first")]
+    #[error("not paired — run Phase 1 (gateway pairing) first before provisioning nodes")]
     NotPaired,
 
     // Scan errors

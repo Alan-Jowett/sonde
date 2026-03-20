@@ -27,10 +27,26 @@ fn msg_type_name(t: u8) -> &'static str {
     }
 }
 
+/// Callback for reporting Phase 1 sub-phase progress (PT-0701).
+///
+/// Phase 1 transitions through these sub-phases in order:
+/// - `"Connecting"` — BLE connection and MTU negotiation
+/// - `"Authenticating"` — gateway signature verification and TOFU check
+/// - `"Registering"` — phone registration and key exchange
+pub trait PairingProgress: Send + Sync {
+    /// Called when the pairing state machine enters a new sub-phase.
+    fn on_phase(&self, phase: &str);
+}
+
 /// Phase 1: Pair with a gateway via BLE.
 ///
 /// Establishes trust-on-first-use (TOFU) identity, performs ECDH key exchange,
 /// and receives the phone PSK and RF channel from the gateway.
+///
+/// # Progress reporting (PT-0701)
+///
+/// If `progress` is `Some`, the callback is invoked at each sub-phase
+/// transition: Connecting → Authenticating → Registering.
 ///
 /// # Re-run safety (PT-0600)
 ///
@@ -52,6 +68,7 @@ pub async fn pair_with_gateway(
     rng: &dyn RngProvider,
     device_address: &[u8; 6],
     phone_label: &str,
+    progress: Option<&dyn PairingProgress>,
 ) -> Result<PairingArtifacts, PairingError> {
     // Validate phone label length (spec §5.4: 0–64 bytes)
     if phone_label.len() > 64 {
@@ -70,6 +87,9 @@ pub async fn pair_with_gateway(
     }
 
     // Step 1: Connect and check MTU
+    if let Some(cb) = progress {
+        cb.on_phase("Connecting");
+    }
     info!("connecting to gateway");
     let mtu = transport.connect(device_address).await?;
     if mtu < BLE_MTU_MIN {
@@ -82,7 +102,7 @@ pub async fn pair_with_gateway(
     debug!(mtu, "connected to gateway");
 
     // Use a closure-like scope to ensure cleanup on error
-    let result = do_pair_with_gateway(transport, store, rng, phone_label).await;
+    let result = do_pair_with_gateway(transport, store, rng, phone_label, progress).await;
 
     // Step 14: Always disconnect
     transport.disconnect().await.ok();
@@ -95,6 +115,7 @@ async fn do_pair_with_gateway(
     store: &mut dyn PairingStore,
     rng: &dyn RngProvider,
     phone_label: &str,
+    progress: Option<&dyn PairingProgress>,
 ) -> Result<PairingArtifacts, PairingError> {
     // Step 2: Generate 32-byte challenge
     let mut challenge = [0u8; 32];
@@ -112,7 +133,10 @@ async fn do_pair_with_gateway(
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &request)
         .await?;
 
-    // Step 4: Read indication (timeout 5s)
+    // Step 4: Read indication (timeout 5s) — enters Authenticating sub-phase
+    if let Some(cb) = progress {
+        cb.on_phase("Authenticating");
+    }
     trace!("waiting for GW_INFO_RESPONSE indication (5 s timeout)");
     let response = transport
         .read_indication(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, 5000)
@@ -169,7 +193,10 @@ async fn do_pair_with_gateway(
         debug!("first-time gateway identity — TOFU record pinned");
     }
 
-    // Step 7: Generate ephemeral X25519 keypair
+    // Step 7: Generate ephemeral X25519 keypair — enters Registering sub-phase
+    if let Some(cb) = progress {
+        cb.on_phase("Registering");
+    }
     let (eph_secret, eph_public) = crypto::generate_x25519_keypair(rng)?;
     trace!("generated ephemeral X25519 keypair");
 
@@ -421,7 +448,7 @@ mod tests {
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             let artifacts = result.unwrap();
 
             assert_eq!(*artifacts.phone_psk, phone_psk);
@@ -473,7 +500,7 @@ mod tests {
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             assert!(matches!(
                 result,
                 Err(PairingError::SignatureVerificationFailed)
@@ -517,7 +544,7 @@ mod tests {
 
             let device_addr = [0xAA; 6];
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             assert!(matches!(result, Err(PairingError::PublicKeyMismatch)));
         });
     }
@@ -548,7 +575,7 @@ mod tests {
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             assert!(matches!(
                 result,
                 Err(PairingError::RegistrationWindowClosed)
@@ -582,7 +609,7 @@ mod tests {
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             assert!(matches!(result, Err(PairingError::GatewayAlreadyPaired)));
         });
     }
@@ -602,7 +629,7 @@ mod tests {
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             assert!(matches!(result, Err(PairingError::IndicationTimeout)));
         });
     }
@@ -632,7 +659,7 @@ mod tests {
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             assert!(matches!(result, Err(PairingError::IndicationTimeout)));
         });
     }
@@ -667,7 +694,7 @@ mod tests {
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             assert!(matches!(result, Err(PairingError::DecryptionFailed)));
         });
     }
@@ -685,7 +712,7 @@ mod tests {
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "").await;
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
             match result {
                 Err(PairingError::MtuTooLow {
                     negotiated,
@@ -739,9 +766,16 @@ mod tests {
             let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "first")
-                .await
-                .unwrap();
+            pair_with_gateway(
+                &mut transport,
+                &mut store,
+                &rng,
+                &device_addr,
+                "first",
+                None,
+            )
+            .await
+            .unwrap();
             let first = store.load_artifacts().unwrap().unwrap();
             assert_eq!(first.phone_label, "first");
 
@@ -764,9 +798,16 @@ mod tests {
                 rf_channel,
             )));
 
-            pair_with_gateway(&mut transport2, &mut store, &rng2, &device_addr, "second")
-                .await
-                .unwrap();
+            pair_with_gateway(
+                &mut transport2,
+                &mut store,
+                &rng2,
+                &device_addr,
+                "second",
+                None,
+            )
+            .await
+            .unwrap();
 
             // State must be consistent — second pairing overwrites cleanly.
             let second = store.load_artifacts().unwrap().unwrap();
@@ -801,5 +842,131 @@ mod tests {
         let existing = is_already_paired(&store).unwrap();
         assert!(existing.is_some(), "should detect existing pairing");
         assert_eq!(existing.unwrap(), identity);
+    }
+
+    // --- PT-0701: Phase 1 sub-phase progress reporting ---
+
+    /// Mock progress callback that records the phases it receives.
+    struct RecordingProgress {
+        phases: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingProgress {
+        fn new() -> Self {
+            Self {
+                phases: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn phases(&self) -> Vec<String> {
+            self.phases.lock().unwrap().clone()
+        }
+    }
+
+    impl PairingProgress for RecordingProgress {
+        fn on_phase(&self, phase: &str) {
+            self.phases.lock().unwrap().push(phase.to_string());
+        }
+    }
+
+    /// Validates: PT-0701
+    ///
+    /// A successful Phase 1 run must invoke the progress callback in order:
+    /// Connecting → Authenticating → Registering.
+    #[test]
+    fn t_pt_701_progress_reports_phases_in_order() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+            let eph_public = predicted_eph_public(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+            let progress = RecordingProgress::new();
+
+            let result = pair_with_gateway(
+                &mut transport,
+                &mut store,
+                &rng,
+                &device_addr,
+                "test",
+                Some(&progress),
+            )
+            .await;
+            result.unwrap();
+
+            assert_eq!(
+                progress.phases(),
+                vec!["Connecting", "Authenticating", "Registering"],
+            );
+        });
+    }
+
+    /// Validates: PT-0701 (None case)
+    ///
+    /// When `progress` is `None`, the pairing succeeds without invoking any
+    /// callback — no panic or error from the absent observer.
+    #[test]
+    fn t_pt_701_progress_none_succeeds() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+            let eph_public = predicted_eph_public(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            // None progress — should succeed without any callback issues.
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "test", None)
+                    .await;
+            result.unwrap();
+        });
     }
 }

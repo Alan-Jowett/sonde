@@ -56,6 +56,7 @@ async fn phase1_loopback_happy_path() {
         &rng,
         &device_addr,
         "integration-test-phone",
+        None,
     )
     .await
     .expect("Phase 1 pairing should succeed");
@@ -103,6 +104,7 @@ async fn phase1_loopback_re_pair() {
         &rng,
         &device_addr,
         "first-phone",
+        None,
     )
     .await
     .expect("first pairing should succeed");
@@ -114,6 +116,7 @@ async fn phase1_loopback_re_pair() {
         &rng,
         &device_addr,
         "second-phone",
+        None,
     )
     .await
     .expect("re-pairing should succeed");
@@ -143,9 +146,10 @@ async fn phase1_loopback_empty_label() {
     let rng = OsRng;
     let device_addr = [0x10, 0x0B, 0xAC, 0x00, 0x00, 0x01];
 
-    let artifacts = phase1::pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "")
-        .await
-        .expect("pairing with empty label should succeed");
+    let artifacts =
+        phase1::pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None)
+            .await
+            .expect("pairing with empty label should succeed");
 
     assert_eq!(artifacts.phone_label, "");
 
@@ -169,7 +173,8 @@ async fn phase1_loopback_tofu_violation() {
     store.save_gateway_identity(&fake_identity).unwrap();
 
     let result =
-        phase1::pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "test").await;
+        phase1::pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "test", None)
+            .await;
 
     assert!(
         matches!(

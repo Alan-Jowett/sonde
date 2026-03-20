@@ -477,7 +477,10 @@ impl Gateway {
         // 2. Create/replace session (random starting_seq, current timestamp_ms)
         let starting_seq: u64 = {
             let mut buf = [0u8; 8];
-            getrandom::fill(&mut buf).expect("CSPRNG failure");
+            if let Err(err) = getrandom::fill(&mut buf) {
+                warn!(error = ?err, "CSPRNG failure while generating starting_seq; aborting WAKE handling");
+                return None;
+            }
             u64::from_ne_bytes(buf)
         };
         let timestamp_ms = SystemTime::now()

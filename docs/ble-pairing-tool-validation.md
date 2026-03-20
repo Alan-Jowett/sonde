@@ -191,27 +191,30 @@ TestNode {
 
 ### T-PT-108  LESC Numeric Comparison pairing used
 
-**Validates:** PT-0106, PT-0904
+**Validates:** PT-0106, PT-0904  
+**Type:** Manual / platform test (runs against real BLE hardware)
 
 **Procedure:**
-1. Configure mock transport to simulate a modem advertising LESC with `DisplayYesNo` I/O capability.
-2. Initiate Phase 1 gateway pairing.
-3. Assert: the transport layer initiates `createBond()` (Android) or equivalent LESC pairing API.
-4. Assert: the pairing method negotiated is Numeric Comparison (not Just Works).
-5. Simulate user accepting the Numeric Comparison dialog.
-6. Assert: pairing completes and GATT operations proceed.
+1. Connect the pairing tool to a modem (or test peripheral) that advertises LESC with `DisplayYesNo` I/O capability.
+2. Initiate Phase 1 gateway pairing from the pairing tool UI.
+3. Observe the platform pairing UX and/or system logs:
+   - Assert: the platform initiates LESC bonding (e.g., Android `createBond()` or equivalent).
+   - Assert: the pairing method negotiated is Numeric Comparison (a 6-digit comparison dialog is shown, not an implicit "Just Works" pairing).
+4. Accept the Numeric Comparison dialog on both sides (host and peripheral, as applicable).
+5. Assert: pairing completes successfully (bond is created at the OS level) and subsequent GATT operations from the pairing tool proceed without additional pairing prompts.
 
 ---
 
 ### T-PT-109  Just Works fallback rejected
 
-**Validates:** PT-0106, PT-0904
+**Validates:** PT-0106, PT-0904  
+**Type:** Manual / platform test (runs against real BLE hardware)
 
 **Procedure:**
-1. Configure mock transport to simulate a peripheral that only supports Just Works pairing (no `DisplayYesNo`).
+1. Configure the mock `BleTransport` to simulate a peripheral that only supports Just Works pairing (no `DisplayYesNo` I/O capability), and to fail the secure connection / bonding attempt (for example, make `connect()` or the platform-specific bond API return an error) **before** any GATT characteristic writes are permitted.
 2. Initiate Phase 1 gateway pairing.
 3. Assert: the connection fails with an actionable error indicating that Numeric Comparison is required.
-4. Assert: no PSK material is exchanged over the unauthenticated link.
+4. Assert at the transport mock that no PSK-bearing GATT operations occurred before the failure (for example, verify that `write_characteristic` was never called).
 
 ---
 
@@ -800,9 +803,9 @@ TestNode {
 **Procedure:**
 1. On Android (instrumentation test running inside the app process), instantiate `SecureStore` and write a test PSK `[0x42u8; 32]` under key `"phone_psk"`.
 2. Assert: `SecureStore` constructor calls `MasterKeys.getOrCreate()` (verifies Android Keystore integration).
-3. Assert: the backing `SharedPreferences` filename is `"sonde_pairing_store"` and is created via `EncryptedSharedPreferences.create()`.
-4. Using the instrumentation `Context`, obtain the preferences file via `context.getSharedPrefsPath("sonde_pairing_store")` (or an equivalent app-internal API) and read the raw XML contents from within the app sandbox.
-5. Assert: the stored value is **not** the plaintext hex of the PSK (encryption is applied), i.e., the PSK does not appear verbatim anywhere in the XML file.
+3. Assert: the backing `SharedPreferences` filename is `"sonde_pairing_store"` and that `SecureStore` obtains it via `EncryptedSharedPreferences.create("sonde_pairing_store", …)` with the expected key and value encryption schemes.
+4. Assert (e.g., via dependency injection, mocking, or a test double) that the concrete `SharedPreferences` instance used by `SecureStore` is the implementation returned by `androidx.security.crypto.EncryptedSharedPreferences` rather than a plain-text `SharedPreferences` implementation.
+5. Assert: the PSK round-trips correctly via the `SecureStore` API (read returns the original `[0x42u8; 32]`), and that the PSK value does not appear verbatim in any log output or error messages captured during the test.
 
 ---
 
@@ -909,11 +912,11 @@ TestNode {
 **Validates:** PT-1003
 
 **Procedure:**
-1. Configure mock transport to fail the first `write_characteristic` call with a timeout error.
+1. Configure the mock transport to inject a timeout error on its next `write_characteristic` call (for example, via a queued error mechanism on the mock).
 2. Initiate Phase 1.
 3. Assert: the error is returned immediately to the caller — no automatic retry of the write.
 4. Assert: mock transport's `write_characteristic` was called exactly **once** (not retried).
-5. Configure mock transport to fail `read_indication` with a timeout.
+5. Configure mock transport to inject a timeout error on `read_indication` using the same error-injection mechanism.
 6. Initiate Phase 1 again.
 7. Assert: the timeout error is surfaced immediately — no automatic retry of the read.
 

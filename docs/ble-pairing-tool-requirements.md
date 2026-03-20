@@ -176,7 +176,7 @@ On Android, the BLE transport SHOULD disconnect cleanly when the hosting Activit
 **Source:** ble-pairing-tool-design.md §9.2 (implicit); Android JNI best practices
 
 **Description:**  
-On Android, the native library MUST cache `GlobalRef` references to app-defined Java classes (e.g., `BleHelper`, `SecureStore`) during `JNI_OnLoad` on the main thread.  Threads attached via `JavaVM::attach_current_thread()` (e.g., tokio worker threads) use the system classloader, which cannot find app-defined classes via `FindClass`.
+On Android, the native library MUST cache `GlobalRef` references to app-defined Java classes (e.g., `BleHelper`, `SecureStore`) during `JNI_OnLoad` (or another Java-attached thread with the application classloader).  Threads attached via `JavaVM::attach_current_thread()` (e.g., tokio worker threads) use the system classloader, which cannot find app-defined classes via `FindClass`.
 
 **Acceptance criteria:**
 

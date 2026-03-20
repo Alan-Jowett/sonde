@@ -684,7 +684,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 - **Just Works / Numeric Comparison:** Android handles LESC pairing via the system pairing dialog.  Numeric Comparison displays a 6-digit passkey for user confirmation.  Just Works proceeds without user interaction.  The app must verify that LESC Numeric Comparison was used; a Just Works fallback must be treated as a connection failure (PT-0106, PT-0904).
 - **Storage:** `EncryptedSharedPreferences` backed by the Android Keystore for PSK protection.
 - **Lifecycle:** The BLE connection must be managed carefully around Android activity lifecycle events (pause/resume).  The transport implementation should disconnect on pause and reconnect on resume if a pairing flow was in progress (PT-0107).
-- **JNI classloader caching:** App-defined Java classes (`BleHelper`, `SecureStore`) must be resolved and cached as `GlobalRef` during `JNI_OnLoad` on the main thread.  Tokio worker threads use the system classloader, which cannot find app-defined classes via `FindClass` (PT-0108).
+- **JNI classloader caching:** App-defined Java classes (`BleHelper`, `SecureStore`) must be resolved and cached as `GlobalRef` from `JNI_OnLoad` or another Java-attached thread that uses the application classloader.  Tokio worker threads use the system classloader, which cannot find app-defined classes via `FindClass` (PT-0108).
 
 ### 9.3  Cross-platform considerations
 

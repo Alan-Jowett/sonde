@@ -664,7 +664,7 @@ fn t_bpf_027_helper_expects_map_descriptor_gets_scalar() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// §9  LD_DW_IMM map relocation tests
+// §4.2  LD_DW_IMM map relocation tests
 // ═══════════════════════════════════════════════════════════════════
 
 /// T-BPF-028: LD_DW_IMM src=1 with negative imm → `InvalidMapIndex`
@@ -727,9 +727,17 @@ fn t_bpf_029_ld_dw_imm_out_of_bounds_map_index() {
 /// T-BPF-030: LD_DW_IMM src=1 happy path — R1 tagged MapDescriptor
 #[test]
 fn t_bpf_030_ld_dw_imm_map_descriptor_happy_path() {
-    fn map_lookup(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
-        0 // Return NULL for simplicity — we just need the call to succeed
-    }
+    let map_buf = [0u8; 64];
+    let map_ptr = map_buf.as_ptr() as u64;
+
+    // Helper returns a non-zero in-bounds pointer so the interpreter
+    // is forced to validate the MapDescriptor tag on R1 (the NULL path
+    // skips that check).
+    let helper_func: fn(u64, u64, u64, u64, u64) -> u64 = {
+        static MAP_DATA_PTR: AtomicU64 = AtomicU64::new(0);
+        MAP_DATA_PTR.store(map_ptr, Ordering::SeqCst);
+        |_: u64, _: u64, _: u64, _: u64, _: u64| -> u64 { MAP_DATA_PTR.load(Ordering::SeqCst) }
+    };
 
     let prog = prog_from(&[
         insn(ebpf::LD_DW_IMM, 1, 1, 0, 0), // r1 = MapDescriptor(0)
@@ -739,20 +747,20 @@ fn t_bpf_030_ld_dw_imm_map_descriptor_happy_path() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [0x42u8; 16];
-    let map_buf = [0u8; 64];
     let maps = [MapRegion {
-        relocated_ptr: map_buf.as_ptr() as u64,
+        relocated_ptr: map_ptr,
         value_size: 64,
-        data_start: map_buf.as_ptr() as u64,
-        data_end: map_buf.as_ptr() as u64 + 64,
+        data_start: map_ptr,
+        data_end: map_ptr + 64,
     }];
     let helpers = [HelperDescriptor {
         id: 1,
-        func: map_lookup,
+        func: helper_func,
         ret: HelperReturn::MapValueOrNull { map_arg: 1 },
     }];
-    // The helper call succeeds → confirms R1 was tagged MapDescriptor.
-    // If the tag were missing, it would fail with InvalidHelperArgument.
+    // The helper returns an in-bounds pointer, forcing the interpreter to
+    // verify the MapDescriptor tag on R1. If the tag were missing, the call
+    // would fail with InvalidHelperArgument.
     assert_eq!(
         unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) }
             .unwrap(),

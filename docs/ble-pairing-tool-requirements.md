@@ -120,6 +120,22 @@ The design MUST clearly separate four layers: **protocol logic** (state machines
 
 ---
 
+### PT-0105  LESC Numeric Comparison BLE pairing
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.1, §9.2
+
+**Description:**  
+The BLE transport MUST use LESC (LE Secure Connections) Numeric Comparison as the BLE pairing mode when connecting to the modem's Gateway Pairing Service. Just Works pairing MUST NOT be accepted because it provides no MITM protection, and the pairing exchange carries PSK material.
+
+**Acceptance criteria:**
+
+1. On Windows, the WinRT pairing ceremony uses Numeric Comparison (6-digit passkey displayed for user confirmation).
+2. On Android, the system pairing dialog uses Numeric Comparison.
+3. If the BLE stack falls back to Just Works (no user confirmation), the transport rejects the connection and returns an error.
+
+---
+
 ## 4  Device discovery
 
 ### PT-0200  BLE scanning
@@ -671,6 +687,21 @@ Test code MUST use clearly non-zero keys (e.g., `[0x42u8; 32]`), not `[0u8; 32]`
 
 ---
 
+### PT-0904  BLE pairing mode enforcement
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.1, §9.2; PT-0105
+
+**Description:**  
+The BLE transport MUST verify that the established BLE pairing used Numeric Comparison (not Just Works). If the underlying BLE stack silently falls back to Just Works, the transport MUST treat this as a security error and disconnect.
+
+**Acceptance criteria:**
+
+1. After BLE pairing completes, the transport checks the pairing method used.
+2. If Just Works was used, the transport disconnects and returns an error indicating MITM-unsafe pairing.
+
+---
+
 ## 12  Non-functional requirements
 
 ### PT-1000  Transient BLE failure tolerance
@@ -745,6 +776,38 @@ The pairing state machine and cryptographic logic MUST be usable from the Tauri-
 
 1. The core crate has no UI or platform dependencies.
 2. The core crate is used by at least two consumers: the application frontend and the test suite.
+
+---
+
+### PT-1005  Android activity lifecycle management
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.2
+
+**Description:**  
+On Android, the BLE transport MUST handle activity lifecycle events (pause/resume) gracefully. The transport MUST disconnect the BLE connection when the activity is paused and reconnect (or prompt the operator to retry) when the activity is resumed, if a pairing flow was in progress.
+
+**Acceptance criteria:**
+
+1. Activity pause during an active BLE connection triggers a clean disconnect.
+2. Activity resume after a paused pairing session either reconnects or prompts the operator.
+3. No BLE resource leaks (unclosed GATT clients) after pause/resume cycles.
+
+---
+
+### PT-1006  JNI classloader caching
+
+**Priority:** Must  
+**Source:** ble-pairing-tool-design.md §9.2 (implicit); Android JNI best practices
+
+**Description:**  
+On Android, the JNI bridge MUST cache `GlobalRef` references to app-defined Java classes during `JNI_OnLoad` (on the main thread). Threads attached to the JVM via `AttachCurrentThread` (e.g., tokio worker threads) may only have access to the system classloader, causing `FindClass` for app classes to fail.
+
+**Acceptance criteria:**
+
+1. All app-defined class references used by the BLE transport are cached as `GlobalRef` during `JNI_OnLoad`.
+2. No `FindClass` calls for app classes occur on natively-attached threads.
+3. A test verifies that BLE helper classes can be instantiated from a non-main thread.
 
 ---
 

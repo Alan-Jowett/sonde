@@ -100,11 +100,11 @@ The bridge test `ble_pairing_confirm_no_auto_reply` explicitly confirms: *"timeo
 
 **Requirement:** "The modem MUST negotiate ATT MTU ≥ 247 bytes."
 
-**Finding:** The modem enforces MTU ≥ 247 post-negotiation (disconnects clients whose MTU is too low) but does not explicitly set the server-side preferred MTU. No `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU` appears in either `sdkconfig.defaults` or `sdkconfig.defaults.esp32s3`. NimBLE's compiled-in default is 256, which satisfies the threshold, but the project's own coding guidelines state: *"sdkconfig.defaults must explicitly set every value the code depends on."*
+**Finding:** The modem enforces MTU ≥ 247 post-negotiation (disconnects clients whose MTU is too low) but does not explicitly set the server-side preferred MTU. No `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU` appears in `crates/sonde-modem/sdkconfig.defaults`. NimBLE's compiled-in default is 256, which satisfies the threshold, but the project's own coding guidelines state: *"sdkconfig.defaults must explicitly set every value the code depends on."*
 
 **Impact:** If NimBLE's default changes in a future ESP-IDF update, the modem could silently start disconnecting all BLE clients without an obvious configuration entry to diagnose.
 
-**Recommendation:** Add `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512` to `sdkconfig.defaults.esp32s3`.
+**Recommendation:** Add `CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512` to `crates/sonde-modem/sdkconfig.defaults`.
 
 ### 4.2  MD-0403 AC#3 — Indication pacing not tied to ATT confirmation
 

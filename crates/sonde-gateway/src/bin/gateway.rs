@@ -604,12 +604,17 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
     let _ = status_handle.set_service_status(stopped_status);
 }
 
-/// Initialise tracing to write to a log file (used in service mode where there
-/// is no console).
+/// Initialise tracing to write to a log file **and** emit ETW events (used in
+/// service mode where there is no console).
+///
+/// The file layer honours `RUST_LOG`; the ETW layer receives all events so that
+/// ETW-side filtering (via `logman` / `tracelog`) controls verbosity
+/// independently.
 ///
 /// The log file path defaults to `<db-path>.log` when `--log-file` is not set.
 #[cfg(windows)]
 fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
 
     let log_path = cli.log_file.clone().unwrap_or_else(|| {
@@ -624,12 +629,20 @@ fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         .open(&log_path)
         .map_err(|e| format!("cannot open log file {}: {e}", log_path.display()))?;
 
-    tracing_subscriber::fmt()
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
-        .with_env_filter(
+        .with_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| "sonde_gateway=info".into()),
-        )
+        );
+
+    let etw_layer = tracing_etw::LayerBuilder::new("sonde-gateway")
+        .build()
+        .map_err(|e| format!("failed to initialise ETW provider: {e}"))?;
+
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(etw_layer)
         .init();
 
     Ok(())

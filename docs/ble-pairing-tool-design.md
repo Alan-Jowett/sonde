@@ -679,7 +679,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 ### 9.2  Android (Android BLE API)
 
 - **BLE library:** Android BLE API accessed via JNI bridge (Tauri Mobile).  `btleplug` does not support Android, so the `BleTransport` trait implementation calls the Android `BluetoothGatt` API through JNI.
-- **Permissions:** The Android manifest must declare `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, and `ACCESS_FINE_LOCATION` (required for BLE scanning on Android 12+).  The app must request runtime permissions before starting a scan (PT-0105).
+- **Permissions:** The Android manifest must declare `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` for Android 12+ (API 31+) BLE scanning.  For pre-31 devices, BLE scanning requires a location permission such as `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`.  The app must request the relevant runtime permissions before starting a scan (PT-0105).
 - **MTU negotiation:** Call `BluetoothGatt.requestMtu(247)` after connection.  The actual negotiated MTU is reported via `onMtuChanged()`.
 - **Just Works / Numeric Comparison:** Android handles LESC pairing via the system pairing dialog.  Numeric Comparison displays a 6-digit passkey for user confirmation.  Just Works proceeds without user interaction.  The app must verify that LESC Numeric Comparison was used; a Just Works fallback must be treated as a connection failure (PT-0106, PT-0904).
 - **Storage:** `EncryptedSharedPreferences` backed by the Android Keystore for PSK protection.

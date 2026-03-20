@@ -146,7 +146,8 @@ TestNode {
 
 ### T-PT-105  BLE permission dialog shown on Android
 
-**Validates:** PT-0105
+**Validates:** PT-0105  
+**Type:** Manual / platform test (requires Android device)
 
 **Procedure:**
 1. Install the app on an Android 12+ device with BLE permissions **not** pre-granted (fresh install or permissions revoked via Settings).
@@ -160,7 +161,8 @@ TestNode {
 
 ### T-PT-106  BLE permission denial produces actionable error
 
-**Validates:** PT-0105
+**Validates:** PT-0105  
+**Type:** Manual / platform test (requires Android device)
 
 **Procedure:**
 1. Install the app on an Android 12+ device with BLE permissions not pre-granted.
@@ -174,7 +176,8 @@ TestNode {
 
 ### T-PT-107  BLE permissions on Android 6–11 (location)
 
-**Validates:** PT-0105
+**Validates:** PT-0105  
+**Type:** Manual / platform test (requires Android 6–11 device)
 
 **Procedure:**
 1. Install the app on an Android 6–11 (API 23–30) device with location permissions not pre-granted.
@@ -214,7 +217,8 @@ TestNode {
 
 ### T-PT-110  Minimum UI elements present
 
-**Validates:** PT-0700
+**Validates:** PT-0700  
+**Type:** Manual / platform test
 
 **Procedure:**
 1. Launch the pairing tool.
@@ -252,7 +256,8 @@ TestNode {
 
 ### T-PT-113  Android activity lifecycle disconnect
 
-**Validates:** PT-0107
+**Validates:** PT-0107  
+**Type:** Manual / platform test (requires Android device)
 
 **Procedure:**
 1. Initiate Phase 1 on Android and establish a BLE connection.
@@ -266,7 +271,8 @@ TestNode {
 
 ### T-PT-114  JNI classloader caching on background threads
 
-**Validates:** PT-0108
+**Validates:** PT-0108  
+**Type:** Manual / platform test (requires Android device or emulator)
 
 **Procedure:**
 1. On Android, invoke `AndroidBleTransport::from_cached_vm()` from a tokio background thread (not the main thread).
@@ -788,26 +794,28 @@ TestNode {
 
 ### T-PT-604  Android secure storage uses EncryptedSharedPreferences
 
-**Validates:** PT-0801
+**Validates:** PT-0801  
+**Type:** Manual / platform test (Android instrumentation test)
 
 **Procedure:**
-1. On Android, instantiate `SecureStore` and write a test PSK `[0x42u8; 32]` under key `"phone_psk"`.
+1. On Android (instrumentation test running inside the app process), instantiate `SecureStore` and write a test PSK `[0x42u8; 32]` under key `"phone_psk"`.
 2. Assert: `SecureStore` constructor calls `MasterKeys.getOrCreate()` (verifies Android Keystore integration).
 3. Assert: the backing `SharedPreferences` filename is `"sonde_pairing_store"` and is created via `EncryptedSharedPreferences.create()`.
-4. Read the raw XML file at the `SharedPreferences` path on disk.
-5. Assert: the stored value is **not** the plaintext hex of the PSK (encryption is applied).
+4. Using the instrumentation `Context`, obtain the preferences file via `context.getSharedPrefsPath("sonde_pairing_store")` (or an equivalent app-internal API) and read the raw XML contents from within the app sandbox.
+5. Assert: the stored value is **not** the plaintext hex of the PSK (encryption is applied), i.e., the PSK does not appear verbatim anywhere in the XML file.
 
 ---
 
 ### T-PT-605  Windows secure storage uses restricted file permissions
 
-**Validates:** PT-0801
+**Validates:** PT-0801  
+**Type:** Manual / platform test (requires Windows)
 
 **Procedure:**
 1. On Windows, instantiate the Windows `PairingStore` and save test artifacts.
 2. Assert: the pairing file is written to `%APPDATA%\sonde\pairing.json`.
 3. Query the file ACL via `GetFileSecurity` / `icacls`.
-4. Assert: only the current user has read/write access (no `Everyone`, `Users`, or `BUILTIN` group entries).
+4. Assert: the ACL does **not** grant read/write access to broad principals such as `Everyone`, `Users`, `Authenticated Users`, or similar world/group entries; access is limited to the owning user and expected privileged accounts (for example `SYSTEM` and `Administrators`).
 
 ---
 

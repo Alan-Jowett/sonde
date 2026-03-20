@@ -99,6 +99,11 @@ pub trait Ble {
     ///
     /// Must be called once per poll cycle to pace fragmented indications.
     fn advance_indication(&self) {}
+    /// Check whether the current BLE connection has exceeded the pairing
+    /// timeout (MD-0414 AC#4).  If so, force-disconnect the client.
+    ///
+    /// Must be called once per poll cycle.
+    fn check_pairing_timeout(&self) {}
     /// Drain one queued BLE event, or `None` if empty.
     fn drain_event(&self) -> Option<BleEvent>;
 }
@@ -248,6 +253,9 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
 
         // Advance fragmented BLE indications (one chunk per poll cycle).
         self.ble.advance_indication();
+
+        // Enforce BLE pairing timeout (MD-0414 AC#4).
+        self.ble.check_pairing_timeout();
 
         // Forward any BLE events to the gateway over USB-CDC.
         // Cap at MAX_BLE_EVENTS_PER_POLL to prevent starvation of serial

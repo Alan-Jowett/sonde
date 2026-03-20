@@ -58,3 +58,7 @@ CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
 # are never persisted.  Each pairing session is independent; the gateway does
 # not rely on persistent BLE bonds.
 CONFIG_BT_NIMBLE_NVS_PERSIST=n
+# ATT preferred MTU (MD-0402).
+# MD-0402 requires ATT MTU >= 247.  We pin 512 to allow larger payloads
+# while staying within NimBLE's supported range.
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512

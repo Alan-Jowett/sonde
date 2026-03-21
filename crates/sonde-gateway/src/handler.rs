@@ -316,8 +316,10 @@ pub struct HandlerConfig {
     pub matchers: Vec<ProgramMatcher>,
     pub command: String,
     pub args: Vec<String>,
-    /// Per-handler reply timeout override. Falls back to the default 30 s
-    /// when `None`. Useful for tests that need a shorter timeout.
+    /// Per-handler I/O timeout override for communication with the handler
+    /// process (e.g. reading DATA replies and writing EVENT messages).
+    /// Falls back to the default 30 s when `None`. Useful for tests that
+    /// need a shorter timeout.
     pub reply_timeout: Option<Duration>,
 }
 

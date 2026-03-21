@@ -4713,7 +4713,7 @@ mod tests {
         let cmd2 = build_command_response(
             &psk,
             key_hint,
-            2, // new nonce (MockRng picks up from previous state)
+            2, // nonce = 2 because MockRng(1) starts at 1 and increments on first use
             starting_seq_2,
             1710000000000,
             CommandPayload::UpdateProgram {

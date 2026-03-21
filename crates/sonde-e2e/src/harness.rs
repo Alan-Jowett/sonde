@@ -905,7 +905,7 @@ async fn run_gateway_pump(
 // Crypto providers (real HMAC-SHA256 / SHA-256)
 // ---------------------------------------------------------------------------
 
-struct TestHmac;
+pub struct TestHmac;
 
 impl HmacProvider for TestHmac {
     fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
@@ -1359,17 +1359,46 @@ pub fn build_encrypted_payload(
     rf_channel: u8,
     sensors: &[sonde_pair::types::SensorDescriptor],
 ) -> Vec<u8> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    build_encrypted_payload_with_timestamp(
+        gw_public_key,
+        gw_gateway_id,
+        phone_psk,
+        phone_key_hint,
+        node_id,
+        node_psk,
+        rf_channel,
+        sensors,
+        timestamp,
+    )
+}
+
+/// Build the encrypted_payload with a caller-supplied timestamp.
+///
+/// Same as [`build_encrypted_payload`] but accepts an explicit timestamp
+/// for negative testing (e.g. stale timestamps outside the ±86400 s window).
+#[allow(clippy::too_many_arguments)]
+pub fn build_encrypted_payload_with_timestamp(
+    gw_public_key: &[u8; 32],
+    gw_gateway_id: &[u8; 16],
+    phone_psk: &[u8; 32],
+    phone_key_hint: u16,
+    node_id: &str,
+    node_psk: &[u8; 32],
+    rf_channel: u8,
+    sensors: &[sonde_pair::types::SensorDescriptor],
+    timestamp: i64,
+) -> Vec<u8> {
     use sonde_pair::cbor::encode_pairing_request;
     use sonde_pair::crypto::{
         aes256gcm_encrypt, ed25519_to_x25519_public, generate_x25519_keypair, hkdf_sha256,
         hmac_sha256, x25519_ecdh,
     };
     use sonde_pair::rng::{OsRng, RngProvider};
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
 
     // Step 1: Encode PairingRequest as CBOR
     let cbor = encode_pairing_request(node_id, node_psk, rf_channel, sensors, timestamp).unwrap();
@@ -1400,4 +1429,151 @@ pub fn build_encrypted_payload(
     payload.extend_from_slice(&ciphertext);
 
     payload
+}
+
+// ---------------------------------------------------------------------------
+// GatewayBleAdapter — routes sonde-pair BleTransport calls to handle_ble_recv
+// ---------------------------------------------------------------------------
+
+/// BLE transport adapter that routes `sonde_pair::transport::BleTransport`
+/// calls directly to the gateway's `handle_ble_recv`, bridging sonde-pair's
+/// state machine to the gateway engine without network or BLE hardware.
+pub struct GatewayBleAdapter {
+    identity: sonde_gateway::GatewayIdentity,
+    storage: Arc<dyn sonde_gateway::storage::Storage>,
+    window: tokio::sync::Mutex<sonde_gateway::ble_pairing::RegistrationWindow>,
+    rf_channel: u8,
+    pending_response: tokio::sync::Mutex<Option<Vec<u8>>>,
+}
+
+impl GatewayBleAdapter {
+    /// Create a new adapter wired to the given gateway identity and storage.
+    pub fn new(
+        identity: sonde_gateway::GatewayIdentity,
+        storage: Arc<dyn sonde_gateway::storage::Storage>,
+        rf_channel: u8,
+    ) -> Self {
+        let mut window = sonde_gateway::ble_pairing::RegistrationWindow::new();
+        window.open(300);
+        Self {
+            identity,
+            storage,
+            window: tokio::sync::Mutex::new(window),
+            rf_channel,
+            pending_response: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
+    fn start_scan(
+        &mut self,
+        _service_uuids: &[u128],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop_scan(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn get_discovered_devices(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Vec<sonde_pair::types::ScannedDevice>,
+                        sonde_pair::error::PairingError,
+                    >,
+                > + '_,
+        >,
+    > {
+        Box::pin(async {
+            Ok(vec![sonde_pair::types::ScannedDevice {
+                name: "Sonde-GW-E2E".into(),
+                address: [0x10, 0x0B, 0xAC, 0x00, 0x00, 0x01],
+                rssi: -50,
+                service_uuids: vec![sonde_pair::types::GATEWAY_SERVICE_UUID],
+            }])
+        })
+    }
+
+    fn connect(
+        &mut self,
+        _address: &[u8; 6],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<u16, sonde_pair::error::PairingError>> + '_>,
+    > {
+        Box::pin(async { Ok(247) })
+    }
+
+    fn disconnect(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn write_characteristic(
+        &mut self,
+        _service: u128,
+        _characteristic: u128,
+        data: &[u8],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
+    > {
+        let data = data.to_vec();
+        Box::pin(async move {
+            let mut window = self.window.lock().await;
+            let response = sonde_gateway::ble_pairing::handle_ble_recv(
+                &data,
+                &self.identity,
+                &self.storage,
+                &mut window,
+                self.rf_channel,
+                None,
+            )
+            .await;
+            *self.pending_response.lock().await = response;
+            Ok(())
+        })
+    }
+
+    fn read_indication(
+        &mut self,
+        _service: u128,
+        _characteristic: u128,
+        timeout_ms: u64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<u8>, sonde_pair::error::PairingError>> + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let timeout_duration = Duration::from_millis(timeout_ms);
+            let poll_interval = Duration::from_millis(5);
+
+            let wait_future = async {
+                loop {
+                    if let Some(response) = self.pending_response.lock().await.take() {
+                        return response;
+                    }
+                    tokio::time::sleep(poll_interval).await;
+                }
+            };
+
+            match tokio::time::timeout(timeout_duration, wait_future).await {
+                Ok(response) => Ok(response),
+                Err(_) => Err(sonde_pair::error::PairingError::IndicationTimeout),
+            }
+        })
+    }
 }

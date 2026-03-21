@@ -3,7 +3,7 @@
 
 //! End-to-end integration tests exercising the full gateway ↔ node protocol.
 
-use sonde_e2e::harness::{E2eTestEnv, NodeProxy, TestSha256};
+use sonde_e2e::harness::{E2eTestEnv, NodeProxy, TestHmac, TestSha256};
 use sonde_gateway::engine::PendingCommand;
 use sonde_gateway::{ProgramRecord, VerificationProfile};
 use sonde_node::traits::PlatformStorage;
@@ -883,7 +883,8 @@ async fn t_e2e_030_app_data_round_trip() {
 // ===========================================================================
 
 use sonde_e2e::harness::{
-    build_encrypted_payload, setup_gateway_identity, simulate_phone_registration,
+    build_encrypted_payload, build_encrypted_payload_with_timestamp, setup_gateway_identity,
+    simulate_phone_registration, GatewayBleAdapter,
 };
 use sonde_pair::validation::compute_key_hint;
 
@@ -1633,4 +1634,449 @@ async fn t_e2e_070_full_use_case() {
         app_data_count, 1,
         "node should send exactly one APP_DATA frame after full onboarding"
     );
+}
+
+// ===========================================================================
+// BLE onboarding negative tests (issue #361)
+// ===========================================================================
+
+/// T-E2E-063a — Stale timestamp (>24 h) → gateway silent discard.
+///
+/// §7.3 step 9: MUST verify |now − timestamp| ≤ 86400; discard if exceeded.
+/// An attacker replaying a captured PEER_REQUEST after 24 h must be rejected.
+///
+/// Covers: GW-1215
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_063a_stale_timestamp_discarded() {
+    use sonde_protocol::{encode_frame, FrameHeader, MSG_PEER_REQUEST};
+
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_psk = [0xBBu8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+    let node_id = "stale-ts-node";
+
+    // Build payload with timestamp 86401 seconds in the past (1 second beyond window).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let stale_timestamp = now - 86401;
+
+    let encrypted_payload = build_encrypted_payload_with_timestamp(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        node_id,
+        &node_psk,
+        rf_channel,
+        &[],
+        stale_timestamp,
+    );
+
+    // Build PEER_REQUEST frame manually and send to gateway.
+    let cbor_map = ciborium::Value::Map(vec![(
+        ciborium::Value::Integer(sonde_protocol::PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(encrypted_payload),
+    )]);
+    let mut cbor_buf = Vec::new();
+    ciborium::into_writer(&cbor_map, &mut cbor_buf).unwrap();
+
+    let hmac = TestHmac;
+    let header = FrameHeader {
+        key_hint: node_key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce: 0x1234_5678_9ABC_DEF0,
+    };
+    let frame = encode_frame(&header, &cbor_buf, &node_psk, &hmac).unwrap();
+
+    let result = env
+        .gateway
+        .process_frame(&frame, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+        .await;
+
+    assert!(
+        result.is_none(),
+        "stale timestamp must cause silent discard (no PEER_ACK)"
+    );
+    assert!(
+        env.storage.get_node(node_id).await.unwrap().is_none(),
+        "node must NOT be registered with stale timestamp"
+    );
+}
+
+/// T-E2E-063b — Frame key_hint / CBOR node_key_hint mismatch → silent discard.
+///
+/// §7.3 step 11: Frame key_hint MUST match CBOR node_key_hint; discard on
+/// mismatch. This consistency check prevents cross-key confusion attacks.
+///
+/// Covers: GW-1217
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_063b_key_hint_mismatch_discarded() {
+    use sonde_protocol::{encode_frame, FrameHeader, MSG_PEER_REQUEST};
+
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_psk = [0xCDu8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+    let node_id = "keyhint-mismatch-node";
+
+    // Build a valid encrypted payload (CBOR inside contains correct node_key_hint).
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        node_id,
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    // Build PEER_REQUEST with a WRONG key_hint in the frame header.
+    let wrong_key_hint = node_key_hint.wrapping_add(1);
+    let cbor_map = ciborium::Value::Map(vec![(
+        ciborium::Value::Integer(sonde_protocol::PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(encrypted_payload),
+    )]);
+    let mut cbor_buf = Vec::new();
+    ciborium::into_writer(&cbor_map, &mut cbor_buf).unwrap();
+
+    // HMAC is computed over (header with wrong_key_hint + payload) using node_psk.
+    // The gateway will verify HMAC with the extracted node_psk → passes.
+    // Then check header.key_hint vs CBOR node_key_hint → mismatch → discard.
+    let hmac = TestHmac;
+    let header = FrameHeader {
+        key_hint: wrong_key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce: 0xAAAA_BBBB_CCCC_DDDD,
+    };
+    let frame = encode_frame(&header, &cbor_buf, &node_psk, &hmac).unwrap();
+
+    let result = env
+        .gateway
+        .process_frame(&frame, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+        .await;
+
+    assert!(
+        result.is_none(),
+        "key_hint mismatch must cause silent discard (no PEER_ACK)"
+    );
+    assert!(
+        env.storage.get_node(node_id).await.unwrap().is_none(),
+        "node must NOT be registered with mismatched key_hint"
+    );
+}
+
+/// T-E2E-063c — Duplicate node_id → gateway silent discard.
+///
+/// §7.3 step 10: MUST check node_id uniqueness; discard duplicate.
+/// A replay or misconfigured node must not overwrite a valid registration.
+///
+/// Covers: GW-1216
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_063c_duplicate_node_id_discarded() {
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_id = "dup-node";
+
+    // First: register the node legitimately via PEER_REQUEST.
+    let node_psk_1 = [0xE1u8; 32];
+    let node_key_hint_1 = compute_key_hint(&node_psk_1);
+    let encrypted_payload_1 = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        node_id,
+        &node_psk_1,
+        rf_channel,
+        &[],
+    );
+
+    let mut node1 = NodeProxy::new_ble_provisioned(
+        node_key_hint_1,
+        node_psk_1,
+        rf_channel,
+        encrypted_payload_1,
+    );
+    let stats1 = node1.run_wake_cycle(&env);
+    assert_eq!(
+        stats1.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "first registration must succeed"
+    );
+    assert!(node1.storage.read_reg_complete());
+
+    // Verify the node is registered with the first PSK.
+    let registered = env
+        .storage
+        .get_node(node_id)
+        .await
+        .unwrap()
+        .expect("node must be registered");
+    assert_eq!(registered.key_hint, node_key_hint_1);
+
+    // Second: attempt to register the same node_id with a different PSK.
+    let node_psk_2 = [0xE2u8; 32];
+    let node_key_hint_2 = compute_key_hint(&node_psk_2);
+    let encrypted_payload_2 = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        node_id,
+        &node_psk_2,
+        rf_channel,
+        &[],
+    );
+
+    let mut node2 = NodeProxy::new_ble_provisioned(
+        node_key_hint_2,
+        node_psk_2,
+        rf_channel,
+        encrypted_payload_2,
+    );
+
+    // The second PEER_REQUEST should be silently discarded → timeout → Sleep.
+    let stats2 = node2.run_wake_cycle(&env);
+    assert_eq!(
+        stats2.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "duplicate node_id PEER_REQUEST must result in Sleep (timeout)"
+    );
+
+    // PEER_REQUEST was sent but no registration occurred.
+    let peer_req_count = stats2
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PEER_REQUEST)
+        .count();
+    assert_eq!(peer_req_count, 1, "node must send PEER_REQUEST");
+
+    assert!(
+        !node2.storage.read_reg_complete(),
+        "reg_complete must remain false (duplicate rejected)"
+    );
+
+    // Original registration must be untouched.
+    let still_registered = env.storage.get_node(node_id).await.unwrap().unwrap();
+    assert_eq!(
+        still_registered.key_hint, node_key_hint_1,
+        "original registration must not be overwritten"
+    );
+}
+
+/// T-E2E-063d — Wrong PEER_ACK nonce → node rejects.
+///
+/// §7.2: PEER_ACK nonce MUST echo the PEER_REQUEST nonce. A PEER_ACK with
+/// a wrong nonce (e.g. from a replay attack) must be rejected by the node.
+///
+/// Covers: T-N911
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_063d_wrong_peer_ack_nonce_rejected() {
+    use sonde_node::key_store::NodeIdentity;
+    use sonde_node::peer_request::{build_peer_request_frame, verify_peer_ack};
+
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+    let (phone_psk, phone_key_hint) =
+        simulate_phone_registration(&identity, &env.storage, rf_channel).await;
+
+    let node_psk = [0xDEu8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+    let node_id = "nonce-test-node";
+
+    let encrypted_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        node_id,
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+
+    // Build a PEER_REQUEST with a known nonce.
+    let hmac = TestHmac;
+    let request_nonce: u64 = 0x1111_2222_3333_4444;
+    let node_identity = NodeIdentity {
+        key_hint: node_key_hint,
+        psk: node_psk,
+    };
+    let frame =
+        build_peer_request_frame(&node_identity, &encrypted_payload, request_nonce, &hmac).unwrap();
+
+    // Send to gateway and get the PEER_ACK back.
+    let ack_frame = env
+        .gateway
+        .process_frame(&frame, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+        .await
+        .expect("gateway must return PEER_ACK for valid PEER_REQUEST");
+
+    // Verify node accepts the real PEER_ACK with correct expected nonce.
+    assert!(
+        verify_peer_ack(
+            &ack_frame,
+            &node_identity,
+            request_nonce,
+            &encrypted_payload,
+            &hmac
+        )
+        .is_ok(),
+        "node must accept PEER_ACK with correct nonce"
+    );
+
+    // Verify node REJECTS the same PEER_ACK when expected nonce differs.
+    let wrong_nonce: u64 = 0x5555_6666_7777_8888;
+    let result = verify_peer_ack(
+        &ack_frame,
+        &node_identity,
+        wrong_nonce,
+        &encrypted_payload,
+        &hmac,
+    );
+    assert!(
+        result.is_err(),
+        "node must reject PEER_ACK when nonce does not match PEER_REQUEST"
+    );
+    assert!(
+        matches!(
+            result.unwrap_err(),
+            sonde_node::error::NodeError::ResponseBindingMismatch
+        ),
+        "error must be ResponseBindingMismatch"
+    );
+}
+
+/// T-E2E-063e — sonde-pair → gateway end-to-end integration.
+///
+/// Wires the actual `sonde_pair::phase1::pair_with_gateway` state machine to
+/// the gateway's `handle_ble_recv` via a `GatewayBleAdapter`, proving that
+/// sonde-pair's Phase 1 output is compatible with the gateway. The resulting
+/// `PairingArtifacts` are then used (via sonde-pair's crypto/CBOR functions)
+/// to build the encrypted payload for Phase 3, which flows through a NodeProxy
+/// to the gateway via PEER_REQUEST/PEER_ACK.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_063e_sonde_pair_gateway_integration() {
+    use sonde_pair::cbor::encode_pairing_request;
+    use sonde_pair::crypto::{
+        aes256gcm_encrypt, ed25519_to_x25519_public, generate_x25519_keypair, hkdf_sha256,
+        hmac_sha256, x25519_ecdh,
+    };
+    use sonde_pair::phase1;
+    use sonde_pair::rng::{OsRng, RngProvider};
+    use sonde_pair::store::MemoryPairingStore;
+    use std::sync::Arc;
+
+    let env = E2eTestEnv::new();
+    let identity = setup_gateway_identity(&env.storage).await;
+    let rf_channel = 6u8;
+
+    // Phase 1: use sonde-pair's actual state machine against the gateway.
+    let dyn_storage: Arc<dyn sonde_gateway::storage::Storage> = env.storage.clone();
+    let mut transport = GatewayBleAdapter::new(identity.clone(), dyn_storage, rf_channel);
+    let mut store = MemoryPairingStore::new();
+    let rng = OsRng;
+    let device_addr = [0x10, 0x0B, 0xAC, 0x00, 0x00, 0x01];
+
+    let artifacts = phase1::pair_with_gateway(
+        &mut transport,
+        &mut store,
+        &rng,
+        &device_addr,
+        "e2e-integration-phone",
+        None,
+    )
+    .await
+    .expect("Phase 1 pairing via GatewayBleAdapter must succeed");
+
+    // Verify artifacts
+    assert_eq!(artifacts.rf_channel, rf_channel);
+    assert_ne!(&*artifacts.phone_psk, &[0u8; 32], "PSK must not be zero");
+    let expected_hint = compute_key_hint(&artifacts.phone_psk);
+    assert_eq!(artifacts.phone_key_hint, expected_hint);
+
+    // Verify phone PSK is stored in gateway.
+    let psks = Storage::list_phone_psks(&*env.storage).await.unwrap();
+    assert_eq!(psks.len(), 1, "exactly one phone PSK should be stored");
+
+    // Phase 3: build encrypted payload using sonde-pair's actual crypto,
+    // then wire through a NodeProxy to the gateway.
+    let node_psk = [0xF0u8; 32];
+    let node_key_hint = compute_key_hint(&node_psk);
+    let node_id = "pair-integration-node";
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let cbor = encode_pairing_request(node_id, &node_psk, rf_channel, &[], timestamp).unwrap();
+    let phone_hmac = hmac_sha256(&*artifacts.phone_psk, &cbor);
+    let mut auth_request = Vec::with_capacity(2 + cbor.len() + 32);
+    auth_request.extend_from_slice(&artifacts.phone_key_hint.to_be_bytes());
+    auth_request.extend_from_slice(&cbor);
+    auth_request.extend_from_slice(&phone_hmac);
+
+    let gw_x25519 = ed25519_to_x25519_public(&artifacts.gateway_identity.public_key).unwrap();
+    let (eph_secret, eph_public) = generate_x25519_keypair(&rng).unwrap();
+    let shared_secret = x25519_ecdh(&eph_secret, &gw_x25519);
+    let aes_key = hkdf_sha256(
+        &shared_secret,
+        &artifacts.gateway_identity.gateway_id,
+        b"sonde-node-pair-v1",
+    );
+    let mut nonce = [0u8; 12];
+    rng.fill_bytes(&mut nonce).unwrap();
+    let ciphertext = aes256gcm_encrypt(
+        &aes_key,
+        &nonce,
+        &auth_request,
+        &artifacts.gateway_identity.gateway_id,
+    )
+    .unwrap();
+
+    let mut encrypted_payload = Vec::with_capacity(32 + 12 + ciphertext.len());
+    encrypted_payload.extend_from_slice(&eph_public);
+    encrypted_payload.extend_from_slice(&nonce);
+    encrypted_payload.extend_from_slice(&ciphertext);
+
+    // Wire the payload through a NodeProxy to the gateway.
+    let mut node =
+        NodeProxy::new_ble_provisioned(node_key_hint, node_psk, rf_channel, encrypted_payload);
+    let stats = node.run_wake_cycle(&env);
+
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "sonde-pair → gateway integration must complete PEER_REQUEST + WAKE"
+    );
+    assert!(
+        node.storage.read_reg_complete(),
+        "reg_complete must be set after successful PEER_ACK"
+    );
+
+    // Verify node registered in gateway.
+    let registered = env
+        .storage
+        .get_node(node_id)
+        .await
+        .unwrap()
+        .expect("node must be registered via sonde-pair integration");
+    assert_eq!(registered.key_hint, node_key_hint);
 }

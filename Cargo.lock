@@ -5148,6 +5148,7 @@ version = "0.1.0"
 name = "sonde-e2e"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "hmac",
  "sha2",
  "sonde-gateway",

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Protocol crate validation tests (T-P001 … T-P062).
+//! Protocol crate validation tests.
 //!
-//! All 41 test cases from `docs/protocol-crate-validation.md`.
+//! Validation tests from `docs/protocol-crate-validation.md`.
 
 use sonde_protocol::*;
 
@@ -244,6 +244,74 @@ fn test_p019() {
     let raw = encode_frame(&hdr, &payload, b"k", &SoftwareHmac).unwrap();
     assert_eq!(raw.len(), MAX_FRAME_SIZE); // 250
     assert!(decode_frame(&raw).is_ok());
+}
+
+#[test]
+fn test_p019a() {
+    // Gap 1: DecodeError::TooLong — construct a MAX_FRAME_SIZE + 1 buffer.
+    let oversized_len = MAX_FRAME_SIZE + 1;
+    assert_eq!(oversized_len, 251);
+    let oversized = vec![0u8; oversized_len];
+    let err = decode_frame(&oversized).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::TooLong),
+        "expected TooLong, got {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_p019b() {
+    // Gap 3: DecodeError::CborError — invalid CBOR bytes in payload.
+    // Build a valid frame containing invalid CBOR (0xFF 0xFF) so
+    // decode_frame() succeeds but NodeMessage::decode() returns CborError.
+    let invalid_cbor = [0xFF, 0xFF];
+    let hdr = FrameHeader {
+        key_hint: 0,
+        msg_type: MSG_WAKE,
+        nonce: 0,
+    };
+    let psk = b"test-psk";
+    let raw = encode_frame(&hdr, &invalid_cbor, psk, &SoftwareHmac).unwrap();
+    let decoded_frame = decode_frame(&raw).unwrap();
+    assert!(verify_frame(&decoded_frame, psk, &SoftwareHmac));
+
+    // Frame-level decode succeeded; message-level must fail with CborError.
+    let err = NodeMessage::decode(MSG_WAKE, &decoded_frame.payload).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::CborError(_)),
+        "expected CborError, got {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_p019c() {
+    // Gap 2: DecodeError::InvalidFieldType — text string where uint expected.
+    // Build CBOR Wake with KEY_BATTERY_MV set to "hello" instead of uint.
+    let map = vec![
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
+            ciborium::Value::Bytes(vec![0xAA; 32]),
+        ),
+        (
+            ciborium::Value::Integer(KEY_BATTERY_MV.into()),
+            ciborium::Value::Text("hello".into()),
+        ),
+    ];
+    let mut cbor = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+    let err = NodeMessage::decode(MSG_WAKE, &cbor).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::InvalidFieldType(KEY_BATTERY_MV)),
+        "expected InvalidFieldType(KEY_BATTERY_MV), got {:?}",
+        err
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +719,448 @@ fn test_p035() {
             assert!(matches!(payload, CommandPayload::Reboot));
         }
         _ => panic!("expected Command/Reboot"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-P036  Missing-field detection for non-Wake types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p036() {
+    // Gap 4: Missing required field for each non-Wake message type.
+
+    // Command — omit KEY_STARTING_SEQ
+    {
+        let map = vec![
+            (
+                ciborium::Value::Integer(KEY_COMMAND_TYPE.into()),
+                ciborium::Value::Integer(0.into()), // NOP
+            ),
+            (
+                ciborium::Value::Integer(KEY_TIMESTAMP_MS.into()),
+                ciborium::Value::Integer(1000.into()),
+            ),
+        ];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+        let err = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MissingField(KEY_STARTING_SEQ)),
+            "Command missing starting_seq: expected MissingField(KEY_STARTING_SEQ), got {:?}",
+            err
+        );
+    }
+
+    // GetChunk — omit KEY_CHUNK_INDEX
+    {
+        let map: Vec<(ciborium::Value, ciborium::Value)> = vec![];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+        let err = NodeMessage::decode(MSG_GET_CHUNK, &cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MissingField(KEY_CHUNK_INDEX)),
+            "GetChunk missing chunk_index: expected MissingField(KEY_CHUNK_INDEX), got {:?}",
+            err
+        );
+    }
+
+    // Chunk — omit KEY_CHUNK_DATA (keep KEY_CHUNK_INDEX)
+    {
+        let map = vec![(
+            ciborium::Value::Integer(KEY_CHUNK_INDEX.into()),
+            ciborium::Value::Integer(0.into()),
+        )];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+        let err = GatewayMessage::decode(MSG_CHUNK, &cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MissingField(KEY_CHUNK_DATA)),
+            "Chunk missing chunk_data: expected MissingField(KEY_CHUNK_DATA), got {:?}",
+            err
+        );
+    }
+
+    // ProgramAck — omit KEY_PROGRAM_HASH
+    {
+        let map: Vec<(ciborium::Value, ciborium::Value)> = vec![];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+        let err = NodeMessage::decode(MSG_PROGRAM_ACK, &cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MissingField(KEY_PROGRAM_HASH)),
+            "ProgramAck missing program_hash: expected MissingField(KEY_PROGRAM_HASH), got {:?}",
+            err
+        );
+    }
+
+    // AppData — omit KEY_BLOB
+    {
+        let map: Vec<(ciborium::Value, ciborium::Value)> = vec![];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+        let err = NodeMessage::decode(MSG_APP_DATA, &cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MissingField(KEY_BLOB)),
+            "AppData missing blob: expected MissingField(KEY_BLOB), got {:?}",
+            err
+        );
+    }
+
+    // AppDataReply — omit KEY_BLOB
+    {
+        let map: Vec<(ciborium::Value, ciborium::Value)> = vec![];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+        let err = GatewayMessage::decode(MSG_APP_DATA_REPLY, &cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MissingField(KEY_BLOB)),
+            "AppDataReply missing blob: expected MissingField(KEY_BLOB), got {:?}",
+            err
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-P037  Unknown CBOR keys ignored in non-Wake messages
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p037() {
+    // Gap 5: Inject unknown key 99 into each non-Wake message type.
+
+    // Helper: decode CBOR, inject key 99, re-encode.
+    fn inject_unknown_key(cbor: &[u8]) -> Vec<u8> {
+        let val: ciborium::Value = ciborium::de::from_reader(cbor).unwrap();
+        let mut map = match val {
+            ciborium::Value::Map(m) => m,
+            _ => panic!("expected CBOR map"),
+        };
+        map.push((
+            ciborium::Value::Integer(99.into()),
+            ciborium::Value::Text("unknown".into()),
+        ));
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut out).unwrap();
+        out
+    }
+
+    // Command (NOP)
+    {
+        let orig = GatewayMessage::Command {
+            starting_seq: 42,
+            timestamp_ms: 1_710_000_000_000,
+            payload: CommandPayload::Nop,
+        };
+        let cbor = orig.encode().unwrap();
+        let modified = inject_unknown_key(&cbor);
+        let decoded = GatewayMessage::decode(MSG_COMMAND, &modified).unwrap();
+        assert_eq!(decoded, orig);
+    }
+
+    // GetChunk
+    {
+        let orig = NodeMessage::GetChunk { chunk_index: 7 };
+        let cbor = orig.encode().unwrap();
+        let modified = inject_unknown_key(&cbor);
+        let decoded = NodeMessage::decode(MSG_GET_CHUNK, &modified).unwrap();
+        assert_eq!(decoded, orig);
+    }
+
+    // Chunk
+    {
+        let orig = GatewayMessage::Chunk {
+            chunk_index: 3,
+            chunk_data: vec![0x55; 10],
+        };
+        let cbor = orig.encode().unwrap();
+        let modified = inject_unknown_key(&cbor);
+        let decoded = GatewayMessage::decode(MSG_CHUNK, &modified).unwrap();
+        assert_eq!(decoded, orig);
+    }
+
+    // ProgramAck
+    {
+        let orig = NodeMessage::ProgramAck {
+            program_hash: vec![0xAB; 32],
+        };
+        let cbor = orig.encode().unwrap();
+        let modified = inject_unknown_key(&cbor);
+        let decoded = NodeMessage::decode(MSG_PROGRAM_ACK, &modified).unwrap();
+        assert_eq!(decoded, orig);
+    }
+
+    // AppData
+    {
+        let orig = NodeMessage::AppData {
+            blob: vec![1, 2, 3],
+        };
+        let cbor = orig.encode().unwrap();
+        let modified = inject_unknown_key(&cbor);
+        let decoded = NodeMessage::decode(MSG_APP_DATA, &modified).unwrap();
+        assert_eq!(decoded, orig);
+    }
+
+    // AppDataReply
+    {
+        let orig = GatewayMessage::AppDataReply {
+            blob: vec![0xAA, 0xBB],
+        };
+        let cbor = orig.encode().unwrap();
+        let modified = inject_unknown_key(&cbor);
+        let decoded = GatewayMessage::decode(MSG_APP_DATA_REPLY, &modified).unwrap();
+        assert_eq!(decoded, orig);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-P038  COMMAND nested payload CBOR byte inspection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p038() {
+    // Gap 6: Verify COMMAND uses nested CBOR structure on the wire.
+
+    // UpdateProgram — top-level keys {4, 5, 13, 14}, key 5 holds nested map
+    // with UpdateProgram sub-fields {2, 6, 7, 8}.
+    {
+        let msg = GatewayMessage::Command {
+            starting_seq: 1,
+            timestamp_ms: 1_710_000_000_000,
+            payload: CommandPayload::UpdateProgram {
+                program_hash: vec![0xBB; 32],
+                program_size: 4000,
+                chunk_size: 190,
+                chunk_count: 22,
+            },
+        };
+        let cbor = msg.encode().unwrap();
+        let val: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
+        let pairs = match &val {
+            ciborium::Value::Map(m) => m,
+            _ => panic!("expected CBOR map"),
+        };
+
+        // Collect top-level keys
+        let keys: Vec<u64> = pairs
+            .iter()
+            .filter_map(|(k, _)| k.as_integer().and_then(|i| u64::try_from(i).ok()))
+            .collect();
+        assert!(keys.contains(&KEY_COMMAND_TYPE), "missing KEY_COMMAND_TYPE");
+        assert!(keys.contains(&KEY_PAYLOAD), "missing KEY_PAYLOAD");
+        assert!(keys.contains(&KEY_STARTING_SEQ), "missing KEY_STARTING_SEQ");
+        assert!(keys.contains(&KEY_TIMESTAMP_MS), "missing KEY_TIMESTAMP_MS");
+
+        // Key 5 (PAYLOAD) must be a nested CBOR map with sub-keys {2, 6, 7, 8}
+        let payload_val = pairs
+            .iter()
+            .find(|(k, _)| k.as_integer().and_then(|i| u64::try_from(i).ok()) == Some(KEY_PAYLOAD))
+            .map(|(_, v)| v)
+            .expect("KEY_PAYLOAD present");
+        let inner_pairs = match payload_val {
+            ciborium::Value::Map(m) => m,
+            _ => panic!("KEY_PAYLOAD must be a nested CBOR map"),
+        };
+        let inner_keys: Vec<u64> = inner_pairs
+            .iter()
+            .filter_map(|(k, _)| k.as_integer().and_then(|i| u64::try_from(i).ok()))
+            .collect();
+        assert!(
+            inner_keys.contains(&KEY_PROGRAM_HASH),
+            "nested map missing KEY_PROGRAM_HASH"
+        );
+        assert!(
+            inner_keys.contains(&KEY_PROGRAM_SIZE),
+            "nested map missing KEY_PROGRAM_SIZE"
+        );
+        assert!(
+            inner_keys.contains(&KEY_CHUNK_SIZE),
+            "nested map missing KEY_CHUNK_SIZE"
+        );
+        assert!(
+            inner_keys.contains(&KEY_CHUNK_COUNT),
+            "nested map missing KEY_CHUNK_COUNT"
+        );
+    }
+
+    // NOP — top-level keys {4, 13, 14} only, no KEY_PAYLOAD
+    {
+        let msg = GatewayMessage::Command {
+            starting_seq: 1,
+            timestamp_ms: 1_710_000_000_000,
+            payload: CommandPayload::Nop,
+        };
+        let cbor = msg.encode().unwrap();
+        let val: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
+        let pairs = match &val {
+            ciborium::Value::Map(m) => m,
+            _ => panic!("expected CBOR map"),
+        };
+        let keys: Vec<u64> = pairs
+            .iter()
+            .filter_map(|(k, _)| k.as_integer().and_then(|i| u64::try_from(i).ok()))
+            .collect();
+        assert!(keys.contains(&KEY_COMMAND_TYPE));
+        assert!(keys.contains(&KEY_STARTING_SEQ));
+        assert!(keys.contains(&KEY_TIMESTAMP_MS));
+        assert!(
+            !keys.contains(&KEY_PAYLOAD),
+            "NOP must not have KEY_PAYLOAD"
+        );
+    }
+
+    // Reboot — top-level keys {4, 13, 14} only, no KEY_PAYLOAD
+    {
+        let msg = GatewayMessage::Command {
+            starting_seq: 1,
+            timestamp_ms: 1_710_000_000_000,
+            payload: CommandPayload::Reboot,
+        };
+        let cbor = msg.encode().unwrap();
+        let val: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
+        let pairs = match &val {
+            ciborium::Value::Map(m) => m,
+            _ => panic!("expected CBOR map"),
+        };
+        let keys: Vec<u64> = pairs
+            .iter()
+            .filter_map(|(k, _)| k.as_integer().and_then(|i| u64::try_from(i).ok()))
+            .collect();
+        assert!(keys.contains(&KEY_COMMAND_TYPE));
+        assert!(keys.contains(&KEY_STARTING_SEQ));
+        assert!(keys.contains(&KEY_TIMESTAMP_MS));
+        assert!(
+            !keys.contains(&KEY_PAYLOAD),
+            "Reboot must not have KEY_PAYLOAD"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-P039  Large u64 values round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p039() {
+    // Gap 7: Large integer values — CBOR 8-byte encoding.
+
+    // Wake with battery_mv = u32::MAX
+    {
+        let msg = NodeMessage::Wake {
+            firmware_abi_version: 1,
+            program_hash: vec![0xAA; 32],
+            battery_mv: u32::MAX,
+        };
+        let cbor = msg.encode().unwrap();
+        let decoded = NodeMessage::decode(MSG_WAKE, &cbor).unwrap();
+        match decoded {
+            NodeMessage::Wake { battery_mv, .. } => {
+                assert_eq!(battery_mv, u32::MAX);
+            }
+            _ => panic!("expected Wake"),
+        }
+
+        // Inspect CBOR bytes: u32::MAX (0xFFFFFFFF) should be encoded as
+        // major type 0, additional info 26 (4-byte uint) → byte 0x1A.
+        let val: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
+        let pairs = match &val {
+            ciborium::Value::Map(m) => m,
+            _ => panic!("expected map"),
+        };
+        let battery_val = pairs
+            .iter()
+            .find(|(k, _)| {
+                k.as_integer().and_then(|i| u64::try_from(i).ok()) == Some(KEY_BATTERY_MV)
+            })
+            .map(|(_, v)| v)
+            .expect("KEY_BATTERY_MV present");
+        let battery: u64 = battery_val
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .expect("integer value");
+        assert_eq!(battery, u32::MAX as u64);
+
+        // Verify CBOR encoding length for battery_mv: search for 0x1A prefix
+        // (major type 0 | additional info 26 = 4-byte uint).
+        // The value 0xFFFFFFFF follows as 4 bytes.
+        let has_4byte_encoding = cbor
+            .windows(5)
+            .any(|w| w[0] == 0x1A && w[1..] == [0xFF, 0xFF, 0xFF, 0xFF]);
+        assert!(
+            has_4byte_encoding,
+            "u32::MAX should be CBOR-encoded as 4-byte uint (0x1A prefix)"
+        );
+    }
+
+    // Command with starting_seq = u64::MAX and timestamp_ms = u64::MAX
+    {
+        let msg = GatewayMessage::Command {
+            starting_seq: u64::MAX,
+            timestamp_ms: u64::MAX,
+            payload: CommandPayload::Nop,
+        };
+        let cbor = msg.encode().unwrap();
+        let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
+        match decoded {
+            GatewayMessage::Command {
+                starting_seq,
+                timestamp_ms,
+                ..
+            } => {
+                assert_eq!(starting_seq, u64::MAX);
+                assert_eq!(timestamp_ms, u64::MAX);
+            }
+            _ => panic!("expected Command"),
+        }
+
+        // Inspect CBOR bytes: u64::MAX should be encoded as
+        // major type 0, additional info 27 (8-byte uint) → byte 0x1B.
+        let val: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
+        let pairs = match &val {
+            ciborium::Value::Map(m) => m,
+            _ => panic!("expected map"),
+        };
+
+        // Verify starting_seq
+        let seq_val = pairs
+            .iter()
+            .find(|(k, _)| {
+                k.as_integer().and_then(|i| u64::try_from(i).ok()) == Some(KEY_STARTING_SEQ)
+            })
+            .map(|(_, v)| v)
+            .expect("KEY_STARTING_SEQ present");
+        let seq: u64 = seq_val
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .expect("integer value");
+        assert_eq!(seq, u64::MAX);
+
+        // Verify timestamp_ms
+        let ts_val = pairs
+            .iter()
+            .find(|(k, _)| {
+                k.as_integer().and_then(|i| u64::try_from(i).ok()) == Some(KEY_TIMESTAMP_MS)
+            })
+            .map(|(_, v)| v)
+            .expect("KEY_TIMESTAMP_MS present");
+        let ts: u64 = ts_val
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .expect("integer value");
+        assert_eq!(ts, u64::MAX);
+
+        // Verify CBOR encoding: 0x1B prefix for 8-byte uint.
+        // u64::MAX = 0xFFFFFFFFFFFFFFFF, should appear as
+        // 0x1B 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF
+        let eight_byte_count = cbor
+            .windows(9)
+            .filter(|w| w[0] == 0x1B && w[1..] == [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+            .count();
+        assert!(
+            eight_byte_count >= 2,
+            "expected at least two 8-byte uint encodings for u64::MAX, found {}",
+            eight_byte_count
+        );
     }
 }
 

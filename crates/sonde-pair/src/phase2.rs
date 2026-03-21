@@ -528,4 +528,343 @@ mod tests {
             );
         });
     }
+
+    // --- PT-0502: BLE disconnect on Phase 2 error paths ---
+
+    /// Validates: PT-0502 (BLE disconnect on error)
+    ///
+    /// After Phase 2 failure (NODE_ACK with StorageError), the BLE connection
+    /// must be released.
+    #[test]
+    fn t_pt_402_disconnect_on_phase2_failure() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x02]).unwrap()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert!(
+                !transport.connected,
+                "BLE connection must be released after Phase 2 failure"
+            );
+            assert!(
+                transport.disconnect_count > 0,
+                "disconnect() must be called on Phase 2 error path"
+            );
+        });
+    }
+
+    /// Validates: PT-0502 (BLE disconnect on success)
+    ///
+    /// After Phase 2 success, the BLE connection must also be released.
+    #[test]
+    fn t_pt_402_disconnect_on_phase2_success() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x00]).unwrap()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors,
+            )
+            .await;
+
+            assert!(result.is_ok());
+            assert!(
+                !transport.connected,
+                "BLE connection must be released after Phase 2 success"
+            );
+            assert!(
+                transport.disconnect_count > 0,
+                "disconnect() must be called after Phase 2 completes"
+            );
+        });
+    }
+
+    // --- PT-1000: Phase 2 disconnect mid-provision ---
+
+    /// Validates: PT-1000
+    ///
+    /// Inject a BLE disconnect during Phase 2 (ConnectionDropped on
+    /// NODE_ACK indication read).  Verify the tool returns an error
+    /// cleanly and releases the BLE connection.
+    #[test]
+    fn t_pt_800_phase2_disconnect_mid_provision() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Err(PairingError::ConnectionDropped));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            assert!(
+                matches!(result, Err(PairingError::ConnectionDropped)),
+                "expected ConnectionDropped, got {result:?}"
+            );
+            assert!(
+                !transport.connected,
+                "transport must be disconnected after Phase 2 disconnect"
+            );
+        });
+    }
+
+    // --- PT-1001: No resource leaks on Phase 2 failure ---
+
+    /// Validates: PT-1001
+    ///
+    /// Run multiple Phase 2 attempts that fail at different stages.
+    /// After each failure, verify no open connections remain.
+    #[test]
+    fn t_pt_801_no_resource_leaks_phase2() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let failure_scenarios: Vec<Box<dyn Fn() -> MockBleTransport>> = vec![
+                // 1. Connection failure
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    t.connect_error = Some(PairingError::ConnectionFailed("test".into()));
+                    t
+                }),
+                // 2. MTU too low
+                Box::new(|| MockBleTransport::new(100)),
+                // 3. GATT write failure
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    t.write_error = Some(PairingError::GattWriteFailed("test".into()));
+                    t
+                }),
+                // 4. Indication timeout (no response)
+                Box::new(|| MockBleTransport::new(247)),
+                // 5. ConnectionDropped during read
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Err(PairingError::ConnectionDropped));
+                    t
+                }),
+                // 6. NODE_ACK(0x01) — already paired
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Ok(build_envelope(NODE_ACK, &[0x01]).unwrap()));
+                    t
+                }),
+                // 7. NODE_ACK(0x02) — storage error
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Ok(build_envelope(NODE_ACK, &[0x02]).unwrap()));
+                    t
+                }),
+                // 8. Error response from node
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    let mut error_body = vec![0x01];
+                    error_body.extend_from_slice(b"fail");
+                    t.queue_response(Ok(build_envelope(MSG_ERROR, &error_body).unwrap()));
+                    t
+                }),
+            ];
+
+            for (i, make_transport) in failure_scenarios.iter().enumerate() {
+                let mut transport = make_transport();
+                let store = store_with_artifacts();
+                let rng = MockRng::new([0x42u8; 32]);
+
+                let result = provision_node(
+                    &mut transport,
+                    &store,
+                    &rng,
+                    &device_addr,
+                    "sensor-1",
+                    &sensors[..1],
+                )
+                .await;
+                assert!(result.is_err(), "scenario {i} should fail");
+                assert!(
+                    !transport.connected,
+                    "scenario {i}: transport must not be connected after Phase 2 failure"
+                );
+            }
+        });
+    }
+
+    // --- PT-1002: Connection timeout exercised in Phase 2 ---
+
+    /// Validates: PT-1002
+    ///
+    /// Exercise the BLE connection timeout path in Phase 2.
+    #[test]
+    fn t_pt_802_connection_timeout_phase2() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.connect_error = Some(PairingError::Timeout {
+                operation: "BLE connection",
+                duration_secs: 10,
+            });
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            match result {
+                Err(PairingError::Timeout {
+                    operation,
+                    duration_secs,
+                }) => {
+                    assert_eq!(operation, "BLE connection");
+                    assert_eq!(duration_secs, 10);
+                }
+                other => panic!("expected Timeout, got {other:?}"),
+            }
+            assert!(!transport.connected);
+        });
+    }
+
+    // --- PT-1003: No implicit retries in Phase 2 ---
+
+    /// Validates: PT-1003
+    ///
+    /// Inject a GATT write failure on the NODE_PROVISION write.
+    /// Assert that zero writes were recorded (the failed write is not retried).
+    #[test]
+    fn t_pt_803_no_implicit_retries_phase2_write() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.write_error = Some(PairingError::GattWriteFailed("BLE write failed".into()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            assert!(
+                matches!(result, Err(PairingError::GattWriteFailed(_))),
+                "expected GattWriteFailed, got {result:?}"
+            );
+            assert_eq!(
+                transport.written.len(),
+                0,
+                "no write should be recorded — the failed write must not be silently retried"
+            );
+        });
+    }
+
+    /// Validates: PT-1003
+    ///
+    /// Inject a GATT read failure (indication timeout) during Phase 2.
+    /// Assert the error propagates without retry.
+    #[test]
+    fn t_pt_803_no_implicit_retries_phase2_read() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            // No response → IndicationTimeout
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            assert!(matches!(result, Err(PairingError::IndicationTimeout)));
+            // Exactly one write (NODE_PROVISION) before the read timeout.
+            assert_eq!(
+                transport.written.len(),
+                1,
+                "exactly one write before timeout — no retry of the read"
+            );
+        });
+    }
 }

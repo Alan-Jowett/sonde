@@ -969,4 +969,344 @@ mod tests {
             result.unwrap();
         });
     }
+
+    // --- PT-0502: BLE disconnect on error paths ---
+
+    /// Validates: PT-0502 (BLE disconnect on error)
+    ///
+    /// After Phase 1 failure (timeout on PHONE_REGISTERED), the BLE connection
+    /// must be released.  T-PT-402 checks store integrity; this test asserts
+    /// the transport is disconnected.
+    #[test]
+    fn t_pt_402_disconnect_on_phase1_failure() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            // No second response → timeout on PHONE_REGISTERED
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
+            assert!(result.is_err());
+
+            assert!(
+                !transport.connected,
+                "BLE connection must be released after Phase 1 failure"
+            );
+            assert!(
+                transport.disconnect_count > 0,
+                "disconnect() must be called on error path"
+            );
+        });
+    }
+
+    // --- PT-1000: Transient failure tolerance ---
+
+    /// Validates: PT-1000
+    ///
+    /// Inject a BLE disconnect during Phase 1 GATT read (ConnectionDropped),
+    /// then verify the tool returns an error cleanly without crashing.
+    #[test]
+    fn t_pt_800_phase1_connection_dropped_during_read() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            // Inject ConnectionDropped on indication read
+            transport.queue_response(Err(PairingError::ConnectionDropped));
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
+            assert!(
+                matches!(result, Err(PairingError::ConnectionDropped)),
+                "expected ConnectionDropped, got {result:?}"
+            );
+            assert!(
+                !transport.connected,
+                "transport must be disconnected after failure"
+            );
+
+            // Verify operator can retry: create a fresh transport.
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rng2 = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng2);
+            let eph_public = predicted_eph_public(&rng2);
+
+            let mut transport2 = MockBleTransport::new(247);
+            transport2.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport2.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                6,
+            )));
+
+            let result2 =
+                pair_with_gateway(&mut transport2, &mut store, &rng2, &device_addr, "", None).await;
+            assert!(result2.is_ok(), "retry after disconnect must succeed");
+        });
+    }
+
+    // --- PT-1001: No resource leaks on failure ---
+
+    /// Validates: PT-1001
+    ///
+    /// Run 10 consecutive Phase 1 attempts that fail at different stages.
+    /// After each failure, verify no open connections remain.
+    #[test]
+    fn t_pt_801_no_resource_leaks_phase1() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let device_addr = [0xAA; 6];
+
+            // Each iteration fails at a different stage.
+            let failure_scenarios: Vec<Box<dyn Fn() -> MockBleTransport>> = vec![
+                // 1. Connection failure
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    t.connect_error = Some(PairingError::ConnectionFailed("test".into()));
+                    t
+                }),
+                // 2. MTU too low
+                Box::new(|| MockBleTransport::new(100)),
+                // 3. Timeout on GW_INFO_RESPONSE
+                Box::new(|| MockBleTransport::new(247)),
+                // 4. ConnectionDropped during read
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Err(PairingError::ConnectionDropped));
+                    t
+                }),
+                // 5. Signature verification failure (wrong key)
+                Box::new(|| {
+                    let rng = MockRng::new([0x42u8; 32]);
+                    let challenge = predicted_challenge(&rng);
+                    let wrong_key = SigningKey::from_bytes(&[0x43u8; 32]);
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Ok(build_gw_info_response(
+                        &wrong_key,
+                        &gateway_id,
+                        &challenge,
+                    )));
+                    t
+                }),
+                // 6. GATT write failure
+                Box::new(|| {
+                    let mut t = MockBleTransport::new(247);
+                    t.write_error = Some(PairingError::GattWriteFailed("test".into()));
+                    t
+                }),
+                // 7. Timeout on PHONE_REGISTERED
+                Box::new(|| {
+                    let rng = MockRng::new([0x42u8; 32]);
+                    let challenge = predicted_challenge(&rng);
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Ok(build_gw_info_response(
+                        &signing_key,
+                        &gateway_id,
+                        &challenge,
+                    )));
+                    t
+                }),
+                // 8. Decryption failure
+                Box::new(|| {
+                    let rng = MockRng::new([0x42u8; 32]);
+                    let challenge = predicted_challenge(&rng);
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Ok(build_gw_info_response(
+                        &signing_key,
+                        &gateway_id,
+                        &challenge,
+                    )));
+                    let mut bad_body = Vec::new();
+                    bad_body.extend_from_slice(&[0x01u8; 12]);
+                    bad_body.extend_from_slice(&[0xFFu8; 49]);
+                    t.queue_response(Ok(build_envelope(PHONE_REGISTERED, &bad_body).unwrap()));
+                    t
+                }),
+                // 9. Registration window closed
+                Box::new(|| {
+                    let rng = MockRng::new([0x42u8; 32]);
+                    let challenge = predicted_challenge(&rng);
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Ok(build_gw_info_response(
+                        &signing_key,
+                        &gateway_id,
+                        &challenge,
+                    )));
+                    t.queue_response(Ok(build_envelope(MSG_ERROR, &[0x02]).unwrap()));
+                    t
+                }),
+                // 10. Already-paired error
+                Box::new(|| {
+                    let rng = MockRng::new([0x42u8; 32]);
+                    let challenge = predicted_challenge(&rng);
+                    let mut t = MockBleTransport::new(247);
+                    t.queue_response(Ok(build_gw_info_response(
+                        &signing_key,
+                        &gateway_id,
+                        &challenge,
+                    )));
+                    t.queue_response(Ok(build_envelope(MSG_ERROR, &[0x03]).unwrap()));
+                    t
+                }),
+            ];
+
+            for (i, make_transport) in failure_scenarios.iter().enumerate() {
+                let mut transport = make_transport();
+                let rng = MockRng::new([0x42u8; 32]);
+                let mut store = MemoryPairingStore::new();
+
+                let result =
+                    pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None)
+                        .await;
+                assert!(result.is_err(), "scenario {i} should fail");
+                assert!(
+                    !transport.connected,
+                    "scenario {i}: transport must not be connected after failure"
+                );
+            }
+        });
+    }
+
+    // --- PT-1002: Connection timeout exercised ---
+
+    /// Validates: PT-1002
+    ///
+    /// Exercise the BLE connection timeout path by injecting a connection
+    /// failure. The existing T-PT-802 checks constant values; this test
+    /// verifies the code path that handles a connection-level error.
+    #[test]
+    fn t_pt_802b_connection_timeout_exercised() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.connect_error = Some(PairingError::Timeout {
+                operation: "BLE connection",
+                duration_secs: 10,
+            });
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
+            match result {
+                Err(PairingError::Timeout {
+                    operation,
+                    duration_secs,
+                }) => {
+                    assert_eq!(operation, "BLE connection");
+                    assert_eq!(duration_secs, 10);
+                }
+                other => panic!("expected Timeout, got {other:?}"),
+            }
+            // Connection never established so no disconnect needed,
+            // but transport must not be in connected state.
+            assert!(!transport.connected);
+        });
+    }
+
+    // --- PT-1003: No implicit retries ---
+
+    /// Validates: PT-1003
+    ///
+    /// Inject a GATT write failure on the first REQUEST_GW_INFO write.
+    /// Assert that exactly zero writes were recorded (the failed write is not
+    /// retried) and the error propagates to the caller.
+    #[test]
+    fn t_pt_803_no_implicit_retries_phase1_write() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.write_error = Some(PairingError::GattWriteFailed("BLE write failed".into()));
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
+            assert!(
+                matches!(result, Err(PairingError::GattWriteFailed(_))),
+                "expected GattWriteFailed, got {result:?}"
+            );
+            assert_eq!(
+                transport.written.len(),
+                0,
+                "no write should be recorded — the failed write must not be silently retried"
+            );
+        });
+    }
+
+    /// Validates: PT-1003
+    ///
+    /// Inject a GATT read failure (indication timeout) during Phase 1.
+    /// Assert the error propagates immediately without a retry.
+    #[test]
+    fn t_pt_803_no_implicit_retries_phase1_read() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            // No responses queued → IndicationTimeout on first read
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
+            assert!(matches!(result, Err(PairingError::IndicationTimeout)));
+            // Exactly one write (REQUEST_GW_INFO) before the read timeout.
+            assert_eq!(
+                transport.written.len(),
+                1,
+                "exactly one write before timeout — no retry of the read"
+            );
+        });
+    }
 }

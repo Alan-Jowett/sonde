@@ -23,6 +23,12 @@ This document defines test cases that validate the BLE pairing tool against the 
 
 | Meta-requirement | Description | Satisfied by |
 |---|---|---|
+| PT-1000 | Transient BLE failure tolerance | T-PT-800 |
+| PT-1001 | No resource leaks on failure | T-PT-801 |
+| PT-1002 | Deterministic timeouts | T-PT-802 |
+| PT-1003 | No implicit retries | T-PT-803 |
+| PT-1004 | Reusable core | T-PT-1004 |
+| PT-1100 | Required cryptographic primitives | Structural coverage (see table below) |
 | PT-1200 | Mocked BLE transport for CI | Test harness infrastructure (§2); all CI tests use `MockBleTransport` |
 | PT-1201 | Phase 1 happy path | T-PT-208 |
 | PT-1202 | Phase 1 error paths | T-PT-203, T-PT-204, T-PT-206, T-PT-209, T-PT-210, T-PT-211, T-PT-212 |
@@ -1132,3 +1138,4 @@ TestNode {
 | T-PT-901 | PT-1101 | HKDF parameters correct for Phase 2 |
 | T-PT-902 | PT-1102 | AES-GCM AAD = gateway_id |
 | T-PT-903 | PT-1103 | CBOR deterministic encoding (known test vector) |
+| T-PT-1004 | PT-1004 | Core crate builds and works without platform features |

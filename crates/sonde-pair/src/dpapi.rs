@@ -134,3 +134,63 @@ mod dpapi_ffi {
         Ok(encrypted)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::file_store::PskProtector;
+
+    /// Validates: PT-0801 (T-PT-605)
+    ///
+    /// DPAPI protect/unprotect round-trip: a 32-byte PSK encrypted via DPAPI
+    /// must decrypt back to the original value.
+    #[test]
+    fn t_pt_605_dpapi_round_trip() {
+        let protector = DpapiPskProtector::new();
+        let psk = [0x42u8; 32];
+
+        let protected = protector.protect(&psk).expect("DPAPI protect failed");
+        assert_ne!(protected, psk, "protected bytes must differ from plaintext");
+        assert!(
+            protected.len() > 32,
+            "DPAPI blob must be larger than the plaintext"
+        );
+
+        let recovered = protector
+            .unprotect(&protected)
+            .expect("DPAPI unprotect failed");
+        assert_eq!(*recovered, psk, "round-trip must recover original PSK");
+    }
+
+    /// Validates: PT-0801 (T-PT-605)
+    ///
+    /// DPAPI unprotect with tampered data must fail.
+    #[test]
+    fn t_pt_605_dpapi_tampered_data_fails() {
+        let protector = DpapiPskProtector::new();
+        let psk = [0x42u8; 32];
+
+        let mut protected = protector.protect(&psk).expect("DPAPI protect failed");
+        if let Some(byte) = protected.last_mut() {
+            *byte ^= 0xFF;
+        }
+
+        let result = protector.unprotect(&protected);
+        assert!(result.is_err(), "tampered DPAPI blob must fail to decrypt");
+    }
+
+    /// Validates: PT-0801 (T-PT-605)
+    ///
+    /// Different PSKs must produce different DPAPI blobs.
+    #[test]
+    fn t_pt_605_dpapi_different_keys_differ() {
+        let protector = DpapiPskProtector::new();
+
+        let blob_a = protector.protect(&[0x42u8; 32]).unwrap();
+        let blob_b = protector.protect(&[0x43u8; 32]).unwrap();
+        assert_ne!(
+            blob_a, blob_b,
+            "different PSKs must produce different blobs"
+        );
+    }
+}

@@ -58,6 +58,12 @@ pub struct MockBleTransport {
     pub mtu: u16,
     /// Whether the transport is currently connected.
     pub connected: bool,
+    /// If `Some`, the next `connect()` call takes and returns this error.
+    pub connect_error: Option<PairingError>,
+    /// If `Some`, the next `write_characteristic()` call takes and returns this error.
+    pub write_error: Option<PairingError>,
+    /// Count of `disconnect()` calls for resource-leak verification.
+    pub disconnect_count: usize,
 }
 
 impl MockBleTransport {
@@ -68,6 +74,9 @@ impl MockBleTransport {
             devices: Vec::new(),
             mtu,
             connected: false,
+            connect_error: None,
+            write_error: None,
+            disconnect_count: 0,
         }
     }
 
@@ -104,6 +113,9 @@ impl BleTransport for MockBleTransport {
         &mut self,
         _address: &[u8; 6],
     ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
+        if let Some(err) = self.connect_error.take() {
+            return Box::pin(async move { Err(err) });
+        }
         self.connected = true;
         let mtu = self.mtu;
         Box::pin(async move { Ok(mtu) })
@@ -111,6 +123,7 @@ impl BleTransport for MockBleTransport {
 
     fn disconnect(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         self.connected = false;
+        self.disconnect_count += 1;
         Box::pin(async { Ok(()) })
     }
 
@@ -120,6 +133,9 @@ impl BleTransport for MockBleTransport {
         characteristic: u128,
         data: &[u8],
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
+        if let Some(err) = self.write_error.take() {
+            return Box::pin(async move { Err(err) });
+        }
         self.written.push((service, characteristic, data.to_vec()));
         Box::pin(async { Ok(()) })
     }

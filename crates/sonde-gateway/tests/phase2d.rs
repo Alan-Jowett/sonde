@@ -253,7 +253,7 @@ async fn t0507_check_node_timeouts_zero_interval() {
     // No panic — zero interval means no timeout check.
 }
 
-// ─── GW-0507: node_timeout EVENT delivery to handler ────────────────
+// ─── Gap 4: GW-0507 — node_timeout EVENT delivered with correct fields ─────
 
 /// Write a Python script to a temp directory. Returns the path as a String.
 fn write_handler_script(dir: &std::path::Path, name: &str, script: &str) -> String {
@@ -318,6 +318,7 @@ fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> Handl
     }
 }
 
+
 macro_rules! require_python {
     () => {
         if !python_available() {
@@ -327,10 +328,12 @@ macro_rules! require_python {
     };
 }
 
-/// Event-logging handler that writes a LOG message when it receives a
-/// node_timeout EVENT, confirming the event was delivered.
-const NODE_TIMEOUT_EVENT_HANDLER_PY: &str = r#"
-import sys, struct
+/// Event-recording handler: writes received EVENT messages to a file (path
+/// passed as last argv), echoes DATA messages back unchanged.
+const EVENT_RECORDING_HANDLER_PY: &str = r#"
+import sys, struct, json, os
+
+EVENT_FILE = sys.argv[-1]
 
 def read_exact(n):
     buf = bytearray()
@@ -442,24 +445,11 @@ def encode_item(val):
     else:
         raise ValueError(f"unsupported type {type(val)}")
 
-# Read messages in a loop, respond to EVENTs with LOG
 while True:
     cbor_data = read_msg()
     msg = decode_cbor_map(cbor_data)
     msg_type = msg[1]
-
-    if msg_type == 2:  # EVENT
-        event_type = msg.get(4, "")
-        if event_type == "node_timeout":
-            log_msg = encode_cbor_map([
-                (1, 0x82),
-                (2, "info"),
-                (3, "received node_timeout event"),
-            ])
-            write_msg(log_msg)
-        continue
-
-    if msg_type == 1:  # DATA — echo back
+    if msg_type == 1:  # DATA
         request_id = msg[2]
         payload_data = msg[5]
         reply = encode_cbor_map([
@@ -468,51 +458,80 @@ while True:
             (3, payload_data),
         ])
         write_msg(reply)
+    elif msg_type == 2:  # EVENT
+        node_id = msg.get(3, "")
+        event_type = msg.get(4, "")
+        details = msg.get(5, {})
+        timestamp = msg.get(6, 0)
+        record = {
+            "node_id": node_id,
+            "event_type": event_type,
+            "details": {str(k): v for k, v in details.items()},
+            "timestamp": timestamp,
+        }
+        with open(EVENT_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+            f.flush()
 "#;
 
-/// T-0507b: node_timeout EVENT is delivered to a running handler.
-/// The handler writes a LOG message upon receiving the event, which the
-/// gateway captures via tracing. Validates GW-0507 AC3.
+/// GW-0507: `node_timeout` EVENT delivered to handler with `last_seen` and
+/// `expected_interval_s` fields.
+///
+/// Uses an event-recording handler that writes EVENT messages to a temp file.
+/// After `check_node_timeouts` the file is inspected for the expected fields.
 #[tokio::test]
-#[traced_test]
-async fn t0507b_node_timeout_event_delivered_to_handler() {
+async fn gw0507_node_timeout_event_with_fields() {
     require_python!();
     let tmp = tempfile::tempdir().unwrap();
-    let script = write_handler_script(
-        tmp.path(),
-        "timeout_event.py",
-        NODE_TIMEOUT_EVENT_HANDLER_PY,
-    );
+    let script = write_handler_script(tmp.path(), "event_rec.py", EVENT_RECORDING_HANDLER_PY);
+    let event_file = tmp.path().join("events.jsonl");
+    let event_file_str = event_file.to_str().unwrap().to_string();
 
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Any],
-        script,
-    )]));
+    // Build handler config with the event file path as an extra argument
+    let mut args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
+    args.push(script);
+    args.push(event_file_str.clone());
+    let config = HandlerConfig {
+        matchers: vec![ProgramMatcher::Any],
+        command: python_cmd().to_string(),
+        args,
+        reply_timeout: None,
+    };
 
+    let router = Arc::new(HandlerRouter::new(vec![config]));
     let storage = Arc::new(InMemoryStorage::new());
 
-    // Register a node with a 60s interval, last_seen 200s ago (timed out).
-    let mut node = NodeRecord::new("timeout-handler-node".into(), 0x0507, [0x57; 32]);
+    // Register a node that has timed out: 60s interval, last seen 200s ago
+    let mut node = NodeRecord::new("timeout-node-ev".into(), 0x0010, [0xAA; 32]);
     node.schedule_interval_s = 60;
     node.last_seen = Some(SystemTime::now() - Duration::from_secs(200));
     storage.upsert_node(&node).await.unwrap();
 
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
-
-    // check_node_timeouts should detect the timed-out node and deliver
-    // a node_timeout EVENT to the handler. The handler writes a LOG message
-    // which the gateway drains from stdout and emits via tracing.
     gw.check_node_timeouts(3).await;
 
-    // Poll for the expected log message with a timeout instead of a fixed sleep.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if logs_contain("received node_timeout event") {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("handler must receive and log node_timeout EVENT (timed out after 5s)");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // Give the handler process a moment to flush the file
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Read and verify the event file
+    let contents = std::fs::read_to_string(&event_file)
+        .unwrap_or_else(|e| panic!("event file must exist at {event_file_str}: {e}"));
+    let line = contents.lines().next().expect("at least one event line");
+    let event: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+
+    assert_eq!(event["node_id"], "timeout-node-ev");
+    assert_eq!(event["event_type"], "node_timeout");
+    assert!(
+        event["details"]["last_seen"].is_number(),
+        "last_seen must be present and numeric"
+    );
+    assert!(
+        event["details"]["expected_interval_s"].is_number(),
+        "expected_interval_s must be present and numeric"
+    );
+    assert_eq!(
+        event["details"]["expected_interval_s"].as_u64().unwrap(),
+        60,
+        "expected_interval_s must equal node's schedule_interval_s"
+    );
 }

@@ -922,20 +922,27 @@ fn test_p054() {
 // T-P055  chunk_count overflow / extreme values
 #[test]
 fn test_p055() {
-    // usize::MAX with chunk_size = 1 would overflow naive (image_size + chunk_size - 1)
-    // arithmetic. The result (usize::MAX chunks) exceeds u32::MAX, so must return None.
-    assert_eq!(chunk_count(usize::MAX, 1), None);
-
-    // u32::MAX + 1 chunks also doesn't fit in u32.
-    let too_many = u32::MAX as usize + 1;
-    assert_eq!(chunk_count(too_many, 1), None);
-
-    // Exactly u32::MAX chunks should fit.
+    // Exactly u32::MAX chunks should fit on all architectures.
     assert_eq!(chunk_count(u32::MAX as usize, 1), Some(u32::MAX));
 
     // Large image_size with large chunk_size that yields a small count.
     assert_eq!(chunk_count(usize::MAX, usize::MAX), Some(1));
     assert_eq!(chunk_count(usize::MAX - 1, usize::MAX), Some(1));
+
+    if usize::BITS > 32 {
+        // On 64-bit (or wider) targets, usize::MAX with chunk_size = 1 would overflow naive
+        // (image_size + chunk_size - 1) arithmetic. The result (usize::MAX chunks) exceeds
+        // u32::MAX, so must return None.
+        assert_eq!(chunk_count(usize::MAX, 1), None);
+
+        // u32::MAX + 1 chunks also doesn't fit in u32. Compute via u64 to avoid overflow.
+        let too_many = (u32::MAX as u64 + 1) as usize;
+        assert_eq!(chunk_count(too_many, 1), None);
+    } else {
+        // On 32-bit targets, usize::MAX == u32::MAX, so chunk_count(usize::MAX, 1) returns
+        // Some(u32::MAX). The "u32::MAX + 1" case is not representable and is skipped.
+        assert_eq!(chunk_count(usize::MAX, 1), Some(u32::MAX));
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -2161,3 +2161,95 @@ async fn t_e2e_063e_sonde_pair_gateway_integration() {
         .expect("node must be registered via sonde-pair integration");
     assert_eq!(registered.key_hint, node_key_hint);
 }
+
+// ===========================================================================
+// BPF execution context & helper boundary validation (issue #351)
+// ===========================================================================
+
+/// T-E2E-083 — Instruction budget enforcement through full stack.
+///
+/// Deploy a BPF program containing an infinite loop through the real
+/// gateway→node chunked transfer. Run with the real `SondeBpfInterpreter`.
+/// Verify the interpreter terminates, the node returns to sleep normally,
+/// and no crash, hang, or panic occurs.
+///
+/// Covers: bpf-environment.md §3.3, ND-0605
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_083_instruction_budget_enforcement() {
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x83; 32];
+    env.register_node("budget-node", 1, psk).await;
+
+    // Infinite loop: `ja -1` jumps to itself forever.
+    let bytecode = [
+        0x05, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, // ja -1 (infinite loop)
+    ];
+    let (program, hash) = make_program_from_bytecode(&bytecode, VerificationProfile::Resident);
+    env.storage.store_program(&program).await.unwrap();
+
+    let mut node_rec = env.storage.get_node("budget-node").await.unwrap().unwrap();
+    node_rec.assigned_program_hash = Some(hash);
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = SondeBpfInterpreter::new();
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
+
+    // The interpreter must terminate the loop and the node must return to
+    // sleep normally — no hang or panic.
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "node must return to sleep after budget exhaustion"
+    );
+}
+
+/// T-E2E-080 — Ephemeral program restrictions through full stack.
+///
+/// Deploy an ephemeral program that calls `set_next_wake()` (helper 15).
+/// Verify the helper returns -1 (blocked for ephemeral) and the node's
+/// sleep interval is unchanged.
+///
+/// Covers: ND-0604, bpf-env §6.4
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_080_ephemeral_restrictions() {
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x80; 32];
+    env.register_node("ephemeral-restrict-node", 1, psk).await;
+
+    // Ephemeral program: calls set_next_wake(10) → helper 15.
+    // The helper should return -1 for ephemeral programs.
+    // r0 receives the helper return value.
+    let bytecode = [
+        // mov r1, 10           — seconds
+        0xb7, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00,
+        // call 15              — set_next_wake
+        0x85, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00,
+        // exit (r0 = helper return, should be -1)
+        0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let (program, hash) = make_program_from_bytecode(&bytecode, VerificationProfile::Ephemeral);
+    env.storage.store_program(&program).await.unwrap();
+
+    env.gateway
+        .queue_command(
+            "ephemeral-restrict-node",
+            PendingCommand::RunEphemeral { program_hash: hash },
+        )
+        .await;
+
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = SondeBpfInterpreter::new();
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
+
+    // The node must return to sleep at its base interval (60 s), not 10 s.
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "ephemeral set_next_wake must be rejected; base interval unchanged"
+    );
+}

@@ -1773,4 +1773,258 @@ mod tests {
             },
         );
     }
+
+    // -- Gap 1: ND-0604 — delay_us maximum enforcement ----------------------
+
+    #[test]
+    fn test_helper_delay_us_exceeds_max_rejected() {
+        // ND-0604: delay_us() values above the 1,000,000 µs cap must
+        // return -1. Without this, an uncapped delay hangs the node.
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                // Just above the 1-second cap → must fail.
+                assert_eq!(helper_delay_us(1_000_001, 0, 0, 0, 0), (-1i64) as u64);
+                // Way above → must fail.
+                assert_eq!(helper_delay_us(u64::MAX, 0, 0, 0, 0), (-1i64) as u64);
+            },
+        );
+    }
+
+    #[test]
+    fn test_helper_delay_us_exact_max_succeeds() {
+        // ND-0604 boundary: exactly 1,000,000 µs must succeed.
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                assert_eq!(helper_delay_us(1_000_000, 0, 0, 0, 0), 0);
+            },
+        );
+    }
+
+    // -- Gap 2: ND-0601 — Bus helpers in ephemeral programs ------------------
+
+    #[test]
+    fn test_helper_bus_helpers_ephemeral_succeed() {
+        // T-N931: All bus helper calls (I2C, SPI, GPIO, ADC) must succeed
+        // from an ephemeral program — behaviour identical to resident.
+        let mut hal = TestHal::new();
+        hal.i2c_read_data = vec![0x1A, 0x2B];
+        hal.gpio_states[5] = 1;
+        hal.adc_values[0] = 2048;
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        let mut read_buf = [0u8; 2];
+        let write_data = [0x55u8; 2];
+        let mut wr_buf = [0u8; 2];
+        let mut spi_rx = [0u8; 2];
+        let spi_tx = [0xAA, 0xBB];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Ephemeral, // ← ephemeral context
+            &mut trace,
+            || {
+                let handle = crate::hal::i2c_handle(0, 0x48);
+
+                // I2C read
+                let r = helper_i2c_read(
+                    handle as u64,
+                    read_buf.as_mut_ptr() as u64,
+                    read_buf.len() as u64,
+                    0,
+                    0,
+                );
+                assert_eq!(r, 0, "i2c_read should succeed for ephemeral");
+
+                // I2C write
+                let r = helper_i2c_write(
+                    handle as u64,
+                    write_data.as_ptr() as u64,
+                    write_data.len() as u64,
+                    0,
+                    0,
+                );
+                assert_eq!(r, 0, "i2c_write should succeed for ephemeral");
+
+                // I2C write-read
+                let w = [0x01u8];
+                let r = helper_i2c_write_read(
+                    handle as u64,
+                    w.as_ptr() as u64,
+                    w.len() as u64,
+                    wr_buf.as_mut_ptr() as u64,
+                    wr_buf.len() as u64,
+                );
+                assert_eq!(r, 0, "i2c_write_read should succeed for ephemeral");
+
+                // SPI transfer
+                let spi_h = crate::hal::spi_handle(0) as u64;
+                let r = helper_spi_transfer(
+                    spi_h,
+                    spi_tx.as_ptr() as u64,
+                    spi_rx.as_mut_ptr() as u64,
+                    spi_tx.len() as u64,
+                    0,
+                );
+                assert_eq!(r, 0, "spi_transfer should succeed for ephemeral");
+
+                // GPIO read
+                let r = helper_gpio_read(5, 0, 0, 0, 0);
+                assert_eq!(
+                    r as i64, 1,
+                    "gpio_read should return pin state for ephemeral"
+                );
+
+                // GPIO write
+                let r = helper_gpio_write(5, 0, 0, 0, 0);
+                assert_eq!(r, 0, "gpio_write should succeed for ephemeral");
+
+                // ADC read
+                let r = helper_adc_read(0, 0, 0, 0, 0);
+                assert_eq!(r as i64, 2048, "adc_read should return value for ephemeral");
+            },
+        );
+    }
+
+    // -- Gap 3: ND-0603 — map_lookup_elem returns NULL on out-of-range key ----
+
+    #[test]
+    fn test_helper_map_lookup_out_of_range_returns_null() {
+        // T-N932: map_lookup_elem on an out-of-range key (key >= max_entries)
+        // must return 0 (NULL). BPF programs rely on this for NULL checks.
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        maps.allocate(&[MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 4,
+        }])
+        .unwrap();
+        let map_ptr = maps.map_pointers()[0];
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                // Key 42 was never written — lookup must return NULL (0).
+                let key: u32 = 42;
+                let ptr = helper_map_lookup_elem(map_ptr, &key as *const u32 as u64, 0, 0, 0);
+                assert_eq!(ptr, 0, "lookup of out-of-range key must return NULL");
+            },
+        );
+    }
+
+    // -- Gap 6: set_next_wake min() semantics via helper dispatch -------------
+
+    #[test]
+    fn test_helper_set_next_wake_clamped_to_base_interval() {
+        // bpf-env §6.4: set_next_wake cannot extend beyond the
+        // gateway-configured base interval. min(600, 300) == 300.
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(300, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                // Request 600 s when base is 300 s — helper should succeed
+                // but effective sleep must be clamped to base interval.
+                let result = helper_set_next_wake(600, 0, 0, 0, 0);
+                assert_eq!(result, 0, "set_next_wake should return success");
+            },
+        );
+        assert_eq!(
+            sleep.effective_sleep_s(),
+            300,
+            "effective sleep must be min(600, 300) = 300"
+        );
+        assert!(
+            !sleep.will_wake_early(),
+            "requesting longer than base should not count as early wake"
+        );
+    }
 }

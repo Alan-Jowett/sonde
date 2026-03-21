@@ -1531,4 +1531,162 @@ mod tests {
         assert!(idx.insert(0x3000, 2).is_ok());
         assert_eq!(idx.get(0x2000), Some(1));
     }
+
+    // ===================================================================
+    // Gap 8 (ND-0601): Bus helpers available to ephemeral programs
+    // ===================================================================
+
+    #[test]
+    fn test_bus_helpers_available_to_ephemeral() {
+        // ND-0601 AC3: Helpers are available to both resident and ephemeral
+        // programs. All existing bus tests use resident programs only.
+        let mut hal = TestHal::new();
+        hal.i2c_read_data = vec![0xAA, 0xBB];
+        hal.gpio_states[3] = 1;
+        hal.adc_values[1] = 1024;
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut buf = [0u8; 2];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Ephemeral, // ← ephemeral
+            &mut trace,
+            || {
+                // I2C read
+                let handle = crate::hal::i2c_handle(0, 0x48);
+                let result = helper_i2c_read(
+                    handle as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                    0,
+                    0,
+                );
+                assert_eq!(result, 0, "i2c_read must work for ephemeral programs");
+
+                // GPIO read
+                assert_eq!(
+                    helper_gpio_read(3, 0, 0, 0, 0),
+                    1,
+                    "gpio_read must work for ephemeral programs"
+                );
+
+                // ADC read
+                assert_eq!(
+                    helper_adc_read(1, 0, 0, 0, 0),
+                    1024,
+                    "adc_read must work for ephemeral programs"
+                );
+            },
+        );
+        assert_eq!(buf, [0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn test_spi_transfer_available_to_ephemeral() {
+        // ND-0601 AC3: SPI helper also available to ephemeral programs.
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let tx = [0xCA, 0xFE];
+        let mut rx = [0u8; 2];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Ephemeral,
+            &mut trace,
+            || {
+                let handle = crate::hal::spi_handle(0);
+                let result = helper_spi_transfer(
+                    handle as u64,
+                    tx.as_ptr() as u64,
+                    rx.as_mut_ptr() as u64,
+                    tx.len() as u64,
+                    0,
+                );
+                assert_eq!(result, 0, "spi_transfer must work for ephemeral programs");
+            },
+        );
+        assert_eq!(rx, tx);
+    }
+
+    // ===================================================================
+    // Gap 9 (ND-0604): delay_us max value enforcement
+    // ===================================================================
+
+    #[test]
+    fn test_delay_us_max_value_rejected() {
+        // ND-0604 AC3: The firmware enforces a maximum delay value.
+        // No existing test calls delay_us with an excessive value.
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                // At the limit (1 second) — should succeed
+                assert_eq!(
+                    helper_delay_us(MAX_DELAY_US as u64, 0, 0, 0, 0),
+                    0,
+                    "delay_us at max value must succeed"
+                );
+
+                // Exceeds max (1 second + 1 microsecond) — must return error
+                assert_eq!(
+                    helper_delay_us(MAX_DELAY_US as u64 + 1, 0, 0, 0, 0) as i64,
+                    -1,
+                    "delay_us exceeding max must return -1"
+                );
+
+                // Way over max — must return error
+                assert_eq!(
+                    helper_delay_us(10_000_000, 0, 0, 0, 0) as i64,
+                    -1,
+                    "delay_us(10s) must return -1"
+                );
+            },
+        );
+    }
 }

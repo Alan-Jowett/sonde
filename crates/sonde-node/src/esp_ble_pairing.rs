@@ -34,7 +34,7 @@ use log::{info, warn};
 
 use crate::ble_pairing::{
     encode_node_ack, handle_node_provision, parse_ble_envelope, parse_node_provision,
-    BLE_MSG_NODE_PROVISION,
+    BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
 use crate::map_storage::MapStorage;
@@ -51,7 +51,7 @@ const NODE_SERVICE_UUID: BleUuid = BleUuid::Uuid16(0xFE50);
 const NODE_COMMAND_UUID: BleUuid = BleUuid::Uuid16(0xFE51);
 
 /// Minimum negotiated ATT MTU accepted (ND-0904).
-const BLE_MTU_MIN: u16 = 247;
+const BLE_MTU_MIN: u16 = BLE_MIN_ATT_MTU;
 
 /// Polling interval for the main loop waiting for disconnect.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);

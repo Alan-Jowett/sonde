@@ -1058,6 +1058,39 @@ mod tests {
         }
     }
 
+    /// Transport mock that also records `timeout_ms` values passed to `recv()`.
+    struct RecordingTransport {
+        inbound: VecDeque<Option<Vec<u8>>>,
+        outbound: Vec<Vec<u8>>,
+        recv_timeouts: Vec<u32>,
+    }
+
+    impl RecordingTransport {
+        fn new() -> Self {
+            Self {
+                inbound: VecDeque::new(),
+                outbound: Vec::new(),
+                recv_timeouts: Vec::new(),
+            }
+        }
+
+        fn queue_response(&mut self, frame: Option<Vec<u8>>) {
+            self.inbound.push_back(frame);
+        }
+    }
+
+    impl Transport for RecordingTransport {
+        fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+            self.outbound.push(frame.to_vec());
+            Ok(())
+        }
+
+        fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+            self.recv_timeouts.push(timeout_ms);
+            Ok(self.inbound.pop_front().flatten())
+        }
+    }
+
     // --- Mock storage ---
 
     pub struct MockStorage {
@@ -1228,6 +1261,29 @@ mod tests {
         }
         fn delay_ms(&self, _ms: u32) {
             // No-op in tests
+        }
+    }
+
+    /// Clock that records every `delay_ms` call for timing assertions.
+    struct TimingClock {
+        delays: std::cell::RefCell<Vec<u32>>,
+    }
+    impl TimingClock {
+        fn new() -> Self {
+            Self {
+                delays: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+        fn recorded_delays(&self) -> Vec<u32> {
+            self.delays.borrow().clone()
+        }
+    }
+    impl Clock for TimingClock {
+        fn elapsed_ms(&self) -> u64 {
+            100
+        }
+        fn delay_ms(&self, ms: u32) {
+            self.delays.borrow_mut().push(ms);
         }
     }
 
@@ -3290,5 +3346,568 @@ mod tests {
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         // reg_complete must remain set — no payload to revert with
         assert!(storage.reg_complete);
+    }
+
+    // ===================================================================
+    // Gap 1 (ND-0701): Chunk retry delay timing — 100 ms between retries
+    // ===================================================================
+
+    #[test]
+    fn test_chunk_retry_delay_timing() {
+        // T-N701 gap: Verify 100 ms delay between chunk retries.
+        // Existing T-N701 checks retry count but never asserts the delay.
+        let psk = [0x71; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        let starting_seq = 100u64;
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: vec![0xAA; 32],
+                program_size: 20,
+                chunk_size: 10,
+                chunk_count: 2,
+            },
+        );
+        transport.queue_response(Some(command_frame));
+        // All 4 chunk attempts (1 initial + 3 retries) timeout
+        for _ in 0..4 {
+            transport.queue_response(None);
+        }
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = TimingClock::new();
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+        // Chunk retries should have 100 ms delay between each attempt.
+        // The first attempt has no delay; retries 2, 3, 4 each delay 100 ms.
+        let delays = clock.recorded_delays();
+        let retry_delays: Vec<_> = delays
+            .iter()
+            .copied()
+            .filter(|&d| d == RETRY_DELAY_MS)
+            .collect();
+        assert_eq!(
+            retry_delays.len(),
+            3,
+            "expected 3 retry delays of {} ms, got delays: {:?}",
+            RETRY_DELAY_MS,
+            delays
+        );
+        for &d in &retry_delays {
+            assert_eq!(
+                d, RETRY_DELAY_MS,
+                "retry delay must be {} ms",
+                RETRY_DELAY_MS
+            );
+        }
+    }
+
+    // ===================================================================
+    // Gap 2 (ND-0702): Under-timeout response accepted
+    // ===================================================================
+
+    #[test]
+    fn test_response_accepted_under_timeout() {
+        // T-N702 gap: A valid response arriving within the 50 ms timeout
+        // must be accepted. Existing test only proves >50 ms triggers timeout.
+        // Uses RecordingTransport to verify the production code passes the
+        // correct RESPONSE_TIMEOUT_MS to recv().
+        let psk = [0x72; 32];
+        let key_hint = 1u16;
+        let mut transport = RecordingTransport::new();
+
+        // Queue a valid COMMAND response (arrives immediately = ~0 ms < 50 ms)
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command_frame));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Response arrived under timeout — node must accept it and sleep normally
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // Exactly 1 WAKE sent, no retries needed
+        assert_eq!(transport.outbound.len(), 1);
+        let decoded = decode_frame(&transport.outbound[0]).unwrap();
+        assert_eq!(decoded.header.msg_type, MSG_WAKE);
+
+        // Verify the production code used the correct timeout constant.
+        // The first recv() call (WAKE/COMMAND exchange) must use
+        // RESPONSE_TIMEOUT_MS (50 ms).
+        assert!(!transport.recv_timeouts.is_empty());
+        assert_eq!(
+            transport.recv_timeouts[0], RESPONSE_TIMEOUT_MS,
+            "recv() must be called with RESPONSE_TIMEOUT_MS ({} ms)",
+            RESPONSE_TIMEOUT_MS
+        );
+    }
+
+    // ===================================================================
+    // Gap 3 (ND-0200): Second COMMAND during BPF execution discarded
+    // ===================================================================
+
+    #[test]
+    fn test_second_command_during_bpf_discarded() {
+        // ND-0200 AC2: The node processes at most one COMMAND response per
+        // wake cycle and MUST NOT initiate a second COMMAND exchange.
+        // Queue a valid COMMAND, then a second unsolicited COMMAND frame.
+        // The node must accept the first, ignore the second, and sleep.
+        let psk = [0x20; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command_frame));
+        // Second COMMAND — should be ignored since the node has already
+        // received its one COMMAND and moved to BPF execution.
+        let second_command = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            2000,
+            1720000000000,
+            CommandPayload::Reboot,
+        );
+        transport.queue_response(Some(second_command));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Must sleep (NOP processed), NOT reboot (second COMMAND ignored)
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // Exactly 1 WAKE sent — no second COMMAND exchange initiated
+        assert_eq!(transport.outbound.len(), 1);
+    }
+
+    // ===================================================================
+    // Gap 4 (ND-0301): Invalid HMAC — no other frames transmitted
+    // ===================================================================
+
+    #[test]
+    fn test_invalid_hmac_no_other_frames_transmitted() {
+        // ND-0301 AC2: No error response or diagnostic frame is transmitted
+        // in response to an invalid HMAC. Existing T-N301 only asserts
+        // "retries WAKE" but never asserts no other frames transmitted.
+        let psk = [0x31; 32];
+        let wrong_psk = [0x32; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Bad HMAC response, then 3 more timeouts
+        let bad_frame = build_command_response(
+            &wrong_psk,
+            key_hint,
+            1,
+            1000,
+            1710000000000,
+            CommandPayload::Nop,
+        );
+        transport.queue_response(Some(bad_frame));
+        transport.queue_response(None);
+        transport.queue_response(None);
+        transport.queue_response(None);
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+        // ALL outbound frames must be WAKE messages — no error/diagnostic
+        // frames are permitted in response to invalid HMAC (silent discard).
+        assert!(!transport.outbound.is_empty());
+        for (i, frame) in transport.outbound.iter().enumerate() {
+            let decoded = decode_frame(frame).unwrap();
+            assert_eq!(
+                decoded.header.msg_type, MSG_WAKE,
+                "outbound frame {} must be WAKE, got msg_type=0x{:02x}",
+                i, decoded.header.msg_type
+            );
+        }
+    }
+
+    // ===================================================================
+    // Gap 5 (ND-0801): Known msg_type in wrong context (COMMAND when
+    // expecting CHUNK) is discarded
+    // ===================================================================
+
+    #[test]
+    fn test_known_msg_type_wrong_context_discarded() {
+        // ND-0801 AC2: A frame with a msg_type that does not match the
+        // expected response (e.g., COMMAND when waiting for CHUNK) is
+        // discarded. Existing T-N801 only tests unknown type (0x99).
+        let psk = [0x81; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        let starting_seq = 300u64;
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: vec![0xAA; 32],
+                program_size: 10,
+                chunk_size: 10,
+                chunk_count: 1,
+            },
+        );
+        transport.queue_response(Some(command_frame));
+
+        // Send a valid COMMAND frame when the node expects CHUNK — wrong context.
+        // Use the GET_CHUNK seq (starting_seq) as the echoed nonce so the frame
+        // passes HMAC and nonce binding — it is only wrong by msg_type context.
+        let wrong_context_frame = build_command_response(
+            &psk,
+            key_hint,
+            starting_seq, // echoes the GET_CHUNK seq, not the WAKE nonce
+            2000,
+            1720000000000,
+            CommandPayload::Nop,
+        );
+        transport.queue_response(Some(wrong_context_frame));
+        // Remaining retries timeout
+        transport.queue_response(None);
+        transport.queue_response(None);
+        transport.queue_response(None);
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Wrong-context frame is silently discarded, chunk retries exhausted
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(
+            !interp.loaded,
+            "BPF should not have loaded after chunk failure"
+        );
+    }
+
+    // ===================================================================
+    // Gap 6 (ND-0202): timestamp_ms stored and used in BPF context
+    // ===================================================================
+
+    #[test]
+    fn test_timestamp_ms_stored_in_bpf_context() {
+        // ND-0202 AC4: The `timestamp_ms` value is stored and used as
+        // the basis for all time-related operations. Existing T-N204
+        // provides it but never asserts the node stored or used it.
+        let psk = [0x22; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+        let timestamp_ms = 1_720_000_000_000u64;
+
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, timestamp_ms, CommandPayload::Nop);
+        transport.queue_response(Some(command_frame));
+
+        // Install a resident program so BPF execution happens
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock; // elapsed_ms always returns 100
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert!(interp.executed, "BPF must have executed");
+        let ctx = interp.captured_ctx.expect("BPF context should be captured");
+
+        // The context timestamp must reflect the gateway-provided
+        // timestamp_ms plus elapsed time since COMMAND was received.
+        // MockClock always returns 100, so elapsed_since_command = 0.
+        assert_eq!(
+            ctx.timestamp, timestamp_ms,
+            "`timestamp_ms` from COMMAND must be stored in BPF context"
+        );
+    }
+
+    // ===================================================================
+    // Gap 7 (ND-0303): Cross-sleep sequence isolation
+    // ===================================================================
+
+    #[test]
+    fn test_sequence_number_isolation_across_cycles() {
+        // ND-0303 AC3/AC4: No sequence state is persisted across deep sleep.
+        // Each cycle starts fresh from the gateway-provided starting_seq.
+        let psk = [0x33; 32];
+        let key_hint = 1u16;
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+        let image_hash = TestSha256.hash(&image_cbor);
+        let chunk_size = image_cbor.len() as u32;
+
+        // --- Cycle 1: starting_seq = 1000 ---
+        let mut transport1 = MockTransport::new();
+        let starting_seq_1 = 1000u64;
+        transport1.queue_response(Some(build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq_1,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: image_hash.to_vec(),
+                program_size: image_cbor.len() as u32,
+                chunk_size,
+                chunk_count: 1,
+            },
+        )));
+        transport1.queue_response(Some(build_chunk_response(
+            &psk,
+            key_hint,
+            starting_seq_1,
+            0,
+            &image_cbor,
+        )));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp1 = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        run_wake_cycle(
+            &mut transport1,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp1,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Verify cycle 1 used starting_seq_1
+        let get_chunk_1 = &transport1.outbound[1];
+        let decoded_1 = decode_frame(get_chunk_1).unwrap();
+        assert_eq!(decoded_1.header.nonce, starting_seq_1);
+
+        // --- Cycle 2: starting_seq = 5000 (NOT a continuation of 1000) ---
+        // Use UpdateProgram so the node sends GET_CHUNK with starting_seq_2,
+        // which lets us verify the sequence is NOT a continuation of cycle 1.
+        let mut transport2 = MockTransport::new();
+        let starting_seq_2 = 5000u64;
+        // Use a fresh MockRng to simulate a new boot.
+        let mut rng2 = MockRng(10);
+        transport2.queue_response(Some(build_command_response(
+            &psk,
+            key_hint,
+            11, // MockRng(10) → first random is 11
+            starting_seq_2,
+            1720000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: image_hash.to_vec(),
+                program_size: image_cbor.len() as u32,
+                chunk_size,
+                chunk_count: 1,
+            },
+        )));
+        transport2.queue_response(Some(build_chunk_response(
+            &psk,
+            key_hint,
+            starting_seq_2,
+            0,
+            &image_cbor,
+        )));
+
+        let mut interp2 = MockBpfInterpreter::new();
+
+        run_wake_cycle(
+            &mut transport2,
+            &mut storage,
+            &mut hal,
+            &mut rng2,
+            &clock,
+            &MockBattery,
+            &mut interp2,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Cycle 2: first GET_CHUNK must use starting_seq_2 (5000),
+        // NOT a continuation from cycle 1 (1000 + ...).
+        let get_chunk_2 = &transport2.outbound[1]; // [0]=WAKE, [1]=GET_CHUNK
+        let decoded_2 = decode_frame(get_chunk_2).unwrap();
+        assert_eq!(decoded_2.header.msg_type, MSG_GET_CHUNK);
+        assert_eq!(
+            decoded_2.header.nonce, starting_seq_2,
+            "cycle 2 GET_CHUNK must use starting_seq={}, not a continuation from cycle 1",
+            starting_seq_2
+        );
+    }
+
+    // ===================================================================
+    // Gap 10 (ND-0605): Stack overflow → graceful sleep
+    // ===================================================================
+
+    #[test]
+    fn test_stack_overflow_graceful() {
+        // ND-0605 AC4: A BPF program that writes beyond the 512-byte
+        // per-frame stack boundary is terminated with a stack violation.
+        // The node must still sleep normally (no crash).
+        let psk = [0x65; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command_frame));
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter {
+            loaded: false,
+            executed: false,
+            execute_result: Err(BpfError::RuntimeError("stack overflow")),
+            captured_ctx: None,
+        };
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Node must sleep normally despite stack violation error
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(interp.executed, "interpreter must have executed");
     }
 }

@@ -305,13 +305,13 @@ mod tests {
         assert_ne!(x_pub, [0u8; 32], "X25519 key should not be all-zero");
     }
 
-    /// PT-0304: Ephemeral key is behaviorally zeroed after use.
+    /// PT-0304: Zeroize mechanism clears ephemeral key buffers.
     ///
-    /// Verifies that `zeroize()` on a `[u8; 32]` actually clears the buffer
-    /// and that `generate_x25519_keypair` returns independent keys on
-    /// independent inputs (no state leaks between calls).
+    /// Verifies that calling `zeroize()` on a `[u8; 32]` clears the buffer
+    /// and that `generate_x25519_keypair` produces independent keys for
+    /// independent RNG inputs (no state leak between calls).
     #[test]
-    fn ephemeral_key_zeroed_on_drop() {
+    fn ephemeral_key_zeroize_clears_buffer() {
         use zeroize::Zeroize;
 
         // Direct zeroize mechanism: calling zeroize() must zero the buffer.
@@ -331,9 +331,9 @@ mod tests {
         );
     }
 
-    /// PT-0304: ECDH shared secret is wrapped in Zeroizing and zeroize clears it.
+    /// PT-0304: Zeroize mechanism clears ECDH shared secret.
     #[test]
-    fn ecdh_shared_secret_zeroed_on_drop() {
+    fn ecdh_shared_secret_zeroize_clears_buffer() {
         use zeroize::Zeroize;
 
         let rng_a = MockRng::new([0x42u8; 32]);

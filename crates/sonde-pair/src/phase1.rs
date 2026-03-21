@@ -181,8 +181,15 @@ async fn do_pair_with_gateway(
 
     // Step 6: TOFU — check stored identity
     if let Some(stored) = store.load_gateway_identity()? {
-        if stored.public_key != gw_info.gw_public_key || stored.gateway_id != gw_info.gateway_id {
+        if stored.public_key != gw_info.gw_public_key {
+            warn!("stored gateway public key does not match presented public key");
             return Err(PairingError::PublicKeyMismatch);
+        }
+        if stored.gateway_id != gw_info.gateway_id {
+            warn!("stored gateway_id does not match presented gateway_id");
+            return Err(PairingError::GatewayAuthFailed(
+                "stored gateway_id does not match presented gateway_id".to_string(),
+            ));
         }
         debug!("gateway identity matches stored TOFU record");
     } else {
@@ -1609,7 +1616,7 @@ mod tests {
             let result =
                 pair_with_gateway(&mut transport, &mut store, &rng, &[0xAA; 6], "", None).await;
             assert!(
-                matches!(result, Err(PairingError::PublicKeyMismatch)),
+                matches!(result, Err(PairingError::GatewayAuthFailed(_))),
                 "same public key + different gateway_id must be a TOFU violation, got {result:?}"
             );
         });

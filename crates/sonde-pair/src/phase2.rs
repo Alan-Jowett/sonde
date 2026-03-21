@@ -961,11 +961,12 @@ mod tests {
         });
     }
 
-    // --- PT-0408: Ephemeral material and node_psk zeroing on error paths ---
+    // --- PT-0408: Error path cleanup ---
 
-    /// Verify that provision_node completes cleanly on error paths without
-    /// panics. The Zeroizing wrappers on `eph_secret` and `node_psk` are
-    /// dropped normally, zeroing the key material.
+    /// Verify that `provision_node` completes cleanly on error paths without
+    /// panics. Ephemeral keys and `node_psk` are wrapped in `Zeroizing` and
+    /// will be dropped normally when the function returns, regardless of the
+    /// error path taken.
     #[test]
     fn t_pt_308_zeroing_on_error_path() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1002,7 +1003,7 @@ mod tests {
         });
     }
 
-    /// Verify zeroing on indication timeout (no response from node).
+    /// Verify error-path cleanup on indication timeout (no response from node).
     #[test]
     fn t_pt_308b_zeroing_on_timeout() {
         let rt = tokio::runtime::Builder::new_current_thread()

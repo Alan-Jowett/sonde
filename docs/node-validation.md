@@ -307,6 +307,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 4. Node sleeps. On next wake, mock gateway assigns `starting_seq = 5000`.
 5. Assert: the first outbound message in the second wake cycle uses seq=5000, not a continuation from the first cycle.
 6. Assert: no sequence state is persisted across deep sleep (ND-0303 AC3).
+7. Perform a third wake cycle with `starting_seq = 2000`. Assert: the node uses seq=2000, confirming cross-sleep isolation from both prior cycles.
 
 ---
 

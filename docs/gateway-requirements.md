@@ -31,7 +31,7 @@
 
 Each requirement uses the following fields:
 
-- **ID** — Unique identifier (`GW-XXXX`).
+- **ID** — Unique identifier (`GW-XXXX`). When a requirement is split into sub-parts after initial numbering, alphabetic suffixes are used (e.g., `GW-0601a`, `GW-0601b`). Intentional numbering gaps (e.g., a removed or reserved requirement) are noted inline.
 - **Title** — Short name.
 - **Description** — What the gateway must do.
 - **Acceptance criteria** — Observable, testable conditions that confirm the requirement is met.
@@ -664,6 +664,8 @@ The gateway MUST inspect the `firmware_abi_version` from `WAKE` messages and ens
 3. An ABI mismatch is reported as a clear error or warning.
 
 ---
+
+> **Note:** GW-0704 is intentionally unassigned (requirement removed during consolidation).
 
 ### GW-0705  Factory reset support
 

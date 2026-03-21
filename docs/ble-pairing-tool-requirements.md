@@ -863,7 +863,7 @@ The tool MUST implement the following cryptographic primitives:
 ### PT-1101  HKDF parameters
 
 **Priority:** Must  
-**Source:** ble-pairing-protocol.md §5.5, §6.3
+**Source:** ble-pairing-protocol.md §5.5, §6.4
 
 **Description:**  
 HKDF-SHA256 MUST use `gateway_id` (16 bytes) as salt. The info string MUST be `"sonde-phone-reg-v1"` for Phase 1 (phone registration) and `"sonde-node-pair-v1"` for Phase 2 (node pairing payload). Output length MUST be 32 bytes.

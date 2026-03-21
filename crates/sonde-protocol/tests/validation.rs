@@ -1584,3 +1584,214 @@ fn test_p062() {
     assert_eq!(decoded.maps[1].max_entries, 64);
     assert_eq!(decoded.maps[2].max_entries, 8);
 }
+
+// ---------------------------------------------------------------------------
+// 8  Validation gap tests (issue #347)
+// ---------------------------------------------------------------------------
+
+// T-P063: Direction-bit cross-direction rejection.
+#[test]
+fn test_p063() {
+    // Protocol §4: 0x01–0x7F = Node→Gateway, 0x80–0xFF = Gateway→Node.
+    // Each decoder must reject msg_types from the opposite direction.
+
+    // NodeMessage::decode rejects gateway msg_types.
+    let wake_cbor = NodeMessage::Wake {
+        firmware_abi_version: 1,
+        program_hash: vec![0xAA; 32],
+        battery_mv: 3300,
+    }
+    .encode()
+    .unwrap();
+
+    for &gw_type in &[MSG_COMMAND, MSG_CHUNK, MSG_APP_DATA_REPLY, MSG_PEER_ACK] {
+        let err = NodeMessage::decode(gw_type, &wake_cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::InvalidMsgType(t) if t == gw_type),
+            "NodeMessage::decode should reject gateway msg_type 0x{:02x}, got {:?}",
+            gw_type,
+            err
+        );
+    }
+
+    // GatewayMessage::decode rejects node msg_types.
+    let cmd_cbor = GatewayMessage::Command {
+        starting_seq: 1,
+        timestamp_ms: 1_710_000_000_000,
+        payload: CommandPayload::Nop,
+    }
+    .encode()
+    .unwrap();
+
+    for &node_type in &[
+        MSG_WAKE,
+        MSG_GET_CHUNK,
+        MSG_PROGRAM_ACK,
+        MSG_APP_DATA,
+        MSG_PEER_REQUEST,
+    ] {
+        let err = GatewayMessage::decode(node_type, &cmd_cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::InvalidMsgType(t) if t == node_type),
+            "GatewayMessage::decode should reject node msg_type 0x{:02x}, got {:?}",
+            node_type,
+            err
+        );
+    }
+}
+
+// T-P064: Nonce echo verification in request-response pair.
+#[test]
+fn test_p064() {
+    // Protocol §7.3: The response frame echoes the request nonce so the
+    // receiver can correlate request/response pairs.  This test verifies
+    // round-trip fidelity of the nonce field through encode → decode and
+    // also demonstrates that a mismatched nonce is detectable.
+    let psk = [0x42u8; 32];
+    let wake_nonce: u64 = 0x1234_5678_90AB_CDEF;
+
+    // 1-2. Node sends WAKE; decode and verify nonce round-trips.
+    let wake = NodeMessage::Wake {
+        firmware_abi_version: 1,
+        program_hash: vec![0xAA; 32],
+        battery_mv: 3300,
+    };
+    let wake_frame = encode_frame(
+        &FrameHeader {
+            key_hint: 0x0001,
+            msg_type: MSG_WAKE,
+            nonce: wake_nonce,
+        },
+        &wake.encode().unwrap(),
+        &psk,
+        &SoftwareHmac,
+    )
+    .unwrap();
+    let decoded_wake = decode_frame(&wake_frame).unwrap();
+    assert!(verify_frame(&decoded_wake, &psk, &SoftwareHmac));
+    assert_eq!(decoded_wake.header.nonce, wake_nonce);
+
+    // 3-4. Gateway echoes the nonce in its COMMAND response.
+    let cmd = GatewayMessage::Command {
+        starting_seq: 1,
+        timestamp_ms: 1_710_000_000_000,
+        payload: CommandPayload::Nop,
+    };
+    let cmd_frame = encode_frame(
+        &FrameHeader {
+            key_hint: 0x0001,
+            msg_type: MSG_COMMAND,
+            nonce: decoded_wake.header.nonce,
+        },
+        &cmd.encode().unwrap(),
+        &psk,
+        &SoftwareHmac,
+    )
+    .unwrap();
+    let decoded_cmd = decode_frame(&cmd_frame).unwrap();
+    assert!(verify_frame(&decoded_cmd, &psk, &SoftwareHmac));
+    assert_eq!(
+        decoded_cmd.header.nonce, wake_nonce,
+        "COMMAND must echo the WAKE nonce"
+    );
+
+    // Both messages must decode to the correct types.
+    let _ = NodeMessage::decode(decoded_wake.header.msg_type, &decoded_wake.payload).unwrap();
+    let _ = GatewayMessage::decode(decoded_cmd.header.msg_type, &decoded_cmd.payload).unwrap();
+
+    // 5-6. Negative case: a COMMAND with a different nonce must be
+    // detectable by comparing it to the original WAKE nonce.
+    let bad_cmd_frame = encode_frame(
+        &FrameHeader {
+            key_hint: 0x0001,
+            msg_type: MSG_COMMAND,
+            nonce: 0xFFFF_FFFF_FFFF_FFFF,
+        },
+        &cmd.encode().unwrap(),
+        &psk,
+        &SoftwareHmac,
+    )
+    .unwrap();
+    let decoded_bad_cmd = decode_frame(&bad_cmd_frame).unwrap();
+    assert!(verify_frame(&decoded_bad_cmd, &psk, &SoftwareHmac));
+    assert_ne!(
+        decoded_bad_cmd.header.nonce, wake_nonce,
+        "mismatched COMMAND nonce must be detectable by comparison with WAKE nonce"
+    );
+}
+
+// T-P065: Multiple APP_DATA with incrementing sequences.
+#[test]
+fn test_p065() {
+    // Protocol §5.6: Nodes may send multiple APP_DATA messages per wake
+    // cycle with incrementing sequence numbers in the header nonce field.
+    // This test verifies that the codec faithfully round-trips distinct
+    // nonce values across multiple frames (sequence enforcement is the
+    // responsibility of the node/gateway state machines, not the codec).
+    let psk = [0x42u8; 32];
+
+    let payloads: Vec<Vec<u8>> = vec![vec![0x11; 8], vec![0x22; 8], vec![0x33; 8]];
+
+    let mut frames = Vec::new();
+    for (i, blob) in payloads.iter().enumerate() {
+        let msg = NodeMessage::AppData { blob: blob.clone() };
+        let hdr = FrameHeader {
+            key_hint: 0x0001,
+            msg_type: MSG_APP_DATA,
+            nonce: (i + 1) as u64,
+        };
+        let frame = encode_frame(&hdr, &msg.encode().unwrap(), &psk, &SoftwareHmac).unwrap();
+        frames.push(frame);
+    }
+
+    for (i, raw) in frames.iter().enumerate() {
+        let decoded = decode_frame(raw).unwrap();
+        assert!(verify_frame(&decoded, &psk, &SoftwareHmac));
+        assert_eq!(decoded.header.msg_type, MSG_APP_DATA);
+        assert_eq!(
+            decoded.header.nonce,
+            (i + 1) as u64,
+            "APP_DATA[{}] nonce mismatch",
+            i
+        );
+
+        let msg = NodeMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+        match msg {
+            NodeMessage::AppData { blob } => {
+                assert_eq!(blob, payloads[i], "APP_DATA[{}] payload mismatch", i);
+            }
+            _ => panic!("expected AppData"),
+        }
+    }
+}
+
+// T-P066: HMAC constant-time comparison behavior.
+#[test]
+fn test_p066() {
+    // This test exercises `SoftwareHmac::verify` directly (not through
+    // `verify_frame`) to confirm it correctly accepts valid tags and
+    // rejects any corruption.  Constant-time behavior itself cannot be
+    // verified by functional tests — it is guaranteed by the `hmac` crate's
+    // `Mac::verify_slice` which delegates to `subtle::ConstantTimeEq`.
+    // That implementation detail is enforced via code review per
+    // protocol-crate-validation.md T-P066.
+    let hmac_provider = SoftwareHmac;
+    let key = &[0x42u8; 32];
+    let data = b"authenticated payload data";
+
+    let correct_mac = hmac_provider.compute(key, data);
+
+    // Correct tag must verify.
+    assert!(
+        hmac_provider.verify(key, data, &correct_mac),
+        "verify must accept correct HMAC"
+    );
+
+    // Single-bit flip must fail.
+    let mut flipped = correct_mac;
+    flipped[0] ^= 0x01;
+    assert!(
+        !hmac_provider.verify(key, data, &flipped),
+        "verify must reject single-bit-flipped HMAC"
+    );
+}

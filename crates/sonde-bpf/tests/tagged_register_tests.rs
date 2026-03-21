@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Tagged register safety invariant tests (T-BPF-001 through T-BPF-030).
+//! Tagged register safety invariant tests — 30 invariants (T-BPF-001 through
+//! T-BPF-030) covered by 32 test functions.
 //!
 //! These tests validate the tagged-register safety model described in
 //! `docs/safe-bpf-interpreter.md` §2–§8, following the test procedures in
@@ -84,12 +85,12 @@ fn t_bpf_002_store_via_map_descriptor() {
 /// T-BPF-003: Load with addr+offset wrapping past u64::MAX → `MemoryAccessViolation`
 #[test]
 fn t_bpf_003_address_overflow() {
-    // Get ctx_base, compute delta so ctx_base + delta + 128 overflows u64::MAX.
     let mut ctx = [0x42u8; 256];
     let ctx_base = ctx.as_ptr() as u64;
-    // We need: ctx_base + delta + 127 + 1 > u64::MAX
-    // delta = u64::MAX - ctx_base - 127
-    let delta = u64::MAX - ctx_base - 127;
+    // delta = u64::MAX - ctx_base so that r1 + delta == u64::MAX exactly.
+    // A 1-byte load at [r1+0] then needs range u64::MAX..u64::MAX+1 → overflow.
+    // This subtraction can never underflow because ctx_base fits in u64.
+    let delta = u64::MAX - ctx_base;
     let lo = delta as u32 as i32;
     let hi = (delta >> 32) as i32;
 
@@ -97,10 +98,10 @@ fn t_bpf_003_address_overflow() {
         // Load delta into r2 via LD_DW_IMM (64-bit immediate, src=0)
         insn(ebpf::LD_DW_IMM, 2, 0, 0, lo),
         insn(0x00, 0, 0, 0, hi),
-        // r1 = r1 + r2 (pointer + scalar → pointer with huge value)
+        // r1 = r1 + r2 (pointer + scalar → pointer at u64::MAX)
         insn(ebpf::ADD64_REG, 1, 2, 0, 0),
-        // LDX_B r0, [r1+127] → checked_add overflows
-        insn(ebpf::LD_B_REG, 0, 1, 127, 0),
+        // LDX_B r0, [r1+0] → address u64::MAX, size 1 → checked_add overflows
+        insn(ebpf::LD_B_REG, 0, 1, 0, 0),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     assert!(matches!(

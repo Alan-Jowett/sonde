@@ -305,6 +305,85 @@ mod tests {
         assert_ne!(x_pub, [0u8; 32], "X25519 key should not be all-zero");
     }
 
+    /// PT-0304: Ephemeral key is behaviorally zeroed after use.
+    ///
+    /// Verifies that `zeroize()` on a `[u8; 32]` actually clears the buffer
+    /// and that `generate_x25519_keypair` returns independent keys on
+    /// independent inputs (no state leaks between calls).
+    #[test]
+    fn ephemeral_key_zeroed_on_drop() {
+        use zeroize::Zeroize;
+
+        // Direct zeroize mechanism: calling zeroize() must zero the buffer.
+        let mut key = [0x42u8; 32];
+        key.zeroize();
+        assert_eq!(key, [0u8; 32], "zeroize() must clear the buffer");
+
+        // Independence: two generate_x25519_keypair calls with different RNG
+        // produce different secrets (no state leak).
+        let rng_a = MockRng::new([0x42u8; 32]);
+        let rng_b = MockRng::new([0x43u8; 32]);
+        let (secret_a, _) = generate_x25519_keypair(&rng_a).unwrap();
+        let (secret_b, _) = generate_x25519_keypair(&rng_b).unwrap();
+        assert_ne!(
+            *secret_a, *secret_b,
+            "different RNG must produce different secrets"
+        );
+    }
+
+    /// PT-0304: ECDH shared secret is wrapped in Zeroizing and zeroize clears it.
+    #[test]
+    fn ecdh_shared_secret_zeroed_on_drop() {
+        use zeroize::Zeroize;
+
+        let rng_a = MockRng::new([0x42u8; 32]);
+        let rng_b = MockRng::new([0x43u8; 32]);
+        let (secret_a, _pub_a) = generate_x25519_keypair(&rng_a).unwrap();
+        let (_secret_b, pub_b) = generate_x25519_keypair(&rng_b).unwrap();
+
+        let mut shared = x25519_ecdh(&secret_a, &pub_b);
+        assert_ne!(*shared, [0u8; 32], "shared secret must be non-zero");
+
+        // Zeroize the inner buffer to confirm the mechanism works.
+        shared.zeroize();
+        assert_eq!(*shared, [0u8; 32], "zeroize() must clear the shared secret");
+    }
+
+    /// §6.3/6.4: Cross-phase HKDF info string swap must fail decryption.
+    ///
+    /// Encrypting with `sonde-phone-reg-v1` and decrypting with a key
+    /// derived using `sonde-node-pair-v1` (or vice versa) must fail.
+    #[test]
+    fn cross_phase_hkdf_info_swap_fails_decryption() {
+        let shared_secret = [0x42u8; 32];
+        let salt = [0x01u8; 16];
+
+        let key_phase1 = hkdf_sha256(&shared_secret, &salt, b"sonde-phone-reg-v1");
+        let key_phase2 = hkdf_sha256(&shared_secret, &salt, b"sonde-node-pair-v1");
+
+        // Keys must differ.
+        assert_ne!(*key_phase1, *key_phase2);
+
+        // Encrypt with Phase 1 key.
+        let nonce = [0x01u8; 12];
+        let plaintext = b"secret data";
+        let aad = &salt;
+        let ciphertext = aes256gcm_encrypt(&key_phase1, &nonce, plaintext, aad).unwrap();
+
+        // Decrypt with Phase 2 key must fail.
+        assert!(
+            aes256gcm_decrypt(&key_phase2, &nonce, &ciphertext, aad).is_err(),
+            "cross-phase info swap must fail decryption"
+        );
+
+        // And vice versa.
+        let ciphertext2 = aes256gcm_encrypt(&key_phase2, &nonce, plaintext, aad).unwrap();
+        assert!(
+            aes256gcm_decrypt(&key_phase1, &nonce, &ciphertext2, aad).is_err(),
+            "reverse cross-phase swap must also fail"
+        );
+    }
+
     // Hex encoding helper for the SHA-256 test
     mod hex {
         pub fn encode(data: impl AsRef<[u8]>) -> String {

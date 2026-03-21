@@ -2257,7 +2257,20 @@ async fn t_e2e_081_ephemeral_restrictions() {
     let mut interpreter = SondeBpfInterpreter::new();
     let stats = node.run_wake_cycle_with(&env, &mut interpreter);
 
+    // Verify the ephemeral program was downloaded (GET_CHUNK sent).
+    let get_chunk_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
+        .count();
+    assert!(
+        get_chunk_count > 0,
+        "ephemeral program must be downloaded via chunked transfer"
+    );
+
     // The node must return to sleep at its base interval (60 s), not 10 s.
+    // Since set_next_wake is blocked for ephemeral programs, the sleep
+    // interval must remain unchanged.
     assert_eq!(
         stats.outcome,
         WakeCycleOutcome::Sleep { seconds: 60 },

@@ -436,8 +436,8 @@ mod tests {
         // context region.
         let result = interp.execute(ctx_ptr, 100_000);
         assert!(
-            result.is_err(),
-            "write to read-only context must be rejected"
+            matches!(result, Err(BpfError::RuntimeError(_))),
+            "write to read-only context must produce a RuntimeError, got: {result:?}"
         );
 
         // The original SondeContext on the caller's stack is unchanged
@@ -477,6 +477,12 @@ mod tests {
         interp.load(&prog, &[], &[]).unwrap();
 
         let result = interp.execute(0, 100_000);
-        assert!(result.is_err(), "stack overflow must terminate the program");
+        assert!(
+            matches!(
+                result,
+                Err(BpfError::RuntimeError(_) | BpfError::InvalidBytecode(_))
+            ),
+            "stack overflow must terminate the program with a violation error, got: {result:?}"
+        );
     }
 }

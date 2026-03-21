@@ -504,14 +504,15 @@ async fn t0507b_node_timeout_event_delivered_to_handler() {
     // which the gateway drains from stdout and emits via tracing.
     gw.check_node_timeouts(3).await;
 
-    // Allow time for the handler to process the event and write the LOG.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // The handler responds to node_timeout with a LOG message containing
-    // "received node_timeout event". The gateway reads this LOG from stdout
-    // and emits it via the tracing system.
-    assert!(
-        logs_contain("received node_timeout event"),
-        "handler must receive and log node_timeout EVENT"
-    );
+    // Poll for the expected log message with a timeout instead of a fixed sleep.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if logs_contain("received node_timeout event") {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("handler must receive and log node_timeout EVENT (timed out after 5s)");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

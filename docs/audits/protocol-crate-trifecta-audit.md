@@ -256,7 +256,7 @@ This audit aims to close those gaps before implementation proceeds.
 
 **Description:** `GatewayMessage::Command` carries both a `command_type: u8` field and a typed `payload: CommandPayload` enum. The command type is fully determined by the `CommandPayload` variant (`Nop` → `0x00`, `UpdateProgram` → `0x01`, etc.), making `command_type` redundant. This creates a risk: a caller can construct a `Command` where `command_type` and `payload` disagree (e.g., `command_type: CMD_NOP` with `payload: CommandPayload::UpdateProgram { ... }`).
 
-**Evidence:** Design §6.2:
+**Evidence (before remediation):** Design §6.2 originally defined:
 ```rust
 Command {
     command_type: u8,

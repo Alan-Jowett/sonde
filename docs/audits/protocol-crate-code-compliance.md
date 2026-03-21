@@ -560,7 +560,7 @@ Update the design spec §7.1 to include `Copy` in the derive list.
 | `ble_envelope` module | F-009 |
 | `MapDef` derives `Copy` | F-011 |
 
-**Undocumented code behaviors: 5** (1 Medium, 4 Low; 1 resolved).
+**Undocumented code behaviors (open): 5** (1 Medium, 4 Low). **Resolved:** 1.
 
 **Constraint compliance:**
 

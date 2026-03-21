@@ -88,6 +88,9 @@ pub trait Ble {
     /// Enable BLE advertising for the Gateway Pairing Service (MD-0407).
     fn enable(&mut self);
     /// Disable BLE advertising and disconnect any active BLE client (MD-0407).
+    ///
+    /// Implementations must also clear any pending event queue and indication
+    /// queue so that stale BLE data does not leak after RESET.
     fn disable(&mut self);
     /// Send an indication to the connected BLE client (MD-0408).
     ///
@@ -1019,9 +1022,8 @@ mod tests {
         }
         fn disable(&mut self) {
             self.enabled = false;
-            // Real EspBleDriver::disable() clears indication queue and
-            // pending events. Mirror that here so bridge-level tests can
-            // verify no stale BLE data leaks after RESET (MD-0412).
+            // Ble::disable() contract: clear pending events and indications
+            // so no stale BLE data leaks across RESET (MD-0412).
             self.indicated.clear();
             self.event_queue.borrow_mut().clear();
         }
@@ -1669,9 +1671,9 @@ mod tests {
         );
     }
 
-    // --- T-0300: RESET clears peer table (MD-0300) ---
+    // --- T-0628: RESET clears peer table (MD-0300) ---
 
-    /// Validates: T-0300 (peer table gap)
+    /// Validates: T-0628 (peer table gap)
     ///
     /// After sending frames to multiple peers (which registers them in the
     /// radio's peer table), RESET must clear the peer table so no phantom
@@ -1716,9 +1718,9 @@ mod tests {
         );
     }
 
-    // --- T-0600: BLE advertising off after RESET with active session (MD-0407/MD-0412) ---
+    // --- T-0633: BLE advertising off after RESET with active session (MD-0407/MD-0412) ---
 
-    /// Validates: T-0600 (security gap — MD-0407 / MD-0412)
+    /// Validates: T-0633 (security gap — MD-0407 / MD-0412)
     ///
     /// Enables BLE, establishes a connection, queues indications and BLE
     /// events, then sends RESET. Verifies:
@@ -1799,9 +1801,9 @@ mod tests {
         );
     }
 
-    // --- T-0603: BLE message boundary preservation (MD-0401) ---
+    // --- T-0630: BLE message boundary preservation (MD-0401) ---
 
-    /// Validates: T-0603 (boundary preservation gap — MD-0401)
+    /// Validates: T-0630 (boundary preservation gap — MD-0401)
     ///
     /// Injects multiple rapid GATT writes and asserts exactly N separate
     /// `BLE_RECV` messages appear on USB, each with the correct payload.

@@ -480,6 +480,9 @@ impl Ble for EspBleDriver {
             s.connection_start = None;
             s.confirm_sent_at = None;
             s.timeout_fired = false;
+            // Clear pending events so stale BLE data does not leak
+            // after RESET (Ble::disable() contract, MD-0412).
+            s.events.clear();
         }
         info!("BLE advertising stopped (MD-0407)");
     }

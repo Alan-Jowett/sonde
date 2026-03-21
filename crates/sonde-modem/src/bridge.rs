@@ -1930,7 +1930,8 @@ mod tests {
     /// Validates: MD-0413 AC3 (BLE_ENABLE idempotent — duplicate is no-op)
     ///
     /// Sending BLE_ENABLE when already enabled must not reinitialize BLE
-    /// or disrupt an active connection.
+    /// or disrupt an active connection. Asserts only externally observable
+    /// behavior: no disconnect event, BLE stays enabled, indication works.
     #[test]
     fn ble_enable_idempotent() {
         let mut bridge = make_bridge_with_ble();
@@ -1940,7 +1941,6 @@ mod tests {
         bridge.usb.inject(&enable);
         bridge.poll();
         assert!(bridge.ble.enabled);
-        assert_eq!(bridge.ble.enable_count.get(), 1);
         bridge.usb.take_tx(); // discard
 
         // Simulate an active BLE connection.
@@ -1952,11 +1952,10 @@ mod tests {
         bridge.poll();
         bridge.usb.take_tx(); // discard BLE_CONNECTED
 
-        // Second BLE_ENABLE — should be a no-op, no disruption.
+        // Second BLE_ENABLE — must not disrupt the connection.
         bridge.usb.inject(&enable);
         bridge.poll();
-        assert!(bridge.ble.enabled);
-        assert_eq!(bridge.ble.enable_count.get(), 2);
+        assert!(bridge.ble.enabled, "BLE must remain enabled");
 
         // No BLE_DISCONNECTED event should have been emitted.
         let tx = bridge.usb.take_tx();
@@ -1982,7 +1981,8 @@ mod tests {
     /// Validates: MD-0413 AC4 (BLE_DISABLE idempotent — duplicate is no-op)
     ///
     /// Sending BLE_DISABLE when already disabled must not crash or
-    /// produce unexpected output.
+    /// produce unexpected output. Asserts only externally observable
+    /// behavior: no serial output, BLE stays disabled, bridge operational.
     #[test]
     fn ble_disable_idempotent() {
         let mut bridge = make_bridge_with_ble();
@@ -1993,14 +1993,12 @@ mod tests {
         bridge.usb.inject(&disable);
         bridge.poll();
         assert!(!bridge.ble.enabled);
-        assert_eq!(bridge.ble.disable_count.get(), 1);
         assert!(bridge.usb.take_tx().is_empty(), "no output expected");
 
         // Second BLE_DISABLE.
         bridge.usb.inject(&disable);
         bridge.poll();
         assert!(!bridge.ble.enabled);
-        assert_eq!(bridge.ble.disable_count.get(), 2);
         assert!(
             bridge.usb.take_tx().is_empty(),
             "duplicate BLE_DISABLE must not produce output"

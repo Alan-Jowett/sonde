@@ -3250,6 +3250,214 @@ mod tests {
         assert!(!storage.reg_complete);
     }
 
+    // ===================================================================
+    // ND-0101: Unknown CBOR keys — forward compatibility (AC2)
+    // ===================================================================
+
+    #[test]
+    fn test_unknown_cbor_keys_ignored() {
+        // ND-0101 AC2: Node MUST ignore unknown CBOR keys in inbound
+        // messages. Gateway sends a COMMAND with extra future-extension
+        // keys (99, 100) alongside the standard fields. The node must
+        // decode the message, treat it as NOP, and sleep normally.
+        let psk = [0xF1; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Build a COMMAND NOP with extra unknown keys 99 and 100.
+        let cbor_map = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Integer(4.into()),    // command_type
+                ciborium::Value::Integer(0x00.into()), // NOP
+            ),
+            (
+                ciborium::Value::Integer(13.into()), // starting_seq
+                ciborium::Value::Integer(1000.into()),
+            ),
+            (
+                ciborium::Value::Integer(14.into()), // timestamp_ms
+                ciborium::Value::Integer(1710000000000u64.into()),
+            ),
+            (
+                ciborium::Value::Integer(99.into()), // unknown future key
+                ciborium::Value::Text("future_field".into()),
+            ),
+            (
+                ciborium::Value::Integer(100.into()), // another unknown key
+                ciborium::Value::Integer(42.into()),
+            ),
+        ]);
+        let mut payload_cbor = Vec::new();
+        ciborium::into_writer(&cbor_map, &mut payload_cbor).unwrap();
+        let header = FrameHeader {
+            key_hint,
+            msg_type: MSG_COMMAND,
+            nonce: 1,
+        };
+        let command_frame = encode_frame(&header, &payload_cbor, &psk, &TestHmac).unwrap();
+        transport.queue_response(Some(command_frame));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Node must decode successfully and sleep normally.
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert_eq!(transport.outbound.len(), 1, "exactly one WAKE sent");
+    }
+
+    // ===================================================================
+    // ND-0200: No second COMMAND exchange before sleep
+    // ===================================================================
+
+    #[test]
+    fn test_second_command_not_consumed() {
+        // ND-0200 AC2: Node processes at most one COMMAND per cycle and
+        // MUST NOT initiate a second COMMAND exchange before sleep.
+        //
+        // A resident program is installed so BPF execution runs after the
+        // first COMMAND. The second COMMAND (REBOOT) is queued in the
+        // transport but must remain unconsumed: the wake cycle's recv()
+        // calls are strictly limited to the WAKE→COMMAND exchange (and
+        // optionally to APP_DATA_REPLY via send_recv during BPF helpers).
+        // No code path calls recv() for a second COMMAND-type message.
+        let psk = [0xF2; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // First COMMAND — NOP (consumed)
+        let nop_frame = build_command_response(
+            &psk,
+            key_hint,
+            1, // echo nonce = rng(0)+1
+            1000,
+            1710000000000,
+            CommandPayload::Nop,
+        );
+        transport.queue_response(Some(nop_frame));
+
+        // Second COMMAND — REBOOT (must NOT be consumed)
+        let reboot_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            1001,
+            1710000000000,
+            CommandPayload::Reboot,
+        );
+        transport.queue_response(Some(reboot_frame));
+
+        // Install a resident program so BPF execution actually runs.
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Outcome must be Sleep (NOP), NOT Reboot.
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // BPF must have executed (proving the program was loaded and run).
+        assert!(interp.executed, "BPF must execute after first COMMAND");
+        // The second frame must remain unconsumed in the transport queue.
+        assert_eq!(
+            transport.inbound.len(),
+            1,
+            "second COMMAND must not be consumed"
+        );
+    }
+
+    // ===================================================================
+    // ND-0605: Per-frame stack overflow — graceful termination
+    // ===================================================================
+
+    #[test]
+    fn test_stack_overflow_graceful() {
+        // ND-0605 AC3: A BPF stack violation must terminate the program
+        // and the node must sleep normally (no crash). The mock
+        // interpreter returns RuntimeError to simulate the overflow
+        // that the real sonde-bpf interpreter would produce when a
+        // program accesses memory beyond the 512-byte per-frame stack.
+        let psk = [0xF3; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command_frame));
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter {
+            loaded: false,
+            executed: false,
+            execute_result: Err(BpfError::RuntimeError("stack overflow")),
+            captured_ctx: None,
+        };
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Node sleeps normally despite stack overflow
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(interp.executed, "interpreter must have executed");
+    }
+
     /// WAKE failure after peer_payload erased does NOT clear reg_complete.
     /// Once peer_payload is gone, transient WAKE failures should not revert
     /// to PEER_REQUEST since there is no payload to re-send.

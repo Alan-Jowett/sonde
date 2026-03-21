@@ -353,4 +353,45 @@ mod tests {
         let result = interp.execute(0, 2).unwrap();
         assert_eq!(result, 42);
     }
+
+    #[test]
+    fn test_stack_frame_overflow() {
+        // ND-0605 AC3: A BPF program that stores beyond the total stack
+        // boundary must trigger a MemoryAccessViolation → RuntimeError.
+        //
+        // The interpreter allocates STACK_SIZE_PER_FRAME * MAX_CALL_DEPTH
+        // bytes. r10 starts at the stack top. Accessing 8 bytes past the
+        // bottom of the stack must fail.
+        //
+        // Bytecode:
+        //   mov64 r0, 0x42
+        //   stxdw [r10 - (STACK_SIZE + 8)], r0   ← past stack bottom
+        //   exit
+        use sonde_bpf::ebpf::{MAX_CALL_DEPTH, STACK_SIZE_PER_FRAME};
+
+        let total_stack = STACK_SIZE_PER_FRAME * MAX_CALL_DEPTH;
+        let overflow_offset = -(total_stack as i16 + 8);
+
+        let mut bytecode = Vec::new();
+        // mov64 r0, 0x42
+        bytecode.extend_from_slice(&[0xb7, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x00]);
+        // stxdw [r10 + overflow_offset], r0
+        let offset_bytes = overflow_offset.to_le_bytes();
+        bytecode.extend_from_slice(&[0x7b, 0x0a, offset_bytes[0], offset_bytes[1]]);
+        bytecode.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        // exit
+        bytecode.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+        let mut interp = SondeBpfInterpreter::new();
+        interp.load(&bytecode, &[], &[]).unwrap();
+        let result = interp.execute(0, 100_000);
+        assert!(
+            result.is_err(),
+            "stack access beyond frame boundary must fail"
+        );
+        assert!(
+            matches!(result, Err(BpfError::RuntimeError(_))),
+            "expected RuntimeError for stack overflow, got {result:?}"
+        );
+    }
 }

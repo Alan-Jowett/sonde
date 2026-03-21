@@ -1246,6 +1246,90 @@ mod tests {
     }
 
     #[test]
+    fn test_helper_delay_us_max_enforcement() {
+        // ND-0604 AC3: delay_us with value exceeding MAX_DELAY_US (1 s)
+        // must return an error (-1) and must NOT busy-wait. A tracking
+        // clock verifies that delay_ms is only called for accepted values.
+        use std::cell::Cell;
+
+        struct TrackingClock {
+            delay_calls: Cell<u32>,
+        }
+        impl Clock for TrackingClock {
+            fn elapsed_ms(&self) -> u64 {
+                0
+            }
+            fn delay_ms(&self, _ms: u32) {
+                self.delay_calls.set(self.delay_calls.get() + 1);
+            }
+        }
+
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TrackingClock {
+            delay_calls: Cell::new(0),
+        };
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        unsafe {
+            install(
+                &mut hal as *mut TestHal as *mut dyn Hal,
+                &mut transport as *mut TestTransport as *mut dyn Transport,
+                &mut maps as *mut MapStorage,
+                &mut sleep as *mut SleepManager,
+                &clock as *const TrackingClock as *const dyn Clock,
+                &hmac as *const TestHmac as *const dyn HmacProvider,
+                &identity as *const NodeIdentity,
+                &mut seq as *mut u64,
+                ProgramClass::Resident,
+                &mut trace as *mut Vec<String>,
+                1_710_000_000_000,
+                100,
+                3300,
+            );
+        }
+        let _guard = DispatchGuard;
+
+        // Exactly at the limit — must succeed and invoke delay
+        assert_eq!(helper_delay_us(1_000_000, 0, 0, 0, 0), 0);
+        assert!(
+            clock.delay_calls.get() > 0,
+            "accepted delay must invoke clock"
+        );
+
+        clock.delay_calls.set(0);
+
+        // One over the limit — must reject WITHOUT calling delay
+        assert_eq!(
+            helper_delay_us(1_000_001, 0, 0, 0, 0),
+            (-1i64) as u64,
+            "delay exceeding MAX_DELAY_US must return error"
+        );
+        assert_eq!(
+            clock.delay_calls.get(),
+            0,
+            "rejected delay must not invoke clock"
+        );
+
+        // Far above the limit
+        assert_eq!(
+            helper_delay_us(u64::MAX, 0, 0, 0, 0),
+            (-1i64) as u64,
+            "extremely large delay must return error"
+        );
+        assert_eq!(
+            clock.delay_calls.get(),
+            0,
+            "rejected delay must not invoke clock"
+        );
+    }
+
+    #[test]
     fn test_helper_set_next_wake() {
         // set_next_wake for resident program succeeds.
         let mut hal = TestHal::new();

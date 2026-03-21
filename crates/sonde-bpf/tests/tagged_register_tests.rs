@@ -69,12 +69,13 @@ fn t_bpf_002_store_via_map_descriptor() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [0x42u8; 16];
-    let map_buf = [0u8; 64];
+    let map_buf = Box::new([0u8; 64]);
+    let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
-        relocated_ptr: map_buf.as_ptr() as u64,
+        relocated_ptr: map_ptr,
         value_size: 64,
-        data_start: map_buf.as_ptr() as u64,
-        data_end: map_buf.as_ptr() as u64 + 64,
+        data_start: map_ptr,
+        data_end: map_ptr + 64,
     }];
     assert!(matches!(
         unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) },
@@ -224,12 +225,13 @@ fn t_bpf_009_map_descriptor_add() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [0x42u8; 16];
-    let map_buf = [0u8; 64];
+    let map_buf = Box::new([0u8; 64]);
+    let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
-        relocated_ptr: map_buf.as_ptr() as u64,
+        relocated_ptr: map_ptr,
         value_size: 64,
-        data_start: map_buf.as_ptr() as u64,
-        data_end: map_buf.as_ptr() as u64 + 64,
+        data_start: map_ptr,
+        data_end: map_ptr + 64,
     }];
     assert!(matches!(
         unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) },
@@ -537,12 +539,13 @@ fn t_bpf_024_map_value_or_null_returns_null() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [0x42u8; 16];
-    let map_buf = [0xAAu8; 64];
+    let map_buf = Box::new([0xAAu8; 64]);
+    let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
-        relocated_ptr: map_buf.as_ptr() as u64,
+        relocated_ptr: map_ptr,
         value_size: 64,
-        data_start: map_buf.as_ptr() as u64,
-        data_end: map_buf.as_ptr() as u64 + 64,
+        data_start: map_ptr,
+        data_end: map_ptr + 64,
     }];
     let helpers = [HelperDescriptor {
         id: 1,
@@ -558,7 +561,7 @@ fn t_bpf_024_map_value_or_null_returns_null() {
 /// T-BPF-025: `MapValueOrNull` helper returns valid pointer → R0 tagged MapValue
 #[test]
 fn t_bpf_025_map_value_or_null_returns_valid() {
-    let mut map_buf = [0xBBu8; 64];
+    let mut map_buf = Box::new([0xBBu8; 64]);
     let map_ptr = map_buf.as_mut_ptr() as u64;
 
     // Helper returns pointer to start of map data.
@@ -595,7 +598,7 @@ fn t_bpf_025_map_value_or_null_returns_valid() {
 /// T-BPF-026: Helper returns out-of-bounds pointer → `MemoryAccessViolation`
 #[test]
 fn t_bpf_026_helper_returns_oob_pointer() {
-    let map_buf = [0xCCu8; 64];
+    let map_buf = Box::new([0xCCu8; 64]);
     let map_ptr = map_buf.as_ptr() as u64;
 
     // Helper returns pointer before map data region.
@@ -646,12 +649,13 @@ fn t_bpf_027_helper_expects_map_descriptor_gets_scalar() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [0x42u8; 16];
-    let map_buf = [0u8; 64];
+    let map_buf = Box::new([0u8; 64]);
+    let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
-        relocated_ptr: map_buf.as_ptr() as u64,
+        relocated_ptr: map_ptr,
         value_size: 64,
-        data_start: map_buf.as_ptr() as u64,
-        data_end: map_buf.as_ptr() as u64 + 64,
+        data_start: map_ptr,
+        data_end: map_ptr + 64,
     }];
     let helpers = [HelperDescriptor {
         id: 1,
@@ -677,12 +681,13 @@ fn t_bpf_028_ld_dw_imm_negative_map_index() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [0x42u8; 16];
-    let map_buf = [0u8; 64];
+    let map_buf = Box::new([0u8; 64]);
+    let map_ptr = map_buf.as_ptr() as u64;
     let maps = [MapRegion {
-        relocated_ptr: map_buf.as_ptr() as u64,
+        relocated_ptr: map_ptr,
         value_size: 64,
-        data_start: map_buf.as_ptr() as u64,
-        data_end: map_buf.as_ptr() as u64 + 64,
+        data_start: map_ptr,
+        data_end: map_ptr + 64,
     }];
     let result = unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) };
     assert!(
@@ -701,20 +706,22 @@ fn t_bpf_029_ld_dw_imm_out_of_bounds_map_index() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [0x42u8; 16];
-    let map_buf_0 = [0u8; 64];
-    let map_buf_1 = [0u8; 64];
+    let map_buf_0 = Box::new([0u8; 64]);
+    let map_buf_1 = Box::new([0u8; 64]);
+    let map_ptr_0 = map_buf_0.as_ptr() as u64;
+    let map_ptr_1 = map_buf_1.as_ptr() as u64;
     let maps = [
         MapRegion {
-            relocated_ptr: map_buf_0.as_ptr() as u64,
+            relocated_ptr: map_ptr_0,
             value_size: 64,
-            data_start: map_buf_0.as_ptr() as u64,
-            data_end: map_buf_0.as_ptr() as u64 + 64,
+            data_start: map_ptr_0,
+            data_end: map_ptr_0 + 64,
         },
         MapRegion {
-            relocated_ptr: map_buf_1.as_ptr() as u64,
+            relocated_ptr: map_ptr_1,
             value_size: 64,
-            data_start: map_buf_1.as_ptr() as u64,
-            data_end: map_buf_1.as_ptr() as u64 + 64,
+            data_start: map_ptr_1,
+            data_end: map_ptr_1 + 64,
         },
     ];
     let result = unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) };
@@ -728,7 +735,7 @@ fn t_bpf_029_ld_dw_imm_out_of_bounds_map_index() {
 /// T-BPF-030: LD_DW_IMM src=1 happy path — R1 tagged MapDescriptor
 #[test]
 fn t_bpf_030_ld_dw_imm_map_descriptor_happy_path() {
-    let map_buf = [0u8; 64];
+    let map_buf = Box::new([0u8; 64]);
     let map_ptr = map_buf.as_ptr() as u64;
 
     // Helper returns a non-zero in-bounds pointer so the interpreter

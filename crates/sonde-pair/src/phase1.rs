@@ -101,6 +101,17 @@ pub async fn pair_with_gateway(
     }
     debug!(mtu, "connected to gateway");
 
+    // LESC enforcement (PT-0904): reject insecure pairing methods.
+    // When pairing_method() returns None, the platform is assumed to
+    // enforce LESC at the OS BLE-stack level (see BleTransport doc).
+    if let Some(method) = transport.pairing_method() {
+        if method != PairingMethod::NumericComparison {
+            transport.disconnect().await.ok();
+            return Err(PairingError::InsecurePairingMethod { method });
+        }
+        debug!(?method, "BLE pairing method verified");
+    }
+
     // Use a closure-like scope to ensure cleanup on error
     let result = do_pair_with_gateway(transport, store, rng, phone_label, progress).await;
 
@@ -328,6 +339,7 @@ mod tests {
     use crate::validation::compute_key_hint;
     use ed25519_dalek::{Signer, SigningKey};
     use sha2::{Digest, Sha512};
+    use tracing_test::traced_test;
 
     /// Convert an Ed25519 signing key seed to an X25519 static secret.
     fn ed25519_seed_to_x25519_secret(seed: &[u8; 32]) -> x25519_dalek::StaticSecret {
@@ -1014,6 +1026,186 @@ mod tests {
                 "disconnect() must be called on error path"
             );
         });
+    }
+
+    // --- PT-0904: LESC pairing method enforcement ---
+
+    /// T-PT-109: Just Works fallback rejected at transport layer.
+    ///
+    /// When the transport rejects the connection because the peripheral only
+    /// supports Just Works, Phase 1 must fail with `ConnectionFailed` and
+    /// no GATT writes must occur.
+    #[test]
+    fn t_pt_109_just_works_connect_rejected() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.fail_connect = true;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
+            assert!(
+                matches!(result, Err(PairingError::ConnectionFailed(_))),
+                "expected ConnectionFailed, got {result:?}"
+            );
+            assert!(
+                transport.written.is_empty(),
+                "no GATT writes should occur when connect fails"
+            );
+        });
+    }
+
+    /// T-PT-804: Numeric Comparison enforced — pairing succeeds.
+    ///
+    /// When the transport reports Numeric Comparison as the pairing method,
+    /// Phase 1 must proceed normally and complete.
+    #[test]
+    fn t_pt_804_numeric_comparison_enforced() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+            let eph_public = predicted_eph_public(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.pairing_method = Some(PairingMethod::NumericComparison);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
+            assert!(
+                result.is_ok(),
+                "pairing should succeed with NumericComparison"
+            );
+        });
+    }
+
+    /// T-PT-805: Just Works fallback rejected at application layer.
+    ///
+    /// When the transport silently falls back to Just Works (connect succeeds
+    /// but `pairing_method()` returns `JustWorks`), Phase 1 must reject the
+    /// connection before sending `REQUEST_GW_INFO` and report an insecure
+    /// pairing method error.
+    #[test]
+    fn t_pt_805_just_works_fallback_rejected() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.pairing_method = Some(PairingMethod::JustWorks);
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(PairingError::InsecurePairingMethod {
+                        method: PairingMethod::JustWorks
+                    })
+                ),
+                "expected InsecurePairingMethod(JustWorks), got {result:?}"
+            );
+            assert!(
+                transport.written.is_empty(),
+                "no GATT writes should occur before LESC check"
+            );
+        });
+    }
+
+    // --- PT-0702: Verbose diagnostic mode ---
+
+    /// T-PT-112: Verbose mode includes message type names but never key
+    /// material.
+    ///
+    /// Enables tracing at TRACE level, runs a full Phase 1, and asserts:
+    /// 1. Message type names appear in logs.
+    /// 2. Raw key bytes never appear in logs.
+    #[traced_test]
+    #[test]
+    fn t_pt_112_verbose_mode() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+            let eph_public = predicted_eph_public(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            let mut store = MemoryPairingStore::new();
+            let device_addr = [0xAA; 6];
+
+            pair_with_gateway(&mut transport, &mut store, &rng, &device_addr, "", None)
+                .await
+                .unwrap();
+        });
+
+        // PT-0702 §1: Verbose output includes message type names.
+        assert!(logs_contain("REQUEST_GW_INFO"));
+        assert!(logs_contain("GW_INFO_RESPONSE"));
+        assert!(logs_contain("REGISTER_PHONE"));
+
+        // PT-0702 §2: Key material never appears in verbose output.
+        // The phone PSK in hex would be "5555..." (0x55 repeated).
+        let psk_hex = "5555555555555555555555555555555555555555555555555555555555555555";
+        assert!(
+            !logs_contain(psk_hex),
+            "phone PSK must not appear in verbose output"
+        );
     }
 
     // --- PT-1000: Transient failure tolerance ---

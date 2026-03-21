@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use crate::error::PairingError;
-use crate::types::ScannedDevice;
+use crate::types::{PairingMethod, ScannedDevice};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -44,6 +44,22 @@ pub trait BleTransport {
         characteristic: u128,
         timeout_ms: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PairingError>> + '_>>;
+
+    /// Returns the BLE pairing method observed during the last connection.
+    ///
+    /// Platform transports that can observe the negotiated pairing method
+    /// (e.g., via Android `onBondStateChanged` or Windows BLE APIs) MUST
+    /// override this and return the actual method.  The application layer
+    /// rejects any method other than `NumericComparison`.
+    ///
+    /// The default returns `None`, which means "this platform enforces
+    /// LESC at the OS BLE-stack level and does not expose the method to
+    /// user-space."  This is acceptable only when the OS guarantees LESC
+    /// and refuses Just Works without app intervention.  Platform
+    /// transports that **can** report the method SHOULD always do so.
+    fn pairing_method(&self) -> Option<PairingMethod> {
+        None
+    }
 }
 
 /// Mock BLE transport for testing pairing logic without hardware.
@@ -66,6 +82,11 @@ pub struct MockBleTransport {
     pub disconnect_count: usize,
     /// Count of `read_indication()` calls for retry verification.
     pub read_call_count: usize,
+    /// BLE pairing method reported after connection (PT-0904).
+    pub pairing_method: Option<PairingMethod>,
+    /// If true, `connect()` returns `ConnectionFailed` (simulates Just Works
+    /// rejection at the transport layer, per T-PT-109).
+    pub fail_connect: bool,
 }
 
 impl MockBleTransport {
@@ -80,6 +101,8 @@ impl MockBleTransport {
             write_error: None,
             disconnect_count: 0,
             read_call_count: 0,
+            pairing_method: None,
+            fail_connect: false,
         }
     }
 
@@ -119,6 +142,14 @@ impl BleTransport for MockBleTransport {
         if let Some(err) = self.connect_error.take() {
             self.connected = false;
             return Box::pin(async move { Err(err) });
+        }
+        if self.fail_connect {
+            return Box::pin(async {
+                Err(PairingError::ConnectionFailed(
+                    "Numeric Comparison pairing required but peripheral only supports Just Works"
+                        .into(),
+                ))
+            });
         }
         self.connected = true;
         let mtu = self.mtu;
@@ -160,5 +191,9 @@ impl BleTransport for MockBleTransport {
                 None => Err(PairingError::IndicationTimeout),
             }
         })
+    }
+
+    fn pairing_method(&self) -> Option<PairingMethod> {
+        self.pairing_method
     }
 }

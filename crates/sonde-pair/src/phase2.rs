@@ -113,6 +113,17 @@ pub async fn provision_node(
         });
     }
 
+    // LESC enforcement (PT-0904): reject insecure pairing methods.
+    // When pairing_method() returns None, the platform is assumed to
+    // enforce LESC at the OS BLE-stack level (see BleTransport doc).
+    if let Some(method) = transport.pairing_method() {
+        if method != PairingMethod::NumericComparison {
+            transport.disconnect().await.ok();
+            return Err(PairingError::InsecurePairingMethod { method });
+        }
+        debug!(?method, "BLE pairing method verified");
+    }
+
     let result = do_provision_node(
         transport,
         node_key_hint,
@@ -608,6 +619,91 @@ mod tests {
             assert!(
                 transport.disconnect_count > 0,
                 "disconnect() must be called after Phase 2 completes"
+            );
+        });
+    }
+
+    // --- PT-0904: LESC pairing method enforcement (Phase 2) ---
+
+    /// T-PT-804 equivalent for Phase 2: Numeric Comparison enforced.
+    ///
+    /// When the transport reports Numeric Comparison as the pairing method,
+    /// Phase 2 (node provisioning) must proceed normally and complete.
+    #[test]
+    fn t_pt_804_numeric_comparison_enforced_phase2() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.pairing_method = Some(PairingMethod::NumericComparison);
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x00]).unwrap()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors,
+            )
+            .await;
+
+            assert!(
+                result.is_ok(),
+                "provisioning should succeed with NumericComparison"
+            );
+        });
+    }
+
+    /// T-PT-805 equivalent for Phase 2: Just Works fallback rejected.
+    ///
+    /// When the transport reports Just Works as the pairing method, Phase 2
+    /// must reject the connection before sending NODE_PROVISION and report
+    /// an insecure pairing method error.
+    #[test]
+    fn t_pt_805_just_works_rejected_phase2() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.pairing_method = Some(PairingMethod::JustWorks);
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let device_addr = [0xBB; 6];
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &device_addr,
+                "sensor-1",
+                &sensors,
+            )
+            .await;
+
+            assert!(
+                matches!(
+                    result,
+                    Err(PairingError::InsecurePairingMethod {
+                        method: PairingMethod::JustWorks
+                    })
+                ),
+                "expected InsecurePairingMethod(JustWorks), got {result:?}"
+            );
+            assert!(
+                transport.written.is_empty(),
+                "no GATT writes should occur before LESC check"
             );
         });
     }

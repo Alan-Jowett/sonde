@@ -623,7 +623,7 @@ TestNode {
 
 ### T-PT-309  Ed25519 → X25519 low-order point rejection
 
-**Validates:** PT-0405
+**Validates:** PT-0405, PT-0902
 
 **Procedure:**
 1. Construct an Ed25519 public key that maps to a low-order X25519 point.

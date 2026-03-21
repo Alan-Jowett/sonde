@@ -266,6 +266,45 @@ mod tests {
         assert_ne!(*key1, *key2);
     }
 
+    /// T-PT-309 / PT-0405, PT-0902: Ed25519 → X25519 low-order point rejection.
+    ///
+    /// The Ed25519 identity point (0, 1) maps to the all-zero X25519 point
+    /// (Montgomery identity).  The conversion must reject this and return
+    /// an error containing "invalid public key".
+    ///
+    /// Note: the validation spec says the operator-facing message should
+    /// contain "invalid gateway public key".  The crypto module is generic
+    /// (not gateway-specific), so it returns "invalid public key: ...".
+    /// The calling code (phase1/phase2) surfaces this to the operator
+    /// via `PairingError::InvalidPublicKey`, which includes the full
+    /// chain: "invalid public key: low-order point ...".
+    #[test]
+    fn t_pt_309_low_order_point_rejected() {
+        // y = 1 in little-endian compressed Edwards form → identity point.
+        let mut identity = [0u8; 32];
+        identity[0] = 0x01;
+
+        let result = ed25519_to_x25519_public(&identity);
+        assert!(result.is_err(), "low-order point must be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err}").contains("invalid public key"),
+            "error should mention invalid public key: {err}"
+        );
+    }
+
+    /// T-PT-309 supplemental: valid Ed25519 key must convert successfully.
+    #[test]
+    fn t_pt_309_valid_key_succeeds() {
+        let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+        let ed_pub = signing_key.verifying_key().to_bytes();
+
+        let result = ed25519_to_x25519_public(&ed_pub);
+        assert!(result.is_ok(), "valid Ed25519 key should convert");
+        let x_pub = result.unwrap();
+        assert_ne!(x_pub, [0u8; 32], "X25519 key should not be all-zero");
+    }
+
     // Hex encoding helper for the SHA-256 test
     mod hex {
         pub fn encode(data: impl AsRef<[u8]>) -> String {

@@ -2197,6 +2197,17 @@ async fn t_e2e_083_instruction_budget_enforcement() {
     let mut interpreter = SondeBpfInterpreter::new();
     let stats = node.run_wake_cycle_with(&env, &mut interpreter);
 
+    // Verify the program was actually installed (PROGRAM_ACK sent).
+    let ack_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(
+        ack_count, 1,
+        "program must be installed (PROGRAM_ACK sent) before budget can be tested"
+    );
+
     // The interpreter must terminate the loop and the node must return to
     // sleep normally — no hang or panic.
     assert_eq!(
@@ -2206,15 +2217,15 @@ async fn t_e2e_083_instruction_budget_enforcement() {
     );
 }
 
-/// T-E2E-080 — Ephemeral program restrictions through full stack.
+/// T-E2E-081 — Ephemeral program restrictions through full stack.
 ///
 /// Deploy an ephemeral program that calls `set_next_wake()` (helper 15).
-/// Verify the helper returns -1 (blocked for ephemeral) and the node's
-/// sleep interval is unchanged.
+/// Verify the node's sleep interval remains at its base value (60 s),
+/// confirming the helper was blocked for the ephemeral program.
 ///
 /// Covers: ND-0604, bpf-env §6.4
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_080_ephemeral_restrictions() {
+async fn t_e2e_081_ephemeral_restrictions() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
     let env = E2eTestEnv::new();

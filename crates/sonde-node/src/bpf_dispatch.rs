@@ -1879,7 +1879,7 @@ mod tests {
             || {
                 let handle = crate::hal::i2c_handle(0, 0x48);
 
-                // I2C read
+                // I2C read — verify data populated
                 let r = helper_i2c_read(
                     handle as u64,
                     read_buf.as_mut_ptr() as u64,
@@ -1888,6 +1888,7 @@ mod tests {
                     0,
                 );
                 assert_eq!(r, 0, "i2c_read should succeed for ephemeral");
+                assert_eq!(read_buf, [0x1A, 0x2B], "i2c_read must populate buffer");
 
                 // I2C write
                 let r = helper_i2c_write(
@@ -1899,7 +1900,7 @@ mod tests {
                 );
                 assert_eq!(r, 0, "i2c_write should succeed for ephemeral");
 
-                // I2C write-read
+                // I2C write-read — verify read buffer populated
                 let w = [0x01u8];
                 let r = helper_i2c_write_read(
                     handle as u64,
@@ -1909,8 +1910,9 @@ mod tests {
                     wr_buf.len() as u64,
                 );
                 assert_eq!(r, 0, "i2c_write_read should succeed for ephemeral");
+                assert_eq!(wr_buf, [0x1A, 0x2B], "i2c_write_read must fill read buf");
 
-                // SPI transfer
+                // SPI transfer — verify echo (rx = tx)
                 let spi_h = crate::hal::spi_handle(0) as u64;
                 let r = helper_spi_transfer(
                     spi_h,
@@ -1920,19 +1922,38 @@ mod tests {
                     0,
                 );
                 assert_eq!(r, 0, "spi_transfer should succeed for ephemeral");
+                assert_eq!(spi_rx, spi_tx, "spi_transfer must echo tx into rx");
 
-                // GPIO read
+                // GPIO read — verify pin state returned
                 let r = helper_gpio_read(5, 0, 0, 0, 0);
                 assert_eq!(
                     r as i64, 1,
                     "gpio_read should return pin state for ephemeral"
                 );
 
-                // GPIO write
+                // GPIO write — verify pin state changed
                 let r = helper_gpio_write(5, 0, 0, 0, 0);
                 assert_eq!(r, 0, "gpio_write should succeed for ephemeral");
+            },
+        );
 
-                // ADC read
+        // Verify GPIO side effect persisted
+        assert_eq!(hal.gpio_states[5], 0, "gpio_write(5, 0) must clear pin");
+
+        // ADC read in a separate context to confirm independence
+        let mut trace2 = Vec::new();
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Ephemeral,
+            &mut trace2,
+            || {
                 let r = helper_adc_read(0, 0, 0, 0, 0);
                 assert_eq!(r as i64, 2048, "adc_read should return value for ephemeral");
             },

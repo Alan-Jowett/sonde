@@ -252,6 +252,7 @@ This audit aims to close those gaps before implementation proceeds.
 | **Severity** | Medium |
 | **Category** | D5 — Internal design consistency |
 | **Location** | `protocol-crate-design.md` §6.2 |
+| **Status** | **Resolved** — see #375 |
 
 **Description:** `GatewayMessage::Command` carries both a `command_type: u8` field and a typed `payload: CommandPayload` enum. The command type is fully determined by the `CommandPayload` variant (`Nop` → `0x00`, `UpdateProgram` → `0x01`, etc.), making `command_type` redundant. This creates a risk: a caller can construct a `Command` where `command_type` and `payload` disagree (e.g., `command_type: CMD_NOP` with `payload: CommandPayload::UpdateProgram { ... }`).
 
@@ -271,6 +272,8 @@ The `command_type` is also defined separately as constants `CMD_NOP = 0x00` thro
 **Impact:** An encode path that writes `command_type` from the field (rather than deriving it from the `CommandPayload` variant) would silently produce malformed frames when the two disagree. No validation test checks for this — all tests construct matching pairs.
 
 **Remediation:** Either: (a) derive `command_type` from `payload` during encoding and remove the separate field, adding a `command_type()` getter method; or (b) keep the field but add a consistency assertion in `encode()` and a test that attempts to encode a mismatched pair, asserting an error.
+
+**Resolution:** Option (a) was applied. The `command_type` field was removed from `GatewayMessage::Command` in both design §6.2 and the implementation. `CommandPayload::command_type()` derives the wire value from the variant. Design §6.3 documents the invariant. The unused `EncodeError::CommandTypeMismatch` variant was also removed (resolves code-compliance F-003).
 
 **Confidence:** High — confirmed by inspecting the struct definition and all test cases.
 
@@ -407,7 +410,7 @@ Findings are ordered by priority (severity × implementation effort). All remedi
 | 3 | F-004 | Add `REBOOT` round-trip test (T-P022b) | Small |
 | 4 | F-012 | Add COMMAND wire-format inspection tests (T-P032b, T-P032c) for payload nesting and key-5 omission | Small |
 | 5 | F-006 | Add `decode_frame` TooLong test (T-P018b) | Trivial |
-| 6 | F-010 | Review `GatewayMessage::Command` for `command_type` redundancy; add consistency check or derive from variant | Medium |
+| 6 | F-010 | ~~Review `GatewayMessage::Command` for `command_type` redundancy~~ — **Resolved** (#375) | Medium |
 | 7 | F-009 | Add `GatewayMessage::decode` invalid msg_type test (T-P031c) | Trivial |
 | 8 | F-007 | Add `InvalidFieldType` test (T-P030b) | Trivial |
 | 9 | F-008 | Add `CborError` test for garbled input (T-P031b) | Trivial |

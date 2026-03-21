@@ -259,7 +259,6 @@ pub enum CommandPayload {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GatewayMessage {
     Command {
-        command_type: u8,
         starting_seq: u64,
         timestamp_ms: u64,
         payload: CommandPayload,

@@ -1928,3 +1928,74 @@ fn test_p068() {
         "verify must reject correct HMAC used with wrong key"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T-P063: CommandPayload::command_type() derivation covers all variants
+// ---------------------------------------------------------------------------
+
+/// Verify that `CommandPayload::command_type()` returns the correct wire code
+/// for every variant, and that encode → decode round-trips preserve it.
+#[test]
+fn test_p063_command_type_derived_from_payload() {
+    let variants: Vec<(CommandPayload, u8)> = vec![
+        (CommandPayload::Nop, CMD_NOP),
+        (
+            CommandPayload::UpdateProgram {
+                program_hash: vec![0x42; 32],
+                program_size: 1024,
+                chunk_size: 190,
+                chunk_count: 6,
+            },
+            CMD_UPDATE_PROGRAM,
+        ),
+        (
+            CommandPayload::RunEphemeral {
+                program_hash: vec![0x42; 32],
+                program_size: 512,
+                chunk_size: 190,
+                chunk_count: 3,
+            },
+            CMD_RUN_EPHEMERAL,
+        ),
+        (
+            CommandPayload::UpdateSchedule { interval_s: 60 },
+            CMD_UPDATE_SCHEDULE,
+        ),
+        (CommandPayload::Reboot, CMD_REBOOT),
+    ];
+
+    for (payload, expected_code) in &variants {
+        // Verify the accessor returns the correct code.
+        assert_eq!(
+            payload.command_type(),
+            *expected_code,
+            "command_type() mismatch for {:?}",
+            payload
+        );
+
+        // Encode and decode a full Command, then verify the round-tripped
+        // payload returns the same command_type code.
+        let msg = GatewayMessage::Command {
+            starting_seq: 1,
+            timestamp_ms: 1000,
+            payload: payload.clone(),
+        };
+        let cbor = msg.encode().unwrap();
+        let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
+        if let GatewayMessage::Command {
+            payload: decoded_payload,
+            ..
+        } = &decoded
+        {
+            assert_eq!(
+                decoded_payload.command_type(),
+                *expected_code,
+                "round-trip command_type() mismatch for {:?}",
+                payload
+            );
+        } else {
+            panic!("expected GatewayMessage::Command");
+        }
+        assert_eq!(decoded, msg);
+    }
+}

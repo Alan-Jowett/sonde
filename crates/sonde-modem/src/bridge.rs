@@ -439,6 +439,8 @@ mod tests {
         rx_queue: RefCell<VecDeque<RecvFrame>>,
         channel: u8,
         mac: [u8; MAC_SIZE],
+        /// Tracks registered peers (mirrors real ESP-NOW peer table).
+        peers: Vec<[u8; MAC_SIZE]>,
     }
 
     impl MockRadio {
@@ -448,6 +450,7 @@ mod tests {
                 rx_queue: RefCell::new(VecDeque::new()),
                 channel: 1,
                 mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+                peers: Vec::new(),
             }
         }
 
@@ -458,6 +461,9 @@ mod tests {
 
     impl Radio for MockRadio {
         fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+            if !self.peers.contains(peer_mac) {
+                self.peers.push(*peer_mac);
+            }
             self.sent.push((data.to_vec(), *peer_mac));
         }
         fn drain_one(&self) -> Option<RecvFrame> {
@@ -483,6 +489,7 @@ mod tests {
             self.channel = 1;
             self.sent.clear();
             self.rx_queue.borrow_mut().clear();
+            self.peers.clear();
         }
     }
 
@@ -1012,6 +1019,11 @@ mod tests {
         }
         fn disable(&mut self) {
             self.enabled = false;
+            // Real EspBleDriver::disable() clears indication queue and
+            // pending events. Mirror that here so bridge-level tests can
+            // verify no stale BLE data leaks after RESET (MD-0412).
+            self.indicated.clear();
+            self.event_queue.borrow_mut().clear();
         }
         fn indicate(&mut self, data: &[u8]) {
             // Ble contract: empty data is a no-op.
@@ -1655,5 +1667,192 @@ mod tests {
             bridge.ble.pairing_replies.is_empty(),
             "bridge must not auto-reply to pairing confirm (timeout is BLE stack's job)"
         );
+    }
+
+    // --- T-0300: RESET clears peer table (MD-0300) ---
+
+    /// Validates: T-0300 (peer table gap)
+    ///
+    /// After sending frames to multiple peers (which registers them in the
+    /// radio's peer table), RESET must clear the peer table so no phantom
+    /// nodes remain. Stale peers after RESET can cause sends to nodes that
+    /// have not re-authenticated.
+    #[test]
+    fn reset_clears_peer_table() {
+        let mut bridge = make_bridge_with_ble();
+
+        // Send frames to three different peers to register them.
+        let peers: [[u8; MAC_SIZE]; 3] = [
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+            [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            [0xDE, 0xAD, 0xBE, 0xEF, 0x42, 0x01],
+        ];
+        for peer in &peers {
+            let frame = encode_modem_frame(&ModemMessage::SendFrame(SendFrame {
+                peer_mac: *peer,
+                frame_data: vec![0x42],
+            }))
+            .unwrap();
+            bridge.usb.inject(&frame);
+        }
+        bridge.poll();
+        bridge.usb.take_tx(); // discard any output
+
+        assert_eq!(
+            bridge.radio.peers.len(),
+            3,
+            "three peers must be registered before RESET"
+        );
+
+        // RESET must clear the peer table.
+        let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset);
+        bridge.poll();
+        bridge.usb.take_tx(); // discard MODEM_READY
+
+        assert!(
+            bridge.radio.peers.is_empty(),
+            "peer table must be empty after RESET (MD-0300)"
+        );
+    }
+
+    // --- T-0600: BLE advertising off after RESET with active session (MD-0407/MD-0412) ---
+
+    /// Validates: T-0600 (security gap — MD-0407 / MD-0412)
+    ///
+    /// Enables BLE, establishes a connection, queues indications and BLE
+    /// events, then sends RESET. Verifies:
+    /// 1. BLE advertising is off.
+    /// 2. No stale BLE events leak to the gateway after RESET.
+    /// 3. Pending indication queue is cleared.
+    ///
+    /// If RESET doesn't fully tear down BLE state, a phone could connect to
+    /// a modem whose gateway session is uninitialized.
+    #[test]
+    fn reset_clears_ble_state_with_active_session() {
+        let mut bridge = make_bridge_with_ble();
+
+        // Enable BLE and simulate a full connection lifecycle.
+        let enable = encode_modem_frame(&ModemMessage::BleEnable).unwrap();
+        bridge.usb.inject(&enable);
+        bridge.poll();
+        assert!(bridge.ble.enabled);
+        bridge.usb.take_tx(); // discard
+
+        // Simulate phone connecting.
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 512,
+        });
+        bridge.poll();
+        bridge.usb.take_tx(); // discard BLE_CONNECTED
+
+        // Queue a pending indication (gateway → phone direction).
+        let indicate = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: vec![0xCA, 0xFE],
+        }))
+        .unwrap();
+        bridge.usb.inject(&indicate);
+        bridge.poll();
+        bridge.usb.take_tx(); // discard
+
+        // Inject stale BLE events that should NOT survive RESET.
+        bridge.ble.inject_event(BleEvent::Recv(vec![0xDE, 0xAD]));
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 999999 });
+
+        // RESET — must tear down all BLE state.
+        let reset = encode_modem_frame(&ModemMessage::Reset).unwrap();
+        bridge.usb.inject(&reset);
+        bridge.poll();
+
+        // 1. BLE advertising must be off.
+        assert!(!bridge.ble.enabled, "BLE must be off after RESET (MD-0412)");
+
+        // 2. Only MODEM_READY should appear on USB — no stale BLE events.
+        let tx = bridge.usb.take_tx();
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&tx);
+        let mut messages = Vec::new();
+        while let Ok(Some(msg)) = decoder.decode() {
+            messages.push(msg);
+        }
+        assert_eq!(messages.len(), 1, "only MODEM_READY expected after RESET");
+        assert!(
+            matches!(messages[0], ModemMessage::ModemReady(_)),
+            "first message after RESET must be MODEM_READY, got {:?}",
+            std::mem::discriminant(&messages[0])
+        );
+
+        // 3. Indication queue must be cleared.
+        assert!(
+            bridge.ble.indicated.is_empty(),
+            "indication queue must be empty after RESET"
+        );
+
+        // 4. BLE event queue must be drained (no stale events).
+        assert!(
+            bridge.ble.event_queue.borrow().is_empty(),
+            "BLE event queue must be empty after RESET"
+        );
+    }
+
+    // --- T-0603: BLE message boundary preservation (MD-0401) ---
+
+    /// Validates: T-0603 (boundary preservation gap — MD-0401)
+    ///
+    /// Injects multiple rapid GATT writes and asserts exactly N separate
+    /// `BLE_RECV` messages appear on USB, each with the correct payload.
+    /// Merging or splitting under load would silently corrupt gateway
+    /// message parsing.
+    #[test]
+    fn ble_multiple_writes_preserve_boundaries() {
+        let mut bridge = make_bridge_with_ble();
+
+        // Inject 5 rapid BLE writes with distinct payloads.
+        let payloads: Vec<Vec<u8>> = vec![
+            vec![0x01],
+            vec![0x02, 0x03],
+            vec![0x04, 0x05, 0x06],
+            vec![0x07, 0x08, 0x09, 0x0A],
+            vec![0x0B, 0x0C, 0x0D, 0x0E, 0x0F],
+        ];
+        for payload in &payloads {
+            bridge.ble.inject_event(BleEvent::Recv(payload.clone()));
+        }
+
+        // Single poll — all events must be processed without merging.
+        bridge.poll();
+
+        // Decode all USB output.
+        let tx = bridge.usb.take_tx();
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&tx);
+        let mut received: Vec<Vec<u8>> = Vec::new();
+        while let Ok(Some(msg)) = decoder.decode() {
+            match msg {
+                ModemMessage::BleRecv(r) => received.push(r.ble_data),
+                other => panic!(
+                    "expected only BleRecv, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        }
+
+        // Exactly N messages, each with the correct payload.
+        assert_eq!(
+            received.len(),
+            payloads.len(),
+            "each GATT write must produce exactly one BLE_RECV (1:1 boundary)"
+        );
+        for (i, (got, want)) in received.iter().zip(payloads.iter()).enumerate() {
+            assert_eq!(
+                got, want,
+                "BLE_RECV[{}] payload mismatch: boundary was not preserved",
+                i
+            );
+        }
     }
 }

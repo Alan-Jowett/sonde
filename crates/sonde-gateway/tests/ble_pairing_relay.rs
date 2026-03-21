@@ -12,127 +12,34 @@
 //! - T-1226: BLE_ENABLE/BLE_DISABLE signals on window open/close (GW-1208)
 //! - T-1107a: Modem RESET recovery re-executes startup (GW-1103)
 
-use std::collections::HashMap;
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::{Signature, VerifyingKey};
-use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
-use tokio::sync::RwLock;
+use tokio::io::{duplex, AsyncWriteExt};
 use tokio_stream::StreamExt;
 use tonic::Request;
 use zeroize::Zeroizing;
 
 use sonde_gateway::admin::pb::gateway_admin_server::GatewayAdmin;
 use sonde_gateway::admin::pb::*;
-use sonde_gateway::admin::AdminService;
-use sonde_gateway::ble_pairing::{handle_ble_recv, BlePairingController, RegistrationWindow};
-use sonde_gateway::engine::PendingCommand;
+use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
 use sonde_gateway::gateway_identity::GatewayIdentity;
 use sonde_gateway::modem::UsbEspNowTransport;
-use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::Transport;
 
 use sonde_protocol::modem::{encode_modem_frame, BleRecv, FrameDecoder, ModemMessage, ModemReady};
 use sonde_protocol::{encode_ble_envelope, parse_ble_envelope};
 
+use common::{build_admin_with_modem, create_transport_and_server, read_modem_msg};
+
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const BLE_MSG_REQUEST_GW_INFO: u8 = 0x01;
 const BLE_MSG_GW_INFO_RESPONSE: u8 = 0x81;
-
-// ── Modem mock helpers ──────────────────────────────────────────────────────
-
-async fn read_modem_msg(
-    stream: &mut DuplexStream,
-    decoder: &mut FrameDecoder,
-    buf: &mut [u8],
-) -> ModemMessage {
-    loop {
-        match decoder.decode() {
-            Ok(Some(msg)) => return msg,
-            Ok(None) => {}
-            Err(e) => panic!("decode error: {e}"),
-        }
-        let n = stream.read(buf).await.expect("read failed");
-        assert!(n > 0, "stream closed unexpectedly");
-        decoder.push(&buf[..n]);
-    }
-}
-
-async fn modem_startup(server: &mut DuplexStream, channel: u8) {
-    let mut decoder = FrameDecoder::new();
-    let mut buf = [0u8; 256];
-
-    // 1. Read RESET
-    let msg = read_modem_msg(server, &mut decoder, &mut buf).await;
-    assert!(matches!(msg, ModemMessage::Reset));
-
-    // 2. Send MODEM_READY
-    let ready = ModemMessage::ModemReady(ModemReady {
-        firmware_version: [1, 0, 0, 0],
-        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
-    });
-    server
-        .write_all(&encode_modem_frame(&ready).unwrap())
-        .await
-        .unwrap();
-
-    // 3. Read SET_CHANNEL
-    let msg = read_modem_msg(server, &mut decoder, &mut buf).await;
-    let ch = match msg {
-        ModemMessage::SetChannel(c) => c,
-        other => panic!("expected SetChannel, got {other:?}"),
-    };
-    assert_eq!(ch, channel);
-
-    // 4. Send SET_CHANNEL_ACK
-    server
-        .write_all(&encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap())
-        .await
-        .unwrap();
-}
-
-/// Create a transport + mock modem server with completed startup handshake.
-async fn create_transport_and_server(channel: u8) -> (UsbEspNowTransport, DuplexStream) {
-    let (client, mut server) = duplex(4096);
-
-    let transport_handle =
-        tokio::spawn(async move { UsbEspNowTransport::new(client, channel).await.unwrap() });
-
-    modem_startup(&mut server, channel).await;
-
-    let transport = transport_handle.await.unwrap();
-    (transport, server)
-}
-
-/// Build the AdminService wired to a mock modem transport.
-async fn build_admin_with_modem(
-    channel: u8,
-) -> (
-    AdminService,
-    DuplexStream,
-    Arc<BlePairingController>,
-    Arc<dyn Storage>,
-) {
-    let (client, mut server) = duplex(4096);
-    let transport_handle =
-        tokio::spawn(async move { UsbEspNowTransport::new(client, channel).await.unwrap() });
-    modem_startup(&mut server, channel).await;
-    let transport = Arc::new(transport_handle.await.unwrap());
-
-    let controller = Arc::new(BlePairingController::new());
-    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
-    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
-    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-
-    let admin = AdminService::new(storage.clone(), pending, session_manager)
-        .with_ble(controller.clone(), transport);
-
-    (admin, server, controller, storage)
-}
 
 // ── T-1223: Ed25519 seed replication ────────────────────────────────────────
 
@@ -195,6 +102,18 @@ async fn t1223_ed25519_seed_replication() {
     let (type_b, body_b) = parse_ble_envelope(&resp_b).unwrap();
     assert_eq!(type_a, BLE_MSG_GW_INFO_RESPONSE);
     assert_eq!(type_b, BLE_MSG_GW_INFO_RESPONSE);
+
+    // Verify response lengths before slicing.
+    assert_eq!(
+        body_a.len(),
+        112,
+        "GW_INFO_RESPONSE from A must be 112 bytes"
+    );
+    assert_eq!(
+        body_b.len(),
+        112,
+        "GW_INFO_RESPONSE from B must be 112 bytes"
+    );
 
     // Extract fields.
     let gw_pub_a: [u8; 32] = body_a[..32].try_into().unwrap();
@@ -272,7 +191,7 @@ async fn t1223_seed_replication_via_storage() {
 /// T-1224  BLE GATT server via modem relay (GW-1204).
 ///
 /// 1. Complete modem startup.
-/// 2. Open a BLE pairing session via admin API.
+/// 2. Open a BLE pairing session (window open).
 /// 3. Inject a `BLE_RECV` containing `REQUEST_GW_INFO` from mock modem.
 /// 4. Assert: gateway processes and sends `BLE_INDICATE` with valid response.
 /// 5. Decode and verify response contains `gw_public_key`, `gateway_id`,
@@ -282,33 +201,9 @@ async fn t1224_ble_gatt_server_via_modem_relay() {
     let (transport, mut server) = create_transport_and_server(6).await;
     let transport = Arc::new(transport);
 
-    let controller = Arc::new(BlePairingController::new());
-    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
-
-    // Store a gateway identity for the BLE handler.
     let identity = GatewayIdentity::generate().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
     storage.store_gateway_identity(&identity).await.unwrap();
-
-    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
-    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-
-    let admin = AdminService::new(storage.clone(), pending, session_manager)
-        .with_ble(controller.clone(), transport.clone());
-
-    // 2. Open BLE pairing session.
-    let request = Request::new(OpenBlePairingRequest { duration_s: 60 });
-    let resp = admin.open_ble_pairing(request).await.unwrap();
-    let mut _stream = resp.into_inner();
-
-    // Consume BLE_ENABLE from mock modem.
-    let mut decoder = FrameDecoder::new();
-    let mut buf = [0u8; 4096];
-    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-    assert!(
-        matches!(msg, ModemMessage::BleEnable),
-        "expected BLE_ENABLE, got {msg:?}"
-    );
 
     // 3. Build a REQUEST_GW_INFO BLE envelope and inject as BLE_RECV.
     let mut challenge = [0u8; 32];
@@ -345,6 +240,8 @@ async fn t1224_ble_gatt_server_via_modem_relay() {
     transport.send_ble_indicate(&response).await.unwrap();
 
     // 5. Read BLE_INDICATE from mock modem side.
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 4096];
     let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
     let indicate_data = match msg {
         ModemMessage::BleIndicate(bi) => bi.ble_data,
@@ -385,39 +282,33 @@ async fn t1224_ble_gatt_server_via_modem_relay() {
 /// T-1225  ATT MTU and fragmentation via modem relay (GW-1205).
 ///
 /// Verifies the gateway sends complete BLE envelopes in a single
-/// `BLE_INDICATE` message (delegation model — modem handles fragmentation
-/// per MD-0403). Uses a GW_INFO_RESPONSE which is 112-byte payload + envelope
-/// overhead, exceeding the default (MTU−3) = 244 byte characteristic value
-/// limit when the envelope is added.
+/// `BLE_INDICATE` message, even when the envelope exceeds the default
+/// (ATT_MTU−3) = 244 byte characteristic value limit. The modem handles
+/// ATT-level fragmentation per MD-0403 (delegation model).
+///
+/// Constructs a 300-byte BLE envelope (exceeding 244) and confirms it
+/// is carried in a single `BLE_INDICATE` without gateway-side splitting.
 #[tokio::test]
 async fn t1225_att_mtu_fragmentation_via_modem_relay() {
     let (transport, mut server) = create_transport_and_server(6).await;
     let transport = Arc::new(transport);
 
-    let identity = GatewayIdentity::generate().unwrap();
-    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
-
-    // Build a REQUEST_GW_INFO and process it.
-    let mut challenge = [0u8; 32];
-    getrandom::fill(&mut challenge).unwrap();
-    let ble_envelope = encode_ble_envelope(BLE_MSG_REQUEST_GW_INFO, &challenge).unwrap();
-
-    let mut window = RegistrationWindow::new();
-    window.open(60);
-    let response = handle_ble_recv(&ble_envelope, &identity, &storage, &mut window, 6, None)
-        .await
-        .expect("must produce response");
-
-    // The response BLE envelope is > 112 bytes (payload) + envelope header.
-    // Gateway sends the entire envelope in a single BLE_INDICATE.
+    // Build an oversized BLE envelope: 300-byte body + 3-byte header = 303 bytes.
+    // This exceeds the default (MTU−3)=244 limit, exercising the delegation model.
+    let oversized_body = vec![0x42u8; 300];
+    let oversized_envelope = encode_ble_envelope(BLE_MSG_GW_INFO_RESPONSE, &oversized_body)
+        .expect("encoding must succeed");
     assert!(
-        response.len() > 100,
-        "BLE envelope should be substantial in size: {} bytes",
-        response.len()
+        oversized_envelope.len() > 244,
+        "envelope must exceed (MTU-3)=244 bytes: actual {} bytes",
+        oversized_envelope.len()
     );
 
-    // Send via transport — must be a single BLE_INDICATE.
-    transport.send_ble_indicate(&response).await.unwrap();
+    // Gateway sends the entire envelope in a single BLE_INDICATE.
+    transport
+        .send_ble_indicate(&oversized_envelope)
+        .await
+        .unwrap();
 
     // Read exactly one BLE_INDICATE from the mock modem.
     let mut decoder = FrameDecoder::new();
@@ -431,14 +322,38 @@ async fn t1225_att_mtu_fragmentation_via_modem_relay() {
     // Assert: the entire BLE envelope was sent in one message (no gateway-side
     // fragmentation). The modem is responsible for ATT-level fragmentation.
     assert_eq!(
-        indicate_data, response,
+        indicate_data, oversized_envelope,
         "BLE_INDICATE must contain the complete, unfragmented envelope"
     );
 
-    // Verify the envelope is decodable and valid.
+    // Verify the envelope is decodable.
     let (msg_type, body) = parse_ble_envelope(&indicate_data).unwrap();
     assert_eq!(msg_type, BLE_MSG_GW_INFO_RESPONSE);
-    assert_eq!(body.len(), 112);
+    assert_eq!(body.len(), 300);
+
+    // Also verify a real response (GW_INFO_RESPONSE = 112+3 = 115 bytes)
+    // is sent in a single message as well.
+    let identity = GatewayIdentity::generate().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
+    let mut challenge = [0u8; 32];
+    getrandom::fill(&mut challenge).unwrap();
+    let ble_envelope = encode_ble_envelope(BLE_MSG_REQUEST_GW_INFO, &challenge).unwrap();
+    let mut window = RegistrationWindow::new();
+    window.open(60);
+    let response = handle_ble_recv(&ble_envelope, &identity, &storage, &mut window, 6, None)
+        .await
+        .expect("must produce response");
+
+    transport.send_ble_indicate(&response).await.unwrap();
+    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+    let real_indicate = match msg {
+        ModemMessage::BleIndicate(bi) => bi.ble_data,
+        other => panic!("expected BleIndicate, got {other:?}"),
+    };
+    assert_eq!(
+        real_indicate, response,
+        "real GW_INFO_RESPONSE must also be sent unfragmented"
+    );
 }
 
 // ── T-1226: BLE_ENABLE/BLE_DISABLE signals on window open/close ────────────
@@ -532,20 +447,26 @@ async fn t1226_ble_enable_disable_signals() {
         "expected BLE_ENABLE after second open, got {msg:?}"
     );
 
-    // 6. Wait for auto-close (2s timeout + small margin).
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // 6. Wait for auto-close by reading BLE_DISABLE with a bounded timeout
+    // instead of a fixed sleep. The 2s window timeout fires, then the
+    // spawned task sends BLE_DISABLE and the WindowClosed event.
+    let msg = tokio::time::timeout(
+        Duration::from_secs(10),
+        read_modem_msg(&mut server, &mut decoder, &mut buf),
+    )
+    .await
+    .expect("BLE_DISABLE must arrive within timeout after auto-close");
 
     // 7b. Assert: BLE_DISABLE sent to modem after auto-close.
-    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
     assert!(
         matches!(msg, ModemMessage::BleDisable),
         "expected BLE_DISABLE after auto-close, got {msg:?}"
     );
 
     // Consume WindowClosed from auto-close stream.
-    let event = stream2
-        .next()
+    let event = tokio::time::timeout(Duration::from_secs(5), stream2.next())
         .await
+        .expect("WindowClosed event must arrive within timeout")
         .expect("stream ended")
         .expect("should get WindowClosed from auto-close");
     assert!(

@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["time", "rt"], optional = true }
 futures = { version = "0.3", optional = true }
 
 # Optional — Android BLE transport and persistent store (aarch64-linux-android)
-jni = { version = "0.21", optional = true }
+jni = { version = "0.22", optional = true }
 
 # Optional — Windows DPAPI PSK protection (enable via `dpapi` feature)
 [target.'cfg(windows)'.dependencies]

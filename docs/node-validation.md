@@ -1412,7 +1412,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N500 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
 | T-N501 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N502 | `test_program_transfer_hash_mismatch` | wake_cycle.rs |
-| T-N503 | *(not yet covered — current transfer tests use empty map lists; a test with 2 map definitions, LDDW pointer resolution, and RTC SRAM allocation is needed)* | — |
+| T-N503 | `test_program_image_decoding_with_maps` | wake_cycle.rs |
 | T-N504 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N505 | `test_ephemeral_program_integration`, `t_e2e_022_run_ephemeral` | wake_cycle.rs, e2e_tests.rs |
 | T-N506 | `test_chunked_transfer_success` | wake_cycle.rs |
@@ -1436,6 +1436,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N613 | `test_helper_bpf_trace_printk` | bpf_dispatch.rs |
 | T-N614 | `test_instruction_budget_exceeded_graceful` | wake_cycle.rs |
 | T-N615 | `test_call_depth_exceeded_graceful` | wake_cycle.rs |
+| T-N616 | `test_map_budget_exceeded_rejects_program` | wake_cycle.rs |
 | T-N700 | `test_wake_retries_exhausted` | wake_cycle.rs |
 | T-N701 | `test_chunked_transfer_chunk_retry_exhausted` | wake_cycle.rs |
 | T-N800 | `test_malformed_cbor_discarded` | wake_cycle.rs |
@@ -1463,7 +1464,6 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 
 > **Note:** Spec cases marked *(hardware — validated on target)* require the
 > NimBLE BLE stack or physical peripherals and cannot run in the host-based
-> test suite. T-N503 (map decoding with LDDW pointer resolution),
-> T-N616 (map memory budget enforcement), and T-N702 (response timeout — mock gateway delays
-> \> 50 ms) are host-testable but not yet implemented.
+> test suite. T-N702 (response timeout — mock gateway delays
+> \> 50 ms) is host-testable but not yet implemented.
 > T-N919–T-N941: spec procedures added — implementation pending.

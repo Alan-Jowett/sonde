@@ -1294,6 +1294,12 @@ mod tests {
         execute_result: Result<u64, BpfError>,
         /// Captured BPF execution context (copied during execute()).
         captured_ctx: Option<SondeContext>,
+        /// Bytecode passed to `load()`.
+        captured_bytecode: Option<Vec<u8>>,
+        /// Map pointers passed to `load()`.
+        captured_map_ptrs: Option<Vec<u64>>,
+        /// Map definitions passed to `load()`.
+        captured_map_defs: Option<Vec<sonde_protocol::MapDef>>,
     }
 
     impl MockBpfInterpreter {
@@ -1303,6 +1309,9 @@ mod tests {
                 executed: false,
                 execute_result: Ok(0),
                 captured_ctx: None,
+                captured_bytecode: None,
+                captured_map_ptrs: None,
+                captured_map_defs: None,
             }
         }
     }
@@ -1317,11 +1326,14 @@ mod tests {
         }
         fn load(
             &mut self,
-            _bytecode: &[u8],
-            _map_ptrs: &[u64],
-            _map_defs: &[sonde_protocol::MapDef],
+            bytecode: &[u8],
+            map_ptrs: &[u64],
+            map_defs: &[sonde_protocol::MapDef],
         ) -> Result<(), BpfError> {
             self.loaded = true;
+            self.captured_bytecode = Some(bytecode.to_vec());
+            self.captured_map_ptrs = Some(map_ptrs.to_vec());
+            self.captured_map_defs = Some(map_defs.to_vec());
             Ok(())
         }
         fn execute(&mut self, ctx_ptr: u64, _budget: u64) -> Result<u64, BpfError> {
@@ -3023,6 +3035,9 @@ mod tests {
             executed: false,
             execute_result: Err(BpfError::InstructionBudgetExceeded),
             captured_ctx: None,
+            captured_bytecode: None,
+            captured_map_ptrs: None,
+            captured_map_defs: None,
         };
         let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
@@ -3071,6 +3086,9 @@ mod tests {
             executed: false,
             execute_result: Err(BpfError::CallDepthExceeded),
             captured_ctx: None,
+            captured_bytecode: None,
+            captured_map_ptrs: None,
+            captured_map_defs: None,
         };
         let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
@@ -3457,6 +3475,64 @@ mod tests {
             1,
             "second COMMAND must not be consumed"
         );
+    }
+
+    // ===================================================================
+    // ND-0605: Per-frame stack overflow — graceful termination
+    // ===================================================================
+
+    #[test]
+    fn test_stack_overflow_graceful() {
+        // ND-0605 AC3: A BPF stack violation must terminate the program
+        // and the node must sleep normally (no crash). The mock
+        // interpreter returns RuntimeError to simulate the overflow
+        // that the real sonde-bpf interpreter would produce when a
+        // program accesses memory beyond the 512-byte per-frame stack.
+        let psk = [0xF3; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+        let command_frame =
+            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
+        transport.queue_response(Some(command_frame));
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter {
+            loaded: false,
+            executed: false,
+            execute_result: Err(BpfError::RuntimeError("stack overflow")),
+            captured_ctx: None,
+            captured_bytecode: None,
+            captured_map_ptrs: None,
+            captured_map_defs: None,
+        };
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Node sleeps normally despite stack overflow
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        assert!(interp.executed, "interpreter must have executed");
     }
 
     /// WAKE failure after peer_payload erased does NOT clear reg_complete.
@@ -4031,39 +4107,85 @@ mod tests {
         );
     }
 
-    // ===================================================================
-    // Gap 10 (ND-0605): Stack overflow → graceful sleep
-    // ===================================================================
+    // -----------------------------------------------------------------------
+    // T-N503: Program image decoding with maps
+    // -----------------------------------------------------------------------
 
+    /// T-N503: Transfer a program image with 2 map definitions and verify:
+    /// - bytecode extraction,
+    /// - map allocation and sizes, and
+    /// - that the map pointer array is forwarded to `interpreter.load()`.
     #[test]
-    fn test_stack_violation_graceful() {
-        // ND-0605 AC4: A BPF program that writes beyond the 512-byte
-        // per-frame stack boundary is terminated with a stack violation.
-        // The node must still sleep normally (no crash).
-        let psk = [0x65; 32];
+    fn test_program_image_decoding_with_maps() {
+        let psk = [0x42u8; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
-        let command_frame =
-            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
-        transport.queue_response(Some(command_frame));
+
+        // BPF bytecode: `exit` instruction (0x95)
+        let bytecode = vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        // Two map definitions:
+        // Map 0: 16 entries × (4 key + 8 value) = 192 bytes
+        // Map 1:  4 entries × (4 key + 32 value) = 144 bytes
+        // Total: 336 bytes (well within 4096 budget)
+        let map_defs = vec![
+            sonde_protocol::MapDef {
+                map_type: 1,
+                key_size: 4,
+                value_size: 8,
+                max_entries: 16,
+            },
+            sonde_protocol::MapDef {
+                map_type: 1,
+                key_size: 4,
+                value_size: 32,
+                max_entries: 4,
+            },
+        ];
 
         let image = sonde_protocol::ProgramImage {
-            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            maps: vec![],
+            bytecode: bytecode.clone(),
+            maps: map_defs.clone(),
         };
         let image_cbor = image.encode_deterministic().unwrap();
+        let image_hash = TestSha256.hash(&image_cbor);
+
+        let chunk_size = 64u32;
+        let chunk_count =
+            sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
+        let starting_seq = 100u64;
+
+        // Queue COMMAND with UpdateProgram
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: image_hash.to_vec(),
+                program_size: image_cbor.len() as u32,
+                chunk_size,
+                chunk_count,
+            },
+        );
+        transport.queue_response(Some(command_frame));
+
+        // Queue CHUNK responses
+        for i in 0..chunk_count {
+            let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
+                .unwrap()
+                .to_vec();
+            let seq = starting_seq + i as u64;
+            let chunk_frame = build_chunk_response(&psk, key_hint, seq, i, &chunk_data);
+            transport.queue_response(Some(chunk_frame));
+        }
 
         let mut storage = MockStorage::new().with_key(key_hint, psk);
-        storage.programs[0] = Some(image_cbor);
         let mut hal = MockHal;
         let mut rng = MockRng(0);
         let clock = MockClock;
-        let mut interp = MockBpfInterpreter {
-            loaded: false,
-            executed: false,
-            execute_result: Err(BpfError::RuntimeError("stack overflow")),
-            captured_ctx: None,
-        };
+        let mut interp = MockBpfInterpreter::new();
         let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
@@ -4079,8 +4201,199 @@ mod tests {
             &TestSha256,
         );
 
-        // Node must sleep normally despite stack violation error
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
-        assert!(interp.executed, "interpreter must have executed");
+
+        // Program installed and executed
+        assert!(interp.loaded, "interpreter should be loaded");
+        assert!(interp.executed, "interpreter should have executed");
+
+        // A/B partition swapped (partition 1 now active)
+        assert_eq!(storage.active_partition, 1);
+        assert!(storage.read_program(1).is_some());
+
+        // Maps allocated with correct count and sizes
+        assert_eq!(map_storage.map_count(), 2, "should have 2 maps allocated");
+        assert_eq!(
+            map_storage.get(0).unwrap().storage_bytes(),
+            192,
+            "map 0: 16 × (4+8) = 192 bytes"
+        );
+        assert_eq!(
+            map_storage.get(1).unwrap().storage_bytes(),
+            144,
+            "map 1: 4 × (4+32) = 144 bytes"
+        );
+
+        // Map definitions match what was requested
+        assert_eq!(map_storage.get(0).unwrap().def, map_defs[0]);
+        assert_eq!(map_storage.get(1).unwrap().def, map_defs[1]);
+
+        // Map pointer forwarding: 2 non-zero, distinct map pointers
+        // were passed to interpreter.load()
+        let captured_ptrs = interp.captured_map_ptrs.as_ref().unwrap();
+        assert_eq!(captured_ptrs.len(), 2, "should have 2 map pointers");
+        assert_ne!(captured_ptrs[0], 0, "map pointer 0 must be non-zero");
+        assert_ne!(captured_ptrs[1], 0, "map pointer 1 must be non-zero");
+        assert_ne!(
+            captured_ptrs[0], captured_ptrs[1],
+            "map pointers must be distinct"
+        );
+
+        // Map definitions were forwarded to the interpreter
+        let captured_defs = interp.captured_map_defs.as_ref().unwrap();
+        assert_eq!(captured_defs.len(), 2);
+        assert_eq!(captured_defs[0], map_defs[0]);
+        assert_eq!(captured_defs[1], map_defs[1]);
+
+        // Bytecode was forwarded unchanged
+        let captured_bc = interp.captured_bytecode.as_ref().unwrap();
+        assert_eq!(captured_bc, &bytecode);
+
+        // Map pointers match MapStorage's cached pointers
+        assert_eq!(captured_ptrs.as_slice(), map_storage.map_pointers());
+    }
+
+    // -----------------------------------------------------------------------
+    // T-N616: Map memory budget enforcement
+    // -----------------------------------------------------------------------
+
+    /// T-N616: Transfer a program whose map definitions exceed the RTC SRAM
+    /// budget. Verify installation fails, active partition is unchanged,
+    /// and no PROGRAM_ACK is sent.
+    #[test]
+    fn test_map_budget_exceeded_rejects_program() {
+        let psk = [0x42u8; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Oversized maps: 2 maps × 5 entries × (4 + 1024) = 10_280 bytes
+        // Budget is 4096 bytes → must be rejected.
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![
+                sonde_protocol::MapDef {
+                    map_type: 1,
+                    key_size: 4,
+                    value_size: 1024,
+                    max_entries: 5,
+                },
+                sonde_protocol::MapDef {
+                    map_type: 1,
+                    key_size: 4,
+                    value_size: 1024,
+                    max_entries: 5,
+                },
+            ],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+        let image_hash = TestSha256.hash(&image_cbor);
+
+        let chunk_size = 64u32;
+        let chunk_count =
+            sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
+        let starting_seq = 200u64;
+
+        // Queue COMMAND with UpdateProgram
+        let command_frame = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: image_hash.to_vec(),
+                program_size: image_cbor.len() as u32,
+                chunk_size,
+                chunk_count,
+            },
+        );
+        transport.queue_response(Some(command_frame));
+
+        // Queue CHUNK responses
+        for i in 0..chunk_count {
+            let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
+                .unwrap()
+                .to_vec();
+            let seq = starting_seq + i as u64;
+            let chunk_frame = build_chunk_response(&psk, key_hint, seq, i, &chunk_data);
+            transport.queue_response(Some(chunk_frame));
+        }
+
+        // Pre-install a small program on partition 0 to verify it survives
+        let existing_image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let existing_cbor = existing_image.encode_deterministic().unwrap();
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(existing_cbor.clone());
+
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+        // Budget check happens in install_resident() BEFORE the A/B swap,
+        // so the active partition must remain 0 and the existing program
+        // must be untouched.
+        assert_eq!(
+            storage.active_partition, 0,
+            "active partition must not change on budget rejection"
+        );
+        assert_eq!(
+            storage.programs[0].as_deref(),
+            Some(existing_cbor.as_slice()),
+            "existing program must be preserved"
+        );
+        // The inactive partition must also remain untouched; no flash writes
+        // should occur when the budget check fails before the A/B swap.
+        assert!(
+            storage.programs[1].is_none(),
+            "inactive partition must not be written on budget rejection"
+        );
+
+        // No PROGRAM_ACK sent — verify by inspecting all outbound frames.
+        assert!(
+            !transport.outbound.is_empty(),
+            "at least one outbound frame expected"
+        );
+        for frame in &transport.outbound {
+            if let Ok(decoded) = decode_frame(frame) {
+                assert_ne!(
+                    decoded.header.msg_type, MSG_PROGRAM_ACK,
+                    "no PROGRAM_ACK should be sent when budget is exceeded"
+                );
+            }
+        }
+
+        // Interpreter should not have been loaded with the oversized program
+        assert!(
+            !interp.loaded,
+            "interpreter must not load a budget-rejected program"
+        );
+
+        // Map storage should remain empty (no allocation occurred)
+        assert_eq!(
+            map_storage.map_count(),
+            0,
+            "no maps should be allocated on budget rejection"
+        );
     }
 }

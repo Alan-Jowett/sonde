@@ -810,6 +810,38 @@ fn test_p046() {
     }
 }
 
+// T-P047  ProgramImage with empty bytecode round-trip
+#[test]
+fn test_p047() {
+    let img = ProgramImage {
+        bytecode: vec![],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 64,
+            max_entries: 16,
+        }],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+    assert!(decoded.bytecode.is_empty());
+    assert_eq!(decoded.maps.len(), 1);
+    assert_eq!(decoded.maps[0].map_type, 1);
+    assert_eq!(decoded.maps[0].key_size, 4);
+    assert_eq!(decoded.maps[0].value_size, 64);
+    assert_eq!(decoded.maps[0].max_entries, 16);
+
+    // Also test fully empty image (no bytecode, no maps).
+    let img2 = ProgramImage {
+        bytecode: vec![],
+        maps: vec![],
+    };
+    let cbor2 = img2.encode_deterministic().unwrap();
+    let decoded2 = ProgramImage::decode(&cbor2).unwrap();
+    assert!(decoded2.bytecode.is_empty());
+    assert!(decoded2.maps.is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // 6  Chunking helper tests
 // ---------------------------------------------------------------------------
@@ -873,6 +905,37 @@ fn test_p053() {
     let hash_orig = program_hash(&cbor, &SoftwareSha256);
     let hash_reasm = program_hash(&reassembled, &SoftwareSha256);
     assert_eq!(hash_orig, hash_reasm);
+}
+
+// T-P054  get_chunk with chunk_size = 0 returns None
+#[test]
+fn test_p054() {
+    let image = vec![0x42u8; 100];
+    // chunk_size = 0 must return None, not Some(&[]).
+    assert!(get_chunk(&image, 0, 0).is_none());
+    assert!(get_chunk(&image, 1, 0).is_none());
+    // Empty image with chunk_size = 0 also returns None.
+    let empty: &[u8] = &[];
+    assert!(get_chunk(empty, 0, 0).is_none());
+}
+
+// T-P055  chunk_count overflow / extreme values
+#[test]
+fn test_p055() {
+    // usize::MAX with chunk_size = 1 would overflow naive (image_size + chunk_size - 1)
+    // arithmetic. The result (usize::MAX chunks) exceeds u32::MAX, so must return None.
+    assert_eq!(chunk_count(usize::MAX, 1), None);
+
+    // u32::MAX + 1 chunks also doesn't fit in u32.
+    let too_many = u32::MAX as usize + 1;
+    assert_eq!(chunk_count(too_many, 1), None);
+
+    // Exactly u32::MAX chunks should fit.
+    assert_eq!(chunk_count(u32::MAX as usize, 1), Some(u32::MAX));
+
+    // Large image_size with large chunk_size that yields a small count.
+    assert_eq!(chunk_count(usize::MAX, usize::MAX), Some(1));
+    assert_eq!(chunk_count(usize::MAX - 1, usize::MAX), Some(1));
 }
 
 // ---------------------------------------------------------------------------

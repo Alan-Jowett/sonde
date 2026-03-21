@@ -60,7 +60,7 @@ fn helper_return_r1(a: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
 fn make_map(backing: &mut [u8], value_size: u32) -> MapRegion {
     let ptr = backing.as_mut_ptr() as u64;
     MapRegion {
-        relocated_ptr: 0x4200_0000, // opaque handle value
+        relocated_ptr: ptr,
         value_size,
         data_start: ptr,
         data_end: ptr + backing.len() as u64,
@@ -147,7 +147,8 @@ fn test_ld_dw_imm_src1_zero_maps() {
 fn test_map_value_or_null_returns_null_is_scalar() {
     // Setup: LD_DW_IMM src=1 loads map descriptor into R1, then call a
     // helper that returns 0 with MapValueOrNull { map_arg: 1 }.
-    // R0 must become scalar(0).  We verify by exiting with R0.
+    // R0 must become scalar(0). We verify by attempting a load via R0 —
+    // this must fail with NonDereferenceableAccess because R0 is scalar.
     let mut backing = [0u8; 64];
     let map = make_map(&mut backing, 8);
 
@@ -161,15 +162,17 @@ fn test_map_value_or_null_returns_null_is_scalar() {
         insn(ebpf::LD_DW_IMM, 1, 1, 0, 0), // r1 = map_descriptor(0)
         insn(0, 0, 0, 0, 0),               // LD_DW_IMM second slot
         insn(ebpf::CALL, 0, 0, 0, 1),      // call helper 1 → returns 0
+        // R0 is now scalar(0). Attempting a load through it must fail
+        // because scalars are not dereferenceable.
+        insn(ebpf::LD_B_REG, 3, 0, 0, 0), // r3 = *(u8*)(r0 + 0)
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];
     let result =
         unsafe { execute_program(&prog, &mut ctx, helpers, &[map], false, UNLIMITED_BUDGET) };
-    assert_eq!(
-        result.unwrap(),
-        0,
-        "MapValueOrNull returning 0 must yield scalar(0)"
+    assert!(
+        matches!(result, Err(BpfError::NonDereferenceableAccess { .. })),
+        "dereferencing scalar(0) must yield NonDereferenceableAccess, got: {result:?}"
     );
 }
 
@@ -197,7 +200,7 @@ fn test_map_value_or_null_returns_valid_ptr_is_map_value() {
     //   call helper 1                (returns r1 as MapValue)
     //   r1 = 0xBEEF                  (value to store)
     //   *(u32*)(r0 + 0) = r1         (store through MapValue pointer)
-    //   r0 = *(u32*)(r0 + 0)         — can't do this because store clobbered tags.
+    //   r0 = *(u32*)(r0 + 0)         — avoid this: reusing r0 would overwrite the tagged pointer value.
     //
     // Simpler: just verify the call succeeds and returns the expected pointer.
     let imm_lo = valid_ptr as u32 as i32;

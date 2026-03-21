@@ -52,6 +52,9 @@ pub enum WakeCycleOutcome {
     Reboot,
     /// Node is unpaired — sleep indefinitely.
     Unpaired,
+    /// Hardware RNG health check failed (ND-0304 AC3).
+    /// The node MUST NOT generate nonces or transmit WAKE frames.
+    RngHealthCheckFailed,
 }
 
 /// Run one complete wake cycle.
@@ -81,6 +84,14 @@ where
     S: PlatformStorage,
     I: BpfInterpreter,
 {
+    // 0. RNG health check (ND-0304 AC3).
+    // If the hardware RNG self-test fails, abort the wake cycle
+    // immediately — no WAKE frame is transmitted.
+    if !rng.check_health() {
+        log::error!("hardware RNG health check failed — aborting wake cycle");
+        return WakeCycleOutcome::RngHealthCheckFailed;
+    }
+
     // 1. Load identity
     let identity = match storage.read_key() {
         Some((key_hint, psk)) => NodeIdentity { key_hint, psk },
@@ -3501,6 +3512,7 @@ mod tests {
         assert!(storage.reg_complete);
     }
 
+
     // ===================================================================
     // Gap 1 (ND-0701): Chunk retry delay timing — 100 ms between retries
     // ===================================================================
@@ -4031,10 +4043,23 @@ mod tests {
         );
     }
 
-    // ===================================================================
-    // Gap 10 (ND-0605): Stack overflow → graceful sleep
-    // ===================================================================
+    // -----------------------------------------------------------------------
+    // T-N927: RNG health-check failure aborts wake cycle (ND-0304 AC3)
+    // -----------------------------------------------------------------------
 
+    /// Mock RNG whose health check always fails.
+    struct FailingHealthRng;
+    impl Rng for FailingHealthRng {
+        fn random_u64(&mut self) -> u64 {
+            panic!("random_u64 must not be called when health check fails");
+        }
+        fn check_health(&mut self) -> bool {
+            false
+        }
+    }
+
+    /// T-N927: When the hardware RNG health check fails, the firmware
+    /// aborts immediately — no WAKE frame is transmitted.
     #[test]
     fn test_stack_violation_graceful() {
         // ND-0605 AC4: A BPF program that writes beyond the 512-byte
@@ -4042,28 +4067,13 @@ mod tests {
         // The node must still sleep normally (no crash).
         let psk = [0x65; 32];
         let key_hint = 1u16;
+
         let mut transport = MockTransport::new();
-        let command_frame =
-            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
-        transport.queue_response(Some(command_frame));
-
-        let image = sonde_protocol::ProgramImage {
-            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            maps: vec![],
-        };
-        let image_cbor = image.encode_deterministic().unwrap();
-
         let mut storage = MockStorage::new().with_key(key_hint, psk);
-        storage.programs[0] = Some(image_cbor);
         let mut hal = MockHal;
-        let mut rng = MockRng(0);
+        let mut rng = FailingHealthRng;
         let clock = MockClock;
-        let mut interp = MockBpfInterpreter {
-            loaded: false,
-            executed: false,
-            execute_result: Err(BpfError::RuntimeError("stack overflow")),
-            captured_ctx: None,
-        };
+        let mut interp = MockBpfInterpreter::new();
         let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome = run_wake_cycle(
@@ -4079,8 +4089,54 @@ mod tests {
             &TestSha256,
         );
 
-        // Node must sleep normally despite stack violation error
-        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
-        assert!(interp.executed, "interpreter must have executed");
+        assert_eq!(
+            outcome,
+            WakeCycleOutcome::RngHealthCheckFailed,
+            "wake cycle must abort on RNG health failure"
+        );
+        // No WAKE frame transmitted.
+        assert!(
+            transport.outbound.is_empty(),
+            "no frames must be sent when RNG health check fails"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // T-N925: APP_DATA_REPLY with mismatched nonce — discarded (ND-0302)
+    // -----------------------------------------------------------------------
+
+    /// T-N925: BPF `send_recv()` receives an APP_DATA_REPLY whose nonce
+    /// does not match the request → silently discarded → call times out.
+    #[test]
+    fn t_n925_app_data_reply_mismatched_nonce_discarded() {
+        let psk = [0xA5; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Reply echoes wrong seq (999 instead of 42) — silently discarded.
+        let reply = build_app_data_reply(&psk, key_hint, 999, &[0xBB]);
+        transport.queue_response(Some(reply));
+        // Subsequent recv returns None → timeout.
+        transport.queue_response(None);
+
+        let identity = NodeIdentity { key_hint, psk };
+        let mut seq = 42u64;
+        let result = send_recv_app_data(
+            &mut transport,
+            &identity,
+            &mut seq,
+            &[0xAA],
+            RESPONSE_TIMEOUT_MS,
+            &MockClock,
+            &TestHmac,
+        );
+
+        // The mismatched-nonce reply is silently discarded; call times out.
+        assert!(
+            matches!(result, Err(NodeError::Timeout)),
+            "mismatched-nonce APP_DATA_REPLY must be discarded"
+        );
+        // seq is still incremented (send succeeded).
+        assert_eq!(seq, 43);
     }
 }

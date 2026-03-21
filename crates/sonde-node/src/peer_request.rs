@@ -728,4 +728,52 @@ mod tests {
         assert!(result);
         assert!(storage.reg_complete);
     }
+
+    // -----------------------------------------------------------------------
+    // T-N941: PEER_ACK with corrupted HMAC — silently discarded (ND-0912)
+    // -----------------------------------------------------------------------
+
+    /// T-N941: A PEER_ACK whose nonce and registration_proof are correct
+    /// but whose HMAC has been corrupted MUST be silently discarded.
+    /// The exchange times out without completing registration.
+    #[test]
+    fn t_n941_peer_ack_corrupted_hmac_discarded() {
+        let hmac = TestHmac;
+        let identity = test_identity();
+        let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let nonce: u64 = 0x42;
+        let mut rng = MockRng::new(nonce);
+        let clock = MockClock::new(5000);
+
+        // Build a valid ACK, then corrupt the HMAC (last 32 bytes).
+        let mut ack = build_peer_ack(&identity, nonce, &payload, &hmac);
+        let len = ack.len();
+        ack[len - 1] ^= 0xFF; // flip one bit in the HMAC
+
+        let mut transport = MockTransport::with_responses(vec![
+            Some(ack), // corrupted HMAC — silently discarded
+            None,      // subsequent recv timeout
+        ]);
+        let mut storage = MockStorage::with_identity(0x1234, [0x42u8; 32], payload.clone());
+
+        let result = peer_request_exchange(
+            &mut transport,
+            &mut storage,
+            &identity,
+            &payload,
+            &mut rng,
+            &clock,
+            &hmac,
+        )
+        .unwrap();
+
+        // Exchange times out — corrupted HMAC frame was discarded.
+        assert!(!result, "corrupted-HMAC PEER_ACK must be discarded");
+        assert!(
+            !storage.reg_complete,
+            "reg_complete must NOT be set after HMAC failure"
+        );
+        // Silent discard — only PEER_REQUEST was sent, no error response.
+        assert_eq!(transport.sent.len(), 1, "only PEER_REQUEST was transmitted");
+    }
 }

@@ -394,4 +394,89 @@ mod tests {
             "expected RuntimeError for stack overflow, got {result:?}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // T-N929: Write to read-only sonde_context rejected (ND-0505 AC5/AC6)
+    // -----------------------------------------------------------------------
+
+    /// T-N929: A BPF program that attempts to write to the `sonde_context`
+    /// memory region MUST be rejected, and the original context MUST remain
+    /// unchanged.
+    #[test]
+    fn t_n929_write_to_read_only_context_rejected() {
+        let mut interp = SondeBpfInterpreter::new();
+
+        // BPF program:
+        //   r2 = 0xDEAD            (mov64 imm)
+        //   *(u32*)(r1 + 0) = r2   (STX W — write to context)
+        //   r0 = 0                 (mov64 imm)
+        //   exit
+        let mut prog = Vec::new();
+        // r2 = 0xDEAD
+        prog.extend_from_slice(&[0xb7, 0x02, 0x00, 0x00, 0xAD, 0xDE, 0x00, 0x00]);
+        // *(u32*)(r1 + 0) = r2  — attempt to write to context
+        prog.extend_from_slice(&[0x63, 0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // r0 = 0
+        prog.extend_from_slice(&[0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // exit
+        prog.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+        interp.load(&prog, &[], &[]).unwrap();
+
+        let ctx = SondeContext {
+            timestamp: 1710000000000,
+            battery_mv: 3300,
+            firmware_abi_version: 1,
+            wake_reason: 0,
+            _padding: [0; 3],
+        };
+        let ctx_ptr = &ctx as *const _ as u64;
+
+        // Execute — the interpreter rejects the write to the read-only
+        // context region.
+        let result = interp.execute(ctx_ptr, 100_000);
+        assert!(
+            result.is_err(),
+            "write to read-only context must be rejected"
+        );
+
+        // The original SondeContext on the caller's stack is unchanged
+        // because SondeBpfInterpreter copies the context into a local
+        // buffer before execution (defense-in-depth).
+        assert_eq!(ctx.timestamp, 1710000000000);
+        assert_eq!(ctx.battery_mv, 3300);
+        assert_eq!(ctx.firmware_abi_version, 1);
+        assert_eq!(ctx.wake_reason, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // T-N934: Stack overflow terminates BPF program (ND-0605 AC4)
+    // -----------------------------------------------------------------------
+
+    /// T-N934: A BPF program that writes beyond the total stack boundary
+    /// MUST be terminated with a stack violation error.
+    #[test]
+    fn t_n934_stack_overflow_terminates_program() {
+        let mut interp = SondeBpfInterpreter::new();
+
+        // BPF program:
+        //   r0 = 0xDEAD                  (mov64 imm)
+        //   *(u32*)(r10 - 4100) = r0     (STX W — beyond 4 KB total stack)
+        //   exit
+        //
+        // R10 starts at stack_base + 4096. Writing at offset -4100 accesses
+        // stack_base - 4, which is below the stack region boundary.
+        let mut prog = Vec::new();
+        // r0 = 0xDEAD
+        prog.extend_from_slice(&[0xb7, 0x00, 0x00, 0x00, 0xAD, 0xDE, 0x00, 0x00]);
+        // *(u32*)(r10 - 4100) = r0  — offset -4100 = 0xEFFC as i16 LE
+        prog.extend_from_slice(&[0x63, 0x0A, 0xFC, 0xEF, 0x00, 0x00, 0x00, 0x00]);
+        // exit
+        prog.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+        interp.load(&prog, &[], &[]).unwrap();
+
+        let result = interp.execute(0, 100_000);
+        assert!(result.is_err(), "stack overflow must terminate the program");
+    }
 }

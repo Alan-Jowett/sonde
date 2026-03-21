@@ -809,4 +809,52 @@ mod tests {
             "BLE_MIN_ATT_MTU must be 247 per ND-0904"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // T-N940: NODE_PROVISION with invalid payload_len — rejected (ND-0905)
+    // -----------------------------------------------------------------------
+
+    /// T-N940: A NODE_PROVISION where `payload_len` exceeds the remaining
+    /// data in the buffer MUST be rejected without reading beyond the buffer
+    /// boundary.
+    #[test]
+    fn t_n940_node_provision_invalid_payload_len_rejected() {
+        // payload_len claims 100 bytes, but only 4 follow the header.
+        let actual_payload = [0xAA, 0xBB, 0xCC, 0xDD];
+        let claimed_len: u16 = 100;
+        let mut body = vec![0u8; 37 + actual_payload.len()];
+
+        // key_hint = 0x1234
+        body[0] = 0x12;
+        body[1] = 0x34;
+        // psk: 32 bytes of 0x42
+        body[2..34].fill(0x42);
+        // rf_channel = 6
+        body[34] = 6;
+        // payload_len = 100 (BE) — exceeds remaining bytes
+        body[35] = (claimed_len >> 8) as u8;
+        body[36] = (claimed_len & 0xFF) as u8;
+        // actual payload: only 4 bytes
+        body[37..41].copy_from_slice(&actual_payload);
+
+        let err = parse_node_provision(&body).unwrap_err();
+        assert_eq!(
+            err, "encrypted_payload truncated",
+            "must reject before reading beyond the buffer"
+        );
+    }
+
+    /// T-N940 variant: payload_len = 0xFFFF (maximum u16) with a minimal
+    /// body — rejects as "too large" before any read.
+    #[test]
+    fn t_n940_node_provision_payload_len_max_u16_rejected() {
+        let mut body = vec![0u8; 37 + 2]; // only 2 payload bytes
+        body[2..34].fill(0x42);
+        body[34] = 1; // channel
+        body[35] = 0xFF;
+        body[36] = 0xFF; // payload_len = 65535
+
+        let err = parse_node_provision(&body).unwrap_err();
+        assert_eq!(err, "encrypted_payload too large");
+    }
 }

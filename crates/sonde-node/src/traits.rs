@@ -18,6 +18,19 @@ pub trait Transport {
 pub trait Rng {
     /// Generate a 64-bit random value using the hardware RNG.
     fn random_u64(&mut self) -> u64;
+
+    /// Check hardware RNG health (ND-0304 AC3).
+    ///
+    /// Platforms that expose a hardware RNG health/self-test API override
+    /// this to invoke the platform check.  Returns `true` if the RNG is
+    /// healthy, `false` if the self-test failed and nonce generation must
+    /// be aborted.
+    ///
+    /// The default returns `true` for backends that have no health-test
+    /// entry point (e.g., `getrandom`-based implementations).
+    fn check_health(&mut self) -> bool {
+        true
+    }
 }
 
 /// Monotonic clock for measuring elapsed time within a wake cycle.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Protocol crate validation tests (T-P001 … T-P062).
+//! Protocol crate validation tests.
 //!
 //! Validation tests from `docs/protocol-crate-validation.md`.
 
@@ -248,8 +248,10 @@ fn test_p019() {
 
 #[test]
 fn test_p019a() {
-    // Gap 1: DecodeError::TooLong — construct a 251-byte buffer.
-    let oversized = vec![0u8; 251];
+    // Gap 1: DecodeError::TooLong — construct a MAX_FRAME_SIZE + 1 buffer.
+    let oversized_len = MAX_FRAME_SIZE + 1;
+    assert_eq!(oversized_len, 251);
+    let oversized = vec![0u8; oversized_len];
     let err = decode_frame(&oversized).unwrap_err();
     assert!(
         matches!(err, DecodeError::TooLong),

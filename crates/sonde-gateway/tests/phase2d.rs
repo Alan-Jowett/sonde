@@ -510,12 +510,20 @@ async fn gw0507_node_timeout_event_with_fields() {
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
     gw.check_node_timeouts(3).await;
 
-    // Give the handler process a moment to flush the file
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Read and verify the event file
-    let contents = std::fs::read_to_string(&event_file)
-        .unwrap_or_else(|e| panic!("event file must exist at {event_file_str}: {e}"));
+    // Poll for the event file to appear and contain at least one line,
+    // rather than using a fixed sleep which is flaky on slow CI runners.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let contents = loop {
+        if let Ok(text) = std::fs::read_to_string(&event_file) {
+            if text.lines().next().is_some() {
+                break text;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("event file must exist and contain data at {event_file_str} within 5s");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     let line = contents.lines().next().expect("at least one event line");
     let event: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
 

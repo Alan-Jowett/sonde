@@ -471,10 +471,16 @@ async fn gw1101_set_channel_ack_timeout() {
         "expected SetChannel(6), got {msg:?}"
     );
 
-    // 4. Transport must fail with timeout error
+    // 4. Transport must fail with a timeout error (not some other failure)
     let result = tokio::time::timeout(Duration::from_secs(10), transport_handle).await;
     match result {
-        Ok(Ok(Err(_))) => {} // Transport returned error — expected
+        Ok(Ok(Err(e))) => {
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("timeout") || msg.contains("Timeout"),
+                "expected timeout error, got: {msg}"
+            );
+        }
         Ok(Err(e)) => panic!("spawn panicked: {e}"),
         Err(_) => panic!("test timed out — transport should fail within ~2s"),
         Ok(Ok(Ok(_))) => panic!("transport must not succeed without SET_CHANNEL_ACK"),

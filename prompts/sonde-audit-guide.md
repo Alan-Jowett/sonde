@@ -18,12 +18,12 @@ Each Sonde component has a matching set of artifacts:
 
 | Component | Requirements | Design | Validation | Code |
 |-----------|-------------|--------|------------|------|
-| **Node** | `node-requirements.md` | `node-design.md` | `node-validation.md` | `crates/sonde-node/` |
-| **Gateway** | `gateway-requirements.md` | `gateway-design.md` | `gateway-validation.md` | `crates/sonde-gateway/` |
-| **Modem** | `modem-requirements.md` | `modem-design.md` | `modem-validation.md` | `crates/sonde-modem/` |
-| **Pairing tool** | `ble-pairing-tool-requirements.md` | `ble-pairing-tool-design.md` | `ble-pairing-tool-validation.md` | `crates/sonde-pair/` |
-| **Protocol crate** | (embedded in `protocol.md`) | `protocol-crate-design.md` | `protocol-crate-validation.md` | `crates/sonde-protocol/` |
-| **E2E** | (derived from component reqs) | — | `e2e-validation.md` | `crates/sonde-e2e/` |
+| **Node** | `docs/node-requirements.md` | `docs/node-design.md` | `docs/node-validation.md` | `crates/sonde-node/` |
+| **Gateway** | `docs/gateway-requirements.md` | `docs/gateway-design.md` | `docs/gateway-validation.md` | `crates/sonde-gateway/` |
+| **Modem** | `docs/modem-requirements.md` | `docs/modem-design.md` | `docs/modem-validation.md` | `crates/sonde-modem/` |
+| **Pairing tool** | `docs/ble-pairing-tool-requirements.md` | `docs/ble-pairing-tool-design.md` | `docs/ble-pairing-tool-validation.md` | `crates/sonde-pair/` |
+| **Protocol crate** | (embedded in `docs/protocol.md`) | `docs/protocol-crate-design.md` | `docs/protocol-crate-validation.md` | `crates/sonde-protocol/` |
+| **E2E** | (derived from component reqs) | — | `docs/e2e-validation.md` | `crates/sonde-e2e/` |
 
 ## Pass 1: Trifecta Audit (Doc ↔ Doc ↔ Doc)
 
@@ -57,8 +57,11 @@ spec content), use a 200K+ context model or narrow the focus areas.
 
 ### CLI alternative
 
+If you have `@alan-jowett/promptkit` installed, you can assemble the
+prompt from the template file directly:
+
 ```bash
-npx @alan-jowett/promptkit assemble audit-traceability \
+npx @alan-jowett/promptkit assemble prompts/sonde-trifecta-audit.md \
   -p project_name="Sonde Modem" \
   -p requirements_doc="$(cat docs/modem-requirements.md)" \
   -p design_doc="$(cat docs/modem-design.md)" \

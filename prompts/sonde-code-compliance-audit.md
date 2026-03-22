@@ -597,14 +597,11 @@ safety-critical, security-related, or regulatory. High for performance
 or functional constraints. Assess based on the constraint itself,
 not the code's complexity.
 
-## Reserved Labels (Future Use)
+## Labels Defined in Other Templates
 
-The following label range is reserved for future specification drift
-categories involving test code:
-
-The following label range in the overall D-series is used for
-specification drift categories involving test code, but it is defined
-in a separate template:
+The following label range in the overall D-series is allocated to
+specification drift categories involving test code, but the labels
+themselves are defined and governed by a separate audit template:
 
 - **D11–D13**: **Test compliance** drift (validation plan vs. test
   code). These labels are defined and described in
@@ -612,7 +609,9 @@ in a separate template:
   or repurposed by this template.
 
 Refer to the `sonde-test-compliance-audit` prompt for the precise
-semantics and usage guidelines for D11–D13.
+semantics and usage guidelines for D11–D13. This template may reference
+these labels where relevant but must treat their definitions as
+authoritative in the test-compliance audit template.
 
 ## Ranking Criteria
 

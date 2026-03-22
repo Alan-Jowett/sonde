@@ -449,29 +449,19 @@ criteria are not verified.
 **Severity guidance**: High. This is more dangerous than D2 (untested
 requirement) because it creates a false sense of coverage.
 
-## Reserved Labels (Future Use)
-
-The following label ranges are reserved for future specification drift
-categories involving implementation and test code:
-
-- **D8–D10**: Reserved for **code compliance** drift (requirements/design
-  vs. source code). Example: D8_UNIMPLEMENTED_REQUIREMENT — a requirement
-  has no corresponding implementation in source code.
-## Code and Test Compliance Labels
+## Labels Defined in Other Templates
 
 The following label ranges cover specification drift categories involving
-implementation and test code:
+implementation and test code. They are allocated here for cross-reference
+but are **defined and governed** by their respective audit templates:
 
 - **D8–D10**: **Code compliance** drift (requirements/design vs. source
-  code). Example: D8_UNIMPLEMENTED_REQUIREMENT — a requirement has no
-  corresponding implementation in source code.
+  code). Defined in `prompts/sonde-code-compliance-audit.md`.
 - **D11–D13**: **Test compliance** drift (validation plan vs. test code).
-  Example: D11_UNIMPLEMENTED_TEST_CASE — a test case in the validation
-  plan has no corresponding automated test.
+  Defined in `prompts/sonde-test-compliance-audit.md`.
 
-These labels are used by the corresponding audit templates
-(`sonde-code-compliance-audit`, `sonde-test-compliance-audit`) in the
-`prompts/` directory.
+These labels MUST NOT be redefined or repurposed by this template.
+Refer to the owning audit template for precise semantics and usage.
 
 ## Ranking Criteria
 

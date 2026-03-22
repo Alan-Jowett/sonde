@@ -2170,9 +2170,10 @@ async fn t_e2e_063e_sonde_pair_gateway_integration() {
 ///
 /// Deploy a BPF program containing a long-running but finite loop through
 /// the real gateway→node chunked transfer. Run with the real
-/// `SondeBpfInterpreter`. Verify the interpreter terminates the program
-/// early, the node returns to sleep normally, and no crash, hang, or panic
-/// occurs.
+/// `SondeBpfInterpreter`. A `set_next_wake(10)` sentinel after the loop
+/// provides an observable side effect: if budget enforcement regresses and
+/// the loop completes, the sentinel fires and changes sleep to 10 s, causing
+/// the assertion to fail.
 ///
 /// Uses a bounded loop (200 000 iterations ≈ 600 000 instructions) that
 /// exceeds the 100 000 instruction budget but still terminates naturally
@@ -2188,14 +2189,18 @@ async fn t_e2e_083_instruction_budget_enforcement() {
     env.register_node("budget-node", 1, psk).await;
 
     // Bounded loop: 200 000 iterations × 3 body instructions = 600 000
-    // total, well above the 100 000 budget. The program terminates
-    // naturally if budget enforcement regresses, avoiding CI hangs.
+    // total, well above the 100 000 budget. A set_next_wake(10) sentinel
+    // follows the loop — if budget enforcement regresses, the sentinel
+    // fires and changes sleep to 10 s, failing the assertion below.
     let bytecode = [
         0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
         0xb7, 0x01, 0x00, 0x00, 0x40, 0x0D, 0x03, 0x00, // mov r1, 200000
         0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // add r0, 1
         0x07, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, // add r1, -1
         0x55, 0x01, 0xFD, 0xFF, 0x00, 0x00, 0x00, 0x00, // jne r1, 0, -3
+        // Sentinel: only reachable if budget enforcement regresses.
+        0xb7, 0x01, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, // mov r1, 10
+        0x85, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x00, 0x00, // call 15 (set_next_wake)
         0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
     ];
     let (program, hash) = make_program_from_bytecode(&bytecode, VerificationProfile::Resident);
@@ -2309,11 +2314,17 @@ async fn t_e2e_081_ephemeral_restrictions() {
         // *(u32*)(r10 - 16) = 42       — value on stack
         0x62, 0x0A, 0xF0, 0xFF, 0x2A, 0x00, 0x00, 0x00,
         // r1 = 0                       — map_fd
-        0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = r10
-        0xbf, 0xA2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Note: r1=0 is not a valid relocated map pointer, but the helper
+        // checks the ephemeral restriction BEFORE map pointer validation
+        // (bpf_dispatch.rs helper_map_update_elem), so this exercises the
+        // correct rejection path. Ephemeral programs cannot obtain a valid
+        // map pointer because LD_DW_IMM relocations resolve against the
+        // program's own map declarations, which are empty for ephemeral.
+        0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r1, 0 (invalid map fd)
+        0xbf, 0xA2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r2, r10
         // r2 += -8                     — key ptr
-        0x07, 0x02, 0x00, 0x00, 0xF8, 0xFF, 0xFF, 0xFF, // r3 = r10
-        0xbf, 0xA3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x07, 0x02, 0x00, 0x00, 0xF8, 0xFF, 0xFF, 0xFF,
+        0xbf, 0xA3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r3, r10
         // r3 += -16                    — value ptr
         0x07, 0x03, 0x00, 0x00, 0xF0, 0xFF, 0xFF, 0xFF,
         // call 11                      — map_update_elem (rejected for ephemeral)
@@ -2321,7 +2332,8 @@ async fn t_e2e_081_ephemeral_restrictions() {
         // r1 = 10                      — seconds
         0xb7, 0x01, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00,
         // call 15                      — set_next_wake (rejected for ephemeral)
-        0x85, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x00, 0x00, // exit
+        0x85, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x00, 0x00,
+        // exit
         0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     let (eph_program, eph_hash) =

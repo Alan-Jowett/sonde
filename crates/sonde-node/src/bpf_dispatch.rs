@@ -1960,12 +1960,13 @@ mod tests {
         );
     }
 
-    // -- Gap 3: ND-0603 — map_lookup_elem returns NULL on out-of-range key ----
+    // -- Gap 3: ND-0603 — map_lookup_elem returns NULL on out-of-range key ---
 
     #[test]
-    fn test_helper_map_lookup_out_of_range_returns_null() {
-        // T-N932: map_lookup_elem on an out-of-range key (key >= max_entries)
+    fn test_helper_map_lookup_out_of_range_key_returns_null() {
+        // T-N932: map_lookup_elem on an out-of-range key (>= max_entries)
         // must return 0 (NULL). BPF programs rely on this for NULL checks.
+        // Uses key = 4, which is the first out-of-range index for max_entries = 4.
         let mut hal = TestHal::new();
         let mut transport = TestTransport::new();
         let mut maps = MapStorage::new(4096);
@@ -1996,8 +1997,9 @@ mod tests {
             ProgramClass::Resident,
             &mut trace,
             || {
-                // Key 42 was never written — lookup must return NULL (0).
-                let key: u32 = 42;
+                // Key 4 is the first out-of-range index (max_entries = 4,
+                // valid indices are 0..3) — lookup must return NULL (0).
+                let key: u32 = 4;
                 let ptr = helper_map_lookup_elem(map_ptr, &key as *const u32 as u64, 0, 0, 0);
                 assert_eq!(ptr, 0, "lookup of out-of-range key must return NULL");
             },

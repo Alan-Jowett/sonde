@@ -53,10 +53,11 @@ fn helper_return_r1(a: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     a
 }
 
-/// Allocate map backing storage and return a `MapRegion` with valid bounds.
+/// Build a `MapRegion` that points into heap-allocated `backing` storage.
 ///
 /// The returned `MapRegion` points into `backing` so the caller must keep it
-/// alive for the duration of the test.
+/// alive for the duration of the test. Backing buffers should be heap-allocated
+/// (`Vec<u8>` / `Box<[u8]>`) to ensure pointer provenance is clearly upheld.
 fn make_map(backing: &mut [u8], value_size: u32) -> MapRegion {
     let ptr = backing.as_mut_ptr() as u64;
     MapRegion {
@@ -73,7 +74,7 @@ fn make_map(backing: &mut [u8], value_size: u32) -> MapRegion {
 fn test_ld_dw_imm_src1_valid_map_index() {
     // LD_DW_IMM src=1, imm=0 → load map descriptor for map[0]
     // Then exit with r0 = 0x42 to prove we didn't error.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
 
     let prog = prog_from(&[
@@ -106,8 +107,8 @@ fn test_ld_dw_imm_src1_negative_imm() {
 #[test]
 fn test_ld_dw_imm_src1_out_of_bounds() {
     // LD_DW_IMM src=1, imm=5 with only 2 maps → InvalidMapIndex
-    let mut b0 = [0u8; 64];
-    let mut b1 = [0u8; 64];
+    let mut b0 = vec![0u8; 64];
+    let mut b1 = vec![0u8; 64];
     let m0 = make_map(&mut b0, 8);
     let m1 = make_map(&mut b1, 8);
 
@@ -149,7 +150,7 @@ fn test_map_value_or_null_returns_null_is_scalar() {
     // helper that returns 0 with MapValueOrNull { map_arg: 1 }.
     // R0 must become scalar(0). We verify by attempting a load via R0 —
     // this must fail with NonDereferenceableAccess because R0 is scalar.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
 
     let helpers = &[HelperDescriptor {
@@ -183,7 +184,7 @@ fn test_map_value_or_null_returns_valid_ptr_is_map_value() {
     // The helper returns a pointer within the map's backing storage.
     // After the call, R0 should be tagged MapValue and be dereferenceable.
     // We verify by storing a value through R0 and reading it back.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     let valid_ptr = backing.as_mut_ptr() as u64;
 
@@ -240,7 +241,7 @@ fn test_map_value_or_null_returns_valid_ptr_is_map_value() {
 fn test_map_value_or_null_returns_out_of_bounds_ptr() {
     // The helper returns a pointer that is outside the map's [data_start, data_end).
     // The interpreter must reject it with MemoryAccessViolation.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     // Point far outside the map's storage.
     let bad_ptr: u64 = 0xDEAD_0000;
@@ -278,7 +279,7 @@ fn test_map_value_or_null_returns_out_of_bounds_ptr() {
 #[test]
 fn test_map_value_or_null_returns_ptr_just_past_end() {
     // Pointer is at data_end - value_size + 1 — one byte past valid range.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     // One byte past the last valid start: data_end - value_size + 1
     let barely_oob = backing.as_mut_ptr() as u64 + 64 - 8 + 1;
@@ -312,7 +313,7 @@ fn test_map_value_or_null_returns_ptr_just_past_end() {
 #[test]
 fn test_map_value_or_null_returns_ptr_before_start() {
     // Pointer is before data_start.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     let before_start = backing.as_mut_ptr() as u64 - 1;
 
@@ -345,7 +346,7 @@ fn test_map_value_or_null_returns_ptr_before_start() {
 #[test]
 fn test_map_value_or_null_exact_boundary_succeeds() {
     // Pointer exactly at the last valid position: data_end - value_size.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     let exact_last = backing.as_mut_ptr() as u64 + 64 - 8; // data_end - value_size
 
@@ -384,7 +385,7 @@ fn test_invalid_helper_argument_scalar_for_map_descriptor() {
     // Call a helper with MapValueOrNull { map_arg: 1 }, but R1 is a plain
     // scalar (no MapDescriptor tag).  The helper returns non-zero, which
     // triggers the MapDescriptor check.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     let valid_ptr = backing.as_mut_ptr() as u64;
 
@@ -417,7 +418,7 @@ fn test_invalid_helper_argument_scalar_for_map_descriptor() {
 fn test_invalid_helper_argument_map_value_for_map_descriptor() {
     // R1 carries a MapValue tag (from a prior lookup), not MapDescriptor.
     // Using it as map_arg should fail with InvalidHelperArgument.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     let valid_ptr = backing.as_mut_ptr() as u64;
 
@@ -472,7 +473,7 @@ fn test_helper_call_clobbers_r1_r5_tags() {
     // The second helper returns R1.value (non-zero relocated_ptr), which
     // triggers the MapDescriptor tag check. Since R1's tag was clobbered
     // to scalar by step 2, this must fail with InvalidHelperArgument.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
 
     fn helper_noop(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
@@ -516,7 +517,7 @@ fn test_map_value_or_null_null_skips_map_arg_validation() {
     // When the helper returns 0 (NULL), the interpreter should NOT check
     // the map_arg register's tag — R0 becomes scalar(0) regardless.
     // Here R1 is a plain scalar (no MapDescriptor), but helper returns 0.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
 
     let helpers = &[HelperDescriptor {
@@ -546,7 +547,7 @@ fn test_map_value_or_null_null_skips_map_arg_validation() {
 fn test_map_descriptor_not_dereferenceable() {
     // Loading a MapDescriptor into a register and trying to dereference it
     // must fail with NonDereferenceableAccess.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
 
     let prog = prog_from(&[
@@ -569,7 +570,7 @@ fn test_map_descriptor_not_dereferenceable() {
 fn test_map_descriptor_arithmetic_rejected() {
     // Adding a scalar to a MapDescriptor register must fail with
     // InvalidPointerArithmetic.
-    let mut backing = [0u8; 64];
+    let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
 
     let prog = prog_from(&[

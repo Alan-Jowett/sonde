@@ -33,8 +33,8 @@ use esp32_nimble::{
 use log::{info, warn};
 
 use crate::ble_pairing::{
-    encode_node_ack, handle_node_provision, parse_ble_envelope, parse_node_provision,
-    BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
+    encode_node_ack, handle_node_provision, is_mtu_acceptable, parse_ble_envelope,
+    parse_node_provision, BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
 use crate::map_storage::MapStorage;
@@ -49,9 +49,6 @@ const NODE_SERVICE_UUID: BleUuid = BleUuid::Uuid16(0xFE50);
 
 /// Node Command characteristic UUID (`0000FE51-0000-1000-8000-00805F9B34FB`).
 const NODE_COMMAND_UUID: BleUuid = BleUuid::Uuid16(0xFE51);
-
-/// Minimum negotiated ATT MTU accepted (ND-0904).
-const BLE_MTU_MIN: u16 = BLE_MIN_ATT_MTU;
 
 /// Polling interval for the main loop waiting for disconnect.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -146,10 +143,10 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     ble_server.on_authentication_complete(move |server, desc, result| {
         if result.is_ok() {
             let mtu = desc.mtu();
-            if mtu < BLE_MTU_MIN {
+            if !is_mtu_acceptable(mtu) {
                 warn!(
                     "BLE: MTU too low ({} < {}); disconnecting (ND-0904)",
-                    mtu, BLE_MTU_MIN
+                    mtu, BLE_MIN_ATT_MTU
                 );
                 let _ = server.disconnect(desc.conn_handle());
             } else {

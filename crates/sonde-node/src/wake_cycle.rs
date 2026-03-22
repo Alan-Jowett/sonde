@@ -3491,8 +3491,10 @@ mod tests {
     fn test_second_command_during_bpf_discarded() {
         // ND-0200 AC2: The node processes at most one COMMAND response per
         // wake cycle and MUST NOT initiate a second COMMAND exchange.
-        // Queue a valid COMMAND, then a second unsolicited COMMAND frame.
-        // The node must accept the first, ignore the second, and sleep.
+        // Install a resident BPF program so execution actually enters the
+        // BPF phase, then queue a second unsolicited COMMAND frame.
+        // The node must accept the first, run BPF, ignore the second,
+        // and sleep.
         let psk = [0x20; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -3512,7 +3514,17 @@ mod tests {
         );
         transport.queue_response(Some(second_command));
 
+        // Install a minimal resident program (EXIT_0) so BPF execution
+        // actually occurs, matching ND-0200's "during BPF" intent.
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+
         let mut storage = MockStorage::new().with_key(key_hint, psk);
+        storage.programs[0] = Some(image_cbor);
+
         let mut hal = MockHal;
         let mut rng = MockRng(0);
         let clock = MockClock;
@@ -3536,6 +3548,9 @@ mod tests {
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         // Exactly 1 WAKE sent — no second COMMAND exchange initiated
         assert_eq!(transport.outbound.len(), 1);
+        // BPF must have executed — confirms the scenario truly tested
+        // "during BPF execution" per ND-0200.
+        assert!(interp.executed, "BPF must have executed with resident program");
     }
 
     // ===================================================================

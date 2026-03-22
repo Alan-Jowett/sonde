@@ -60,7 +60,7 @@ For pure bug fixes where the spec is already correct, step 4 alone is sufficient
 
 ### Audit prompts
 
-The `prompts/` directory contains reusable audit templates:
+The `prompts/` directory (see [#430](https://github.com/Alan-Jowett/sonde/pull/430)) contains reusable audit templates:
 
 - `sonde-trifecta-audit.md` — cross-document traceability (D1–D7: requirements ↔ design ↔ validation)
 - `sonde-code-compliance-audit.md` — code vs spec compliance (D8–D10: is the code what the spec says?)

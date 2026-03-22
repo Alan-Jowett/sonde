@@ -3632,12 +3632,14 @@ mod tests {
         transport.queue_response(Some(command_frame));
 
         // Send a valid COMMAND frame when the node expects CHUNK — wrong context.
-        // Use the GET_CHUNK seq (starting_seq) as the echoed nonce so the frame
-        // passes HMAC and nonce binding — it is only wrong by msg_type context.
+        // Use the WAKE nonce (1 from MockRng(0)) as echo_nonce so the frame
+        // is otherwise fully valid/authenticated and only wrong by msg_type.
+        // This catches regressions where the node incorrectly tries to treat
+        // the unexpected COMMAND as a real COMMAND during chunk transfer.
         let wrong_context_frame = build_command_response(
             &psk,
             key_hint,
-            starting_seq, // echoes the GET_CHUNK seq, not the WAKE nonce
+            1, // WAKE nonce from MockRng(0) — frame is valid except for context
             2000,
             1720000000000,
             CommandPayload::Nop,

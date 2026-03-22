@@ -2168,10 +2168,15 @@ async fn t_e2e_063e_sonde_pair_gateway_integration() {
 
 /// T-E2E-083 — Instruction budget enforcement through full stack.
 ///
-/// Deploy a BPF program containing an infinite loop through the real
-/// gateway→node chunked transfer. Run with the real `SondeBpfInterpreter`.
-/// Verify the interpreter terminates, the node returns to sleep normally,
-/// and no crash, hang, or panic occurs.
+/// Deploy a BPF program containing a long-running but finite loop through
+/// the real gateway→node chunked transfer. Run with the real
+/// `SondeBpfInterpreter`. Verify the interpreter terminates the program
+/// early, the node returns to sleep normally, and no crash, hang, or panic
+/// occurs.
+///
+/// Uses a bounded loop (200 000 iterations ≈ 600 000 instructions) that
+/// exceeds the 100 000 instruction budget but still terminates naturally
+/// if budget enforcement regresses — preventing CI hangs.
 ///
 /// Covers: bpf-environment.md §3.3, ND-0605
 #[tokio::test(flavor = "multi_thread")]
@@ -2182,9 +2187,16 @@ async fn t_e2e_083_instruction_budget_enforcement() {
     let psk = [0x83; 32];
     env.register_node("budget-node", 1, psk).await;
 
-    // Infinite loop: `ja -1` jumps to itself forever.
+    // Bounded loop: 200 000 iterations × 3 body instructions = 600 000
+    // total, well above the 100 000 budget. The program terminates
+    // naturally if budget enforcement regresses, avoiding CI hangs.
     let bytecode = [
-        0x05, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, // ja -1 (infinite loop)
+        0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+        0xb7, 0x01, 0x00, 0x00, 0x40, 0x0D, 0x03, 0x00, // mov r1, 200000
+        0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // add r0, 1
+        0x07, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, // add r1, -1
+        0x55, 0x01, 0xFD, 0xFF, 0x00, 0x00, 0x00, 0x00, // jne r1, 0, -3
+        0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
     ];
     let (program, hash) = make_program_from_bytecode(&bytecode, VerificationProfile::Resident);
     env.storage.store_program(&program).await.unwrap();
@@ -2219,42 +2231,112 @@ async fn t_e2e_083_instruction_budget_enforcement() {
 
 /// T-E2E-081 — Ephemeral program restrictions through full stack.
 ///
-/// Deploy an ephemeral program that calls `set_next_wake()` (helper 15).
-/// Verify the node's sleep interval remains at its base value (60 s),
-/// confirming the helper was blocked for the ephemeral program.
+/// Validates that both `map_update_elem` (helper 11) and `set_next_wake`
+/// (helper 15) are rejected for ephemeral programs.
+///
+/// 1. Install a resident program WITH a map so that `map_storage` has an
+///    allocated map 0.
+/// 2. Deploy an ephemeral program that calls `map_update_elem` then
+///    `set_next_wake(10)`.
+/// 3. Assert the sleep interval remains at 60 s (set_next_wake rejected).
+/// 4. Assert map 0 was not written (map_update_elem rejected).
 ///
 /// Covers: ND-0604, bpf-env §6.4
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_081_ephemeral_restrictions() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+    use sonde_protocol::MapDef;
 
     let env = E2eTestEnv::new();
     let psk = [0x80; 32];
     env.register_node("ephemeral-restrict-node", 1, psk).await;
 
-    // Ephemeral program: calls set_next_wake(10) → helper 15.
-    // The helper should return -1 for ephemeral programs.
-    // r0 receives the helper return value.
-    let bytecode = [
-        // mov r1, 10           — seconds
-        0xb7, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00,
-        // call 15              — set_next_wake
-        0x85, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00,
-        // exit (r0 = helper return, should be -1)
+    // Step 1: Install a resident program with a single map so map 0 exists.
+    let resident_image = ProgramImage {
+        bytecode: vec![
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+    };
+    let resident_cbor = resident_image.encode_deterministic().unwrap();
+    let sha = TestSha256;
+    let resident_hash = sha.hash(&resident_cbor).to_vec();
+    let resident_size = resident_cbor.len() as u32;
+    let resident_record = ProgramRecord {
+        hash: resident_hash.clone(),
+        image: resident_cbor,
+        size: resident_size,
+        verification_profile: VerificationProfile::Resident,
+        abi_version: None,
+    };
+    env.storage.store_program(&resident_record).await.unwrap();
+
+    let mut node_rec = env
+        .storage
+        .get_node("ephemeral-restrict-node")
+        .await
+        .unwrap()
+        .unwrap();
+    node_rec.assigned_program_hash = Some(resident_hash);
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = SondeBpfInterpreter::new();
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
+    assert_eq!(
+        stats.outcome,
+        WakeCycleOutcome::Sleep { seconds: 60 },
+        "resident install cycle must succeed"
+    );
+    // Confirm map 0 is allocated and empty after resident install.
+    assert!(
+        node.map_storage.get(0).is_some(),
+        "map 0 must be allocated by resident program"
+    );
+
+    // Step 2: Deploy ephemeral program that calls map_update_elem then
+    // set_next_wake. The ephemeral image must NOT declare its own maps
+    // (the node rejects ephemeral programs with maps entirely).
+    let ephemeral_bytecode = [
+        // *(u32*)(r10 - 8) = 0        — key on stack
+        0x62, 0x0A, 0xF8, 0xFF, 0x00, 0x00, 0x00, 0x00,
+        // *(u32*)(r10 - 16) = 42       — value on stack
+        0x62, 0x0A, 0xF0, 0xFF, 0x2A, 0x00, 0x00, 0x00,
+        // r1 = 0                       — map_fd
+        0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = r10
+        0xbf, 0xA2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // r2 += -8                     — key ptr
+        0x07, 0x02, 0x00, 0x00, 0xF8, 0xFF, 0xFF, 0xFF, // r3 = r10
+        0xbf, 0xA3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // r3 += -16                    — value ptr
+        0x07, 0x03, 0x00, 0x00, 0xF0, 0xFF, 0xFF, 0xFF,
+        // call 11                      — map_update_elem (rejected for ephemeral)
+        0x85, 0x00, 0x00, 0x00, 0x0B, 0x00, 0x00, 0x00,
+        // r1 = 10                      — seconds
+        0xb7, 0x01, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00,
+        // call 15                      — set_next_wake (rejected for ephemeral)
+        0x85, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x00, 0x00, // exit
         0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
-    let (program, hash) = make_program_from_bytecode(&bytecode, VerificationProfile::Ephemeral);
-    env.storage.store_program(&program).await.unwrap();
+    let (eph_program, eph_hash) =
+        make_program_from_bytecode(&ephemeral_bytecode, VerificationProfile::Ephemeral);
+    env.storage.store_program(&eph_program).await.unwrap();
 
     env.gateway
         .queue_command(
             "ephemeral-restrict-node",
-            PendingCommand::RunEphemeral { program_hash: hash },
+            PendingCommand::RunEphemeral {
+                program_hash: eph_hash,
+            },
         )
         .await;
 
-    let mut node = NodeProxy::new(1, psk);
-    let mut interpreter = SondeBpfInterpreter::new();
     let stats = node.run_wake_cycle_with(&env, &mut interpreter);
 
     // Verify the ephemeral program was downloaded (GET_CHUNK sent).
@@ -2268,12 +2350,21 @@ async fn t_e2e_081_ephemeral_restrictions() {
         "ephemeral program must be downloaded via chunked transfer"
     );
 
-    // The node must return to sleep at its base interval (60 s), not 10 s.
-    // Since set_next_wake is blocked for ephemeral programs, the sleep
-    // interval must remain unchanged.
+    // set_next_wake must be rejected — sleep at base interval (60 s).
     assert_eq!(
         stats.outcome,
         WakeCycleOutcome::Sleep { seconds: 60 },
         "ephemeral set_next_wake must be rejected; base interval unchanged"
+    );
+
+    // map_update_elem must be rejected — map 0 must remain zero-initialized.
+    let map = node
+        .map_storage
+        .get(0)
+        .expect("map 0 must still be allocated");
+    assert_eq!(
+        map.lookup(0).unwrap(),
+        &[0u8, 0, 0, 0],
+        "ephemeral map_update_elem must be rejected; map value must remain zero"
     );
 }

@@ -4610,6 +4610,11 @@ mod tests {
     fn test_send_recv_oversized_blob_rejected() {
         // ND-0103 / T-N104: send_recv() with oversized blob is rejected.
         // Seq is not advanced and no frame is sent.
+        //
+        // Use a blob of 204 bytes — this is within the raw MAX_PAYLOAD_SIZE
+        // (207) pre-check but exceeds the budget once CBOR overhead (map
+        // header + key + bstr length prefix = 4 bytes) is added, exercising
+        // the post-encoding size check rather than just the fast pre-check.
         let psk = [0xC3; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -4617,7 +4622,7 @@ mod tests {
         let identity = NodeIdentity { key_hint, psk };
         let mut seq = 50u64;
 
-        let blob = vec![0xCD; sonde_protocol::MAX_PAYLOAD_SIZE + 1];
+        let blob = vec![0xCD; 204];
         let result = send_recv_app_data(
             &mut transport,
             &identity,

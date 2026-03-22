@@ -498,7 +498,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            *encoded, *re_encoded,
+            &encoded[..], &re_encoded[..],
             "re-encoding must produce identical bytes (deterministic definite-length)"
         );
     }

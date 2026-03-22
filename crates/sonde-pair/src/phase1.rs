@@ -186,10 +186,11 @@ async fn do_pair_with_gateway(
             return Err(PairingError::PublicKeyMismatch);
         }
         if stored.gateway_id != gw_info.gateway_id {
-            warn!("stored gateway_id does not match presented gateway_id");
-            return Err(PairingError::GatewayAuthFailed(
-                "stored gateway_id does not match presented gateway_id".to_string(),
-            ));
+            warn!(
+                "gateway identity mismatch: stored gateway_id does not match presented gateway_id; \
+                 if the gateway was reinstalled or reset, clear local pairing and re-pair"
+            );
+            return Err(PairingError::GatewayIdMismatch);
         }
         debug!("gateway identity matches stored TOFU record");
     } else {
@@ -1616,7 +1617,7 @@ mod tests {
             let result =
                 pair_with_gateway(&mut transport, &mut store, &rng, &[0xAA; 6], "", None).await;
             assert!(
-                matches!(result, Err(PairingError::GatewayAuthFailed(_))),
+                matches!(result, Err(PairingError::GatewayIdMismatch)),
                 "same public key + different gateway_id must be a TOFU violation, got {result:?}"
             );
         });

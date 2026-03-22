@@ -274,45 +274,61 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
         );
     }
 
-    // Shortest-form encoding verification: walk the parsed CBOR structure
-    // and assert that every integer key uses the minimal single-byte form.
-    // ciborium's `Value::Integer` stores the decoded value; re-encode each
-    // key individually and verify it takes exactly 1 byte (values 0–23 are
-    // encoded as major-type 0 with the value in the lower 5 bits).
-    fn assert_shortest_key(key: &ciborium::Value, context: &str) {
-        let n = key
-            .as_integer()
-            .and_then(|i| u64::try_from(i).ok())
-            .unwrap_or_else(|| panic!("{context}: key must be a positive integer"));
-        assert!(
-            n <= 23,
-            "{context}: key {n} > 23 not expected in program image"
-        );
-        // Re-encode the integer and verify it's exactly 1 byte.
-        let mut buf = Vec::new();
-        ciborium::into_writer(key, &mut buf).unwrap();
-        assert_eq!(
-            buf.len(),
-            1,
-            "{context}: key {n} should be 1 byte (shortest form), got {} bytes: {:02x?}",
-            buf.len(),
-            buf,
-        );
-    }
+    // Shortest-form encoding verification: inspect the raw CBOR bytes
+    // directly. Re-encoding a decoded `ciborium::Value` always produces
+    // minimal encoding, which makes the check a tautology. Instead, walk
+    // the raw bytes and assert that no integer uses the 2-byte form
+    // `[major|24, val]` when `val` fits in the single-byte direct form
+    // (values 0–23).
+    fn assert_no_non_minimal_ints(data: &[u8]) {
+        let mut pos = 0;
+        while pos < data.len() {
+            let byte = data[pos];
+            let major = byte >> 5;
+            let info = byte & 0x1f;
+            pos += 1;
 
-    // Verify outer map keys are shortest-form.
-    for (k, _) in outer_map {
-        assert_shortest_key(k, "outer map");
-    }
+            let val = match info {
+                0..=23 => info as usize,
+                24 => {
+                    assert!(
+                        pos < data.len(),
+                        "truncated CBOR: expected 1-byte value at offset {}",
+                        pos
+                    );
+                    let v = data[pos] as usize;
+                    assert!(
+                        v > 23,
+                        "non-minimal CBOR at byte {}: value {v} \
+                         encoded as 2 bytes but fits in single-byte form",
+                        pos - 1
+                    );
+                    pos += 1;
+                    v
+                }
+                25 => {
+                    pos += 2;
+                    continue;
+                }
+                26 => {
+                    pos += 4;
+                    continue;
+                }
+                27 => {
+                    pos += 8;
+                    continue;
+                }
+                _ => continue, // indefinite-length or break: not expected in deterministic CBOR
+            };
 
-    // Verify inner MapDef keys are shortest-form.
-    let maps_array = outer_map[1].1.as_array().expect("key 2 must hold an array");
-    for (i, map_val) in maps_array.iter().enumerate() {
-        let inner_map = map_val.as_map().expect("MapDef must be a map");
-        for (k, _) in inner_map {
-            assert_shortest_key(k, &format!("MapDef[{i}]"));
+            // Skip over content bytes for byte strings and text strings.
+            if major == 2 || major == 3 {
+                pos += val;
+            }
         }
     }
+
+    assert_no_non_minimal_ints(&cbor);
 
     // Verify round-trip: same input always produces the same bytes.
     let cbor2 = image.encode_deterministic().unwrap();
@@ -465,6 +481,9 @@ async fn t0705_factory_reset_wake_discarded() {
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::NotFound);
 
+    // Snapshot session state from the valid WAKE (before removal).
+    let session_before = gw.session_manager().get_session("reset-node").await;
+
     // Verify: WAKE from the removed node is silently discarded.
     let frame = node.build_wake(2, 1, &[0u8; 32], 3300);
     let resp = gw.process_frame(&frame, node.peer_address()).await;
@@ -473,14 +492,28 @@ async fn t0705_factory_reset_wake_discarded() {
         "WAKE from removed node must be silently discarded"
     );
 
-    // Verify: no *new* session was created for the removed node's second WAKE.
-    // The prior session from the valid WAKE may still be in the session manager
-    // (session cleanup is not part of node removal), but the second WAKE must
-    // not have replaced it — we check that at most 1 session exists.
-    assert!(
-        gw.session_manager().active_count().await <= 1,
-        "removed node's WAKE must not create a new session"
-    );
+    // Verify: the post-removal WAKE did not create or replace a session.
+    // Checking `active_count() <= 1` is insufficient because sessions are
+    // keyed by `node_id` — an overwrite keeps the count at 1. Instead,
+    // snapshot session state before the second WAKE and assert it's unchanged.
+    let session_after = gw.session_manager().get_session("reset-node").await;
+    match (&session_before, &session_after) {
+        (Some(before), Some(after)) => {
+            assert_eq!(
+                before.next_expected_seq, after.next_expected_seq,
+                "session must not be replaced by post-removal WAKE"
+            );
+        }
+        (None, None) => {
+            // Session was cleaned up during removal — no new session either.
+        }
+        (None, Some(_)) => {
+            panic!("post-removal WAKE must not create a new session");
+        }
+        (Some(_), None) => {
+            // Session was cleaned up during removal — acceptable.
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -906,12 +939,24 @@ async fn t0504_many_to_one_handler_routing() {
     };
     let cbor_a = msg_a.encode().unwrap();
     let frame_a = encode_frame(&header_a, &cbor_a, &node_a.psk, &RustCryptoHmac).unwrap();
-    let resp_a = gw.process_frame(&frame_a, node_a.peer_address()).await;
-    if resp_a.is_none() {
-        // Handler process timing issue — skip gracefully on CI.
-        eprintln!("SKIPPED: handler did not respond for node A (CI timing)");
-        return;
-    }
+    let resp_a = {
+        let mut attempt = 0;
+        let max_attempts = 10;
+        let mut result = None;
+        while attempt < max_attempts {
+            result = gw.process_frame(&frame_a, node_a.peer_address()).await;
+            if result.is_some() {
+                break;
+            }
+            attempt += 1;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        result
+    };
+    assert!(
+        resp_a.is_some(),
+        "handler did not respond for node A within bounded retries; routing must be enforced"
+    );
     let (_, msg_a_reply) = decode_response(&resp_a.unwrap(), &node_a.psk);
     assert!(
         matches!(msg_a_reply, GatewayMessage::AppDataReply { .. }),
@@ -929,11 +974,24 @@ async fn t0504_many_to_one_handler_routing() {
     };
     let cbor_b = msg_b.encode().unwrap();
     let frame_b = encode_frame(&header_b, &cbor_b, &node_b.psk, &RustCryptoHmac).unwrap();
-    let resp_b = gw.process_frame(&frame_b, node_b.peer_address()).await;
-    if resp_b.is_none() {
-        eprintln!("SKIPPED: handler did not respond for node B (CI timing)");
-        return;
-    }
+    let resp_b = {
+        let mut attempt = 0;
+        let max_attempts = 10;
+        let mut result = None;
+        while attempt < max_attempts {
+            result = gw.process_frame(&frame_b, node_b.peer_address()).await;
+            if result.is_some() {
+                break;
+            }
+            attempt += 1;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        result
+    };
+    assert!(
+        resp_b.is_some(),
+        "handler did not respond for node B within bounded retries; routing must be enforced"
+    );
     let (_, msg_b_reply) = decode_response(&resp_b.unwrap(), &node_b.psk);
     assert!(
         matches!(msg_b_reply, GatewayMessage::AppDataReply { .. }),
@@ -948,8 +1006,8 @@ async fn t0504_many_to_one_handler_routing() {
 /// After registration + WAKE, the node record must contain all specified
 /// fields with correct values: node_id, key_hint, psk,
 /// assigned_program_hash, schedule_interval_s, firmware_abi_version,
-/// last_battery_mv, last_seen. `current_program_hash` is only set via
-/// PROGRAM_ACK (not tested here — see chunked transfer tests).
+/// last_battery_mv, last_seen, and current_program_hash (None, since
+/// it is only set via PROGRAM_ACK).
 #[tokio::test]
 async fn t0700_registry_entry_all_fields_present() {
     let storage = Arc::new(InMemoryStorage::new());
@@ -1004,6 +1062,11 @@ async fn t0700_registry_entry_all_fields_present() {
     assert!(
         stored.last_seen.is_some(),
         "last_seen must be set after WAKE"
+    );
+    // `current_program_hash` is only set via PROGRAM_ACK, not WAKE.
+    assert_eq!(
+        stored.current_program_hash, None,
+        "current_program_hash must not be set by WAKE alone"
     );
 }
 
@@ -1229,6 +1292,13 @@ def decode_item(data, idx):
         return data[idx:idx+val], idx+val
     elif major == 3:
         return data[idx:idx+val].decode('utf-8'), idx+val
+    elif major == 5:
+        result = {}
+        for _ in range(val):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        return result, idx
     else:
         raise ValueError(f"unsupported major type {major}")
 

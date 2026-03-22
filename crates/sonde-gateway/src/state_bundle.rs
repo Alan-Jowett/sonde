@@ -107,6 +107,7 @@ const PHONE_KEY_STATUS: i64 = 5;
 const HANDLER_KEY_MATCHERS: i64 = 1;
 const HANDLER_KEY_COMMAND: i64 = 2;
 const HANDLER_KEY_ARGS: i64 = 3;
+const HANDLER_KEY_REPLY_TIMEOUT_MS: i64 = 4;
 
 // ── Error type ───────────────────────────────────────────────────────────────
 
@@ -576,6 +577,13 @@ fn handler_config_to_cbor(h: &HandlerConfig) -> ciborium::value::Value {
         entries.push((
             Value::Integer(HANDLER_KEY_ARGS.into()),
             Value::Array(h.args.iter().map(|a| Value::Text(a.clone())).collect()),
+        ));
+    }
+
+    if let Some(timeout) = &h.reply_timeout {
+        entries.push((
+            Value::Integer(HANDLER_KEY_REPLY_TIMEOUT_MS.into()),
+            Value::Integer((timeout.as_millis() as i64).into()),
         ));
     }
 
@@ -1302,6 +1310,7 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
     let mut matchers: Vec<ProgramMatcher> = Vec::new();
     let mut command: Option<String> = None;
     let mut args: Vec<String> = Vec::new();
+    let mut reply_timeout: Option<Duration> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -1358,6 +1367,15 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
                         }
                     }
                 }
+                Some(HANDLER_KEY_REPLY_TIMEOUT_MS) => {
+                    if let Value::Integer(ms) = v {
+                        if let Ok(ms_val) = u64::try_from(ms) {
+                            if ms_val > 0 {
+                                reply_timeout = Some(Duration::from_millis(ms_val));
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1370,7 +1388,7 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
         matchers,
         command,
         args,
-        reply_timeout: None,
+        reply_timeout,
     })
 }
 

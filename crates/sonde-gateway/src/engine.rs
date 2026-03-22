@@ -863,10 +863,11 @@ impl Gateway {
                         );
                         let mut pending = self.pending_commands.write().await;
                         if let Some(cmds) = pending.get_mut(&node.node_id) {
-                            if let Some(pos) = cmds.iter().position(|c| {
-                                matches!(c, PendingCommand::RunEphemeral { program_hash: h } if h == &program.hash)
-                            }) {
-                                cmds.remove(pos);
+                            cmds.retain(|c| {
+                                !matches!(c, PendingCommand::RunEphemeral { program_hash: h } if h == &program.hash)
+                            });
+                            if cmds.is_empty() {
+                                pending.remove(&node.node_id);
                             }
                         }
                     } else {

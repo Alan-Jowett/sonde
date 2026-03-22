@@ -1939,7 +1939,9 @@ mod tests {
         awaiting_confirm: Cell<bool>,
         chunks_sent: RefCell<Vec<Vec<u8>>>,
         event_queue: RefCell<VecDeque<BleEvent>>,
+        #[allow(dead_code)]
         enabled: bool,
+        #[allow(dead_code)]
         pairing_replies: Vec<bool>,
     }
 
@@ -2285,9 +2287,38 @@ mod tests {
         let mut bridge2 = make_bridge_with_ble();
         bridge2.ble.inject_event(BleEvent::Recv(vec![]));
         bridge2.poll();
+
         // The bridge forwards whatever the BLE layer produces. The codec may
-        // accept or reject empty BLE_RECV; either way no crash.
-        // (The real guarantee is that the BLE layer never emits empty Recv.)
+        // accept or reject empty BLE_RECV; either way no crash. We assert
+        // that if a frame is produced, it is a BLE_RECV with empty payload,
+        // and that no other modem messages are synthesized.
+        let tx2 = bridge2.usb.take_tx();
+        let mut decoder2 = FrameDecoder::new();
+        decoder2.push(&tx2);
+
+        let decoded = decoder2.decode().unwrap();
+        if let Some(msg) = decoded {
+            match msg {
+                ModemMessage::BleRecv(r) => {
+                    assert!(
+                        r.ble_data.is_empty(),
+                        "expected empty ble_data for empty BleEvent::Recv"
+                    );
+                }
+                other => {
+                    panic!(
+                        "unexpected modem message for empty BleEvent::Recv: {:?}",
+                        other
+                    );
+                }
+            }
+        } else {
+            // No frame forwarded is also acceptable: empty BLE_RECV dropped.
+            assert!(
+                tx2.is_empty(),
+                "decoder returned None but serial buffer was not empty"
+            );
+        }
     }
 
     /// Validates: MD-0409 AC2 — multiple Write Long payloads arrive as

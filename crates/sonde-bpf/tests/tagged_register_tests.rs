@@ -19,7 +19,7 @@ use sonde_bpf::interpreter::{
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn insn(opc: u8, dst: u8, src: u8, off: i16, imm: i32) -> [u8; 8] {
-    let regs = (src << 4) | (dst & 0x0f);
+    let regs = ((src & 0x0f) << 4) | (dst & 0x0f);
     let off_bytes = off.to_le_bytes();
     let imm_bytes = imm.to_le_bytes();
     [
@@ -81,6 +81,7 @@ fn t_bpf_002_store_via_map_descriptor() {
         unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) },
         Err(BpfError::NonDereferenceableAccess { .. })
     ));
+    drop(map_buf);
 }
 
 /// T-BPF-003: Load with addr+offset wrapping past u64::MAX → `MemoryAccessViolation`
@@ -237,6 +238,7 @@ fn t_bpf_009_map_descriptor_add() {
         unsafe { execute_program(&prog, &mut ctx, &[], &maps, false, UNLIMITED_BUDGET) },
         Err(BpfError::InvalidPointerArithmetic { .. })
     ));
+    drop(map_buf);
 }
 
 /// T-BPF-010: MUL on pointer → result is scalar (tag cleared)
@@ -556,6 +558,7 @@ fn t_bpf_024_map_value_or_null_returns_null() {
         unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) },
         Err(BpfError::NonDereferenceableAccess { .. })
     ));
+    drop(map_buf);
 }
 
 /// T-BPF-025: `MapValueOrNull` helper returns valid pointer → R0 tagged MapValue
@@ -593,6 +596,7 @@ fn t_bpf_025_map_value_or_null_returns_valid() {
     let result =
         unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) };
     assert_eq!(result.unwrap(), 0xBB);
+    drop(map_buf);
 }
 
 /// T-BPF-026: Helper returns out-of-bounds pointer → `MemoryAccessViolation`
@@ -630,6 +634,7 @@ fn t_bpf_026_helper_returns_oob_pointer() {
         unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) },
         Err(BpfError::MemoryAccessViolation { .. })
     ));
+    drop(map_buf);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -666,6 +671,7 @@ fn t_bpf_027_helper_expects_map_descriptor_gets_scalar() {
         unsafe { execute_program(&prog, &mut ctx, &helpers, &maps, false, UNLIMITED_BUDGET) },
         Err(BpfError::InvalidHelperArgument { .. })
     ));
+    drop(map_buf);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -695,6 +701,7 @@ fn t_bpf_028_ld_dw_imm_negative_map_index() {
         "expected InvalidMapIndex with index=-1, got {:?}",
         result
     );
+    drop(map_buf);
 }
 
 /// T-BPF-029: LD_DW_IMM src=1 with imm ≥ maps.len() → `InvalidMapIndex`
@@ -730,6 +737,7 @@ fn t_bpf_029_ld_dw_imm_out_of_bounds_map_index() {
         "expected InvalidMapIndex with index=5, got {:?}",
         result
     );
+    drop((map_buf_0, map_buf_1));
 }
 
 /// T-BPF-030: LD_DW_IMM src=1 happy path — R1 tagged MapDescriptor
@@ -774,4 +782,5 @@ fn t_bpf_030_ld_dw_imm_map_descriptor_happy_path() {
             .unwrap(),
         1
     );
+    drop(map_buf);
 }

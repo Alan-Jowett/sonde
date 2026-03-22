@@ -514,7 +514,7 @@ async fn gw0507_node_timeout_event_with_fields() {
     // rather than using a fixed sleep which is flaky on slow CI runners.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let contents = loop {
-        if let Ok(text) = std::fs::read_to_string(&event_file) {
+        if let Ok(text) = tokio::fs::read_to_string(&event_file).await {
             if text.lines().next().is_some() {
                 break text;
             }

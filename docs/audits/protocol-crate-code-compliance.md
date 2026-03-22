@@ -208,7 +208,7 @@ depend on `alloc`.  Add `features = ["alloc"]` to the ciborium dependency.
 | **Severity** | Low |
 | **Category** | D9 — Undocumented Behavior |
 | **Spec ref** | `protocol-crate-design.md` §8 |
-| **Code location** | `crates/sonde-protocol/src/error.rs:10` |
+| **Code location** | `crates/sonde-protocol/src/error.rs` (pre-#375) |
 | **Confidence** | Definite |
 | **Status** | **Resolved** — removed in #375 |
 

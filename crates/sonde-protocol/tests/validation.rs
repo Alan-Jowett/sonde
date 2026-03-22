@@ -1930,13 +1930,13 @@ fn test_p068() {
 }
 
 // ---------------------------------------------------------------------------
-// T-P063: CommandPayload::command_type() derivation covers all variants
+// T-P090: CommandPayload::command_type() derivation covers all variants
 // ---------------------------------------------------------------------------
 
 /// Verify that `CommandPayload::command_type()` returns the correct wire code
 /// for every variant, and that encode → decode round-trips preserve it.
 #[test]
-fn test_p063_command_type_derived_from_payload() {
+fn test_p090_command_type_derived_from_payload() {
     let variants: Vec<(CommandPayload, u8)> = vec![
         (CommandPayload::Nop, CMD_NOP),
         (

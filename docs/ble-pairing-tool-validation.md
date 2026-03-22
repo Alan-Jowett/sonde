@@ -44,6 +44,8 @@ This document defines test cases that validate the BLE pairing tool against the 
 | SHA-256 | T-PT-303 |
 | CSPRNG | T-PT-302, T-PT-702 |
 
+**Test ID convention:** Test IDs follow the numeric pattern `T-PT-NNN`. When a test case is added after initial numbering to cover a gap between two adjacent IDs, an alphabetic suffix is used (e.g., `T-PT-208a` for a test inserted between T-PT-208 and T-PT-209).
+
 ---
 
 ## 2  Test environment
@@ -380,7 +382,7 @@ TestNode {
 
 **Procedure:**
 1. Start with an empty pairing store.
-2. Complete a successful gateway authentication.
+2. Complete a successful Phase 1 (phone registration) flow through to `PHONE_REGISTERED`.
 3. Assert: `gw_public_key` and `gateway_id` are persisted in the pairing store.
 
 ---

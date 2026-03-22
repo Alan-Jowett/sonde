@@ -280,6 +280,8 @@ The node MUST store its 256-bit PSK in a dedicated flash partition. The firmware
 
 ---
 
+> **Note:** ND-0401 is intentionally unassigned (requirement removed during consolidation).
+
 ### ND-0402  Factory reset
 
 **Priority:** Must  

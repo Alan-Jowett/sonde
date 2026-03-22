@@ -743,10 +743,15 @@ async fn gw1208_explicit_close_ble_pairing_sends_disable() {
     let resp = admin.open_ble_pairing(request).await.unwrap();
     let mut _stream = resp.into_inner();
 
-    // Verify BLE_ENABLE was sent.
+    // Verify BLE_ENABLE was sent (with timeout to avoid hanging CI).
     let mut decoder = FrameDecoder::new();
     let mut buf = [0u8; 256];
-    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+    let msg = tokio::time::timeout(
+        Duration::from_secs(5),
+        read_modem_msg(&mut server, &mut decoder, &mut buf),
+    )
+    .await
+    .expect("timed out waiting for BLE_ENABLE");
     assert!(
         matches!(msg, ModemMessage::BleEnable),
         "BLE_ENABLE must be sent on open, got {msg:?}"
@@ -761,8 +766,13 @@ async fn gw1208_explicit_close_ble_pairing_sends_disable() {
     let close_resp = admin.close_ble_pairing(Request::new(Empty {})).await;
     assert!(close_resp.is_ok(), "CloseBlePairing must succeed");
 
-    // Verify BLE_DISABLE was sent to modem.
-    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+    // Verify BLE_DISABLE was sent to modem (with timeout to fail fast).
+    let msg = tokio::time::timeout(
+        Duration::from_secs(5),
+        read_modem_msg(&mut server, &mut decoder, &mut buf),
+    )
+    .await
+    .expect("timed out waiting for BLE_DISABLE");
     assert!(
         matches!(msg, ModemMessage::BleDisable),
         "BLE_DISABLE must be sent on explicit close, got {msg:?}"

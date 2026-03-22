@@ -573,10 +573,16 @@ async fn gw1205_ble_indicate_sent_to_modem() {
     let payload = vec![0x01, 0x02, 0x03, 0x04, 0x05];
     transport.send_ble_indicate(&payload).await.unwrap();
 
-    // Read the BLE_INDICATE from the mock modem side
+    // Read the BLE_INDICATE from the mock modem side (with timeout to avoid
+    // hanging CI if the transport regresses and stops emitting the frame).
     let mut decoder = FrameDecoder::new();
     let mut buf = [0u8; 256];
-    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    let msg = tokio::time::timeout(
+        Duration::from_secs(5),
+        read_next_message(&mut server, &mut decoder, &mut buf),
+    )
+    .await
+    .expect("timed out waiting for BLE_INDICATE from modem transport");
     match msg {
         ModemMessage::BleIndicate(bi) => {
             assert_eq!(

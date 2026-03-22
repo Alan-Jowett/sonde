@@ -307,22 +307,78 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
                     v
                 }
                 25 => {
+                    assert!(
+                        pos + 1 < data.len(),
+                        "truncated CBOR: expected 2-byte value at offset {}",
+                        pos
+                    );
+                    let v = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+                    assert!(
+                        v > 0xff,
+                        "non-minimal CBOR at byte {}: value {v} \
+                         encoded as 2-byte uint but fits in 1 byte",
+                        pos - 1
+                    );
                     pos += 2;
-                    continue;
+                    v
                 }
                 26 => {
+                    assert!(
+                        pos + 3 < data.len(),
+                        "truncated CBOR: expected 4-byte value at offset {}",
+                        pos
+                    );
+                    let v = u32::from_be_bytes([
+                        data[pos],
+                        data[pos + 1],
+                        data[pos + 2],
+                        data[pos + 3],
+                    ]) as usize;
+                    assert!(
+                        v > 0xffff,
+                        "non-minimal CBOR at byte {}: value {v} \
+                         encoded as 4-byte uint but fits in 2 bytes",
+                        pos - 1
+                    );
                     pos += 4;
-                    continue;
+                    v
                 }
                 27 => {
+                    assert!(
+                        pos + 7 < data.len(),
+                        "truncated CBOR: expected 8-byte value at offset {}",
+                        pos
+                    );
+                    let v = u64::from_be_bytes([
+                        data[pos],
+                        data[pos + 1],
+                        data[pos + 2],
+                        data[pos + 3],
+                        data[pos + 4],
+                        data[pos + 5],
+                        data[pos + 6],
+                        data[pos + 7],
+                    ]) as usize;
+                    assert!(
+                        v > 0xffff_ffff,
+                        "non-minimal CBOR at byte {}: value {v} \
+                         encoded as 8-byte uint but fits in 4 bytes",
+                        pos - 1
+                    );
                     pos += 8;
-                    continue;
+                    v
                 }
                 _ => continue, // indefinite-length or break: not expected in deterministic CBOR
             };
 
             // Skip over content bytes for byte strings and text strings.
             if major == 2 || major == 3 {
+                assert!(
+                    pos + val <= data.len(),
+                    "truncated CBOR: string length {} at offset {} exceeds buffer",
+                    val,
+                    pos - 1
+                );
                 pos += val;
             }
         }
@@ -416,6 +472,11 @@ async fn t0600_hmac_failure_state_unchanged() {
         "next_expected_seq must not change after HMAC failure"
     );
     assert_eq!(starting_seq, session_after.next_expected_seq);
+    assert_eq!(
+        std::mem::discriminant(&session_before.state),
+        std::mem::discriminant(&session_after.state),
+        "session state variant must not change after HMAC failure"
+    );
 
     // Verify: registry unchanged (battery_mv, firmware_abi_version not overwritten
     // by the bad frame's payload values).
@@ -939,23 +1000,15 @@ async fn t0504_many_to_one_handler_routing() {
     };
     let cbor_a = msg_a.encode().unwrap();
     let frame_a = encode_frame(&header_a, &cbor_a, &node_a.psk, &RustCryptoHmac).unwrap();
-    let resp_a = {
-        let mut attempt = 0;
-        let max_attempts = 10;
-        let mut result = None;
-        while attempt < max_attempts {
-            result = gw.process_frame(&frame_a, node_a.peer_address()).await;
-            if result.is_some() {
-                break;
-            }
-            attempt += 1;
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        result
-    };
+    let resp_a = tokio::time::timeout(
+        Duration::from_millis(500),
+        gw.process_frame(&frame_a, node_a.peer_address()),
+    )
+    .await
+    .expect("handler did not respond for node A within timeout; routing must be enforced");
     assert!(
         resp_a.is_some(),
-        "handler did not respond for node A within bounded retries; routing must be enforced"
+        "handler did not respond for node A; routing must be enforced"
     );
     let (_, msg_a_reply) = decode_response(&resp_a.unwrap(), &node_a.psk);
     assert!(
@@ -974,23 +1027,15 @@ async fn t0504_many_to_one_handler_routing() {
     };
     let cbor_b = msg_b.encode().unwrap();
     let frame_b = encode_frame(&header_b, &cbor_b, &node_b.psk, &RustCryptoHmac).unwrap();
-    let resp_b = {
-        let mut attempt = 0;
-        let max_attempts = 10;
-        let mut result = None;
-        while attempt < max_attempts {
-            result = gw.process_frame(&frame_b, node_b.peer_address()).await;
-            if result.is_some() {
-                break;
-            }
-            attempt += 1;
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        result
-    };
+    let resp_b = tokio::time::timeout(
+        Duration::from_millis(500),
+        gw.process_frame(&frame_b, node_b.peer_address()),
+    )
+    .await
+    .expect("handler did not respond for node B within timeout; routing must be enforced");
     assert!(
         resp_b.is_some(),
-        "handler did not respond for node B within bounded retries; routing must be enforced"
+        "handler did not respond for node B; routing must be enforced"
     );
     let (_, msg_b_reply) = decode_response(&resp_b.unwrap(), &node_b.psk);
     assert!(

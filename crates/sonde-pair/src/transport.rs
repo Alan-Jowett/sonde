@@ -64,6 +64,8 @@ pub struct MockBleTransport {
     pub write_error: Option<PairingError>,
     /// Count of `disconnect()` calls for resource-leak verification.
     pub disconnect_count: usize,
+    /// Count of `read_indication()` calls for retry verification.
+    pub read_call_count: usize,
 }
 
 impl MockBleTransport {
@@ -77,6 +79,7 @@ impl MockBleTransport {
             connect_error: None,
             write_error: None,
             disconnect_count: 0,
+            read_call_count: 0,
         }
     }
 
@@ -133,10 +136,12 @@ impl BleTransport for MockBleTransport {
         characteristic: u128,
         data: &[u8],
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
+        // Record every attempted write, even when an injected error is returned.
+        self.written.push((service, characteristic, data.to_vec()));
+
         if let Some(err) = self.write_error.take() {
             return Box::pin(async move { Err(err) });
         }
-        self.written.push((service, characteristic, data.to_vec()));
         Box::pin(async { Ok(()) })
     }
 
@@ -146,6 +151,7 @@ impl BleTransport for MockBleTransport {
         _characteristic: u128,
         _timeout_ms: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PairingError>> + '_>> {
+        self.read_call_count += 1;
         let response = self.responses.pop_front();
         Box::pin(async move {
             match response {

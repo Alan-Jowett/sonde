@@ -1274,8 +1274,8 @@ mod tests {
             );
             assert_eq!(
                 transport.written.len(),
-                0,
-                "no write should be recorded — the failed write must not be silently retried"
+                1,
+                "exactly one write attempt — the failed write must not be silently retried"
             );
         });
     }
@@ -1306,6 +1306,12 @@ mod tests {
                 transport.written.len(),
                 1,
                 "exactly one write before timeout — no retry of the read"
+            );
+            // And exactly one read_indication call — the timeout must not trigger a retry.
+            assert_eq!(
+                transport.read_call_count,
+                1,
+                "exactly one read_indication call — no implicit retries on timeout"
             );
         });
     }

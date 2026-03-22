@@ -31,7 +31,10 @@ pub async fn read_modem_msg(
             Ok(None) => {}
             Err(e) => panic!("decode error: {e}"),
         }
-        let n = stream.read(buf).await.expect("read failed");
+        let n = tokio::time::timeout(Duration::from_secs(10), stream.read(buf))
+            .await
+            .expect("timed out waiting for modem message")
+            .expect("read failed");
         assert!(n > 0, "stream closed unexpectedly");
         decoder.push(&buf[..n]);
     }

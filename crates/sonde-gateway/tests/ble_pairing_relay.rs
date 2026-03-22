@@ -220,10 +220,13 @@ async fn t1224_ble_gatt_server_via_modem_relay() {
 
     // The gateway's BLE loop processes the message. We simulate the BLE
     // loop inline since integration tests don't start the gateway binary.
-    let ble_event = transport
-        .recv_ble_event()
-        .await
-        .expect("expected BLE event");
+    let ble_event = tokio::time::timeout(
+        Duration::from_secs(5),
+        transport.recv_ble_event(),
+    )
+    .await
+    .expect("timed out waiting for BLE event")
+    .expect("expected BLE event");
     let recv_data = match ble_event {
         sonde_gateway::modem::BleEvent::Recv(br) => br.ble_data,
         other => panic!("expected BleEvent::Recv, got {other:?}"),

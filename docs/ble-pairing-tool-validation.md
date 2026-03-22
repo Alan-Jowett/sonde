@@ -19,7 +19,7 @@ This document defines test cases that validate the BLE pairing tool against the 
 
 **Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), and PT-0104 (separation of concerns) are structural constraints validated by CI build targets (Android `aarch64-linux-android`, Windows `x86_64-pc-windows-msvc`) and code review of `Cargo.toml` dependency graphs.  They do not have runtime test cases in this document.  PT-1004 (reusable core) is validated by T-PT-1004, which asserts the crate builds without platform features.
 
-**Testing meta-requirement traceability:** The following mapping shows how requirements PT-1200–PT-1206 are satisfied by the test suites in this document:
+**Testing meta-requirement traceability:** The following mapping shows how requirements PT-1000–PT-1206 are satisfied by the test suites in this document:
 
 | Meta-requirement | Description | Satisfied by |
 |---|---|---|

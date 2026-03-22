@@ -791,7 +791,7 @@ mod tests {
     /// Validates: PT-1003
     ///
     /// Inject a GATT write failure on the NODE_PROVISION write.
-    /// Assert that zero writes were recorded (the failed write is not retried).
+    /// Assert that exactly one write was recorded (the failed write is not retried).
     #[test]
     fn t_pt_803_no_implicit_retries_phase2_write() {
         let rt = tokio::runtime::Builder::new_current_thread()

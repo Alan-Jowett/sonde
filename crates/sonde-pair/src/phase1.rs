@@ -1250,7 +1250,7 @@ mod tests {
     /// Validates: PT-1003
     ///
     /// Inject a GATT write failure on the first REQUEST_GW_INFO write.
-    /// Assert that exactly zero writes were recorded (the failed write is not
+    /// Assert that exactly one write was recorded (the failed write is not
     /// retried) and the error propagates to the caller.
     #[test]
     fn t_pt_803_no_implicit_retries_phase1_write() {

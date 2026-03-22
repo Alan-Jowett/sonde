@@ -124,7 +124,7 @@ A complete, open-source mechanical design tailored to the sensor board. CAD file
 
 - Sleep current against the Stage 1 devboard baseline (target: ≤ 10 µA)
 - Full firmware compatibility without changes
-- Field programming and OTA update flow
+- Field programming and over-the-air BPF program update flow (no firmware OTA)
 - BOM cost and global sourcing
 
 ### Outcome

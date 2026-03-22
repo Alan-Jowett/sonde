@@ -2083,12 +2083,26 @@ mod tests {
         bridge.poll();
 
         // Only MODEM_READY should appear — no stale RECV_FRAMEs.
+        // Decode the entire tx buffer to catch any trailing messages.
         let tx = bridge.usb.take_tx();
-        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        let mut remaining = tx.as_slice();
+        let mut messages = Vec::new();
+        while !remaining.is_empty() {
+            let (msg, consumed) = decode_modem_frame(remaining)
+                .expect("failed to decode frame from tx buffer");
+            messages.push(msg);
+            remaining = &remaining[consumed..];
+        }
+        assert_eq!(
+            messages.len(),
+            1,
+            "expected exactly one message after reconnect, got {}",
+            messages.len()
+        );
         assert!(
-            matches!(msg, ModemMessage::ModemReady(_)),
+            matches!(messages[0], ModemMessage::ModemReady(_)),
             "only MODEM_READY expected after reconnect, got {:?}",
-            msg
+            messages[0]
         );
 
         // Verify the radio queue is empty (frames were consumed, not re-queued).

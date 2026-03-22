@@ -1820,7 +1820,13 @@ fn test_p067() {
     // responsibility of the node/gateway state machines, not the codec).
     let psk = [0x42u8; 32];
 
-    let payloads: Vec<Vec<u8>> = vec![vec![0x11; 8], vec![0x22; 8], vec![0x33; 8]];
+    let payloads: Vec<Vec<u8>> = vec![
+        vec![0x11; 8],
+        vec![0x22; 8],
+        vec![0x33; 8],
+        vec![0x44; 8],
+        vec![0x55; 8],
+    ];
 
     let mut frames = Vec::new();
     for (i, blob) in payloads.iter().enumerate() {
@@ -1834,6 +1840,7 @@ fn test_p067() {
         frames.push(frame);
     }
 
+    let mut prev_nonce = 0u64;
     for (i, raw) in frames.iter().enumerate() {
         let decoded = decode_frame(raw).unwrap();
         assert!(verify_frame(&decoded, &psk, &SoftwareHmac));
@@ -1844,6 +1851,13 @@ fn test_p067() {
             "APP_DATA[{}] nonce mismatch",
             i
         );
+        // Strict monotonic ordering: each nonce must exceed the previous.
+        assert!(
+            decoded.header.nonce > prev_nonce,
+            "APP_DATA[{i}] nonce {} must be strictly greater than previous {prev_nonce}",
+            decoded.header.nonce
+        );
+        prev_nonce = decoded.header.nonce;
 
         let msg = NodeMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
         match msg {

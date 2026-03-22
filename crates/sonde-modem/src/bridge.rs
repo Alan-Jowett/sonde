@@ -89,8 +89,10 @@ pub trait Ble {
     fn enable(&mut self);
     /// Disable BLE advertising and disconnect any active BLE client (MD-0407).
     ///
-    /// Implementations must also clear any pending event queue and indication
-    /// queue so that stale BLE data does not leak after RESET.
+    /// Implementations **must not** drop disconnect events here; suppression
+    /// of stale events across RESET is handled by the bridge reset logic.
+    /// Implementations must clear the indication queue so partial fragments
+    /// are not sent to the next client.
     fn disable(&mut self);
     /// Send an indication to the connected BLE client (MD-0408).
     ///
@@ -309,6 +311,9 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         self.radio.reset_state();
         // BLE advertising is off by default after RESET (MD-0412).
         self.ble.disable();
+        // Drain any stale BLE events (including BLE_DISCONNECTED from the
+        // disable call above) so they do not leak into the next session.
+        while self.ble.drain_event().is_some() {}
         self.counters.reset();
         self.decoder.reset();
         self.send_modem_ready();
@@ -1022,10 +1027,10 @@ mod tests {
         }
         fn disable(&mut self) {
             self.enabled = false;
-            // Ble::disable() contract: clear pending events and indications
-            // so no stale BLE data leaks across RESET (MD-0412).
+            // Ble::disable() contract: clear indications so partial fragments
+            // are not sent to the next client. Events are NOT cleared here —
+            // the bridge reset logic drains stale events (MD-0412).
             self.indicated.clear();
-            self.event_queue.borrow_mut().clear();
         }
         fn indicate(&mut self, data: &[u8]) {
             // Ble contract: empty data is a no-op.

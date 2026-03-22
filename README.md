@@ -24,6 +24,8 @@ Nodes run uniform firmware and execute behavior defined by BPF programs ([RFC 96
 
 > **Status:** Active development — protocol, gateway, modem, and node crates are implemented and tested. See [Project status](#project-status) below.
 
+> ⚠️ **Spec-first project** — edit the [specification documents](docs/) before changing code. Code modules may be regenerated from specs. See [Contributing](docs/contributing.md#spec-first-development-model).
+
 ---
 
 ## Project status

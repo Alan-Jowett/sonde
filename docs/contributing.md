@@ -26,6 +26,49 @@
 
 ---
 
+## Spec-first development model
+
+Sonde follows a **spec-driven development workflow**. The specification documents — not the source code — are the source of truth. Every component has a document trifecta:
+
+| Document | Purpose | Example |
+|----------|---------|---------|
+| **Requirements** (`*-requirements.md`) | What to build — REQ-IDs, acceptance criteria | `gateway-requirements.md` |
+| **Design** (`*-design.md`) | How to build it — architecture, modules, traits | `gateway-design.md` |
+| **Validation** (`*-validation.md`) | How to verify it — test cases, traceability matrix | `gateway-validation.md` |
+
+### Why this matters
+
+Code modules may be **regenerated from the spec** by LLM agents. If you edit code without updating the corresponding spec documents, your changes may be silently overwritten the next time a module is regenerated or audited against the spec.
+
+### The contribution workflow
+
+For any change that affects behavior:
+
+1. **Update the requirements doc** — add or modify REQ-IDs and acceptance criteria.
+2. **Update the design doc** — describe how the change is realized architecturally.
+3. **Update the validation doc** — add or modify test cases with traceability links.
+4. **Implement the code** — write the code that satisfies the spec.
+5. **Audit** — verify the code matches the spec (see `prompts/` for audit templates).
+
+For pure bug fixes where the spec is already correct, step 4 alone is sufficient — but add a test (step 3) if one is missing.
+
+### What NOT to do
+
+- **Don't edit code without updating the spec.** The spec trifecta must always reflect the intended behavior. Code that drifts from the spec will be flagged by traceability audits.
+- **Don't add features by code alone.** A feature without a requirement ID is untracked and untestable against the spec.
+- **Don't modify test assertions without checking the validation doc.** Test cases are specified in the validation document; the code tests should match.
+
+### Audit prompts
+
+The `prompts/` directory contains reusable audit templates:
+
+- `sonde-trifecta-audit.md` — cross-document traceability (D1–D7: requirements ↔ design ↔ validation)
+- `sonde-code-compliance-audit.md` — code vs spec compliance (D8–D10: is the code what the spec says?)
+- `sonde-test-compliance-audit.md` — test vs spec compliance (D11–D13: do the tests match the validation plan?)
+- `sonde-audit-guide.md` — workflow guide for running audits
+
+---
+
 ## Requirements for all contributions
 
 Every pull request must satisfy the following requirements before it will be merged.

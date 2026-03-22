@@ -48,7 +48,6 @@ Open a new LLM session and paste the contents of
 {{design_doc}}       →  paste contents of modem-design.md
 {{validation_plan}}  →  paste contents of modem-validation.md
 {{focus_areas}}      →  "all" (or narrow: "security requirements only")
-{{audience}}         →  "engineering team"
 ```
 
 For large documents, you may need to use a model with a large context
@@ -65,7 +64,6 @@ npx @alan-jowett/promptkit assemble audit-traceability \
   -p design_doc="$(cat docs/modem-design.md)" \
   -p validation_plan="$(cat docs/modem-validation.md)" \
   -p focus_areas="all" \
-  -p audience="engineering team" \
   -o modem-trifecta-audit.md
 ```
 
@@ -95,7 +93,6 @@ Open a new LLM session and paste the contents of
 {{design_doc}}        →  paste contents of modem-design.md (or "N/A")
 {{code_context}}      →  paste key source files from crates/sonde-modem/
 {{focus_areas}}       →  "all" (or narrow: "authentication requirements")
-{{audience}}          →  "engineering team"
 ```
 
 For the code context, focus on the **behavioral surface**:
@@ -138,7 +135,6 @@ Open a new LLM session and paste the contents of
 {{validation_plan}}   →  paste contents of modem-validation.md
 {{test_code}}         →  paste test files from crates/sonde-modem/tests/
 {{focus_areas}}       →  "all" (or narrow: "TC-001 through TC-020")
-{{audience}}          →  "QA leads"
 ```
 
 For the test code, focus on:
@@ -162,7 +158,7 @@ For components with many test cases, use `focus_areas` to narrow:
 ## Recommended Order
 
 1. **Modem** — smallest component, good first test
-2. **Protocol crate** — well-tested (41 tests + 4 fuzz targets)
+2. **Protocol crate** — well-tested (validation suite + fuzz targets)
 3. **Node** — recently closed gaps (#369), interesting to verify
 4. **Gateway** — largest surface, most likely to surface drift
 5. **Pairing tool** — biggest spec/code divergence, most findings expected

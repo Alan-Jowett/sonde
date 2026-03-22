@@ -602,12 +602,17 @@ not the code's complexity.
 The following label range is reserved for future specification drift
 categories involving test code:
 
-- **D11–D13**: Reserved for **test compliance** drift (validation plan
-  vs. test code). Example: D11_UNIMPLEMENTED_TEST_CASE — a test case in
-  the validation plan has no corresponding automated test.
+The following label range in the overall D-series is used for
+specification drift categories involving test code, but it is defined
+in a separate template:
 
-These labels will be defined when the `audit-test-compliance` template
-is added to the library.
+- **D11–D13**: **Test compliance** drift (validation plan vs. test
+  code). These labels are defined and described in
+  `prompts/sonde-test-compliance-audit.md` and MUST NOT be redefined
+  or repurposed by this template.
+
+Refer to the `sonde-test-compliance-audit` prompt for the precise
+semantics and usage guidelines for D11–D13.
 
 ## Ranking Criteria
 

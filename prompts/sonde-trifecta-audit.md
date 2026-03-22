@@ -457,13 +457,21 @@ categories involving implementation and test code:
 - **D8–D10**: Reserved for **code compliance** drift (requirements/design
   vs. source code). Example: D8_UNIMPLEMENTED_REQUIREMENT — a requirement
   has no corresponding implementation in source code.
-- **D11–D13**: Reserved for **test compliance** drift (validation plan
-  vs. test code). Example: D11_UNIMPLEMENTED_TEST_CASE — a test case in
-  the validation plan has no corresponding automated test.
+## Code and Test Compliance Labels
 
-These labels will be defined when the corresponding audit templates
-(`audit-code-compliance`, `audit-test-compliance`) are added to the
-library.
+The following label ranges cover specification drift categories involving
+implementation and test code:
+
+- **D8–D10**: **Code compliance** drift (requirements/design vs. source
+  code). Example: D8_UNIMPLEMENTED_REQUIREMENT — a requirement has no
+  corresponding implementation in source code.
+- **D11–D13**: **Test compliance** drift (validation plan vs. test code).
+  Example: D11_UNIMPLEMENTED_TEST_CASE — a test case in the validation
+  plan has no corresponding automated test.
+
+These labels are used by the corresponding audit templates
+(`sonde-code-compliance-audit`, `sonde-test-compliance-audit`) in the
+`prompts/` directory.
 
 ## Ranking Criteria
 

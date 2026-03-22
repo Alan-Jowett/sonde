@@ -238,6 +238,12 @@ impl PairingStore for AndroidPairingStore {
                 phone_label,
             }))
         })
+        .map_err(|e| match e {
+            PairingError::JniError(msg) => {
+                PairingError::StoreLoadFailed(format!("attach_current_thread: {msg}"))
+            }
+            other => other,
+        })
     }
 
     fn clear(&mut self) -> Result<(), PairingError> {
@@ -336,6 +342,8 @@ fn get_bytes(
     }
 
     let bytes = env
+        // SAFETY: `SecureStore.getBytes` returns `byte[]` (or null, handled above),
+        // so the JObject is a valid JByteArray local ref in this env.
         .convert_byte_array(unsafe { JByteArray::from_raw(env, result.into_raw()) })
         .map_err(store_load_jni_err)?;
     Ok(Some(bytes))
@@ -415,6 +423,8 @@ fn get_string(
         return Ok(None);
     }
 
+    // SAFETY: `SecureStore.getString` returns `String` (or null, handled above),
+    // so the JObject is a valid JString local ref in this env.
     let s: String = unsafe { JString::from_raw(env, result.into_raw()) }
         .try_to_string(env)
         .map_err(store_load_jni_err)?;
@@ -499,6 +509,8 @@ fn jni_exception_msg(env: &mut Env<'_>) -> Option<String> {
     if msg_obj.is_null() {
         return Some("(no message)".into());
     }
+    // SAFETY: `Throwable.getMessage()` returns `String` (or null, handled above),
+    // so the JObject is a valid JString local ref in this env.
     let msg = unsafe { JString::from_raw(env, msg_obj.into_raw()) }
         .try_to_string(env)
         .ok()?;

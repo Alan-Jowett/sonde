@@ -162,6 +162,12 @@ impl AndroidBleTransport {
             let context = get_application_context(env)?;
             Self::new(env, &context)
         })
+        .map_err(|e| match e {
+            PairingError::JniError(msg) => {
+                PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+            }
+            other => other,
+        })
     }
 
     /// Pause BLE operations (e.g. on Android `onPause`).
@@ -268,6 +274,8 @@ impl BleTransport for AndroidBleTransport {
                             .map_err(|e| jni_exception_or(env, "getDeviceName", e))?
                             .l()
                             .map_err(jni_err)?;
+                        // SAFETY: `getDeviceName` returns `String`, so the JObject
+                        // is a valid JString local ref in this env.
                         let name: String = unsafe { JString::from_raw(env, name_obj.into_raw()) }
                             .try_to_string(env)
                             .map_err(jni_err)?;
@@ -284,6 +292,8 @@ impl BleTransport for AndroidBleTransport {
                             .l()
                             .map_err(jni_err)?;
                         let addr_bytes = env
+                            // SAFETY: `getDeviceAddress` returns `byte[]`, so the
+                            // JObject is a valid JByteArray local ref in this env.
                             .convert_byte_array(unsafe {
                                 JByteArray::from_raw(env, addr_obj.into_raw())
                             })
@@ -476,6 +486,8 @@ impl BleTransport for AndroidBleTransport {
                         .map_err(jni_err)?;
 
                     let bytes = env
+                        // SAFETY: `readCharacteristic` returns `byte[]`, so the
+                        // JObject is a valid JByteArray local ref in this env.
                         .convert_byte_array(unsafe { JByteArray::from_raw(env, result.into_raw()) })
                         .map_err(jni_err)?;
                     Ok(bytes)
@@ -600,6 +612,8 @@ fn get_exception_message(env: &mut Env<'_>) -> Option<String> {
         return Some("(no message)".into());
     }
 
+    // SAFETY: `Throwable.getMessage()` returns `String` (or null, handled above),
+    // so the JObject is a valid JString local ref in this env.
     let msg = unsafe { JString::from_raw(env, msg_obj.into_raw()) }
         .try_to_string(env)
         .ok()?;

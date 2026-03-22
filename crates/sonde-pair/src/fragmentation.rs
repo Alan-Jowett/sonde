@@ -83,6 +83,24 @@ impl IndicationReassembler {
             });
         }
 
+        // Guard against unbounded allocation before extending the buffer.
+        // A malicious peer could send a large first chunk before the
+        // header-derived size check runs.
+        if self.buffer.len() + chunk.len() > MAX_REASSEMBLY_SIZE {
+            let msg_type = if self.buffer.is_empty() {
+                chunk[0]
+            } else {
+                self.buffer[0]
+            };
+            self.reset();
+            return Err(PairingError::InvalidResponse {
+                msg_type,
+                reason: format!(
+                    "chunk would exceed maximum reassembly size {MAX_REASSEMBLY_SIZE}"
+                ),
+            });
+        }
+
         self.buffer.extend_from_slice(chunk);
 
         // Once we have the 3-byte header, derive the expected total length.

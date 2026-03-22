@@ -31,7 +31,7 @@ use tracing::debug;
 
 use crate::error::PairingError;
 use crate::transport::BleTransport;
-use crate::types::ScannedDevice;
+use crate::types::{PairingMethod, ScannedDevice};
 
 /// BLE connection + bonding timeout in milliseconds (PT-1002).
 ///
@@ -445,6 +445,12 @@ impl BleTransport for AndroidBleTransport {
             .await
             .map_err(join_err)?
         })
+    }
+
+    /// Android can observe the pairing method via `onBondStateChanged`.
+    /// TODO: Wire up JNI callback to report the actual negotiated method.
+    fn pairing_method(&self) -> Option<PairingMethod> {
+        None
     }
 }
 

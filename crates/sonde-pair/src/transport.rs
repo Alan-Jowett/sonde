@@ -49,17 +49,17 @@ pub trait BleTransport {
     ///
     /// Platform transports that can observe the negotiated pairing method
     /// (e.g., via Android `onBondStateChanged` or Windows BLE APIs) MUST
-    /// override this and return the actual method.  The application layer
-    /// rejects any method other than `NumericComparison`.
+    /// return the actual method.  The application layer rejects any method
+    /// other than `NumericComparison`.
     ///
-    /// The default returns `None`, which means "this platform enforces
-    /// LESC at the OS BLE-stack level and does not expose the method to
-    /// user-space."  This is acceptable only when the OS guarantees LESC
-    /// and refuses Just Works without app intervention.  Platform
-    /// transports that **can** report the method SHOULD always do so.
-    fn pairing_method(&self) -> Option<PairingMethod> {
-        None
-    }
+    /// Return `None` only when the OS BLE stack guarantees LESC and refuses
+    /// Just Works without app intervention (the caller treats `None` as
+    /// "OS-enforced LESC").
+    ///
+    /// This is a required method (no default) so that new transport
+    /// implementations are forced to make an explicit choice — forgetting
+    /// to implement it is a compile error, not a silent security bypass.
+    fn pairing_method(&self) -> Option<PairingMethod>;
 }
 
 /// Mock BLE transport for testing pairing logic without hardware.

@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use crate::error::PairingError;
 use crate::transport::BleTransport;
-use crate::types::{ScannedDevice, BLE_MTU_MIN};
+use crate::types::{PairingMethod, ScannedDevice, BLE_MTU_MIN};
 
 /// BLE connection timeout (PT-1002).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -369,6 +369,12 @@ impl BleTransport for BtleplugTransport {
                 Err(_) => Err(PairingError::IndicationTimeout),
             }
         })
+    }
+
+    /// btleplug does not expose the negotiated pairing method to user-space.
+    /// The OS BLE stack is assumed to enforce LESC.
+    fn pairing_method(&self) -> Option<PairingMethod> {
+        None
     }
 }
 

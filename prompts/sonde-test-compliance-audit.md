@@ -634,15 +634,6 @@ should be asserted.
 Within a given severity level, order findings by impact on specification
 integrity:
 
-1. **Highest risk**: D6 (constraint violation in design), D7 (illusory
-   test coverage), D10 (constraint violation in code), and D13
-   (assertion mismatch) — these indicate active conflicts between
-   artifacts.
-
-> Note: In this test-compliance audit template, only D11–D13 appear as
-> finding labels. D1–D10 are defined in the companion templates for
-> cross-reference but do not participate in ordering here.
-
 1. **Highest risk**: D13 (assertion mismatch) — indicates active
    conflicts between what tests assert and what should be asserted
    based on the specification.
@@ -658,11 +649,11 @@ integrity:
 In findings, reference labels as:
 
 ```
-[DRIFT: D2_UNTESTED_REQUIREMENT]
-Requirement: REQ-SEC-003 (requirements doc, section 4.2)
-Evidence: REQ-SEC-003 does not appear in the traceability matrix
-  (validation plan, section 4). No test case references this REQ-ID.
-Impact: The encryption-at-rest requirement will not be verified.
+[DRIFT: D12_UNTESTED_ACCEPTANCE_CRITERION]
+Acceptance criterion: AC-SEC-003 (requirements doc, section 4.2)
+Evidence: AC-SEC-003 does not appear in the traceability matrix
+  (validation plan, section 4). No test case references this AC-ID.
+Impact: The encryption-at-rest acceptance criterion will not be verified.
 ```
 
 ---

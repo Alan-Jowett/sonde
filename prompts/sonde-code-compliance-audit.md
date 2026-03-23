@@ -621,14 +621,6 @@ authoritative in the test-compliance audit template.
 Within a given severity level, order findings by impact on specification
 integrity:
 
-1. **Highest risk**: D6 (constraint violation in design), D7 (illusory
-   test coverage), and D10 (constraint violation in code) — these
-   indicate active conflicts between artifacts.
-
-> Note: In this code-compliance audit template, only D8–D10 appear as
-> finding labels. D1–D7 are defined in the companion templates for
-> cross-reference but do not participate in ordering here.
-
 1. **Highest risk**: D10 (constraint violation in code) — indicates an
    active conflict between implementation and governing constraints.
 2. **High risk**: D8 (unimplemented requirement) — indicates a silent
@@ -642,11 +634,13 @@ integrity:
 In findings, reference labels as:
 
 ```
-[DRIFT: D2_UNTESTED_REQUIREMENT]
+[DRIFT: D8_UNIMPLEMENTED_REQUIREMENT]
 Requirement: REQ-SEC-003 (requirements doc, section 4.2)
-Evidence: REQ-SEC-003 does not appear in the traceability matrix
-  (validation plan, section 4). No test case references this REQ-ID.
-Impact: The encryption-at-rest requirement will not be verified.
+Evidence: Code paths handling data-at-rest do not invoke the specified
+  encryption module, and no implementation of REQ-SEC-003 exists in the
+  relevant services.
+Impact: The encryption-at-rest requirement is not implemented, leaving
+  stored data unprotected against unauthorized access.
 ```
 
 ---

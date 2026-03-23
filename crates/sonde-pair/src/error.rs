@@ -132,4 +132,16 @@ pub enum PairingError {
     // Scan errors
     #[error("scan is already active")]
     ScanAlreadyActive,
+
+    // Platform / JNI errors (Android)
+    #[cfg(feature = "android")]
+    #[error("JNI error: {0}")]
+    JniError(String),
+}
+
+#[cfg(feature = "android")]
+impl From<jni::errors::Error> for PairingError {
+    fn from(e: jni::errors::Error) -> Self {
+        PairingError::JniError(e.to_string())
+    }
 }

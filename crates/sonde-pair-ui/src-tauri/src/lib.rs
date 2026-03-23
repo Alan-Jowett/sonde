@@ -645,20 +645,22 @@ pub extern "system" fn JNI_OnLoad(
 fn jni_on_load_inner(
     vm: *mut jni::sys::JavaVM,
 ) -> Result<jni::sys::jint, Box<dyn std::error::Error>> {
-    let vm1 = unsafe { jni::JavaVM::from_raw(vm)? };
-    let vm2 = unsafe { jni::JavaVM::from_raw(vm)? };
-    AndroidBleTransport::cache_vm(vm1);
-    AndroidPairingStore::cache_vm(vm2);
+    let vm = unsafe { jni::JavaVM::from_raw(vm) };
+    AndroidBleTransport::cache_vm(vm.clone());
+    AndroidPairingStore::cache_vm(vm.clone());
 
     // Resolve app-defined classes on the main thread.
-    let vm_env = unsafe { jni::JavaVM::from_raw(vm)? };
-    let mut env = vm_env.get_env()?;
-    AndroidBleTransport::cache_helper_class(&mut env)
-        .map_err(|e| format!("cache BleHelper: {e}"))?;
-    AndroidPairingStore::cache_store_class(&mut env)
-        .map_err(|e| format!("cache SecureStore: {e}"))?;
+    vm.attach_current_thread(|env| -> Result<(), Box<dyn std::error::Error>> {
+        AndroidBleTransport::cache_helper_class(env).map_err(
+            |e| -> Box<dyn std::error::Error> { format!("cache BleHelper: {e}").into() },
+        )?;
+        AndroidPairingStore::cache_store_class(env).map_err(|e| -> Box<dyn std::error::Error> {
+            format!("cache SecureStore: {e}").into()
+        })?;
+        Ok(())
+    })?;
 
-    Ok(jni::JNIVersion::V6.into())
+    Ok(jni::JNIVersion::V1_6.into())
 }
 
 // ---------------------------------------------------------------------------

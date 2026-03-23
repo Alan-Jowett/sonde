@@ -24,9 +24,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
-use jni::JNIEnv;
-use jni::JavaVM;
+use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
+use jni::refs::Global;
+use jni::{jni_sig, jni_str, Env, JavaVM};
 use tracing::debug;
 
 use crate::error::PairingError;
@@ -50,7 +50,7 @@ static CACHED_VM: OnceLock<JavaVM> = OnceLock::new();
 /// the application classloader.  Native threads attached via
 /// `attach_current_thread()` only see the system classloader, so
 /// `find_class()` for app-defined classes fails on them.
-static CACHED_HELPER_CLASS: OnceLock<GlobalRef> = OnceLock::new();
+static CACHED_HELPER_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 
 /// Android BLE transport backed by the companion `BleHelper` Java class.
 ///
@@ -70,7 +70,7 @@ pub struct AndroidBleTransport {
 
 struct JniState {
     vm: JavaVM,
-    helper: GlobalRef,
+    helper: Global<JObject<'static>>,
 }
 
 // SAFETY: JavaVM is Send+Sync and GlobalRef is Send.  We only access the
@@ -88,7 +88,7 @@ impl AndroidBleTransport {
     /// `context` must be an Android `Context` (e.g. `Activity` or
     /// `Application`).  The helper takes `getApplicationContext()` so the
     /// caller does not need to worry about lifecycle.
-    pub fn new(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<Self, PairingError> {
+    pub fn new(env: &mut Env<'_>, context: &JObject<'_>) -> Result<Self, PairingError> {
         let vm = env.get_java_vm().map_err(jni_err)?;
 
         // Use the cached class ref (resolved on the main thread which has the
@@ -102,15 +102,10 @@ impl AndroidBleTransport {
             )
         })?;
 
-        // SAFETY: The GlobalRef was created from find_class(), which returns
-        // a JClass.  We reconstruct a JClass from the raw jobject pointer;
-        // the GlobalRef keeps the underlying reference alive.
-        let helper_class = unsafe { JClass::from_raw(cached.as_obj().as_raw()) };
-
         let helper = env
             .new_object(
-                helper_class,
-                "(Landroid/content/Context;)V",
+                &**cached,
+                jni_sig!("(Landroid/content/Context;)V"),
                 &[JValue::Object(context)],
             )
             .map_err(|e| jni_exception_or(env, "BleHelper()", e))?;
@@ -140,13 +135,15 @@ impl AndroidBleTransport {
     /// (e.g. the main thread inside `JNI_OnLoad`).  Natively-attached
     /// threads only see the system classloader, so `find_class()` for
     /// app-defined classes would fail on them.
-    pub fn cache_helper_class(env: &mut JNIEnv<'_>) -> Result<(), PairingError> {
-        let cls = env.find_class("io/sonde/pair/BleHelper").map_err(|e| {
-            PairingError::ConnectionFailed(format!(
-                "BleHelper class not found — ensure io.sonde.pair.BleHelper \
+    pub fn cache_helper_class(env: &mut Env<'_>) -> Result<(), PairingError> {
+        let cls = env
+            .find_class(jni_str!("io/sonde/pair/BleHelper"))
+            .map_err(|e| {
+                PairingError::ConnectionFailed(format!(
+                    "BleHelper class not found — ensure io.sonde.pair.BleHelper \
                  is compiled into the APK: {e}"
-            ))
-        })?;
+                ))
+            })?;
         let global = env.new_global_ref(cls).map_err(jni_err)?;
         let _ = CACHED_HELPER_CLASS.set(global);
         debug!("AndroidBleTransport: BleHelper class cached");
@@ -161,9 +158,16 @@ impl AndroidBleTransport {
         let vm = CACHED_VM.get().ok_or_else(|| {
             PairingError::ConnectionFailed("JavaVM not cached — call cache_vm() first".into())
         })?;
-        let mut env = vm.attach_current_thread().map_err(jni_err)?;
-        let context = get_application_context(&mut env)?;
-        Self::new(&mut env, &context)
+        vm.attach_current_thread(|env| {
+            let context = get_application_context(env)?;
+            Self::new(env, &context)
+        })
+        .map_err(|e| match e {
+            PairingError::JniError(msg) => {
+                PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+            }
+            other => other,
+        })
     }
 
     /// Pause BLE operations (e.g. on Android `onPause`).
@@ -171,10 +175,24 @@ impl AndroidBleTransport {
     /// Stops any active scan.  Call from the host Activity/Fragment
     /// lifecycle handler.
     pub fn on_pause(&self) -> Result<(), PairingError> {
-        let mut env = self.inner.vm.attach_current_thread().map_err(jni_err)?;
-        env.call_method(self.inner.helper.as_obj(), "stopScan", "()V", &[])
-            .map_err(|e| jni_exception_or(&mut env, "stopScan", e))?;
-        Ok(())
+        self.inner
+            .vm
+            .attach_current_thread(|env| {
+                env.call_method(
+                    self.inner.helper.as_obj(),
+                    jni_str!("stopScan"),
+                    jni_sig!("()V"),
+                    &[],
+                )
+                .map_err(|e| jni_exception_or(env, "stopScan", e))?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                PairingError::JniError(msg) => {
+                    PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+                }
+                other => other,
+            })
     }
 }
 
@@ -187,21 +205,28 @@ impl BleTransport for AndroidBleTransport {
         let uuids: Vec<String> = service_uuids.iter().map(|u| uuid_to_string(*u)).collect();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;
-                // Call startScan once per UUID — Java side accumulates
-                // ScanFilters and restarts the scan with the full set.
-                for uuid_string in &uuids {
-                    let uuid_jstr = env.new_string(uuid_string).map_err(jni_err)?;
-                    env.call_method(
-                        inner.helper.as_obj(),
-                        "startScan",
-                        "(Ljava/lang/String;)V",
-                        &[JValue::Object(&uuid_jstr)],
-                    )
-                    .map_err(|e| jni_exception_or(&mut env, "startScan", e))?;
-                }
-                debug!(?uuids, "BLE scan started");
-                Ok(())
+                inner
+                    .vm
+                    .attach_current_thread(|env| {
+                        for uuid_string in &uuids {
+                            let uuid_jstr = env.new_string(uuid_string).map_err(jni_err)?;
+                            env.call_method(
+                                inner.helper.as_obj(),
+                                jni_str!("startScan"),
+                                jni_sig!("(Ljava/lang/String;)V"),
+                                &[JValue::Object(uuid_jstr.as_ref())],
+                            )
+                            .map_err(|e| jni_exception_or(env, "startScan", e))?;
+                        }
+                        debug!(?uuids, "BLE scan started");
+                        Ok(())
+                    })
+                    .map_err(|e| match e {
+                        PairingError::JniError(msg) => {
+                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+                        }
+                        other => other,
+                    })
             })
             .await
             .map_err(join_err)?
@@ -212,11 +237,25 @@ impl BleTransport for AndroidBleTransport {
         let inner = self.inner.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;
-                env.call_method(inner.helper.as_obj(), "stopScan", "()V", &[])
-                    .map_err(|e| jni_exception_or(&mut env, "stopScan", e))?;
-                debug!("BLE scan stopped");
-                Ok(())
+                inner
+                    .vm
+                    .attach_current_thread(|env| {
+                        env.call_method(
+                            inner.helper.as_obj(),
+                            jni_str!("stopScan"),
+                            jni_sig!("()V"),
+                            &[],
+                        )
+                        .map_err(|e| jni_exception_or(env, "stopScan", e))?;
+                        debug!("BLE scan stopped");
+                        Ok(())
+                    })
+                    .map_err(|e| match e {
+                        PairingError::JniError(msg) => {
+                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+                        }
+                        other => other,
+                    })
             })
             .await
             .map_err(join_err)?
@@ -229,87 +268,121 @@ impl BleTransport for AndroidBleTransport {
         let inner = self.inner.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;
-                let helper = inner.helper.as_obj();
+                inner
+                    .vm
+                    .attach_current_thread(|env| {
+                        let helper = inner.helper.as_obj();
 
-                let count = env
-                    .call_method(helper, "getDiscoveredDeviceCount", "()I", &[])
-                    .map_err(|e| jni_exception_or(&mut env, "getDiscoveredDeviceCount", e))?
-                    .i()
-                    .map_err(jni_err)?;
-
-                let mut devices = Vec::with_capacity(count as usize);
-
-                for i in 0..count {
-                    let idx = JValue::Int(i);
-
-                    // Name
-                    let name_obj = env
-                        .call_method(helper, "getDeviceName", "(I)Ljava/lang/String;", &[idx])
-                        .map_err(|e| jni_exception_or(&mut env, "getDeviceName", e))?
-                        .l()
-                        .map_err(jni_err)?;
-                    let name: String = env
-                        .get_string(&JString::from(name_obj))
-                        .map_err(jni_err)?
-                        .into();
-
-                    // Address (6 bytes)
-                    let addr_obj = env
-                        .call_method(helper, "getDeviceAddress", "(I)[B", &[idx])
-                        .map_err(|e| jni_exception_or(&mut env, "getDeviceAddress", e))?
-                        .l()
-                        .map_err(jni_err)?;
-                    let addr_bytes = env
-                        .convert_byte_array(JByteArray::from(addr_obj))
-                        .map_err(jni_err)?;
-                    let address: [u8; 6] = addr_bytes
-                        .try_into()
-                        .map_err(|_| PairingError::ConnectionFailed("bad address length".into()))?;
-
-                    // RSSI
-                    let rssi = env
-                        .call_method(helper, "getDeviceRssi", "(I)I", &[idx])
-                        .map_err(|e| jni_exception_or(&mut env, "getDeviceRssi", e))?
-                        .i()
-                        .map_err(jni_err)? as i8;
-
-                    // Service UUIDs
-                    let uuids_obj = env
-                        .call_method(
-                            helper,
-                            "getDeviceServiceUuids",
-                            "(I)[Ljava/lang/String;",
-                            &[idx],
-                        )
-                        .map_err(|e| jni_exception_or(&mut env, "getDeviceServiceUuids", e))?
-                        .l()
-                        .map_err(jni_err)?;
-                    let uuids_arr = jni::objects::JObjectArray::from(uuids_obj);
-                    let uuid_count = env.get_array_length(&uuids_arr).map_err(jni_err)?;
-                    let mut service_uuids = Vec::with_capacity(uuid_count as usize);
-                    for j in 0..uuid_count {
-                        let uuid_obj = env
-                            .get_object_array_element(&uuids_arr, j)
+                        let count = env
+                            .call_method(
+                                helper,
+                                jni_str!("getDiscoveredDeviceCount"),
+                                jni_sig!("()I"),
+                                &[],
+                            )
+                            .map_err(|e| jni_exception_or(env, "getDiscoveredDeviceCount", e))?
+                            .i()
                             .map_err(jni_err)?;
-                        let uuid_str: String = env
-                            .get_string(&JString::from(uuid_obj))
-                            .map_err(jni_err)?
-                            .into();
-                        if let Some(val) = parse_uuid_string(&uuid_str) {
-                            service_uuids.push(val);
+
+                        let mut devices = Vec::with_capacity(count as usize);
+
+                        for i in 0..count {
+                            let idx = JValue::Int(i);
+
+                            // Name
+                            let name_obj = env
+                                .call_method(
+                                    helper,
+                                    jni_str!("getDeviceName"),
+                                    jni_sig!("(I)Ljava/lang/String;"),
+                                    &[idx],
+                                )
+                                .map_err(|e| jni_exception_or(env, "getDeviceName", e))?
+                                .l()
+                                .map_err(jni_err)?;
+                            // SAFETY: `getDeviceName` returns `String`, so the JObject
+                            // is a valid JString local ref in this env.
+                            let name: String =
+                                unsafe { JString::from_raw(env, name_obj.into_raw()) }
+                                    .try_to_string(env)
+                                    .map_err(jni_err)?;
+
+                            // Address (6 bytes)
+                            let addr_obj = env
+                                .call_method(
+                                    helper,
+                                    jni_str!("getDeviceAddress"),
+                                    jni_sig!("(I)[B"),
+                                    &[idx],
+                                )
+                                .map_err(|e| jni_exception_or(env, "getDeviceAddress", e))?
+                                .l()
+                                .map_err(jni_err)?;
+                            let addr_bytes = env
+                                // SAFETY: `getDeviceAddress` returns `byte[]`, so the
+                                // JObject is a valid JByteArray local ref in this env.
+                                .convert_byte_array(unsafe {
+                                    JByteArray::from_raw(env, addr_obj.into_raw())
+                                })
+                                .map_err(jni_err)?;
+                            let address: [u8; 6] = addr_bytes.try_into().map_err(|_| {
+                                PairingError::ConnectionFailed("bad address length".into())
+                            })?;
+
+                            // RSSI
+                            let rssi = env
+                                .call_method(
+                                    helper,
+                                    jni_str!("getDeviceRssi"),
+                                    jni_sig!("(I)I"),
+                                    &[idx],
+                                )
+                                .map_err(|e| jni_exception_or(env, "getDeviceRssi", e))?
+                                .i()
+                                .map_err(jni_err)? as i8;
+
+                            // Service UUIDs
+                            let uuids_obj = env
+                                .call_method(
+                                    helper,
+                                    jni_str!("getDeviceServiceUuids"),
+                                    jni_sig!("(I)[Ljava/lang/String;"),
+                                    &[idx],
+                                )
+                                .map_err(|e| jni_exception_or(env, "getDeviceServiceUuids", e))?
+                                .l()
+                                .map_err(jni_err)?;
+                            // SAFETY: getDeviceServiceUuids returns String[].
+                            let uuids_arr: JObjectArray<JString> = unsafe {
+                                JObjectArray::<JString>::from_raw(env, uuids_obj.into_raw())
+                            };
+                            let uuid_count = uuids_arr.len(env).map_err(jni_err)?;
+                            let mut service_uuids = Vec::with_capacity(uuid_count as usize);
+                            for j in 0..uuid_count {
+                                let uuid_obj = uuids_arr.get_element(env, j).map_err(jni_err)?;
+                                let uuid_str: String =
+                                    uuid_obj.try_to_string(env).map_err(jni_err)?;
+                                if let Some(val) = parse_uuid_string(&uuid_str) {
+                                    service_uuids.push(val);
+                                }
+                            }
+
+                            devices.push(ScannedDevice {
+                                name,
+                                address,
+                                rssi,
+                                service_uuids,
+                            });
                         }
-                    }
 
-                    devices.push(ScannedDevice {
-                        name,
-                        address,
-                        rssi,
-                        service_uuids,
-                    });
-                }
-
-                Ok(devices)
+                        Ok(devices)
+                    })
+                    .map_err(|e| match e {
+                        PairingError::JniError(msg) => {
+                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+                        }
+                        other => other,
+                    })
             })
             .await
             .map_err(join_err)?
@@ -324,21 +397,33 @@ impl BleTransport for AndroidBleTransport {
         let addr = *address;
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;
-                let addr_arr = env.byte_array_from_slice(&addr).map_err(jni_err)?;
-                let mtu = env
-                    .call_method(
-                        inner.helper.as_obj(),
-                        "connect",
-                        "([BJ)I",
-                        &[JValue::Object(&addr_arr), JValue::Long(CONNECT_TIMEOUT_MS)],
-                    )
-                    .map_err(|e| jni_exception_or(&mut env, "connect", e))?
-                    .i()
-                    .map_err(jni_err)?;
+                inner
+                    .vm
+                    .attach_current_thread(|env| {
+                        let addr_arr = env.byte_array_from_slice(&addr).map_err(jni_err)?;
+                        let mtu = env
+                            .call_method(
+                                inner.helper.as_obj(),
+                                jni_str!("connect"),
+                                jni_sig!("([BJ)I"),
+                                &[
+                                    JValue::Object(addr_arr.as_ref()),
+                                    JValue::Long(CONNECT_TIMEOUT_MS),
+                                ],
+                            )
+                            .map_err(|e| jni_exception_or(env, "connect", e))?
+                            .i()
+                            .map_err(jni_err)?;
 
-                debug!(address = ?addr, mtu, "connected");
-                Ok(mtu as u16)
+                        debug!(address = ?addr, mtu, "connected");
+                        Ok(mtu as u16)
+                    })
+                    .map_err(|e| match e {
+                        PairingError::JniError(msg) => {
+                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+                        }
+                        other => other,
+                    })
             })
             .await
             .map_err(join_err)?
@@ -349,11 +434,25 @@ impl BleTransport for AndroidBleTransport {
         let inner = self.inner.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;
-                env.call_method(inner.helper.as_obj(), "disconnect", "()V", &[])
-                    .map_err(|e| jni_exception_or(&mut env, "disconnect", e))?;
-                debug!("disconnected");
-                Ok(())
+                inner
+                    .vm
+                    .attach_current_thread(|env| {
+                        env.call_method(
+                            inner.helper.as_obj(),
+                            jni_str!("disconnect"),
+                            jni_sig!("()V"),
+                            &[],
+                        )
+                        .map_err(|e| jni_exception_or(env, "disconnect", e))?;
+                        debug!("disconnected");
+                        Ok(())
+                    })
+                    .map_err(|e| match e {
+                        PairingError::JniError(msg) => {
+                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+                        }
+                        other => other,
+                    })
             })
             .await
             .map_err(join_err)?
@@ -372,26 +471,35 @@ impl BleTransport for AndroidBleTransport {
         let data = data.to_vec();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;
-                let svc_jstr = env.new_string(&svc_str).map_err(jni_err)?;
-                let chr_jstr = env.new_string(&chr_str).map_err(jni_err)?;
-                let data_arr = env.byte_array_from_slice(&data).map_err(jni_err)?;
+                inner
+                    .vm
+                    .attach_current_thread(|env| {
+                        let svc_jstr = env.new_string(&svc_str).map_err(jni_err)?;
+                        let chr_jstr = env.new_string(&chr_str).map_err(jni_err)?;
+                        let data_arr = env.byte_array_from_slice(&data).map_err(jni_err)?;
 
-                env.call_method(
-                    inner.helper.as_obj(),
-                    "writeCharacteristic",
-                    "(Ljava/lang/String;Ljava/lang/String;[BJ)V",
-                    &[
-                        JValue::Object(&svc_jstr),
-                        JValue::Object(&chr_jstr),
-                        JValue::Object(&data_arr),
-                        JValue::Long(WRITE_TIMEOUT_MS),
-                    ],
-                )
-                .map_err(|e| jni_exception_or(&mut env, "writeCharacteristic", e))?;
+                        env.call_method(
+                            inner.helper.as_obj(),
+                            jni_str!("writeCharacteristic"),
+                            jni_sig!("(Ljava/lang/String;Ljava/lang/String;[BJ)V"),
+                            &[
+                                JValue::Object(svc_jstr.as_ref()),
+                                JValue::Object(chr_jstr.as_ref()),
+                                JValue::Object(data_arr.as_ref()),
+                                JValue::Long(WRITE_TIMEOUT_MS),
+                            ],
+                        )
+                        .map_err(|e| jni_exception_or(env, "writeCharacteristic", e))?;
 
-                debug!(characteristic = %chr_str, len = data.len(), "GATT write complete");
-                Ok(())
+                        debug!(characteristic = %chr_str, len = data.len(), "GATT write complete");
+                        Ok(())
+                    })
+                    .map_err(|e| match e {
+                        PairingError::JniError(msg) => {
+                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+                        }
+                        other => other,
+                    })
             })
             .await
             .map_err(join_err)?
@@ -409,38 +517,50 @@ impl BleTransport for AndroidBleTransport {
         let chr_str = uuid_to_string(characteristic);
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut env = inner.vm.attach_current_thread().map_err(jni_err)?;
-                let svc_jstr = env.new_string(&svc_str).map_err(jni_err)?;
-                let chr_jstr = env.new_string(&chr_str).map_err(jni_err)?;
+                inner
+                    .vm
+                    .attach_current_thread(|env| {
+                        let svc_jstr = env.new_string(&svc_str).map_err(jni_err)?;
+                        let chr_jstr = env.new_string(&chr_str).map_err(jni_err)?;
 
-                let result = env
-                    .call_method(
-                        inner.helper.as_obj(),
-                        "readIndication",
-                        "(Ljava/lang/String;Ljava/lang/String;J)[B",
-                        &[
-                            JValue::Object(&svc_jstr),
-                            JValue::Object(&chr_jstr),
-                            JValue::Long(timeout_ms as i64),
-                        ],
-                    )
-                    .map_err(|e| {
-                        let pe = jni_exception_or(&mut env, "readIndication", e);
-                        // Map Java "indication timeout" to the dedicated error variant
-                        if let PairingError::ConnectionFailed(ref msg) = pe {
-                            if msg.contains("indication timeout") {
-                                return PairingError::IndicationTimeout;
-                            }
+                        let result = env
+                            .call_method(
+                                inner.helper.as_obj(),
+                                jni_str!("readIndication"),
+                                jni_sig!("(Ljava/lang/String;Ljava/lang/String;J)[B"),
+                                &[
+                                    JValue::Object(svc_jstr.as_ref()),
+                                    JValue::Object(chr_jstr.as_ref()),
+                                    JValue::Long(timeout_ms as i64),
+                                ],
+                            )
+                            .map_err(|e| {
+                                let pe = jni_exception_or(env, "readIndication", e);
+                                if let PairingError::ConnectionFailed(ref msg) = pe {
+                                    if msg.contains("indication timeout") {
+                                        return PairingError::IndicationTimeout;
+                                    }
+                                }
+                                pe
+                            })?
+                            .l()
+                            .map_err(jni_err)?;
+
+                        let bytes = env
+                            // SAFETY: `readIndication` returns `byte[]`, so the
+                            // JObject is a valid JByteArray local ref in this env.
+                            .convert_byte_array(unsafe {
+                                JByteArray::from_raw(env, result.into_raw())
+                            })
+                            .map_err(jni_err)?;
+                        Ok(bytes)
+                    })
+                    .map_err(|e| match e {
+                        PairingError::JniError(msg) => {
+                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
                         }
-                        pe
-                    })?
-                    .l()
-                    .map_err(jni_err)?;
-
-                let bytes = env
-                    .convert_byte_array(JByteArray::from(result))
-                    .map_err(jni_err)?;
-                Ok(bytes)
+                        other => other,
+                    })
             })
             .await
             .map_err(join_err)?
@@ -459,9 +579,15 @@ impl BleTransport for AndroidBleTransport {
 impl Drop for AndroidBleTransport {
     fn drop(&mut self) {
         // Best-effort disconnect — attach to JVM if possible.
-        if let Ok(mut env) = self.inner.vm.attach_current_thread() {
-            let _ = env.call_method(self.inner.helper.as_obj(), "disconnect", "()V", &[]);
-        }
+        let _ = self.inner.vm.attach_current_thread(|env| {
+            let _ = env.call_method(
+                self.inner.helper.as_obj(),
+                jni_str!("disconnect"),
+                jni_sig!("()V"),
+                &[],
+            );
+            Ok::<(), PairingError>(())
+        });
     }
 }
 
@@ -497,15 +623,15 @@ fn uuid_to_string(uuid: u128) -> String {
 
 /// Get the Application context via `ActivityThread.currentApplication()`.
 /// Works from any JNI-attached thread without needing an Activity reference.
-fn get_application_context<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>, PairingError> {
+fn get_application_context<'a>(env: &mut Env<'a>) -> Result<JObject<'a>, PairingError> {
     let activity_thread = env
-        .find_class("android/app/ActivityThread")
+        .find_class(jni_str!("android/app/ActivityThread"))
         .map_err(jni_err)?;
     let app = env
         .call_static_method(
             activity_thread,
-            "currentApplication",
-            "()Landroid/app/Application;",
+            jni_str!("currentApplication"),
+            jni_sig!("()Landroid/app/Application;"),
             &[],
         )
         .and_then(|v| v.l())
@@ -530,7 +656,7 @@ fn join_err(e: tokio::task::JoinError) -> PairingError {
 
 /// Attempt to extract the Java exception message; fall back to the raw
 /// JNI error string if the exception cannot be read.
-fn jni_exception_or(env: &mut JNIEnv<'_>, context: &str, err: jni::errors::Error) -> PairingError {
+fn jni_exception_or(env: &mut Env<'_>, context: &str, err: jni::errors::Error) -> PairingError {
     let detail = match err {
         jni::errors::Error::JavaException => {
             get_exception_message(env).unwrap_or_else(|| "(unknown Java exception)".into())
@@ -541,15 +667,20 @@ fn jni_exception_or(env: &mut JNIEnv<'_>, context: &str, err: jni::errors::Error
 }
 
 /// Read and clear the pending Java exception message, if any.
-fn get_exception_message(env: &mut JNIEnv<'_>) -> Option<String> {
-    if !env.exception_check().ok()? {
+fn get_exception_message(env: &mut Env<'_>) -> Option<String> {
+    if !env.exception_check() {
         return None;
     }
-    let exc = env.exception_occurred().ok()?;
-    env.exception_clear().ok()?;
+    let exc = env.exception_occurred()?;
+    env.exception_clear();
 
     let msg_obj = env
-        .call_method(&exc, "getMessage", "()Ljava/lang/String;", &[])
+        .call_method(
+            &exc,
+            jni_str!("getMessage"),
+            jni_sig!("()Ljava/lang/String;"),
+            &[],
+        )
         .ok()?
         .l()
         .ok()?;
@@ -558,11 +689,11 @@ fn get_exception_message(env: &mut JNIEnv<'_>) -> Option<String> {
         return Some("(no message)".into());
     }
 
-    let msg = env
-        .get_string(&JString::from(msg_obj))
-        .ok()?
-        .to_string_lossy()
-        .into_owned();
+    // SAFETY: `Throwable.getMessage()` returns `String` (or null, handled above),
+    // so the JObject is a valid JString local ref in this env.
+    let msg = unsafe { JString::from_raw(env, msg_obj.into_raw()) }
+        .try_to_string(env)
+        .ok()?;
     Some(msg)
 }
 

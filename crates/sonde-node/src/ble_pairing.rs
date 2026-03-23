@@ -544,6 +544,43 @@ mod tests {
         assert_eq!(body, &[NODE_ACK_STORAGE_ERROR]);
     }
 
+    // -----------------------------------------------------------------------
+    // T-N940: NODE_PROVISION with invalid payload_len rejected (ND-0905)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn t_n940_payload_len_exceeds_remaining_data() {
+        // T-N940: payload_len field exceeds the remaining data in the buffer.
+        // The parser must reject the message without reading past the end.
+        let claimed_payload: usize = 10; // must be <= PEER_PAYLOAD_MAX_LEN
+        assert!(claimed_payload <= PEER_PAYLOAD_MAX_LEN);
+        let actual_data_bytes = 4;
+        let mut body = vec![0u8; NODE_PROVISION_MIN_LEN + actual_data_bytes];
+        body[2..34].fill(0x42); // psk
+        body[34] = 1; // valid channel
+                      // Claim `claimed_payload` bytes of payload, but only `actual_data_bytes` follow.
+        body[35] = (claimed_payload >> 8) as u8;
+        body[36] = claimed_payload as u8;
+        body[NODE_PROVISION_MIN_LEN..NODE_PROVISION_MIN_LEN + actual_data_bytes].fill(0xAA);
+
+        let err = parse_node_provision(&body).unwrap_err();
+        assert_eq!(err, "encrypted_payload truncated");
+    }
+
+    #[test]
+    fn t_n940_payload_len_max_u16_rejected() {
+        // T-N940 boundary: payload_len = 0xFFFF (65535) — far exceeds both
+        // the buffer and PEER_PAYLOAD_MAX_LEN.
+        let mut body = vec![0u8; NODE_PROVISION_MIN_LEN]; // minimum-length body, no payload data
+        body[2..34].fill(0x42); // psk
+        body[34] = 1; // valid channel
+        body[35] = 0xFF;
+        body[36] = 0xFF; // payload_len = 65535
+
+        let err = parse_node_provision(&body).unwrap_err();
+        assert_eq!(err, "encrypted_payload too large");
+    }
+
     // --- handle_node_provision: T-N904 happy path ---
 
     /// T-N904: NODE_PROVISION on unpaired node → NODE_ACK(0x00), all NVS fields written.

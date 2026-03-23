@@ -90,7 +90,7 @@ impl std::error::Error for BpfError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegionTag {
     Stack,
-    /// Read-only input memory (writes rejected with `ReadOnlyWrite`).
+    /// Read-only input memory (writes silently ignored per ND-0505 AC6).
     Context,
     /// Writable input memory (same as Context but allows stores).
     Memory,
@@ -369,15 +369,18 @@ fn mem_store<const N: usize>(
     if matches!(region.tag, RegionTag::MapDescriptor { .. }) {
         return Err(BpfError::NonDereferenceableAccess { pc });
     }
-    if matches!(region.tag, RegionTag::Context) {
-        return Err(BpfError::ReadOnlyWrite { pc });
-    }
+    // ND-0505 AC6: writes to read-only context are silently ignored;
+    // the program continues execution. Bounds validation is still
+    // performed so that out-of-range stores are caught.
     let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end = addr
         .checked_add(N as u64)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: N })?;
     if addr < region.base || end > region.end {
         return Err(BpfError::MemoryAccessViolation { pc, addr, len: N });
+    }
+    if matches!(region.tag, RegionTag::Context) {
+        return Ok(());
     }
     unsafe {
         match N {
@@ -392,6 +395,10 @@ fn mem_store<const N: usize>(
 }
 
 /// Execute a 32-bit atomic operation at `[base_reg + off]`.
+///
+/// When the target region is read-only context, bounds validation and
+/// FETCH/CMPXCHG register-result semantics are preserved but the actual
+/// write to memory is suppressed (ND-0505 AC6).
 #[inline]
 fn mem_atomic32(
     base_reg: TaggedReg,
@@ -407,9 +414,7 @@ fn mem_atomic32(
     if matches!(region.tag, RegionTag::MapDescriptor { .. }) {
         return Err(BpfError::NonDereferenceableAccess { pc });
     }
-    if matches!(region.tag, RegionTag::Context) {
-        return Err(BpfError::ReadOnlyWrite { pc });
-    }
+    let read_only = matches!(region.tag, RegionTag::Context);
     let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end = addr
         .checked_add(4)
@@ -426,37 +431,47 @@ fn mem_atomic32(
         let old = ptr.read_unaligned();
         match base_op {
             ebpf::BPF_ATOMIC_ADD => {
-                ptr.write_unaligned(old.wrapping_add(reg[src].value as u32));
+                if !read_only {
+                    ptr.write_unaligned(old.wrapping_add(reg[src].value as u32));
+                }
                 if fetch {
                     reg[src] = TaggedReg::scalar(old as u64);
                 }
             }
             ebpf::BPF_ATOMIC_OR => {
-                ptr.write_unaligned(old | reg[src].value as u32);
+                if !read_only {
+                    ptr.write_unaligned(old | reg[src].value as u32);
+                }
                 if fetch {
                     reg[src] = TaggedReg::scalar(old as u64);
                 }
             }
             ebpf::BPF_ATOMIC_AND => {
-                ptr.write_unaligned(old & reg[src].value as u32);
+                if !read_only {
+                    ptr.write_unaligned(old & reg[src].value as u32);
+                }
                 if fetch {
                     reg[src] = TaggedReg::scalar(old as u64);
                 }
             }
             ebpf::BPF_ATOMIC_XOR => {
-                ptr.write_unaligned(old ^ reg[src].value as u32);
+                if !read_only {
+                    ptr.write_unaligned(old ^ reg[src].value as u32);
+                }
                 if fetch {
                     reg[src] = TaggedReg::scalar(old as u64);
                 }
             }
             0xe0 => {
                 // XCHG
-                ptr.write_unaligned(reg[src].value as u32);
+                if !read_only {
+                    ptr.write_unaligned(reg[src].value as u32);
+                }
                 reg[src] = TaggedReg::scalar(old as u64);
             }
             0xf0 => {
                 // CMPXCHG
-                if old == reg[0].value as u32 {
+                if !read_only && old == reg[0].value as u32 {
                     ptr.write_unaligned(reg[src].value as u32);
                 }
                 reg[0] = TaggedReg::scalar(old as u64);
@@ -473,6 +488,10 @@ fn mem_atomic32(
 }
 
 /// Execute a 64-bit atomic operation at `[base_reg + off]`.
+///
+/// When the target region is read-only context, bounds validation and
+/// FETCH/CMPXCHG register-result semantics are preserved but the actual
+/// write to memory is suppressed (ND-0505 AC6).
 #[inline]
 fn mem_atomic64(
     base_reg: TaggedReg,
@@ -488,9 +507,7 @@ fn mem_atomic64(
     if matches!(region.tag, RegionTag::MapDescriptor { .. }) {
         return Err(BpfError::NonDereferenceableAccess { pc });
     }
-    if matches!(region.tag, RegionTag::Context) {
-        return Err(BpfError::ReadOnlyWrite { pc });
-    }
+    let read_only = matches!(region.tag, RegionTag::Context);
     let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end = addr
         .checked_add(8)
@@ -507,37 +524,47 @@ fn mem_atomic64(
         let old = ptr.read_unaligned();
         match base_op {
             ebpf::BPF_ATOMIC_ADD => {
-                ptr.write_unaligned(old.wrapping_add(reg[src].value));
+                if !read_only {
+                    ptr.write_unaligned(old.wrapping_add(reg[src].value));
+                }
                 if fetch {
                     reg[src] = TaggedReg::scalar(old);
                 }
             }
             ebpf::BPF_ATOMIC_OR => {
-                ptr.write_unaligned(old | reg[src].value);
+                if !read_only {
+                    ptr.write_unaligned(old | reg[src].value);
+                }
                 if fetch {
                     reg[src] = TaggedReg::scalar(old);
                 }
             }
             ebpf::BPF_ATOMIC_AND => {
-                ptr.write_unaligned(old & reg[src].value);
+                if !read_only {
+                    ptr.write_unaligned(old & reg[src].value);
+                }
                 if fetch {
                     reg[src] = TaggedReg::scalar(old);
                 }
             }
             ebpf::BPF_ATOMIC_XOR => {
-                ptr.write_unaligned(old ^ reg[src].value);
+                if !read_only {
+                    ptr.write_unaligned(old ^ reg[src].value);
+                }
                 if fetch {
                     reg[src] = TaggedReg::scalar(old);
                 }
             }
             0xe0 => {
                 // XCHG
-                ptr.write_unaligned(reg[src].value);
+                if !read_only {
+                    ptr.write_unaligned(reg[src].value);
+                }
                 reg[src] = TaggedReg::scalar(old);
             }
             0xf0 => {
                 // CMPXCHG
-                if old == reg[0].value {
+                if !read_only && old == reg[0].value {
                     ptr.write_unaligned(reg[src].value);
                 }
                 reg[0] = TaggedReg::scalar(old);
@@ -586,7 +613,7 @@ pub fn execute_program_no_maps(
 /// * `helpers` — table of helper function descriptors.
 /// * `maps` — table of map region descriptors.
 /// * `read_only_ctx` — when `true`, writes to the context region are
-///   rejected with `ReadOnlyWrite`.  When `false`, the region is writable.
+///   silently ignored (ND-0505 AC6).  When `false`, the region is writable.
 /// * `instruction_budget` — maximum number of instruction slots that may be
 ///   executed before the program is terminated with
 ///   [`BpfError::InstructionBudgetExceeded`].  Pass [`UNLIMITED_BUDGET`] to

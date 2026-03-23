@@ -10,7 +10,7 @@
 //! The bridge is generic over `SerialPort` and `Radio` traits, allowing
 //! the same logic to be tested on a host with mock implementations.
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::sync::Arc;
 
 use sonde_protocol::modem::{
@@ -131,6 +131,7 @@ pub struct Bridge<S: SerialPort, R: Radio, B: Ble = NoBle> {
     usb: S,
     radio: R,
     ble: B,
+    ble_enabled: bool,
     counters: Arc<ModemCounters>,
     decoder: FrameDecoder,
     rx_buf: [u8; 64],
@@ -143,6 +144,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
             usb,
             radio,
             ble: NoBle,
+            ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
             rx_buf: [0u8; 64],
@@ -151,12 +153,19 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
 }
 
 impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
-    /// Create a bridge with a BLE driver.
-    pub fn with_ble(usb: S, radio: R, ble: B, counters: Arc<ModemCounters>) -> Self {
+    /// Create a bridge with a BLE driver (BLE starts disabled).
+    ///
+    /// The driver is explicitly disabled during construction so that
+    /// `ble_enabled` and the hardware state are guaranteed to be in sync.
+    /// Callers that need BLE active must send a `BLE_ENABLE` command after
+    /// construction; the driver will never be silently left enabled.
+    pub fn with_ble(usb: S, radio: R, mut ble: B, counters: Arc<ModemCounters>) -> Self {
+        ble.disable();
         Self {
             usb,
             radio,
             ble,
+            ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
             rx_buf: [0u8; 64],
@@ -324,6 +333,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
                 break;
             }
         }
+        self.ble_enabled = false;
         self.counters.reset();
         self.decoder.reset();
         self.send_modem_ready();
@@ -379,13 +389,23 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn handle_ble_enable(&mut self) {
-        info!("BLE_ENABLE received");
+        if self.ble_enabled {
+            debug!("BLE_ENABLE received (already enabled; retrying enable)");
+        } else {
+            info!("BLE_ENABLE received");
+        }
         self.ble.enable();
+        self.ble_enabled = true;
     }
 
     fn handle_ble_disable(&mut self) {
-        info!("BLE_DISABLE received");
+        if !self.ble_enabled {
+            debug!("BLE_DISABLE received (already disabled; retrying disable)");
+        } else {
+            info!("BLE_DISABLE received");
+        }
         self.ble.disable();
+        self.ble_enabled = false;
     }
 
     fn handle_ble_pairing_confirm_reply(&mut self, reply: BlePairingConfirmReply) {
@@ -401,6 +421,10 @@ mod tests {
     };
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
+
+    /// ATT protocol overhead subtracted from the negotiated MTU to get the
+    /// maximum ATT attribute value size (ATT_MTU − 3).
+    const ATT_HEADER_BYTES: u16 = 3;
 
     /// Mock serial port that records writes and plays back reads.
     struct MockSerial {
@@ -431,6 +455,10 @@ mod tests {
         fn set_reconnect_once(&mut self) {
             self.reconnect_once = true;
         }
+
+        fn set_connected(&mut self, connected: bool) {
+            self.connected = connected;
+        }
     }
 
     impl SerialPort for MockSerial {
@@ -443,6 +471,9 @@ mod tests {
             (n, reconnected)
         }
         fn write(&mut self, data: &[u8]) -> bool {
+            if !self.connected {
+                return false;
+            }
             self.tx_data.extend_from_slice(data);
             true
         }
@@ -475,6 +506,10 @@ mod tests {
         fn inject_rx(&self, frame: RecvFrame) {
             self.rx_queue.borrow_mut().push_back(frame);
         }
+
+        fn peer_count(&self) -> usize {
+            self.peers.len()
+        }
     }
 
     impl Radio for MockRadio {
@@ -492,6 +527,7 @@ mod tests {
                 return Err("invalid channel");
             }
             self.channel = channel;
+            self.peers.clear();
             Ok(())
         }
         fn channel(&self) -> u8 {
@@ -1013,6 +1049,8 @@ mod tests {
         pairing_replies: Vec<bool>,
         event_queue: RefCell<VecDeque<BleEvent>>,
         check_pairing_timeout_count: Cell<usize>,
+        enable_count: Cell<usize>,
+        disable_count: Cell<usize>,
     }
 
     impl MockBle {
@@ -1023,6 +1061,8 @@ mod tests {
                 pairing_replies: Vec::new(),
                 event_queue: RefCell::new(VecDeque::new()),
                 check_pairing_timeout_count: Cell::new(0),
+                enable_count: Cell::new(0),
+                disable_count: Cell::new(0),
             }
         }
 
@@ -1034,6 +1074,7 @@ mod tests {
     impl Ble for MockBle {
         fn enable(&mut self) {
             self.enabled = true;
+            self.enable_count.set(self.enable_count.get() + 1);
         }
         fn disable(&mut self) {
             self.enabled = false;
@@ -1041,6 +1082,7 @@ mod tests {
             // are not sent to the next client. Events are NOT cleared here —
             // the bridge reset logic drains stale events (MD-0412).
             self.indicated.clear();
+            self.disable_count.set(self.disable_count.get() + 1);
         }
         fn indicate(&mut self, data: &[u8]) {
             // Ble contract: empty data is a no-op.
@@ -1880,5 +1922,1064 @@ mod tests {
                 i
             );
         }
+    }
+
+    // ---------------------------------------------------------------
+    // GAP 1: MD-0403 AC3 — Indication fragmentation flow control
+    // ---------------------------------------------------------------
+
+    /// Mock BLE driver that simulates ATT indication fragmentation and
+    /// flow control, mirroring the real `EspBleDriver` pacing logic.
+    ///
+    /// Key behaviours:
+    /// - `indicate()` fragments into chunks of (MTU − 3) bytes, enqueues
+    ///   them, and sends the next chunk immediately (setting
+    ///   `awaiting_confirm`) **only** when not already awaiting a confirm
+    ///   and there were no pending chunks in the indication queue.
+    /// - `advance_indication()` sends the next queued chunk **only** when
+    ///   `awaiting_confirm` is false (i.e. the ATT confirmation arrived).
+    /// - `simulate_confirm()` clears the flag, as `on_notify_tx` would.
+    struct FragmentingMockBle {
+        mtu: u16,
+        indication_queue: RefCell<VecDeque<Vec<u8>>>,
+        awaiting_confirm: Cell<bool>,
+        chunks_sent: RefCell<Vec<Vec<u8>>>,
+        event_queue: RefCell<VecDeque<BleEvent>>,
+        #[allow(dead_code)]
+        enabled: bool,
+        #[allow(dead_code)]
+        pairing_replies: Vec<bool>,
+    }
+
+    impl FragmentingMockBle {
+        fn new(mtu: u16) -> Self {
+            Self {
+                mtu,
+                indication_queue: RefCell::new(VecDeque::new()),
+                awaiting_confirm: Cell::new(false),
+                chunks_sent: RefCell::new(Vec::new()),
+                event_queue: RefCell::new(VecDeque::new()),
+                enabled: false,
+                pairing_replies: Vec::new(),
+            }
+        }
+
+        /// Simulate ATT Handle Value Confirmation (on_notify_tx success).
+        fn simulate_confirm(&self) {
+            self.awaiting_confirm.set(false);
+        }
+
+        fn chunks_sent(&self) -> std::cell::Ref<'_, Vec<Vec<u8>>> {
+            self.chunks_sent.borrow()
+        }
+
+        fn is_awaiting_confirm(&self) -> bool {
+            self.awaiting_confirm.get()
+        }
+
+        fn pending_chunks(&self) -> usize {
+            self.indication_queue.borrow().len()
+        }
+
+        fn send_next_chunk(&self) {
+            if let Some(chunk) = self.indication_queue.borrow_mut().pop_front() {
+                self.chunks_sent.borrow_mut().push(chunk);
+                self.awaiting_confirm.set(true);
+            }
+        }
+    }
+
+    impl Ble for FragmentingMockBle {
+        fn enable(&mut self) {
+            self.enabled = true;
+        }
+        fn disable(&mut self) {
+            self.enabled = false;
+            self.indication_queue.borrow_mut().clear();
+            self.chunks_sent.borrow_mut().clear();
+            self.event_queue.borrow_mut().clear();
+            self.awaiting_confirm.set(false);
+        }
+        fn indicate(&mut self, data: &[u8]) {
+            if data.is_empty() || self.mtu == 0 {
+                return;
+            }
+            let chunk_size = (self.mtu.saturating_sub(ATT_HEADER_BYTES)) as usize;
+            if chunk_size == 0 {
+                return;
+            }
+            let was_empty = self.indication_queue.borrow().is_empty();
+            {
+                let mut queue = self.indication_queue.borrow_mut();
+                for chunk in data.chunks(chunk_size) {
+                    queue.push_back(chunk.to_vec());
+                }
+            }
+            if !self.awaiting_confirm.get() && was_empty {
+                // Send the first chunk immediately (mirrors EspBleDriver)
+                // while preserving the confirmation-gated pacing model.
+                self.send_next_chunk();
+            }
+        }
+        fn pairing_confirm_reply(&mut self, accept: bool) {
+            self.pairing_replies.push(accept);
+        }
+        fn advance_indication(&self) {
+            if !self.awaiting_confirm.get() && !self.indication_queue.borrow().is_empty() {
+                self.send_next_chunk();
+            }
+        }
+        fn drain_event(&self) -> Option<BleEvent> {
+            self.event_queue.borrow_mut().pop_front()
+        }
+    }
+
+    fn make_bridge_with_fragmenting_ble(
+        mtu: u16,
+    ) -> Bridge<MockSerial, MockRadio, FragmentingMockBle> {
+        Bridge::with_ble(
+            MockSerial::new(),
+            MockRadio::new(),
+            FragmentingMockBle::new(mtu),
+            ModemCounters::new(),
+        )
+    }
+
+    /// Feed `data` into the bridge serial port and poll until fully consumed.
+    fn feed_and_drain<R: Radio, B: Ble>(bridge: &mut Bridge<MockSerial, R, B>, data: &[u8]) {
+        bridge.usb.inject(data);
+        let buf_len = bridge.rx_buf.len();
+        for _ in 0..(data.len() / buf_len + 2) {
+            bridge.poll();
+        }
+    }
+
+    /// Validates: T-0605 / MD-0403 AC3 — flow control between indication
+    /// chunks.
+    ///
+    /// Sends a payload that spans 3 chunks. Asserts that only one chunk is
+    /// sent per confirmation cycle and that no chunk is sent while
+    /// `awaiting_confirm` is true.
+    #[test]
+    fn t0605_indication_flow_control_awaits_confirm() {
+        let mtu = 247u16;
+        // Payload that spans 3 chunks (244 + 244 + 12 = 500 bytes).
+        // Must stay ≤ 511 bytes (serial frame body limit).
+        let payload: Vec<u8> = (0u16..500).map(|i| (i & 0xFF) as u8).collect();
+
+        let mut bridge = make_bridge_with_fragmenting_ble(mtu);
+
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload.clone(),
+        }))
+        .unwrap();
+        feed_and_drain(&mut bridge, &frame);
+
+        // After indicate(), first chunk is sent, awaiting confirm.
+        assert_eq!(bridge.ble.chunks_sent().len(), 1, "only 1st chunk sent");
+        assert!(
+            bridge.ble.is_awaiting_confirm(),
+            "must be awaiting confirm after 1st chunk"
+        );
+
+        // Poll again without confirming — no new chunk.
+        bridge.poll();
+        assert_eq!(
+            bridge.ble.chunks_sent().len(),
+            1,
+            "no advance without confirm"
+        );
+
+        // Simulate ATT confirmation and poll — 2nd chunk sent.
+        bridge.ble.simulate_confirm();
+        bridge.poll();
+        assert_eq!(bridge.ble.chunks_sent().len(), 2, "2nd chunk after confirm");
+        assert!(bridge.ble.is_awaiting_confirm());
+
+        // Simulate confirm and poll — 3rd (last) chunk sent.
+        bridge.ble.simulate_confirm();
+        bridge.poll();
+        assert_eq!(bridge.ble.chunks_sent().len(), 3, "3rd chunk after confirm");
+        assert!(bridge.ble.is_awaiting_confirm());
+
+        // Final confirm — queue is drained.
+        bridge.ble.simulate_confirm();
+        bridge.poll();
+        assert_eq!(bridge.ble.pending_chunks(), 0, "queue fully drained");
+        assert!(!bridge.ble.is_awaiting_confirm());
+
+        // Reassembled chunks must match original payload.
+        let reassembled: Vec<u8> = bridge.ble.chunks_sent().iter().flatten().copied().collect();
+        assert_eq!(reassembled, payload, "reassembly must match original");
+    }
+
+    /// Validates: MD-0403 AC2 — each indication chunk ≤ (MTU − 3) bytes.
+    #[test]
+    fn t0605_indication_chunks_within_mtu_limit() {
+        let mtu = 247u16;
+        let chunk_size = mtu.saturating_sub(ATT_HEADER_BYTES) as usize;
+        // 500 bytes → 3 chunks (244 + 244 + 12).
+        let payload: Vec<u8> = vec![0xAB; 500];
+
+        let mut bridge = make_bridge_with_fragmenting_ble(mtu);
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload,
+        }))
+        .unwrap();
+        feed_and_drain(&mut bridge, &frame);
+
+        // Drain all chunks by simulating confirmations.
+        while bridge.ble.pending_chunks() > 0 || bridge.ble.is_awaiting_confirm() {
+            bridge.ble.simulate_confirm();
+            bridge.poll();
+        }
+
+        for (i, chunk) in bridge.ble.chunks_sent().iter().enumerate() {
+            assert!(
+                chunk.len() <= chunk_size,
+                "chunk {} is {} bytes, exceeds MTU-3 = {}",
+                i,
+                chunk.len(),
+                chunk_size
+            );
+        }
+    }
+
+    /// Validates: MD-0403 — single-chunk payload needs no fragmentation.
+    #[test]
+    fn t0605_indication_single_chunk_no_fragmentation() {
+        let mtu = 247u16;
+        let chunk_size = mtu.saturating_sub(ATT_HEADER_BYTES) as usize;
+        let payload: Vec<u8> = vec![0x42; chunk_size - 10]; // well under ATT value max
+
+        let mut bridge = make_bridge_with_fragmenting_ble(mtu);
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload.clone(),
+        }))
+        .unwrap();
+        feed_and_drain(&mut bridge, &frame);
+
+        assert_eq!(bridge.ble.chunks_sent().len(), 1, "no fragmentation needed");
+        assert_eq!(bridge.ble.chunks_sent()[0], payload);
+        assert_eq!(bridge.ble.pending_chunks(), 0, "queue empty");
+    }
+
+    /// Validates: MD-0403 — payload exactly (MTU − 3) bytes: single chunk.
+    #[test]
+    fn t0605_indication_exact_mtu_boundary() {
+        let mtu = 247u16;
+        let chunk_size = mtu.saturating_sub(ATT_HEADER_BYTES) as usize;
+        let payload: Vec<u8> = vec![0x42; chunk_size]; // exactly ATT value max
+
+        let mut bridge = make_bridge_with_fragmenting_ble(mtu);
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload.clone(),
+        }))
+        .unwrap();
+        feed_and_drain(&mut bridge, &frame);
+
+        assert_eq!(bridge.ble.chunks_sent().len(), 1, "exact fit = 1 chunk");
+        assert_eq!(bridge.ble.chunks_sent()[0], payload);
+    }
+
+    /// Validates: MD-0403 — `advance_indication()` is a no-op while
+    /// `awaiting_confirm` is true, even with queued chunks.
+    #[test]
+    fn t0605_advance_indication_blocked_while_awaiting_confirm() {
+        let mtu = 247u16;
+        // 500 bytes → 3 chunks (244 + 244 + 12), within serial frame limit.
+        let payload: Vec<u8> = vec![0x42; 500];
+
+        let mut bridge = make_bridge_with_fragmenting_ble(mtu);
+        let frame = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: payload,
+        }))
+        .unwrap();
+        feed_and_drain(&mut bridge, &frame);
+
+        // First chunk sent, 2 remaining.
+        assert_eq!(bridge.ble.chunks_sent().len(), 1);
+        assert!(bridge.ble.is_awaiting_confirm());
+        assert_eq!(bridge.ble.pending_chunks(), 2);
+
+        // 10 polls without confirm — still only 1 chunk sent.
+        for _ in 0..10 {
+            bridge.poll();
+        }
+        assert_eq!(
+            bridge.ble.chunks_sent().len(),
+            1,
+            "must not advance without confirm"
+        );
+        assert_eq!(bridge.ble.pending_chunks(), 2, "queue unchanged");
+    }
+
+    /// Validates: MD-0403 — `indicate()` with empty data is silently
+    /// discarded (defense-in-depth via FragmentingMockBle).
+    #[test]
+    fn t0605_fragmenting_ble_empty_indicate_discarded() {
+        let mut bridge = make_bridge_with_fragmenting_ble(247);
+        bridge.ble.indicate(&[]);
+        assert!(bridge.ble.chunks_sent().is_empty());
+        assert!(!bridge.ble.is_awaiting_confirm());
+    }
+
+    // ---------------------------------------------------------------
+    // GAP 2: MD-0409 AC2 — Write Long reassembly
+    // ---------------------------------------------------------------
+
+    /// Validates: T-0613 / MD-0409 AC2 — large BLE payload forwarded as
+    /// a single `BLE_RECV`.
+    ///
+    /// NimBLE reassembles Prepare Write + Execute Write before invoking
+    /// `on_write`, so the bridge receives a single large `BleEvent::Recv`.
+    /// This test verifies the *bridge* forwarding path: it injects a
+    /// pre-reassembled payload larger than (MTU − 3) = 244 bytes and
+    /// asserts it arrives as one `BLE_RECV` serial message. The BLE stack
+    /// reassembly itself is a NimBLE responsibility and is not exercised
+    /// here.
+    #[test]
+    fn t0613_write_long_reassembled_as_single_ble_recv() {
+        let mut bridge = make_bridge_with_ble();
+        // 500 bytes exceeds MTU-3 = 244, which would trigger Write Long
+        // on a real BLE stack. NimBLE reassembles before on_write fires.
+        let large_write: Vec<u8> = (0u16..500).map(|i| (i & 0xFF) as u8).collect();
+        bridge.ble.inject_event(BleEvent::Recv(large_write.clone()));
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleRecv(r) => {
+                assert_eq!(
+                    r.ble_data, large_write,
+                    "Write Long payload must arrive as single BLE_RECV"
+                );
+            }
+            _ => panic!("expected BleRecv"),
+        }
+    }
+
+    /// Validates: T-0613 / MD-0409 AC3 — payload forwarded unmodified.
+    ///
+    /// Sends a binary payload with all 256 byte values and verifies
+    /// bit-exact forwarding through the bridge.
+    #[test]
+    fn t0613_ble_recv_payload_forwarded_unmodified() {
+        let mut bridge = make_bridge_with_ble();
+        let all_bytes: Vec<u8> = (0u16..256).map(|i| i as u8).collect();
+        bridge.ble.inject_event(BleEvent::Recv(all_bytes.clone()));
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleRecv(r) => {
+                assert_eq!(r.ble_data, all_bytes, "payload must be bit-exact");
+            }
+            _ => panic!("expected BleRecv"),
+        }
+    }
+
+    /// Validates: T-0613b / MD-0409 AC4 — empty BLE data handling.
+    ///
+    /// Part 1: Verifies the bridge does not emit a BLE_RECV when no BLE
+    /// event is queued (baseline sanity check — no event means no output).
+    ///
+    /// Part 2: Injects an explicit empty `BleEvent::Recv` into the bridge
+    /// and verifies the bridge handles it gracefully (defense-in-depth).
+    /// The discard responsibility for empty GATT writes lies in the BLE
+    /// driver layer, not the bridge; this test validates bridge resilience.
+    #[test]
+    fn t0613b_empty_gatt_write_no_ble_recv() {
+        // Part 1: Baseline sanity — no BLE event queued means no BLE_RECV
+        // output. This does not exercise empty-write discard logic (which is
+        // a BLE driver responsibility), only verifies the bridge stays quiet.
+        let mut bridge = make_bridge_with_fragmenting_ble(247);
+        bridge.poll();
+        assert!(
+            bridge.usb.take_tx().is_empty(),
+            "no BLE_RECV when BLE layer emits nothing"
+        );
+
+        // Part 2: Inject an explicit empty BleEvent::Recv to verify the
+        // bridge handles it gracefully (defense-in-depth).
+        let mut bridge2 = make_bridge_with_ble();
+        bridge2.ble.inject_event(BleEvent::Recv(vec![]));
+        bridge2.poll();
+
+        // The bridge forwards whatever the BLE layer produces. The codec may
+        // accept or reject empty BLE_RECV; either way no crash. We assert
+        // that if a frame is produced, it is a BLE_RECV with empty payload,
+        // and that no other modem messages are synthesized.
+        let tx2 = bridge2.usb.take_tx();
+        let mut decoder2 = FrameDecoder::new();
+        decoder2.push(&tx2);
+
+        // The codec is allowed to reject empty BLE_RECV frames; for this
+        // test, a decode error is treated as "no valid message produced".
+        let decoded = decoder2.decode().unwrap_or_default();
+        if let Some(msg) = decoded {
+            match msg {
+                ModemMessage::BleRecv(r) => {
+                    assert!(
+                        r.ble_data.is_empty(),
+                        "expected empty ble_data for empty BleEvent::Recv"
+                    );
+                }
+                other => {
+                    panic!(
+                        "unexpected modem message for empty BleEvent::Recv: {:?}",
+                        other
+                    );
+                }
+            }
+        } else {
+            // No frame forwarded is also acceptable: empty BLE_RECV dropped.
+            assert!(
+                tx2.is_empty(),
+                "decoder returned None but serial buffer was not empty"
+            );
+        }
+    }
+
+    /// Validates: MD-0409 AC2 — multiple Write Long payloads arrive as
+    /// separate `BLE_RECV` messages (no merging across writes).
+    #[test]
+    fn t0613_multiple_write_longs_separate_ble_recv() {
+        let mut bridge = make_bridge_with_ble();
+        let write1: Vec<u8> = vec![0xAA; 300];
+        let write2: Vec<u8> = vec![0xBB; 400];
+        bridge.ble.inject_event(BleEvent::Recv(write1.clone()));
+        bridge.ble.inject_event(BleEvent::Recv(write2.clone()));
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&tx);
+
+        let msg1 = decoder.decode().unwrap().expect("first BLE_RECV");
+        let msg2 = decoder.decode().unwrap().expect("second BLE_RECV");
+
+        match (msg1, msg2) {
+            (ModemMessage::BleRecv(r1), ModemMessage::BleRecv(r2)) => {
+                assert_eq!(r1.ble_data, write1, "first Write Long intact");
+                assert_eq!(r2.ble_data, write2, "second Write Long intact");
+            }
+            _ => panic!("expected two BleRecv messages"),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // GAP 3: USB TX backpressure / ring buffer overflow
+    // ---------------------------------------------------------------
+
+    /// Mock serial port that can simulate write failures (TX buffer full).
+    struct BackpressureSerial {
+        rx_data: Vec<u8>,
+        tx_data: Vec<u8>,
+        connected: bool,
+        reconnect_once: bool,
+        /// When true, `write()` returns false (simulating full TX buffer).
+        reject_writes: bool,
+        write_attempt_count: usize,
+    }
+
+    impl BackpressureSerial {
+        fn new() -> Self {
+            Self {
+                rx_data: Vec::new(),
+                tx_data: Vec::new(),
+                connected: true,
+                reconnect_once: false,
+                reject_writes: false,
+                write_attempt_count: 0,
+            }
+        }
+
+        fn take_tx(&mut self) -> Vec<u8> {
+            std::mem::take(&mut self.tx_data)
+        }
+    }
+
+    impl SerialPort for BackpressureSerial {
+        fn read(&mut self, buf: &mut [u8]) -> (usize, bool) {
+            let reconnected = self.reconnect_once;
+            self.reconnect_once = false;
+            let n = std::cmp::min(buf.len(), self.rx_data.len());
+            buf[..n].copy_from_slice(&self.rx_data[..n]);
+            self.rx_data.drain(..n);
+            (n, reconnected)
+        }
+        fn write(&mut self, data: &[u8]) -> bool {
+            self.write_attempt_count += 1;
+            if self.reject_writes {
+                return false;
+            }
+            self.tx_data.extend_from_slice(data);
+            true
+        }
+        fn is_connected(&self) -> bool {
+            self.connected
+        }
+    }
+
+    /// Validates: Design §4.3 — radio frame flood with full TX buffer.
+    ///
+    /// Injects radio frames while the USB serial rejects writes. The
+    /// bridge must not crash, block, or panic. Frames are silently
+    /// dropped (rx_count is NOT incremented).
+    #[test]
+    fn t0403_tx_backpressure_drops_frames_no_crash() {
+        let usb = BackpressureSerial::new();
+        let mut bridge: Bridge<BackpressureSerial, MockRadio> =
+            Bridge::new(usb, MockRadio::new(), ModemCounters::new());
+
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+
+        // Simulate TX buffer full.
+        bridge.usb.reject_writes = true;
+
+        // Flood with radio frames.
+        for i in 0u8..32 {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -40,
+                frame_data: vec![i],
+            });
+        }
+
+        // Poll twice — should not crash or block.
+        bridge.poll();
+        bridge.poll();
+
+        // All frames consumed from radio queue.
+        assert!(
+            bridge.radio.drain_one().is_none(),
+            "radio queue must be drained"
+        );
+
+        // No frames forwarded (writes rejected).
+        assert_eq!(
+            bridge.counters.rx_count(),
+            0,
+            "rx_count must not increment on write failure"
+        );
+
+        // Write attempts were made (bridge tried to forward).
+        assert!(
+            bridge.usb.write_attempt_count > 0,
+            "bridge must attempt writes"
+        );
+    }
+
+    /// Validates: Design §4.3 — bridge recovers after TX backpressure
+    /// clears.
+    ///
+    /// After a period of write failures, writes succeed again and frames
+    /// are forwarded normally.
+    #[test]
+    fn t0403_tx_backpressure_recovery() {
+        let usb = BackpressureSerial::new();
+        let mut bridge: Bridge<BackpressureSerial, MockRadio> =
+            Bridge::new(usb, MockRadio::new(), ModemCounters::new());
+
+        let peer = [1, 2, 3, 4, 5, 6];
+
+        // Phase 1: Reject writes.
+        bridge.usb.reject_writes = true;
+        for i in 0u8..5 {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -50,
+                frame_data: vec![i],
+            });
+        }
+        bridge.poll();
+        assert_eq!(bridge.counters.rx_count(), 0, "all dropped under pressure");
+        bridge.usb.take_tx(); // discard (empty)
+
+        // Phase 2: Restore writes.
+        bridge.usb.reject_writes = false;
+        for i in 10u8..13 {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -55,
+                frame_data: vec![i],
+            });
+        }
+        bridge.poll();
+        assert_eq!(
+            bridge.counters.rx_count(),
+            3,
+            "3 frames forwarded after recovery"
+        );
+
+        // Verify forwarded frames are decodable.
+        let tx = bridge.usb.take_tx();
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&tx);
+        let mut count = 0;
+        while let Ok(Some(msg)) = decoder.decode() {
+            assert!(matches!(msg, ModemMessage::RecvFrame(_)));
+            count += 1;
+        }
+        assert_eq!(count, 3);
+    }
+
+    /// Validates: Design §4.3 — BLE events also tolerate TX
+    /// backpressure without crash.
+    #[test]
+    fn t0403_tx_backpressure_ble_events_no_crash() {
+        let usb = BackpressureSerial::new();
+        let mut bridge: Bridge<BackpressureSerial, MockRadio, MockBle> =
+            Bridge::with_ble(usb, MockRadio::new(), MockBle::new(), ModemCounters::new());
+
+        bridge.usb.reject_writes = true;
+
+        // Inject BLE events while TX is blocked.
+        let peer = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        bridge.ble.inject_event(BleEvent::Recv(vec![0x01, 0x02]));
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 247,
+        });
+        bridge.ble.inject_event(BleEvent::Disconnected {
+            peer_addr: peer,
+            reason: 0x13,
+        });
+
+        // Must not crash or block.
+        bridge.poll();
+        assert!(bridge.usb.take_tx().is_empty(), "writes rejected");
+
+        // Restore writes and verify bridge still works.
+        bridge.usb.reject_writes = false;
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 42 });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(
+            matches!(msg, ModemMessage::BlePairingConfirm(_)),
+            "bridge must recover after backpressure clears"
+        );
+    }
+
+    // --- Issue #339: Validation gap tests ---
+
+    /// Validates: MD-0200 (ESP-NOW default channel is 1 at initial boot)
+    ///
+    /// The modem must initialize ESP-NOW on channel 1. Verifies both
+    /// the radio layer and the STATUS response report channel 1 before
+    /// any SET_CHANNEL command is sent.
+    #[test]
+    fn default_channel_is_one_at_boot() {
+        let mut bridge = make_bridge();
+        // Radio layer should start on channel 1.
+        assert_eq!(bridge.radio.channel(), 1);
+
+        // STATUS should also report channel 1.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                assert_eq!(s.channel, 1, "default channel must be 1 at boot");
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    /// Validates: MD-0413 AC3 (BLE_ENABLE idempotent — duplicate is safe)
+    ///
+    /// Sending BLE_ENABLE when already enabled must not disrupt an active
+    /// connection. The bridge always forwards the call to the BLE driver
+    /// (retrying enable) so that transient start failures can be recovered.
+    /// Asserts only externally observable behavior: no disconnect event,
+    /// BLE stays enabled, indication works.
+    #[test]
+    fn ble_enable_idempotent() {
+        let mut bridge = make_bridge_with_ble();
+
+        // First BLE_ENABLE.
+        let enable = encode_modem_frame(&ModemMessage::BleEnable).unwrap();
+        bridge.usb.inject(&enable);
+        bridge.poll();
+        assert!(bridge.ble.enabled);
+        bridge.usb.take_tx(); // discard
+
+        // Simulate an active BLE connection.
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 247,
+        });
+        bridge.poll();
+        bridge.usb.take_tx(); // discard BLE_CONNECTED
+
+        // Second BLE_ENABLE — must not disrupt the connection.
+        bridge.usb.inject(&enable);
+        bridge.poll();
+        assert!(bridge.ble.enabled, "BLE must remain enabled");
+
+        // No BLE_DISCONNECTED event should have been emitted.
+        let tx = bridge.usb.take_tx();
+        assert!(
+            tx.is_empty(),
+            "duplicate BLE_ENABLE must not produce output or disconnect"
+        );
+
+        // Bridge always retries enable to recover from transient failures.
+        assert_eq!(
+            bridge.ble.enable_count.get(),
+            2,
+            "duplicate BLE_ENABLE should retry Ble::enable()"
+        );
+
+        // Connection should still be usable — indicate data to BLE client.
+        let indicate = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: vec![0xAB, 0xCD],
+        }))
+        .unwrap();
+        bridge.usb.inject(&indicate);
+        bridge.poll();
+        assert_eq!(
+            bridge.ble.indicated.len(),
+            1,
+            "BLE indicate must still work after duplicate enable"
+        );
+    }
+
+    /// Validates: MD-0413 AC4 (BLE_DISABLE idempotent — duplicate is safe)
+    ///
+    /// Sending BLE_DISABLE when already disabled must not crash or
+    /// produce unexpected output. The bridge always forwards the call to
+    /// the BLE driver (retrying disable) so transient failures are
+    /// recovered. Asserts only externally observable behavior: no serial
+    /// output, BLE stays disabled, bridge operational.
+    #[test]
+    fn ble_disable_idempotent() {
+        let mut bridge = make_bridge_with_ble();
+
+        // BLE starts disabled — first BLE_DISABLE is already a duplicate.
+        assert!(!bridge.ble.enabled);
+        let disable = encode_modem_frame(&ModemMessage::BleDisable).unwrap();
+        bridge.usb.inject(&disable);
+        bridge.poll();
+        assert!(!bridge.ble.enabled);
+        assert!(bridge.usb.take_tx().is_empty(), "no output expected");
+
+        // Second BLE_DISABLE.
+        bridge.usb.inject(&disable);
+        bridge.poll();
+        assert!(!bridge.ble.enabled);
+        assert!(
+            bridge.usb.take_tx().is_empty(),
+            "duplicate BLE_DISABLE must not produce output"
+        );
+        // Bridge always retries disable to recover from transient failures.
+        // The initial construction disable + 2 explicit calls = 3 total.
+        assert_eq!(
+            bridge.ble.disable_count.get(),
+            3,
+            "duplicate BLE_DISABLE should retry Ble::disable()"
+        );
+
+        // Bridge should still be operational.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::Status(_)));
+    }
+
+    /// Validates: MD-0202 AC3 / MD-0303 AC3 (tx_fail_count reported in STATUS)
+    ///
+    /// Triggers a non-zero `tx_fail_count` and verifies STATUS reports it.
+    /// On real hardware the ESP-NOW send callback increments `tx_fail_count`;
+    /// here we simulate via the shared `ModemCounters`.
+    #[test]
+    fn tx_fail_count_reported_in_status() {
+        let mut bridge = make_bridge();
+
+        // Simulate the ESP-NOW driver reporting 3 tx failures.
+        bridge.counters.inc_tx_fail();
+        bridge.counters.inc_tx_fail();
+        bridge.counters.inc_tx_fail();
+        // Also simulate some successful sends.
+        bridge.counters.inc_tx();
+        bridge.counters.inc_tx();
+
+        // Query status.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                assert_eq!(
+                    s.tx_fail_count, 3,
+                    "tx_fail_count must reflect failed sends"
+                );
+                assert_eq!(s.tx_count, 2, "tx_count must reflect successful sends");
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    /// Validates: MD-0301 (ESP-NOW frames during USB disconnect are discarded)
+    ///
+    /// Injects radio frames while USB is disconnected, then reconnects
+    /// and verifies no stale frames are flushed to the gateway.
+    #[test]
+    fn frames_during_usb_disconnect_are_discarded() {
+        let mut bridge = make_bridge();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+
+        // Simulate USB disconnect.
+        bridge.usb.set_connected(false);
+
+        // Inject radio frames during the disconnect.
+        for i in 0u8..5 {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -50,
+                frame_data: vec![i],
+            });
+        }
+
+        // Poll while disconnected — frames should be drained but writes fail.
+        bridge.poll();
+
+        // Reconnect USB.
+        bridge.usb.set_connected(true);
+        bridge.usb.set_reconnect_once();
+        bridge.poll();
+
+        // Only MODEM_READY should appear — no stale RECV_FRAMEs.
+        // Decode the entire tx buffer to catch any trailing messages.
+        let tx = bridge.usb.take_tx();
+        let mut remaining = tx.as_slice();
+        let mut messages = Vec::new();
+        while !remaining.is_empty() {
+            let (msg, consumed) =
+                decode_modem_frame(remaining).expect("failed to decode frame from tx buffer");
+            messages.push(msg);
+            remaining = &remaining[consumed..];
+        }
+        assert_eq!(
+            messages.len(),
+            1,
+            "expected exactly one message after reconnect, got {}",
+            messages.len()
+        );
+        assert!(
+            matches!(messages[0], ModemMessage::ModemReady(_)),
+            "only MODEM_READY expected after reconnect, got {:?}",
+            messages[0]
+        );
+
+        // Verify the radio queue is empty (frames were consumed, not re-queued).
+        assert!(
+            bridge.radio.drain_one().is_none(),
+            "radio queue must be empty — stale frames must not survive reconnect"
+        );
+    }
+
+    /// Validates: MD-0206 AC3 (peer table cleared on channel change)
+    ///
+    /// Sends frames to populate the peer table, then changes the channel
+    /// and verifies the peer table was cleared.
+    #[test]
+    fn peer_table_cleared_on_channel_change() {
+        let mut bridge = make_bridge();
+
+        // Send frames to three distinct peers to populate the peer table.
+        for i in 1u8..=3 {
+            let peer = [i, 0, 0, 0, 0, 0];
+            let sf = ModemMessage::SendFrame(SendFrame {
+                peer_mac: peer,
+                frame_data: vec![0xAA],
+            });
+            let frame = encode_modem_frame(&sf).unwrap();
+            bridge.usb.inject(&frame);
+        }
+        bridge.poll();
+        assert_eq!(
+            bridge.radio.peer_count(),
+            3,
+            "should have 3 peers before channel change"
+        );
+
+        // Change channel.
+        let set_ch = encode_modem_frame(&ModemMessage::SetChannel(6)).unwrap();
+        bridge.usb.inject(&set_ch);
+        bridge.poll();
+        bridge.usb.take_tx(); // discard SET_CHANNEL_ACK
+
+        // Peer table must be empty after channel change.
+        assert_eq!(
+            bridge.radio.peer_count(),
+            0,
+            "peer table must be cleared on channel change (MD-0206 AC3)"
+        );
+    }
+
+    /// Validates: MD-0207 AC3 (ESP-NOW resumes after channel scan)
+    ///
+    /// After SCAN_CHANNELS completes, verifies that the radio can still
+    /// send and receive ESP-NOW frames.
+    #[test]
+    fn espnow_resumes_after_channel_scan() {
+        let mut bridge = make_bridge();
+
+        // Perform a channel scan.
+        let scan = encode_modem_frame(&ModemMessage::ScanChannels).unwrap();
+        bridge.usb.inject(&scan);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let mut remaining = tx.as_slice();
+        let mut scan_results = Vec::new();
+        while !remaining.is_empty() {
+            let (msg, consumed) =
+                decode_modem_frame(remaining).expect("failed to decode frame from tx buffer");
+            if let ModemMessage::ScanResult(_) = &msg {
+                scan_results.push(msg);
+            }
+            remaining = &remaining[consumed..];
+        }
+        assert!(!scan_results.is_empty(), "expected at least one ScanResult");
+
+        // Send a frame after scan — radio TX must work.
+        let peer = [1, 2, 3, 4, 5, 6];
+        let sf = ModemMessage::SendFrame(SendFrame {
+            peer_mac: peer,
+            frame_data: vec![0xDE, 0xAD],
+        });
+        let frame = encode_modem_frame(&sf).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert_eq!(bridge.radio.sent.len(), 1, "radio TX must work after scan");
+        assert_eq!(bridge.radio.sent[0].0, vec![0xDE, 0xAD]);
+
+        // Receive a frame after scan — radio RX must work.
+        bridge.radio.inject_rx(RecvFrame {
+            peer_mac: peer,
+            rssi: -45,
+            frame_data: vec![0xBE, 0xEF],
+        });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::RecvFrame(rf) => {
+                assert_eq!(rf.frame_data, vec![0xBE, 0xEF]);
+                assert_eq!(rf.peer_mac, peer);
+            }
+            _ => panic!("expected RecvFrame after scan"),
+        }
+    }
+
+    /// Validates: MD-0303 AC5 (uptime_s accuracy — not just > 0)
+    ///
+    /// Uses a backdated boot time to verify `uptime_s` reflects actual
+    /// elapsed seconds, not a stuck-at-1 sentinel.
+    #[test]
+    fn uptime_accuracy_reflects_elapsed_time() {
+        use std::time::{Duration, Instant};
+
+        // Backdate boot_time by 7 seconds.
+        let boot = Instant::now() - Duration::from_secs(7);
+        let counters = ModemCounters::new_with_boot_time(boot);
+        let mut bridge = Bridge::new(MockSerial::new(), MockRadio::new(), counters);
+
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                // Compute expected uptime based on current time and boot time,
+                // and allow a small tolerance to avoid flakiness on slow CI.
+                let expected = Instant::now().duration_since(boot).as_secs();
+                let lower = expected.saturating_sub(1);
+                let upper = expected + 1;
+                let uptime = u64::from(s.uptime_s);
+                assert!(
+                    (lower..=upper).contains(&uptime),
+                    "uptime_s should be close to {}s (±1s), got {}",
+                    expected,
+                    uptime
+                );
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    /// Validates: MD-0201 (rapid radio frame burst — exactly one RECV_FRAME
+    /// per ESP-NOW frame received)
+    ///
+    /// Injects 32 frames in a rapid burst (spanning multiple poll cycles
+    /// due to MAX_RX_FRAMES_PER_POLL cap) and verifies a strict 1:1 mapping
+    /// between injected and forwarded frames with correct payloads.
+    #[test]
+    fn rapid_radio_burst_one_recv_per_frame() {
+        let mut bridge = make_bridge();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        let total: usize = 32;
+
+        // Inject a burst of frames.
+        for i in 0..total {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -30 - (i as i8 % 30),
+                frame_data: vec![(i & 0xFF) as u8, ((i >> 8) & 0xFF) as u8],
+            });
+        }
+
+        // Drain across multiple poll cycles (cap is MAX_RX_FRAMES_PER_POLL = 16).
+        let mut all_tx = Vec::new();
+        let max_polls = total / MAX_RX_FRAMES_PER_POLL + 2;
+        for _ in 0..max_polls {
+            bridge.poll();
+            all_tx.extend_from_slice(&bridge.usb.take_tx());
+        }
+
+        // Decode all forwarded frames and verify 1:1 mapping.
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&all_tx);
+        let mut recv_count = 0usize;
+        loop {
+            match decoder.decode() {
+                Ok(Some(msg)) => match msg {
+                    ModemMessage::RecvFrame(rf) => {
+                        assert_eq!(
+                            rf.frame_data,
+                            vec![(recv_count & 0xFF) as u8, ((recv_count >> 8) & 0xFF) as u8],
+                            "frame {} payload mismatch",
+                            recv_count
+                        );
+                        assert_eq!(rf.peer_mac, peer);
+                        recv_count += 1;
+                    }
+                    _ => panic!("unexpected message type in burst output"),
+                },
+                Ok(None) => break,
+                Err(e) => panic!("failed to decode modem frame in burst output: {:?}", e),
+            }
+        }
+        assert_eq!(
+            recv_count, total,
+            "exactly one RECV_FRAME per injected frame (got {}, expected {})",
+            recv_count, total
+        );
+        assert_eq!(bridge.counters.rx_count(), total as u32);
     }
 }

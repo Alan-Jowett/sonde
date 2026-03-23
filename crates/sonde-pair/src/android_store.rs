@@ -156,6 +156,12 @@ impl AndroidPairingStore {
             let context = get_app_context(env)?;
             Self::new(env, &context)
         })
+        .map_err(|e| match e {
+            PairingError::JniError(msg) => {
+                PairingError::StoreSaveFailed(format!("attach_current_thread: {msg}"))
+            }
+            other => other,
+        })
     }
 }
 
@@ -248,51 +254,72 @@ impl PairingStore for AndroidPairingStore {
     }
 
     fn clear(&mut self) -> Result<(), PairingError> {
-        self.vm.attach_current_thread(|env| {
-            env.call_method(self.store.as_obj(), jni_str!("clear"), jni_sig!("()V"), &[])
-                .map_err(|e| store_jni_exception(env, "clear", e, StoreOp::Save))?;
-            debug!("pairing store cleared");
-            Ok(())
-        })
+        self.vm
+            .attach_current_thread(|env| {
+                env.call_method(self.store.as_obj(), jni_str!("clear"), jni_sig!("()V"), &[])
+                    .map_err(|e| store_jni_exception(env, "clear", e, StoreOp::Save))?;
+                debug!("pairing store cleared");
+                Ok(())
+            })
+            .map_err(|e| match e {
+                PairingError::JniError(msg) => {
+                    PairingError::StoreSaveFailed(format!("attach_current_thread: {msg}"))
+                }
+                other => other,
+            })
     }
 
     fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, PairingError> {
-        self.vm.attach_current_thread(|env| {
-            let store = self.store.as_obj();
+        self.vm
+            .attach_current_thread(|env| {
+                let store = self.store.as_obj();
 
-            let gw_public_key = match get_bytes(env, store, KEY_GW_PUBLIC_KEY)? {
-                Some(b) => b,
-                None => return Ok(None),
-            };
-            let gateway_id = match get_bytes(env, store, KEY_GATEWAY_ID)? {
-                Some(b) => b,
-                None => return Ok(None),
-            };
+                let gw_public_key = match get_bytes(env, store, KEY_GW_PUBLIC_KEY)? {
+                    Some(b) => b,
+                    None => return Ok(None),
+                };
+                let gateway_id = match get_bytes(env, store, KEY_GATEWAY_ID)? {
+                    Some(b) => b,
+                    None => return Ok(None),
+                };
 
-            let gw_pk: [u8; 32] = gw_public_key.try_into().map_err(|_| {
-                PairingError::StoreLoadFailed("gw_public_key: expected 32 bytes".into())
-            })?;
-            let gw_id: [u8; 16] = gateway_id.try_into().map_err(|_| {
-                PairingError::StoreLoadFailed("gateway_id: expected 16 bytes".into())
-            })?;
+                let gw_pk: [u8; 32] = gw_public_key.try_into().map_err(|_| {
+                    PairingError::StoreLoadFailed("gw_public_key: expected 32 bytes".into())
+                })?;
+                let gw_id: [u8; 16] = gateway_id.try_into().map_err(|_| {
+                    PairingError::StoreLoadFailed("gateway_id: expected 16 bytes".into())
+                })?;
 
-            Ok(Some(GatewayIdentity {
-                public_key: gw_pk,
-                gateway_id: gw_id,
-            }))
-        })
+                Ok(Some(GatewayIdentity {
+                    public_key: gw_pk,
+                    gateway_id: gw_id,
+                }))
+            })
+            .map_err(|e| match e {
+                PairingError::JniError(msg) => {
+                    PairingError::StoreLoadFailed(format!("attach_current_thread: {msg}"))
+                }
+                other => other,
+            })
     }
 
     fn save_gateway_identity(&mut self, identity: &GatewayIdentity) -> Result<(), PairingError> {
-        self.vm.attach_current_thread(|env| {
-            let store = self.store.as_obj();
+        self.vm
+            .attach_current_thread(|env| {
+                let store = self.store.as_obj();
 
-            put_bytes(env, store, KEY_GW_PUBLIC_KEY, &identity.public_key)?;
-            put_bytes(env, store, KEY_GATEWAY_ID, &identity.gateway_id)?;
+                put_bytes(env, store, KEY_GW_PUBLIC_KEY, &identity.public_key)?;
+                put_bytes(env, store, KEY_GATEWAY_ID, &identity.gateway_id)?;
 
-            debug!("gateway identity saved");
-            Ok(())
-        })
+                debug!("gateway identity saved");
+                Ok(())
+            })
+            .map_err(|e| match e {
+                PairingError::JniError(msg) => {
+                    PairingError::StoreSaveFailed(format!("attach_current_thread: {msg}"))
+                }
+                other => other,
+            })
     }
 }
 

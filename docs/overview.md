@@ -37,7 +37,7 @@ APIs and the wire protocol may change between commits. The project is not yet re
 
 **Versioning:** The project has not yet reached v1.0. A stable v1.0 release is planned after the full system (gateway + modem + node + admin) has been validated end-to-end.
 
-**Roadmap:** See [implementation-guide.md](implementation-guide.md) for the phased build plan and [README.md § Project status](../README.md#project-status) for the latest crate-level status.
+**Roadmap:** See [implementation-guide.md](implementation-guide.md) for the phased software build plan, [roadmap.md](roadmap.md) for the hardware roadmap, and [README.md § Project status](../README.md#project-status) for the latest crate-level status.
 
 ---
 

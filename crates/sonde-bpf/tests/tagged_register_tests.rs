@@ -122,7 +122,10 @@ fn t_bpf_004_atomic_on_readonly_ctx() {
     ]);
     let mut ctx = [0x42u8; 16];
     let result = execute_program_no_maps(&prog, &mut ctx, &[], true, UNLIMITED_BUDGET);
-    assert!(result.is_ok(), "atomic on read-only ctx must succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "atomic on read-only ctx must succeed: {result:?}"
+    );
     // Context memory must remain unchanged (write suppressed).
     assert!(ctx.iter().all(|&b| b == 0x42), "context must be unchanged");
 }

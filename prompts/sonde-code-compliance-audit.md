@@ -414,9 +414,12 @@ After reporting individual findings, produce aggregate metrics:
 
 # Taxonomy: Specification Drift
 
-Use these labels to classify findings when auditing requirements, design,
-and validation documents for consistency and completeness. Every finding
-MUST use exactly one label from this taxonomy.
+Use this taxonomy when auditing requirements, design, and validation
+documents for consistency and completeness. For findings reported in
+this audit's Phase 6, you MUST assign exactly one of the D8–D10 labels
+defined below. The D1–D7 labels are included only for cross-reference
+with the broader Specification Drift taxonomy and MUST NOT be used as
+finding labels in this audit.
 
 ## Labels
 

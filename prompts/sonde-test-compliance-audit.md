@@ -355,11 +355,11 @@ For each automatable test case in the validation plan:
      - Wrong assertions or mismatched expected results →
        D13_ASSERTION_MISMATCH
    - **NOT IMPLEMENTED**: No test implements this test case (no
-     matching test function found in the provided code). Flag as
-     D11_UNIMPLEMENTED_TEST_CASE. Note: a test stub with an empty
-     body or skip annotation is NOT an implementation — classify it
-     as D13 (assertions don't match because there are none) and
-     record its code location.
+     matching test function found in the provided code), or only a
+     non-executing stub exists. Flag as D11_UNIMPLEMENTED_TEST_CASE.
+     Note: a test stub with an empty body or skip annotation is NOT
+     an implementation — classify it as D11_UNIMPLEMENTED_TEST_CASE
+     and record its code location.
 
 ## Phase 4: Backward Traceability (Test Code → Validation Plan)
 
@@ -383,7 +383,7 @@ Identify tests that don't trace to the validation plan.
 
 ## Phase 5: Classification and Reporting
 
-Classify every finding using the specification-drift taxonomy.
+Classify every finding using the specification-drift taxonomy, **restricted in this audit to labels D11–D13**. Any other taxonomy labels (for example, D1–D10, if shown elsewhere in this document) are reference-only and MUST NOT be used for this audit's findings.
 
 1. Assign exactly one drift label (D11, D12, or D13) to each finding.
 2. Assign severity using the taxonomy's severity guidance.
@@ -554,61 +554,12 @@ requirement) because it creates a false sense of coverage.
 
 ## Code Compliance Labels
 
-### D8_UNIMPLEMENTED_REQUIREMENT
-
-A requirement exists in the requirements document but has no
-corresponding implementation in the source code.
-
-**Pattern**: REQ-ID specifies a behavior, constraint, or capability.
-No function, module, class, or code path in the source implements
-or enforces this requirement.
-
-**Risk**: The requirement was specified but never built. The system
-does not deliver this capability despite it being in the spec.
-
-**Severity guidance**: Critical when the requirement is safety-critical
-or security-related. High for functional requirements. Medium for
-non-functional requirements that affect quality attributes.
-
-### D9_UNDOCUMENTED_BEHAVIOR
-
-The source code implements behavior that is not specified in any
-requirement or design document.
-
-**Pattern**: A function, module, or code path implements meaningful
-behavior (not just infrastructure like logging or error handling)
-that does not trace to any REQ-ID in the requirements document or
-any section in the design document.
-
-**Risk**: Scope creep in implementation — the code does more than
-was specified. The undocumented behavior may be intentional (a missing
-requirement) or accidental (a developer's assumption). Either way,
-it is untested against any specification.
-
-**Severity guidance**: Medium when the behavior is benign feature
-logic. High when the behavior involves security, access control,
-data mutation, or external communication — undocumented behavior
-in these areas is a security concern.
-
-### D10_CONSTRAINT_VIOLATION_IN_CODE
-
-The source code violates a constraint stated in the requirements or
-design document.
-
-**Pattern**: The requirements document states a constraint (e.g.,
-"MUST respond within 200ms", "MUST NOT store passwords in plaintext",
-"MUST use TLS 1.3 or later") and the source code demonstrably violates
-it — through algorithmic choice, missing implementation, or explicit
-contradiction.
-
-**Risk**: The implementation will not meet requirements. Unlike D6
-(constraint violation in design), this is a concrete defect in code,
-not a planning gap.
-
-**Severity guidance**: Critical when the violated constraint is
-safety-critical, security-related, or regulatory. High for performance
-or functional constraints. Assess based on the constraint itself,
-not the code's complexity.
+Code compliance labels D8–D10 are defined in the
+`prompts/sonde-code-compliance-audit.md` template.
+Refer to that document for the authoritative definitions and usage
+guidance for these labels. This test-compliance template focuses on
+test compliance drift (D11–D13) and should not redefine code
+compliance concepts.
 
 ## Test Compliance Labels
 

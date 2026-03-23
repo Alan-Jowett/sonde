@@ -70,6 +70,20 @@ npx @alan-jowett/promptkit assemble prompts/sonde-trifecta-audit.md \
   -o modem-trifecta-audit.md
 ```
 
+> **Note:** Passing large documents via `$(cat ...)` can exceed shell
+> argument length limits (`ARG_MAX`) for bigger components. If you hit
+> this limit, use file-based input instead:
+>
+> ```bash
+> npx @alan-jowett/promptkit assemble prompts/sonde-trifecta-audit.md \
+>   -p project_name="Sonde Modem" \
+>   -f requirements_doc=docs/modem-requirements.md \
+>   -f design_doc=docs/modem-design.md \
+>   -f validation_plan=docs/modem-validation.md \
+>   -p focus_areas="all" \
+>   -o modem-trifecta-audit.md
+> ```
+
 Then feed the assembled prompt to your LLM.
 
 ### Repeat for each component

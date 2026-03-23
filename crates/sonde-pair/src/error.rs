@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-use crate::types::NodeAckStatus;
+use crate::types::{NodeAckStatus, PairingMethod};
 
 /// Errors that can occur during BLE pairing.
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +122,12 @@ pub enum PairingError {
 
     #[error("not paired — run Phase 1 (gateway pairing) first before provisioning nodes")]
     NotPaired,
+
+    #[error("BLE pairing used insecure method `{method}` — Numeric Comparison (LESC) is required")]
+    InsecurePairingMethod { method: PairingMethod },
+
+    #[error("invalid argument: {reason}")]
+    InvalidArgument { reason: String },
 
     // Scan errors
     #[error("scan is already active")]

@@ -52,6 +52,8 @@ secret-service = { version = "5", features = ["rt-tokio-crypto-rust"], optional 
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }
+tracing-test = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }
 tempfile = "3"

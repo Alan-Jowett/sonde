@@ -18,7 +18,7 @@ use tokio::net::TcpStream;
 
 use crate::error::PairingError;
 use crate::transport::BleTransport;
-use crate::types::{ScannedDevice, GATEWAY_SERVICE_UUID};
+use crate::types::{PairingMethod, ScannedDevice, GATEWAY_SERVICE_UUID};
 
 /// A [`BleTransport`] that tunnels BLE operations over TCP to a
 /// [`fake_gatt_peripheral`](https://github.com/Alan-Jowett/sonde/issues/259).
@@ -150,6 +150,12 @@ impl BleTransport for LoopbackBleTransport {
                 Err(_) => Err(PairingError::IndicationTimeout),
             }
         })
+    }
+
+    /// Loopback transport reports a concrete pairing method so that
+    /// higher layers will still enforce LESC (PT-0904) during tests.
+    fn pairing_method(&self) -> Option<PairingMethod> {
+        Some(PairingMethod::NumericComparison)
     }
 }
 

@@ -10,6 +10,7 @@ pub mod envelope;
 pub mod error;
 #[cfg(feature = "file-store")]
 pub mod file_store;
+pub mod fragmentation;
 pub mod phase1;
 pub mod phase2;
 pub mod rng;

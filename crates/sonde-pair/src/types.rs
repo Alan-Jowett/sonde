@@ -122,6 +122,32 @@ impl std::fmt::Display for NodeAckStatus {
     }
 }
 
+/// BLE pairing method negotiated during connection (PT-0904).
+///
+/// The transport exposes this after a successful connection so application
+/// logic can reject insecure methods before exchanging key material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PairingMethod {
+    /// LE Secure Connections (LESC) Numeric Comparison — required.
+    NumericComparison,
+    /// Just Works — insecure, must be rejected (PT-0904).
+    JustWorks,
+    /// Unknown — the transport cannot observe the pairing method.
+    /// Must be rejected by `enforce_lesc()` per PT-0904.
+    Unknown,
+}
+
+impl std::fmt::Display for PairingMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NumericComparison => write!(f, "Numeric Comparison"),
+            Self::JustWorks => write!(f, "Just Works"),
+            Self::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
 /// Descriptor for a sensor attached to a node.
 ///
 /// Encoded as a CBOR map: `{1: sensor_type, 2: sensor_id, 3: label?}`.

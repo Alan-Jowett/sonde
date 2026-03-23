@@ -2,10 +2,11 @@
 // Copyright (c) 2026 sonde contributors
 
 use crate::error::PairingError;
-use crate::types::ScannedDevice;
+use crate::types::{PairingMethod, ScannedDevice};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use tracing::debug;
 
 /// Platform-independent BLE transport abstraction.
 ///
@@ -44,6 +45,22 @@ pub trait BleTransport {
         characteristic: u128,
         timeout_ms: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PairingError>> + '_>>;
+
+    /// Returns the BLE pairing method observed during the last connection.
+    ///
+    /// Platform transports that can observe the negotiated pairing method
+    /// (e.g., via Android `onBondStateChanged` or Windows BLE APIs) MUST
+    /// return the actual method.  The application layer rejects any method
+    /// other than `NumericComparison`.
+    ///
+    /// Return `None` only when the OS BLE stack guarantees LESC and refuses
+    /// Just Works without app intervention (the caller treats `None` as
+    /// "OS-enforced LESC").
+    ///
+    /// This is a required method (no default) so that new transport
+    /// implementations are forced to make an explicit choice — forgetting
+    /// to implement it is a compile error, not a silent security bypass.
+    fn pairing_method(&self) -> Option<PairingMethod>;
 }
 
 /// Mock BLE transport for testing pairing logic without hardware.
@@ -66,6 +83,11 @@ pub struct MockBleTransport {
     pub disconnect_count: usize,
     /// Count of `read_indication()` calls for retry verification.
     pub read_call_count: usize,
+    /// BLE pairing method reported after connection (PT-0904).
+    pub pairing_method: Option<PairingMethod>,
+    /// If true, `connect()` returns `ConnectionFailed` (simulates Just Works
+    /// rejection at the transport layer, per T-PT-109).
+    pub fail_connect: bool,
 }
 
 impl MockBleTransport {
@@ -80,6 +102,8 @@ impl MockBleTransport {
             write_error: None,
             disconnect_count: 0,
             read_call_count: 0,
+            pairing_method: None,
+            fail_connect: false,
         }
     }
 
@@ -119,6 +143,14 @@ impl BleTransport for MockBleTransport {
         if let Some(err) = self.connect_error.take() {
             self.connected = false;
             return Box::pin(async move { Err(err) });
+        }
+        if self.fail_connect {
+            return Box::pin(async {
+                Err(PairingError::ConnectionFailed(
+                    "Numeric Comparison pairing required but peripheral only supports Just Works"
+                        .into(),
+                ))
+            });
         }
         self.connected = true;
         let mtu = self.mtu;
@@ -160,5 +192,55 @@ impl BleTransport for MockBleTransport {
                 None => Err(PairingError::IndicationTimeout),
             }
         })
+    }
+
+    fn pairing_method(&self) -> Option<PairingMethod> {
+        self.pairing_method
+    }
+}
+
+/// Enforce LESC Numeric Comparison (PT-0904).
+///
+/// Checks the transport's reported pairing method and rejects anything
+/// other than `NumericComparison`.  When `pairing_method()` returns `None`,
+/// the platform is assumed to enforce LESC at the OS BLE-stack level.
+///
+/// On failure the transport is disconnected before returning the error.
+pub async fn enforce_lesc(transport: &mut dyn BleTransport) -> Result<(), PairingError> {
+    if let Some(method) = transport.pairing_method() {
+        if method != PairingMethod::NumericComparison {
+            if let Err(e) = transport.disconnect().await {
+                debug!(
+                    error = ?e,
+                    ?method,
+                    "BLE disconnect after insecure pairing method failed"
+                );
+            }
+            return Err(PairingError::InsecurePairingMethod { method });
+        }
+        debug!(?method, "BLE pairing method verified");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ensure that when the pairing method is `None` (OS-enforced LESC),
+    /// `enforce_lesc` allows pairing to proceed and does not disconnect.
+    #[tokio::test]
+    async fn enforce_lesc_allows_os_enforced_pairing() {
+        let mut transport = MockBleTransport::new(185);
+        // Simulate an active connection; `pairing_method` is `None` by default.
+        transport.connected = true;
+
+        let result = enforce_lesc(&mut transport).await;
+
+        assert!(result.is_ok(), "enforce_lesc should allow OS-enforced LESC");
+        assert!(
+            transport.connected,
+            "transport should remain connected when pairing_method is None"
+        );
     }
 }

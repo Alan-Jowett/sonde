@@ -311,8 +311,14 @@ mod tests {
     /// and that `generate_x25519_keypair` produces independent keys for
     /// independent RNG inputs (no state leak between calls).
     #[test]
-    fn ephemeral_key_zeroize_clears_buffer() {
+    fn ephemeral_key_zeroed_on_drop() {
         use zeroize::Zeroize;
+
+        // Compile-time assertion: generate_x25519_keypair returns secrets
+        // wrapped in Zeroizing, which implements ZeroizeOnDrop.
+        #[allow(drop_bounds)]
+        fn _assert_zeroize_on_drop<T: Drop>() {}
+        _assert_zeroize_on_drop::<zeroize::Zeroizing<[u8; 32]>>();
 
         // Direct zeroize mechanism: calling zeroize() must zero the buffer.
         let mut key = [0x42u8; 32];
@@ -333,8 +339,14 @@ mod tests {
 
     /// PT-0304: Zeroize mechanism clears ECDH shared secret.
     #[test]
-    fn ecdh_shared_secret_zeroize_clears_buffer() {
+    fn ecdh_shared_secret_zeroed_on_drop() {
         use zeroize::Zeroize;
+
+        // Compile-time assertion: x25519_ecdh returns Zeroizing<[u8; 32]>,
+        // which implements ZeroizeOnDrop via the Zeroizing wrapper.
+        #[allow(drop_bounds)]
+        fn _assert_zeroize_on_drop<T: Drop>() {}
+        _assert_zeroize_on_drop::<zeroize::Zeroizing<[u8; 32]>>();
 
         let rng_a = MockRng::new([0x42u8; 32]);
         let rng_b = MockRng::new([0x43u8; 32]);

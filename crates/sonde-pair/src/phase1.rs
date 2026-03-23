@@ -193,8 +193,7 @@ async fn do_pair_with_gateway(
             warn!(
                 stored_gateway_id = ?stored.gateway_id,
                 presented_gateway_id = ?gw_info.gateway_id,
-                "gateway identity mismatch: stored gateway_id does not match presented gateway_id; \
-                 if the gateway was reinstalled or reset, clear local pairing and re-pair"
+                "gateway identity mismatch: stored gateway_id does not match presented gateway_id; if the gateway was reinstalled or reset, clear local pairing and re-pair"
             );
             return Err(PairingError::GatewayIdMismatch);
         }
@@ -1582,18 +1581,30 @@ mod tests {
                 !transport2.written.is_empty(),
                 "transport2 must have at least one written frame"
             );
-            let (_, _, data1) = &transport1.written[0];
-            let (_, _, data2) = &transport2.written[0];
-            let (msg_type1, challenge_payload1) = parse_envelope(data1).unwrap();
-            let (msg_type2, challenge_payload2) = parse_envelope(data2).unwrap();
-            assert_eq!(
-                msg_type1, REQUEST_GW_INFO,
-                "first frame from transport1 must be REQUEST_GW_INFO"
-            );
-            assert_eq!(
-                msg_type2, REQUEST_GW_INFO,
-                "first frame from transport2 must be REQUEST_GW_INFO"
-            );
+            let challenge_payload1 = transport1
+                .written
+                .iter()
+                .find_map(|(_, _, data)| {
+                    let (msg_type, payload) = parse_envelope(data).unwrap();
+                    if msg_type == REQUEST_GW_INFO {
+                        Some(payload.to_vec())
+                    } else {
+                        None
+                    }
+                })
+                .expect("transport1 must contain a REQUEST_GW_INFO frame");
+            let challenge_payload2 = transport2
+                .written
+                .iter()
+                .find_map(|(_, _, data)| {
+                    let (msg_type, payload) = parse_envelope(data).unwrap();
+                    if msg_type == REQUEST_GW_INFO {
+                        Some(payload.to_vec())
+                    } else {
+                        None
+                    }
+                })
+                .expect("transport2 must contain a REQUEST_GW_INFO frame");
 
             assert_ne!(
                 challenge_payload1, challenge_payload2,

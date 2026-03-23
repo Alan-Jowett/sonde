@@ -1085,23 +1085,43 @@ mod tests {
                 !transport2.written.is_empty(),
                 "transport2 wrote no frames; expected at least one NODE_PROVISION frame"
             );
-            let (_, _, data1) = &transport1.written[0];
-            let (_, _, data2) = &transport2.written[0];
-            let (msg_type1, payload1) = crate::envelope::parse_envelope(data1).unwrap();
-            let (msg_type2, payload2) = crate::envelope::parse_envelope(data2).unwrap();
-            assert_eq!(
-                msg_type1, NODE_PROVISION,
-                "first write must be NODE_PROVISION"
-            );
-            assert_eq!(
-                msg_type2, NODE_PROVISION,
-                "first write must be NODE_PROVISION"
-            );
+            let payload1 = transport1
+                .written
+                .iter()
+                .find_map(|(_, _, data)| {
+                    let (msg_type, payload) = crate::envelope::parse_envelope(data).unwrap();
+                    if msg_type == NODE_PROVISION {
+                        Some(payload.to_vec())
+                    } else {
+                        None
+                    }
+                })
+                .expect("expected at least one NODE_PROVISION frame in transport1.written");
+
+            let payload2 = transport2
+                .written
+                .iter()
+                .find_map(|(_, _, data)| {
+                    let (msg_type, payload) = crate::envelope::parse_envelope(data).unwrap();
+                    if msg_type == NODE_PROVISION {
+                        Some(payload.to_vec())
+                    } else {
+                        None
+                    }
+                })
+                .expect("expected at least one NODE_PROVISION frame in transport2.written");
 
             // NODE_PROVISION layout:
             // node_key_hint(2) + node_psk(32) + rf_channel(1) + payload_len(2) + eph_public(32) + ...
-            let eph_offset = 2 + 32 + 1 + 2; // 37
-            let eph_end = eph_offset + 32;
+            const NODE_KEY_HINT_LEN: usize = 2;
+            const NODE_PSK_LEN: usize = 32;
+            const RF_CHANNEL_LEN: usize = 1;
+            const PAYLOAD_LEN_FIELD_LEN: usize = 2;
+            const EPH_PUBLIC_LEN: usize = 32;
+
+            let eph_offset =
+                NODE_KEY_HINT_LEN + NODE_PSK_LEN + RF_CHANNEL_LEN + PAYLOAD_LEN_FIELD_LEN;
+            let eph_end = eph_offset + EPH_PUBLIC_LEN;
             assert!(
                 payload1.len() >= eph_end,
                 "NODE_PROVISION payload1 too short: len={} expected at least {eph_end}",

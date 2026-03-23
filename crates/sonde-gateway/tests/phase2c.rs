@@ -1251,7 +1251,9 @@ macro_rules! require_python {
         if !python_available() {
             panic!(
                 "Python 3 not available: required for this integration test. \
-                 Install Python 3 or disable these tests explicitly (e.g., with #[ignore])."
+                 Install Python 3, run tests without the `python-tests` feature \
+                 (omit `--features python-tests`), or skip this test via \
+                 `cargo test -- --skip <test-name>`."
             );
         }
     };

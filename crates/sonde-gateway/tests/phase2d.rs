@@ -310,7 +310,9 @@ macro_rules! require_python {
         if !python_available() {
             panic!(
                 "Python 3 not available: required for this integration test. \
-                 Install Python 3 or disable these tests explicitly (e.g., with #[ignore])."
+                 Install Python 3, run tests without the `python-tests` feature \
+                 (omit `--features python-tests`), or skip this test via \
+                 `cargo test -- --skip <test-name>`."
             );
         }
     };
@@ -473,7 +475,7 @@ async fn gw0507_node_timeout_event_with_fields() {
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "event_rec.py", EVENT_RECORDING_HANDLER_PY);
     let event_file = tmp.path().join("events.jsonl");
-    let event_file_str = event_file.to_str().unwrap().to_string();
+    let event_file_str = event_file.to_string_lossy().into_owned();
 
     // Build handler config with the event file path as an extra argument
     let mut args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();

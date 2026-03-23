@@ -372,9 +372,10 @@ impl BleTransport for BtleplugTransport {
     }
 
     /// btleplug does not expose the negotiated pairing method to user-space.
-    /// The OS BLE stack is assumed to enforce LESC.
+    /// Report `Unknown` so that `enforce_lesc()` rejects the connection
+    /// per PT-0904 rather than silently assuming OS enforcement.
     fn pairing_method(&self) -> Option<PairingMethod> {
-        None
+        Some(PairingMethod::Unknown)
     }
 }
 

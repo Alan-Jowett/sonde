@@ -133,6 +133,9 @@ pub enum PairingMethod {
     NumericComparison,
     /// Just Works — insecure, must be rejected (PT-0904).
     JustWorks,
+    /// Unknown — the transport cannot observe the pairing method.
+    /// Must be rejected by `enforce_lesc()` per PT-0904.
+    Unknown,
 }
 
 impl std::fmt::Display for PairingMethod {
@@ -140,6 +143,7 @@ impl std::fmt::Display for PairingMethod {
         match self {
             Self::NumericComparison => write!(f, "Numeric Comparison"),
             Self::JustWorks => write!(f, "Just Works"),
+            Self::Unknown => write!(f, "Unknown"),
         }
     }
 }

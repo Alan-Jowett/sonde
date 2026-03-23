@@ -86,7 +86,22 @@ impl IndicationReassembler {
         // Guard against unbounded allocation before extending the buffer.
         // A malicious peer could send a large first chunk before the
         // header-derived size check runs.
-        if self.buffer.len() + chunk.len() > MAX_REASSEMBLY_SIZE {
+        let new_len = match self.buffer.len().checked_add(chunk.len()) {
+            Some(n) => n,
+            None => {
+                let msg_type = if self.buffer.is_empty() {
+                    chunk[0]
+                } else {
+                    self.buffer[0]
+                };
+                self.reset();
+                return Err(PairingError::InvalidResponse {
+                    msg_type,
+                    reason: "indication size overflow during reassembly".into(),
+                });
+            }
+        };
+        if new_len > MAX_REASSEMBLY_SIZE {
             let msg_type = if self.buffer.is_empty() {
                 chunk[0]
             } else {

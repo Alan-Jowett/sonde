@@ -152,10 +152,10 @@ impl BleTransport for LoopbackBleTransport {
         })
     }
 
-    /// Loopback transport does not simulate BLE pairing negotiation.
-    /// The OS BLE stack is assumed to enforce LESC.
+    /// Loopback transport reports a concrete pairing method so that
+    /// higher layers will still enforce LESC (PT-0904) during tests.
     fn pairing_method(&self) -> Option<PairingMethod> {
-        None
+        Some(PairingMethod::NumericComparison)
     }
 }
 

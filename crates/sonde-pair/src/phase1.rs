@@ -1309,8 +1309,7 @@ mod tests {
             );
             // And exactly one read_indication call — the timeout must not trigger a retry.
             assert_eq!(
-                transport.read_call_count,
-                1,
+                transport.read_call_count, 1,
                 "exactly one read_indication call — no implicit retries on timeout"
             );
         });

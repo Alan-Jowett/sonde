@@ -867,8 +867,7 @@ mod tests {
             );
             // And exactly one read_indication() attempt — no implicit retries on read failure.
             assert_eq!(
-                transport.read_call_count,
-                1,
+                transport.read_call_count, 1,
                 "read_indication() must be called exactly once — no implicit retries"
             );
         });

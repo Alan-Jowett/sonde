@@ -1586,7 +1586,7 @@ fn test_p062() {
 }
 
 // ---------------------------------------------------------------------------
-// 8  Validation gap tests (issue #347)
+// Validation gap tests (issue #347)
 // ---------------------------------------------------------------------------
 
 // T-P063: NodeMessage::decode rejects gateway msg_types.
@@ -1680,6 +1680,9 @@ fn test_p065() {
         timestamp_ms: 1_710_000_000_000,
         payload: CommandPayload::Nop,
     };
+    // Note: this test only verifies encode→decode round-trip fidelity of
+    // the nonce field, not protocol-level nonce binding enforcement (which
+    // is the responsibility of the node/gateway state machines).
     let cmd_frame = encode_frame(
         &FrameHeader {
             key_hint: 0x0001,
@@ -1813,11 +1816,11 @@ fn test_p066() {
 // T-P067: Multiple APP_DATA with incrementing sequences.
 #[test]
 fn test_p067() {
-    // Protocol §5.6: Nodes may send multiple APP_DATA messages per wake
-    // cycle with incrementing sequence numbers in the header nonce field.
     // This test verifies that the codec faithfully round-trips distinct
     // nonce values across multiple frames (sequence enforcement is the
     // responsibility of the node/gateway state machines, not the codec).
+    // The assertion below sanity-checks nonce round-trip fidelity based
+    // on test construction, not codec-enforced sequencing.
     let psk = [0x42u8; 32];
 
     let payloads: Vec<Vec<u8>> = vec![
@@ -1851,10 +1854,12 @@ fn test_p067() {
             "APP_DATA[{}] nonce mismatch",
             i
         );
-        // Strict monotonic ordering: each nonce must exceed the previous.
+        // Given the test construction (nonce = i + 1), each decoded nonce should
+        // be strictly greater than the previous; this sanity-checks nonce
+        // round-trip across multiple frames, not codec-enforced sequencing.
         assert!(
             decoded.header.nonce > prev_nonce,
-            "APP_DATA[{i}] nonce {} must be strictly greater than previous {prev_nonce}",
+            "APP_DATA[{i}] decoded nonce {} should be strictly greater than previous {prev_nonce} based on test construction",
             decoded.header.nonce
         );
         prev_nonce = decoded.header.nonce;

@@ -393,6 +393,10 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn handle_ble_disable(&mut self) {
+        if !self.ble_enabled {
+            info!("BLE_DISABLE received (already disabled, no-op)");
+            return;
+        }
         info!("BLE_DISABLE received");
         self.ble.disable();
         self.ble_enabled = false;
@@ -2282,19 +2286,23 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         decoder.push(&all_tx);
         let mut recv_count = 0usize;
-        while let Ok(Some(msg)) = decoder.decode() {
-            match msg {
-                ModemMessage::RecvFrame(rf) => {
-                    assert_eq!(
-                        rf.frame_data,
-                        vec![(recv_count & 0xFF) as u8, ((recv_count >> 8) & 0xFF) as u8],
-                        "frame {} payload mismatch",
-                        recv_count
-                    );
-                    assert_eq!(rf.peer_mac, peer);
-                    recv_count += 1;
-                }
-                _ => panic!("unexpected message type in burst output"),
+        loop {
+            match decoder.decode() {
+                Ok(Some(msg)) => match msg {
+                    ModemMessage::RecvFrame(rf) => {
+                        assert_eq!(
+                            rf.frame_data,
+                            vec![(recv_count & 0xFF) as u8, ((recv_count >> 8) & 0xFF) as u8],
+                            "frame {} payload mismatch",
+                            recv_count
+                        );
+                        assert_eq!(rf.peer_mac, peer);
+                        recv_count += 1;
+                    }
+                    _ => panic!("unexpected message type in burst output"),
+                },
+                Ok(None) => break,
+                Err(e) => panic!("failed to decode modem frame in burst output: {:?}", e),
             }
         }
         assert_eq!(

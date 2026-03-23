@@ -499,6 +499,58 @@ async fn t0202_run_ephemeral() {
     }
 }
 
+/// T-0202b: Oversized ephemeral program rejected at dispatch (GW-0202 AC3).
+/// A program ingested as Resident (4 KB limit) that exceeds the 2 KB ephemeral
+/// budget must be rejected when queued as RunEphemeral. The gateway should fall
+/// through to NOP and log a warning.
+#[tokio::test]
+#[traced_test]
+async fn t0202b_ephemeral_size_budget_rejected() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-202b", 0x022B, [0x2B; 32]);
+    storage.upsert_node(&node.to_record()).await.unwrap();
+
+    // Ingest a ~3 KB program as Resident (within 4 KB limit but exceeds 2 KB ephemeral budget).
+    let oversized_bytecode = vec![0xAA; 2500];
+    let oversized_hash = store_test_program_with_profile(
+        &storage,
+        &oversized_bytecode,
+        VerificationProfile::Resident,
+    )
+    .await;
+
+    // Queue the oversized program as ephemeral.
+    gw.queue_command(
+        "node-202b",
+        PendingCommand::RunEphemeral {
+            program_hash: oversized_hash.clone(),
+        },
+    )
+    .await;
+
+    // WAKE — gateway must NOT issue RUN_EPHEMERAL for the oversized program.
+    let (_, _, payload) = do_wake(&gw, &node, 1, &[0u8; 32]).await;
+    assert_eq!(
+        payload.command_type(),
+        sonde_protocol::CMD_NOP,
+        "oversized ephemeral must be rejected at dispatch, falling through to NOP"
+    );
+    assert!(
+        logs_contain("ephemeral size budget exceeded"),
+        "expected size budget warning to be logged"
+    );
+
+    // The oversized ephemeral was dropped from the queue — subsequent WAKE should also NOP.
+    let (_, _, payload2) = do_wake(&gw, &node, 2, &[0u8; 32]).await;
+    assert_eq!(
+        payload2.command_type(),
+        sonde_protocol::CMD_NOP,
+        "oversized ephemeral must have been removed from queue"
+    );
+}
+
 /// T-0203: UPDATE_SCHEDULE via pending command.
 #[tokio::test]
 async fn t0203_update_schedule() {

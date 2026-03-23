@@ -133,7 +133,7 @@ fn write_handler_script(dir: &std::path::Path, name: &str, script: &str) -> Stri
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(script.as_bytes()).unwrap();
     f.flush().unwrap();
-    path.to_str().unwrap().to_string()
+    path.to_string_lossy().into_owned()
 }
 
 /// Echo handler: reads one DATA message, replies with DATA_REPLY containing
@@ -946,6 +946,249 @@ reply = encode_cbor_map([
 write_msg(reply)
 "#;
 
+/// Stateful counter handler: maintains a counter across messages, incrementing
+/// with each DATA received. The counter value is the first byte of the reply.
+/// If the handler is respawned, the counter resets to 0, proving state loss.
+const STATEFUL_COUNTER_HANDLER_PY: &str = r#"
+import sys, struct
+
+counter = 0
+
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
+def read_msg():
+    raw = read_exact(4)
+    length = struct.unpack('>I', raw)[0]
+    data = read_exact(length)
+    return data
+
+def write_msg(payload):
+    sys.stdout.buffer.write(struct.pack('>I', len(payload)))
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
+
+def decode_cbor_map(data):
+    result = {}
+    idx = 0
+    if data[idx] & 0xe0 != 0xa0 and data[idx] != 0xbf:
+        raise ValueError(f"expected map, got {data[idx]:#x}")
+    if data[idx] == 0xbf:
+        idx += 1
+        while data[idx] != 0xff:
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        idx += 1
+    else:
+        count = data[idx] & 0x1f
+        idx += 1
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+    return result
+
+def decode_item(data, idx):
+    major = (data[idx] >> 5) & 0x07
+    info = data[idx] & 0x1f
+    idx += 1
+    if major == 0:
+        val, idx = decode_uint(info, data, idx)
+        return val, idx
+    elif major == 2:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length], idx + length
+    elif major == 3:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length].decode('utf-8'), idx + length
+    elif major == 5:
+        count, idx = decode_uint(info, data, idx)
+        m = {}
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            m[k] = v
+        return m, idx
+    else:
+        raise ValueError(f"unsupported major type {major}")
+
+def decode_uint(info, data, idx):
+    if info < 24:
+        return info, idx
+    elif info == 24:
+        return data[idx], idx + 1
+    elif info == 25:
+        return struct.unpack('>H', data[idx:idx+2])[0], idx + 2
+    elif info == 26:
+        return struct.unpack('>I', data[idx:idx+4])[0], idx + 4
+    elif info == 27:
+        return struct.unpack('>Q', data[idx:idx+8])[0], idx + 8
+    else:
+        raise ValueError(f"unsupported additional info {info}")
+
+def encode_uint(major, val):
+    major_bits = major << 5
+    if val < 24:
+        return bytes([major_bits | val])
+    elif val < 256:
+        return bytes([major_bits | 24, val])
+    elif val < 65536:
+        return bytes([major_bits | 25]) + struct.pack('>H', val)
+    elif val < 2**32:
+        return bytes([major_bits | 26]) + struct.pack('>I', val)
+    else:
+        return bytes([major_bits | 27]) + struct.pack('>Q', val)
+
+def encode_cbor_map(pairs):
+    out = encode_uint(5, len(pairs))
+    for k, v in pairs:
+        out += encode_item(k)
+        out += encode_item(v)
+    return out
+
+def encode_item(val):
+    if isinstance(val, int):
+        return encode_uint(0, val)
+    elif isinstance(val, bytes):
+        return encode_uint(2, len(val)) + val
+    elif isinstance(val, str):
+        encoded = val.encode('utf-8')
+        return encode_uint(3, len(encoded)) + encoded
+    else:
+        raise ValueError(f"unsupported type {type(val)}")
+
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — skip
+        continue
+    break
+    # Found a DATA message
+request_id = msg[2]
+
+counter += 1
+
+reply = encode_cbor_map([
+    (1, 0x81),
+    (2, request_id),
+    (3, bytes([counter])),
+])
+write_msg(reply)
+
+# Continue reading more DATA messages
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — skip
+        continue
+    request_id = msg[2]
+    counter += 1
+    reply = encode_cbor_map([
+        (1, 0x81),
+        (2, request_id),
+        (3, bytes([counter])),
+    ])
+    write_msg(reply)
+"#;
+
+/// Hang handler: reads one DATA message, then sleeps forever without replying.
+/// Used to test handler reply timeout (GW-0503 AC2/AC3).
+const HANG_HANDLER_PY: &str = r#"
+import sys, struct, time
+
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
+def read_msg():
+    raw = read_exact(4)
+    length = struct.unpack('>I', raw)[0]
+    data = read_exact(length)
+    return data
+
+def decode_cbor_map(data):
+    result = {}
+    idx = 0
+    if data[idx] & 0xe0 != 0xa0 and data[idx] != 0xbf:
+        raise ValueError(f"expected map, got {data[idx]:#x}")
+    if data[idx] == 0xbf:
+        idx += 1
+        while data[idx] != 0xff:
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        idx += 1
+    else:
+        count = data[idx] & 0x1f
+        idx += 1
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+    return result
+
+def decode_item(data, idx):
+    major = (data[idx] >> 5) & 0x07
+    info = data[idx] & 0x1f
+    idx += 1
+    if major == 0:
+        val, idx = decode_uint(info, data, idx)
+        return val, idx
+    elif major == 2:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length], idx + length
+    elif major == 3:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length].decode('utf-8'), idx + length
+    elif major == 5:
+        count, idx = decode_uint(info, data, idx)
+        m = {}
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            m[k] = v
+        return m, idx
+    else:
+        raise ValueError(f"unsupported major type {major}")
+
+def decode_uint(info, data, idx):
+    if info < 24:
+        return info, idx
+    elif info == 24:
+        return data[idx], idx + 1
+    elif info == 25:
+        return struct.unpack('>H', data[idx:idx+2])[0], idx + 2
+    elif info == 26:
+        return struct.unpack('>I', data[idx:idx+4])[0], idx + 4
+    elif info == 27:
+        return struct.unpack('>Q', data[idx:idx+8])[0], idx + 8
+    else:
+        raise ValueError(f"unsupported additional info {info}")
+
+# Read one DATA message (skip EVENTs)
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — skip
+        continue
+    break
+
+# Hang forever — never send a reply
+time.sleep(3600)
+"#;
+
 /// Find Python 3 executable name.
 fn python_cmd() -> &'static str {
     if cfg!(windows) {
@@ -998,6 +1241,7 @@ fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> Handl
         matchers,
         command: python_cmd().to_string(),
         args,
+        reply_timeout: None,
     }
 }
 
@@ -1551,6 +1795,97 @@ async fn t0513_log_messages_no_crash() {
         }
         other => panic!("expected AppDataReply, got {:?}", other),
     }
+}
+
+/// T-0503b: Long-running handler persists across multiple messages without
+/// respawn. The handler maintains a counter that increments with each DATA
+/// message. If the handler were respawned, the counter would reset.
+/// Validates GW-0503 acceptance criteria 1 (handler persistence).
+#[tokio::test]
+async fn t0503b_handler_persistence_across_messages() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Stateful counter handler: maintains a counter across messages.
+    // Each reply includes the counter value as the first byte.
+    let script = write_handler_script(tmp.path(), "counter.py", STATEFUL_COUNTER_HANDLER_PY);
+
+    let program_hash = vec![0x53; 32];
+    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
+        vec![ProgramMatcher::Hash(program_hash.clone())],
+        script,
+    )]));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-503b", 0x53B0, [0x5B; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    let (starting_seq, _, _) = do_wake(&gw, &node, 5300, &program_hash).await;
+
+    // Send 5 messages — each reply should contain an incrementing counter.
+    for i in 0u64..5 {
+        let seq = starting_seq + i;
+        let blob = vec![0xAA];
+        let app_frame = node.build_app_data(seq, &blob);
+        let resp = gw
+            .process_frame(&app_frame, node.peer_address())
+            .await
+            .unwrap_or_else(|| panic!("expected reply for APP_DATA #{i}"));
+
+        let (_hdr, msg) = decode_response(&resp, &node.psk);
+        match msg {
+            GatewayMessage::AppDataReply { blob: reply_blob } => {
+                assert!(!reply_blob.is_empty(), "reply {i} must not be empty");
+                assert_eq!(
+                    reply_blob[0],
+                    (i + 1) as u8,
+                    "handler counter on message #{i} must be {} (handler was respawned if it reset)",
+                    i + 1
+                );
+            }
+            other => panic!("expected AppDataReply, got {:?}", other),
+        }
+    }
+}
+
+/// T-0503c: Handler that hangs indefinitely — gateway must time out and return
+/// no reply. Validates GW-0503 AC2/AC3 (timeout kills handler, no reply sent).
+/// Uses a 2 s `reply_timeout` to avoid blocking the test suite for 30 s.
+#[tokio::test]
+async fn t0503c_handler_reply_timeout() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+
+    let script = write_handler_script(tmp.path(), "hang.py", HANG_HANDLER_PY);
+
+    let program_hash = vec![0x53; 32];
+    let mut config =
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script);
+    config.reply_timeout = Some(Duration::from_secs(2));
+    let router = Arc::new(HandlerRouter::new(vec![config]));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-503c", 0x53C0, [0x5C; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    let (starting_seq, _, _) = do_wake(&gw, &node, 5301, &program_hash).await;
+
+    // Send APP_DATA — handler will read it but never reply.
+    // Gateway must time out (2s) and return None.
+    let blob = vec![0x01];
+    let app_frame = node.build_app_data(starting_seq, &blob);
+    let peer = node.peer_address();
+
+    let resp = gw.process_frame(&app_frame, peer).await;
+
+    assert!(
+        resp.is_none(),
+        "hung handler must produce no reply after timeout"
+    );
 }
 
 // ─── Regression: Gateway without handler still accepts APP_DATA silently ──

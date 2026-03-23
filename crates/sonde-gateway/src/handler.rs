@@ -316,6 +316,11 @@ pub struct HandlerConfig {
     pub matchers: Vec<ProgramMatcher>,
     pub command: String,
     pub args: Vec<String>,
+    /// Per-handler I/O timeout override for communication with the handler
+    /// process (e.g. reading DATA replies and writing EVENT messages).
+    /// Falls back to the default 30 s when `None`. Useful for tests that
+    /// need a shorter timeout.
+    pub reply_timeout: Option<Duration>,
 }
 
 // --- HandlerProcess ---
@@ -393,7 +398,8 @@ impl HandlerProcess {
         }
 
         let reader = self.stdout_reader.as_mut()?;
-        let result = tokio::time::timeout(HANDLER_TIMEOUT, async {
+        let timeout = self.config.reply_timeout.unwrap_or(HANDLER_TIMEOUT);
+        let result = tokio::time::timeout(timeout, async {
             loop {
                 match read_message(reader).await {
                     Ok(HandlerMessage::Log { level, message }) => match level.as_str() {
@@ -445,7 +451,7 @@ impl HandlerProcess {
             Err(_) => {
                 error!(
                     command = %self.config.command,
-                    timeout_secs = HANDLER_TIMEOUT.as_secs(),
+                    timeout_secs = timeout.as_secs(),
                     "handler timed out — killing child"
                 );
                 self.kill_child().await;
@@ -469,7 +475,8 @@ impl HandlerProcess {
             None => return,
         };
 
-        match tokio::time::timeout(HANDLER_TIMEOUT, write_message(stdin, msg)).await {
+        let timeout = self.config.reply_timeout.unwrap_or(HANDLER_TIMEOUT);
+        match tokio::time::timeout(timeout, write_message(stdin, msg)).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 error!(error = %e, "failed to write event to handler stdin");
@@ -687,6 +694,7 @@ pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerCo
                 matchers,
                 command: entry.command,
                 args: entry.args,
+                reply_timeout: None,
             })
         })
         .collect()
@@ -905,11 +913,13 @@ mod tests {
                 matchers: vec![ProgramMatcher::Hash(vec![0xAA])],
                 command: "handler_a".to_string(),
                 args: vec![],
+                reply_timeout: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Hash(vec![0xBB])],
                 command: "handler_b".to_string(),
                 args: vec![],
+                reply_timeout: None,
             },
         ]);
 
@@ -925,11 +935,13 @@ mod tests {
                 matchers: vec![ProgramMatcher::Hash(vec![0xAA])],
                 command: "handler_a".to_string(),
                 args: vec![],
+                reply_timeout: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Any],
                 command: "catch_all".to_string(),
                 args: vec![],
+                reply_timeout: None,
             },
         ]);
 
@@ -944,11 +956,13 @@ mod tests {
                 matchers: vec![ProgramMatcher::Any],
                 command: "catch_all".to_string(),
                 args: vec![],
+                reply_timeout: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Hash(vec![0xAA])],
                 command: "exact".to_string(),
                 args: vec![],
+                reply_timeout: None,
             },
         ]);
 
@@ -966,6 +980,7 @@ mod tests {
             ],
             command: "multi".to_string(),
             args: vec![],
+            reply_timeout: None,
         }]);
 
         assert_eq!(router.find_handler(&[0xAA]), Some(0));

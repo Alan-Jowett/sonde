@@ -107,6 +107,7 @@ const PHONE_KEY_STATUS: i64 = 5;
 const HANDLER_KEY_MATCHERS: i64 = 1;
 const HANDLER_KEY_COMMAND: i64 = 2;
 const HANDLER_KEY_ARGS: i64 = 3;
+const HANDLER_KEY_REPLY_TIMEOUT_MS: i64 = 4;
 
 // ── Error type ───────────────────────────────────────────────────────────────
 
@@ -576,6 +577,19 @@ fn handler_config_to_cbor(h: &HandlerConfig) -> ciborium::value::Value {
         entries.push((
             Value::Integer(HANDLER_KEY_ARGS.into()),
             Value::Array(h.args.iter().map(|a| Value::Text(a.clone())).collect()),
+        ));
+    }
+
+    if let Some(timeout) = &h.reply_timeout {
+        let timeout_ms = timeout.as_millis();
+        let timeout_ms_i64 = if timeout_ms > i64::MAX as u128 {
+            i64::MAX
+        } else {
+            timeout_ms as i64
+        };
+        entries.push((
+            Value::Integer(HANDLER_KEY_REPLY_TIMEOUT_MS.into()),
+            Value::Integer(timeout_ms_i64.into()),
         ));
     }
 
@@ -1302,6 +1316,7 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
     let mut matchers: Vec<ProgramMatcher> = Vec::new();
     let mut command: Option<String> = None;
     let mut args: Vec<String> = Vec::new();
+    let mut reply_timeout: Option<Duration> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -1358,6 +1373,15 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
                         }
                     }
                 }
+                Some(HANDLER_KEY_REPLY_TIMEOUT_MS) => {
+                    if let Value::Integer(ms) = v {
+                        if let Ok(ms_val) = u64::try_from(ms) {
+                            if ms_val > 0 {
+                                reply_timeout = Some(Duration::from_millis(ms_val));
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1370,6 +1394,7 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
         matchers,
         command,
         args,
+        reply_timeout,
     })
 }
 
@@ -1629,11 +1654,13 @@ mod tests {
                 matchers: vec![ProgramMatcher::Hash(hash.clone())],
                 command: "/usr/bin/handler".to_string(),
                 args: vec!["--verbose".to_string()],
+                reply_timeout: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Any],
                 command: "/usr/bin/catch-all".to_string(),
                 args: Vec::new(),
+                reply_timeout: None,
             },
         ];
 
@@ -1649,6 +1676,34 @@ mod tests {
         assert_eq!(loaded[1].command, "/usr/bin/catch-all");
         assert!(loaded[1].args.is_empty());
         assert!(matches!(loaded[1].matchers[0], ProgramMatcher::Any));
+    }
+
+    #[test]
+    fn roundtrip_handler_reply_timeout() {
+        use crate::handler::{HandlerConfig, ProgramMatcher};
+        use std::time::Duration;
+
+        let configs = vec![
+            HandlerConfig {
+                matchers: vec![ProgramMatcher::Any],
+                command: "/usr/bin/with-timeout".to_string(),
+                args: Vec::new(),
+                reply_timeout: Some(Duration::from_millis(5000)),
+            },
+            HandlerConfig {
+                matchers: vec![ProgramMatcher::Any],
+                command: "/usr/bin/no-timeout".to_string(),
+                args: Vec::new(),
+                reply_timeout: None,
+            },
+        ];
+
+        let bundle = encrypt_state_full(&[], &[], None, &[], &configs, "timeout-pass").unwrap();
+        let (_, _, _, _, loaded) = decrypt_state_full(&bundle, "timeout-pass").unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].reply_timeout, Some(Duration::from_millis(5000)));
+        assert_eq!(loaded[1].reply_timeout, None);
     }
 
     #[test]

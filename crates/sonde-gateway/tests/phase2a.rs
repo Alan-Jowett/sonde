@@ -95,6 +95,51 @@ async fn t0702_battery_level_tracking() {
     assert_eq!(fetched.last_battery_mv, Some(2900));
 }
 
+/// T-0702b: Battery historical data retention and cap at 100 readings.
+/// Validates GW-0702 AC2: historical battery data is available for trend
+/// analysis, capped at 100 readings per node.
+#[tokio::test]
+async fn t0702b_battery_history_retention_and_cap() {
+    let storage = InMemoryStorage::new();
+    let mut node = NodeRecord::new("node-bat-hist".into(), 11, [0x42; 32]);
+
+    // Initially empty.
+    assert!(
+        node.battery_history.is_empty(),
+        "initial battery history must be empty"
+    );
+
+    // Send 105 readings (exceeds the 100-reading cap).
+    for i in 0u32..105 {
+        node.update_telemetry(3000 + i, 1);
+    }
+    storage.upsert_node(&node).await.unwrap();
+
+    let fetched = storage.get_node("node-bat-hist").await.unwrap().unwrap();
+
+    // History must be capped at 100 readings.
+    assert_eq!(
+        fetched.battery_history.len(),
+        100,
+        "battery history must be capped at 100 readings"
+    );
+
+    // Oldest retained reading should be the 6th (index 5) since first 5 were evicted.
+    assert_eq!(
+        fetched.battery_history[0].battery_mv, 3005,
+        "oldest retained reading must be 3005 mV (first 5 evicted)"
+    );
+
+    // Most recent reading must be the last one sent.
+    assert_eq!(
+        fetched.battery_history[99].battery_mv, 3104,
+        "most recent reading must be 3104 mV"
+    );
+
+    // last_battery_mv must reflect the most recent reading.
+    assert_eq!(fetched.last_battery_mv, Some(3104));
+}
+
 /// T-0703: Firmware ABI version tracking.
 #[tokio::test]
 async fn t0703_firmware_abi_version_tracking() {

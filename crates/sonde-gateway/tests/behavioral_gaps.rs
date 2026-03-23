@@ -975,6 +975,7 @@ async fn t0504_many_to_one_handler_routing() {
         matchers: vec![ProgramMatcher::Any],
         command: python_cmd().to_string(),
         args,
+        reply_timeout: None,
     }]));
 
     let storage = Arc::new(InMemoryStorage::new());

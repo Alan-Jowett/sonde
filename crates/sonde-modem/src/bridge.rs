@@ -10,7 +10,7 @@
 //! The bridge is generic over `SerialPort` and `Radio` traits, allowing
 //! the same logic to be tested on a host with mock implementations.
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::sync::Arc;
 
 use sonde_protocol::modem::{
@@ -131,6 +131,7 @@ pub struct Bridge<S: SerialPort, R: Radio, B: Ble = NoBle> {
     usb: S,
     radio: R,
     ble: B,
+    ble_enabled: bool,
     counters: Arc<ModemCounters>,
     decoder: FrameDecoder,
     rx_buf: [u8; 64],
@@ -143,6 +144,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
             usb,
             radio,
             ble: NoBle,
+            ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
             rx_buf: [0u8; 64],
@@ -151,12 +153,19 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
 }
 
 impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
-    /// Create a bridge with a BLE driver.
-    pub fn with_ble(usb: S, radio: R, ble: B, counters: Arc<ModemCounters>) -> Self {
+    /// Create a bridge with a BLE driver (BLE starts disabled).
+    ///
+    /// The driver is explicitly disabled during construction so that
+    /// `ble_enabled` and the hardware state are guaranteed to be in sync.
+    /// Callers that need BLE active must send a `BLE_ENABLE` command after
+    /// construction; the driver will never be silently left enabled.
+    pub fn with_ble(usb: S, radio: R, mut ble: B, counters: Arc<ModemCounters>) -> Self {
+        ble.disable();
         Self {
             usb,
             radio,
             ble,
+            ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
             rx_buf: [0u8; 64],
@@ -324,6 +333,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
                 break;
             }
         }
+        self.ble_enabled = false;
         self.counters.reset();
         self.decoder.reset();
         self.send_modem_ready();
@@ -379,13 +389,23 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn handle_ble_enable(&mut self) {
-        info!("BLE_ENABLE received");
+        if self.ble_enabled {
+            debug!("BLE_ENABLE received (already enabled; retrying enable)");
+        } else {
+            info!("BLE_ENABLE received");
+        }
         self.ble.enable();
+        self.ble_enabled = true;
     }
 
     fn handle_ble_disable(&mut self) {
-        info!("BLE_DISABLE received");
+        if !self.ble_enabled {
+            debug!("BLE_DISABLE received (already disabled; retrying disable)");
+        } else {
+            info!("BLE_DISABLE received");
+        }
         self.ble.disable();
+        self.ble_enabled = false;
     }
 
     fn handle_ble_pairing_confirm_reply(&mut self, reply: BlePairingConfirmReply) {
@@ -431,6 +451,10 @@ mod tests {
         fn set_reconnect_once(&mut self) {
             self.reconnect_once = true;
         }
+
+        fn set_connected(&mut self, connected: bool) {
+            self.connected = connected;
+        }
     }
 
     impl SerialPort for MockSerial {
@@ -443,6 +467,9 @@ mod tests {
             (n, reconnected)
         }
         fn write(&mut self, data: &[u8]) -> bool {
+            if !self.connected {
+                return false;
+            }
             self.tx_data.extend_from_slice(data);
             true
         }
@@ -475,6 +502,10 @@ mod tests {
         fn inject_rx(&self, frame: RecvFrame) {
             self.rx_queue.borrow_mut().push_back(frame);
         }
+
+        fn peer_count(&self) -> usize {
+            self.peers.len()
+        }
     }
 
     impl Radio for MockRadio {
@@ -492,6 +523,7 @@ mod tests {
                 return Err("invalid channel");
             }
             self.channel = channel;
+            self.peers.clear();
             Ok(())
         }
         fn channel(&self) -> u8 {
@@ -1013,6 +1045,8 @@ mod tests {
         pairing_replies: Vec<bool>,
         event_queue: RefCell<VecDeque<BleEvent>>,
         check_pairing_timeout_count: Cell<usize>,
+        enable_count: Cell<usize>,
+        disable_count: Cell<usize>,
     }
 
     impl MockBle {
@@ -1023,6 +1057,8 @@ mod tests {
                 pairing_replies: Vec::new(),
                 event_queue: RefCell::new(VecDeque::new()),
                 check_pairing_timeout_count: Cell::new(0),
+                enable_count: Cell::new(0),
+                disable_count: Cell::new(0),
             }
         }
 
@@ -1034,6 +1070,7 @@ mod tests {
     impl Ble for MockBle {
         fn enable(&mut self) {
             self.enabled = true;
+            self.enable_count.set(self.enable_count.get() + 1);
         }
         fn disable(&mut self) {
             self.enabled = false;
@@ -1041,6 +1078,7 @@ mod tests {
             // are not sent to the next client. Events are NOT cleared here —
             // the bridge reset logic drains stale events (MD-0412).
             self.indicated.clear();
+            self.disable_count.set(self.disable_count.get() + 1);
         }
         fn indicate(&mut self, data: &[u8]) {
             // Ble contract: empty data is a no-op.
@@ -1880,5 +1918,421 @@ mod tests {
                 i
             );
         }
+    }
+
+    // --- Issue #339: Validation gap tests ---
+
+    /// Validates: MD-0200 (ESP-NOW default channel is 1 at initial boot)
+    ///
+    /// The modem must initialize ESP-NOW on channel 1. Verifies both
+    /// the radio layer and the STATUS response report channel 1 before
+    /// any SET_CHANNEL command is sent.
+    #[test]
+    fn default_channel_is_one_at_boot() {
+        let mut bridge = make_bridge();
+        // Radio layer should start on channel 1.
+        assert_eq!(bridge.radio.channel(), 1);
+
+        // STATUS should also report channel 1.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                assert_eq!(s.channel, 1, "default channel must be 1 at boot");
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    /// Validates: MD-0413 AC3 (BLE_ENABLE idempotent — duplicate is safe)
+    ///
+    /// Sending BLE_ENABLE when already enabled must not disrupt an active
+    /// connection. The bridge always forwards the call to the BLE driver
+    /// (retrying enable) so that transient start failures can be recovered.
+    /// Asserts only externally observable behavior: no disconnect event,
+    /// BLE stays enabled, indication works.
+    #[test]
+    fn ble_enable_idempotent() {
+        let mut bridge = make_bridge_with_ble();
+
+        // First BLE_ENABLE.
+        let enable = encode_modem_frame(&ModemMessage::BleEnable).unwrap();
+        bridge.usb.inject(&enable);
+        bridge.poll();
+        assert!(bridge.ble.enabled);
+        bridge.usb.take_tx(); // discard
+
+        // Simulate an active BLE connection.
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 247,
+        });
+        bridge.poll();
+        bridge.usb.take_tx(); // discard BLE_CONNECTED
+
+        // Second BLE_ENABLE — must not disrupt the connection.
+        bridge.usb.inject(&enable);
+        bridge.poll();
+        assert!(bridge.ble.enabled, "BLE must remain enabled");
+
+        // No BLE_DISCONNECTED event should have been emitted.
+        let tx = bridge.usb.take_tx();
+        assert!(
+            tx.is_empty(),
+            "duplicate BLE_ENABLE must not produce output or disconnect"
+        );
+
+        // Bridge always retries enable to recover from transient failures.
+        assert_eq!(
+            bridge.ble.enable_count.get(),
+            2,
+            "duplicate BLE_ENABLE should retry Ble::enable()"
+        );
+
+        // Connection should still be usable — indicate data to BLE client.
+        let indicate = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
+            ble_data: vec![0xAB, 0xCD],
+        }))
+        .unwrap();
+        bridge.usb.inject(&indicate);
+        bridge.poll();
+        assert_eq!(
+            bridge.ble.indicated.len(),
+            1,
+            "BLE indicate must still work after duplicate enable"
+        );
+    }
+
+    /// Validates: MD-0413 AC4 (BLE_DISABLE idempotent — duplicate is safe)
+    ///
+    /// Sending BLE_DISABLE when already disabled must not crash or
+    /// produce unexpected output. The bridge always forwards the call to
+    /// the BLE driver (retrying disable) so transient failures are
+    /// recovered. Asserts only externally observable behavior: no serial
+    /// output, BLE stays disabled, bridge operational.
+    #[test]
+    fn ble_disable_idempotent() {
+        let mut bridge = make_bridge_with_ble();
+
+        // BLE starts disabled — first BLE_DISABLE is already a duplicate.
+        assert!(!bridge.ble.enabled);
+        let disable = encode_modem_frame(&ModemMessage::BleDisable).unwrap();
+        bridge.usb.inject(&disable);
+        bridge.poll();
+        assert!(!bridge.ble.enabled);
+        assert!(bridge.usb.take_tx().is_empty(), "no output expected");
+
+        // Second BLE_DISABLE.
+        bridge.usb.inject(&disable);
+        bridge.poll();
+        assert!(!bridge.ble.enabled);
+        assert!(
+            bridge.usb.take_tx().is_empty(),
+            "duplicate BLE_DISABLE must not produce output"
+        );
+        // Bridge always retries disable to recover from transient failures.
+        // The initial construction disable + 2 explicit calls = 3 total.
+        assert_eq!(
+            bridge.ble.disable_count.get(),
+            3,
+            "duplicate BLE_DISABLE should retry Ble::disable()"
+        );
+
+        // Bridge should still be operational.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(matches!(msg, ModemMessage::Status(_)));
+    }
+
+    /// Validates: MD-0202 AC3 / MD-0303 AC3 (tx_fail_count reported in STATUS)
+    ///
+    /// Triggers a non-zero `tx_fail_count` and verifies STATUS reports it.
+    /// On real hardware the ESP-NOW send callback increments `tx_fail_count`;
+    /// here we simulate via the shared `ModemCounters`.
+    #[test]
+    fn tx_fail_count_reported_in_status() {
+        let mut bridge = make_bridge();
+
+        // Simulate the ESP-NOW driver reporting 3 tx failures.
+        bridge.counters.inc_tx_fail();
+        bridge.counters.inc_tx_fail();
+        bridge.counters.inc_tx_fail();
+        // Also simulate some successful sends.
+        bridge.counters.inc_tx();
+        bridge.counters.inc_tx();
+
+        // Query status.
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                assert_eq!(
+                    s.tx_fail_count, 3,
+                    "tx_fail_count must reflect failed sends"
+                );
+                assert_eq!(s.tx_count, 2, "tx_count must reflect successful sends");
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    /// Validates: MD-0301 (ESP-NOW frames during USB disconnect are discarded)
+    ///
+    /// Injects radio frames while USB is disconnected, then reconnects
+    /// and verifies no stale frames are flushed to the gateway.
+    #[test]
+    fn frames_during_usb_disconnect_are_discarded() {
+        let mut bridge = make_bridge();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+
+        // Simulate USB disconnect.
+        bridge.usb.set_connected(false);
+
+        // Inject radio frames during the disconnect.
+        for i in 0u8..5 {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -50,
+                frame_data: vec![i],
+            });
+        }
+
+        // Poll while disconnected — frames should be drained but writes fail.
+        bridge.poll();
+
+        // Reconnect USB.
+        bridge.usb.set_connected(true);
+        bridge.usb.set_reconnect_once();
+        bridge.poll();
+
+        // Only MODEM_READY should appear — no stale RECV_FRAMEs.
+        // Decode the entire tx buffer to catch any trailing messages.
+        let tx = bridge.usb.take_tx();
+        let mut remaining = tx.as_slice();
+        let mut messages = Vec::new();
+        while !remaining.is_empty() {
+            let (msg, consumed) =
+                decode_modem_frame(remaining).expect("failed to decode frame from tx buffer");
+            messages.push(msg);
+            remaining = &remaining[consumed..];
+        }
+        assert_eq!(
+            messages.len(),
+            1,
+            "expected exactly one message after reconnect, got {}",
+            messages.len()
+        );
+        assert!(
+            matches!(messages[0], ModemMessage::ModemReady(_)),
+            "only MODEM_READY expected after reconnect, got {:?}",
+            messages[0]
+        );
+
+        // Verify the radio queue is empty (frames were consumed, not re-queued).
+        assert!(
+            bridge.radio.drain_one().is_none(),
+            "radio queue must be empty — stale frames must not survive reconnect"
+        );
+    }
+
+    /// Validates: MD-0206 AC3 (peer table cleared on channel change)
+    ///
+    /// Sends frames to populate the peer table, then changes the channel
+    /// and verifies the peer table was cleared.
+    #[test]
+    fn peer_table_cleared_on_channel_change() {
+        let mut bridge = make_bridge();
+
+        // Send frames to three distinct peers to populate the peer table.
+        for i in 1u8..=3 {
+            let peer = [i, 0, 0, 0, 0, 0];
+            let sf = ModemMessage::SendFrame(SendFrame {
+                peer_mac: peer,
+                frame_data: vec![0xAA],
+            });
+            let frame = encode_modem_frame(&sf).unwrap();
+            bridge.usb.inject(&frame);
+        }
+        bridge.poll();
+        assert_eq!(
+            bridge.radio.peer_count(),
+            3,
+            "should have 3 peers before channel change"
+        );
+
+        // Change channel.
+        let set_ch = encode_modem_frame(&ModemMessage::SetChannel(6)).unwrap();
+        bridge.usb.inject(&set_ch);
+        bridge.poll();
+        bridge.usb.take_tx(); // discard SET_CHANNEL_ACK
+
+        // Peer table must be empty after channel change.
+        assert_eq!(
+            bridge.radio.peer_count(),
+            0,
+            "peer table must be cleared on channel change (MD-0206 AC3)"
+        );
+    }
+
+    /// Validates: MD-0207 AC3 (ESP-NOW resumes after channel scan)
+    ///
+    /// After SCAN_CHANNELS completes, verifies that the radio can still
+    /// send and receive ESP-NOW frames.
+    #[test]
+    fn espnow_resumes_after_channel_scan() {
+        let mut bridge = make_bridge();
+
+        // Perform a channel scan.
+        let scan = encode_modem_frame(&ModemMessage::ScanChannels).unwrap();
+        bridge.usb.inject(&scan);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let mut remaining = tx.as_slice();
+        let mut scan_results = Vec::new();
+        while !remaining.is_empty() {
+            let (msg, consumed) =
+                decode_modem_frame(remaining).expect("failed to decode frame from tx buffer");
+            if let ModemMessage::ScanResult(_) = &msg {
+                scan_results.push(msg);
+            }
+            remaining = &remaining[consumed..];
+        }
+        assert!(!scan_results.is_empty(), "expected at least one ScanResult");
+
+        // Send a frame after scan — radio TX must work.
+        let peer = [1, 2, 3, 4, 5, 6];
+        let sf = ModemMessage::SendFrame(SendFrame {
+            peer_mac: peer,
+            frame_data: vec![0xDE, 0xAD],
+        });
+        let frame = encode_modem_frame(&sf).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert_eq!(bridge.radio.sent.len(), 1, "radio TX must work after scan");
+        assert_eq!(bridge.radio.sent[0].0, vec![0xDE, 0xAD]);
+
+        // Receive a frame after scan — radio RX must work.
+        bridge.radio.inject_rx(RecvFrame {
+            peer_mac: peer,
+            rssi: -45,
+            frame_data: vec![0xBE, 0xEF],
+        });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::RecvFrame(rf) => {
+                assert_eq!(rf.frame_data, vec![0xBE, 0xEF]);
+                assert_eq!(rf.peer_mac, peer);
+            }
+            _ => panic!("expected RecvFrame after scan"),
+        }
+    }
+
+    /// Validates: MD-0303 AC5 (uptime_s accuracy — not just > 0)
+    ///
+    /// Uses a backdated boot time to verify `uptime_s` reflects actual
+    /// elapsed seconds, not a stuck-at-1 sentinel.
+    #[test]
+    fn uptime_accuracy_reflects_elapsed_time() {
+        use std::time::{Duration, Instant};
+
+        // Backdate boot_time by 7 seconds.
+        let boot = Instant::now() - Duration::from_secs(7);
+        let counters = ModemCounters::new_with_boot_time(boot);
+        let mut bridge = Bridge::new(MockSerial::new(), MockRadio::new(), counters);
+
+        let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::Status(s) => {
+                // Compute expected uptime based on current time and boot time,
+                // and allow a small tolerance to avoid flakiness on slow CI.
+                let expected = Instant::now().duration_since(boot).as_secs();
+                let lower = expected.saturating_sub(1);
+                let upper = expected + 1;
+                let uptime = u64::from(s.uptime_s);
+                assert!(
+                    (lower..=upper).contains(&uptime),
+                    "uptime_s should be close to {}s (±1s), got {}",
+                    expected,
+                    uptime
+                );
+            }
+            _ => panic!("expected Status"),
+        }
+    }
+
+    /// Validates: MD-0201 (rapid radio frame burst — exactly one RECV_FRAME
+    /// per ESP-NOW frame received)
+    ///
+    /// Injects 32 frames in a rapid burst (spanning multiple poll cycles
+    /// due to MAX_RX_FRAMES_PER_POLL cap) and verifies a strict 1:1 mapping
+    /// between injected and forwarded frames with correct payloads.
+    #[test]
+    fn rapid_radio_burst_one_recv_per_frame() {
+        let mut bridge = make_bridge();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        let total: usize = 32;
+
+        // Inject a burst of frames.
+        for i in 0..total {
+            bridge.radio.inject_rx(RecvFrame {
+                peer_mac: peer,
+                rssi: -30 - (i as i8 % 30),
+                frame_data: vec![(i & 0xFF) as u8, ((i >> 8) & 0xFF) as u8],
+            });
+        }
+
+        // Drain across multiple poll cycles (cap is MAX_RX_FRAMES_PER_POLL = 16).
+        let mut all_tx = Vec::new();
+        let max_polls = total / MAX_RX_FRAMES_PER_POLL + 2;
+        for _ in 0..max_polls {
+            bridge.poll();
+            all_tx.extend_from_slice(&bridge.usb.take_tx());
+        }
+
+        // Decode all forwarded frames and verify 1:1 mapping.
+        let mut decoder = FrameDecoder::new();
+        decoder.push(&all_tx);
+        let mut recv_count = 0usize;
+        loop {
+            match decoder.decode() {
+                Ok(Some(msg)) => match msg {
+                    ModemMessage::RecvFrame(rf) => {
+                        assert_eq!(
+                            rf.frame_data,
+                            vec![(recv_count & 0xFF) as u8, ((recv_count >> 8) & 0xFF) as u8],
+                            "frame {} payload mismatch",
+                            recv_count
+                        );
+                        assert_eq!(rf.peer_mac, peer);
+                        recv_count += 1;
+                    }
+                    _ => panic!("unexpected message type in burst output"),
+                },
+                Ok(None) => break,
+                Err(e) => panic!("failed to decode modem frame in burst output: {:?}", e),
+            }
+        }
+        assert_eq!(
+            recv_count, total,
+            "exactly one RECV_FRAME per injected frame (got {}, expected {})",
+            recv_count, total
+        );
+        assert_eq!(bridge.counters.rx_count(), total as u32);
     }
 }

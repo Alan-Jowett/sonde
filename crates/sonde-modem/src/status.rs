@@ -36,7 +36,7 @@ impl ModemCounters {
 
     /// Create counters with a custom boot time (for testing).
     #[cfg(test)]
-    fn new_with_boot_time(boot_time: Instant) -> Arc<Self> {
+    pub(crate) fn new_with_boot_time(boot_time: Instant) -> Arc<Self> {
         Arc::new(Self {
             tx_count: AtomicU32::new(0),
             rx_count: AtomicU32::new(0),

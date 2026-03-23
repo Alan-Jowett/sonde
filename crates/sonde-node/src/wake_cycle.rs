@@ -4577,23 +4577,27 @@ mod tests {
 
     // --- Gap 2: ND-0103 — send_recv() frame size enforcement ---
 
+    /// Derive the maximum AppData blob size that fits within MAX_PAYLOAD_SIZE
+    /// after CBOR encoding, to avoid coupling tests to encoding overhead.
+    fn max_app_data_blob_len() -> usize {
+        let mut size = sonde_protocol::MAX_PAYLOAD_SIZE;
+        while size > 0 {
+            let probe = NodeMessage::AppData {
+                blob: vec![0x00; size],
+            };
+            if probe.encode().unwrap().len() <= sonde_protocol::MAX_PAYLOAD_SIZE {
+                return size;
+            }
+            size -= 1;
+        }
+        0
+    }
+
     #[test]
     fn test_send_recv_max_blob() {
         // ND-0103 / T-N103: send_recv() with maximum blob that fits
         // within the frame budget succeeds.
-        //
-        // Derive the maximum blob size dynamically to avoid coupling
-        // to CBOR encoding details (overhead varies with blob length).
-        let mut max_blob_size = sonde_protocol::MAX_PAYLOAD_SIZE;
-        while max_blob_size > 0 {
-            let probe = NodeMessage::AppData {
-                blob: vec![0x00; max_blob_size],
-            };
-            if probe.encode().unwrap().len() <= sonde_protocol::MAX_PAYLOAD_SIZE {
-                break;
-            }
-            max_blob_size -= 1;
-        }
+        let max_blob_size = max_app_data_blob_len();
 
         let psk = [0xC2; 32];
         let key_hint = 1u16;
@@ -4627,19 +4631,7 @@ mod tests {
     fn test_send_recv_oversized_blob_rejected() {
         // ND-0103 / T-N104: send_recv() with oversized blob is rejected.
         // Seq is not advanced and no frame is sent.
-        //
-        // Derive the boundary dynamically: max_blob_size + 1 must be
-        // rejected by the post-encoding size check.
-        let mut max_blob_size = sonde_protocol::MAX_PAYLOAD_SIZE;
-        while max_blob_size > 0 {
-            let probe = NodeMessage::AppData {
-                blob: vec![0x00; max_blob_size],
-            };
-            if probe.encode().unwrap().len() <= sonde_protocol::MAX_PAYLOAD_SIZE {
-                break;
-            }
-            max_blob_size -= 1;
-        }
+        let max_blob_size = max_app_data_blob_len();
 
         let psk = [0xC3; 32];
         let key_hint = 1u16;
@@ -4733,9 +4725,13 @@ mod tests {
         );
         assert_eq!(outcome1, WakeCycleOutcome::Sleep { seconds: 60 });
 
-        // Verify cycle 1 used starting_seq_1 for GET_CHUNK
-        let gc1 = decode_frame(&transport1.outbound[1]).unwrap();
-        assert_eq!(gc1.header.msg_type, MSG_GET_CHUNK);
+        // Verify cycle 1 used starting_seq_1 for the first GET_CHUNK it sent
+        let gc1 = transport1
+            .outbound
+            .iter()
+            .filter_map(|frame| decode_frame(frame).ok())
+            .find(|msg| msg.header.msg_type == MSG_GET_CHUNK)
+            .expect("no MSG_GET_CHUNK frame sent in cycle 1");
         assert_eq!(gc1.header.nonce, starting_seq_1);
 
         // --- Cycle 2: starting_seq = 5000 (fresh, no carryover) ---
@@ -4785,8 +4781,12 @@ mod tests {
         assert_eq!(outcome2, WakeCycleOutcome::Sleep { seconds: 60 });
 
         // Verify cycle 2 uses starting_seq_2, NOT a continuation of cycle 1.
-        let gc2 = decode_frame(&transport2.outbound[1]).unwrap();
-        assert_eq!(gc2.header.msg_type, MSG_GET_CHUNK);
+        let gc2 = transport2
+            .outbound
+            .iter()
+            .filter_map(|frame| decode_frame(frame).ok())
+            .find(|msg| msg.header.msg_type == MSG_GET_CHUNK)
+            .expect("no MSG_GET_CHUNK frame sent in cycle 2");
         assert_eq!(
             gc2.header.nonce, starting_seq_2,
             "cycle 2 must start fresh from gateway-provided starting_seq"
@@ -5002,10 +5002,11 @@ mod tests {
         // Verify the node entered the chunk-transfer path by sending
         // at least one MSG_GET_CHUNK before the wrong msg_type was
         // received and discarded.
-        let sent_get_chunk = transport
-            .outbound
-            .iter()
-            .any(|f| decode_frame(f).map(|d| d.header.msg_type == MSG_GET_CHUNK).unwrap_or(false));
+        let sent_get_chunk = transport.outbound.iter().any(|f| {
+            decode_frame(f)
+                .map(|d| d.header.msg_type == MSG_GET_CHUNK)
+                .unwrap_or(false)
+        });
         assert!(
             sent_get_chunk,
             "node must have sent MSG_GET_CHUNK before discarding wrong msg_type"

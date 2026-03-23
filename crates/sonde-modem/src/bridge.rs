@@ -2117,7 +2117,7 @@ mod tests {
     #[test]
     fn t0605_indication_chunks_within_mtu_limit() {
         let mtu = 247u16;
-        let chunk_size = (mtu - ATT_HEADER_BYTES) as usize;
+        let chunk_size = mtu.saturating_sub(ATT_HEADER_BYTES) as usize;
         // 500 bytes → 3 chunks (244 + 244 + 12).
         let payload: Vec<u8> = vec![0xAB; 500];
 
@@ -2149,7 +2149,7 @@ mod tests {
     #[test]
     fn t0605_indication_single_chunk_no_fragmentation() {
         let mtu = 247u16;
-        let chunk_size = (mtu - ATT_HEADER_BYTES) as usize;
+        let chunk_size = mtu.saturating_sub(ATT_HEADER_BYTES) as usize;
         let payload: Vec<u8> = vec![0x42; chunk_size - 10]; // well under ATT value max
 
         let mut bridge = make_bridge_with_fragmenting_ble(mtu);
@@ -2168,7 +2168,7 @@ mod tests {
     #[test]
     fn t0605_indication_exact_mtu_boundary() {
         let mtu = 247u16;
-        let chunk_size = (mtu - ATT_HEADER_BYTES) as usize;
+        let chunk_size = mtu.saturating_sub(ATT_HEADER_BYTES) as usize;
         let payload: Vec<u8> = vec![0x42; chunk_size]; // exactly ATT value max
 
         let mut bridge = make_bridge_with_fragmenting_ble(mtu);
@@ -2228,13 +2228,16 @@ mod tests {
     // GAP 2: MD-0409 AC2 — Write Long reassembly
     // ---------------------------------------------------------------
 
-    /// Validates: T-0613 / MD-0409 AC2 — Write Long payloads reassembled
-    /// by the BLE stack are forwarded as a single `BLE_RECV`.
+    /// Validates: T-0613 / MD-0409 AC2 — large BLE payload forwarded as
+    /// a single `BLE_RECV`.
     ///
     /// NimBLE reassembles Prepare Write + Execute Write before invoking
     /// `on_write`, so the bridge receives a single large `BleEvent::Recv`.
-    /// This test injects a payload larger than (MTU − 3) = 244 bytes and
-    /// asserts it arrives as one `BLE_RECV` serial message.
+    /// This test verifies the *bridge* forwarding path: it injects a
+    /// pre-reassembled payload larger than (MTU − 3) = 244 bytes and
+    /// asserts it arrives as one `BLE_RECV` serial message. The BLE stack
+    /// reassembly itself is a NimBLE responsibility and is not exercised
+    /// here.
     #[test]
     fn t0613_write_long_reassembled_as_single_ble_recv() {
         let mut bridge = make_bridge_with_ble();

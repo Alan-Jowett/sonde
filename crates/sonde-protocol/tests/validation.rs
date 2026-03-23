@@ -2389,11 +2389,12 @@ fn test_p049c() {
 }
 
 // ---------------------------------------------------------------------------
-// T-P066  §5.1 HMAC constant-time comparison behavior
+// T-P066  §5.1 HMAC verification dispatch behavior
 //
-// The security invariant is that HMAC verification uses constant-time
-// comparison.  verify_frame() must call HmacProvider::verify() — not
-// compute() + == — so a conforming provider cannot be bypassed.
+// The security invariant is that verify_frame() delegates HMAC checks to
+// HmacProvider::verify(), rather than computing an HMAC locally and
+// comparing with ==. This ensures any constant-time behavior or other
+// security properties implemented by the provider are preserved.
 //
 // This test creates a tracking provider that asserts verify() is called.
 // ---------------------------------------------------------------------------

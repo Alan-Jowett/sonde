@@ -117,6 +117,7 @@ impl BleTransport for MockBleTransport {
         _address: &[u8; 6],
     ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
         if let Some(err) = self.connect_error.take() {
+            self.connected = false;
             return Box::pin(async move { Err(err) });
         }
         self.connected = true;

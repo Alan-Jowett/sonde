@@ -1,3 +1,18 @@
 target/
 test-programs/*.o
 crates/sonde-pair-ui/src-tauri/gen/
+
+# Build artifacts
+*.bin
+*.msi
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Key material
+*.key
+*.pem
+*.pfx
+*.p12

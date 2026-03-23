@@ -57,8 +57,16 @@ For each PR you are asked to review:
 3. Read the relevant spec from `docs/` (the PR description or
    changed files will indicate which spec)
 4. Execute the loop above
-5. Push the fixes: `git add . && git commit && git push`
-6. Resolve the addressed review comments
+5. **Push fixes FIRST** — this is a hard gate:
+   ```
+   git add -A && git commit -m "Address review findings" && git push
+   ```
+   Verify the push succeeded (exit code 0). Do NOT proceed to step 6
+   until the push is confirmed.
+6. **Only after push succeeds**: Resolve addressed review threads
+   using the GitHub GraphQL API
+7. If any review threads could not be resolved because the fix was
+   incomplete, note them for the next iteration
 
 ## Key Rules
 

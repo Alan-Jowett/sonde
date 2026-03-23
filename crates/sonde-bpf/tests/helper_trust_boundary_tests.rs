@@ -282,10 +282,7 @@ fn test_map_value_or_null_returns_ptr_just_past_end() {
     let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     // One byte past the last valid start: data_end - value_size + 1
-    let barely_oob = backing.as_mut_ptr() as u64
-        + backing.len() as u64
-        - map.value_size as u64
-        + 1;
+    let barely_oob = backing.as_mut_ptr() as u64 + backing.len() as u64 - map.value_size as u64 + 1;
 
     let helpers = &[HelperDescriptor {
         id: 1,
@@ -504,7 +501,7 @@ fn test_helper_call_clobbers_r1_r5_tags() {
         // so the test doesn't depend on R1's value being preserved (R1-R5 are
         // caller-saved in the eBPF calling convention).
         insn(ebpf::MOV64_IMM, 1, 0, 0, 0x1234), // r1 = non-zero scalar (untagged)
-        insn(ebpf::CALL, 0, 0, 0, 2), // call MapValueOrNull(map_arg=1) — R1 is scalar now
+        insn(ebpf::CALL, 0, 0, 0, 2),           // call MapValueOrNull(map_arg=1) — R1 is scalar now
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];

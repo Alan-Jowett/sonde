@@ -31,7 +31,7 @@ use sonde_gateway::modem::UsbEspNowTransport;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::Transport;
 
-use sonde_protocol::modem::{encode_modem_frame, BleRecv, FrameDecoder, ModemMessage, ModemReady};
+use sonde_protocol::modem::{encode_modem_frame, BleRecv, FrameDecoder, ModemMessage};
 use sonde_protocol::{encode_ble_envelope, parse_ble_envelope};
 
 use common::{build_admin_with_modem, create_transport_and_server, read_modem_msg};
@@ -447,15 +447,10 @@ async fn t1226_ble_enable_disable_signals() {
         "expected BLE_ENABLE after second open, got {msg:?}"
     );
 
-    // 6. Wait for auto-close by reading BLE_DISABLE with a bounded timeout
-    // instead of a fixed sleep. The 2s window timeout fires, then the
-    // spawned task sends BLE_DISABLE and the WindowClosed event.
-    let msg = tokio::time::timeout(
-        Duration::from_secs(10),
-        read_modem_msg(&mut server, &mut decoder, &mut buf),
-    )
-    .await
-    .expect("BLE_DISABLE must arrive within timeout after auto-close");
+    // 6. Wait for auto-close by reading BLE_DISABLE. The 2s window timeout
+    // fires inside read_modem_msg's internal timeout loop, then the spawned
+    // task sends BLE_DISABLE and the WindowClosed event.
+    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
 
     // 7b. Assert: BLE_DISABLE sent to modem after auto-close.
     assert!(
@@ -522,38 +517,8 @@ async fn t1107a_modem_reset_recovery() {
         tokio::spawn(async move { UsbEspNowTransport::new(client2, 6).await.unwrap() });
 
     // 5. Assert: startup sequence is re-executed (RESET → MODEM_READY → SET_CHANNEL).
-    let mut decoder = FrameDecoder::new();
-    let mut buf = [0u8; 256];
-
-    // Read RESET
-    let msg = read_modem_msg(&mut server2, &mut decoder, &mut buf).await;
-    assert!(
-        matches!(msg, ModemMessage::Reset),
-        "recovery must start with RESET"
-    );
-
-    // Send MODEM_READY
-    let ready = ModemMessage::ModemReady(ModemReady {
-        firmware_version: [1, 0, 1, 0],
-        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
-    });
-    server2
-        .write_all(&encode_modem_frame(&ready).unwrap())
-        .await
-        .unwrap();
-
-    // Read SET_CHANNEL
-    let msg = read_modem_msg(&mut server2, &mut decoder, &mut buf).await;
-    match msg {
-        ModemMessage::SetChannel(ch) => assert_eq!(ch, 6, "channel must match"),
-        other => panic!("expected SetChannel, got {other:?}"),
-    }
-
-    // Send SET_CHANNEL_ACK
-    server2
-        .write_all(&encode_modem_frame(&ModemMessage::SetChannelAck(6)).unwrap())
-        .await
-        .unwrap();
+    // Reuse shared modem startup handshake to avoid drift if the protocol changes.
+    common::modem_startup(&mut server2, 6).await;
 
     // 6. Startup completes — transport is operational.
     let transport2 = transport_handle2.await.unwrap();

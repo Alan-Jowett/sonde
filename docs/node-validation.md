@@ -1412,7 +1412,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N500 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
 | T-N501 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N502 | `test_program_transfer_hash_mismatch` | wake_cycle.rs |
-| T-N503 | `test_program_image_decoding_with_maps` | wake_cycle.rs |
+| T-N503 | `test_program_image_decoding_with_maps` (partial — does not validate LDDW `src=1` map reference resolution) | wake_cycle.rs |
 | T-N504 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N505 | `test_ephemeral_program_integration`, `t_e2e_022_run_ephemeral` | wake_cycle.rs, e2e_tests.rs |
 | T-N506 | `test_chunked_transfer_success` | wake_cycle.rs |

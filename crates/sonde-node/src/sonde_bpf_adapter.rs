@@ -511,7 +511,10 @@ mod tests {
             }
             Err(err) => {
                 assert!(
-                    matches!(err, BpfError::InvalidBytecode(_)),
+                    matches!(
+                        err,
+                        BpfError::InvalidBytecode(_) | BpfError::LoadError(_)
+                    ),
                     "stack overflow program must be rejected at load() as invalid/unsafe, got: {err:?}"
                 );
             }

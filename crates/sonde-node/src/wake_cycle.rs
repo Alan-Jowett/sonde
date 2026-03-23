@@ -999,6 +999,10 @@ pub fn send_recv_app_data<T: Transport + ?Sized, C: Clock + ?Sized, H: HmacProvi
                     _ => continue,
                 }
             }
+            // `recv(remaining)` blocks for up to `remaining` ms (the
+            // time left until the overall deadline). A `None` return
+            // means that full interval elapsed with no data, so the
+            // deadline has been reached — return `Timeout` immediately.
             None => return Err(NodeError::Timeout),
         }
     }

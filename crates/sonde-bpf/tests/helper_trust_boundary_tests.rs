@@ -244,7 +244,7 @@ fn test_map_value_or_null_returns_out_of_bounds_ptr() {
     let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     // Choose an address just past the end of the map's storage so it is guaranteed OOB.
-    let bad_ptr: u64 = map.data_end.wrapping_add(1);
+    let bad_ptr: u64 = map.data_end + 1;
 
     let helpers = &[HelperDescriptor {
         id: 1,
@@ -348,7 +348,8 @@ fn test_map_value_or_null_exact_boundary_succeeds() {
     // Pointer exactly at the last valid position: data_end - value_size.
     let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
-    let exact_last = backing.as_mut_ptr() as u64 + 64 - 8; // data_end - value_size
+    let exact_last =
+        backing.as_mut_ptr() as u64 + backing.len() as u64 - map.value_size as u64; // data_end - value_size
 
     let helpers = &[HelperDescriptor {
         id: 1,
@@ -448,7 +449,7 @@ fn test_invalid_helper_argument_map_value_for_map_descriptor() {
         insn(ebpf::CALL, 0, 0, 0, 1), // call → R0 = MapValue(valid_ptr)
         // Step 2: Move MapValue R0 into R1 (which has MapValue tag, not MapDescriptor)
         insn(ebpf::MOV64_REG, 1, 0, 0, 0), // r1 = r0 (MapValue tagged)
-        // Load R1 (MapValue) as imm for helper arg (r1 has non-zero value)
+        // Call helper 2 with R1 holding a MapValue-tagged pointer (non-zero) instead of a MapDescriptor
         insn(ebpf::CALL, 0, 0, 0, 2), // call helper 2 with map_arg=1, but R1 is MapValue
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
@@ -496,12 +497,11 @@ fn test_helper_call_clobbers_r1_r5_tags() {
     let prog = prog_from(&[
         insn(ebpf::LD_DW_IMM, 1, 1, 0, 0), // r1 = map_descriptor(0) [tagged]
         insn(0, 0, 0, 0, 0),
-        insn(ebpf::CALL, 0, 0, 0, 1), // call scalar helper → clobbers R1 tag
-        // Explicitly set R1 to a known non-zero scalar after the first call
-        // so the test doesn't depend on R1's value being preserved (R1-R5 are
-        // caller-saved in the eBPF calling convention).
-        insn(ebpf::MOV64_IMM, 1, 0, 0, 0x1234), // r1 = non-zero scalar (untagged)
-        insn(ebpf::CALL, 0, 0, 0, 2),           // call MapValueOrNull(map_arg=1) — R1 is scalar now
+        insn(ebpf::CALL, 0, 0, 0, 1), // call scalar helper → clobbers R1 tag, preserves value
+        // Directly call the MapValueOrNull helper using post-call R1.
+        // This relies on the "values preserved, tags cleared" invariant:
+        // R1 still holds a non-zero relocated_ptr value but is now scalar.
+        insn(ebpf::CALL, 0, 0, 0, 2), // call MapValueOrNull(map_arg=1) — R1 value preserved, tag cleared
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];

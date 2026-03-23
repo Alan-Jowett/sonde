@@ -390,20 +390,20 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
 
     fn handle_ble_enable(&mut self) {
         if self.ble_enabled {
-            debug!("BLE_ENABLE received (already enabled, no-op)");
-            return;
+            debug!("BLE_ENABLE received (already enabled; retrying enable)");
+        } else {
+            info!("BLE_ENABLE received");
         }
-        info!("BLE_ENABLE received");
         self.ble.enable();
         self.ble_enabled = true;
     }
 
     fn handle_ble_disable(&mut self) {
         if !self.ble_enabled {
-            debug!("BLE_DISABLE received (already disabled, no-op)");
-            return;
+            debug!("BLE_DISABLE received (already disabled; retrying disable)");
+        } else {
+            info!("BLE_DISABLE received");
         }
-        info!("BLE_DISABLE received");
         self.ble.disable();
         self.ble_enabled = false;
     }
@@ -1947,11 +1947,13 @@ mod tests {
         }
     }
 
-    /// Validates: MD-0413 AC3 (BLE_ENABLE idempotent — duplicate is no-op)
+    /// Validates: MD-0413 AC3 (BLE_ENABLE idempotent — duplicate is safe)
     ///
-    /// Sending BLE_ENABLE when already enabled must not reinitialize BLE
-    /// or disrupt an active connection. Asserts only externally observable
-    /// behavior: no disconnect event, BLE stays enabled, indication works.
+    /// Sending BLE_ENABLE when already enabled must not disrupt an active
+    /// connection. The bridge always forwards the call to the BLE driver
+    /// (retrying enable) so that transient start failures can be recovered.
+    /// Asserts only externally observable behavior: no disconnect event,
+    /// BLE stays enabled, indication works.
     #[test]
     fn ble_enable_idempotent() {
         let mut bridge = make_bridge_with_ble();
@@ -1984,11 +1986,11 @@ mod tests {
             "duplicate BLE_ENABLE must not produce output or disconnect"
         );
 
-        // Bridge must not call Ble::enable() a second time: duplicate is a true no-op.
+        // Bridge always retries enable to recover from transient failures.
         assert_eq!(
             bridge.ble.enable_count.get(),
-            1,
-            "duplicate BLE_ENABLE must not call Ble::enable() again"
+            2,
+            "duplicate BLE_ENABLE should retry Ble::enable()"
         );
 
         // Connection should still be usable — indicate data to BLE client.
@@ -2005,11 +2007,13 @@ mod tests {
         );
     }
 
-    /// Validates: MD-0413 AC4 (BLE_DISABLE idempotent — duplicate is no-op)
+    /// Validates: MD-0413 AC4 (BLE_DISABLE idempotent — duplicate is safe)
     ///
     /// Sending BLE_DISABLE when already disabled must not crash or
-    /// produce unexpected output. Asserts only externally observable
-    /// behavior: no serial output, BLE stays disabled, bridge operational.
+    /// produce unexpected output. The bridge always forwards the call to
+    /// the BLE driver (retrying disable) so transient failures are
+    /// recovered. Asserts only externally observable behavior: no serial
+    /// output, BLE stays disabled, bridge operational.
     #[test]
     fn ble_disable_idempotent() {
         let mut bridge = make_bridge_with_ble();
@@ -2030,12 +2034,12 @@ mod tests {
             bridge.usb.take_tx().is_empty(),
             "duplicate BLE_DISABLE must not produce output"
         );
-        // Ensure idempotence at the bridge level: Ble::disable() must not
-        // be called beyond the initial construction call.
+        // Bridge always retries disable to recover from transient failures.
+        // The initial construction disable + 2 explicit calls = 3 total.
         assert_eq!(
             bridge.ble.disable_count.get(),
-            1,
-            "duplicate BLE_DISABLE must not call Ble::disable() again"
+            3,
+            "duplicate BLE_DISABLE should retry Ble::disable()"
         );
 
         // Bridge should still be operational.

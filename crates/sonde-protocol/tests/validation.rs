@@ -2123,32 +2123,9 @@ fn test_p048() {
     let decoded = ProgramImage::decode(&cbor).unwrap();
     assert_eq!(decoded, img, "round-trip must preserve all values");
 
-    // Verify individual integer encodings in the produced CBOR bytes
-    // match minimal RFC 8949 §4.2 expectations for our boundary values.
-    let has_seq = |needle: &[u8]| cbor.windows(needle.len()).any(|w| w == needle);
-
-    // 23 is the largest single-byte unsigned integer: 0x17.
-    assert!(
-        has_seq(&[0x17]),
-        "CBOR output must contain minimal encoding 0x17 for value 23"
-    );
-
-    // 24 is the first value that requires an additional length byte: 0x18 0x18.
-    assert!(
-        has_seq(&[0x18, 0x18]),
-        "CBOR output must contain minimal encoding 0x18 0x18 for value 24"
-    );
-
-    // 256 is the first value requiring three bytes: 0x19 0x01 0x00.
-    assert!(
-        has_seq(&[0x19, 0x01, 0x00]),
-        "CBOR output must contain minimal encoding 0x19 0x01 0x00 for value 256"
-    );
-    // 256 must NOT use a non-minimal 4-byte encoding.
-    assert!(
-        !has_seq(&[0x1a, 0x00, 0x00, 0x01, 0x00]),
-        "CBOR output must not contain non-minimal 4-byte encoding for value 256"
-    );
+    // Minimal integer encodings for 23, 24, and 256 are validated via the
+    // reference encoder comparison below (ciborium uses minimal-length CBOR
+    // integers), so we do not perform additional raw byte subsequence checks.
 
     // Build a reference version of the same map using ciborium. ciborium
     // uses minimal-length CBOR integers, so this is a reference-encoder
@@ -2188,22 +2165,6 @@ fn test_p048() {
     assert_eq!(
         cbor, reference_encoded,
         "encode_deterministic must produce the same minimal encoding as ciborium"
-    );
-
-    // Verify the encoding is compact: manually compute expected size.
-    // Outer map(2): A2 = 1B
-    //   key 1: 01 = 1B, bytecode bstr(1): 41 AB = 2B
-    //   key 2: 02 = 1B, array(1): 81 = 1B
-    //     inner map(4): A4 = 1B
-    //       key 1: 01 1B, val 1:   01       1B
-    //       key 2: 02 1B, val 23:  17       1B
-    //       key 3: 03 1B, val 24:  18 18    2B
-    //       key 4: 04 1B, val 256: 19 01 00 3B
-    // Total: 1 + 1+2 + 1+1 + 1 + (1+1)+(1+1)+(1+2)+(1+3) = 18
-    assert_eq!(
-        cbor.len(),
-        18,
-        "encoded length should match minimal CBOR size"
     );
 }
 
@@ -2367,7 +2328,11 @@ fn test_p049c() {
         );
     }
 
-    // Nested map has map_type as text instead of integer.
+    // Nested map has MAP_KEY_TYPE as text instead of integer.
+    // The decoder's integer parser returns None for non-integer values,
+    // so the field is treated as missing (MissingField) rather than as
+    // an invalid type. This is the correct decoder behavior — text values
+    // are not silently accepted.
     {
         let map = vec![
             (

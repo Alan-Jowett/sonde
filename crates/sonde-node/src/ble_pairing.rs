@@ -62,6 +62,22 @@ pub const NODE_ACK_STORAGE_ERROR: u8 = 0x02;
 /// limit, so NVS is never the bottleneck.
 pub const PEER_PAYLOAD_MAX_LEN: usize = 202;
 
+/// Minimum negotiated ATT MTU accepted for BLE pairing (ND-0904).
+///
+/// The BLE transport layer must negotiate at least this MTU. Connections
+/// with a lower MTU must be disconnected. This constant is shared between
+/// the platform-independent validation logic and the ESP-specific BLE
+/// transport in `esp_ble_pairing.rs`.
+pub const BLE_MIN_ATT_MTU: u16 = 247;
+
+/// Check whether the negotiated ATT MTU meets the minimum requirement.
+///
+/// Returns `true` if `mtu >= BLE_MIN_ATT_MTU` (247). The caller should
+/// disconnect the BLE peer if this returns `false` (ND-0904).
+pub fn is_mtu_acceptable(mtu: u16) -> bool {
+    mtu >= BLE_MIN_ATT_MTU
+}
+
 /// Minimum body length for a NODE_PROVISION with an empty encrypted_payload.
 const NODE_PROVISION_MIN_LEN: usize = 37;
 
@@ -750,5 +766,47 @@ mod tests {
             Some(payload.as_slice())
         );
         assert!(!storage.read_reg_complete());
+    }
+
+    // ===================================================================
+    // Gap 11 (ND-0904): MTU < 247 rejection
+    // ===================================================================
+
+    #[test]
+    fn test_mtu_below_minimum_rejected() {
+        // ND-0904: The negotiated ATT MTU must be >= 247. Connections
+        // with a lower MTU must be disconnected.
+        assert!(!is_mtu_acceptable(246), "MTU 246 (< 247) must be rejected");
+        assert!(!is_mtu_acceptable(100), "MTU 100 must be rejected");
+        assert!(
+            !is_mtu_acceptable(23),
+            "MTU 23 (BLE default) must be rejected"
+        );
+        assert!(!is_mtu_acceptable(0), "MTU 0 must be rejected");
+    }
+
+    #[test]
+    fn test_mtu_at_minimum_accepted() {
+        // ND-0904: MTU == 247 is the exact boundary — must be accepted.
+        assert!(
+            is_mtu_acceptable(247),
+            "MTU 247 (exact minimum) must be accepted"
+        );
+    }
+
+    #[test]
+    fn test_mtu_above_minimum_accepted() {
+        // ND-0904: MTU > 247 must be accepted.
+        assert!(is_mtu_acceptable(248), "MTU 248 must be accepted");
+        assert!(is_mtu_acceptable(512), "MTU 512 must be accepted");
+    }
+
+    #[test]
+    fn test_ble_min_att_mtu_constant() {
+        // Ensure the shared constant matches the protocol requirement.
+        assert_eq!(
+            BLE_MIN_ATT_MTU, 247,
+            "BLE_MIN_ATT_MTU must be 247 per ND-0904"
+        );
     }
 }

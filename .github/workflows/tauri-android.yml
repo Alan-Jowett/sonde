@@ -63,9 +63,6 @@ jobs:
       - name: Initialize Android project
         working-directory: crates/sonde-pair-ui
         run: |
-          # Save our custom AndroidManifest.xml (with BLE permissions)
-          # before `tauri android init` overwrites it with a minimal default.
-          cp src-tauri/gen/android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak
           rm -rf src-tauri/gen/android
           cargo tauri android init
 
@@ -76,8 +73,8 @@ jobs:
         # `tauri android init` regenerates gen/android/.
         working-directory: crates/sonde-pair-ui/src-tauri/gen/android
         run: |
-          # Restore custom AndroidManifest.xml with BLE permissions.
-          cp /tmp/AndroidManifest.xml.bak app/src/main/AndroidManifest.xml
+          # Restore custom AndroidManifest.xml with BLE permissions from persistent location.
+          cp ../../../../../crates/sonde-pair-ui/android/AndroidManifest.xml app/src/main/AndroidManifest.xml
 
           # Copy Java source files into the standard Android source tree
           mkdir -p app/src/main/java/io/sonde/pair

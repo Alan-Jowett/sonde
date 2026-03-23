@@ -289,7 +289,11 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
     // confirm map keys appear in ascending order, independent of how
     // ciborium iterates decoded map entries.
     fn read_cbor_uint(data: &[u8], pos: &mut usize) -> (u8, u64) {
-        assert!(*pos < data.len(), "unexpected end of CBOR at offset {}", *pos);
+        assert!(
+            *pos < data.len(),
+            "unexpected end of CBOR at offset {}",
+            *pos
+        );
         let byte = data[*pos];
         *pos += 1;
         let major = byte >> 5;
@@ -306,7 +310,11 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
                 *pos += 2;
                 v
             }
-            _ => panic!("unexpected CBOR additional info {} at offset {}", info, *pos - 1),
+            _ => panic!(
+                "unexpected CBOR additional info {} at offset {}",
+                info,
+                *pos - 1
+            ),
         };
         (major, val)
     }
@@ -314,7 +322,7 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
     fn skip_cbor_item(data: &[u8], pos: &mut usize) {
         let (major, val) = read_cbor_uint(data, pos);
         match major {
-            0 | 1 => {} // unsigned/negative int — already consumed
+            0 | 1 => {}                    // unsigned/negative int — already consumed
             2 | 3 => *pos += val as usize, // byte/text string
             4 => {
                 for _ in 0..val {
@@ -342,7 +350,9 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
                 assert!(
                     kv > p,
                     "{}: keys not in ascending order ({} after {})",
-                    label, kv, p
+                    label,
+                    kv,
+                    p
                 );
             }
             prev_key = Some(kv);
@@ -363,7 +373,8 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
                 assert!(
                     kv > p,
                     "outer map keys not in ascending order ({} after {})",
-                    kv, p
+                    kv,
+                    p
                 );
             }
             prev_key = Some(kv);

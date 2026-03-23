@@ -1249,8 +1249,10 @@ fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> Handl
 macro_rules! require_python {
     () => {
         if !python_available() {
-            eprintln!("SKIPPED: Python 3 not available");
-            return;
+            panic!(
+                "Python 3 not available: required for this integration test. \
+                 Install Python 3 or disable these tests explicitly (e.g., with #[ignore])."
+            );
         }
     };
 }
@@ -1260,6 +1262,7 @@ macro_rules! require_python {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// T-0500: APP_DATA reception and echo forwarding via handler.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0500_app_data_echo_forwarding() {
     require_python!();
@@ -1301,6 +1304,7 @@ async fn t0500_app_data_echo_forwarding() {
 }
 
 /// T-0501: APP_DATA_REPLY with fixed non-zero data [0xAA, 0xBB].
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0501_app_data_reply_fixed_data() {
     require_python!();
@@ -1337,6 +1341,7 @@ async fn t0501_app_data_reply_fixed_data() {
 }
 
 /// T-0502: APP_DATA_REPLY suppressed on empty handler reply.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0502_empty_reply_suppressed() {
     require_python!();
@@ -1366,6 +1371,7 @@ async fn t0502_empty_reply_suppressed() {
 }
 
 /// T-0503: Multiple APP_DATA per wake cycle (persistent handler).
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0503_multiple_app_data_per_wake() {
     require_python!();
@@ -1409,6 +1415,7 @@ async fn t0503_multiple_app_data_per_wake() {
 /// T-0504: Handler transport framing roundtrip (integration-level).
 /// Verifies the gateway correctly encodes DATA with all fields and the handler
 /// can decode+reply via the 4-byte length-prefix framing.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0504_handler_transport_framing() {
     require_python!();
@@ -1450,6 +1457,7 @@ async fn t0504_handler_transport_framing() {
 }
 
 /// T-0505: Handler respawn after clean exit.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0505_handler_respawn_on_clean_exit() {
     require_python!();
@@ -1502,6 +1510,7 @@ async fn t0505_handler_respawn_on_clean_exit() {
 }
 
 /// T-0506: Handler crash — no reply sent to node.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0506_handler_crash_no_reply() {
     require_python!();
@@ -1531,6 +1540,7 @@ async fn t0506_handler_crash_no_reply() {
 }
 
 /// T-0507: Handler routing by program hash — two handlers, two programs.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0507_routing_by_program_hash() {
     require_python!();
@@ -1592,6 +1602,7 @@ async fn t0507_routing_by_program_hash() {
 }
 
 /// T-0508: No matching handler — no reply, no crash.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0508_no_handler_match_no_reply() {
     require_python!();
@@ -1621,6 +1632,7 @@ async fn t0508_no_handler_match_no_reply() {
 }
 
 /// T-0509: Catch-all handler (`ProgramMatcher::Any`).
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0509_catch_all_handler() {
     require_python!();
@@ -1659,6 +1671,7 @@ async fn t0509_catch_all_handler() {
 
 /// T-0510: `request_id` correlation — sequential APP_DATA use incrementing
 /// nonces; each reply uses the correct nonce.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0510_request_id_correlation() {
     require_python!();
@@ -1698,6 +1711,7 @@ async fn t0510_request_id_correlation() {
 }
 
 /// T-0511: Handler replies with wrong `request_id` — reply discarded.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0511_request_id_mismatch_discarded() {
     require_python!();
@@ -1727,6 +1741,7 @@ async fn t0511_request_id_mismatch_discarded() {
 /// Verifies that the gateway can run WAKE and post-WAKE APP_DATA with a
 /// configured handler without panicking, and that APP_DATA still works.
 /// (EVENT forwarding from engine to handler is not wired in Phase 2C-i.)
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0512_handler_no_crash_on_wake() {
     require_python!();
@@ -1761,6 +1776,7 @@ async fn t0512_handler_no_crash_on_wake() {
 }
 
 /// T-0513: LOG messages from handler do not crash the gateway.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0513_log_messages_no_crash() {
     require_python!();
@@ -1801,6 +1817,7 @@ async fn t0513_log_messages_no_crash() {
 /// respawn. The handler maintains a counter that increments with each DATA
 /// message. If the handler were respawned, the counter would reset.
 /// Validates GW-0503 acceptance criteria 1 (handler persistence).
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0503b_handler_persistence_across_messages() {
     require_python!();
@@ -1853,6 +1870,7 @@ async fn t0503b_handler_persistence_across_messages() {
 /// T-0503c: Handler that hangs indefinitely — gateway must time out and return
 /// no reply. Validates GW-0503 AC2/AC3 (timeout kills handler, no reply sent).
 /// Uses a 2 s `reply_timeout` to avoid blocking the test suite for 30 s.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0503c_handler_reply_timeout() {
     require_python!();
@@ -2057,6 +2075,7 @@ while True:
 /// Uses a handler that maintains an in-process counter. Each DATA reply
 /// includes the counter value. If the handler were respawned between
 /// messages the counter would reset, causing assertion failures.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn gw0503_ac3_persistent_handler_stays_alive() {
     require_python!();
@@ -2109,6 +2128,7 @@ async fn gw0503_ac3_persistent_handler_stays_alive() {
 ///
 /// Sends 3 APP_DATA messages with sequential seq numbers and verifies each
 /// APP_DATA_REPLY's header nonce matches the request's sequence number.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn gw0501_sequence_number_correctness() {
     require_python!();
@@ -2159,6 +2179,7 @@ async fn gw0501_sequence_number_correctness() {
 ///
 /// Configures a single echo handler with two hash matchers. Nodes running
 /// different programs both get correct replies from the same handler.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn gw0504_many_to_one_routing() {
     require_python!();

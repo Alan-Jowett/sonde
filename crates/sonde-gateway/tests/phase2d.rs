@@ -18,7 +18,6 @@ use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
 };
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
-use tracing_test::traced_test;
 
 // ─── Modem test helpers ────────────────────────────────────────────────
 
@@ -306,28 +305,16 @@ fn python_available() -> bool {
     }
 }
 
-/// Build a `HandlerConfig` for a Python 3 handler script.
-fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> HandlerConfig {
-    let mut args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
-    args.push(script);
-    HandlerConfig {
-        matchers,
-        command: python_cmd().to_string(),
-        args,
-        reply_timeout: None,
-    }
-}
-
-
 macro_rules! require_python {
     () => {
         if !python_available() {
-            eprintln!("SKIPPED: Python 3 not available");
-            return;
+            panic!(
+                "Python 3 not available: required for this integration test. \
+                 Install Python 3 or disable these tests explicitly (e.g., with #[ignore])."
+            );
         }
     };
 }
-
 /// Event-recording handler: writes received EVENT messages to a file (path
 /// passed as last argv), echoes DATA messages back unchanged.
 const EVENT_RECORDING_HANDLER_PY: &str = r#"
@@ -479,6 +466,7 @@ while True:
 ///
 /// Uses an event-recording handler that writes EVENT messages to a temp file.
 /// After `check_node_timeouts` the file is inspected for the expected fields.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn gw0507_node_timeout_event_with_fields() {
     require_python!();

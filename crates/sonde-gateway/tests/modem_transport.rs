@@ -482,7 +482,7 @@ async fn gw1101_set_channel_ack_timeout() {
             );
         }
         Ok(Err(e)) => panic!("spawn panicked: {e}"),
-        Err(_) => panic!("test timed out — transport should fail within ~2s"),
+        Err(_) => panic!("test timed out — transport should fail within ~10s"),
         Ok(Ok(Ok(_))) => panic!("transport must not succeed without SET_CHANNEL_ACK"),
     }
 }
@@ -558,7 +558,10 @@ async fn gw1103_error_recovery_full_restart() {
         .await
         .unwrap();
 
-    let _transport2 = transport_handle.await.unwrap();
+    let _transport2 = tokio::time::timeout(Duration::from_secs(10), transport_handle)
+        .await
+        .expect("transport startup timed out in gw1103_error_recovery_full_restart")
+        .unwrap();
 }
 
 // ── Gap 7: GW-1205 — BLE indication sent to modem ──────────────────────

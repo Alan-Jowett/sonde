@@ -706,3 +706,90 @@ async fn t1222_numeric_comparison_passkey_display() {
     // Clean up: close pairing.
     let _ = admin.close_ble_pairing(Request::new(Empty {})).await;
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Issue #352 — BLE pairing gap tests
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── Gap 8: GW-1208 — Explicit CloseBlePairing → BLE_DISABLE ────────────
+
+/// GW-1208 AC5/AC6: Explicit `CloseBlePairing` sends `BLE_DISABLE` to modem.
+///
+/// Opens a BLE pairing session via admin API with a long timeout, then
+/// explicitly closes it before auto-close fires. Verifies:
+/// 1. `BLE_ENABLE` sent on open.
+/// 2. `BLE_DISABLE` sent on explicit close.
+/// 3. `RegistrationWindow` transitions to closed.
+#[tokio::test]
+async fn gw1208_explicit_close_ble_pairing_sends_disable() {
+    let (client, mut server) = duplex(4096);
+    let channel = 6u8;
+    let transport_handle =
+        tokio::spawn(async move { UsbEspNowTransport::new(client, channel).await.unwrap() });
+    modem_startup(&mut server, channel).await;
+    let transport = Arc::new(transport_handle.await.unwrap());
+
+    let controller = Arc::new(BlePairingController::new());
+    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
+    let admin = AdminService::new(storage, pending, session_manager)
+        .with_ble(controller.clone(), transport);
+
+    // Open pairing with a long timeout (300s) — we close explicitly.
+    let request = Request::new(OpenBlePairingRequest { duration_s: 300 });
+    let resp = admin.open_ble_pairing(request).await.unwrap();
+    let mut _stream = resp.into_inner();
+
+    // Verify BLE_ENABLE was sent (with timeout to avoid hanging CI).
+    // Loop until BLE_ENABLE is observed, ignoring unrelated frames.
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+    let ble_enable = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+            if matches!(msg, ModemMessage::BleEnable) {
+                return msg;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for BLE_ENABLE");
+    assert!(
+        matches!(ble_enable, ModemMessage::BleEnable),
+        "BLE_ENABLE must be sent on open, got {ble_enable:?}"
+    );
+
+    assert!(
+        controller.is_window_open().await,
+        "window must be open after OpenBlePairing"
+    );
+
+    // Explicitly close — this is the path gap #8 targets.
+    let close_resp = admin.close_ble_pairing(Request::new(Empty {})).await;
+    assert!(close_resp.is_ok(), "CloseBlePairing must succeed");
+
+    // Verify BLE_DISABLE was sent to modem (with timeout to fail fast).
+    // Loop until BLE_DISABLE is observed, ignoring unrelated frames.
+    let ble_disable = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+            if matches!(msg, ModemMessage::BleDisable) {
+                return msg;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for BLE_DISABLE");
+    assert!(
+        matches!(ble_disable, ModemMessage::BleDisable),
+        "BLE_DISABLE must be sent on explicit close, got {ble_disable:?}"
+    );
+
+    assert!(
+        !controller.is_window_open().await,
+        "window must be closed after explicit CloseBlePairing"
+    );
+}

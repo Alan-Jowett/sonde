@@ -176,8 +176,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -312,8 +311,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -449,8 +447,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -580,8 +577,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -710,8 +706,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -851,8 +846,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -987,8 +981,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -1131,8 +1124,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -1249,8 +1241,12 @@ fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> Handl
 macro_rules! require_python {
     () => {
         if !python_available() {
-            eprintln!("SKIPPED: Python 3 not available");
-            return;
+            panic!(
+                "Python 3 not available: required for this integration test. \
+                 Install Python 3, run tests without the `python-tests` feature \
+                 (omit `--features python-tests`), or skip this test via \
+                 `cargo test -- --skip <test-name>`."
+            );
         }
     };
 }
@@ -1260,6 +1256,7 @@ macro_rules! require_python {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// T-0500: APP_DATA reception and echo forwarding via handler.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0500_app_data_echo_forwarding() {
     require_python!();
@@ -1301,6 +1298,7 @@ async fn t0500_app_data_echo_forwarding() {
 }
 
 /// T-0501: APP_DATA_REPLY with fixed non-zero data [0xAA, 0xBB].
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0501_app_data_reply_fixed_data() {
     require_python!();
@@ -1337,6 +1335,7 @@ async fn t0501_app_data_reply_fixed_data() {
 }
 
 /// T-0502: APP_DATA_REPLY suppressed on empty handler reply.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0502_empty_reply_suppressed() {
     require_python!();
@@ -1366,6 +1365,7 @@ async fn t0502_empty_reply_suppressed() {
 }
 
 /// T-0503: Multiple APP_DATA per wake cycle (persistent handler).
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0503_multiple_app_data_per_wake() {
     require_python!();
@@ -1409,6 +1409,7 @@ async fn t0503_multiple_app_data_per_wake() {
 /// T-0504: Handler transport framing roundtrip (integration-level).
 /// Verifies the gateway correctly encodes DATA with all fields and the handler
 /// can decode+reply via the 4-byte length-prefix framing.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0504_handler_transport_framing() {
     require_python!();
@@ -1450,6 +1451,7 @@ async fn t0504_handler_transport_framing() {
 }
 
 /// T-0505: Handler respawn after clean exit.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0505_handler_respawn_on_clean_exit() {
     require_python!();
@@ -1502,6 +1504,7 @@ async fn t0505_handler_respawn_on_clean_exit() {
 }
 
 /// T-0506: Handler crash — no reply sent to node.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0506_handler_crash_no_reply() {
     require_python!();
@@ -1531,6 +1534,7 @@ async fn t0506_handler_crash_no_reply() {
 }
 
 /// T-0507: Handler routing by program hash — two handlers, two programs.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0507_routing_by_program_hash() {
     require_python!();
@@ -1592,6 +1596,7 @@ async fn t0507_routing_by_program_hash() {
 }
 
 /// T-0508: No matching handler — no reply, no crash.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0508_no_handler_match_no_reply() {
     require_python!();
@@ -1621,6 +1626,7 @@ async fn t0508_no_handler_match_no_reply() {
 }
 
 /// T-0509: Catch-all handler (`ProgramMatcher::Any`).
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0509_catch_all_handler() {
     require_python!();
@@ -1659,6 +1665,7 @@ async fn t0509_catch_all_handler() {
 
 /// T-0510: `request_id` correlation — sequential APP_DATA use incrementing
 /// nonces; each reply uses the correct nonce.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0510_request_id_correlation() {
     require_python!();
@@ -1698,6 +1705,7 @@ async fn t0510_request_id_correlation() {
 }
 
 /// T-0511: Handler replies with wrong `request_id` — reply discarded.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0511_request_id_mismatch_discarded() {
     require_python!();
@@ -1727,6 +1735,7 @@ async fn t0511_request_id_mismatch_discarded() {
 /// Verifies that the gateway can run WAKE and post-WAKE APP_DATA with a
 /// configured handler without panicking, and that APP_DATA still works.
 /// (EVENT forwarding from engine to handler is not wired in Phase 2C-i.)
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0512_handler_no_crash_on_wake() {
     require_python!();
@@ -1761,6 +1770,7 @@ async fn t0512_handler_no_crash_on_wake() {
 }
 
 /// T-0513: LOG messages from handler do not crash the gateway.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0513_log_messages_no_crash() {
     require_python!();
@@ -1801,6 +1811,7 @@ async fn t0513_log_messages_no_crash() {
 /// respawn. The handler maintains a counter that increments with each DATA
 /// message. If the handler were respawned, the counter would reset.
 /// Validates GW-0503 acceptance criteria 1 (handler persistence).
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0503b_handler_persistence_across_messages() {
     require_python!();
@@ -1853,6 +1864,7 @@ async fn t0503b_handler_persistence_across_messages() {
 /// T-0503c: Handler that hangs indefinitely — gateway must time out and return
 /// no reply. Validates GW-0503 AC2/AC3 (timeout kills handler, no reply sent).
 /// Uses a 2 s `reply_timeout` to avoid blocking the test suite for 30 s.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0503c_handler_reply_timeout() {
     require_python!();
@@ -1909,4 +1921,314 @@ async fn t05xx_no_handler_backward_compat() {
         resp.is_none(),
         "gateway without handler must silently accept APP_DATA"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Issue #352 — Handler lifecycle and data path gap tests
+// ═══════════════════════════════════════════════════════════════════════
+
+// ─── Gap 1: GW-0503 AC3 — Persistent handler stays alive across messages ────
+
+/// Persistent counter handler: stays alive across messages and includes an
+/// incrementing counter in each reply. If the handler were respawned, the
+/// counter would reset to 0.
+const PERSISTENT_COUNTER_HANDLER_PY: &str = r#"
+import sys, struct
+
+counter = 0
+
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
+def read_msg():
+    raw = read_exact(4)
+    length = struct.unpack('>I', raw)[0]
+    data = read_exact(length)
+    return data
+
+def write_msg(payload):
+    sys.stdout.buffer.write(struct.pack('>I', len(payload)))
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
+
+def decode_cbor_map(data):
+    result = {}
+    idx = 0
+    if data[idx] & 0xe0 != 0xa0 and data[idx] != 0xbf:
+        raise ValueError(f"expected map, got {data[idx]:#x}")
+    if data[idx] == 0xbf:
+        idx += 1
+        while data[idx] != 0xff:
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        idx += 1
+    else:
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+    return result
+
+def decode_item(data, idx):
+    major = (data[idx] >> 5) & 0x07
+    info = data[idx] & 0x1f
+    idx += 1
+    if major == 0:
+        val, idx = decode_uint(info, data, idx)
+        return val, idx
+    elif major == 2:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length], idx + length
+    elif major == 3:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length].decode('utf-8'), idx + length
+    elif major == 5:
+        count, idx = decode_uint(info, data, idx)
+        m = {}
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            m[k] = v
+        return m, idx
+    else:
+        raise ValueError(f"unsupported major type {major}")
+
+def decode_uint(info, data, idx):
+    if info < 24:
+        return info, idx
+    elif info == 24:
+        return data[idx], idx + 1
+    elif info == 25:
+        return struct.unpack('>H', data[idx:idx+2])[0], idx + 2
+    elif info == 26:
+        return struct.unpack('>I', data[idx:idx+4])[0], idx + 4
+    elif info == 27:
+        return struct.unpack('>Q', data[idx:idx+8])[0], idx + 8
+    else:
+        raise ValueError(f"unsupported additional info {info}")
+
+def encode_uint(major, val):
+    major_bits = major << 5
+    if val < 24:
+        return bytes([major_bits | val])
+    elif val < 256:
+        return bytes([major_bits | 24, val])
+    elif val < 65536:
+        return bytes([major_bits | 25]) + struct.pack('>H', val)
+    elif val < 2**32:
+        return bytes([major_bits | 26]) + struct.pack('>I', val)
+    else:
+        return bytes([major_bits | 27]) + struct.pack('>Q', val)
+
+def encode_cbor_map(pairs):
+    out = encode_uint(5, len(pairs))
+    for k, v in pairs:
+        out += encode_item(k)
+        out += encode_item(v)
+    return out
+
+def encode_item(val):
+    if isinstance(val, int):
+        return encode_uint(0, val)
+    elif isinstance(val, bytes):
+        return encode_uint(2, len(val)) + val
+    elif isinstance(val, str):
+        encoded = val.encode('utf-8')
+        return encode_uint(3, len(encoded)) + encoded
+    else:
+        raise ValueError(f"unsupported type {type(val)}")
+
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    msg_type = msg[1]
+    if msg_type == 1:  # DATA
+        counter += 1
+        request_id = msg[2]
+        reply = encode_cbor_map([
+            (1, 0x81),
+            (2, request_id),
+            (3, bytes([counter])),
+        ])
+        write_msg(reply)
+    elif msg_type == 2:  # EVENT — no reply expected
+        pass
+"#;
+
+/// GW-0503 AC3: Persistent handler stays alive across messages.
+///
+/// Uses a handler that maintains an in-process counter. Each DATA reply
+/// includes the counter value. If the handler were respawned between
+/// messages the counter would reset, causing assertion failures.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn gw0503_ac3_persistent_handler_stays_alive() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "counter.py", PERSISTENT_COUNTER_HANDLER_PY);
+
+    let program_hash = vec![0x30; 32];
+    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
+        vec![ProgramMatcher::Hash(program_hash.clone())],
+        script,
+    )]));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-persist", 0x0530, [0x60; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    let (starting_seq, _, _) = do_wake(&gw, &node, 30000, &program_hash).await;
+
+    // Send 3 APP_DATA messages — counter must increment 1, 2, 3
+    for i in 0u64..3 {
+        let seq = starting_seq + i;
+        let blob = vec![(i + 1) as u8; 2];
+        let app_frame = node.build_app_data(seq, &blob);
+        let resp = gw
+            .process_frame(&app_frame, node.peer_address())
+            .await
+            .unwrap_or_else(|| panic!("expected reply for APP_DATA #{i}"));
+
+        let (_hdr, msg) = decode_response(&resp, &node.psk);
+        match msg {
+            GatewayMessage::AppDataReply { blob: reply_blob } => {
+                assert_eq!(
+                    reply_blob,
+                    vec![(i + 1) as u8],
+                    "counter must be {} on message #{i} (handler must not respawn)",
+                    i + 1
+                );
+            }
+            other => panic!("expected AppDataReply, got {:?}", other),
+        }
+    }
+}
+
+// ─── Gap 2: GW-0501 — Sequence-number correctness ──────────────────────────
+
+/// GW-0501 AC3/AC4: Each APP_DATA_REPLY echoes the correct per-message
+/// sequence number in the reply nonce.
+///
+/// Sends 3 APP_DATA messages with sequential seq numbers and verifies each
+/// APP_DATA_REPLY's header nonce matches the request's sequence number.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn gw0501_sequence_number_correctness() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x31; 32];
+    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
+        vec![ProgramMatcher::Hash(program_hash.clone())],
+        script,
+    )]));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-seq", 0x0531, [0x61; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    let (starting_seq, _, _) = do_wake(&gw, &node, 31000, &program_hash).await;
+
+    for i in 0u64..3 {
+        let seq = starting_seq + i;
+        let blob = vec![(0x40 + i) as u8; 3];
+        let app_frame = node.build_app_data(seq, &blob);
+        let resp = gw
+            .process_frame(&app_frame, node.peer_address())
+            .await
+            .unwrap_or_else(|| panic!("expected reply for APP_DATA #{i}"));
+
+        let (hdr, msg) = decode_response(&resp, &node.psk);
+        assert_eq!(hdr.msg_type, MSG_APP_DATA_REPLY);
+        assert_eq!(
+            hdr.nonce, seq,
+            "APP_DATA_REPLY nonce must echo request seq {seq} for message #{i}"
+        );
+        match msg {
+            GatewayMessage::AppDataReply { blob: reply_blob } => {
+                assert_eq!(reply_blob, blob, "echo mismatch on message #{i}");
+            }
+            other => panic!("expected AppDataReply, got {:?}", other),
+        }
+    }
+}
+
+// ─── Gap 3: GW-0504 AC3 — Many-to-one routing ─────────────────────────────
+
+/// GW-0504 AC3: Two program hashes routed to the same handler.
+///
+/// Configures a single echo handler with two hash matchers. Nodes running
+/// different programs both get correct replies from the same handler.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn gw0504_many_to_one_routing() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
+
+    let hash_x = vec![0xC0; 32];
+    let hash_y = vec![0xD0; 32];
+
+    // One handler configured for both program hashes
+    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
+        vec![
+            ProgramMatcher::Hash(hash_x.clone()),
+            ProgramMatcher::Hash(hash_y.clone()),
+        ],
+        script,
+    )]));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    // Node X with hash_x
+    let node_x = TestNode::new("node-mto-x", 0x5040, [0xC1; 32]);
+    setup_node_with_program(&storage, &node_x, &hash_x).await;
+    let (seq_x, _, _) = do_wake(&gw, &node_x, 40000, &hash_x).await;
+
+    let blob_x = vec![0xAA, 0xBB];
+    let app_x = node_x.build_app_data(seq_x, &blob_x);
+    let resp_x = gw
+        .process_frame(&app_x, node_x.peer_address())
+        .await
+        .expect("node X must get reply from shared handler");
+    let (_, msg_x) = decode_response(&resp_x, &node_x.psk);
+    match msg_x {
+        GatewayMessage::AppDataReply { blob } => {
+            assert_eq!(blob, blob_x, "shared handler must echo node X data");
+        }
+        other => panic!("expected AppDataReply for X, got {:?}", other),
+    }
+
+    // Node Y with hash_y — same handler
+    let node_y = TestNode::new("node-mto-y", 0x5041, [0xD1; 32]);
+    setup_node_with_program(&storage, &node_y, &hash_y).await;
+    let (seq_y, _, _) = do_wake(&gw, &node_y, 41000, &hash_y).await;
+
+    let blob_y = vec![0xCC, 0xDD];
+    let app_y = node_y.build_app_data(seq_y, &blob_y);
+    let resp_y = gw
+        .process_frame(&app_y, node_y.peer_address())
+        .await
+        .expect("node Y must get reply from shared handler");
+    let (_, msg_y) = decode_response(&resp_y, &node_y.psk);
+    match msg_y {
+        GatewayMessage::AppDataReply { blob } => {
+            assert_eq!(blob, blob_y, "shared handler must echo node Y data");
+        }
+        other => panic!("expected AppDataReply for Y, got {:?}", other),
+    }
 }

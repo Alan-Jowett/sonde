@@ -429,3 +429,169 @@ async fn t1108_e2e_wake_cycle_over_pty() {
         other => panic!("expected SendFrame, got {other:?}"),
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Issue #352 — Modem transport gap tests
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── Gap 5: GW-1101 — SET_CHANNEL_ACK timeout ────────────────────────────
+
+/// GW-1101: SET_CHANNEL_ACK timeout.
+///
+/// Modem sends MODEM_READY (ACKs RESET) but never sends SET_CHANNEL_ACK.
+/// The gateway must detect this and return an error rather than operating
+/// on the wrong RF channel.
+#[tokio::test]
+async fn gw1101_set_channel_ack_timeout() {
+    let (client, mut server) = duplex(4096);
+
+    let transport_handle = tokio::spawn(async move { UsbEspNowTransport::new(client, 6).await });
+
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+
+    // 1. Read RESET
+    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    assert!(matches!(msg, ModemMessage::Reset));
+
+    // 2. Send MODEM_READY
+    let ready = ModemMessage::ModemReady(ModemReady {
+        firmware_version: [1, 0, 0, 0],
+        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+    });
+    server
+        .write_all(&encode_modem_frame(&ready).unwrap())
+        .await
+        .unwrap();
+
+    // 3. Read SET_CHANNEL — but do NOT send SET_CHANNEL_ACK
+    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    assert!(
+        matches!(msg, ModemMessage::SetChannel(6)),
+        "expected SetChannel(6), got {msg:?}"
+    );
+
+    // 4. Transport must fail (e.g., due to a timeout) rather than succeeding
+    let result = tokio::time::timeout(Duration::from_secs(10), transport_handle).await;
+    match result {
+        Ok(Ok(Err(_))) => {
+            // Transport failed as expected when SET_CHANNEL_ACK was not received.
+        }
+        Ok(Err(e)) => panic!("spawn panicked: {e}"),
+        Err(_) => panic!("test timed out — transport should fail within ~10s"),
+        Ok(Ok(Ok(_))) => panic!("transport must not succeed without SET_CHANNEL_ACK"),
+    }
+}
+
+// ── Gap 6: GW-1103 AC2 — Recovery after ERROR → RESET ──────────────────
+
+/// GW-1103 AC2: After modem ERROR, drop + reconstruct transport re-executes
+/// the full startup sequence (RESET → MODEM_READY → SET_CHANNEL → ACK).
+#[tokio::test]
+async fn gw1103_error_recovery_full_restart() {
+    // Phase 1: Normal startup
+    let (transport, mut server1) = create_transport_and_server(6).await;
+
+    // Inject ERROR from modem
+    let error_msg = ModemMessage::Error(sonde_protocol::modem::ModemError {
+        error_code: 0x02,
+        message: b"ESPNOW_INIT_FAILED".to_vec(),
+    });
+    server1
+        .write_all(&encode_modem_frame(&error_msg).unwrap())
+        .await
+        .unwrap();
+
+    // Verify transport still receives frames after ERROR (non-fatal)
+    let recv = ModemMessage::RecvFrame(RecvFrame {
+        peer_mac: [0x11; 6],
+        rssi: -40,
+        frame_data: vec![0xAA],
+    });
+    server1
+        .write_all(&encode_modem_frame(&recv).unwrap())
+        .await
+        .unwrap();
+    let (data, _) = tokio::time::timeout(Duration::from_secs(10), transport.recv())
+        .await
+        .expect("transport recv timed out in gw1103_error_recovery_full_restart")
+        .unwrap();
+    assert_eq!(data, vec![0xAA], "transport must survive ERROR");
+
+    // Phase 2: Drop and reconstruct — simulating gateway recovery
+    drop(transport);
+    drop(server1);
+
+    // Create new transport on a fresh connection — must re-run startup
+    let (client2, mut server2) = duplex(4096);
+    let transport_handle =
+        tokio::spawn(async move { UsbEspNowTransport::new(client2, 6).await.unwrap() });
+
+    // Verify the FULL startup sequence re-executes
+    let mut decoder2 = FrameDecoder::new();
+    let mut buf2 = [0u8; 256];
+
+    let msg = read_next_message(&mut server2, &mut decoder2, &mut buf2).await;
+    assert!(
+        matches!(msg, ModemMessage::Reset),
+        "recovery must start with RESET"
+    );
+
+    let ready = ModemMessage::ModemReady(ModemReady {
+        firmware_version: [1, 0, 0, 0],
+        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+    });
+    server2
+        .write_all(&encode_modem_frame(&ready).unwrap())
+        .await
+        .unwrap();
+
+    let msg = read_next_message(&mut server2, &mut decoder2, &mut buf2).await;
+    assert!(
+        matches!(msg, ModemMessage::SetChannel(6)),
+        "recovery must send SET_CHANNEL"
+    );
+
+    server2
+        .write_all(&encode_modem_frame(&ModemMessage::SetChannelAck(6)).unwrap())
+        .await
+        .unwrap();
+
+    let _transport2 = tokio::time::timeout(Duration::from_secs(10), transport_handle)
+        .await
+        .expect("transport startup timed out in gw1103_error_recovery_full_restart")
+        .unwrap();
+}
+
+// ── Gap 7: GW-1205 — BLE indication sent to modem ──────────────────────
+
+/// GW-1205: `send_ble_indicate` transmits a BLE_INDICATE message to the
+/// modem, verifying the gateway doesn't fire-and-forget without actually
+/// sending the data.
+#[tokio::test]
+async fn gw1205_ble_indicate_sent_to_modem() {
+    let (transport, mut server) = create_transport_and_server(6).await;
+
+    let payload = vec![0x01, 0x02, 0x03, 0x04, 0x05];
+    transport.send_ble_indicate(&payload).await.unwrap();
+
+    // Read the BLE_INDICATE from the mock modem side (with timeout to avoid
+    // hanging CI if the transport regresses and stops emitting the frame).
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+    let msg = tokio::time::timeout(
+        Duration::from_secs(5),
+        read_next_message(&mut server, &mut decoder, &mut buf),
+    )
+    .await
+    .expect("timed out waiting for BLE_INDICATE from modem transport");
+    match msg {
+        ModemMessage::BleIndicate(bi) => {
+            assert_eq!(
+                bi.ble_data, payload,
+                "BLE_INDICATE must carry the exact payload"
+            );
+        }
+        other => panic!("expected BleIndicate, got {other:?}"),
+    }
+}

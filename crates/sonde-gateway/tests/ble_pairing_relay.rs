@@ -124,6 +124,17 @@ async fn t1223_ed25519_seed_replication() {
     let gw_id_b: [u8; 16] = body_b[32..48].try_into().unwrap();
     let sig_b: [u8; 64] = body_b[48..112].try_into().unwrap();
 
+    // Verify response fields match the expected identity values (not just each other).
+    assert_eq!(
+        gw_pub_a,
+        pub_key_a,
+        "gateway A response must contain its known public key"
+    );
+    assert_eq!(
+        gw_id_a, gateway_id_a,
+        "gateway A response must contain its known gateway_id"
+    );
+
     // 7. Assert: both produce identical public keys, gateway_ids, and signatures.
     assert_eq!(gw_pub_a, gw_pub_b, "public keys must match");
     assert_eq!(gw_id_a, gw_id_b, "gateway_ids must match");

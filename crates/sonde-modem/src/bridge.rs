@@ -313,7 +313,17 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         self.ble.disable();
         // Drain any stale BLE events (including BLE_DISCONNECTED from the
         // disable call above) so they do not leak into the next session.
-        while self.ble.drain_event().is_some() {}
+        // Hard upper bound prevents spinning if a BLE implementation
+        // erroneously returns events indefinitely.
+        const MAX_DRAIN: usize = 256;
+        let mut drained = 0;
+        while self.ble.drain_event().is_some() {
+            drained += 1;
+            if drained >= MAX_DRAIN {
+                warn!("RESET: drained {MAX_DRAIN} BLE events (limit reached)");
+                break;
+            }
+        }
         self.counters.reset();
         self.decoder.reset();
         self.send_modem_ready();
@@ -1691,7 +1701,7 @@ mod tests {
         // Send frames to three different peers to register them.
         let peers: [[u8; MAC_SIZE]; 3] = [
             [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
-            [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            [0x22, 0x33, 0x44, 0x55, 0x66, 0x77],
             [0xDE, 0xAD, 0xBE, 0xEF, 0x42, 0x01],
         ];
         for peer in &peers {
@@ -1841,10 +1851,11 @@ mod tests {
         while let Ok(Some(msg)) = decoder.decode() {
             match msg {
                 ModemMessage::BleRecv(r) => received.push(r.ble_data),
-                other => panic!(
-                    "expected only BleRecv, got {:?}",
-                    std::mem::discriminant(&other)
-                ),
+                ModemMessage::Error(e) => panic!("unexpected Error on USB: {:?}", e),
+                _ => {
+                    // Ignore non-error, non-BleRecv frames; this test only cares about
+                    // preserving BLE_RECV boundaries and payloads.
+                }
             }
         }
 

@@ -348,8 +348,7 @@ fn test_map_value_or_null_exact_boundary_succeeds() {
     // Pointer exactly at the last valid position: data_end - value_size.
     let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
-    let exact_last =
-        backing.as_mut_ptr() as u64 + backing.len() as u64 - map.value_size as u64; // data_end - value_size
+    let exact_last = backing.as_mut_ptr() as u64 + backing.len() as u64 - map.value_size as u64; // data_end - value_size
 
     let helpers = &[HelperDescriptor {
         id: 1,

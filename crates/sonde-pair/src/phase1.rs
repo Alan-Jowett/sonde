@@ -182,7 +182,20 @@ async fn do_pair_with_gateway(
     // Step 6: TOFU — check stored identity
     if let Some(stored) = store.load_gateway_identity()? {
         if stored.public_key != gw_info.gw_public_key {
+            warn!(
+                stored_key = ?stored.public_key,
+                presented_key = ?gw_info.gw_public_key,
+                "stored gateway public key does not match presented public key"
+            );
             return Err(PairingError::PublicKeyMismatch);
+        }
+        if stored.gateway_id != gw_info.gateway_id {
+            warn!(
+                stored_gateway_id = ?stored.gateway_id,
+                presented_gateway_id = ?gw_info.gateway_id,
+                "gateway identity mismatch: stored gateway_id does not match presented gateway_id; if the gateway was reinstalled or reset, clear local pairing and re-pair"
+            );
+            return Err(PairingError::GatewayIdMismatch);
         }
         debug!("gateway identity matches stored TOFU record");
     } else {
@@ -1495,6 +1508,380 @@ mod tests {
             assert_eq!(
                 transport.read_call_count, 1,
                 "exactly one read_indication call — no implicit retries on timeout"
+            );
+        });
+    }
+
+    // --- PT-0301: Challenge uniqueness across attempts ---
+
+    /// Two pairing attempts with different RNG seeds must produce different
+    /// challenges in the REQUEST_GW_INFO write.
+    #[test]
+    fn t_pt_208_challenge_uniqueness() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            // Attempt 1 with seed 0x42
+            let rng1 = MockRng::new([0x42u8; 32]);
+            let challenge1 = predicted_challenge(&rng1);
+            let eph_public1 = predicted_eph_public(&rng1);
+            let mut transport1 = MockBleTransport::new(247);
+            transport1.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge1,
+            )));
+            transport1.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public1,
+                &phone_psk,
+                rf_channel,
+            )));
+            let mut store1 = MemoryPairingStore::new();
+            pair_with_gateway(&mut transport1, &mut store1, &rng1, &[0xAA; 6], "", None)
+                .await
+                .unwrap();
+
+            // Attempt 2 with seed 0x43
+            let rng2 = MockRng::new([0x43u8; 32]);
+            let challenge2 = predicted_challenge(&rng2);
+            let eph_public2 = predicted_eph_public(&rng2);
+            let mut transport2 = MockBleTransport::new(247);
+            transport2.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge2,
+            )));
+            transport2.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public2,
+                &phone_psk,
+                rf_channel,
+            )));
+            let mut store2 = MemoryPairingStore::new();
+            pair_with_gateway(&mut transport2, &mut store2, &rng2, &[0xAA; 6], "", None)
+                .await
+                .unwrap();
+
+            // Extract challenges from REQUEST_GW_INFO writes
+            assert!(
+                !transport1.written.is_empty(),
+                "transport1 must have at least one written frame"
+            );
+            assert!(
+                !transport2.written.is_empty(),
+                "transport2 must have at least one written frame"
+            );
+            let challenge_payload1 = transport1
+                .written
+                .iter()
+                .find_map(|(_, _, data)| {
+                    let (msg_type, payload) = parse_envelope(data).unwrap();
+                    if msg_type == REQUEST_GW_INFO {
+                        Some(payload.to_vec())
+                    } else {
+                        None
+                    }
+                })
+                .expect("transport1 must contain a REQUEST_GW_INFO frame");
+            let challenge_payload2 = transport2
+                .written
+                .iter()
+                .find_map(|(_, _, data)| {
+                    let (msg_type, payload) = parse_envelope(data).unwrap();
+                    if msg_type == REQUEST_GW_INFO {
+                        Some(payload.to_vec())
+                    } else {
+                        None
+                    }
+                })
+                .expect("transport2 must contain a REQUEST_GW_INFO frame");
+
+            assert_ne!(
+                challenge_payload1, challenge_payload2,
+                "challenges from different RNG seeds must differ"
+            );
+        });
+    }
+
+    // --- PT-0302: Same gw_public_key + different gateway_id ---
+
+    /// TOFU check must reject a response with the same public key but a
+    /// different `gateway_id` from what is stored.
+    #[test]
+    fn t_pt_209_tofu_gateway_id_mismatch() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let original_gw_id = [0x01u8; 16];
+            let different_gw_id = [0x02u8; 16];
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+
+            // Pre-store a gateway identity with original_gw_id.
+            let mut store = MemoryPairingStore::new();
+            let identity = GatewayIdentity {
+                public_key: signing_key.verifying_key().to_bytes(),
+                gateway_id: original_gw_id,
+            };
+            store.save_gateway_identity(&identity).unwrap();
+
+            // Gateway responds with the same public key but different gateway_id.
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &different_gw_id,
+                &challenge,
+            )));
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &[0xAA; 6], "", None).await;
+            assert!(
+                matches!(result, Err(PairingError::GatewayIdMismatch)),
+                "same public key + different gateway_id must be a TOFU violation, got {result:?}"
+            );
+        });
+    }
+
+    // --- PT-0303 / §4.1.1: ERROR(0x01) generic error code ---
+
+    /// ERROR(0x01) at the GW_INFO_RESPONSE step should be mapped to
+    /// `GatewayAuthFailed`.
+    #[test]
+    fn t_pt_210_error_0x01_at_gw_info() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            // Gateway responds with ERROR(0x01) instead of GW_INFO_RESPONSE
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x01]).unwrap()));
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let mut store = MemoryPairingStore::new();
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &[0xAA; 6], "", None).await;
+            match result {
+                Err(PairingError::GatewayAuthFailed(reason)) => {
+                    assert!(
+                        reason.contains("0x01"),
+                        "error message should include status code: {reason}"
+                    );
+                }
+                other => panic!("expected GatewayAuthFailed, got {other:?}"),
+            }
+        });
+    }
+
+    /// §4.1.1: ERROR(0x01) at the PHONE_REGISTERED step should be mapped to
+    /// `GatewayAuthFailed` (not a specific error like RegistrationWindowClosed).
+    #[test]
+    fn t_pt_211_error_0x01_at_phone_registered() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            // Second response: ERROR(0x01) generic
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x01]).unwrap()));
+
+            let mut store = MemoryPairingStore::new();
+
+            let result =
+                pair_with_gateway(&mut transport, &mut store, &rng, &[0xAA; 6], "", None).await;
+            match result {
+                Err(PairingError::GatewayAuthFailed(reason)) => {
+                    assert!(
+                        reason.contains("0x01"),
+                        "error message should include status code: {reason}"
+                    );
+                }
+                other => panic!("expected GatewayAuthFailed for generic error, got {other:?}"),
+            }
+        });
+    }
+
+    // --- PT-0405: Fresh ephemeral per attempt (Phase 1) ---
+
+    /// Two Phase 1 attempts must use different ephemeral public keys in
+    /// the REGISTER_PHONE write.
+    #[test]
+    fn t_pt_212_fresh_ephemeral_per_attempt() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            // Attempt 1
+            let rng1 = MockRng::new([0x42u8; 32]);
+            let challenge1 = predicted_challenge(&rng1);
+            let eph_public1 = predicted_eph_public(&rng1);
+            let mut transport1 = MockBleTransport::new(247);
+            transport1.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge1,
+            )));
+            transport1.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public1,
+                &phone_psk,
+                rf_channel,
+            )));
+            let mut store1 = MemoryPairingStore::new();
+            pair_with_gateway(&mut transport1, &mut store1, &rng1, &[0xAA; 6], "", None)
+                .await
+                .unwrap();
+
+            // Attempt 2 with different seed
+            let rng2 = MockRng::new([0x43u8; 32]);
+            let challenge2 = predicted_challenge(&rng2);
+            let eph_public2 = predicted_eph_public(&rng2);
+            let mut transport2 = MockBleTransport::new(247);
+            transport2.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge2,
+            )));
+            transport2.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public2,
+                &phone_psk,
+                rf_channel,
+            )));
+            let mut store2 = MemoryPairingStore::new();
+            pair_with_gateway(&mut transport2, &mut store2, &rng2, &[0xAA; 6], "", None)
+                .await
+                .unwrap();
+
+            // Extract ephemeral public keys from REGISTER_PHONE writes (2nd write)
+            assert!(
+                transport1.written.len() >= 2,
+                "transport1 should have at least 2 writes"
+            );
+            assert!(
+                transport2.written.len() >= 2,
+                "transport2 should have at least 2 writes"
+            );
+            let (_, _, reg1) = &transport1.written[1];
+            let (_, _, reg2) = &transport2.written[1];
+            let (msg_type1, reg_payload1) = parse_envelope(reg1).unwrap();
+            let (msg_type2, reg_payload2) = parse_envelope(reg2).unwrap();
+            assert_eq!(
+                msg_type1, REGISTER_PHONE,
+                "second write must be REGISTER_PHONE"
+            );
+            assert_eq!(
+                msg_type2, REGISTER_PHONE,
+                "second write must be REGISTER_PHONE"
+            );
+
+            // First 32 bytes of REGISTER_PHONE body are the ephemeral public key
+            assert!(
+                reg_payload1.len() >= 32,
+                "REGISTER_PHONE payload1 too short: len={}",
+                reg_payload1.len()
+            );
+            assert!(
+                reg_payload2.len() >= 32,
+                "REGISTER_PHONE payload2 too short: len={}",
+                reg_payload2.len()
+            );
+            assert_ne!(
+                &reg_payload1[..32],
+                &reg_payload2[..32],
+                "ephemeral public keys must differ between attempts"
+            );
+        });
+    }
+
+    // --- §5.2: REQUEST_GW_INFO body verification ---
+
+    /// The REQUEST_GW_INFO write must contain exactly 32 bytes of challenge data.
+    #[test]
+    fn t_pt_213_request_gw_info_body_is_32_bytes() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
+            let gateway_id = [0x01u8; 16];
+            let phone_psk = [0x55u8; 32];
+            let rf_channel = 6u8;
+
+            let rng = MockRng::new([0x42u8; 32]);
+            let challenge = predicted_challenge(&rng);
+            let eph_public = predicted_eph_public(&rng);
+
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_gw_info_response(
+                &signing_key,
+                &gateway_id,
+                &challenge,
+            )));
+            transport.queue_response(Ok(build_phone_registered_response(
+                &signing_key,
+                &gateway_id,
+                &eph_public,
+                &phone_psk,
+                rf_channel,
+            )));
+
+            let mut store = MemoryPairingStore::new();
+            pair_with_gateway(&mut transport, &mut store, &rng, &[0xAA; 6], "", None)
+                .await
+                .unwrap();
+
+            // First write is REQUEST_GW_INFO
+            let (_, _, data) = &transport.written[0];
+            let (msg_type, payload) = parse_envelope(data).unwrap();
+            assert_eq!(msg_type, REQUEST_GW_INFO);
+            assert_eq!(
+                payload.len(),
+                32,
+                "REQUEST_GW_INFO body must be exactly 32 bytes (challenge), got {}",
+                payload.len()
+            );
+
+            // Challenge bytes should be non-zero (from MockRng with 0x42 seed)
+            assert!(
+                payload.iter().any(|&b| b != 0),
+                "challenge must not be all zeros"
             );
         });
     }

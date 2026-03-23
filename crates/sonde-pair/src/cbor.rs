@@ -438,4 +438,241 @@ mod tests {
         let enc2 = encode_pairing_request("n1", &psk, 3, &sensors, 100).unwrap();
         assert_eq!(enc1, enc2, "encoding must be deterministic");
     }
+
+    /// PT-0403: CBOR uses definite-length containers.
+    ///
+    /// Verifies the outer map and inner sensors array use definite-length
+    /// headers per RFC 8949 §4.2 (no indefinite-length markers 0xBF/0x9F).
+    #[test]
+    fn definite_length_cbor_containers() {
+        let psk = [0x42u8; 32];
+        let sensors = vec![
+            SensorDescriptor {
+                sensor_type: 1,
+                sensor_id: 0x48,
+                label: Some("temp".into()),
+            },
+            SensorDescriptor {
+                sensor_type: 2,
+                sensor_id: 3,
+                label: None,
+            },
+        ];
+
+        let encoded = encode_pairing_request("sensor-1", &psk, 6, &sensors, 1700000000).unwrap();
+
+        // CBOR major type 5 (map) with definite length starts with 0xA0..0xBB.
+        // Indefinite-length map starts with 0xBF.
+        let first_byte = encoded[0];
+        assert_ne!(
+            first_byte, 0xBF,
+            "outer map must use definite-length encoding, not indefinite (0xBF)"
+        );
+        // Major type 5 definite-length: high 3 bits = 0b101 = 0xA0..0xBB
+        assert_eq!(
+            first_byte & 0xE0,
+            0xA0,
+            "first byte must be a definite-length map (major type 5)"
+        );
+
+        // For this fixture (ASCII inputs + fixed PSK byte pattern), require
+        // that no indefinite-length containers are used anywhere in the encoding.
+        //
+        // Instead of scanning raw bytes (which can produce false positives when these
+        // values appear inside data items), walk the CBOR structure and reject
+        // indefinite-length arrays/maps based on container headers.
+        fn assert_no_indefinite_containers(mut input: &[u8]) {
+            fn read_len(ai: u8, input: &mut &[u8]) -> u64 {
+                match ai {
+                    v @ 0..=23 => v as u64,
+                    24 => {
+                        assert!(
+                            !input.is_empty(),
+                            "truncated CBOR: expected 1 byte for length"
+                        );
+                        let val = input[0] as u64;
+                        *input = &input[1..];
+                        val
+                    }
+                    25 => {
+                        assert!(
+                            input.len() >= 2,
+                            "truncated CBOR: expected 2 bytes for length"
+                        );
+                        let val = u16::from_be_bytes([input[0], input[1]]) as u64;
+                        *input = &input[2..];
+                        val
+                    }
+                    26 => {
+                        assert!(
+                            input.len() >= 4,
+                            "truncated CBOR: expected 4 bytes for length"
+                        );
+                        let val =
+                            u32::from_be_bytes([input[0], input[1], input[2], input[3]]) as u64;
+                        *input = &input[4..];
+                        val
+                    }
+                    27 => {
+                        assert!(
+                            input.len() >= 8,
+                            "truncated CBOR: expected 8 bytes for length"
+                        );
+                        let val = u64::from_be_bytes([
+                            input[0], input[1], input[2], input[3], input[4], input[5], input[6],
+                            input[7],
+                        ]);
+                        *input = &input[8..];
+                        val
+                    }
+                    _ => panic!("unsupported CBOR additional information for length: {}", ai),
+                }
+            }
+
+            fn consume_item(input: &mut &[u8]) {
+                assert!(!input.is_empty(), "truncated CBOR: unexpected end of input");
+                let initial = input[0];
+                *input = &input[1..];
+                let major = initial >> 5;
+                let ai = initial & 0x1F;
+
+                match major {
+                    // Unsigned integer
+                    0 => {
+                        let _ = read_len(ai, input);
+                    }
+                    // Negative integer
+                    1 => {
+                        let _ = read_len(ai, input);
+                    }
+                    // Byte string (definite-length only in this helper)
+                    2 => {
+                        if ai == 31 {
+                            panic!(
+                                "indefinite-length byte strings are not supported in this test helper"
+                            );
+                        }
+                        let len = read_len(ai, input) as usize;
+                        assert!(
+                            input.len() >= len,
+                            "truncated CBOR: byte string shorter than declared length"
+                        );
+                        *input = &input[len..];
+                    }
+                    // Text string (definite-length only in this helper)
+                    3 => {
+                        if ai == 31 {
+                            panic!(
+                                "indefinite-length text strings are not supported in this test helper"
+                            );
+                        }
+                        let len = read_len(ai, input) as usize;
+                        assert!(
+                            input.len() >= len,
+                            "truncated CBOR: text string shorter than declared length"
+                        );
+                        *input = &input[len..];
+                    }
+                    // Array
+                    4 => {
+                        if ai == 31 {
+                            panic!("encoded CBOR must not use indefinite-length arrays (0x9F)");
+                        }
+                        let len = read_len(ai, input);
+                        for _ in 0..len {
+                            consume_item(input);
+                        }
+                    }
+                    // Map
+                    5 => {
+                        if ai == 31 {
+                            panic!("encoded CBOR must not use indefinite-length maps (0xBF)");
+                        }
+                        let len = read_len(ai, input);
+                        for _ in 0..len {
+                            // key
+                            consume_item(input);
+                            // value
+                            consume_item(input);
+                        }
+                    }
+                    // Tag
+                    6 => {
+                        let _tag = read_len(ai, input);
+                        consume_item(input);
+                    }
+                    // Simple values and floats
+                    7 => {
+                        match ai {
+                            // simple values false/true/null/undefined
+                            20..=23 => {}
+                            // one-byte simple value
+                            24 => {
+                                assert!(
+                                    !input.is_empty(),
+                                    "truncated CBOR: expected 1 byte for simple value"
+                                );
+                                *input = &input[1..];
+                            }
+                            // half-precision float
+                            25 => {
+                                assert!(
+                                    input.len() >= 2,
+                                    "truncated CBOR: expected 2 bytes for f16"
+                                );
+                                *input = &input[2..];
+                            }
+                            // single-precision float
+                            26 => {
+                                assert!(
+                                    input.len() >= 4,
+                                    "truncated CBOR: expected 4 bytes for f32"
+                                );
+                                *input = &input[4..];
+                            }
+                            // double-precision float
+                            27 => {
+                                assert!(
+                                    input.len() >= 8,
+                                    "truncated CBOR: expected 8 bytes for f64"
+                                );
+                                *input = &input[8..];
+                            }
+                            // "break" (0xFF) or reserved/invalid in this context
+                            _ => panic!(
+                                "unexpected CBOR simple/floating-point additional info: {}",
+                                ai
+                            ),
+                        }
+                    }
+                    _ => panic!("invalid CBOR major type: {}", major),
+                }
+            }
+
+            while !input.is_empty() {
+                consume_item(&mut input);
+            }
+        }
+
+        assert_no_indefinite_containers(&encoded);
+
+        let decoded = decode_pairing_request(&encoded).unwrap();
+        assert_eq!(decoded.node_id, "sensor-1");
+        assert_eq!(decoded.sensors.len(), 2);
+
+        // Verify encoding round-trips exactly (deterministic definite-length).
+        let re_encoded = encode_pairing_request(
+            &decoded.node_id,
+            &decoded.node_psk,
+            decoded.rf_channel,
+            &decoded.sensors,
+            decoded.timestamp,
+        )
+        .unwrap();
+        assert_eq!(
+            &encoded[..],
+            &re_encoded[..],
+            "re-encoding must produce identical bytes (deterministic definite-length)"
+        );
+    }
 }

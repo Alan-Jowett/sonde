@@ -60,6 +60,9 @@ pub enum PairingError {
     #[error("gateway public key does not match stored identity (TOFU violation) — if the gateway was re-keyed, clear local pairing first")]
     PublicKeyMismatch,
 
+    #[error("gateway identity mismatch: stored gateway_id does not match presented gateway_id — if the gateway was reinstalled or reset, clear local pairing and re-pair")]
+    GatewayIdMismatch,
+
     #[error("gateway registration window is closed — open the registration window on the gateway and retry")]
     RegistrationWindowClosed,
 

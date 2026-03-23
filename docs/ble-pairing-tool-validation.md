@@ -17,12 +17,18 @@ This document defines test cases that validate the BLE pairing tool against the 
 
 **Test harness:** All CI tests use a **mock BLE transport** (in-process implementation of the `BleTransport` trait) and a **mock pairing store** (in-memory implementation of the `PairingStore` trait). No real BLE hardware is needed. Manual tests against physical hardware are specified separately.
 
-**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), PT-0104 (separation of concerns), and PT-1004 (reusable core) are structural constraints validated by CI build targets (Android `aarch64-linux-android`, Windows `x86_64-pc-windows-msvc`) and code review of `Cargo.toml` dependency graphs.  They do not have runtime test cases in this document.
+**Architecture requirements:** PT-0100 (supported platforms), PT-0101 (Rust-first implementation), PT-0102 (platform isolation), PT-0103 (crate placement), and PT-0104 (separation of concerns) are structural constraints validated by CI build targets (Android `aarch64-linux-android`, Windows `x86_64-pc-windows-msvc`) and code review of `Cargo.toml` dependency graphs.  They do not have runtime test cases in this document.  PT-1004 (reusable core) is validated by T-PT-1004, which asserts the crate builds without platform features.
 
-**Testing meta-requirement traceability:** The following mapping shows how requirements PT-1200–PT-1206 are satisfied by the test suites in this document:
+**Testing meta-requirement traceability:** The following mapping shows how requirements PT-1000–PT-1206 are satisfied by the test suites, structural coverage, and supporting CI/build checks described in this document:
 
 | Meta-requirement | Description | Satisfied by |
 |---|---|---|
+| PT-1000 | Transient BLE failure tolerance | T-PT-300, T-PT-310, T-PT-800 |
+| PT-1001 | No resource leaks on failure | T-PT-801 |
+| PT-1002 | Deterministic timeouts | T-PT-310, T-PT-312, T-PT-313, T-PT-314, T-PT-802 |
+| PT-1003 | No implicit retries | T-PT-803 |
+| PT-1004 | Reusable core | T-PT-1004 |
+| PT-1100 | Required cryptographic primitives | Structural coverage (see table below) |
 | PT-1200 | Mocked BLE transport for CI | Test harness infrastructure (§2); all CI tests use `MockBleTransport` |
 | PT-1201 | Phase 1 happy path | T-PT-208 |
 | PT-1202 | Phase 1 error paths | T-PT-203, T-PT-204, T-PT-206, T-PT-209, T-PT-210, T-PT-211, T-PT-212 |
@@ -851,6 +857,20 @@ TestNode {
 
 ---
 
+### T-PT-606  Windows DPAPI PSK protect/unprotect semantics
+
+**Validates:** PT-0801
+**Type:** Automated (requires Windows + `--features dpapi`)
+
+**Procedure:**
+1. Instantiate `DpapiPskProtector` and protect a 32-byte test PSK.
+2. Assert: the protected blob differs from the plaintext and is larger than 32 bytes.
+3. Unprotect the blob and assert the recovered value equals the original PSK.
+4. Tamper with the protected blob (flip the last byte) and assert `unprotect` returns an error.
+5. Protect two different PSKs and assert the blobs differ.
+
+---
+
 ## 9  Security tests
 
 ### T-PT-700  No key material in default logs
@@ -1054,6 +1074,17 @@ TestNode {
 
 ---
 
+### T-PT-1004  Core crate builds and works without platform features
+
+**Validates:** PT-1004
+
+**Procedure:**
+1. Build the `sonde-pair` crate without any platform features enabled (`--no-default-features`).
+2. Assert: the build succeeds on all CI targets (Android `aarch64-linux-android`, Windows `x86_64-pc-windows-msvc`, Linux `x86_64-unknown-linux-gnu`).
+3. Assert: `Cargo.toml` dependency graph shows platform-specific dependencies are gated behind feature flags, not unconditionally required.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Test ID | Requirement | Title |
@@ -1116,6 +1147,7 @@ TestNode {
 | T-PT-603 | PT-0804 | No node PSK persisted after provisioning |
 | T-PT-604 | PT-0801 | Android secure storage uses EncryptedSharedPreferences |
 | T-PT-605 | PT-0801 | Windows secure storage uses restricted file permissions |
+| T-PT-606 | PT-0801 | Windows DPAPI PSK protect/unprotect semantics |
 | T-PT-700 | PT-0900 | No key material in default logs |
 | T-PT-701 | PT-0900 | No key material in verbose logs |
 | T-PT-702 | PT-0901 | All randomness from injectable RNG provider |
@@ -1132,3 +1164,4 @@ TestNode {
 | T-PT-901 | PT-1101 | HKDF parameters correct for Phase 2 |
 | T-PT-902 | PT-1102 | AES-GCM AAD = gateway_id |
 | T-PT-903 | PT-1103 | CBOR deterministic encoding (known test vector) |
+| T-PT-1004 | PT-1004 | Core crate builds and works without platform features |

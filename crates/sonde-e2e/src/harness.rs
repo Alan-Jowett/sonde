@@ -1545,14 +1545,21 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
 
     fn write_characteristic(
         &mut self,
-        _service: u128,
-        _characteristic: u128,
+        service: u128,
+        characteristic: u128,
         data: &[u8],
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
     > {
         let data = data.to_vec();
         Box::pin(async move {
+            if service != sonde_pair::types::GATEWAY_SERVICE_UUID
+                || characteristic != sonde_pair::types::GATEWAY_COMMAND_UUID
+            {
+                return Err(sonde_pair::error::PairingError::ConnectionFailed(
+                    "unexpected GATT service/characteristic in e2e harness".into(),
+                ));
+            }
             let mut window = self.window.lock().await;
             // Refresh the registration window if it has expired, so slow CI
             // environments don't cause nondeterministic test failures.
@@ -1578,8 +1585,8 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
 
     fn read_indication(
         &mut self,
-        _service: u128,
-        _characteristic: u128,
+        service: u128,
+        characteristic: u128,
         timeout_ms: u64,
     ) -> std::pin::Pin<
         Box<
@@ -1587,6 +1594,13 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
         >,
     > {
         Box::pin(async move {
+            if service != sonde_pair::types::GATEWAY_SERVICE_UUID
+                || characteristic != sonde_pair::types::GATEWAY_COMMAND_UUID
+            {
+                return Err(sonde_pair::error::PairingError::ConnectionFailed(
+                    "unexpected GATT service/characteristic in e2e harness".into(),
+                ));
+            }
             let timeout_duration = Duration::from_millis(timeout_ms);
 
             let wait_future = async {

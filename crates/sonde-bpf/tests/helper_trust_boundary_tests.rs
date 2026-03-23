@@ -24,7 +24,7 @@ use sonde_bpf::interpreter::{
 
 /// Build a single 8-byte BPF instruction.
 fn insn(opc: u8, dst: u8, src: u8, off: i16, imm: i32) -> [u8; 8] {
-    let regs = (src << 4) | (dst & 0x0f);
+    let regs = ((src & 0x0f) << 4) | (dst & 0x0f);
     let off_bytes = off.to_le_bytes();
     let imm_bytes = imm.to_le_bytes();
     [
@@ -229,7 +229,7 @@ fn test_map_value_or_null_returns_valid_ptr_is_map_value() {
     );
     // Verify the store actually wrote through the pointer.
     assert_eq!(
-        u64::from_ne_bytes(backing[..8].try_into().unwrap()),
+        u64::from_le_bytes(backing[..8].try_into().unwrap()),
         0xBEEF,
         "store through MapValue pointer must write to backing storage"
     );
@@ -243,8 +243,8 @@ fn test_map_value_or_null_returns_out_of_bounds_ptr() {
     // The interpreter must reject it with MemoryAccessViolation.
     let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
-    // Point far outside the map's storage.
-    let bad_ptr: u64 = 0xDEAD_0000;
+    // Choose an address just past the end of the map's storage so it is guaranteed OOB.
+    let bad_ptr: u64 = map.data_end.wrapping_add(1);
 
     let helpers = &[HelperDescriptor {
         id: 1,
@@ -282,7 +282,10 @@ fn test_map_value_or_null_returns_ptr_just_past_end() {
     let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
     // One byte past the last valid start: data_end - value_size + 1
-    let barely_oob = backing.as_mut_ptr() as u64 + 64 - 8 + 1;
+    let barely_oob = backing.as_mut_ptr() as u64
+        + backing.len() as u64
+        - map.value_size as u64
+        + 1;
 
     let helpers = &[HelperDescriptor {
         id: 1,
@@ -496,8 +499,11 @@ fn test_helper_call_clobbers_r1_r5_tags() {
     let prog = prog_from(&[
         insn(ebpf::LD_DW_IMM, 1, 1, 0, 0), // r1 = map_descriptor(0) [tagged]
         insn(0, 0, 0, 0, 0),
-        insn(ebpf::CALL, 0, 0, 0, 1), // call scalar helper → clobbers R1 tag, value preserved
-        // R1.value = relocated_ptr (non-zero), R1.region = None
+        insn(ebpf::CALL, 0, 0, 0, 1), // call scalar helper → clobbers R1 tag
+        // Explicitly set R1 to a known non-zero scalar after the first call
+        // so the test doesn't depend on R1's value being preserved (R1-R5 are
+        // caller-saved in the eBPF calling convention).
+        insn(ebpf::MOV64_IMM, 1, 0, 0, 0x1234), // r1 = non-zero scalar (untagged)
         insn(ebpf::CALL, 0, 0, 0, 2), // call MapValueOrNull(map_arg=1) — R1 is scalar now
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);

@@ -20,7 +20,7 @@ A phased approach is used so that each stage produces a fully functional, valida
 ## Licensing
 
 This roadmap document is licensed under MIT, as indicated by the SPDX header at the top of the file.
-Both PCB and enclosure design files themselves will be released under a permissive open hardware license (e.g., [CERN-OHL-P v2](https://ohwr.org/cern_ohl_p_v2.txt)), the hardware equivalent of MIT. All hardware design files (schematics, KiCad projects, STL/STEP files) will be published in this repository.
+Both PCB and enclosure design files themselves will be released under a permissive open hardware license (e.g., [CERN-OHL-P v2](https://ohwr.org/cern_ohl_p_v2.txt)), similar in spirit to MIT for software. All hardware design files (schematics, KiCad projects, STL/STEP files) will be published in this repository.
 
 ---
 

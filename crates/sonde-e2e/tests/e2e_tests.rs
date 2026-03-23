@@ -2246,7 +2246,7 @@ async fn t_e2e_083_instruction_budget_enforcement() {
 /// 3. Assert the sleep interval remains at 60 s (set_next_wake rejected).
 /// 4. Assert map 0 was not written (map_update_elem rejected).
 ///
-/// Covers: bpf-env §6.4
+/// Covers: bpf-environment.md §2.2, ND-0603, ND-0604
 #[tokio::test(flavor = "multi_thread")]
 async fn t_e2e_081_ephemeral_restrictions() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;

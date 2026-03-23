@@ -1997,6 +1997,17 @@ mod tests {
             ProgramClass::Resident,
             &mut trace,
             || {
+                // In-range key that was never explicitly written: for
+                // BPF_MAP_TYPE_ARRAY, entries are zero-initialized and
+                // always present, so lookup must return a non-NULL pointer.
+                let in_range_key: u32 = 0;
+                let in_range_ptr =
+                    helper_map_lookup_elem(map_ptr, &in_range_key as *const u32 as u64, 0, 0, 0);
+                assert_ne!(
+                    in_range_ptr, 0,
+                    "lookup of in-range never-updated key must return non-NULL (zero-initialized)"
+                );
+
                 // Key 4 is the first out-of-range index (max_entries = 4,
                 // valid indices are 0..3) — lookup must return NULL (0).
                 let key: u32 = 4;

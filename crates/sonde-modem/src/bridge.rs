@@ -320,7 +320,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         while self.ble.drain_event().is_some() {
             drained += 1;
             if drained >= MAX_DRAIN {
-                warn!("RESET: drained {MAX_DRAIN} BLE events (limit reached)");
+                warn!("RESET: drained {drained} BLE events (limit reached)");
                 break;
             }
         }
@@ -1800,7 +1800,7 @@ mod tests {
         assert!(
             matches!(messages[0], ModemMessage::ModemReady(_)),
             "first message after RESET must be MODEM_READY, got {:?}",
-            std::mem::discriminant(&messages[0])
+            &messages[0]
         );
 
         // 3. Indication queue must be cleared.

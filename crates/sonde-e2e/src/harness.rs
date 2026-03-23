@@ -905,7 +905,7 @@ async fn run_gateway_pump(
 // Crypto providers (real HMAC-SHA256 / SHA-256)
 // ---------------------------------------------------------------------------
 
-struct TestHmac;
+pub struct TestHmac;
 
 impl HmacProvider for TestHmac {
     fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
@@ -1359,17 +1359,46 @@ pub fn build_encrypted_payload(
     rf_channel: u8,
     sensors: &[sonde_pair::types::SensorDescriptor],
 ) -> Vec<u8> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("failed to compute system time since UNIX_EPOCH")
+        .as_secs() as i64;
+
+    build_encrypted_payload_with_timestamp(
+        gw_public_key,
+        gw_gateway_id,
+        phone_psk,
+        phone_key_hint,
+        node_id,
+        node_psk,
+        rf_channel,
+        sensors,
+        timestamp,
+    )
+}
+
+/// Build the encrypted_payload with a caller-supplied timestamp.
+///
+/// Same as [`build_encrypted_payload`] but accepts an explicit timestamp
+/// for negative testing (e.g. stale timestamps outside the ±86400 s window).
+#[allow(clippy::too_many_arguments)]
+pub fn build_encrypted_payload_with_timestamp(
+    gw_public_key: &[u8; 32],
+    gw_gateway_id: &[u8; 16],
+    phone_psk: &[u8; 32],
+    phone_key_hint: u16,
+    node_id: &str,
+    node_psk: &[u8; 32],
+    rf_channel: u8,
+    sensors: &[sonde_pair::types::SensorDescriptor],
+    timestamp: i64,
+) -> Vec<u8> {
     use sonde_pair::cbor::encode_pairing_request;
     use sonde_pair::crypto::{
         aes256gcm_encrypt, ed25519_to_x25519_public, generate_x25519_keypair, hkdf_sha256,
         hmac_sha256, x25519_ecdh,
     };
     use sonde_pair::rng::{OsRng, RngProvider};
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
 
     // Step 1: Encode PairingRequest as CBOR
     let cbor = encode_pairing_request(node_id, node_psk, rf_channel, sensors, timestamp).unwrap();
@@ -1400,4 +1429,199 @@ pub fn build_encrypted_payload(
     payload.extend_from_slice(&ciphertext);
 
     payload
+}
+
+// ---------------------------------------------------------------------------
+// GatewayBleAdapter — routes sonde-pair BleTransport calls to handle_ble_recv
+// ---------------------------------------------------------------------------
+
+/// Registration window duration for test adapters (seconds).
+///
+/// The BLE onboarding flow requires an open registration window. 300 s (5 min)
+/// is generous enough for any realistic test scenario without risking timeouts.
+const TEST_REG_WINDOW_SECS: u32 = 300;
+
+/// BLE transport adapter that routes `sonde_pair::transport::BleTransport`
+/// calls directly to the gateway's `handle_ble_recv`, bridging sonde-pair's
+/// state machine to the gateway engine without network or BLE hardware.
+pub struct GatewayBleAdapter {
+    identity: sonde_gateway::GatewayIdentity,
+    storage: Arc<dyn sonde_gateway::storage::Storage>,
+    window: tokio::sync::Mutex<sonde_gateway::ble_pairing::RegistrationWindow>,
+    rf_channel: u8,
+    response_queue: tokio::sync::Mutex<VecDeque<Vec<u8>>>,
+    response_notify: tokio::sync::Notify,
+}
+
+impl GatewayBleAdapter {
+    /// Create a new adapter wired to the given gateway identity and storage.
+    pub fn new(
+        identity: sonde_gateway::GatewayIdentity,
+        storage: Arc<dyn sonde_gateway::storage::Storage>,
+        rf_channel: u8,
+    ) -> Self {
+        let mut window = sonde_gateway::ble_pairing::RegistrationWindow::new();
+        window.open(TEST_REG_WINDOW_SECS);
+        Self {
+            identity,
+            storage,
+            window: tokio::sync::Mutex::new(window),
+            rf_channel,
+            response_queue: tokio::sync::Mutex::new(VecDeque::new()),
+            response_notify: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
+    fn start_scan(
+        &mut self,
+        _service_uuids: &[u128],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop_scan(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn get_discovered_devices(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        Vec<sonde_pair::types::ScannedDevice>,
+                        sonde_pair::error::PairingError,
+                    >,
+                > + '_,
+        >,
+    > {
+        Box::pin(async {
+            Ok(vec![sonde_pair::types::ScannedDevice {
+                name: "Sonde-GW-E2E".into(),
+                address: [0x10, 0x0B, 0xAC, 0x00, 0x00, 0x01],
+                rssi: -50,
+                service_uuids: vec![sonde_pair::types::GATEWAY_SERVICE_UUID],
+            }])
+        })
+    }
+
+    fn connect(
+        &mut self,
+        address: &[u8; 6],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<u16, sonde_pair::error::PairingError>> + '_>,
+    > {
+        let address = *address;
+        Box::pin(async move {
+            // Ensure we only "connect" to the device we advertised via get_discovered_devices,
+            // so tests fail if the pairing state machine selects or routes to the wrong device.
+            let expected_address: [u8; 6] = [0x10, 0x0B, 0xAC, 0x00, 0x00, 0x01];
+
+            if address == expected_address {
+                Ok(247)
+            } else {
+                Err(sonde_pair::error::PairingError::ConnectionFailed(
+                    "unexpected device address in e2e harness".into(),
+                ))
+            }
+        })
+    }
+
+    fn disconnect(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn write_characteristic(
+        &mut self,
+        service: u128,
+        characteristic: u128,
+        data: &[u8],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sonde_pair::error::PairingError>> + '_>,
+    > {
+        let data = data.to_vec();
+        Box::pin(async move {
+            if service != sonde_pair::types::GATEWAY_SERVICE_UUID
+                || characteristic != sonde_pair::types::GATEWAY_COMMAND_UUID
+            {
+                return Err(sonde_pair::error::PairingError::ConnectionFailed(
+                    "unexpected GATT service/characteristic in e2e harness".into(),
+                ));
+            }
+            let mut window = self.window.lock().await;
+            // Refresh the registration window if it has expired, so slow CI
+            // environments don't cause nondeterministic test failures.
+            if !window.is_open() {
+                window.open(TEST_REG_WINDOW_SECS);
+            }
+            let response = sonde_gateway::ble_pairing::handle_ble_recv(
+                &data,
+                &self.identity,
+                &self.storage,
+                &mut window,
+                self.rf_channel,
+                None,
+            )
+            .await;
+            if let Some(resp) = response {
+                self.response_queue.lock().await.push_back(resp);
+                self.response_notify.notify_one();
+            }
+            Ok(())
+        })
+    }
+
+    fn read_indication(
+        &mut self,
+        service: u128,
+        characteristic: u128,
+        timeout_ms: u64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<u8>, sonde_pair::error::PairingError>> + '_,
+        >,
+    > {
+        Box::pin(async move {
+            if service != sonde_pair::types::GATEWAY_SERVICE_UUID
+                || characteristic != sonde_pair::types::GATEWAY_COMMAND_UUID
+            {
+                return Err(sonde_pair::error::PairingError::ConnectionFailed(
+                    "unexpected GATT service/characteristic in e2e harness".into(),
+                ));
+            }
+            let timeout_duration = Duration::from_millis(timeout_ms);
+
+            let wait_future = async {
+                loop {
+                    // Prepare the notified future *before* checking the queue
+                    // to avoid losing a wakeup that fires between the check
+                    // and the await.
+                    let notified = self.response_notify.notified();
+
+                    if let Some(response) = self.response_queue.lock().await.pop_front() {
+                        return response;
+                    }
+
+                    notified.await;
+                }
+            };
+
+            match tokio::time::timeout(timeout_duration, wait_future).await {
+                Ok(response) => Ok(response),
+                Err(_) => Err(sonde_pair::error::PairingError::IndicationTimeout),
+            }
+        })
+    }
 }

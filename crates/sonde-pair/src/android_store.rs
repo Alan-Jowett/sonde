@@ -192,58 +192,59 @@ impl PairingStore for AndroidPairingStore {
     }
 
     fn load_artifacts(&self) -> Result<Option<PairingArtifacts>, PairingError> {
-        self.vm.attach_current_thread(|env| {
-            let store = self.store.as_obj();
+        self.vm
+            .attach_current_thread(|env| {
+                let store = self.store.as_obj();
 
-            let gw_public_key = match get_bytes(env, store, KEY_GW_PUBLIC_KEY)? {
-                Some(b) => b,
-                None => return Ok(None),
-            };
-            let gateway_id = match get_bytes(env, store, KEY_GATEWAY_ID)? {
-                Some(b) => b,
-                None => return Ok(None),
-            };
-            let phone_psk = match get_bytes(env, store, KEY_PHONE_PSK)? {
-                Some(b) => b,
-                None => return Ok(None),
-            };
-            let phone_key_hint = get_int(env, store, KEY_PHONE_KEY_HINT)?;
-            if phone_key_hint == INT_ABSENT {
-                return Ok(None);
-            }
-            let rf_channel = get_int(env, store, KEY_RF_CHANNEL)?;
-            if rf_channel == INT_ABSENT {
-                return Ok(None);
-            }
-            let phone_label = get_string(env, store, KEY_PHONE_LABEL)?.unwrap_or_default();
+                let gw_public_key = match get_bytes(env, store, KEY_GW_PUBLIC_KEY)? {
+                    Some(b) => b,
+                    None => return Ok(None),
+                };
+                let gateway_id = match get_bytes(env, store, KEY_GATEWAY_ID)? {
+                    Some(b) => b,
+                    None => return Ok(None),
+                };
+                let phone_psk = match get_bytes(env, store, KEY_PHONE_PSK)? {
+                    Some(b) => b,
+                    None => return Ok(None),
+                };
+                let phone_key_hint = get_int(env, store, KEY_PHONE_KEY_HINT)?;
+                if phone_key_hint == INT_ABSENT {
+                    return Ok(None);
+                }
+                let rf_channel = get_int(env, store, KEY_RF_CHANNEL)?;
+                if rf_channel == INT_ABSENT {
+                    return Ok(None);
+                }
+                let phone_label = get_string(env, store, KEY_PHONE_LABEL)?.unwrap_or_default();
 
-            let gw_pk: [u8; 32] = gw_public_key.try_into().map_err(|_| {
-                PairingError::StoreLoadFailed("gw_public_key: expected 32 bytes".into())
-            })?;
-            let gw_id: [u8; 16] = gateway_id.try_into().map_err(|_| {
-                PairingError::StoreLoadFailed("gateway_id: expected 16 bytes".into())
-            })?;
-            let psk: [u8; 32] = phone_psk.try_into().map_err(|_| {
-                PairingError::StoreLoadFailed("phone_psk: expected 32 bytes".into())
-            })?;
+                let gw_pk: [u8; 32] = gw_public_key.try_into().map_err(|_| {
+                    PairingError::StoreLoadFailed("gw_public_key: expected 32 bytes".into())
+                })?;
+                let gw_id: [u8; 16] = gateway_id.try_into().map_err(|_| {
+                    PairingError::StoreLoadFailed("gateway_id: expected 16 bytes".into())
+                })?;
+                let psk: [u8; 32] = phone_psk.try_into().map_err(|_| {
+                    PairingError::StoreLoadFailed("phone_psk: expected 32 bytes".into())
+                })?;
 
-            Ok(Some(PairingArtifacts {
-                gateway_identity: GatewayIdentity {
-                    public_key: gw_pk,
-                    gateway_id: gw_id,
-                },
-                phone_psk: Zeroizing::new(psk),
-                phone_key_hint: phone_key_hint as u16,
-                rf_channel: rf_channel as u8,
-                phone_label,
-            }))
-        })
-        .map_err(|e| match e {
-            PairingError::JniError(msg) => {
-                PairingError::StoreLoadFailed(format!("attach_current_thread: {msg}"))
-            }
-            other => other,
-        })
+                Ok(Some(PairingArtifacts {
+                    gateway_identity: GatewayIdentity {
+                        public_key: gw_pk,
+                        gateway_id: gw_id,
+                    },
+                    phone_psk: Zeroizing::new(psk),
+                    phone_key_hint: phone_key_hint as u16,
+                    rf_channel: rf_channel as u8,
+                    phone_label,
+                }))
+            })
+            .map_err(|e| match e {
+                PairingError::JniError(msg) => {
+                    PairingError::StoreLoadFailed(format!("attach_current_thread: {msg}"))
+                }
+                other => other,
+            })
     }
 
     fn clear(&mut self) -> Result<(), PairingError> {

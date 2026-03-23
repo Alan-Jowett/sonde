@@ -89,11 +89,13 @@ where
 
     // 1b. RNG health check (ND-0304 AC3).
     //     Abort early if the hardware RNG fails its self-test.
+    //     Do not call determine_wake_reason() here — it consumes the
+    //     early-wake flag via take_early_wake_flag().  On RNG failure we
+    //     must preserve that flag so the next wake cycle can honour it.
     if !rng.health_check() {
         let (base_interval_s, _) = storage.read_schedule();
-        let wake_reason = determine_wake_reason(storage);
         return WakeCycleOutcome::Sleep {
-            seconds: SleepManager::new(base_interval_s, wake_reason).effective_sleep_s(),
+            seconds: base_interval_s,
         };
     }
 

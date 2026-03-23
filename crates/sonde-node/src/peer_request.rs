@@ -746,7 +746,7 @@ mod tests {
         // Each elapsed_ms() call advances 500ms; after ~21 calls → 10 s timeout
         let clock = MockClock::new(500);
 
-        // Build a valid PEER_ACK then corrupt the HMAC (last 32 bytes).
+        // Build a valid PEER_ACK then corrupt the HMAC by flipping the last byte.
         let mut ack_frame = build_peer_ack(&identity, nonce, &payload, &hmac);
         let len = ack_frame.len();
         ack_frame[len - 1] ^= 0xFF;

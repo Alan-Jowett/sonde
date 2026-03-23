@@ -419,7 +419,7 @@ mod tests {
         let mut interp = SondeBpfInterpreter::new();
         interp.load(&prog, &[], &[]).unwrap();
 
-        let ctx = crate::bpf_helpers::SondeContext {
+        let mut ctx = crate::bpf_helpers::SondeContext {
             timestamp: 1710000000000,
             battery_mv: 3300,
             firmware_abi_version: 1,
@@ -427,7 +427,7 @@ mod tests {
             _padding: [0; 3],
         };
         let ctx_before = ctx;
-        let ctx_ptr = &ctx as *const _ as u64;
+        let ctx_ptr = &mut ctx as *mut _ as u64;
 
         // Execute — must succeed (program continues past the write).
         let result = interp.execute(ctx_ptr, 100_000).unwrap();

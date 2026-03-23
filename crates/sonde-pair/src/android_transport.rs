@@ -185,6 +185,12 @@ impl AndroidBleTransport {
             .map_err(|e| jni_exception_or(env, "stopScan", e))?;
             Ok(())
         })
+        .map_err(|e| match e {
+            PairingError::JniError(msg) => {
+                PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+            }
+            other => other,
+        })
     }
 }
 
@@ -486,7 +492,7 @@ impl BleTransport for AndroidBleTransport {
                         .map_err(jni_err)?;
 
                     let bytes = env
-                        // SAFETY: `readCharacteristic` returns `byte[]`, so the
+                        // SAFETY: `readIndication` returns `byte[]`, so the
                         // JObject is a valid JByteArray local ref in this env.
                         .convert_byte_array(unsafe { JByteArray::from_raw(env, result.into_raw()) })
                         .map_err(jni_err)?;

@@ -250,7 +250,7 @@ impl PairingStore for AndroidPairingStore {
     fn clear(&mut self) -> Result<(), PairingError> {
         self.vm.attach_current_thread(|env| {
             env.call_method(self.store.as_obj(), jni_str!("clear"), jni_sig!("()V"), &[])
-                .map_err(|e| store_jni_exception(env, "clear", e, false))?;
+                .map_err(|e| store_jni_exception(env, "clear", e, StoreOp::Save))?;
             debug!("pairing store cleared");
             Ok(())
         })
@@ -317,7 +317,7 @@ fn put_bytes(
             JValue::Object(val_arr.as_ref()),
         ],
     )
-    .map_err(|e| store_jni_exception(env, "putBytes", e, false))?;
+    .map_err(|e| store_jni_exception(env, "putBytes", e, StoreOp::Save))?;
     Ok(())
 }
 
@@ -334,7 +334,7 @@ fn get_bytes(
             jni_sig!("(Ljava/lang/String;)[B"),
             &[JValue::Object(key_jstr.as_ref())],
         )
-        .map_err(|e| store_jni_exception(env, "getBytes", e, true))?
+        .map_err(|e| store_jni_exception(env, "getBytes", e, StoreOp::Load))?
         .l()
         .map_err(store_load_jni_err)?;
 
@@ -363,7 +363,7 @@ fn put_int(
         jni_sig!("(Ljava/lang/String;I)V"),
         &[JValue::Object(key_jstr.as_ref()), JValue::Int(value)],
     )
-    .map_err(|e| store_jni_exception(env, "putInt", e, false))?;
+    .map_err(|e| store_jni_exception(env, "putInt", e, StoreOp::Save))?;
     Ok(())
 }
 
@@ -376,7 +376,7 @@ fn get_int(env: &mut Env<'_>, store: &JObject<'_>, key: &str) -> Result<i32, Pai
             jni_sig!("(Ljava/lang/String;I)I"),
             &[JValue::Object(key_jstr.as_ref()), JValue::Int(INT_ABSENT)],
         )
-        .map_err(|e| store_jni_exception(env, "getInt", e, true))?
+        .map_err(|e| store_jni_exception(env, "getInt", e, StoreOp::Load))?
         .i()
         .map_err(store_load_jni_err)?;
     Ok(val)
@@ -399,7 +399,7 @@ fn put_string(
             JValue::Object(val_jstr.as_ref()),
         ],
     )
-    .map_err(|e| store_jni_exception(env, "putString", e, false))?;
+    .map_err(|e| store_jni_exception(env, "putString", e, StoreOp::Save))?;
     Ok(())
 }
 
@@ -416,7 +416,7 @@ fn get_string(
             jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
             &[JValue::Object(key_jstr.as_ref())],
         )
-        .map_err(|e| store_jni_exception(env, "getString", e, true))?
+        .map_err(|e| store_jni_exception(env, "getString", e, StoreOp::Load))?
         .l()
         .map_err(store_load_jni_err)?;
 
@@ -470,11 +470,16 @@ fn store_load_jni_err(e: jni::errors::Error) -> PairingError {
     PairingError::StoreLoadFailed(format!("JNI error: {e}"))
 }
 
+enum StoreOp {
+    Load,
+    Save,
+}
+
 fn store_jni_exception(
     env: &mut Env<'_>,
     context: &str,
     err: jni::errors::Error,
-    for_load: bool,
+    op: StoreOp,
 ) -> PairingError {
     let detail = match err {
         jni::errors::Error::JavaException => {
@@ -483,10 +488,9 @@ fn store_jni_exception(
         other => other.to_string(),
     };
     let msg = format!("{context}: {detail}");
-    if for_load {
-        PairingError::StoreLoadFailed(msg)
-    } else {
-        PairingError::StoreSaveFailed(msg)
+    match op {
+        StoreOp::Load => PairingError::StoreLoadFailed(msg),
+        StoreOp::Save => PairingError::StoreSaveFailed(msg),
     }
 }
 

@@ -552,13 +552,16 @@ mod tests {
     fn t_n940_payload_len_exceeds_remaining_data() {
         // T-N940: payload_len field exceeds the remaining data in the buffer.
         // The parser must reject the message without reading past the end.
-        let mut body = vec![0u8; 37 + 4]; // 37 header + 4 actual payload bytes
+        let claimed_payload: usize = 10; // must be <= PEER_PAYLOAD_MAX_LEN
+        assert!(claimed_payload <= PEER_PAYLOAD_MAX_LEN);
+        let actual_data_bytes = 4;
+        let mut body = vec![0u8; NODE_PROVISION_MIN_LEN + actual_data_bytes];
         body[2..34].fill(0x42); // psk
         body[34] = 1; // valid channel
-                      // Claim 100 bytes of payload, but only 4 follow.
-        body[35] = 0x00;
-        body[36] = 100;
-        body[37..41].fill(0xAA); // 4 bytes of actual data
+        // Claim `claimed_payload` bytes of payload, but only `actual_data_bytes` follow.
+        body[35] = (claimed_payload >> 8) as u8;
+        body[36] = claimed_payload as u8;
+        body[NODE_PROVISION_MIN_LEN..NODE_PROVISION_MIN_LEN + actual_data_bytes].fill(0xAA);
 
         let err = parse_node_provision(&body).unwrap_err();
         assert_eq!(err, "encrypted_payload truncated");

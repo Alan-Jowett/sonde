@@ -433,7 +433,7 @@ mod tests {
         let result = interp.execute(ctx_ptr, 100_000).unwrap();
 
         // The write was silently ignored so the read returns the original
-        // first byte of the context (low byte of the copied timestamp).
+        // first byte of the context in memory (native-endian timestamp byte).
         let expected_first_byte = ctx_before.timestamp.to_ne_bytes()[0] as u64;
         assert_eq!(result, expected_first_byte);
 

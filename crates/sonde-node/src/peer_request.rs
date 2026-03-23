@@ -581,8 +581,10 @@ mod tests {
 
         let mut ack_frame = build_peer_ack(&identity, nonce, &payload, &hmac);
         // Tamper with the last byte (HMAC)
-        let len = ack_frame.len();
-        ack_frame[len - 1] ^= 0xFF;
+        let last = ack_frame
+            .last_mut()
+            .expect("build_peer_ack() must not return an empty PEER_ACK frame");
+        *last ^= 0xFF;
 
         let result = verify_peer_ack(&ack_frame, &identity, nonce, &payload, &hmac);
         assert!(result.is_err());
@@ -748,8 +750,10 @@ mod tests {
 
         // Build a valid PEER_ACK then corrupt the HMAC by flipping the last byte.
         let mut ack_frame = build_peer_ack(&identity, nonce, &payload, &hmac);
-        let len = ack_frame.len();
-        ack_frame[len - 1] ^= 0xFF;
+        let last = ack_frame
+            .last_mut()
+            .expect("build_peer_ack() must not return an empty PEER_ACK frame");
+        *last ^= 0xFF;
 
         let mut transport = MockTransport::with_responses(vec![
             Some(ack_frame), // corrupted HMAC

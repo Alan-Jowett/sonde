@@ -2015,8 +2015,6 @@ fn test_p090_command_type_derived_from_payload() {
 // This test creates a tracking provider that asserts verify() is called.
 // ---------------------------------------------------------------------------
 
-use std::cell::Cell;
-
 struct TrackingHmac {
     verify_called: Cell<bool>,
 }
@@ -2386,90 +2384,4 @@ fn test_p049c() {
         );
 
     }
-}
-
-// ---------------------------------------------------------------------------
-// T-P066  §5.1 HMAC verification dispatch behavior
-//
-// The security invariant is that verify_frame() delegates HMAC checks to
-// HmacProvider::verify(), rather than computing an HMAC locally and
-// comparing with ==. This ensures any constant-time behavior or other
-// security properties implemented by the provider are preserved.
-//
-// This test creates a tracking provider that asserts verify() is called.
-// ---------------------------------------------------------------------------
-
-struct TrackingHmac {
-    verify_called: Cell<bool>,
-}
-
-impl TrackingHmac {
-    fn new() -> Self {
-        Self {
-            verify_called: Cell::new(false),
-        }
-    }
-}
-
-impl HmacProvider for TrackingHmac {
-    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
-        SoftwareHmac.compute(key, data)
-    }
-
-    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-        self.verify_called.set(true);
-        SoftwareHmac.verify(key, data, expected)
-    }
-}
-
-#[test]
-fn test_p066() {
-    let psk = [0x42u8; 32];
-    let hdr = FrameHeader {
-        key_hint: 0x1234,
-        msg_type: MSG_WAKE,
-        nonce: 0xDEAD_BEEF,
-    };
-    let msg = NodeMessage::Wake {
-        firmware_abi_version: 1,
-        program_hash: vec![0xAA; 32],
-        battery_mv: 3300,
-    };
-    let cbor = msg.encode().unwrap();
-
-    let tracker = TrackingHmac::new();
-    let raw = encode_frame(&hdr, &cbor, &psk, &tracker).unwrap();
-    let frame = decode_frame(&raw).unwrap();
-
-    // Reset tracker before verify_frame call.
-    tracker.verify_called.set(false);
-    let valid = verify_frame(&frame, &psk, &tracker);
-    assert!(valid, "HMAC should verify with correct key");
-    assert!(
-        tracker.verify_called.get(),
-        "verify_frame must call HmacProvider::verify (constant-time path), not compute + =="
-    );
-
-    // Also verify with wrong key — verify() must still be called.
-    let wrong_psk = [0xFFu8; 32];
-    tracker.verify_called.set(false);
-    let invalid = verify_frame(&frame, &wrong_psk, &tracker);
-    assert!(!invalid, "HMAC should fail with wrong key");
-    assert!(
-        tracker.verify_called.get(),
-        "verify_frame must call HmacProvider::verify even for invalid HMACs"
-    );
-
-    // Tampered frame — mismatch at first byte.
-    let mut tampered = raw.clone();
-    let hmac_offset = tampered.len() - HMAC_SIZE;
-    tampered[hmac_offset] ^= 0xFF;
-    let tampered_frame = decode_frame(&tampered).unwrap();
-    tracker.verify_called.set(false);
-    let tampered_result = verify_frame(&tampered_frame, &psk, &tracker);
-    assert!(!tampered_result, "HMAC should fail with tampered tag");
-    assert!(
-        tracker.verify_called.get(),
-        "verify_frame must call HmacProvider::verify for tampered tags"
-    );
 }

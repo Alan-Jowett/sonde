@@ -1667,7 +1667,8 @@ async fn t_e2e_063a_stale_timestamp_discarded() {
         .as_secs();
     let stale_timestamp = now
         .checked_sub(86401)
-        .expect("system time must be at least 86401s after UNIX_EPOCH for this test") as i64;
+        .expect("system time must be at least 86401s after UNIX_EPOCH for this test")
+        as i64;
 
     let encrypted_payload = build_encrypted_payload_with_timestamp(
         identity.public_key(),

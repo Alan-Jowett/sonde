@@ -4061,10 +4061,7 @@ mod tests {
     /// T-N927: When the hardware RNG health check fails, the firmware
     /// aborts immediately — no WAKE frame is transmitted.
     #[test]
-    fn test_stack_violation_graceful() {
-        // ND-0605 AC4: A BPF program that writes beyond the 512-byte
-        // per-frame stack boundary is terminated with a stack violation.
-        // The node must still sleep normally (no crash).
+    fn t_n927_rng_health_check_failure_aborts_wake_cycle() {
         let psk = [0x65; 32];
         let key_hint = 1u16;
 

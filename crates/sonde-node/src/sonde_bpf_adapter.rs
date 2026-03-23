@@ -422,10 +422,24 @@ mod tests {
         prog.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
         // A verifier improvement may legitimately reject this program at
-        // load time. Treat that as an acceptable outcome.
+        // load time. Treat that as an acceptable outcome, but require it to
+        // fail with an appropriate "invalid/unsafe program" error.
         let load_result = interp.load(&prog, &[], &[]);
-        if load_result.is_err() {
-            return;
+        match load_result {
+            Ok(()) => {
+                // Program loaded — verify it's rejected at execution time.
+            }
+            Err(err) => {
+                assert!(
+                    matches!(
+                        err,
+                        BpfError::InvalidBytecode(_) | BpfError::LoadError(_)
+                    ),
+                    "context-write program must be rejected at load() as invalid/unsafe, got: {err:?}"
+                );
+                // Load-time rejection is acceptable; the context is trivially unchanged.
+                return;
+            }
         }
 
         let ctx = SondeContext {
@@ -480,19 +494,27 @@ mod tests {
         prog.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
         // A verifier improvement may legitimately reject this program at
-        // load time. Treat that as an acceptable outcome.
+        // load time. Treat that as an acceptable outcome, but in that case
+        // we still require it to fail with an appropriate "invalid/unsafe
+        // program" error.
         let load_result = interp.load(&prog, &[], &[]);
-        if load_result.is_err() {
-            return;
+        match load_result {
+            Ok(()) => {
+                let result = interp.execute(0, 100_000);
+                assert!(
+                    matches!(
+                        result,
+                        Err(BpfError::RuntimeError(_) | BpfError::InvalidBytecode(_))
+                    ),
+                    "stack overflow must terminate the program with a violation error, got: {result:?}"
+                );
+            }
+            Err(err) => {
+                assert!(
+                    matches!(err, BpfError::InvalidBytecode(_)),
+                    "stack overflow program must be rejected at load() as invalid/unsafe, got: {err:?}"
+                );
+            }
         }
-
-        let result = interp.execute(0, 100_000);
-        assert!(
-            matches!(
-                result,
-                Err(BpfError::RuntimeError(_) | BpfError::InvalidBytecode(_))
-            ),
-            "stack overflow must terminate the program with a violation error, got: {result:?}"
-        );
     }
 }

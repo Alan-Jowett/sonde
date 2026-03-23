@@ -175,13 +175,5 @@ fn main() {
             info!("unexpected unpaired state — rebooting");
             sleep_ctrl.reboot();
         }
-        WakeCycleOutcome::RngHealthCheckFailed => {
-            // Hardware RNG is degraded — nonces would be predictable.
-            // Reboot in hopes the RNG recovers. If it fails persistently,
-            // the node will reboot-loop, which is safer than transmitting
-            // predictable nonces (ND-0304 AC3).
-            warn!("hardware RNG health check failed — rebooting");
-            sleep_ctrl.reboot();
-        }
     }
 }

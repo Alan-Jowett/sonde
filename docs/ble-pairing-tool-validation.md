@@ -233,7 +233,7 @@ TestNode {
 1. Connect the pairing tool to a modem (or test peripheral) configured for LESC with `DisplayYesNo` I/O capability.
 2. Initiate Phase 1 gateway pairing from the pairing tool UI.
 3. Observe the platform pairing UX and/or system logs:
-   - Assert: the platform initiates LESC bonding (e.g., Android `createBond()` or equivalent).
+   - Assert: LESC pairing is established — either the platform initiates bonding (e.g., Android `createBond()`) or the modem's server-initiated SMP Security Request triggers the OS pairing dialog (e.g. WinRT, CoreBluetooth).
    - Assert: the pairing method negotiated is Numeric Comparison (a 6-digit comparison dialog is shown, not an implicit "Just Works" pairing).
 4. Accept the Numeric Comparison dialog on both sides (host and peripheral, as applicable).
 5. Assert: pairing completes successfully (bond is created at the OS level) and subsequent GATT operations from the pairing tool proceed without additional pairing prompts.

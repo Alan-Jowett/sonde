@@ -148,7 +148,7 @@ BLE connections to the modem MUST use **LE Secure Connections (LESC) with Numeri
 **Acceptance criteria:**
 
 1. **Precondition:** the modem is configured for LESC with `DisplayYesNo` I/O capability (see modem requirements).
-2. The phone app triggers `createBond()` (Android) or equivalent platform API to initiate LESC pairing.
+2. The phone app triggers `createBond()` (Android) or equivalent platform API to initiate LESC pairing, **or** responds to a server-initiated SMP Security Request from the modem (MD-0404 criterion 5). On platforms where the BLE stack handles server-initiated pairing transparently (e.g. WinRT, CoreBluetooth), the app need not call a pairing API explicitly.
 3. A Numeric Comparison dialog is presented to the user for confirmation.
 4. If the user rejects the comparison or the pairing mode degrades to Just Works, the connection is terminated.
 

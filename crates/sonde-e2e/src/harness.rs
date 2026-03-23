@@ -1567,10 +1567,16 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
 
             let wait_future = async {
                 loop {
+                    // Prepare the notified future *before* checking the queue
+                    // to avoid losing a wakeup that fires between the check
+                    // and the await.
+                    let notified = self.response_notify.notified();
+
                     if let Some(response) = self.response_queue.lock().await.pop_front() {
                         return response;
                     }
-                    self.response_notify.notified().await;
+
+                    notified.await;
                 }
             };
 

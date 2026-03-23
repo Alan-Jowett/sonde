@@ -1647,9 +1647,9 @@ fn test_p064() {
 #[test]
 fn test_p065() {
     // Protocol §7.3: The response frame echoes the request nonce so the
-    // receiver can correlate request/response pairs.  This test verifies
+    // receiver can correlate request/response pairs. This test exercises
     // round-trip fidelity of the nonce field through encode → decode and
-    // also demonstrates that a mismatched nonce is detectable.
+    // illustrates nonce-based correlation of a WAKE/COMMAND pair.
     let psk = [0x42u8; 32];
     let wake_nonce: u64 = 0x1234_5678_90AB_CDEF;
 
@@ -1705,8 +1705,11 @@ fn test_p065() {
     let _ = NodeMessage::decode(decoded_wake.header.msg_type, &decoded_wake.payload).unwrap();
     let _ = GatewayMessage::decode(decoded_cmd.header.msg_type, &decoded_cmd.payload).unwrap();
 
-    // 5-6. Negative case: a COMMAND with a different nonce must be
-    // detectable by comparing it to the original WAKE nonce.
+    // 5-6. Negative case (header round-trip / correlation example only):
+    // a COMMAND with a different nonce will decode with a nonce value that
+    // differs from the original WAKE nonce, so a caller could detect a
+    // mismatch by comparison. This test does not assert any protocol-level
+    // validator or state-machine rejection behavior.
     let bad_cmd_frame = encode_frame(
         &FrameHeader {
             key_hint: 0x0001,

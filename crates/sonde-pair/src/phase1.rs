@@ -1574,10 +1574,26 @@ mod tests {
                 .unwrap();
 
             // Extract challenges from REQUEST_GW_INFO writes
+            assert!(
+                !transport1.written.is_empty(),
+                "transport1 must have at least one written frame"
+            );
+            assert!(
+                !transport2.written.is_empty(),
+                "transport2 must have at least one written frame"
+            );
             let (_, _, data1) = &transport1.written[0];
             let (_, _, data2) = &transport2.written[0];
-            let (_, challenge_payload1) = parse_envelope(data1).unwrap();
-            let (_, challenge_payload2) = parse_envelope(data2).unwrap();
+            let (msg_type1, challenge_payload1) = parse_envelope(data1).unwrap();
+            let (msg_type2, challenge_payload2) = parse_envelope(data2).unwrap();
+            assert_eq!(
+                msg_type1, REQUEST_GW_INFO,
+                "first frame from transport1 must be REQUEST_GW_INFO"
+            );
+            assert_eq!(
+                msg_type2, REQUEST_GW_INFO,
+                "first frame from transport2 must be REQUEST_GW_INFO"
+            );
 
             assert_ne!(
                 challenge_payload1, challenge_payload2,

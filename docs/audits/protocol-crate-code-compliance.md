@@ -208,8 +208,9 @@ depend on `alloc`.  Add `features = ["alloc"]` to the ciborium dependency.
 | **Severity** | Low |
 | **Category** | D9 — Undocumented Behavior |
 | **Spec ref** | `protocol-crate-design.md` §8 |
-| **Code location** | `crates/sonde-protocol/src/error.rs:10` |
+| **Code location** | `crates/sonde-protocol/src/error.rs` (pre-#375) |
 | **Confidence** | Definite |
+| **Status** | **Resolved** — removed in #375 |
 
 **Description:**
 The `EncodeError` enum contains a `CommandTypeMismatch` variant:
@@ -237,6 +238,10 @@ Low.  The variant appears unused in the current codebase (the
 `command_type` is derived from `CommandPayload` automatically, so a
 mismatch cannot occur with the current API).  Its presence adds API
 surface without spec backing.
+
+**Resolution:** The `CommandTypeMismatch` variant was removed. Since
+`command_type` is derived from `CommandPayload::command_type()`, a
+mismatch is structurally impossible and the variant was dead code.
 
 **Remediation:**
 Either add the variant to the design spec with rationale, or remove it
@@ -548,14 +553,14 @@ Update the design spec §7.1 to include `Copy` in the derive list.
 
 | Undocumented behavior | Finding |
 |---|---|
-| `EncodeError::CommandTypeMismatch` | F-003 |
+| ~~`EncodeError::CommandTypeMismatch`~~ | F-003 (resolved) |
 | `DecodeError::InvalidCommandType` | F-004 |
 | `MSG_PEER_REQUEST` / `MSG_PEER_ACK` constants | F-005 |
 | `modem` module | F-008 |
 | `ble_envelope` module | F-009 |
 | `MapDef` derives `Copy` | F-011 |
 
-**Undocumented code behaviors: 6** (1 Medium, 5 Low).
+**Undocumented code behaviors (open): 5** (1 Medium, 4 Low). **Resolved:** 1.
 
 **Constraint compliance:**
 
@@ -596,7 +601,7 @@ Update the design spec §7.1 to include `Copy` in the derive list.
 | P0 | F-002 | Add `alloc` feature to `Cargo.toml`, gate `extern crate alloc`, fix ciborium features | Small |
 | P1 | F-005 | Document `PEER_REQUEST`/`PEER_ACK` in `protocol.md` or move to separate module | Medium |
 | P1 | F-010 | Reorder COMMAND CBOR keys to ascending (4, 5, 13, 14) | Small |
-| P2 | F-003 | Remove unused `CommandTypeMismatch` or add to design spec | Trivial |
+| P2 | F-003 | ~~Remove unused `CommandTypeMismatch`~~ — **Resolved** (#375) | Trivial |
 | P2 | F-004 | Add `InvalidCommandType` to design spec §8 | Trivial |
 | P2 | F-006 | Update design spec §7.2 return type to `Result` | Trivial |
 | P2 | F-007 | Update design spec §9 to match code's check order | Trivial |
@@ -635,9 +640,10 @@ Update the design spec §7.1 to include `Copy` in the derive list.
    *all* protocol messages (not just program images)?  If so, F-010
    should be P0.
 
-3. **Q3:** The `EncodeError::CommandTypeMismatch` variant appears unused.
-   Was it intended for a future API that accepts caller-supplied
-   `command_type` values, or is it dead code?
+3. **Q3:** ~~The `EncodeError::CommandTypeMismatch` variant appears unused.~~
+   **Resolved:** The variant was dead code and has been removed (#375).
+   Since `command_type` is derived from `CommandPayload::command_type()`,
+   a mismatch is structurally impossible.
 
 4. **Q4:** Should the `chunk_count(0, 0)` edge case be defined
    authoritatively?  The code's behavior (`None`) is safer, but the

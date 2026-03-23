@@ -7,7 +7,6 @@ use core::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum EncodeError {
     FrameTooLarge,
-    CommandTypeMismatch { command_type: u8, expected: u8 },
     CborError(String),
 }
 
@@ -15,14 +14,6 @@ impl fmt::Display for EncodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EncodeError::FrameTooLarge => write!(f, "frame exceeds maximum size"),
-            EncodeError::CommandTypeMismatch {
-                command_type,
-                expected,
-            } => write!(
-                f,
-                "command_type 0x{:02x} does not match payload (expected 0x{:02x})",
-                command_type, expected
-            ),
             EncodeError::CborError(msg) => write!(f, "CBOR encoding error: {}", msg),
         }
     }

@@ -3550,7 +3550,10 @@ mod tests {
         assert_eq!(transport.outbound.len(), 1);
         // BPF must have executed — confirms the scenario truly tested
         // "during BPF execution" per ND-0200.
-        assert!(interp.executed, "BPF must have executed with resident program");
+        assert!(
+            interp.executed,
+            "BPF must have executed with resident program"
+        );
     }
 
     // ===================================================================

@@ -1813,14 +1813,12 @@ fn test_p066() {
     );
 }
 
-// T-P067: Multiple APP_DATA with incrementing sequences.
+// T-P067: Multiple APP_DATA nonce round-trip fidelity.
 #[test]
 fn test_p067() {
     // This test verifies that the codec faithfully round-trips distinct
-    // nonce values across multiple frames (sequence enforcement is the
-    // responsibility of the node/gateway state machines, not the codec).
-    // The assertion below sanity-checks nonce round-trip fidelity based
-    // on test construction, not codec-enforced sequencing.
+    // nonce values across multiple frames. Sequence enforcement is the
+    // responsibility of the node/gateway state machines, not the codec.
     let psk = [0x42u8; 32];
 
     let payloads: Vec<Vec<u8>> = vec![
@@ -1843,7 +1841,6 @@ fn test_p067() {
         frames.push(frame);
     }
 
-    let mut prev_nonce = 0u64;
     for (i, raw) in frames.iter().enumerate() {
         let decoded = decode_frame(raw).unwrap();
         assert!(verify_frame(&decoded, &psk, &SoftwareHmac));
@@ -1854,15 +1851,6 @@ fn test_p067() {
             "APP_DATA[{}] nonce mismatch",
             i
         );
-        // Given the test construction (nonce = i + 1), each decoded nonce should
-        // be strictly greater than the previous; this sanity-checks nonce
-        // round-trip across multiple frames, not codec-enforced sequencing.
-        assert!(
-            decoded.header.nonce > prev_nonce,
-            "APP_DATA[{i}] decoded nonce {} should be strictly greater than previous {prev_nonce} based on test construction",
-            decoded.header.nonce
-        );
-        prev_nonce = decoded.header.nonce;
 
         let msg = NodeMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
         match msg {

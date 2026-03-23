@@ -12,6 +12,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use tracing::debug;
+
 use crate::error::PairingError;
 use crate::transport::BleTransport;
 use crate::types::{ScannedDevice, GATEWAY_SERVICE_UUID, NODE_SERVICE_UUID};
@@ -134,9 +136,18 @@ impl<T: BleTransport> DeviceScanner<T> {
         let now = Instant::now();
         let discovered = self.transport.get_discovered_devices().await?;
 
+        debug!("refresh: discovered {} devices", discovered.len());
         for device in discovered {
             if is_target_device(&device) {
+                debug!(name = %device.name, addr = ?device.address, "target device found");
                 self.known.insert(device.address, (device, now));
+            } else {
+                debug!(
+                    name = %device.name,
+                    addr = ?device.address,
+                    uuids = ?device.service_uuids,
+                    "device filtered out (no target UUID)"
+                );
             }
         }
 

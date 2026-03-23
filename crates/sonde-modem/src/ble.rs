@@ -360,7 +360,13 @@ impl EspBleDriver {
 
         let gateway_cmd_char = ble_service.lock().create_characteristic(
             GATEWAY_COMMAND_UUID,
-            NimbleProperties::WRITE | NimbleProperties::INDICATE,
+            // Require an authenticated, encrypted link for writes so that
+            // the OS BLE stack automatically triggers LESC Numeric Comparison
+            // pairing before the first GATT write (MD-0404).
+            NimbleProperties::WRITE
+                | NimbleProperties::WRITE_ENC
+                | NimbleProperties::WRITE_AUTHEN
+                | NimbleProperties::INDICATE,
         );
 
         // GATT write handler: forward to gateway as BLE_RECV (MD-0409).

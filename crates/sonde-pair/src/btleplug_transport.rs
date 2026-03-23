@@ -169,14 +169,15 @@ impl BleTransport for BtleplugTransport {
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         let uuids: Vec<Uuid> = service_uuids.iter().map(|u| to_uuid(*u)).collect();
         Box::pin(async move {
-            let filter = ScanFilter {
-                services: uuids.clone(),
-            };
+            // Use an empty ScanFilter — WinRT's advertisement watcher does not
+            // reliably match service UUIDs embedded in 16-bit AD structures.
+            // Filtering is done in DeviceScanner::refresh() instead.
+            let filter = ScanFilter::default();
             self.adapter
                 .start_scan(filter)
                 .await
                 .map_err(|e| PairingError::ConnectionFailed(format!("scan start failed: {e}")))?;
-            debug!(services = ?uuids, "BLE scan started");
+            debug!(services = ?uuids, "BLE scan started (filter applied in discovery layer)");
             Ok(())
         })
     }
@@ -201,13 +202,28 @@ impl BleTransport for BtleplugTransport {
             })?;
 
             let mut devices = Vec::new();
+            debug!("enumerating {} peripherals from btleplug", peripherals.len());
             for p in &peripherals {
                 let props = match p.properties().await {
                     Ok(Some(props)) => props,
-                    _ => continue,
+                    Ok(None) => {
+                        debug!("peripheral {:?}: properties returned None", p.address());
+                        continue;
+                    }
+                    Err(e) => {
+                        debug!("peripheral {:?}: properties error: {e}", p.address());
+                        continue;
+                    }
                 };
                 let address = p.address().into_inner();
                 let service_uuids: Vec<u128> = props.services.iter().map(|u| u.as_u128()).collect();
+                debug!(
+                    name = ?props.local_name,
+                    addr = ?address,
+                    services = ?props.services,
+                    rssi = ?props.rssi,
+                    "discovered peripheral"
+                );
 
                 devices.push(ScannedDevice {
                     name: props.local_name.unwrap_or_default(),
@@ -235,9 +251,27 @@ impl BleTransport for BtleplugTransport {
             let target_addr = BDAddr::from(addr);
 
             // Locate the peripheral among previously discovered devices.
-            let peripherals = self.adapter.peripherals().await.map_err(|e| {
+            // If the adapter has no cached peripherals (e.g. a freshly
+            // created transport), run a short scan first so WinRT populates
+            // its internal device list.
+            let mut peripherals = self.adapter.peripherals().await.map_err(|e| {
                 PairingError::ConnectionFailed(format!("failed to list peripherals: {e}"))
             })?;
+
+            if !peripherals.iter().any(|p| p.address() == target_addr) {
+                debug!("target not in cached peripherals, running short scan");
+                self.adapter
+                    .start_scan(ScanFilter::default())
+                    .await
+                    .map_err(|e| {
+                        PairingError::ConnectionFailed(format!("pre-connect scan failed: {e}"))
+                    })?;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                self.adapter.stop_scan().await.ok();
+                peripherals = self.adapter.peripherals().await.map_err(|e| {
+                    PairingError::ConnectionFailed(format!("failed to list peripherals: {e}"))
+                })?;
+            }
 
             let peripheral = peripherals
                 .into_iter()
@@ -375,7 +409,10 @@ impl BleTransport for BtleplugTransport {
     /// Report `Unknown` so that `enforce_lesc()` rejects the connection
     /// per PT-0904 rather than silently assuming OS enforcement.
     fn pairing_method(&self) -> Option<PairingMethod> {
-        Some(PairingMethod::Unknown)
+        // btleplug delegates pairing to the OS BLE stack (WinRT / BlueZ /
+        // CoreBluetooth).  It does not expose which pairing method was used,
+        // so we return `None` to indicate OS-enforced security (PT-0904).
+        None
     }
 }
 

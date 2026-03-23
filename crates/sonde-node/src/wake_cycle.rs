@@ -4115,6 +4115,10 @@ mod tests {
     /// - bytecode extraction,
     /// - map allocation and sizes, and
     /// - that the map pointer array is forwarded to `interpreter.load()`.
+    ///
+    /// Note: this test uses a simple `exit` bytecode and does not exercise
+    /// LDDW pseudo-map-reference relocation. It validates map decoding,
+    /// allocation, and pointer forwarding only.
     #[test]
     fn test_program_image_decoding_with_maps() {
         let psk = [0x42u8; 32];
@@ -4153,15 +4157,16 @@ mod tests {
         let chunk_size = 64u32;
         let chunk_count =
             sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
-        let starting_seq = 100u64;
+        const STARTING_SEQ: u64 = 100;
+        const TIMESTAMP_MS: u64 = 1_710_000_000_000;
 
         // Queue COMMAND with UpdateProgram
         let command_frame = build_command_response(
             &psk,
             key_hint,
             1,
-            starting_seq,
-            1710000000000,
+            STARTING_SEQ,
+            TIMESTAMP_MS,
             CommandPayload::UpdateProgram {
                 program_hash: image_hash.to_vec(),
                 program_size: image_cbor.len() as u32,
@@ -4176,7 +4181,7 @@ mod tests {
             let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
                 .unwrap()
                 .to_vec();
-            let seq = starting_seq + i as u64;
+            let seq = STARTING_SEQ + i as u64;
             let chunk_frame = build_chunk_response(&psk, key_hint, seq, i, &chunk_data);
             transport.queue_response(Some(chunk_frame));
         }
@@ -4266,22 +4271,26 @@ mod tests {
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
 
-        // Oversized maps: 2 maps × 5 entries × (4 + 1024) = 10_280 bytes
+        // Oversized maps: 2 maps × 5 entries × (key_size + value_size) per entry
+        const MAP_KEY_SIZE: u32 = 4;
+        const MAP_VALUE_SIZE: u32 = 1024;
+        const MAP_MAX_ENTRIES: u32 = 5;
+        // Total: 2 × 5 × (4 + 1024) = 10_280 bytes
         // Budget is 4096 bytes → must be rejected.
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![
                 sonde_protocol::MapDef {
                     map_type: 1,
-                    key_size: 4,
-                    value_size: 1024,
-                    max_entries: 5,
+                    key_size: MAP_KEY_SIZE,
+                    value_size: MAP_VALUE_SIZE,
+                    max_entries: MAP_MAX_ENTRIES,
                 },
                 sonde_protocol::MapDef {
                     map_type: 1,
-                    key_size: 4,
-                    value_size: 1024,
-                    max_entries: 5,
+                    key_size: MAP_KEY_SIZE,
+                    value_size: MAP_VALUE_SIZE,
+                    max_entries: MAP_MAX_ENTRIES,
                 },
             ],
         };
@@ -4291,15 +4300,16 @@ mod tests {
         let chunk_size = 64u32;
         let chunk_count =
             sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
-        let starting_seq = 200u64;
+        const STARTING_SEQ: u64 = 200;
+        const TIMESTAMP_MS: u64 = 1_710_000_000_000;
 
         // Queue COMMAND with UpdateProgram
         let command_frame = build_command_response(
             &psk,
             key_hint,
             1,
-            starting_seq,
-            1710000000000,
+            STARTING_SEQ,
+            TIMESTAMP_MS,
             CommandPayload::UpdateProgram {
                 program_hash: image_hash.to_vec(),
                 program_size: image_cbor.len() as u32,
@@ -4314,7 +4324,7 @@ mod tests {
             let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
                 .unwrap()
                 .to_vec();
-            let seq = starting_seq + i as u64;
+            let seq = STARTING_SEQ + i as u64;
             let chunk_frame = build_chunk_response(&psk, key_hint, seq, i, &chunk_data);
             transport.queue_response(Some(chunk_frame));
         }

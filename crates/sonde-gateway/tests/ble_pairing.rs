@@ -744,17 +744,22 @@ async fn gw1208_explicit_close_ble_pairing_sends_disable() {
     let mut _stream = resp.into_inner();
 
     // Verify BLE_ENABLE was sent (with timeout to avoid hanging CI).
+    // Loop until BLE_ENABLE is observed, ignoring unrelated frames.
     let mut decoder = FrameDecoder::new();
     let mut buf = [0u8; 256];
-    let msg = tokio::time::timeout(
-        Duration::from_secs(5),
-        read_modem_msg(&mut server, &mut decoder, &mut buf),
-    )
+    let ble_enable = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+            if matches!(msg, ModemMessage::BleEnable) {
+                return msg;
+            }
+        }
+    })
     .await
     .expect("timed out waiting for BLE_ENABLE");
     assert!(
-        matches!(msg, ModemMessage::BleEnable),
-        "BLE_ENABLE must be sent on open, got {msg:?}"
+        matches!(ble_enable, ModemMessage::BleEnable),
+        "BLE_ENABLE must be sent on open, got {ble_enable:?}"
     );
 
     assert!(
@@ -767,15 +772,20 @@ async fn gw1208_explicit_close_ble_pairing_sends_disable() {
     assert!(close_resp.is_ok(), "CloseBlePairing must succeed");
 
     // Verify BLE_DISABLE was sent to modem (with timeout to fail fast).
-    let msg = tokio::time::timeout(
-        Duration::from_secs(5),
-        read_modem_msg(&mut server, &mut decoder, &mut buf),
-    )
+    // Loop until BLE_DISABLE is observed, ignoring unrelated frames.
+    let ble_disable = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+            if matches!(msg, ModemMessage::BleDisable) {
+                return msg;
+            }
+        }
+    })
     .await
     .expect("timed out waiting for BLE_DISABLE");
     assert!(
-        matches!(msg, ModemMessage::BleDisable),
-        "BLE_DISABLE must be sent on explicit close, got {msg:?}"
+        matches!(ble_disable, ModemMessage::BleDisable),
+        "BLE_DISABLE must be sent on explicit close, got {ble_disable:?}"
     );
 
     assert!(

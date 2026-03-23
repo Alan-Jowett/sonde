@@ -512,7 +512,10 @@ async fn gw1103_error_recovery_full_restart() {
         .write_all(&encode_modem_frame(&recv).unwrap())
         .await
         .unwrap();
-    let (data, _) = transport.recv().await.unwrap();
+    let (data, _) = tokio::time::timeout(Duration::from_secs(10), transport.recv())
+        .await
+        .expect("transport recv timed out in gw1103_error_recovery_full_restart")
+        .unwrap();
     assert_eq!(data, vec![0xAA], "transport must survive ERROR");
 
     // Phase 2: Drop and reconstruct — simulating gateway recovery

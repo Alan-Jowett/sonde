@@ -176,8 +176,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -312,8 +311,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -449,8 +447,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -580,8 +577,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -710,8 +706,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -851,8 +846,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -987,8 +981,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -1131,8 +1124,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)
@@ -1978,8 +1970,7 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
-        idx += 1
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)

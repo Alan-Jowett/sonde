@@ -18,6 +18,15 @@ pub trait Transport {
 pub trait Rng {
     /// Generate a 64-bit random value using the hardware RNG.
     fn random_u64(&mut self) -> u64;
+
+    /// Run the hardware RNG self-test (ND-0304 AC3).
+    ///
+    /// Returns `true` if the RNG is healthy. The firmware calls this at
+    /// the start of every wake cycle and aborts if it returns `false`.
+    /// Platforms without a dedicated health-test API should return `true`.
+    fn health_check(&mut self) -> bool {
+        true
+    }
 }
 
 /// Monotonic clock for measuring elapsed time within a wake cycle.

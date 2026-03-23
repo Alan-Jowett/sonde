@@ -676,17 +676,41 @@ fn test_mem_oob() {
 // ── Read-only context tests ────────────────────────────────────────
 
 #[test]
-fn test_read_only_ctx_rejects_store() {
-    // stb [r1+0], 0x42; exit
+fn test_read_only_ctx_ignores_store() {
+    // stb [r1+0], 0x42; r0 = ldxb [r1+0]; exit
+    // The store is silently ignored (ND-0505 AC6), so the load reads the
+    // original value and execution continues normally.
     let prog = prog_from(&[
         insn(ebpf::ST_B_IMM, 1, 0, 0, 0x42),
+        insn(ebpf::LD_B_REG, 0, 1, 0, 0),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [0u8; 16];
-    assert!(matches!(
-        execute_program_no_maps(&prog, &mut mem, &[], true, UNLIMITED_BUDGET),
-        Err(BpfError::ReadOnlyWrite { .. })
-    ));
+    // read_only_ctx = true: write is silently ignored, context unchanged.
+    let result = execute_program_no_maps(&prog, &mut mem, &[], true, UNLIMITED_BUDGET).unwrap();
+    assert_eq!(
+        result, 0,
+        "write must have no effect; load reads original 0"
+    );
+    assert_eq!(mem[0], 0, "context byte must be unchanged");
+}
+
+#[test]
+fn test_read_only_ctx_oob_store_rejected() {
+    // stb [r1+16], 0x42; exit
+    // Out-of-bounds store to read-only context must still be rejected
+    // (bounds validation occurs before the silent-ignore path).
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 1, 0, 16, 0x42),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [0u8; 16];
+    let result = execute_program_no_maps(&prog, &mut mem, &[], true, UNLIMITED_BUDGET);
+    assert!(
+        matches!(result, Err(BpfError::MemoryAccessViolation { .. })),
+        "out-of-bounds store to read-only context must fail: {:?}",
+        result
+    );
 }
 
 #[test]

@@ -182,11 +182,17 @@ async fn do_pair_with_gateway(
     // Step 6: TOFU — check stored identity
     if let Some(stored) = store.load_gateway_identity()? {
         if stored.public_key != gw_info.gw_public_key {
-            warn!("stored gateway public key does not match presented public key");
+            warn!(
+                stored_key = ?stored.public_key,
+                presented_key = ?gw_info.gw_public_key,
+                "stored gateway public key does not match presented public key"
+            );
             return Err(PairingError::PublicKeyMismatch);
         }
         if stored.gateway_id != gw_info.gateway_id {
             warn!(
+                stored_gateway_id = ?stored.gateway_id,
+                presented_gateway_id = ?gw_info.gateway_id,
                 "gateway identity mismatch: stored gateway_id does not match presented gateway_id; \
                  if the gateway was reinstalled or reset, clear local pairing and re-pair"
             );
@@ -1756,14 +1762,38 @@ mod tests {
                 .unwrap();
 
             // Extract ephemeral public keys from REGISTER_PHONE writes (2nd write)
-            assert!(transport1.written.len() >= 2);
-            assert!(transport2.written.len() >= 2);
+            assert!(
+                transport1.written.len() >= 2,
+                "transport1 should have at least 2 writes"
+            );
+            assert!(
+                transport2.written.len() >= 2,
+                "transport2 should have at least 2 writes"
+            );
             let (_, _, reg1) = &transport1.written[1];
             let (_, _, reg2) = &transport2.written[1];
-            let (_, reg_payload1) = parse_envelope(reg1).unwrap();
-            let (_, reg_payload2) = parse_envelope(reg2).unwrap();
+            let (msg_type1, reg_payload1) = parse_envelope(reg1).unwrap();
+            let (msg_type2, reg_payload2) = parse_envelope(reg2).unwrap();
+            assert_eq!(
+                msg_type1, REGISTER_PHONE,
+                "second write must be REGISTER_PHONE"
+            );
+            assert_eq!(
+                msg_type2, REGISTER_PHONE,
+                "second write must be REGISTER_PHONE"
+            );
 
             // First 32 bytes of REGISTER_PHONE body are the ephemeral public key
+            assert!(
+                reg_payload1.len() >= 32,
+                "REGISTER_PHONE payload1 too short: len={}",
+                reg_payload1.len()
+            );
+            assert!(
+                reg_payload2.len() >= 32,
+                "REGISTER_PHONE payload2 too short: len={}",
+                reg_payload2.len()
+            );
             assert_ne!(
                 &reg_payload1[..32],
                 &reg_payload2[..32],

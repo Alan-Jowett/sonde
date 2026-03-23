@@ -963,10 +963,9 @@ mod tests {
 
     // --- PT-0408: Error path cleanup ---
 
-    /// Verify that `provision_node` completes cleanly on error paths without
-    /// panics. Ephemeral keys and `node_psk` are wrapped in `Zeroizing` and
-    /// will be dropped normally when the function returns, regardless of the
-    /// error path taken.
+    /// Verify that `provision_node` returns cleanly on error paths without
+    /// panics. Zeroing of ephemeral keys and `node_psk` is handled by
+    /// `Zeroizing` wrappers by construction and is not directly asserted here.
     #[test]
     fn t_pt_308_zeroing_on_error_path() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -994,8 +993,8 @@ mod tests {
             )
             .await;
 
-            // Function returned an error — ephemeral keys and node_psk were
-            // dropped and zeroed via Zeroizing wrappers.
+            // Function returned an error cleanly; zeroing of ephemeral keys
+            // and node_psk is handled by `Zeroizing` wrappers by construction.
             assert!(
                 matches!(result, Err(PairingError::NodeErrorResponse { .. })),
                 "expected NodeErrorResponse, got {result:?}"
@@ -1029,7 +1028,7 @@ mod tests {
             .await;
 
             assert!(matches!(result, Err(PairingError::IndicationTimeout)));
-            // Ephemeral keys and node_psk were dropped and zeroed.
+            // Zeroing is handled by `Zeroizing` wrappers by construction.
         });
     }
 
@@ -1078,16 +1077,43 @@ mod tests {
             .unwrap();
 
             // Extract NODE_PROVISION payloads and compare ephemeral public keys
+            assert!(
+                !transport1.written.is_empty(),
+                "transport1 wrote no frames; expected at least one NODE_PROVISION frame"
+            );
+            assert!(
+                !transport2.written.is_empty(),
+                "transport2 wrote no frames; expected at least one NODE_PROVISION frame"
+            );
             let (_, _, data1) = &transport1.written[0];
             let (_, _, data2) = &transport2.written[0];
-            let (_, payload1) = crate::envelope::parse_envelope(data1).unwrap();
-            let (_, payload2) = crate::envelope::parse_envelope(data2).unwrap();
+            let (msg_type1, payload1) = crate::envelope::parse_envelope(data1).unwrap();
+            let (msg_type2, payload2) = crate::envelope::parse_envelope(data2).unwrap();
+            assert_eq!(
+                msg_type1, NODE_PROVISION,
+                "first write must be NODE_PROVISION"
+            );
+            assert_eq!(
+                msg_type2, NODE_PROVISION,
+                "first write must be NODE_PROVISION"
+            );
 
             // NODE_PROVISION layout:
             // node_key_hint(2) + node_psk(32) + rf_channel(1) + payload_len(2) + eph_public(32) + ...
             let eph_offset = 2 + 32 + 1 + 2; // 37
-            let eph1 = &payload1[eph_offset..eph_offset + 32];
-            let eph2 = &payload2[eph_offset..eph_offset + 32];
+            let eph_end = eph_offset + 32;
+            assert!(
+                payload1.len() >= eph_end,
+                "NODE_PROVISION payload1 too short: len={} expected at least {eph_end}",
+                payload1.len()
+            );
+            assert!(
+                payload2.len() >= eph_end,
+                "NODE_PROVISION payload2 too short: len={} expected at least {eph_end}",
+                payload2.len()
+            );
+            let eph1 = &payload1[eph_offset..eph_end];
+            let eph2 = &payload2[eph_offset..eph_end];
 
             assert_ne!(
                 eph1, eph2,

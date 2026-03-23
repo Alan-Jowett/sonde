@@ -2313,12 +2313,9 @@ mod tests {
         let mut decoder2 = FrameDecoder::new();
         decoder2.push(&tx2);
 
-        let decoded = match decoder2.decode() {
-            Ok(decoded) => decoded,
-            // The codec is allowed to reject empty BLE_RECV frames; for this
-            // test, a decode error is treated as "no valid message produced".
-            Err(_e) => None,
-        };
+        // The codec is allowed to reject empty BLE_RECV frames; for this
+        // test, a decode error is treated as "no valid message produced".
+        let decoded = decoder2.decode().unwrap_or_default();
         if let Some(msg) = decoded {
             match msg {
                 ModemMessage::BleRecv(r) => {

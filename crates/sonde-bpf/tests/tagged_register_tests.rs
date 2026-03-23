@@ -112,7 +112,8 @@ fn t_bpf_003_address_overflow() {
     ));
 }
 
-/// T-BPF-004: Atomic op on Context (read-only) → `ReadOnlyWrite`
+/// T-BPF-004: Atomic op on Context (read-only) — write silently ignored
+/// (ND-0505 AC6), memory unchanged, execution continues.
 #[test]
 fn t_bpf_004_atomic_on_readonly_ctx() {
     let prog = prog_from(&[
@@ -120,10 +121,13 @@ fn t_bpf_004_atomic_on_readonly_ctx() {
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [0x42u8; 16];
-    assert!(matches!(
-        execute_program_no_maps(&prog, &mut ctx, &[], true, UNLIMITED_BUDGET),
-        Err(BpfError::ReadOnlyWrite { .. })
-    ));
+    let result = execute_program_no_maps(&prog, &mut ctx, &[], true, UNLIMITED_BUDGET);
+    assert!(
+        result.is_ok(),
+        "atomic on read-only ctx must succeed: {result:?}"
+    );
+    // Context memory must remain unchanged (write suppressed).
+    assert!(ctx.iter().all(|&b| b == 0x42), "context must be unchanged");
 }
 
 /// T-BPF-005: Atomic op via scalar register → `NonDereferenceableAccess`

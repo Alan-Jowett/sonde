@@ -394,4 +394,58 @@ mod tests {
             "expected RuntimeError for stack overflow, got {result:?}"
         );
     }
+
+    // -------------------------------------------------------------------
+    // T-N929: Write to read-only sonde_context silently ignored (ND-0505 AC5/AC6)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn t_n929_write_to_read_only_context_silently_ignored() {
+        // T-N929: Load a BPF program that attempts to write to the
+        // sonde_context memory region.  Verify the context is unchanged
+        // and execution continues normally.
+        //
+        // Program: stb [r1+0], 0xFF; r0 = ldxb [r1+0]; exit
+        //   - Tries to overwrite timestamp byte 0 with 0xFF
+        //   - Reads it back to verify write had no effect
+        let mut prog = Vec::new();
+        // ST_B_IMM [r1+0] = 0xFF  (attempt write to context)
+        prog.extend_from_slice(&[0x72, 0x01, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00]);
+        // LD_B_REG r0 = [r1+0]    (read back from context)
+        prog.extend_from_slice(&[0x71, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        // EXIT
+        prog.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+        let mut interp = SondeBpfInterpreter::new();
+        interp.load(&prog, &[], &[]).unwrap();
+
+        // Use a timestamp with an explicit byte pattern so the expected
+        // ldxb return value is obvious on inspection.  The first byte in
+        // native-endian order is the value the BPF program reads back.
+        let timestamp: u64 = 0x0807_0605_0403_0201;
+        let mut ctx = crate::bpf_helpers::SondeContext {
+            timestamp,
+            battery_mv: 3300,
+            firmware_abi_version: 1,
+            wake_reason: 0,
+            _padding: [0; 3],
+        };
+        let ctx_before = ctx;
+        let ctx_ptr = &mut ctx as *mut _ as u64;
+
+        // Execute — must succeed (program continues past the write).
+        let result = interp.execute(ctx_ptr, 100_000).unwrap();
+
+        // The write was silently ignored so the read returns the original
+        // first byte of the context in memory (native-endian byte 0).
+        let expected_first_byte = timestamp.to_ne_bytes()[0] as u64;
+        assert_eq!(result, expected_first_byte);
+
+        // Original context struct is unchanged (adapter copies before
+        // passing to the interpreter, so the caller's context is safe).
+        assert_eq!(ctx.timestamp, ctx_before.timestamp);
+        assert_eq!(ctx.battery_mv, ctx_before.battery_mv);
+        assert_eq!(ctx.firmware_abi_version, ctx_before.firmware_abi_version);
+        assert_eq!(ctx.wake_reason, ctx_before.wake_reason);
+    }
 }

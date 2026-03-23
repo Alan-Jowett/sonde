@@ -87,6 +87,18 @@ where
         None => return WakeCycleOutcome::Unpaired,
     };
 
+    // 1b. RNG health check (ND-0304 AC3).
+    //     Abort early if the hardware RNG fails its self-test.
+    //     Do not call determine_wake_reason() here — it consumes the
+    //     early-wake flag via take_early_wake_flag().  On RNG failure we
+    //     must preserve that flag so the next wake cycle can honour it.
+    if !rng.health_check() {
+        let (base_interval_s, _) = storage.read_schedule();
+        return WakeCycleOutcome::Sleep {
+            seconds: base_interval_s,
+        };
+    }
+
     // 2. Determine wake reason
     let wake_reason = determine_wake_reason(storage);
 
@@ -3485,7 +3497,7 @@ mod tests {
     // ===================================================================
 
     #[test]
-    fn test_stack_overflow_graceful() {
+    fn test_stack_violation_graceful() {
         // ND-0605 AC3: A BPF stack violation must terminate the program
         // and the node must sleep normally (no crash). The mock
         // interpreter returns RuntimeError to simulate the overflow
@@ -4405,6 +4417,69 @@ mod tests {
             map_storage.map_count(),
             0,
             "no maps should be allocated on budget rejection"
+        );
+    }
+
+    // ===================================================================
+    // T-N927: RNG health-test failure aborts wake cycle (ND-0304 AC3)
+    // ===================================================================
+
+    /// MockRng that fails its health check.
+    struct FailingRng;
+    impl Rng for FailingRng {
+        fn random_u64(&mut self) -> u64 {
+            panic!("random_u64 must not be called when health check fails");
+        }
+        fn health_check(&mut self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn t_n927_rng_health_check_failure_aborts() {
+        // T-N927: If the hardware RNG health check fails, the firmware
+        // must abort the wake cycle. No WAKE frame is transmitted.
+        let psk = [0x42u8; 32];
+        let key_hint = 1u16;
+
+        let mut transport = MockTransport::new();
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        // Set the early-wake flag before the cycle to verify it is preserved
+        // on RNG failure (the code must not call determine_wake_reason which
+        // would consume it via take_early_wake_flag).
+        storage.early_wake_flag = true;
+        let mut hal = MockHal;
+        let mut rng = FailingRng;
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        // Must sleep — no WAKE frame transmitted.
+        assert!(matches!(outcome, WakeCycleOutcome::Sleep { .. }));
+        assert!(
+            transport.outbound.is_empty(),
+            "no frames must be transmitted when RNG health check fails"
+        );
+        // Early-wake flag must be preserved (not consumed by determine_wake_reason).
+        // TODO: Once the wake-cycle logic is updated to consume/clear the flag
+        // on early abort (to prevent the next cycle from misclassifying the
+        // wake as Early), update this assertion to expect `false`.
+        assert!(
+            storage.early_wake_flag,
+            "early_wake_flag must remain set after RNG failure"
         );
     }
 }

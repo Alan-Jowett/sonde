@@ -475,20 +475,27 @@ mod tests {
             "first byte must be a definite-length map (major type 5)"
         );
 
-        // Verify no indefinite-length markers (0x9F for array, 0xBF for map)
-        // appear as container starts. We scan for the break code 0xFF preceded
-        // by 0x9F/0xBF, but a simpler check: no 0xBF or 0x9F bytes that start
-        // a new container. We verify by re-parsing and checking round-trip.
+        // For this fixture (ASCII inputs + fixed PSK byte pattern), require
+        // that no indefinite-length containers are used anywhere in the encoding.
+        // 0x9F = start of indefinite-length array, 0xBF = start of indefinite-length map.
+        for (i, b) in encoded.iter().enumerate() {
+            assert_ne!(
+                *b, 0x9F,
+                "encoded CBOR must not use indefinite-length arrays (0x9F); found at byte index {}",
+                i
+            );
+            assert_ne!(
+                *b, 0xBF,
+                "encoded CBOR must not use indefinite-length maps (0xBF); found at byte index {}",
+                i
+            );
+        }
+
         let decoded = decode_pairing_request(&encoded).unwrap();
         assert_eq!(decoded.node_id, "sensor-1");
         assert_eq!(decoded.sensors.len(), 2);
 
-        // The encoded bytes must not contain the indefinite-length break code
-        // (0xFF) which is only used with indefinite-length encoding.
-        // Note: 0xFF may appear as data bytes inside byte strings, but never
-        // as a standalone break code in definite-length CBOR.
-        // ciborium always uses definite-length encoding, so we verify the
-        // encoding round-trips exactly.
+        // Verify encoding round-trips exactly (deterministic definite-length).
         let re_encoded = encode_pairing_request(
             &decoded.node_id,
             &decoded.node_psk,

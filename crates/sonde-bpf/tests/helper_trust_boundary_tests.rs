@@ -465,19 +465,28 @@ fn test_invalid_helper_argument_map_value_for_map_descriptor() {
 
 #[test]
 fn test_helper_call_clobbers_r1_r5_tags() {
-    // After a helper call, R1-R5 must lose their tags (become scalar)
-    // while their values are preserved. Strategy:
+    // After a helper call, R1-R5 must lose their tags (become scalar).
+    // Strategy:
     //   1. Load MapDescriptor into R1 via LD_DW_IMM src=1
-    //   2. Call a Scalar helper (clobbers R1 tag, preserves value)
+    //   2. Call a Scalar helper (clobbers R1 tag)
     //   3. Call a MapValueOrNull helper with map_arg=1
-    // The second helper returns R1.value (non-zero relocated_ptr), which
-    // triggers the MapDescriptor tag check. Since R1's tag was clobbered
-    // to scalar by step 2, this must fail with InvalidHelperArgument.
+    // The second helper returns a constant non-zero value (independent of
+    // R1), which triggers the map_arg tag check. Since R1's tag was
+    // clobbered to scalar by step 2, this must fail with
+    // InvalidHelperArgument.
     let mut backing = vec![0u8; 64];
     let map = make_map(&mut backing, 8);
 
     fn helper_noop(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
         42
+    }
+
+    // Returns a constant non-zero value regardless of arguments, so the
+    // MapValueOrNull path triggers map_arg validation even if R1's value
+    // was clobbered by the prior helper call (eBPF calling convention
+    // allows helpers to clobber R1-R5 values).
+    fn helper_const_nonzero(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+        0xCAFE
     }
 
     let helpers = &[
@@ -488,7 +497,7 @@ fn test_helper_call_clobbers_r1_r5_tags() {
         },
         HelperDescriptor {
             id: 2,
-            func: helper_return_r1,
+            func: helper_const_nonzero,
             ret: HelperReturn::MapValueOrNull { map_arg: 1 },
         },
     ];
@@ -496,11 +505,11 @@ fn test_helper_call_clobbers_r1_r5_tags() {
     let prog = prog_from(&[
         insn(ebpf::LD_DW_IMM, 1, 1, 0, 0), // r1 = map_descriptor(0) [tagged]
         insn(0, 0, 0, 0, 0),
-        insn(ebpf::CALL, 0, 0, 0, 1), // call scalar helper → clobbers R1 tag, preserves value
-        // Directly call the MapValueOrNull helper using post-call R1.
-        // This relies on the "values preserved, tags cleared" invariant:
-        // R1 still holds a non-zero relocated_ptr value but is now scalar.
-        insn(ebpf::CALL, 0, 0, 0, 2), // call MapValueOrNull(map_arg=1) — R1 value preserved, tag cleared
+        insn(ebpf::CALL, 0, 0, 0, 1), // call scalar helper → clobbers R1 tag
+        // Call MapValueOrNull helper — returns constant non-zero, triggering
+        // map_arg validation. R1's tag was cleared by the prior call, so this
+        // must fail with InvalidHelperArgument regardless of R1's value.
+        insn(ebpf::CALL, 0, 0, 0, 2), // call MapValueOrNull(map_arg=1) — R1 tag cleared
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut ctx = [];

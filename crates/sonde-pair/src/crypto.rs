@@ -316,8 +316,7 @@ mod tests {
 
         // Compile-time assertion: generate_x25519_keypair returns secrets
         // wrapped in Zeroizing, which implements ZeroizeOnDrop.
-        #[allow(drop_bounds)]
-        fn _assert_zeroize_on_drop<T: Drop>() {}
+        fn _assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
         _assert_zeroize_on_drop::<zeroize::Zeroizing<[u8; 32]>>();
 
         // Direct zeroize mechanism: calling zeroize() must zero the buffer.
@@ -344,8 +343,7 @@ mod tests {
 
         // Compile-time assertion: x25519_ecdh returns Zeroizing<[u8; 32]>,
         // which implements ZeroizeOnDrop via the Zeroizing wrapper.
-        #[allow(drop_bounds)]
-        fn _assert_zeroize_on_drop<T: Drop>() {}
+        fn _assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
         _assert_zeroize_on_drop::<zeroize::Zeroizing<[u8; 32]>>();
 
         let rng_a = MockRng::new([0x42u8; 32]);

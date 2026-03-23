@@ -961,13 +961,14 @@ mod tests {
         });
     }
 
-    // --- PT-0408: Error path cleanup ---
+    // --- PT-0408: Error path no-panic ---
 
-    /// Verify that `provision_node` returns cleanly on error paths without
-    /// panics. Zeroing of ephemeral keys and `node_psk` is handled by
-    /// `Zeroizing` wrappers by construction and is not directly asserted here.
+    /// PT-0408: `provision_node` returns cleanly on error paths without
+    /// panicking. Ephemeral key zeroing is guaranteed by `Zeroizing`
+    /// wrappers (compile-time, see crypto.rs tests) and is not directly
+    /// observable at runtime.
     #[test]
-    fn t_pt_308_zeroing_on_error_path() {
+    fn t_pt_0408_error_path_no_panic() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1002,9 +1003,11 @@ mod tests {
         });
     }
 
-    /// Verify error-path cleanup on indication timeout (no response from node).
+    /// PT-0408: `provision_node` returns cleanly on indication timeout
+    /// without panicking. Ephemeral key zeroing is guaranteed by
+    /// `Zeroizing` wrappers by construction.
     #[test]
-    fn t_pt_308b_zeroing_on_timeout() {
+    fn t_pt_0408_timeout_no_panic() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

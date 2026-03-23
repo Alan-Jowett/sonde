@@ -487,7 +487,7 @@ mod tests {
                     v @ 0..=23 => v as u64,
                     24 => {
                         assert!(
-                            input.len() >= 1,
+                            !input.is_empty(),
                             "truncated CBOR: expected 1 byte for length"
                         );
                         let val = input[0] as u64;
@@ -609,7 +609,7 @@ mod tests {
                             // one-byte simple value
                             24 => {
                                 assert!(
-                                    input.len() >= 1,
+                                    !input.is_empty(),
                                     "truncated CBOR: expected 1 byte for simple value"
                                 );
                                 *input = &input[1..];

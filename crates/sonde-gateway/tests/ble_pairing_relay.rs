@@ -126,8 +126,7 @@ async fn t1223_ed25519_seed_replication() {
 
     // Verify response fields match the expected identity values (not just each other).
     assert_eq!(
-        gw_pub_a,
-        pub_key_a,
+        gw_pub_a, pub_key_a,
         "gateway A response must contain its known public key"
     );
     assert_eq!(

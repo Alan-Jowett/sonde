@@ -419,8 +419,12 @@ mod tests {
         let mut interp = SondeBpfInterpreter::new();
         interp.load(&prog, &[], &[]).unwrap();
 
+        // Use a timestamp with an explicit byte pattern so the expected
+        // ldxb return value is obvious on inspection.  The first byte in
+        // native-endian order is the value the BPF program reads back.
+        let timestamp: u64 = 0x0807_0605_0403_0201;
         let mut ctx = crate::bpf_helpers::SondeContext {
-            timestamp: 1710000000000,
+            timestamp,
             battery_mv: 3300,
             firmware_abi_version: 1,
             wake_reason: 0,
@@ -433,8 +437,8 @@ mod tests {
         let result = interp.execute(ctx_ptr, 100_000).unwrap();
 
         // The write was silently ignored so the read returns the original
-        // first byte of the context in memory (native-endian timestamp byte).
-        let expected_first_byte = ctx_before.timestamp.to_ne_bytes()[0] as u64;
+        // first byte of the context in memory (native-endian byte 0).
+        let expected_first_byte = timestamp.to_ne_bytes()[0] as u64;
         assert_eq!(result, expected_first_byte);
 
         // Original context struct is unchanged (adapter copies before

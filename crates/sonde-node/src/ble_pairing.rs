@@ -558,7 +558,7 @@ mod tests {
         let mut body = vec![0u8; NODE_PROVISION_MIN_LEN + actual_data_bytes];
         body[2..34].fill(0x42); // psk
         body[34] = 1; // valid channel
-        // Claim `claimed_payload` bytes of payload, but only `actual_data_bytes` follow.
+                      // Claim `claimed_payload` bytes of payload, but only `actual_data_bytes` follow.
         body[35] = (claimed_payload >> 8) as u8;
         body[36] = claimed_payload as u8;
         body[NODE_PROVISION_MIN_LEN..NODE_PROVISION_MIN_LEN + actual_data_bytes].fill(0xAA);
@@ -571,7 +571,7 @@ mod tests {
     fn t_n940_payload_len_max_u16_rejected() {
         // T-N940 boundary: payload_len = 0xFFFF (65535) — far exceeds both
         // the buffer and PEER_PAYLOAD_MAX_LEN.
-        let mut body = vec![0u8; 37]; // minimum-length body, no payload data
+        let mut body = vec![0u8; NODE_PROVISION_MIN_LEN]; // minimum-length body, no payload data
         body[2..34].fill(0x42); // psk
         body[34] = 1; // valid channel
         body[35] = 0xFF;

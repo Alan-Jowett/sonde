@@ -4474,9 +4474,6 @@ mod tests {
             "no frames must be transmitted when RNG health check fails"
         );
         // Early-wake flag must be preserved (not consumed by determine_wake_reason).
-        // TODO: Once the wake-cycle logic is updated to consume/clear the flag
-        // on early abort (to prevent the next cycle from misclassifying the
-        // wake as Early), update this assertion to expect `false`.
         assert!(
             storage.early_wake_flag,
             "early_wake_flag must remain set after RNG failure"

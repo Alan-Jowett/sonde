@@ -581,9 +581,15 @@ fn handler_config_to_cbor(h: &HandlerConfig) -> ciborium::value::Value {
     }
 
     if let Some(timeout) = &h.reply_timeout {
+        let timeout_ms = timeout.as_millis();
+        let timeout_ms_i64 = if timeout_ms > i64::MAX as u128 {
+            i64::MAX
+        } else {
+            timeout_ms as i64
+        };
         entries.push((
             Value::Integer(HANDLER_KEY_REPLY_TIMEOUT_MS.into()),
-            Value::Integer((timeout.as_millis() as i64).into()),
+            Value::Integer(timeout_ms_i64.into()),
         ));
     }
 
@@ -1670,6 +1676,34 @@ mod tests {
         assert_eq!(loaded[1].command, "/usr/bin/catch-all");
         assert!(loaded[1].args.is_empty());
         assert!(matches!(loaded[1].matchers[0], ProgramMatcher::Any));
+    }
+
+    #[test]
+    fn roundtrip_handler_reply_timeout() {
+        use crate::handler::{HandlerConfig, ProgramMatcher};
+        use std::time::Duration;
+
+        let configs = vec![
+            HandlerConfig {
+                matchers: vec![ProgramMatcher::Any],
+                command: "/usr/bin/with-timeout".to_string(),
+                args: Vec::new(),
+                reply_timeout: Some(Duration::from_millis(5000)),
+            },
+            HandlerConfig {
+                matchers: vec![ProgramMatcher::Any],
+                command: "/usr/bin/no-timeout".to_string(),
+                args: Vec::new(),
+                reply_timeout: None,
+            },
+        ];
+
+        let bundle = encrypt_state_full(&[], &[], None, &[], &configs, "timeout-pass").unwrap();
+        let (_, _, _, _, loaded) = decrypt_state_full(&bundle, "timeout-pass").unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].reply_timeout, Some(Duration::from_millis(5000)));
+        assert_eq!(loaded[1].reply_timeout, None);
     }
 
     #[test]

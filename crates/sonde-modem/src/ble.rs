@@ -468,6 +468,13 @@ impl Ble for EspBleDriver {
             let _ = ble_device.get_server().disconnect(handle);
         }
 
+        // NimBLE's advertise_on_disconnect may restart advertising after the
+        // disconnect above.  Stop again to guarantee advertising stays OFF
+        // after BLE_DISABLE/RESET (MD-0407/MD-0412/MD-0413).
+        if let Err(e) = ble_advertising.lock().stop() {
+            warn!("BLE: post-disconnect stop failed: {:?}", e);
+        }
+
         if let Ok(mut s) = self.state.lock() {
             s.advertising = false;
             s.mtu = 0;
@@ -480,6 +487,9 @@ impl Ble for EspBleDriver {
             s.connection_start = None;
             s.confirm_sent_at = None;
             s.timeout_fired = false;
+            // Events are NOT cleared here — BLE_DISABLE needs
+            // BLE_DISCONNECTED to flow through (modem-protocol.md §4.14).
+            // Stale event suppression across RESET is handled by the bridge.
         }
         info!("BLE advertising stopped (MD-0407)");
     }

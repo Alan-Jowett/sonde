@@ -999,6 +999,10 @@ pub fn send_recv_app_data<T: Transport + ?Sized, C: Clock + ?Sized, H: HmacProvi
                     _ => continue,
                 }
             }
+            // `recv(remaining)` blocks for up to `remaining` ms (the
+            // time left until the overall deadline). A `None` return
+            // means that full interval elapsed with no data, so the
+            // deadline has been reached — return `Timeout` immediately.
             None => return Err(NodeError::Timeout),
         }
     }
@@ -4138,6 +4142,7 @@ mod tests {
     fn test_program_image_decoding_with_maps() {
         let psk = [0x42u8; 32];
         let key_hint = 1u16;
+
         let mut transport = MockTransport::new();
 
         // BPF bytecode: `exit` instruction (0x95)
@@ -5160,5 +5165,44 @@ mod tests {
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         // 2 WAKE frames: initial attempt + 1 retry
         assert_eq!(transport.outbound.len(), 2, "node must retry after timeout");
+    }
+
+    // -----------------------------------------------------------------------
+    // T-N925: APP_DATA_REPLY with mismatched nonce — discarded (ND-0302)
+    // -----------------------------------------------------------------------
+
+    /// T-N925: BPF `send_recv()` receives an APP_DATA_REPLY whose nonce
+    /// does not match the request → silently discarded → call times out.
+    #[test]
+    fn t_n925_app_data_reply_mismatched_nonce_discarded() {
+        let psk = [0xA5; 32];
+        let key_hint = 1u16;
+        let mut transport = MockTransport::new();
+
+        // Reply echoes wrong seq (999 instead of 42) — silently discarded.
+        let reply = build_app_data_reply(&psk, key_hint, 999, &[0xBB]);
+        transport.queue_response(Some(reply));
+        // Subsequent recv returns None → timeout.
+        transport.queue_response(None);
+
+        let identity = NodeIdentity { key_hint, psk };
+        let mut seq = 42u64;
+        let result = send_recv_app_data(
+            &mut transport,
+            &identity,
+            &mut seq,
+            &[0xAA],
+            RESPONSE_TIMEOUT_MS,
+            &MockClock,
+            &TestHmac,
+        );
+
+        // The mismatched-nonce reply is silently discarded; call times out.
+        assert!(
+            matches!(result, Err(NodeError::Timeout)),
+            "mismatched-nonce APP_DATA_REPLY must be discarded"
+        );
+        // seq is still incremented (send succeeded).
+        assert_eq!(seq, 43);
     }
 }

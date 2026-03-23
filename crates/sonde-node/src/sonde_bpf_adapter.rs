@@ -448,4 +448,56 @@ mod tests {
         assert_eq!(ctx.firmware_abi_version, ctx_before.firmware_abi_version);
         assert_eq!(ctx.wake_reason, ctx_before.wake_reason);
     }
+
+    // -----------------------------------------------------------------------
+    // T-N934: Stack overflow terminates BPF program (ND-0605 AC4)
+    // -----------------------------------------------------------------------
+
+    /// T-N934: A BPF program that writes beyond the total stack boundary
+    /// MUST be terminated with a stack violation error.
+    #[test]
+    fn t_n934_stack_overflow_terminates_program() {
+        let mut interp = SondeBpfInterpreter::new();
+
+        // BPF program:
+        //   r0 = 0xDEAD                  (mov64 imm)
+        //   *(u32*)(r10 - 4100) = r0     (STX W — beyond 4 KB total stack)
+        //   exit
+        //
+        // R10 starts at stack_base + 4096. Writing at offset -4100 accesses
+        // stack_base - 4, which is below the stack region boundary.
+        let mut prog = Vec::new();
+        // r0 = 0xDEAD
+        prog.extend_from_slice(&[0xb7, 0x00, 0x00, 0x00, 0xAD, 0xDE, 0x00, 0x00]);
+        // *(u32*)(r10 - 4100) = r0  — offset -4100 = 0xEFFC as i16 LE
+        prog.extend_from_slice(&[0x63, 0x0A, 0xFC, 0xEF, 0x00, 0x00, 0x00, 0x00]);
+        // exit
+        prog.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+        // A verifier improvement may legitimately reject this program at
+        // load time. Treat that as an acceptable outcome, but in that case
+        // we still require it to fail with an appropriate "invalid/unsafe
+        // program" error.
+        let load_result = interp.load(&prog, &[], &[]);
+        match load_result {
+            Ok(()) => {
+                // After successful load, stack boundary violations are
+                // runtime memory errors — not bytecode decoding errors.
+                let result = interp.execute(0, 100_000);
+                assert!(
+                    matches!(result, Err(BpfError::RuntimeError(_))),
+                    "stack overflow must terminate the program with a RuntimeError, got: {result:?}"
+                );
+            }
+            Err(err) => {
+                assert!(
+                    matches!(
+                        err,
+                        BpfError::InvalidBytecode(_) | BpfError::LoadError(_)
+                    ),
+                    "stack overflow program must be rejected at load() as invalid/unsafe, got: {err:?}"
+                );
+            }
+        }
+    }
 }

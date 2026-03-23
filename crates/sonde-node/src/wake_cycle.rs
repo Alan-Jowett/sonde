@@ -4375,12 +4375,12 @@ mod tests {
             "at least one outbound frame expected"
         );
         for frame in &transport.outbound {
-            if let Ok(decoded) = decode_frame(frame) {
-                assert_ne!(
-                    decoded.header.msg_type, MSG_PROGRAM_ACK,
-                    "no PROGRAM_ACK should be sent when budget is exceeded"
-                );
-            }
+            let decoded = decode_frame(frame)
+                .expect("all outbound frames must decode successfully in test");
+            assert_ne!(
+                decoded.header.msg_type, MSG_PROGRAM_ACK,
+                "no PROGRAM_ACK should be sent when budget is exceeded"
+            );
         }
 
         // Interpreter should not have been loaded with the oversized program

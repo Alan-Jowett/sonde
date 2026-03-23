@@ -1583,6 +1583,10 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
         })
     }
 
+    fn pairing_method(&self) -> Option<sonde_pair::types::PairingMethod> {
+        Some(sonde_pair::types::PairingMethod::NumericComparison)
+    }
+
     fn read_indication(
         &mut self,
         service: u128,

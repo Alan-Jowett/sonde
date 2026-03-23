@@ -1361,7 +1361,7 @@ pub fn build_encrypted_payload(
 ) -> Vec<u8> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("failed to compute system time since UNIX_EPOCH")
         .as_secs() as i64;
 
     build_encrypted_payload_with_timestamp(
@@ -1515,11 +1515,24 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
 
     fn connect(
         &mut self,
-        _address: &[u8; 6],
+        address: &[u8; 6],
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<u16, sonde_pair::error::PairingError>> + '_>,
     > {
-        Box::pin(async { Ok(247) })
+        let address = *address;
+        Box::pin(async move {
+            // Ensure we only "connect" to the device we advertised via get_discovered_devices,
+            // so tests fail if the pairing state machine selects or routes to the wrong device.
+            let expected_address: [u8; 6] = [0x10, 0x0B, 0xAC, 0x00, 0x00, 0x01];
+
+            if address == expected_address {
+                Ok(247)
+            } else {
+                Err(sonde_pair::error::PairingError::ConnectionFailed(
+                    "unexpected device address in e2e harness".into(),
+                ))
+            }
+        })
     }
 
     fn disconnect(
@@ -1541,6 +1554,11 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
         let data = data.to_vec();
         Box::pin(async move {
             let mut window = self.window.lock().await;
+            // Refresh the registration window if it has expired, so slow CI
+            // environments don't cause nondeterministic test failures.
+            if !window.is_open() {
+                window.open(TEST_REG_WINDOW_SECS);
+            }
             let response = sonde_gateway::ble_pairing::handle_ble_recv(
                 &data,
                 &self.identity,

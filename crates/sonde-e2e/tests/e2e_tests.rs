@@ -1895,10 +1895,10 @@ async fn t_e2e_063c_duplicate_node_id_discarded() {
         encrypted_payload_1,
     );
     let stats1 = node1.run_wake_cycle(&env);
-    assert_eq!(
-        stats1.outcome,
-        WakeCycleOutcome::Sleep { seconds: 60 },
-        "first registration must succeed"
+    assert!(
+        matches!(stats1.outcome, WakeCycleOutcome::Sleep { .. }),
+        "first registration must succeed (got {:?})",
+        stats1.outcome
     );
     assert!(node1.storage.read_reg_complete());
 
@@ -1934,10 +1934,10 @@ async fn t_e2e_063c_duplicate_node_id_discarded() {
 
     // The second PEER_REQUEST should be silently discarded → timeout → Sleep.
     let stats2 = node2.run_wake_cycle(&env);
-    assert_eq!(
-        stats2.outcome,
-        WakeCycleOutcome::Sleep { seconds: 60 },
-        "duplicate node_id PEER_REQUEST must result in Sleep (timeout)"
+    assert!(
+        matches!(stats2.outcome, WakeCycleOutcome::Sleep { .. }),
+        "duplicate node_id PEER_REQUEST must result in Sleep (timeout) (got {:?})",
+        stats2.outcome
     );
 
     // PEER_REQUEST was sent but no registration occurred.

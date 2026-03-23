@@ -126,6 +126,9 @@ pub enum PairingError {
     #[error("BLE pairing used insecure method `{method}` — Numeric Comparison (LESC) is required")]
     InsecurePairingMethod { method: PairingMethod },
 
+    #[error("invalid argument: {reason}")]
+    InvalidArgument { reason: String },
+
     // Scan errors
     #[error("scan is already active")]
     ScanAlreadyActive,

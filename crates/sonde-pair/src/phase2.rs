@@ -7,7 +7,7 @@ use crate::envelope::{build_envelope, parse_envelope, parse_error_body, parse_no
 use crate::error::PairingError;
 use crate::rng::RngProvider;
 use crate::store::PairingStore;
-use crate::transport::BleTransport;
+use crate::transport::{enforce_lesc, BleTransport};
 use crate::types::*;
 use crate::validation::{compute_key_hint, validate_node_id};
 use tracing::{debug, info, trace};
@@ -114,15 +114,7 @@ pub async fn provision_node(
     }
 
     // LESC enforcement (PT-0904): reject insecure pairing methods.
-    // When pairing_method() returns None, the platform is assumed to
-    // enforce LESC at the OS BLE-stack level (see BleTransport doc).
-    if let Some(method) = transport.pairing_method() {
-        if method != PairingMethod::NumericComparison {
-            transport.disconnect().await.ok();
-            return Err(PairingError::InsecurePairingMethod { method });
-        }
-        debug!(?method, "BLE pairing method verified");
-    }
+    enforce_lesc(transport).await?;
 
     let result = do_provision_node(
         transport,

@@ -9,7 +9,7 @@ use crate::envelope::{
 use crate::error::PairingError;
 use crate::rng::RngProvider;
 use crate::store::PairingStore;
-use crate::transport::BleTransport;
+use crate::transport::{enforce_lesc, BleTransport};
 use crate::types::*;
 use crate::validation::validate_rf_channel;
 use tracing::{debug, info, trace, warn};
@@ -102,15 +102,7 @@ pub async fn pair_with_gateway(
     debug!(mtu, "connected to gateway");
 
     // LESC enforcement (PT-0904): reject insecure pairing methods.
-    // When pairing_method() returns None, the platform is assumed to
-    // enforce LESC at the OS BLE-stack level (see BleTransport doc).
-    if let Some(method) = transport.pairing_method() {
-        if method != PairingMethod::NumericComparison {
-            transport.disconnect().await.ok();
-            return Err(PairingError::InsecurePairingMethod { method });
-        }
-        debug!(?method, "BLE pairing method verified");
-    }
+    enforce_lesc(transport).await?;
 
     // Use a closure-like scope to ensure cleanup on error
     let result = do_pair_with_gateway(transport, store, rng, phone_label, progress).await;

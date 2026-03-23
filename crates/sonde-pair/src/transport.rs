@@ -6,6 +6,7 @@ use crate::types::{PairingMethod, ScannedDevice};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use tracing::debug;
 
 /// Platform-independent BLE transport abstraction.
 ///
@@ -196,4 +197,22 @@ impl BleTransport for MockBleTransport {
     fn pairing_method(&self) -> Option<PairingMethod> {
         self.pairing_method
     }
+}
+
+/// Enforce LESC Numeric Comparison (PT-0904).
+///
+/// Checks the transport's reported pairing method and rejects anything
+/// other than `NumericComparison`.  When `pairing_method()` returns `None`,
+/// the platform is assumed to enforce LESC at the OS BLE-stack level.
+///
+/// On failure the transport is disconnected before returning the error.
+pub async fn enforce_lesc(transport: &mut dyn BleTransport) -> Result<(), PairingError> {
+    if let Some(method) = transport.pairing_method() {
+        if method != PairingMethod::NumericComparison {
+            transport.disconnect().await.ok();
+            return Err(PairingError::InsecurePairingMethod { method });
+        }
+        debug!(?method, "BLE pairing method verified");
+    }
+    Ok(())
 }

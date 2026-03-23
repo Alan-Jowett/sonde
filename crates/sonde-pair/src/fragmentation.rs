@@ -37,8 +37,7 @@ pub fn fragment_for_write(
     max_chunk_size: usize,
 ) -> Result<Vec<Vec<u8>>, PairingError> {
     if max_chunk_size == 0 {
-        return Err(PairingError::InvalidResponse {
-            msg_type: 0,
+        return Err(PairingError::InvalidArgument {
             reason: "max_chunk_size must be > 0".into(),
         });
     }
@@ -95,9 +94,7 @@ impl IndicationReassembler {
             self.reset();
             return Err(PairingError::InvalidResponse {
                 msg_type,
-                reason: format!(
-                    "chunk would exceed maximum reassembly size {MAX_REASSEMBLY_SIZE}"
-                ),
+                reason: format!("chunk would exceed maximum reassembly size {MAX_REASSEMBLY_SIZE}"),
             });
         }
 

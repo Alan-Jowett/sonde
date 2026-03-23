@@ -449,8 +449,10 @@ impl BleTransport for AndroidBleTransport {
 
     /// Android can observe the pairing method via `onBondStateChanged`.
     /// TODO: Wire up JNI callback to report the actual negotiated method.
+    /// Until the JNI callback is wired up, report the weakest method so that
+    /// higher-level policy fails closed instead of assuming OS-enforced LESC.
     fn pairing_method(&self) -> Option<PairingMethod> {
-        None
+        Some(PairingMethod::JustWorks)
     }
 }
 

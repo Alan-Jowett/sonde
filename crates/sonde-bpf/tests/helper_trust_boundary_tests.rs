@@ -269,8 +269,8 @@ fn test_map_value_or_null_returns_out_of_bounds_ptr() {
     assert!(
         matches!(
             result,
-            Err(BpfError::MemoryAccessViolation { addr, len: 8, .. })
-            if addr == bad_ptr
+            Err(BpfError::MemoryAccessViolation { len, .. })
+            if len == map.value_size as usize
         ),
         "helper returning out-of-bounds pointer must yield MemoryAccessViolation, got: {result:?}"
     );

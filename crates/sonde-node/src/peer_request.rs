@@ -747,8 +747,10 @@ mod tests {
 
         // Build a valid ACK, then corrupt the HMAC (last 32 bytes).
         let mut ack = build_peer_ack(&identity, nonce, &payload, &hmac);
-        let len = ack.len();
-        ack[len - 1] ^= 0xFF; // flip one bit in the HMAC
+        let last_byte = ack
+            .last_mut()
+            .expect("build_peer_ack must produce a non-empty ACK frame");
+        *last_byte ^= 0xFF; // flip one bit in the HMAC
 
         let mut transport = MockTransport::with_responses(vec![
             Some(ack), // corrupted HMAC — silently discarded

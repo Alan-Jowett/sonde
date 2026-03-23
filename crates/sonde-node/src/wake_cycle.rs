@@ -84,19 +84,20 @@ where
     S: PlatformStorage,
     I: BpfInterpreter,
 {
-    // 0. RNG health check (ND-0304 AC3).
-    // If the hardware RNG self-test fails, abort the wake cycle
-    // immediately — no WAKE frame is transmitted.
-    if !rng.check_health() {
-        log::error!("hardware RNG health check failed — aborting wake cycle");
-        return WakeCycleOutcome::RngHealthCheckFailed;
-    }
-
     // 1. Load identity
     let identity = match storage.read_key() {
         Some((key_hint, psk)) => NodeIdentity { key_hint, psk },
         None => return WakeCycleOutcome::Unpaired,
     };
+
+    // 1a. RNG health check (ND-0304 AC3).
+    // Runs after identity load so unpaired nodes still return Unpaired
+    // (and sleep indefinitely) rather than reboot-looping.  The check
+    // must complete before any RNG usage (PEER_REQUEST nonce, WAKE nonce).
+    if !rng.check_health() {
+        log::error!("hardware RNG health check failed — aborting wake cycle");
+        return WakeCycleOutcome::RngHealthCheckFailed;
+    }
 
     // 2. Determine wake reason
     let wake_reason = determine_wake_reason(storage);

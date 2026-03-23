@@ -835,7 +835,7 @@ mod tests {
         body[35] = (claimed_len >> 8) as u8;
         body[36] = (claimed_len & 0xFF) as u8;
         // actual payload: only 4 bytes
-        body[37..41].copy_from_slice(&actual_payload);
+        body[37..37 + actual_payload.len()].copy_from_slice(&actual_payload);
 
         let err = parse_node_provision(&body).unwrap_err();
         assert_eq!(

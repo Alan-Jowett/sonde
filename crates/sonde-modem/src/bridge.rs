@@ -2088,8 +2088,8 @@ mod tests {
         let mut remaining = tx.as_slice();
         let mut messages = Vec::new();
         while !remaining.is_empty() {
-            let (msg, consumed) = decode_modem_frame(remaining)
-                .expect("failed to decode frame from tx buffer");
+            let (msg, consumed) =
+                decode_modem_frame(remaining).expect("failed to decode frame from tx buffer");
             messages.push(msg);
             remaining = &remaining[consumed..];
         }

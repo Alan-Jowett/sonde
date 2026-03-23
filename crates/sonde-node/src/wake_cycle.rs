@@ -3459,61 +3459,6 @@ mod tests {
         );
     }
 
-    // ===================================================================
-    // ND-0605: Per-frame stack overflow — graceful termination
-    // ===================================================================
-
-    #[test]
-    fn test_stack_overflow_graceful() {
-        // ND-0605 AC3: A BPF stack violation must terminate the program
-        // and the node must sleep normally (no crash). The mock
-        // interpreter returns RuntimeError to simulate the overflow
-        // that the real sonde-bpf interpreter would produce when a
-        // program accesses memory beyond the 512-byte per-frame stack.
-        let psk = [0xF3; 32];
-        let key_hint = 1u16;
-        let mut transport = MockTransport::new();
-        let command_frame =
-            build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
-        transport.queue_response(Some(command_frame));
-
-        let image = sonde_protocol::ProgramImage {
-            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            maps: vec![],
-        };
-        let image_cbor = image.encode_deterministic().unwrap();
-
-        let mut storage = MockStorage::new().with_key(key_hint, psk);
-        storage.programs[0] = Some(image_cbor);
-        let mut hal = MockHal;
-        let mut rng = MockRng(0);
-        let clock = MockClock;
-        let mut interp = MockBpfInterpreter {
-            loaded: false,
-            executed: false,
-            execute_result: Err(BpfError::RuntimeError("stack overflow")),
-            captured_ctx: None,
-        };
-        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
-
-        let outcome = run_wake_cycle(
-            &mut transport,
-            &mut storage,
-            &mut hal,
-            &mut rng,
-            &clock,
-            &MockBattery,
-            &mut interp,
-            &mut map_storage,
-            &TestHmac,
-            &TestSha256,
-        );
-
-        // Node sleeps normally despite stack overflow
-        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
-        assert!(interp.executed, "interpreter must have executed");
-    }
-
     /// WAKE failure after peer_payload erased does NOT clear reg_complete.
     /// Once peer_payload is gone, transient WAKE failures should not revert
     /// to PEER_REQUEST since there is no payload to re-send.
@@ -4092,6 +4037,9 @@ mod tests {
 
     #[test]
     fn test_stack_violation_graceful() {
+        // ND-0605 AC4: A BPF program that writes beyond the 512-byte
+        // per-frame stack boundary is terminated with a stack violation.
+        // The node must still sleep normally (no crash).
         let psk = [0x65; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();

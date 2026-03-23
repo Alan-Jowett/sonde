@@ -1793,8 +1793,12 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         decoder.push(&tx);
         let mut messages = Vec::new();
-        while let Ok(Some(msg)) = decoder.decode() {
-            messages.push(msg);
+        loop {
+            match decoder.decode() {
+                Ok(Some(msg)) => messages.push(msg),
+                Ok(None) => break,
+                Err(e) => panic!("failed to decode modem frame after RESET: {:?}", e),
+            }
         }
         assert_eq!(messages.len(), 1, "only MODEM_READY expected after RESET");
         assert!(
@@ -1848,14 +1852,18 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         decoder.push(&tx);
         let mut received: Vec<Vec<u8>> = Vec::new();
-        while let Ok(Some(msg)) = decoder.decode() {
-            match msg {
-                ModemMessage::BleRecv(r) => received.push(r.ble_data),
-                ModemMessage::Error(e) => panic!("unexpected Error on USB: {:?}", e),
-                _ => {
-                    // Ignore non-error, non-BleRecv frames; this test only cares about
-                    // preserving BLE_RECV boundaries and payloads.
-                }
+        loop {
+            match decoder.decode() {
+                Ok(Some(msg)) => match msg {
+                    ModemMessage::BleRecv(r) => received.push(r.ble_data),
+                    ModemMessage::Error(e) => panic!("unexpected Error on USB: {:?}", e),
+                    _ => {
+                        // Ignore non-error, non-BleRecv frames; this test only cares about
+                        // preserving BLE_RECV boundaries and payloads.
+                    }
+                },
+                Ok(None) => break,
+                Err(e) => panic!("failed to decode modem frame: {:?}", e),
             }
         }
 

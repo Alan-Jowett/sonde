@@ -219,6 +219,15 @@ impl EspBleDriver {
                 // when BLE_PAIRING_CONFIRM is sent in on_confirm_pin.
                 s.connection_start = Some(Instant::now());
             }
+
+            // Proactively initiate LESC pairing from the server side so that
+            // clients that don't trigger pairing on their own (e.g. btleplug
+            // on WinRT) still go through Numeric Comparison (MD-0404).
+            let conn_handle = desc.conn_handle();
+            unsafe {
+                esp_idf_sys::ble_gap_security_initiate(conn_handle);
+            }
+            info!("BLE: server-initiated security for conn_handle={}", conn_handle);
         });
 
         // --- Disconnect event handler ---
@@ -360,13 +369,7 @@ impl EspBleDriver {
 
         let gateway_cmd_char = ble_service.lock().create_characteristic(
             GATEWAY_COMMAND_UUID,
-            // Require an authenticated, encrypted link for writes so that
-            // the OS BLE stack automatically triggers LESC Numeric Comparison
-            // pairing before the first GATT write (MD-0404).
-            NimbleProperties::WRITE
-                | NimbleProperties::WRITE_ENC
-                | NimbleProperties::WRITE_AUTHEN
-                | NimbleProperties::INDICATE,
+            NimbleProperties::WRITE | NimbleProperties::INDICATE,
         );
 
         // GATT write handler: forward to gateway as BLE_RECV (MD-0409).

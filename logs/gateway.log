@@ -1,0 +1,12 @@
+[2m2026-03-23T23:43:27.890117Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m starting sonde-gateway [3mdb[0m[2m=[0m.\sonde.db [3mport[0m[2m=[0mCOM5 [3mchannel[0m[2m=[0m1
+[2m2026-03-23T23:43:27.891425Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m master key loaded [3mprovider[0m[2m=[0mFile
+[2m2026-03-23T23:43:27.912101Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m storage opened: .\sonde.db
+[2m2026-03-23T23:43:27.914482Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m gateway identity generated and stored [3mgateway_id[0m[2m=[0ma873544c8938dad184c494d8358bab95 [3mpublic_key_prefix[0m[2m=[0m2147544865bc2a9b
+[2m2026-03-23T23:43:27.939865Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m drained 77 bytes of boot garbage from serial port
+[2m2026-03-23T23:43:28.462646Z[0m [32m INFO[0m [2msonde_gateway::modem[0m[2m:[0m modem ready [3mfirmware[0m[2m=[0m[0, 1, 0, 0] [3mmac[0m[2m=[0m[232, 246, 10, 168, 200, 224]
+[2m2026-03-23T23:43:28.475463Z[0m [32m INFO[0m [2msonde_gateway::modem[0m[2m:[0m modem channel set [3mchannel[0m[2m=[0m1
+[2m2026-03-23T23:43:28.475555Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m modem transport ready [3mchannel[0m[2m=[0m1
+[2m2026-03-23T23:43:28.475726Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m entering frame processing loop
+[2m2026-03-23T23:43:28.475809Z[0m [32m INFO[0m [2msonde_gateway::admin[0m[2m:[0m gRPC admin server listening on named pipe [3mpipe[0m[2m=[0m\\.\pipe\sonde-admin
+[2m2026-03-23T23:44:51.788152Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m BLE phone disconnected [3mpeer[0m[2m=[0m[107, 138, 87, 74, 59, 140] [3mreason[0m[2m=[0m19
+[2m2026-03-23T23:47:21.242773Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m BLE phone disconnected [3mpeer[0m[2m=[0m[107, 138, 87, 74, 59, 140] [3mreason[0m[2m=[0m19

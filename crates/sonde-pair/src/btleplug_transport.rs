@@ -342,11 +342,46 @@ impl BleTransport for BtleplugTransport {
             let chr =
                 find_characteristic(&state.peripheral, to_uuid(service), to_uuid(characteristic))?;
 
-            state
+            // First write may fail with "requires authentication" on WinRT if
+            // the characteristic has WRITE_ENC/WRITE_AUTHEN permissions.  This
+            // triggers the OS BLE pairing dialog.  Retry after a short delay to
+            // give the user time to accept the pairing prompt.
+            let result = state
                 .peripheral
                 .write(&chr, &data, WriteType::WithResponse)
-                .await
-                .map_err(|e| PairingError::GattWriteFailed(e.to_string()))?;
+                .await;
+
+            match result {
+                Ok(()) => {}
+                Err(ref e) => {
+                    let msg = e.to_string();
+                    if msg.contains("authentication") || msg.contains("0x80650005") {
+                        debug!("GATT write requires auth — waiting for OS pairing dialog");
+                        // Give the user up to 30s to accept the OS pairing prompt.
+                        for attempt in 1..=6 {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            debug!(attempt, "retrying GATT write after pairing");
+                            match state
+                                .peripheral
+                                .write(&chr, &data, WriteType::WithResponse)
+                                .await
+                            {
+                                Ok(()) => break,
+                                Err(ref retry_err) if attempt < 6 => {
+                                    debug!(error = %retry_err, "retry failed, will try again");
+                                }
+                                Err(retry_err) => {
+                                    return Err(PairingError::GattWriteFailed(
+                                        retry_err.to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        return Err(PairingError::GattWriteFailed(msg));
+                    }
+                }
+            }
 
             debug!(
                 characteristic = %to_uuid(characteristic),

@@ -41,6 +41,12 @@ use common::{build_admin_with_modem, create_transport_and_server, read_modem_msg
 const BLE_MSG_REQUEST_GW_INFO: u8 = 0x01;
 const BLE_MSG_GW_INFO_RESPONSE: u8 = 0x81;
 
+/// GW_INFO_RESPONSE body length: 32 (public key) + 16 (gateway_id) + 64 (signature).
+const GW_INFO_RESPONSE_LEN: usize = 32 + 16 + 64;
+
+/// Default ATT characteristic value limit: ATT_MTU(247) − ATT header(3).
+const DEFAULT_ATT_VALUE_MAX: usize = 244;
+
 // ── T-1223: Ed25519 seed replication ────────────────────────────────────────
 
 /// T-1223  Ed25519 seed replication (GW-1203).
@@ -106,23 +112,23 @@ async fn t1223_ed25519_seed_replication() {
     // Verify response lengths before slicing.
     assert_eq!(
         body_a.len(),
-        112,
-        "GW_INFO_RESPONSE from A must be 112 bytes"
+        GW_INFO_RESPONSE_LEN,
+        "GW_INFO_RESPONSE from A must be {GW_INFO_RESPONSE_LEN} bytes"
     );
     assert_eq!(
         body_b.len(),
-        112,
-        "GW_INFO_RESPONSE from B must be 112 bytes"
+        GW_INFO_RESPONSE_LEN,
+        "GW_INFO_RESPONSE from B must be {GW_INFO_RESPONSE_LEN} bytes"
     );
 
     // Extract fields.
     let gw_pub_a: [u8; 32] = body_a[..32].try_into().unwrap();
     let gw_id_a: [u8; 16] = body_a[32..48].try_into().unwrap();
-    let sig_a: [u8; 64] = body_a[48..112].try_into().unwrap();
+    let sig_a: [u8; 64] = body_a[48..GW_INFO_RESPONSE_LEN].try_into().unwrap();
 
     let gw_pub_b: [u8; 32] = body_b[..32].try_into().unwrap();
     let gw_id_b: [u8; 16] = body_b[32..48].try_into().unwrap();
-    let sig_b: [u8; 64] = body_b[48..112].try_into().unwrap();
+    let sig_b: [u8; 64] = body_b[48..GW_INFO_RESPONSE_LEN].try_into().unwrap();
 
     // Verify response fields match the expected identity values (not just each other).
     assert_eq!(
@@ -200,12 +206,12 @@ async fn t1223_seed_replication_via_storage() {
 
 /// T-1224  BLE GATT server via modem relay (GW-1204).
 ///
-/// 1. Complete modem startup.
-/// 2. Open a BLE pairing session (window open).
-/// 3. Inject a `BLE_RECV` containing `REQUEST_GW_INFO` from mock modem.
-/// 4. Assert: gateway processes and sends `BLE_INDICATE` with valid response.
-/// 5. Decode and verify response contains `gw_public_key`, `gateway_id`,
-///    and valid `signature`.
+/// Test flow:
+/// 1. Initialize mock modem transport and in-memory gateway storage with a generated identity.
+/// 2. Build a `REQUEST_GW_INFO` BLE envelope.
+/// 3. Inject the envelope into the mock modem as a `BLE_RECV` frame.
+/// 4. Allow the gateway's BLE handling logic to process the frame and emit a `BLE_INDICATE` response over the modem relay.
+/// 5. Decode and verify the response contains `gw_public_key`, `gateway_id`, and a valid `signature`.
 #[tokio::test]
 async fn t1224_ble_gatt_server_via_modem_relay() {
     let (transport, mut server) = create_transport_and_server(6).await;
@@ -264,12 +270,16 @@ async fn t1224_ble_gatt_server_via_modem_relay() {
         msg_type, BLE_MSG_GW_INFO_RESPONSE,
         "response must be GW_INFO_RESPONSE"
     );
-    assert_eq!(body.len(), 112, "GW_INFO_RESPONSE must be 112 bytes");
+    assert_eq!(
+        body.len(),
+        GW_INFO_RESPONSE_LEN,
+        "GW_INFO_RESPONSE must be {GW_INFO_RESPONSE_LEN} bytes"
+    );
 
     // Extract and verify fields.
     let gw_public_key: [u8; 32] = body[..32].try_into().unwrap();
     let gateway_id: [u8; 16] = body[32..48].try_into().unwrap();
-    let sig_bytes: [u8; 64] = body[48..112].try_into().unwrap();
+    let sig_bytes: [u8; 64] = body[48..GW_INFO_RESPONSE_LEN].try_into().unwrap();
 
     assert_eq!(gw_public_key, *identity.public_key());
     assert_eq!(gateway_id, *identity.gateway_id());
@@ -305,12 +315,12 @@ async fn t1225_att_mtu_fragmentation_via_modem_relay() {
 
     // Build an oversized BLE envelope: 300-byte body + 3-byte header = 303 bytes.
     // This exceeds the default (MTU−3)=244 limit, exercising the delegation model.
-    let oversized_body = vec![0x42u8; 300];
+    let oversized_body = vec![0x42u8; DEFAULT_ATT_VALUE_MAX + 56];
     let oversized_envelope = encode_ble_envelope(BLE_MSG_GW_INFO_RESPONSE, &oversized_body)
         .expect("encoding must succeed");
     assert!(
-        oversized_envelope.len() > 244,
-        "envelope must exceed (MTU-3)=244 bytes: actual {} bytes",
+        oversized_envelope.len() > DEFAULT_ATT_VALUE_MAX,
+        "envelope must exceed (MTU-3)={DEFAULT_ATT_VALUE_MAX} bytes: actual {} bytes",
         oversized_envelope.len()
     );
 
@@ -339,7 +349,7 @@ async fn t1225_att_mtu_fragmentation_via_modem_relay() {
     // Verify the envelope is decodable.
     let (msg_type, body) = parse_ble_envelope(&indicate_data).unwrap();
     assert_eq!(msg_type, BLE_MSG_GW_INFO_RESPONSE);
-    assert_eq!(body.len(), 300);
+    assert_eq!(body.len(), DEFAULT_ATT_VALUE_MAX + 56);
 
     // Also verify a real response (GW_INFO_RESPONSE = 112+3 = 115 bytes)
     // is sent in a single message as well.
@@ -388,45 +398,57 @@ async fn t1226_ble_enable_disable_signals() {
     let resp = admin.open_ble_pairing(request).await.unwrap();
     let mut stream = resp.into_inner();
 
-    // Consume WindowOpened event.
-    let event = stream
-        .next()
-        .await
-        .expect("stream ended")
-        .expect("should get WindowOpened");
-    assert!(matches!(
-        event.event,
-        Some(ble_pairing_event::Event::WindowOpened(_))
-    ));
+    // Collect WindowOpened AND BLE_ENABLE in either order.
+    let mut saw_window_opened = false;
+    let mut saw_ble_enable = false;
 
-    // 2. Assert: BLE_ENABLE sent to modem.
-    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-    assert!(
-        matches!(msg, ModemMessage::BleEnable),
-        "expected BLE_ENABLE after open, got {msg:?}"
-    );
+    while !(saw_window_opened && saw_ble_enable) {
+        tokio::select! {
+            maybe_event = stream.next(), if !saw_window_opened => {
+                let event = maybe_event.expect("stream ended").expect("should get WindowOpened");
+                assert!(
+                    matches!(event.event, Some(ble_pairing_event::Event::WindowOpened(_))),
+                    "expected WindowOpened event, got {event:?}"
+                );
+                saw_window_opened = true;
+            }
+            msg = async { read_modem_msg(&mut server, &mut decoder, &mut buf).await }, if !saw_ble_enable => {
+                assert!(
+                    matches!(msg, ModemMessage::BleEnable),
+                    "expected BLE_ENABLE after open, got {msg:?}"
+                );
+                saw_ble_enable = true;
+            }
+        }
+    }
 
     // 3. Close registration window explicitly.
     let close_resp = admin.close_ble_pairing(Request::new(Empty {})).await;
     assert!(close_resp.is_ok(), "CloseBlePairing must succeed");
 
-    // 4. Assert: BLE_DISABLE sent to modem.
-    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-    assert!(
-        matches!(msg, ModemMessage::BleDisable),
-        "expected BLE_DISABLE after close, got {msg:?}"
-    );
+    // Collect BLE_DISABLE AND WindowClosed in either order.
+    let mut saw_ble_disable = false;
+    let mut saw_window_closed = false;
 
-    // Consume WindowClosed from the stream.
-    let event = stream
-        .next()
-        .await
-        .expect("stream ended")
-        .expect("should get WindowClosed");
-    assert!(matches!(
-        event.event,
-        Some(ble_pairing_event::Event::WindowClosed(_))
-    ));
+    while !(saw_ble_disable && saw_window_closed) {
+        tokio::select! {
+            maybe_event = stream.next(), if !saw_window_closed => {
+                let event = maybe_event.expect("stream ended").expect("should get WindowClosed");
+                assert!(
+                    matches!(event.event, Some(ble_pairing_event::Event::WindowClosed(_))),
+                    "expected WindowClosed event, got {event:?}"
+                );
+                saw_window_closed = true;
+            }
+            msg = async { read_modem_msg(&mut server, &mut decoder, &mut buf).await }, if !saw_ble_disable => {
+                assert!(
+                    matches!(msg, ModemMessage::BleDisable),
+                    "expected BLE_DISABLE after close, got {msg:?}"
+                );
+                saw_ble_disable = true;
+            }
+        }
+    }
 
     // Confirm window is actually closed.
     assert!(
@@ -439,45 +461,57 @@ async fn t1226_ble_enable_disable_signals() {
     let resp = admin.open_ble_pairing(request).await.unwrap();
     let mut stream2 = resp.into_inner();
 
-    // Consume WindowOpened event.
-    let event = stream2
-        .next()
-        .await
-        .expect("stream ended")
-        .expect("should get WindowOpened");
-    assert!(matches!(
-        event.event,
-        Some(ble_pairing_event::Event::WindowOpened(_))
-    ));
+    // Collect WindowOpened AND BLE_ENABLE in either order.
+    let mut saw_window_opened = false;
+    let mut saw_ble_enable = false;
 
-    // 7a. Assert: BLE_ENABLE sent to modem.
-    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
-    assert!(
-        matches!(msg, ModemMessage::BleEnable),
-        "expected BLE_ENABLE after second open, got {msg:?}"
-    );
+    while !(saw_window_opened && saw_ble_enable) {
+        tokio::select! {
+            maybe_event = stream2.next(), if !saw_window_opened => {
+                let event = maybe_event.expect("stream ended").expect("should get WindowOpened");
+                assert!(
+                    matches!(event.event, Some(ble_pairing_event::Event::WindowOpened(_))),
+                    "expected WindowOpened event, got {event:?}"
+                );
+                saw_window_opened = true;
+            }
+            msg = async { read_modem_msg(&mut server, &mut decoder, &mut buf).await }, if !saw_ble_enable => {
+                assert!(
+                    matches!(msg, ModemMessage::BleEnable),
+                    "expected BLE_ENABLE after second open, got {msg:?}"
+                );
+                saw_ble_enable = true;
+            }
+        }
+    }
 
-    // 6. Wait for auto-close by reading BLE_DISABLE. The 2s window timeout
-    // fires inside read_modem_msg's internal timeout loop, then the spawned
-    // task sends BLE_DISABLE and the WindowClosed event.
-    let msg = read_modem_msg(&mut server, &mut decoder, &mut buf).await;
+    // 6. Wait for auto-close: collect BLE_DISABLE AND WindowClosed in either order.
+    let mut saw_ble_disable = false;
+    let mut saw_window_closed = false;
 
-    // 7b. Assert: BLE_DISABLE sent to modem after auto-close.
-    assert!(
-        matches!(msg, ModemMessage::BleDisable),
-        "expected BLE_DISABLE after auto-close, got {msg:?}"
-    );
-
-    // Consume WindowClosed from auto-close stream.
-    let event = tokio::time::timeout(Duration::from_secs(5), stream2.next())
-        .await
-        .expect("WindowClosed event must arrive within timeout")
-        .expect("stream ended")
-        .expect("should get WindowClosed from auto-close");
-    assert!(
-        matches!(event.event, Some(ble_pairing_event::Event::WindowClosed(_))),
-        "auto-close must emit WindowClosed event"
-    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !(saw_ble_disable && saw_window_closed) {
+            tokio::select! {
+                maybe_event = stream2.next(), if !saw_window_closed => {
+                    let event = maybe_event.expect("stream ended").expect("should get WindowClosed from auto-close");
+                    assert!(
+                        matches!(event.event, Some(ble_pairing_event::Event::WindowClosed(_))),
+                        "auto-close must emit WindowClosed event, got {event:?}"
+                    );
+                    saw_window_closed = true;
+                }
+                msg = async { read_modem_msg(&mut server, &mut decoder, &mut buf).await }, if !saw_ble_disable => {
+                    assert!(
+                        matches!(msg, ModemMessage::BleDisable),
+                        "expected BLE_DISABLE after auto-close, got {msg:?}"
+                    );
+                    saw_ble_disable = true;
+                }
+            }
+        }
+    })
+    .await
+    .expect("auto-close events must arrive within 5s timeout");
 }
 
 // ── T-1107a: Modem RESET recovery re-executes startup ───────────────────────

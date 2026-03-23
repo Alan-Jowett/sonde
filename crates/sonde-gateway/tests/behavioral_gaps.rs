@@ -451,7 +451,7 @@ async fn t0600_hmac_failure_state_unchanged() {
         .await
         .expect("valid WAKE must produce a response");
     let (_, msg) = decode_response(&resp, &node.psk);
-    let starting_seq = match msg {
+    let _starting_seq = match msg {
         GatewayMessage::Command { starting_seq, .. } => starting_seq,
         other => panic!("expected Command, got {:?}", other),
     };

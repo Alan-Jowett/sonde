@@ -66,8 +66,8 @@ async fn await_window_event_and_modem_signal(
                     saw_event = true;
                 }
                 msg = async { read_modem_msg(server, decoder, buf).await }, if !saw_modem => {
-                    assert!(
-                        std::mem::discriminant(&msg) == std::mem::discriminant(&expected_msg),
+                    assert_eq!(
+                        expected_msg, msg,
                         "{label}: expected {expected_msg:?}, got {msg:?}"
                     );
                     saw_modem = true;
@@ -87,8 +87,12 @@ const BLE_MSG_GW_INFO_RESPONSE: u8 = 0x81;
 /// GW_INFO_RESPONSE body length: 32 (public key) + 16 (gateway_id) + 64 (signature).
 const GW_INFO_RESPONSE_LEN: usize = 32 + 16 + 64;
 
-/// Default ATT characteristic value limit: ATT_MTU(247) − ATT header(3).
-const DEFAULT_ATT_VALUE_MAX: usize = 244;
+/// Maximum ATT characteristic value size for MTU=247 used in these tests:
+/// 247 (ATT_MTU) − 3 (ATT header) = 244.
+const ATT_VALUE_MAX_FOR_MTU_247: usize = 244;
+
+/// Backwards-compatible alias; some tests still refer to this older name.
+const DEFAULT_ATT_VALUE_MAX: usize = ATT_VALUE_MAX_FOR_MTU_247;
 
 // ── T-1223: Ed25519 seed replication ────────────────────────────────────────
 
@@ -475,8 +479,8 @@ async fn t1226_ble_enable_disable_signals() {
         "window must be closed after explicit close"
     );
 
-    // 5. Open again with a 2s timeout for auto-close.
-    let request = Request::new(OpenBlePairingRequest { duration_s: 2 });
+    // 5. Open again with a 1s timeout for auto-close.
+    let request = Request::new(OpenBlePairingRequest { duration_s: 1 });
     let resp = admin.open_ble_pairing(request).await.unwrap();
     let mut stream2 = resp.into_inner();
 

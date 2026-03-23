@@ -581,8 +581,10 @@ mod tests {
 
         let mut ack_frame = build_peer_ack(&identity, nonce, &payload, &hmac);
         // Tamper with the last byte (HMAC)
-        let len = ack_frame.len();
-        ack_frame[len - 1] ^= 0xFF;
+        let last_byte = ack_frame
+            .last_mut()
+            .expect("build_peer_ack must produce a non-empty ACK frame");
+        *last_byte ^= 0xFF;
 
         let result = verify_peer_ack(&ack_frame, &identity, nonce, &payload, &hmac);
         assert!(result.is_err());

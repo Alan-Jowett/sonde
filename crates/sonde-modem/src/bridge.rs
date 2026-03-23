@@ -10,7 +10,7 @@
 //! The bridge is generic over `SerialPort` and `Radio` traits, allowing
 //! the same logic to be tested on a host with mock implementations.
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::sync::Arc;
 
 use sonde_protocol::modem::{
@@ -153,10 +153,12 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
 }
 
 impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
-    /// Create a bridge with a BLE driver.
+    /// Create a bridge with a BLE driver (BLE starts disabled).
     ///
-    /// BLE is explicitly disabled during construction so that
-    /// `ble_enabled` cannot get out of sync with the driver state.
+    /// The driver is explicitly disabled during construction so that
+    /// `ble_enabled` and the hardware state are guaranteed to be in sync.
+    /// Callers that need BLE active must send a `BLE_ENABLE` command after
+    /// construction; the driver will never be silently left enabled.
     pub fn with_ble(usb: S, radio: R, mut ble: B, counters: Arc<ModemCounters>) -> Self {
         ble.disable();
         Self {
@@ -388,7 +390,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
 
     fn handle_ble_enable(&mut self) {
         if self.ble_enabled {
-            info!("BLE_ENABLE received (already enabled, no-op)");
+            debug!("BLE_ENABLE received (already enabled, no-op)");
             return;
         }
         info!("BLE_ENABLE received");
@@ -398,7 +400,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
 
     fn handle_ble_disable(&mut self) {
         if !self.ble_enabled {
-            info!("BLE_DISABLE received (already disabled, no-op)");
+            debug!("BLE_DISABLE received (already disabled, no-op)");
             return;
         }
         info!("BLE_DISABLE received");
@@ -2201,10 +2203,7 @@ mod tests {
             }
             remaining = &remaining[consumed..];
         }
-        assert!(
-            !scan_results.is_empty(),
-            "expected at least one ScanResult"
-        );
+        assert!(!scan_results.is_empty(), "expected at least one ScanResult");
 
         // Send a frame after scan — radio TX must work.
         let peer = [1, 2, 3, 4, 5, 6];
@@ -2256,10 +2255,17 @@ mod tests {
         let (msg, _) = decode_modem_frame(&tx).unwrap();
         match msg {
             ModemMessage::Status(s) => {
+                // Compute expected uptime based on current time and boot time,
+                // and allow a small tolerance to avoid flakiness on slow CI.
+                let expected = Instant::now().duration_since(boot).as_secs();
+                let lower = expected.saturating_sub(1);
+                let upper = expected + 1;
+                let uptime = u64::from(s.uptime_s);
                 assert!(
-                    (6..=8).contains(&s.uptime_s),
-                    "uptime_s should be ~7s, got {}",
-                    s.uptime_s
+                    (lower..=upper).contains(&uptime),
+                    "uptime_s should be close to {}s (±1s), got {}",
+                    expected,
+                    uptime
                 );
             }
             _ => panic!("expected Status"),

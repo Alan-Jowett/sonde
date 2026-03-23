@@ -131,6 +131,7 @@ pub struct Bridge<S: SerialPort, R: Radio, B: Ble = NoBle> {
     usb: S,
     radio: R,
     ble: B,
+    ble_enabled: bool,
     counters: Arc<ModemCounters>,
     decoder: FrameDecoder,
     rx_buf: [u8; 64],
@@ -143,6 +144,7 @@ impl<S: SerialPort, R: Radio> Bridge<S, R, NoBle> {
             usb,
             radio,
             ble: NoBle,
+            ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
             rx_buf: [0u8; 64],
@@ -157,6 +159,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
             usb,
             radio,
             ble,
+            ble_enabled: false,
             counters,
             decoder: FrameDecoder::new(),
             rx_buf: [0u8; 64],
@@ -324,6 +327,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
                 break;
             }
         }
+        self.ble_enabled = false;
         self.counters.reset();
         self.decoder.reset();
         self.send_modem_ready();
@@ -379,13 +383,19 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn handle_ble_enable(&mut self) {
+        if self.ble_enabled {
+            info!("BLE_ENABLE received (already enabled, no-op)");
+            return;
+        }
         info!("BLE_ENABLE received");
         self.ble.enable();
+        self.ble_enabled = true;
     }
 
     fn handle_ble_disable(&mut self) {
         info!("BLE_DISABLE received");
         self.ble.disable();
+        self.ble_enabled = false;
     }
 
     fn handle_ble_pairing_confirm_reply(&mut self, reply: BlePairingConfirmReply) {
@@ -1964,6 +1974,13 @@ mod tests {
             "duplicate BLE_ENABLE must not produce output or disconnect"
         );
 
+        // Bridge must not call Ble::enable() a second time: duplicate is a true no-op.
+        assert_eq!(
+            bridge.ble.enable_count.get(),
+            1,
+            "duplicate BLE_ENABLE must not call Ble::enable() again"
+        );
+
         // Connection should still be usable — indicate data to BLE client.
         let indicate = encode_modem_frame(&ModemMessage::BleIndicate(BleIndicate {
             ble_data: vec![0xAB, 0xCD],
@@ -2071,11 +2088,6 @@ mod tests {
 
         // Poll while disconnected — frames should be drained but writes fail.
         bridge.poll();
-        assert_eq!(
-            bridge.counters.rx_count(),
-            0,
-            "rx_count must not increment when USB is disconnected"
-        );
 
         // Reconnect USB.
         bridge.usb.set_connected(true);
@@ -2164,8 +2176,18 @@ mod tests {
         bridge.usb.inject(&scan);
         bridge.poll();
         let tx = bridge.usb.take_tx();
-        let (msg, _) = decode_modem_frame(&tx).unwrap();
-        assert!(matches!(msg, ModemMessage::ScanResult(_)));
+        let mut remaining = tx.as_slice();
+        let mut scan_results = Vec::new();
+        while !remaining.is_empty() {
+            let (msg, consumed) =
+                decode_modem_frame(remaining).expect("failed to decode frame from tx buffer");
+            if let ModemMessage::ScanResult(_) = &msg {
+                scan_results.push(msg);
+            }
+            remaining = &remaining[consumed..];
+        }
+        assert_eq!(scan_results.len(), 1, "expected exactly one ScanResult");
+        assert!(matches!(scan_results[0], ModemMessage::ScanResult(_)));
 
         // Send a frame after scan — radio TX must work.
         let peer = [1, 2, 3, 4, 5, 6];

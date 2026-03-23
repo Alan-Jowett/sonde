@@ -500,13 +500,12 @@ mod tests {
         let load_result = interp.load(&prog, &[], &[]);
         match load_result {
             Ok(()) => {
+                // After successful load, stack boundary violations are
+                // runtime memory errors — not bytecode decoding errors.
                 let result = interp.execute(0, 100_000);
                 assert!(
-                    matches!(
-                        result,
-                        Err(BpfError::RuntimeError(_) | BpfError::InvalidBytecode(_))
-                    ),
-                    "stack overflow must terminate the program with a violation error, got: {result:?}"
+                    matches!(result, Err(BpfError::RuntimeError(_))),
+                    "stack overflow must terminate the program with a RuntimeError, got: {result:?}"
                 );
             }
             Err(err) => {

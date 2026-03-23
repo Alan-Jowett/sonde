@@ -175,22 +175,24 @@ impl AndroidBleTransport {
     /// Stops any active scan.  Call from the host Activity/Fragment
     /// lifecycle handler.
     pub fn on_pause(&self) -> Result<(), PairingError> {
-        self.inner.vm.attach_current_thread(|env| {
-            env.call_method(
-                self.inner.helper.as_obj(),
-                jni_str!("stopScan"),
-                jni_sig!("()V"),
-                &[],
-            )
-            .map_err(|e| jni_exception_or(env, "stopScan", e))?;
-            Ok(())
-        })
-        .map_err(|e| match e {
-            PairingError::JniError(msg) => {
-                PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-            }
-            other => other,
-        })
+        self.inner
+            .vm
+            .attach_current_thread(|env| {
+                env.call_method(
+                    self.inner.helper.as_obj(),
+                    jni_str!("stopScan"),
+                    jni_sig!("()V"),
+                    &[],
+                )
+                .map_err(|e| jni_exception_or(env, "stopScan", e))?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                PairingError::JniError(msg) => {
+                    PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
+                }
+                other => other,
+            })
     }
 }
 

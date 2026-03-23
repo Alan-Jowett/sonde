@@ -759,3 +759,72 @@ fn test_instruction_budget_ld_dw_imm_counts_two_slots() {
         42
     );
 }
+
+// ── Stack frame boundary tests (bpf-env §3.3, §5.2) ────────────────
+
+#[test]
+fn test_stack_frame_512_byte_boundary_valid() {
+    // Store a byte at the very bottom of the 512-byte frame (r10 - 512)
+    // and read it back. This must succeed.
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 10, 0, -512, 0x42),
+        insn(ebpf::LD_B_REG, 0, 10, -512, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert_eq!(
+        execute_program_no_maps(&prog, &mut mem, &[], false, UNLIMITED_BUDGET).unwrap(),
+        0x42
+    );
+}
+
+#[test]
+fn test_stack_total_boundary_valid() {
+    // The total stack is 512 * 8 = 4096 bytes. Store a byte at the very
+    // bottom (r10 - 4096) and read it back. This must succeed.
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 10, 0, -4096, 0xAB),
+        insn(ebpf::LD_B_REG, 0, 10, -4096, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert_eq!(
+        execute_program_no_maps(&prog, &mut mem, &[], false, UNLIMITED_BUDGET).unwrap(),
+        0xAB
+    );
+}
+
+#[test]
+fn test_stack_total_boundary_exceeded_rejected() {
+    // Attempt to store a byte at r10 - 4097, one byte beyond the total
+    // 4096-byte stack. This must fail with a memory access violation.
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 10, 0, -4097, 0x42),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert!(
+        matches!(
+            execute_program_no_maps(&prog, &mut mem, &[], false, UNLIMITED_BUDGET),
+            Err(BpfError::MemoryAccessViolation { .. })
+        ),
+        "store beyond total stack must be rejected"
+    );
+}
+
+#[test]
+fn test_stack_frame_word_at_boundary() {
+    // Store a 4-byte word at the very bottom of the 512-byte frame
+    // (r10 - 512). The access spans bytes [r10-512..r10-509], all within
+    // the frame.
+    let prog = prog_from(&[
+        insn(ebpf::ST_W_IMM, 10, 0, -512, 0x12345678u32 as i32),
+        insn(ebpf::LD_W_REG, 0, 10, -512, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert_eq!(
+        execute_program_no_maps(&prog, &mut mem, &[], false, UNLIMITED_BUDGET).unwrap(),
+        0x12345678
+    );
+}

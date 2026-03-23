@@ -2,9 +2,13 @@ target/
 test-programs/*.o
 crates/sonde-pair-ui/src-tauri/gen/
 
-# Build artifacts
-*.bin
-*.msi
+# Firmware flash images
+flash_image.bin
+firmware/*.bin
+firmware-modem/*.bin
+
+# Installer artifacts
+installer/*.msi
 
 # Database files
 *.db
@@ -13,6 +17,3 @@ crates/sonde-pair-ui/src-tauri/gen/
 
 # Key material
 *.key
-*.pem
-*.pfx
-*.p12

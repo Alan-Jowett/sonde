@@ -301,11 +301,21 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
         let val = match info {
             0..=23 => info as u64,
             24 => {
+                assert!(
+                    *pos < data.len(),
+                    "truncated CBOR: expected 1 extra byte at offset {}",
+                    *pos
+                );
                 let v = data[*pos] as u64;
                 *pos += 1;
                 v
             }
             25 => {
+                assert!(
+                    *pos + 1 < data.len(),
+                    "truncated CBOR: expected 2 extra bytes at offset {}",
+                    *pos
+                );
                 let v = u16::from_be_bytes([data[*pos], data[*pos + 1]]) as u64;
                 *pos += 2;
                 v
@@ -366,7 +376,7 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
         let (major, count) = read_cbor_uint(&cbor, &mut pos);
         assert_eq!(major, 5, "outer CBOR must be a map");
         let mut prev_key: Option<u64> = None;
-        for pair_idx in 0..count {
+        for _pair_idx in 0..count {
             let (km, kv) = read_cbor_uint(&cbor, &mut pos);
             assert_eq!(km, 0, "outer map keys must be unsigned integers");
             if let Some(p) = prev_key {
@@ -390,7 +400,6 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
                 // skip value for other keys
                 skip_cbor_item(&cbor, &mut pos);
             }
-            let _ = pair_idx; // suppress unused warning
         }
     }
 
@@ -1445,8 +1454,20 @@ def decode_cbor_map(data):
             result[k] = v
         idx += 1
     else:
-        count = data[idx] & 0x1f
+        info = data[idx] & 0x1f
         idx += 1
+        if info < 24:
+            count = info
+        elif info == 24:
+            count = data[idx]; idx += 1
+        elif info == 25:
+            count = struct.unpack('>H', data[idx:idx+2])[0]; idx += 2
+        elif info == 26:
+            count = struct.unpack('>I', data[idx:idx+4])[0]; idx += 4
+        elif info == 27:
+            count = struct.unpack('>Q', data[idx:idx+8])[0]; idx += 8
+        else:
+            raise ValueError(f"unsupported map additional info {info}")
         for _ in range(count):
             k, idx = decode_item(data, idx)
             v, idx = decode_item(data, idx)

@@ -1,3 +1,28 @@
 target/
 test-programs/*.o
 crates/sonde-pair-ui/src-tauri/gen/
+
+# Build artifacts — download from CI, don't commit
+*.exe
+*.msi
+*.apk
+firmware/flash_image.bin
+firmware-modem/flash_image.bin
+flash_image.bin
+modem_firmware.bin
+bin/
+
+# Secrets and runtime state — never commit
+master.key
+*.key
+sonde.db
+sonde.db-shm
+sonde.db-wal
+
+# Logs
+logcat*.txt
+
+# APK build artifacts
+apk/
+apk-nightly/
+installer/

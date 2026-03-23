@@ -2000,11 +2000,18 @@ mod tests {
             if chunk_size == 0 {
                 return;
             }
-            for chunk in data.chunks(chunk_size) {
-                self.indication_queue.borrow_mut().push_back(chunk.to_vec());
+            let was_empty = self.indication_queue.borrow().is_empty();
+            {
+                let mut queue = self.indication_queue.borrow_mut();
+                for chunk in data.chunks(chunk_size) {
+                    queue.push_back(chunk.to_vec());
+                }
             }
-            // Send the first chunk immediately (mirrors EspBleDriver).
-            self.send_next_chunk();
+            if !self.awaiting_confirm.get() && was_empty {
+                // Send the first chunk immediately (mirrors EspBleDriver)
+                // while preserving the confirmation-gated pacing model.
+                self.send_next_chunk();
+            }
         }
         fn pairing_confirm_reply(&mut self, accept: bool) {
             self.pairing_replies.push(accept);
@@ -2296,7 +2303,16 @@ mod tests {
         let mut decoder2 = FrameDecoder::new();
         decoder2.push(&tx2);
 
-        let decoded = decoder2.decode().unwrap();
+        let decoded = match decoder2.decode() {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                panic!(
+                    "decoder error for empty BleEvent::Recv; expected either a valid BLE_RECV, \
+                     no frame, or dropped frame behavior, but got error: {:?}",
+                    e
+                );
+            }
+        };
         if let Some(msg) = decoded {
             match msg {
                 ModemMessage::BleRecv(r) => {

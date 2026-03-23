@@ -499,8 +499,7 @@ mod tests {
                             input.len() >= 2,
                             "truncated CBOR: expected 2 bytes for length"
                         );
-                        let val =
-                            u16::from_be_bytes([input[0], input[1]]) as u64;
+                        let val = u16::from_be_bytes([input[0], input[1]]) as u64;
                         *input = &input[2..];
                         val
                     }
@@ -509,9 +508,8 @@ mod tests {
                             input.len() >= 4,
                             "truncated CBOR: expected 4 bytes for length"
                         );
-                        let val = u32::from_be_bytes([
-                            input[0], input[1], input[2], input[3],
-                        ]) as u64;
+                        let val =
+                            u32::from_be_bytes([input[0], input[1], input[2], input[3]]) as u64;
                         *input = &input[4..];
                         val
                     }
@@ -521,24 +519,18 @@ mod tests {
                             "truncated CBOR: expected 8 bytes for length"
                         );
                         let val = u64::from_be_bytes([
-                            input[0], input[1], input[2], input[3],
-                            input[4], input[5], input[6], input[7],
+                            input[0], input[1], input[2], input[3], input[4], input[5], input[6],
+                            input[7],
                         ]);
                         *input = &input[8..];
                         val
                     }
-                    _ => panic!(
-                        "unsupported CBOR additional information for length: {}",
-                        ai
-                    ),
+                    _ => panic!("unsupported CBOR additional information for length: {}", ai),
                 }
             }
 
             fn consume_item(input: &mut &[u8]) {
-                assert!(
-                    !input.is_empty(),
-                    "truncated CBOR: unexpected end of input"
-                );
+                assert!(!input.is_empty(), "truncated CBOR: unexpected end of input");
                 let initial = input[0];
                 *input = &input[1..];
                 let major = initial >> 5;
@@ -584,9 +576,7 @@ mod tests {
                     // Array
                     4 => {
                         if ai == 31 {
-                            panic!(
-                                "encoded CBOR must not use indefinite-length arrays (0x9F)"
-                            );
+                            panic!("encoded CBOR must not use indefinite-length arrays (0x9F)");
                         }
                         let len = read_len(ai, input);
                         for _ in 0..len {
@@ -596,9 +586,7 @@ mod tests {
                     // Map
                     5 => {
                         if ai == 31 {
-                            panic!(
-                                "encoded CBOR must not use indefinite-length maps (0xBF)"
-                            );
+                            panic!("encoded CBOR must not use indefinite-length maps (0xBF)");
                         }
                         let len = read_len(ai, input);
                         for _ in 0..len {

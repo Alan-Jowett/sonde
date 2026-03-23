@@ -4569,6 +4569,10 @@ mod tests {
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
         // Exactly 1 WAKE frame sent (no retries needed).
         assert_eq!(transport.outbound.len(), 1);
+
+        // Decode the outbound frame and ensure it is a WAKE message.
+        let decoded = decode_frame(&transport.outbound[0]).unwrap();
+        assert_eq!(decoded.header.msg_type, MSG_WAKE);
     }
 
     // --- Gap 2: ND-0103 — send_recv() frame size enforcement ---
@@ -4577,6 +4581,20 @@ mod tests {
     fn test_send_recv_max_blob() {
         // ND-0103 / T-N103: send_recv() with maximum blob that fits
         // within the frame budget succeeds.
+        //
+        // Derive the maximum blob size dynamically to avoid coupling
+        // to CBOR encoding details (overhead varies with blob length).
+        let mut max_blob_size = sonde_protocol::MAX_PAYLOAD_SIZE;
+        while max_blob_size > 0 {
+            let probe = NodeMessage::AppData {
+                blob: vec![0x00; max_blob_size],
+            };
+            if probe.encode().unwrap().len() <= sonde_protocol::MAX_PAYLOAD_SIZE {
+                break;
+            }
+            max_blob_size -= 1;
+        }
+
         let psk = [0xC2; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -4588,8 +4606,7 @@ mod tests {
         let identity = NodeIdentity { key_hint, psk };
         let mut seq = 100u64;
 
-        // Max blob for APP_DATA: 207 (MAX_PAYLOAD_SIZE) - 4 (CBOR overhead) = 203
-        let blob = vec![0xAB; 203];
+        let blob = vec![0xAB; max_blob_size];
         let result = send_recv_app_data(
             &mut transport,
             &identity,
@@ -4611,10 +4628,19 @@ mod tests {
         // ND-0103 / T-N104: send_recv() with oversized blob is rejected.
         // Seq is not advanced and no frame is sent.
         //
-        // Use a blob of 204 bytes — this is within the raw MAX_PAYLOAD_SIZE
-        // (207) pre-check but exceeds the budget once CBOR overhead (map
-        // header + key + bstr length prefix = 4 bytes) is added, exercising
-        // the post-encoding size check rather than just the fast pre-check.
+        // Derive the boundary dynamically: max_blob_size + 1 must be
+        // rejected by the post-encoding size check.
+        let mut max_blob_size = sonde_protocol::MAX_PAYLOAD_SIZE;
+        while max_blob_size > 0 {
+            let probe = NodeMessage::AppData {
+                blob: vec![0x00; max_blob_size],
+            };
+            if probe.encode().unwrap().len() <= sonde_protocol::MAX_PAYLOAD_SIZE {
+                break;
+            }
+            max_blob_size -= 1;
+        }
+
         let psk = [0xC3; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();
@@ -4622,7 +4648,7 @@ mod tests {
         let identity = NodeIdentity { key_hint, psk };
         let mut seq = 50u64;
 
-        let blob = vec![0xCD; 204];
+        let blob = vec![0xCD; max_blob_size + 1];
         let result = send_recv_app_data(
             &mut transport,
             &identity,
@@ -4740,6 +4766,9 @@ mod tests {
 
         let mut rng2 = MockRng(1);
         let mut interp2 = MockBpfInterpreter::new();
+        // Create fresh MapStorage for cycle 2 to model a rebooted wake
+        // cycle where RAM-backed map state does not survive deep sleep.
+        let mut map_storage2 = MapStorage::new(DEFAULT_MAP_BUDGET);
 
         let outcome2 = run_wake_cycle(
             &mut transport2,
@@ -4749,7 +4778,7 @@ mod tests {
             &clock,
             &MockBattery,
             &mut interp2,
-            &mut map_storage,
+            &mut map_storage2,
             &TestHmac,
             &TestSha256,
         );
@@ -4970,6 +4999,17 @@ mod tests {
         );
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // Verify the node entered the chunk-transfer path by sending
+        // at least one MSG_GET_CHUNK before the wrong msg_type was
+        // received and discarded.
+        let sent_get_chunk = transport
+            .outbound
+            .iter()
+            .any(|f| decode_frame(f).map(|d| d.header.msg_type == MSG_GET_CHUNK).unwrap_or(false));
+        assert!(
+            sent_get_chunk,
+            "node must have sent MSG_GET_CHUNK before discarding wrong msg_type"
+        );
         assert!(
             !interp.loaded,
             "program must not load — wrong msg_type was discarded"

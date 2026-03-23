@@ -1711,6 +1711,44 @@ async fn t_e2e_063a_stale_timestamp_discarded() {
         env.storage.get_node(node_id).await.unwrap().is_none(),
         "node must NOT be registered with stale timestamp"
     );
+
+    // Positive control: same setup with a fresh timestamp MUST succeed,
+    // proving the discard above was specifically due to the stale timestamp.
+    let fresh_node_id = "fresh-ts-node";
+    let fresh_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        fresh_node_id,
+        &node_psk,
+        rf_channel,
+        &[],
+    );
+    let fresh_cbor_map = ciborium::Value::Map(vec![(
+        ciborium::Value::Integer(sonde_protocol::PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(fresh_payload),
+    )]);
+    let mut fresh_cbor_buf = Vec::new();
+    ciborium::into_writer(&fresh_cbor_map, &mut fresh_cbor_buf).unwrap();
+    let fresh_header = FrameHeader {
+        key_hint: node_key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce: 0x1234_5678_9ABC_DEF1,
+    };
+    let fresh_frame = encode_frame(&fresh_header, &fresh_cbor_buf, &node_psk, &hmac).unwrap();
+    let fresh_result = env
+        .gateway
+        .process_frame(&fresh_frame, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+        .await;
+    assert!(
+        fresh_result.is_some(),
+        "positive control: fresh timestamp must produce PEER_ACK"
+    );
+    assert!(
+        env.storage.get_node(fresh_node_id).await.unwrap().is_some(),
+        "positive control: node must be registered with fresh timestamp"
+    );
 }
 
 /// T-E2E-063b — Frame key_hint / CBOR node_key_hint mismatch → silent discard.
@@ -1777,6 +1815,46 @@ async fn t_e2e_063b_key_hint_mismatch_discarded() {
     assert!(
         env.storage.get_node(node_id).await.unwrap().is_none(),
         "node must NOT be registered with mismatched key_hint"
+    );
+
+    // Positive control: same payload with the CORRECT key_hint MUST succeed,
+    // proving the discard above was specifically due to the key_hint mismatch.
+    let good_node_id = "keyhint-good-node";
+    let good_node_psk = [0xCEu8; 32];
+    let good_key_hint = compute_key_hint(&good_node_psk);
+    let good_payload = build_encrypted_payload(
+        identity.public_key(),
+        identity.gateway_id(),
+        &phone_psk,
+        phone_key_hint,
+        good_node_id,
+        &good_node_psk,
+        rf_channel,
+        &[],
+    );
+    let good_cbor_map = ciborium::Value::Map(vec![(
+        ciborium::Value::Integer(sonde_protocol::PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(good_payload),
+    )]);
+    let mut good_cbor_buf = Vec::new();
+    ciborium::into_writer(&good_cbor_map, &mut good_cbor_buf).unwrap();
+    let good_header = FrameHeader {
+        key_hint: good_key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce: 0xAAAA_BBBB_CCCC_DDDE,
+    };
+    let good_frame = encode_frame(&good_header, &good_cbor_buf, &good_node_psk, &hmac).unwrap();
+    let good_result = env
+        .gateway
+        .process_frame(&good_frame, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+        .await;
+    assert!(
+        good_result.is_some(),
+        "positive control: matching key_hint must produce PEER_ACK"
+    );
+    assert!(
+        env.storage.get_node(good_node_id).await.unwrap().is_some(),
+        "positive control: node must be registered with matching key_hint"
     );
 }
 

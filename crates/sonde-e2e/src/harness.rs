@@ -1435,6 +1435,12 @@ pub fn build_encrypted_payload_with_timestamp(
 // GatewayBleAdapter — routes sonde-pair BleTransport calls to handle_ble_recv
 // ---------------------------------------------------------------------------
 
+/// Registration window duration for test adapters (seconds).
+///
+/// The BLE onboarding flow requires an open registration window. 300 s (5 min)
+/// is generous enough for any realistic test scenario without risking timeouts.
+const TEST_REG_WINDOW_SECS: u32 = 300;
+
 /// BLE transport adapter that routes `sonde_pair::transport::BleTransport`
 /// calls directly to the gateway's `handle_ble_recv`, bridging sonde-pair's
 /// state machine to the gateway engine without network or BLE hardware.
@@ -1455,7 +1461,7 @@ impl GatewayBleAdapter {
         rf_channel: u8,
     ) -> Self {
         let mut window = sonde_gateway::ble_pairing::RegistrationWindow::new();
-        window.open(300);
+        window.open(TEST_REG_WINDOW_SECS);
         Self {
             identity,
             storage,

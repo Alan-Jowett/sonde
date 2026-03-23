@@ -1928,9 +1928,11 @@ mod tests {
     /// flow control, mirroring the real `EspBleDriver` pacing logic.
     ///
     /// Key behaviours:
-    /// - `indicate()` fragments into chunks of (MTU − 3) bytes and sends
-    ///   the first chunk immediately (setting `awaiting_confirm`).
-    /// - `advance_indication()` sends the next chunk **only** when
+    /// - `indicate()` fragments into chunks of (MTU − 3) bytes, enqueues
+    ///   them, and sends the next chunk immediately (setting
+    ///   `awaiting_confirm`) **only** when not already awaiting a confirm
+    ///   and there were no pending chunks in the indication queue.
+    /// - `advance_indication()` sends the next queued chunk **only** when
     ///   `awaiting_confirm` is false (i.e. the ATT confirmation arrived).
     /// - `simulate_confirm()` clears the flag, as `on_notify_tx` would.
     struct FragmentingMockBle {
@@ -2270,18 +2272,20 @@ mod tests {
         }
     }
 
-    /// Validates: T-0613b / MD-0409 AC4 — empty GATT writes silently
-    /// discarded.
+    /// Validates: T-0613b / MD-0409 AC4 — empty BLE data handling.
     ///
-    /// The BLE driver (`on_write` callback) must not emit `BleEvent::Recv`
-    /// for empty writes. This test injects an explicit empty `BleEvent::Recv`
-    /// into the bridge and verifies the bridge still forwards it (the discard
-    /// responsibility lies in the BLE layer, not the bridge). It then
-    /// confirms that the `FragmentingMockBle` does not emit such events.
+    /// Part 1: Verifies the bridge does not emit a BLE_RECV when no BLE
+    /// event is queued (baseline sanity check — no event means no output).
+    ///
+    /// Part 2: Injects an explicit empty `BleEvent::Recv` into the bridge
+    /// and verifies the bridge handles it gracefully (defense-in-depth).
+    /// The discard responsibility for empty GATT writes lies in the BLE
+    /// driver layer, not the bridge; this test validates bridge resilience.
     #[test]
     fn t0613b_empty_gatt_write_no_ble_recv() {
-        // Part 1: Verify the BLE layer (FragmentingMockBle) does not produce
-        // a Recv event for an empty GATT write — no event means no BLE_RECV.
+        // Part 1: Baseline sanity — no BLE event queued means no BLE_RECV
+        // output. This does not exercise empty-write discard logic (which is
+        // a BLE driver responsibility), only verifies the bridge stays quiet.
         let mut bridge = make_bridge_with_fragmenting_ble(247);
         bridge.poll();
         assert!(

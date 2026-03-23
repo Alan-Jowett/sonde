@@ -4092,9 +4092,6 @@ mod tests {
 
     #[test]
     fn test_stack_violation_graceful() {
-        // ND-0605 AC4: A BPF program that writes beyond the 512-byte
-        // per-frame stack boundary is terminated with a stack violation.
-        // The node must still sleep normally (no crash).
         let psk = [0x65; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();

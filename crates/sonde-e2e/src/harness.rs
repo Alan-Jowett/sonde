@@ -1443,7 +1443,8 @@ pub struct GatewayBleAdapter {
     storage: Arc<dyn sonde_gateway::storage::Storage>,
     window: tokio::sync::Mutex<sonde_gateway::ble_pairing::RegistrationWindow>,
     rf_channel: u8,
-    pending_response: tokio::sync::Mutex<Option<Vec<u8>>>,
+    response_queue: tokio::sync::Mutex<VecDeque<Vec<u8>>>,
+    response_notify: tokio::sync::Notify,
 }
 
 impl GatewayBleAdapter {
@@ -1460,7 +1461,8 @@ impl GatewayBleAdapter {
             storage,
             window: tokio::sync::Mutex::new(window),
             rf_channel,
-            pending_response: tokio::sync::Mutex::new(None),
+            response_queue: tokio::sync::Mutex::new(VecDeque::new()),
+            response_notify: tokio::sync::Notify::new(),
         }
     }
 }
@@ -1542,7 +1544,10 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
                 None,
             )
             .await;
-            *self.pending_response.lock().await = response;
+            if let Some(resp) = response {
+                self.response_queue.lock().await.push_back(resp);
+                self.response_notify.notify_one();
+            }
             Ok(())
         })
     }
@@ -1559,14 +1564,13 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
     > {
         Box::pin(async move {
             let timeout_duration = Duration::from_millis(timeout_ms);
-            let poll_interval = Duration::from_millis(5);
 
             let wait_future = async {
                 loop {
-                    if let Some(response) = self.pending_response.lock().await.take() {
+                    if let Some(response) = self.response_queue.lock().await.pop_front() {
                         return response;
                     }
-                    tokio::time::sleep(poll_interval).await;
+                    self.response_notify.notified().await;
                 }
             };
 

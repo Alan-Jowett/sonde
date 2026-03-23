@@ -1643,7 +1643,7 @@ fn test_p064() {
     }
 }
 
-// T-P065: Nonce echo verification — WAKE → COMMAND pair.
+// T-P065: Nonce field round-trip fidelity — WAKE → COMMAND pair (codec layer only).
 #[test]
 fn test_p065() {
     // Protocol §7.3: The response frame echoes the request nonce so the
@@ -1729,7 +1729,7 @@ fn test_p065() {
     );
 }
 
-// T-P066: Nonce echo verification — GET_CHUNK → CHUNK and APP_DATA → APP_DATA_REPLY pairs.
+// T-P066: Nonce field round-trip fidelity — GET_CHUNK → CHUNK and APP_DATA → APP_DATA_REPLY pairs (codec layer only).
 #[test]
 fn test_p066() {
     let psk = [0x42u8; 32];
@@ -1816,12 +1816,15 @@ fn test_p066() {
     );
 }
 
-// T-P067: Multiple APP_DATA nonce round-trip fidelity.
+// T-P067: Multiple APP_DATA nonce/sequence round-trip fidelity (codec layer only).
 #[test]
 fn test_p067() {
-    // This test verifies that the codec faithfully round-trips distinct
-    // nonce values across multiple frames. Sequence enforcement is the
-    // responsibility of the node/gateway state machines, not the codec.
+    // Verifies that the codec faithfully round-trips distinct nonce values
+    // across multiple APP_DATA frames. Per protocol §5.6, post-WAKE messages
+    // carry a gateway-assigned sequence number in the nonce field; this test
+    // confirms the codec preserves those values through encode → decode.
+    // Monotonic ordering enforcement is the responsibility of the
+    // node/gateway state machines, not the codec layer.
     let psk = [0x42u8; 32];
 
     let payloads: Vec<Vec<u8>> = vec![

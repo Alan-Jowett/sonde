@@ -285,6 +285,104 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
         );
     }
 
+    // Byte-level key ordering verification: walk the raw CBOR bytes to
+    // confirm map keys appear in ascending order, independent of how
+    // ciborium iterates decoded map entries.
+    fn read_cbor_uint(data: &[u8], pos: &mut usize) -> (u8, u64) {
+        assert!(*pos < data.len(), "unexpected end of CBOR at offset {}", *pos);
+        let byte = data[*pos];
+        *pos += 1;
+        let major = byte >> 5;
+        let info = byte & 0x1f;
+        let val = match info {
+            0..=23 => info as u64,
+            24 => {
+                let v = data[*pos] as u64;
+                *pos += 1;
+                v
+            }
+            25 => {
+                let v = u16::from_be_bytes([data[*pos], data[*pos + 1]]) as u64;
+                *pos += 2;
+                v
+            }
+            _ => panic!("unexpected CBOR additional info {} at offset {}", info, *pos - 1),
+        };
+        (major, val)
+    }
+
+    fn skip_cbor_item(data: &[u8], pos: &mut usize) {
+        let (major, val) = read_cbor_uint(data, pos);
+        match major {
+            0 | 1 => {} // unsigned/negative int — already consumed
+            2 | 3 => *pos += val as usize, // byte/text string
+            4 => {
+                for _ in 0..val {
+                    skip_cbor_item(data, pos);
+                }
+            }
+            5 => {
+                for _ in 0..val {
+                    skip_cbor_item(data, pos); // key
+                    skip_cbor_item(data, pos); // value
+                }
+            }
+            _ => panic!("unhandled CBOR major type {} at offset {}", major, *pos),
+        }
+    }
+
+    fn assert_map_keys_ascending(data: &[u8], pos: &mut usize, label: &str) {
+        let (major, count) = read_cbor_uint(data, pos);
+        assert_eq!(major, 5, "{} must be a CBOR map", label);
+        let mut prev_key: Option<u64> = None;
+        for _ in 0..count {
+            let (km, kv) = read_cbor_uint(data, pos);
+            assert_eq!(km, 0, "{} map keys must be unsigned integers", label);
+            if let Some(p) = prev_key {
+                assert!(
+                    kv > p,
+                    "{}: keys not in ascending order ({} after {})",
+                    label, kv, p
+                );
+            }
+            prev_key = Some(kv);
+            skip_cbor_item(data, pos); // skip value
+        }
+    }
+
+    {
+        let mut pos = 0usize;
+        // Outer map
+        let (major, count) = read_cbor_uint(&cbor, &mut pos);
+        assert_eq!(major, 5, "outer CBOR must be a map");
+        let mut prev_key: Option<u64> = None;
+        for pair_idx in 0..count {
+            let (km, kv) = read_cbor_uint(&cbor, &mut pos);
+            assert_eq!(km, 0, "outer map keys must be unsigned integers");
+            if let Some(p) = prev_key {
+                assert!(
+                    kv > p,
+                    "outer map keys not in ascending order ({} after {})",
+                    kv, p
+                );
+            }
+            prev_key = Some(kv);
+            if kv == 2 {
+                // key 2 → array of MapDef maps
+                let (am, alen) = read_cbor_uint(&cbor, &mut pos);
+                assert_eq!(am, 4, "value of outer key 2 must be a CBOR array");
+                for mi in 0..alen {
+                    let label = format!("MapDef[{}]", mi);
+                    assert_map_keys_ascending(&cbor, &mut pos, &label);
+                }
+            } else {
+                // skip value for other keys
+                skip_cbor_item(&cbor, &mut pos);
+            }
+            let _ = pair_idx; // suppress unused warning
+        }
+    }
+
     // Shortest-form encoding verification: inspect the raw CBOR bytes
     // directly. Re-encoding a decoded `ciborium::Value` always produces
     // minimal encoding, which makes the check a tautology. Instead, walk
@@ -379,7 +477,19 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
                     pos += 8;
                     v
                 }
-                _ => continue, // indefinite-length or break: not expected in deterministic CBOR
+                _ => {
+                    // Indefinite-length encodings (info == 31) for byte/text strings,
+                    // arrays, and maps are not allowed in deterministic CBOR.
+                    if info == 31 && (major == 2 || major == 3 || major == 4 || major == 5) {
+                        panic!(
+                            "indefinite-length CBOR item (major type {} with info 31) \
+                             at byte {} is not allowed in deterministic CBOR",
+                            major,
+                            pos - 1
+                        );
+                    }
+                    continue;
+                }
             };
 
             // Skip over content bytes for byte strings and text strings.
@@ -944,12 +1054,15 @@ async fn t0400_program_available_immediately_after_ingestion() {
 
 /// Multiple programs routed to a single handler via `ProgramMatcher::Any`.
 ///
-/// Verifies that a gateway configured with one catch-all handler correctly
-/// routes APP_DATA from two nodes with different `current_program_hash`
-/// values through the same handler. Requires Python 3 for the handler
-/// process. Skipped if unavailable or if the handler is too slow (CI).
+/// Verifies that a gateway configured with one catch-all handler
+/// configuration correctly routes APP_DATA from two nodes with different
+/// `current_program_hash` values to a handler matched by that
+/// configuration. Requires Python 3 for the handler process. Skipped if
+/// unavailable or if the handler is too slow (CI).
 ///
-/// Note: `find_handler` routing logic is also covered by unit tests in
+/// Note: this test does not assert that both requests are handled by the
+/// same handler process instance; it validates the routing configuration.
+/// `find_handler` routing logic is also covered by unit tests in
 /// `handler.rs`; this integration test verifies the full end-to-end path.
 #[tokio::test]
 #[ignore] // Requires Python 3; opt-in via `cargo test -- --ignored`

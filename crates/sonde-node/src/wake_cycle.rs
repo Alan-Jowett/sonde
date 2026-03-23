@@ -3500,9 +3500,9 @@ mod tests {
     fn test_ac3_stack_overflow_graceful() {
         // ND-0605 AC3: A BPF stack overflow must terminate the program
         // and the node must sleep normally (no crash). The mock
-        // interpreter returns RuntimeError to simulate the overflow
-        // that the real sonde-bpf interpreter would produce when a
-        // program accesses memory beyond the 512-byte per-frame stack.
+        // interpreter returns RuntimeError("stack overflow") to simulate
+        // the overflow that the real sonde-bpf interpreter would produce
+        // when a program accesses memory beyond the 512-byte per-frame stack.
         let psk = [0xF3; 32];
         let key_hint = 1u16;
         let mut transport = MockTransport::new();

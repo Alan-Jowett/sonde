@@ -3497,8 +3497,8 @@ mod tests {
     // ===================================================================
 
     #[test]
-    fn test_stack_violation_graceful() {
-        // ND-0605 AC3: A BPF stack violation must terminate the program
+    fn test_ac3_stack_overflow_graceful() {
+        // ND-0605 AC3: A BPF stack overflow must terminate the program
         // and the node must sleep normally (no crash). The mock
         // interpreter returns RuntimeError to simulate the overflow
         // that the real sonde-bpf interpreter would produce when a

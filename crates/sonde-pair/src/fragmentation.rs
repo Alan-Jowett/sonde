@@ -27,7 +27,8 @@ const MAX_REASSEMBLY_SIZE: usize = 4096;
 /// Fragment data into chunks for BLE Write Long.
 ///
 /// Each chunk is at most `max_chunk_size` bytes.  Returns a single-element
-/// vector if the data fits in one chunk.
+/// vector if the data fits in one chunk, or an empty vector if `data` is
+/// empty.
 ///
 /// # Errors
 ///
@@ -78,7 +79,7 @@ impl IndicationReassembler {
             self.reset();
             return Err(PairingError::InvalidResponse {
                 msg_type: 0,
-                reason: "empty indication chunk".into(),
+                reason: "empty indication chunk (msg_type unknown)".into(),
             });
         }
 

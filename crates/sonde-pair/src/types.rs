@@ -127,6 +127,7 @@ impl std::fmt::Display for NodeAckStatus {
 /// The transport exposes this after a successful connection so application
 /// logic can reject insecure methods before exchanging key material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PairingMethod {
     /// LE Secure Connections (LESC) Numeric Comparison — required.
     NumericComparison,

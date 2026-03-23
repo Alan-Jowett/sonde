@@ -624,14 +624,18 @@ integrity:
 1. **Highest risk**: D6 (constraint violation in design), D7 (illusory
    test coverage), and D10 (constraint violation in code) — these
    indicate active conflicts between artifacts.
-2. **High risk**: D2 (untested requirement), D5 (assumption drift), and
-   D8 (unimplemented requirement) — these indicate silent gaps that
-   will surface late.
-3. **Medium risk**: D1 (untraced requirement), D3 (orphaned design),
-   and D9 (undocumented behavior) — these indicate incomplete
-   traceability that needs human resolution.
-4. **Lowest risk**: D4 (orphaned test case) — effort misdirection but
-   no safety or correctness impact.
+
+> Note: In this code-compliance audit template, only D8–D10 appear as
+> finding labels. D1–D7 are defined in the companion templates for
+> cross-reference but do not participate in ordering here.
+
+1. **Highest risk**: D10 (constraint violation in code) — indicates an
+   active conflict between implementation and governing constraints.
+2. **High risk**: D8 (unimplemented requirement) — indicates a silent
+   gap between specified behavior and implemented behavior.
+3. **Medium risk**: D9 (undocumented behavior) — indicates behavior that
+   exists in code but is not anchored to specification artifacts and
+   requires human resolution.
 
 ## Usage
 

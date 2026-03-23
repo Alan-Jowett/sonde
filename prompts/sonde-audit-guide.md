@@ -1,7 +1,7 @@
 # Sonde Audit Guide — Using PromptKit for Specification Integrity
 
 This guide explains how to use the assembled PromptKit audit prompts
-to audit any Sonde component. Three prompts are provided:
+to audit any Sonde component. Three audit prompt templates are provided:
 
 1. **Trifecta audit** (`sonde-trifecta-audit.md`) — cross-checks
    requirements ↔ design ↔ validation for specification drift (D1–D7)

@@ -398,8 +398,8 @@ Classify every finding using the specification-drift taxonomy, **restricted in t
      does (or doesn't)
    - Impact: what could go wrong
    - Recommended resolution
-4. Order findings primarily by severity, then by taxonomy ranking
-   within each severity tier.
+4. Order findings primarily by severity, then by taxonomy sub-ranking
+   within each severity tier (D13 highest risk, then D12, then D11).
 
 ## Phase 6: Coverage Summary
 
@@ -638,14 +638,20 @@ integrity:
    test coverage), D10 (constraint violation in code), and D13
    (assertion mismatch) — these indicate active conflicts between
    artifacts.
-2. **High risk**: D2 (untested requirement), D5 (assumption drift),
-   D8 (unimplemented requirement), and D12 (untested acceptance
-   criterion) — these indicate silent gaps that will surface late.
-3. **Medium risk**: D1 (untraced requirement), D3 (orphaned design),
-   D9 (undocumented behavior), and D11 (unimplemented test case) —
-   these indicate incomplete traceability that needs human resolution.
-4. **Lowest risk**: D4 (orphaned test case) — effort misdirection but
-   no safety or correctness impact.
+
+> Note: In this test-compliance audit template, only D11–D13 appear as
+> finding labels. D1–D10 are defined in the companion templates for
+> cross-reference but do not participate in ordering here.
+
+1. **Highest risk**: D13 (assertion mismatch) — indicates active
+   conflicts between what tests assert and what should be asserted
+   based on the specification.
+2. **High risk**: D12 (untested acceptance criterion) — indicates
+   acceptance criteria that will not be verified, leading to silent
+   gaps that surface late.
+3. **Medium risk**: D11 (unimplemented test case) — indicates planned
+   tests that are not realized in the concrete test artifacts, creating
+   incomplete coverage that needs resolution.
 
 ## Usage
 

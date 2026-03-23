@@ -36,6 +36,49 @@ use sonde_protocol::{encode_ble_envelope, parse_ble_envelope};
 
 use common::{build_admin_with_modem, create_transport_and_server, read_modem_msg};
 
+use tokio::io::DuplexStream;
+use tonic::Status;
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Collect a window event and a modem signal in either order, with a 5 s
+/// timeout so tests fail fast instead of hanging CI.
+async fn await_window_event_and_modem_signal(
+    stream: &mut tokio_stream::wrappers::ReceiverStream<Result<BlePairingEvent, Status>>,
+    server: &mut DuplexStream,
+    decoder: &mut FrameDecoder,
+    buf: &mut [u8],
+    event_matches: impl Fn(&BlePairingEvent) -> bool,
+    expected_msg: ModemMessage,
+    label: &str,
+) {
+    let mut saw_event = false;
+    let mut saw_modem = false;
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !(saw_event && saw_modem) {
+            tokio::select! {
+                maybe_event = stream.next(), if !saw_event => {
+                    let event = maybe_event
+                        .unwrap_or_else(|| panic!("{label}: stream ended"))
+                        .unwrap_or_else(|e| panic!("{label}: stream error: {e}"));
+                    assert!(event_matches(&event), "{label}: unexpected event {event:?}");
+                    saw_event = true;
+                }
+                msg = async { read_modem_msg(server, decoder, buf).await }, if !saw_modem => {
+                    assert!(
+                        std::mem::discriminant(&msg) == std::mem::discriminant(&expected_msg),
+                        "{label}: expected {expected_msg:?}, got {msg:?}"
+                    );
+                    saw_modem = true;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{label}: timed out after 5 s"));
+}
+
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const BLE_MSG_REQUEST_GW_INFO: u8 = 0x01;
@@ -399,56 +442,32 @@ async fn t1226_ble_enable_disable_signals() {
     let mut stream = resp.into_inner();
 
     // Collect WindowOpened AND BLE_ENABLE in either order.
-    let mut saw_window_opened = false;
-    let mut saw_ble_enable = false;
-
-    while !(saw_window_opened && saw_ble_enable) {
-        tokio::select! {
-            maybe_event = stream.next(), if !saw_window_opened => {
-                let event = maybe_event.expect("stream ended").expect("should get WindowOpened");
-                assert!(
-                    matches!(event.event, Some(ble_pairing_event::Event::WindowOpened(_))),
-                    "expected WindowOpened event, got {event:?}"
-                );
-                saw_window_opened = true;
-            }
-            msg = async { read_modem_msg(&mut server, &mut decoder, &mut buf).await }, if !saw_ble_enable => {
-                assert!(
-                    matches!(msg, ModemMessage::BleEnable),
-                    "expected BLE_ENABLE after open, got {msg:?}"
-                );
-                saw_ble_enable = true;
-            }
-        }
-    }
+    await_window_event_and_modem_signal(
+        &mut stream,
+        &mut server,
+        &mut decoder,
+        &mut buf,
+        |e| matches!(e.event, Some(ble_pairing_event::Event::WindowOpened(_))),
+        ModemMessage::BleEnable,
+        "open: WindowOpened + BLE_ENABLE",
+    )
+    .await;
 
     // 3. Close registration window explicitly.
     let close_resp = admin.close_ble_pairing(Request::new(Empty {})).await;
     assert!(close_resp.is_ok(), "CloseBlePairing must succeed");
 
     // Collect BLE_DISABLE AND WindowClosed in either order.
-    let mut saw_ble_disable = false;
-    let mut saw_window_closed = false;
-
-    while !(saw_ble_disable && saw_window_closed) {
-        tokio::select! {
-            maybe_event = stream.next(), if !saw_window_closed => {
-                let event = maybe_event.expect("stream ended").expect("should get WindowClosed");
-                assert!(
-                    matches!(event.event, Some(ble_pairing_event::Event::WindowClosed(_))),
-                    "expected WindowClosed event, got {event:?}"
-                );
-                saw_window_closed = true;
-            }
-            msg = async { read_modem_msg(&mut server, &mut decoder, &mut buf).await }, if !saw_ble_disable => {
-                assert!(
-                    matches!(msg, ModemMessage::BleDisable),
-                    "expected BLE_DISABLE after close, got {msg:?}"
-                );
-                saw_ble_disable = true;
-            }
-        }
-    }
+    await_window_event_and_modem_signal(
+        &mut stream,
+        &mut server,
+        &mut decoder,
+        &mut buf,
+        |e| matches!(e.event, Some(ble_pairing_event::Event::WindowClosed(_))),
+        ModemMessage::BleDisable,
+        "close: WindowClosed + BLE_DISABLE",
+    )
+    .await;
 
     // Confirm window is actually closed.
     assert!(
@@ -462,56 +481,28 @@ async fn t1226_ble_enable_disable_signals() {
     let mut stream2 = resp.into_inner();
 
     // Collect WindowOpened AND BLE_ENABLE in either order.
-    let mut saw_window_opened = false;
-    let mut saw_ble_enable = false;
-
-    while !(saw_window_opened && saw_ble_enable) {
-        tokio::select! {
-            maybe_event = stream2.next(), if !saw_window_opened => {
-                let event = maybe_event.expect("stream ended").expect("should get WindowOpened");
-                assert!(
-                    matches!(event.event, Some(ble_pairing_event::Event::WindowOpened(_))),
-                    "expected WindowOpened event, got {event:?}"
-                );
-                saw_window_opened = true;
-            }
-            msg = async { read_modem_msg(&mut server, &mut decoder, &mut buf).await }, if !saw_ble_enable => {
-                assert!(
-                    matches!(msg, ModemMessage::BleEnable),
-                    "expected BLE_ENABLE after second open, got {msg:?}"
-                );
-                saw_ble_enable = true;
-            }
-        }
-    }
+    await_window_event_and_modem_signal(
+        &mut stream2,
+        &mut server,
+        &mut decoder,
+        &mut buf,
+        |e| matches!(e.event, Some(ble_pairing_event::Event::WindowOpened(_))),
+        ModemMessage::BleEnable,
+        "second open: WindowOpened + BLE_ENABLE",
+    )
+    .await;
 
     // 6. Wait for auto-close: collect BLE_DISABLE AND WindowClosed in either order.
-    let mut saw_ble_disable = false;
-    let mut saw_window_closed = false;
-
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !(saw_ble_disable && saw_window_closed) {
-            tokio::select! {
-                maybe_event = stream2.next(), if !saw_window_closed => {
-                    let event = maybe_event.expect("stream ended").expect("should get WindowClosed from auto-close");
-                    assert!(
-                        matches!(event.event, Some(ble_pairing_event::Event::WindowClosed(_))),
-                        "auto-close must emit WindowClosed event, got {event:?}"
-                    );
-                    saw_window_closed = true;
-                }
-                msg = async { read_modem_msg(&mut server, &mut decoder, &mut buf).await }, if !saw_ble_disable => {
-                    assert!(
-                        matches!(msg, ModemMessage::BleDisable),
-                        "expected BLE_DISABLE after auto-close, got {msg:?}"
-                    );
-                    saw_ble_disable = true;
-                }
-            }
-        }
-    })
-    .await
-    .expect("auto-close events must arrive within 5s timeout");
+    await_window_event_and_modem_signal(
+        &mut stream2,
+        &mut server,
+        &mut decoder,
+        &mut buf,
+        |e| matches!(e.event, Some(ble_pairing_event::Event::WindowClosed(_))),
+        ModemMessage::BleDisable,
+        "auto-close: WindowClosed + BLE_DISABLE",
+    )
+    .await;
 }
 
 // ── T-1107a: Modem RESET recovery re-executes startup ───────────────────────

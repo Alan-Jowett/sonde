@@ -749,10 +749,10 @@ async fn t0103_starting_seq_not_zero_or_constant() {
         }
     }
 
-    // Not all zero.
+    // No sampled value is zero.
     assert!(
-        seq_values.iter().any(|&s| s != 0),
-        "starting_seq must not always be zero; got {:?}",
+        seq_values.iter().all(|&s| s != 0),
+        "starting_seq must not be zero for any sampled session; got {:?}",
         seq_values
     );
 

@@ -2382,6 +2382,5 @@ fn test_p049c() {
             "top-level array: expected CborError, got {:?}",
             err
         );
-
     }
 }

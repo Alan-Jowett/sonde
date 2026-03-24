@@ -616,6 +616,45 @@ The node registry and program library are accessed through the storage trait beh
 
 ---
 
+## 11A  Operational logging
+
+> **Requirements:** GW-1300 (lifecycle events), GW-1301 (modem transport state), GW-1302 (frame-level debug traces).
+
+The gateway uses the `tracing` crate for structured, levelled logging. All log entries use key=value fields for machine-parseability. Log levels follow a consistent policy:
+
+| Level | Usage |
+|---|---|
+| `ERROR` | Unrecoverable failures: handler crash, storage write failure, serial disconnect |
+| `WARN` | Recoverable anomalies: malformed CBOR, HMAC mismatch, ABI mismatch, modem tx failures |
+| `INFO` | Operator-relevant lifecycle events: node WAKE, COMMAND selected, session create/expire, PEER_REQUEST processed, PEER_ACK frame encoded, modem transport state transitions |
+| `DEBUG` | Developer diagnostics: individual modem frames (send/recv), channel-full drops, health polls |
+
+### 11A.1  Engine lifecycle logging
+
+The `Gateway::process_frame` / `handle_wake` / `handle_peer_request` methods emit structured `info!()` entries for:
+
+- **PEER_REQUEST processed** — `node_id`, `key_hint`, `result` (`"registered"` or `"duplicate"`)
+- **PEER_ACK frame encoded** — `node_id`
+- **WAKE received** — `node_id`, `seq`, `battery_mv`
+- **COMMAND selected** — `node_id`, `command_type`
+- **Session created** — `node_id` (emitted in `handle_wake` after `create_session`)
+- **Session expired** — `node_id` (emitted in `SessionManager::reap_expired`)
+
+### 11A.2  Modem transport state logging
+
+The gateway binary (`bin/gateway.rs`) logs modem transport state transitions at `INFO` level:
+
+- `"modem serial connected"` — after the serial port is opened
+- `"modem transport ready"` — after successful startup handshake
+- `"modem disconnecting"` — when a transport subsystem exits unexpectedly
+- `"modem disconnected — reconnecting"` — before each reconnection backoff sleep, with `backoff_s` indicating the delay in seconds
+
+### 11A.3  Frame-level debug traces
+
+The `UsbEspNowTransport` logs each frame at `DEBUG` level in `dispatch_message` (recv path) and `Transport::send` (send path), with fields `msg_type` (decoded from the protocol frame header, e.g., `"WAKE"`, `"COMMAND"`), `peer_mac`, and `len`. The send-path log is emitted only after a successful write to the modem.
+
+---
+
 ## 12  Error handling
 
 All protocol errors result in **silent discard** — no error response is sent to the node (security.md §6). Errors are logged internally for operational monitoring.

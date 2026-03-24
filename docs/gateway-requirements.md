@@ -944,6 +944,55 @@ The gateway modem transport adapter SHOULD poll `GET_STATUS` periodically (recom
 
 ---
 
+### GW-1300  Operational logging — lifecycle events
+
+**Priority:** Must
+**Source:** Issue #459
+
+**Description:**
+The gateway MUST emit structured `tracing` log entries (key=value fields) at `INFO` level for critical lifecycle events so that operators can monitor gateway health and debug node interactions.
+
+**Acceptance criteria:**
+
+1. When a `PEER_REQUEST` is received and processed, an `INFO` log is emitted with fields `node_id`, `key_hint`, and `result` (e.g., `"registered"` or `"duplicate"`).
+2. When a `PEER_ACK` response frame is encoded, an `INFO` log is emitted with field `node_id`.
+3. When a WAKE is received and successfully decoded, an `INFO` log is emitted with fields `node_id`, `seq` (starting sequence number), and `battery_mv`.
+4. When a COMMAND response is selected for a node, an `INFO` log is emitted with fields `node_id` and `command_type` (e.g., `"UpdateProgram"`, `"Nop"`, `"RunEphemeral"`, `"UpdateSchedule"`, `"Reboot"`).
+5. When a session is created, an `INFO` log is emitted with field `node_id`.
+6. When a session expires (reaped), an `INFO` log is emitted with field `node_id`.
+
+---
+
+### GW-1301  Operational logging — modem transport state
+
+**Priority:** Must
+**Source:** Issue #459
+
+**Description:**
+The gateway MUST log modem transport state changes at `INFO` level so that operators can track modem connectivity.
+
+**Acceptance criteria:**
+
+1. Modem transport state is logged at `INFO` level for each of the following transitions: `connected` (serial port opened), `ready` (startup handshake complete), `disconnecting` (transport subsystem exited), and `reconnecting` (before backoff sleep).
+2. Reconnection attempts include the backoff delay in the log entry.
+
+---
+
+### GW-1302  Operational logging — frame-level debug traces
+
+**Priority:** Should
+**Source:** Issue #459
+
+**Description:**
+The gateway SHOULD log individual modem frames at `DEBUG` level so that developers can trace radio traffic during troubleshooting.
+
+**Acceptance criteria:**
+
+1. Each frame received from the modem is logged at `DEBUG` level with fields `msg_type`, `peer_mac`, and `len`.
+2. Each frame sent to the modem is logged at `DEBUG` level with fields `msg_type`, `peer_mac`, and `len`.
+
+---
+
 ### GW-1103  Modem error handling
 
 **Priority:** Must

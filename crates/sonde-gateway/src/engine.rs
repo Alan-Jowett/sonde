@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{info, warn};
 
 use sonde_protocol::{
     decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
@@ -427,8 +427,23 @@ impl Gateway {
         record.sensors = sensors;
         record.registered_by_phone_id = Some(phone_id);
         if !self.storage.insert_node_if_not_exists(&record).await.ok()? {
+            // GW-1300 AC1: log duplicate PEER_REQUEST.
+            info!(
+                node_id = %record.node_id,
+                key_hint = record.key_hint,
+                result = "duplicate",
+                "PEER_REQUEST processed"
+            );
             return None; // node_id already registered
         }
+
+        // GW-1300 AC1: log successful PEER_REQUEST registration.
+        info!(
+            node_id = %record.node_id,
+            key_hint = record.key_hint,
+            result = "registered",
+            "PEER_REQUEST processed"
+        );
 
         // Step 13: Send PEER_ACK (GW-1219).
         // registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" || encrypted_payload)
@@ -457,7 +472,12 @@ impl Gateway {
             nonce: decoded.header.nonce, // echo nonce
         };
 
-        encode_frame(&ack_header, &ack_cbor_buf, &node_psk, &self.crypto_hmac).ok()
+        let frame = encode_frame(&ack_header, &ack_cbor_buf, &node_psk, &self.crypto_hmac).ok()?;
+
+        // GW-1300 AC2: log PEER_ACK frame encoded (transport send happens later).
+        info!(node_id = %record.node_id, "PEER_ACK frame encoded");
+
+        Some(frame)
     }
 
     /// Handle a WAKE message: create session, determine command, respond.
@@ -502,10 +522,21 @@ impl Gateway {
             .unwrap_or_default()
             .as_millis() as u64;
 
+        // GW-1300 AC3: log WAKE received.
+        info!(
+            node_id = %node.node_id,
+            seq = starting_seq,
+            battery_mv,
+            "WAKE received"
+        );
+
         let _session = self
             .session_manager
             .create_session(node.node_id.clone(), peer, header.nonce, starting_seq)
             .await;
+
+        // GW-1300 AC5: log session created.
+        info!(node_id = %node.node_id, "session created");
 
         // 3. Determine command (check pending commands, then program_hash match, then NOP)
         let command_payload = self
@@ -577,6 +608,20 @@ impl Gateway {
                 .route_event(&node.node_id, "node_online", details, timestamp_ms / 1000)
                 .await;
         }
+
+        // GW-1300 AC4: log COMMAND selected (transport send happens later).
+        let command_type = match &command_payload {
+            CommandPayload::Nop => "Nop",
+            CommandPayload::UpdateProgram { .. } => "UpdateProgram",
+            CommandPayload::RunEphemeral { .. } => "RunEphemeral",
+            CommandPayload::UpdateSchedule { .. } => "UpdateSchedule",
+            CommandPayload::Reboot => "Reboot",
+        };
+        info!(
+            node_id = %node.node_id,
+            command_type,
+            "COMMAND selected"
+        );
 
         // 5. Encode GatewayMessage::Command response
         let response_msg = GatewayMessage::Command {

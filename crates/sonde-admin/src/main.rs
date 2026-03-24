@@ -9,7 +9,7 @@ use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
 
 #[derive(Parser)]
-#[command(name = "sonde-admin", about = "Sonde gateway administration CLI")]
+#[command(name = "sonde-admin", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"), about = "Sonde gateway administration CLI")]
 struct Cli {
     /// Gateway admin socket path (UDS on Linux, named pipe on Windows).
     #[arg(

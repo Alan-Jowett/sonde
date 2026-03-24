@@ -547,7 +547,7 @@ The Node Provisioning Service exposes a single characteristic:
 | `0xFE50` (service) | — | Node Provisioning Service |
 | `0xFE51` (characteristic) | Write + Indicate | NODE_PROVISION (write) / NODE_ACK (indicate) |
 
-GATT writes are rejected until LESC pairing completes and the negotiated ATT MTU is ≥ 247 bytes (ND-0904). On authentication failure or insufficient MTU the connection is dropped.
+GATT writes received before LESC pairing completes are accepted at the ATT level but not processed immediately: the implementation buffers at most one pre-auth write in `pending_write` and defers it until authentication succeeds and the negotiated ATT MTU is ≥ 247 bytes (ND-0904). Writes that cannot be buffered (for example because a pending write is already present or the payload is invalid/too large) are rejected/ignored according to normal ATT error handling. If authentication fails, or if the post-pairing MTU negotiation results in MTU < 247, any buffered write is discarded and the connection is dropped.
 
 ### 15.3  Security model
 
@@ -555,21 +555,22 @@ Security is configured as LESC Just Works:
 
 - `AuthReq::all()` — requests SC (Secure Connections) + Bond + MITM.
 - `SecurityIOCap::NoInputNoOutput` — downgrades MITM to Just Works while keeping LESC. The effective pairing mode is LESC Just Works (ND-0904); `AuthReq::all()` requests the maximum security level, which is then constrained by the `NoInputNoOutput` I/O capability per BT Core Spec Vol 3 Part H §2.3.5.1.
+- The node proactively initiates LESC pairing by calling `ble_gap_security_initiate(conn_handle)` in the `on_connect` callback (ND-0904 criterion 3). This sends an SMP Security Request to the client, ensuring pairing is triggered regardless of client behavior.
 
 This matches the modem's BLE configuration so that the same phone app can pair with both gateway and node endpoints.
 
 ### 15.4  Advertising
 
-The node advertises as `sonde-XXXX` where `XXXX` is the last two bytes of the BLE MAC in hex (ND-0903). The advertisement includes the `0xFE50` service UUID for phone-side filtering.
+The node advertises as `sonde-XXXX` where `XXXX` is the last two bytes of the BLE MAC in hex (ND-0903). The advertisement includes the `0xFE50` service UUID for phone-side filtering. The GAP device name is set to the same value via `BLEDevice::set_device_name()` before advertising starts (ND-0903 criterion 3), so connected clients see the correct name instead of the NimBLE default (`nimble`).
 
 ### 15.5  Event flow
 
 ```
 boot → NimBLE init → GATT service register → start advertising
     ↓
-phone connects → LESC pairing → MTU exchange → auth complete
+phone connects → server calls ble_gap_security_initiate() → LESC pairing → MTU exchange → auth complete
     ↓
-GATT write (NODE_PROVISION) → handle_node_provision() → NODE_ACK indicate
+buffered GATT write flushed (if any) → handle_node_provision() → NODE_ACK indicate
     ↓
 phone disconnects → return → reboot (ND-0907)
 ```

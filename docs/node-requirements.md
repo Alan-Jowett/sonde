@@ -731,12 +731,13 @@ In BLE pairing mode the node MUST start the BLE stack and register the Node Prov
 **Source:** ble-pairing-protocol.md §8.2
 
 **Description:**  
-The node MUST advertise with the Node Provisioning Service UUID. The advertising name MUST be `sonde-XXXX` where `XXXX` is the last 4 hex digits of the BLE MAC address.
+The node MUST advertise with the Node Provisioning Service UUID. The advertising name MUST be `sonde-XXXX` where `XXXX` is the last 4 hex digits of the BLE MAC address. The node MUST also set the GAP device name to the same value via `BLEDevice::set_device_name()` so that connected clients (e.g. Windows, Android) see the correct name after pairing.
 
 **Acceptance criteria:**
 
 1. The advertisement includes the Node Provisioning Service UUID.
-2. The device name matches the pattern `sonde-XXXX` derived from the BLE MAC.
+2. The device name in the advertising payload matches the pattern `sonde-XXXX` derived from the BLE MAC.
+3. The GAP device name record matches the advertising name, so clients that read the name after connecting (rather than from the advertisement) see `sonde-XXXX` instead of the NimBLE default (`nimble`).
 
 ---
 
@@ -746,12 +747,14 @@ The node MUST advertise with the Node Provisioning Service UUID. The advertising
 **Source:** ble-pairing-protocol.md §3.4, §8.2
 
 **Description:**  
-The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LESC Just Works pairing.
+The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LESC Just Works pairing. The node MUST proactively initiate LESC pairing from the server side immediately after a BLE client connects, ensuring pairing is triggered regardless of whether the client initiates it.
 
 **Acceptance criteria:**
 
 1. The negotiated ATT MTU is ≥ 247.
 2. LESC Just Works pairing completes successfully.
+3. The node MUST initiate LESC pairing from the server side (via `ble_gap_security_initiate`) in the `on_connect` callback, ensuring pairing is triggered even when the client does not initiate it.
+4. If a GATT write arrives before LESC pairing completes, the node MUST buffer the write and process it once authentication succeeds, rather than discarding it.
 
 ---
 

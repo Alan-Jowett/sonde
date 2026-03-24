@@ -824,9 +824,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Boot node into BLE pairing mode.
 2. Scan for BLE advertisements from a test central.
 3. Assert: advertisement contains Node Provisioning Service UUID `0000FE50-0000-1000-8000-00805F9B34FB`.
-4. Assert: device name matches `sonde-XXXX` where XXXX = last 4 hex digits of BLE MAC.
+4. Assert: device name in the advertising payload matches `sonde-XXXX` where XXXX = last 4 hex digits of BLE MAC.
 5. Connect and discover services.
 6. Assert: Node Command characteristic `0000FE51-0000-1000-8000-00805F9B34FB` is present with Write+Indicate properties.
+7. Assert: the GAP device name (read after connecting) matches `sonde-XXXX`, not the NimBLE default (`nimble`) (ND-0903 criterion 3).
 
 ---
 
@@ -840,6 +841,27 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 3. Assert: negotiated MTU is ≥ 247.
 4. Initiate LESC Just Works pairing.
 5. Assert: pairing completes successfully.
+
+### T-N903a  Server-initiated LESC pairing — passive client
+
+**Validates:** ND-0904 (criterion 3)
+
+**Procedure:**
+1. Connect a BLE client to the node that does **not** initiate pairing on its own (plain GATT connect, no `createBond`).
+2. Assert: the node initiates LESC pairing from the server side (the client receives an SMP Security Request).
+3. Assert: LESC Just Works pairing completes successfully.
+
+### T-N903b  Pre-auth GATT write buffered until authentication completes
+
+**Validates:** ND-0904 (criterion 4)
+
+**Procedure:**
+1. Connect a BLE client to the node (plain GATT connect, no client-initiated pairing).
+2. Immediately send a GATT write to the Node Command characteristic **before** LESC pairing completes.
+3. Assert: the write is buffered, not discarded.
+4. Allow server-initiated LESC pairing to complete.
+5. Assert: the buffered write is processed after `authenticated` becomes true.
+6. Assert: a `NODE_ACK` indication is sent in response.
 
 ---
 

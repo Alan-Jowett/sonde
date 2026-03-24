@@ -377,13 +377,14 @@ The characteristic supports Write for phone→gateway messages and Indicate (wit
 
 ### 15.2  LESC pairing
 
-The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-0402, MD-0404). During pairing:
+The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-0402, MD-0404). The modem proactively initiates LESC pairing from the server side by calling `ble_gap_security_initiate(conn_handle)` in the `on_connect` callback (MD-0404 criterion 5). This sends an SMP Security Request to the client, ensuring pairing is triggered regardless of client behavior. During pairing:
 
-1. The NimBLE stack generates a 6-digit passkey.
-2. The modem sends `BLE_PAIRING_CONFIRM` to the gateway with the passkey.
-3. The BLE stack proceeds with LESC key exchange immediately (see D9-5 below — `on_confirm_pin` cannot block). The modem then waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`) — before setting the `authenticated` flag and emitting `BLE_CONNECTED`.
-4. If no reply arrives within 30 seconds, the modem rejects the pairing (MD-0414).
-5. On successful pairing and operator acceptance, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
+1. The `on_connect` callback calls `ble_gap_security_initiate(conn_handle)` to start the SMP exchange.
+2. The NimBLE stack generates a 6-digit passkey.
+3. The modem sends `BLE_PAIRING_CONFIRM` to the gateway with the passkey.
+4. The BLE stack proceeds with LESC key exchange immediately (see D9-5 below — `on_confirm_pin` cannot block). The modem then waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`) — before setting the `authenticated` flag and emitting `BLE_CONNECTED`.
+5. If no reply arrives within 30 seconds, the modem rejects the pairing (MD-0414).
+6. On successful pairing and operator acceptance, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
 
 Just Works remains available as a fallback when the phone does not support Numeric Comparison (MD-0404).
 
@@ -391,7 +392,9 @@ Just Works remains available as a fallback when the phone does not support Numer
 
 #### 15.2.1  Write gating on `authenticated` flag (D9-4)
 
-GATT writes to the Gateway Command characteristic are gated on the `authenticated` flag in `BleState` (MD-0402, MD-0414). The flag is `false` at connection time and only set to `true` after LESC pairing completes *and* the operator accepts the Numeric Comparison passkey. While `authenticated` is `false`, inbound GATT writes are ignored/discarded (not forwarded to the gateway) and a warning is logged. This prevents data relay before the session is fully approved.
+GATT writes to the Gateway Command characteristic are gated on the `authenticated` flag in `BleState` (MD-0402, MD-0414). The flag is `false` at connection time and only set to `true` after LESC pairing completes *and* the operator accepts the Numeric Comparison passkey.
+
+Because the modem initiates LESC pairing server-side in `on_connect` (MD-0404 criterion 5), clients may send their first GATT write (e.g. `REQUEST_GW_INFO`) before the SMP handshake and operator confirmation complete. Rather than silently discarding such writes, the modem buffers **one** pre-authentication write in `BleState::pending_write`. When `authenticated` becomes `true`, the buffered write is flushed to the event queue as a `BleEvent::Recv` immediately before the deferred `BleEvent::Connected`. This ensures the gateway receives the write without requiring the client to retry. The buffer is cleared on disconnect.
 
 ### 15.3  ATT MTU and indication pacing
 

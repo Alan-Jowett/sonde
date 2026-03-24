@@ -1,0 +1,16 @@
+[2m2026-03-24T02:25:24.937017Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m starting sonde-gateway [3mdb[0m[2m=[0m.\sonde.db [3mport[0m[2m=[0mCOM5 [3mchannel[0m[2m=[0m1
+[2m2026-03-24T02:25:24.937900Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m master key loaded [3mprovider[0m[2m=[0mFile
+[2m2026-03-24T02:25:24.967373Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m storage opened: .\sonde.db
+[2m2026-03-24T02:25:24.969855Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m gateway identity generated and stored [3mgateway_id[0m[2m=[0m93152ac01c051e85196965202b6dcd4a [3mpublic_key_prefix[0m[2m=[0m73cb9f33ae35bb3a
+[2m2026-03-24T02:25:24.995371Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m drained 77 bytes of boot garbage from serial port
+[2m2026-03-24T02:25:25.516920Z[0m [32m INFO[0m [2msonde_gateway::modem[0m[2m:[0m modem ready [3mfirmware[0m[2m=[0m[0, 1, 0, 0] [3mmac[0m[2m=[0m[232, 246, 10, 168, 200, 224]
+[2m2026-03-24T02:25:25.529504Z[0m [32m INFO[0m [2msonde_gateway::modem[0m[2m:[0m modem channel set [3mchannel[0m[2m=[0m1
+[2m2026-03-24T02:25:25.529579Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m modem transport ready [3mchannel[0m[2m=[0m1
+[2m2026-03-24T02:25:25.529689Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m entering frame processing loop
+[2m2026-03-24T02:25:25.529800Z[0m [32m INFO[0m [2msonde_gateway::admin[0m[2m:[0m gRPC admin server listening on named pipe [3mpipe[0m[2m=[0m\\.\pipe\sonde-admin
+[2m2026-03-24T02:26:23.178293Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m BLE Numeric Comparison passkey ΓÇö awaiting operator confirmation [3mpasskey[0m[2m=[0m377089
+[2m2026-03-24T02:26:51.904410Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m BLE phone connected [3mpeer[0m[2m=[0m[107, 138, 87, 74, 59, 140] [3mmtu[0m[2m=[0m247
+[2m2026-03-24T02:27:29.973392Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m BLE phone disconnected [3mpeer[0m[2m=[0m[107, 138, 87, 74, 59, 140] [3mreason[0m[2m=[0m19
+[2m2026-03-24T02:29:20.111023Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m BLE Numeric Comparison passkey ΓÇö awaiting operator confirmation [3mpasskey[0m[2m=[0m297902
+[2m2026-03-24T02:29:39.118293Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m BLE phone connected [3mpeer[0m[2m=[0m[107, 138, 87, 74, 59, 140] [3mmtu[0m[2m=[0m247
+[2m2026-03-24T02:30:10.170693Z[0m [32m INFO[0m [2msonde_gateway[0m[2m:[0m BLE phone disconnected [3mpeer[0m[2m=[0m[107, 138, 87, 74, 59, 140] [3mreason[0m[2m=[0m19

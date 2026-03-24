@@ -237,6 +237,7 @@ async fn run_gateway(
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(db = %cli.db, port = %cli.port, channel = cli.channel, "starting sonde-gateway");
+    let mut shutdown = shutdown;
 
     // 1. Load master key for at-rest PSK encryption (GW-0601a).
     //    Build the appropriate KeyProvider from CLI arguments, then invoke it.
@@ -318,156 +319,196 @@ async fn run_gateway(
         ))
     };
 
-    // 6. Open serial port and create modem transport
+    // 6–9. Modem transport + processing loops with reconnection (GW-1103).
     //
-    // Drain any boot log garbage from the USB-CDC buffer before starting
-    // the modem protocol. ESP32-S3 ROM and early IDF init may send text
-    // to the USB endpoint before the console is routed to UART.
-    let serial_port = {
-        let port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
-        let mut drain_buf = [0u8; 4096];
-        loop {
-            match tokio::time::timeout(Duration::from_millis(500), port.read(&mut drain_buf)).await
-            {
-                Ok(Ok(n)) if n > 0 => {
-                    info!("drained {n} bytes of boot garbage from serial port");
-                }
-                _ => break,
-            }
-        }
-        port
-    };
-    let transport = Arc::new(UsbEspNowTransport::new(serial_port, cli.channel).await?);
-    info!(channel = cli.channel, "modem transport ready");
+    // If the serial port disconnects (e.g. modem reset / USB-CDC unplug),
+    // the reader task exits and the frame/BLE loops break.  Instead of
+    // exiting the gateway process, we log the error, wait with backoff,
+    // and rebuild the transport from scratch.
+    let mut backoff = Duration::from_secs(1);
+    const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-    // 7. Start gRPC admin server
-    let ble_controller = Arc::new(sonde_gateway::ble_pairing::BlePairingController::new());
-    let admin_service = AdminService::new(storage.clone(), pending_commands, session_manager)
-        .with_ble(Arc::clone(&ble_controller), Arc::clone(&transport));
-    let admin_socket = cli.admin_socket.clone();
-
-    let grpc_handle = tokio::spawn(async move {
-        if let Err(e) = sonde_gateway::admin::serve_admin(admin_service, &admin_socket).await {
-            error!("gRPC server error: {}", e);
-        }
-    });
-
-    // 8. Main frame-processing loop
-    info!("entering frame processing loop");
-    let transport_ref = transport.clone();
-
-    let frame_loop = tokio::spawn(async move {
-        loop {
-            match transport_ref.recv().await {
-                Ok((raw_frame, peer_addr)) => {
-                    if let Some(response) =
-                        gateway.process_frame(&raw_frame, peer_addr.clone()).await
-                    {
-                        if let Err(e) = transport_ref.send(&response, &peer_addr).await {
-                            error!("send error: {}", e);
-                        }
+    loop {
+        // 6. Open serial port and create modem transport
+        let serial_port = match async {
+            let port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
+            let mut drain_buf = [0u8; 4096];
+            loop {
+                match tokio::time::timeout(Duration::from_millis(500), port.read(&mut drain_buf))
+                    .await
+                {
+                    Ok(Ok(n)) if n > 0 => {
+                        info!("drained {n} bytes of boot garbage from serial port");
                     }
-                }
-                Err(e) => {
-                    error!("recv error: {e}");
-                    break;
+                    _ => break,
                 }
             }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(port)
         }
-    });
-
-    // 8a. BLE event processing loop (Phase 1 phone pairing via modem relay).
-    let ble_transport = transport.clone();
-    let ble_storage: Arc<dyn Storage> = storage.clone();
-    let ble_channel = cli.channel;
-    let ble_ctrl = Arc::clone(&ble_controller);
-    let ble_loop = tokio::spawn(async move {
-        use sonde_gateway::ble_pairing::handle_ble_recv;
-        use sonde_gateway::modem::BleEvent;
-        use tracing::{debug, warn};
-
-        // Load gateway identity for BLE pairing operations.
-        let identity = match ble_storage.load_gateway_identity().await {
-            Ok(Some(id)) => id,
-            Ok(None) => {
-                error!("BLE loop: no gateway identity — cannot handle BLE pairing");
-                return;
-            }
+        .await
+        {
+            Ok(port) => port,
             Err(e) => {
-                error!("BLE loop: failed to load gateway identity: {e}");
-                return;
+                error!("failed to open serial port {}: {e}", cli.port);
+                info!("retrying in {}s…", backoff.as_secs());
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+                continue;
             }
         };
 
-        // Use the shared registration window via the controller.
-        let mut window = sonde_gateway::ble_pairing::RegistrationWindow::new();
-
-        loop {
-            // Sync the local window state from the controller on each iteration.
-            let controller_open = ble_ctrl.is_window_open().await;
-            if controller_open && !window.is_open() {
-                window.open(3600);
-            } else if !controller_open && window.is_open() {
-                window.close();
+        let transport = match UsbEspNowTransport::new(serial_port, cli.channel).await {
+            Ok(t) => Arc::new(t),
+            Err(e) => {
+                error!("modem startup failed: {e}");
+                info!("retrying in {}s…", backoff.as_secs());
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+                continue;
             }
+        };
+        info!(channel = cli.channel, "modem transport ready");
+        backoff = Duration::from_secs(1); // reset on success
 
-            match ble_transport.recv_ble_event().await {
-                Some(BleEvent::Recv(br)) => {
-                    if let Some(response) = handle_ble_recv(
-                        &br.ble_data,
-                        &identity,
-                        &ble_storage,
-                        &mut window,
-                        ble_channel,
-                        Some(&ble_ctrl),
-                    )
-                    .await
-                    {
-                        if let Err(e) = ble_transport.send_ble_indicate(&response).await {
-                            error!("BLE_INDICATE send error: {e}");
+        // 7. Start gRPC admin server (only on first iteration)
+        // Re-create the admin service with the new transport reference each time.
+        let ble_controller = Arc::new(sonde_gateway::ble_pairing::BlePairingController::new());
+        let admin_service = AdminService::new(
+            storage.clone(),
+            pending_commands.clone(),
+            session_manager.clone(),
+        )
+        .with_ble(Arc::clone(&ble_controller), Arc::clone(&transport));
+        let admin_socket = cli.admin_socket.clone();
+
+        let grpc_handle = tokio::spawn(async move {
+            if let Err(e) = sonde_gateway::admin::serve_admin(admin_service, &admin_socket).await {
+                error!("gRPC server error: {}", e);
+            }
+        });
+
+        // 8. Main frame-processing loop
+        info!("entering frame processing loop");
+        let transport_ref = transport.clone();
+        let gateway_ref = gateway.clone();
+
+        let frame_loop = tokio::spawn(async move {
+            loop {
+                match transport_ref.recv().await {
+                    Ok((raw_frame, peer_addr)) => {
+                        if let Some(response) = gateway_ref
+                            .process_frame(&raw_frame, peer_addr.clone())
+                            .await
+                        {
+                            if let Err(e) = transport_ref.send(&response, &peer_addr).await {
+                                error!("send error: {}", e);
+                            }
                         }
                     }
+                    Err(e) => {
+                        error!("recv error: {e}");
+                        break;
+                    }
                 }
-                Some(BleEvent::Connected(bc)) => {
-                    info!(
-                        peer = ?bc.peer_addr,
-                        mtu = bc.mtu,
-                        "BLE phone connected"
-                    );
-                    ble_ctrl.broadcast_event(
-                        sonde_gateway::ble_pairing::BlePairingEventKind::PhoneConnected {
-                            peer_addr: bc.peer_addr,
-                            mtu: bc.mtu,
-                        },
-                    );
-                }
-                Some(BleEvent::Disconnected(bd)) => {
-                    info!(
-                        peer = ?bd.peer_addr,
-                        reason = bd.reason,
-                        "BLE phone disconnected"
-                    );
-                    ble_ctrl.broadcast_event(
-                        sonde_gateway::ble_pairing::BlePairingEventKind::PhoneDisconnected {
-                            peer_addr: bd.peer_addr,
-                        },
-                    );
-                }
-                Some(BleEvent::PairingConfirm(pc)) => {
-                    info!(
-                        passkey = pc.passkey,
-                        "BLE Numeric Comparison passkey — awaiting operator confirmation"
-                    );
-                    ble_ctrl.broadcast_event(
-                        sonde_gateway::ble_pairing::BlePairingEventKind::PasskeyRequest {
-                            passkey: pc.passkey,
-                        },
-                    );
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    ble_ctrl.set_passkey_responder(tx).await;
+            }
+        });
 
-                    let accept =
-                        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+        // 8a. BLE event processing loop (Phase 1 phone pairing via modem relay).
+        let ble_transport = transport.clone();
+        let ble_storage: Arc<dyn Storage> = storage.clone();
+        let ble_channel = cli.channel;
+        let ble_ctrl = Arc::clone(&ble_controller);
+        let ble_loop = tokio::spawn(async move {
+            use sonde_gateway::ble_pairing::handle_ble_recv;
+            use sonde_gateway::modem::BleEvent;
+            use tracing::{debug, warn};
+
+            // Load gateway identity for BLE pairing operations.
+            let identity = match ble_storage.load_gateway_identity().await {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    error!("BLE loop: no gateway identity — cannot handle BLE pairing");
+                    return;
+                }
+                Err(e) => {
+                    error!("BLE loop: failed to load gateway identity: {e}");
+                    return;
+                }
+            };
+
+            // Use the shared registration window via the controller.
+            let mut window = sonde_gateway::ble_pairing::RegistrationWindow::new();
+
+            loop {
+                // Sync the local window state from the controller on each iteration.
+                let controller_open = ble_ctrl.is_window_open().await;
+                if controller_open && !window.is_open() {
+                    window.open(3600);
+                } else if !controller_open && window.is_open() {
+                    window.close();
+                }
+
+                match ble_transport.recv_ble_event().await {
+                    Some(BleEvent::Recv(br)) => {
+                        if let Some(response) = handle_ble_recv(
+                            &br.ble_data,
+                            &identity,
+                            &ble_storage,
+                            &mut window,
+                            ble_channel,
+                            Some(&ble_ctrl),
+                        )
+                        .await
+                        {
+                            if let Err(e) = ble_transport.send_ble_indicate(&response).await {
+                                error!("BLE_INDICATE send error: {e}");
+                            }
+                        }
+                    }
+                    Some(BleEvent::Connected(bc)) => {
+                        info!(
+                            peer = ?bc.peer_addr,
+                            mtu = bc.mtu,
+                            "BLE phone connected"
+                        );
+                        ble_ctrl.broadcast_event(
+                            sonde_gateway::ble_pairing::BlePairingEventKind::PhoneConnected {
+                                peer_addr: bc.peer_addr,
+                                mtu: bc.mtu,
+                            },
+                        );
+                    }
+                    Some(BleEvent::Disconnected(bd)) => {
+                        info!(
+                            peer = ?bd.peer_addr,
+                            reason = bd.reason,
+                            "BLE phone disconnected"
+                        );
+                        ble_ctrl.broadcast_event(
+                            sonde_gateway::ble_pairing::BlePairingEventKind::PhoneDisconnected {
+                                peer_addr: bd.peer_addr,
+                            },
+                        );
+                    }
+                    Some(BleEvent::PairingConfirm(pc)) => {
+                        info!(
+                            passkey = pc.passkey,
+                            "BLE Numeric Comparison passkey — awaiting operator confirmation"
+                        );
+                        ble_ctrl.broadcast_event(
+                            sonde_gateway::ble_pairing::BlePairingEventKind::PasskeyRequest {
+                                passkey: pc.passkey,
+                            },
+                        );
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        ble_ctrl.set_passkey_responder(tx).await;
+
+                        let accept = match tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            rx,
+                        )
+                        .await
+                        {
                             Ok(Ok(v)) => v,
                             _ => {
                                 warn!("passkey confirmation timed out — rejecting");
@@ -475,33 +516,41 @@ async fn run_gateway(
                             }
                         };
 
-                    if let Err(e) = ble_transport.send_ble_pairing_confirm_reply(accept).await {
-                        error!("BLE_PAIRING_CONFIRM_REPLY send error: {e}");
+                        if let Err(e) = ble_transport.send_ble_pairing_confirm_reply(accept).await {
+                            error!("BLE_PAIRING_CONFIRM_REPLY send error: {e}");
+                        }
+                    }
+                    None => {
+                        debug!("BLE event channel closed");
+                        break;
                     }
                 }
-                None => {
-                    debug!("BLE event channel closed");
-                    break;
-                }
+            }
+        });
+
+        // 9. Wait for shutdown signal, or for any subsystem to exit unexpectedly.
+        tokio::select! {
+            _ = &mut shutdown => {
+                info!("shutdown signal received, stopping gateway");
+                break; // exit the outer reconnect loop
+            }
+            _ = frame_loop => {
+                error!("frame processing loop exited — modem likely disconnected");
+            }
+            _ = ble_loop => {
+                error!("BLE event loop exited — modem likely disconnected");
+            }
+            _ = grpc_handle => {
+                error!("gRPC server exited unexpectedly");
+                break; // gRPC failure is not recoverable
             }
         }
-    });
 
-    // 9. Wait for shutdown signal, or for any subsystem to exit unexpectedly.
-    tokio::select! {
-        _ = shutdown => {
-            info!("shutdown signal received, stopping gateway");
-        }
-        _ = frame_loop => {
-            error!("frame processing loop exited unexpectedly");
-        }
-        _ = ble_loop => {
-            error!("BLE event loop exited unexpectedly");
-        }
-        _ = grpc_handle => {
-            error!("gRPC server exited unexpectedly");
-        }
-    }
+        // Transport disconnected — retry after backoff (GW-1103).
+        info!("attempting modem reconnection in {}s…", backoff.as_secs());
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(MAX_BACKOFF);
+    } // end of reconnect loop
 
     info!("gateway stopped");
     Ok(())

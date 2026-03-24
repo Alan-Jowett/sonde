@@ -419,7 +419,7 @@ When sending indications larger than (MTU − 3) bytes, the modem MUST fragment 
 **Source:** ble-pairing-protocol.md §8.2, §9.2
 
 **Description:**
-The modem MUST support BLE LESC Numeric Comparison pairing as the default method to establish an encrypted link with the connecting phone. During Numeric Comparison, the modem relays the 6-digit passkey to the gateway via `BLE_PAIRING_CONFIRM` and waits for `BLE_PAIRING_CONFIRM_REPLY` before accepting or rejecting the pairing. Just Works remains available as a fallback for environments without operator presence.
+The modem MUST support BLE LESC Numeric Comparison pairing as the default method to establish an encrypted link with the connecting phone. The modem MUST proactively initiate LESC pairing from the server side immediately after a BLE client connects, ensuring pairing is triggered regardless of whether the client initiates it. During Numeric Comparison, the modem relays the 6-digit passkey to the gateway via `BLE_PAIRING_CONFIRM` and waits for `BLE_PAIRING_CONFIRM_REPLY` before accepting or rejecting the pairing. Just Works remains available as a fallback for environments without operator presence.
 
 **Acceptance criteria:**
 
@@ -427,6 +427,7 @@ The modem MUST support BLE LESC Numeric Comparison pairing as the default method
 2. The resulting BLE link is encrypted.
 3. The 6-digit passkey is relayed to the gateway via `BLE_PAIRING_CONFIRM`.
 4. Just Works pairing completes successfully when the connecting phone does not support Numeric Comparison; no `BLE_PAIRING_CONFIRM` is sent.
+5. The modem MUST initiate LESC pairing from the server side (via `ble_gap_security_initiate`) in the `on_connect` callback, ensuring pairing is triggered even when the client does not initiate it (e.g. btleplug on WinRT, or any client that connects without calling `createBond`).
 
 ---
 
@@ -501,6 +502,7 @@ When a phone writes to the Gateway Command characteristic, the modem MUST forwar
 2. Write Long payloads are reassembled before forwarding.
 3. The payload is forwarded unmodified.
 4. Empty GATT writes are silently discarded.
+5. If a GATT write arrives before server-initiated LESC pairing completes (i.e. `authenticated` is still `false`), the modem MUST buffer the write and forward it as `BLE_RECV` once authentication succeeds, rather than discarding it.
 
 ---
 

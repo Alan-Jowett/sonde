@@ -121,6 +121,11 @@ struct BleState {
     /// while `check_pairing_timeout()` retries `disconnect()` on subsequent
     /// polls until `on_disconnect` clears `conn_handle`.
     timeout_fired: bool,
+    /// GATT write received before authentication completed.  Buffered here
+    /// and flushed to `events` once `authenticated` becomes `true`, so
+    /// clients that write immediately after connecting (before the
+    /// server-initiated LESC handshake finishes) don't lose data.
+    pending_write: Option<Vec<u8>>,
 }
 
 impl BleState {
@@ -138,6 +143,7 @@ impl BleState {
             connection_start: None,
             confirm_sent_at: None,
             timeout_fired: false,
+            pending_write: None,
         }
     }
 }
@@ -219,6 +225,18 @@ impl EspBleDriver {
                 // when BLE_PAIRING_CONFIRM is sent in on_confirm_pin.
                 s.connection_start = Some(Instant::now());
             }
+
+            // Proactively initiate LESC pairing from the server side so that
+            // clients that don't trigger pairing on their own (e.g. btleplug
+            // on WinRT) still go through Numeric Comparison (MD-0404).
+            let conn_handle = desc.conn_handle();
+            unsafe {
+                esp_idf_sys::ble_gap_security_initiate(conn_handle);
+            }
+            info!(
+                "BLE: server-initiated security for conn_handle={}",
+                conn_handle
+            );
         });
 
         // --- Disconnect event handler ---
@@ -249,6 +267,7 @@ impl EspBleDriver {
                 s.connection_start = None;
                 s.confirm_sent_at = None;
                 s.timeout_fired = false;
+                s.pending_write = None;
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::Disconnected {
                         peer_addr,
@@ -334,6 +353,11 @@ impl EspBleDriver {
                         s.authenticated = true;
                         s.connection_start = None;
                         s.confirm_sent_at = None;
+                        // Flush any GATT write that arrived before auth completed.
+                        if let Some(data) = s.pending_write.take() {
+                            info!("BLE: flushing buffered GATT write {} bytes", data.len());
+                            s.events.push_back(BleEvent::Recv(data));
+                        }
                         let mtu = s.mtu;
                         if s.events.len() < MAX_BLE_EVENT_QUEUE {
                             s.events.push_back(BleEvent::Connected {
@@ -378,10 +402,15 @@ impl EspBleDriver {
                     info!("BLE: GATT write {} bytes", value.len());
                     s.events.push_back(BleEvent::Recv(value.to_vec()));
                 } else if !s.authenticated {
-                    warn!(
-                        "BLE: GATT write {} bytes rejected (not authenticated)",
+                    // Buffer the first pre-auth write so it can be flushed
+                    // once server-initiated LESC completes and the operator
+                    // confirms.  Only one write is buffered (the client
+                    // should not send more before receiving a response).
+                    info!(
+                        "BLE: GATT write {} bytes buffered (awaiting authentication)",
                         value.len()
                     );
+                    s.pending_write = Some(value.to_vec());
                 } else if s.events.len() >= MAX_BLE_EVENT_QUEUE {
                     warn!("BLE: event queue full; dropping GATT write");
                 }
@@ -487,6 +516,7 @@ impl Ble for EspBleDriver {
             s.connection_start = None;
             s.confirm_sent_at = None;
             s.timeout_fired = false;
+            s.pending_write = None;
             // Events are NOT cleared here — BLE_DISABLE needs
             // BLE_DISCONNECTED to flow through (modem-protocol.md §4.14).
             // Stale event suppression across RESET is handled by the bridge.
@@ -547,6 +577,11 @@ impl Ble for EspBleDriver {
                     s.authenticated = true;
                     s.connection_start = None;
                     s.confirm_sent_at = None;
+                    // Flush any GATT write that arrived before auth completed.
+                    if let Some(data) = s.pending_write.take() {
+                        info!("BLE: flushing buffered GATT write {} bytes", data.len());
+                        s.events.push_back(BleEvent::Recv(data));
+                    }
                     s.events.push_back(BleEvent::Connected { peer_addr, mtu });
                 }
             }

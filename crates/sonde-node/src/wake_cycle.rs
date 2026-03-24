@@ -411,11 +411,6 @@ where
     }
 
     if let Some(program) = loaded_program {
-        // Log BPF execution start (ND-1006).
-        log::info!(
-            "BPF execute program_hash={}",
-            hash_hex_prefix(&program.hash)
-        );
         let program_class = if program.is_ephemeral {
             ProgramClass::Ephemeral
         } else {
@@ -509,6 +504,12 @@ where
                     };
                 match interpreter.load(&program.bytecode, load_ptrs, load_defs) {
                     Ok(()) => {
+                        // Log BPF execution start (ND-1006) — after all
+                        // preconditions and load succeed.
+                        log::info!(
+                            "BPF execute program_hash={}",
+                            hash_hex_prefix(&program.hash)
+                        );
                         let ctx_ptr = &ctx as *const SondeContext as u64;
                         interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
                     }

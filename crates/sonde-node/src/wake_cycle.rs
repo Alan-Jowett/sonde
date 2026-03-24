@@ -224,12 +224,26 @@ where
             );
         }
         CommandPayload::UpdateProgram { program_hash, .. } => {
-            let hash_hex: String = program_hash.iter().take(4).map(|b| format!("{:02x}", b)).collect();
-            log::info!("COMMAND received command_type=UpdateProgram program_hash={}", hash_hex);
+            let hash_hex: String = program_hash
+                .iter()
+                .take(4)
+                .map(|b| format!("{:02x}", b))
+                .collect();
+            log::info!(
+                "COMMAND received command_type=UpdateProgram program_hash={}",
+                hash_hex
+            );
         }
         CommandPayload::RunEphemeral { program_hash, .. } => {
-            let hash_hex: String = program_hash.iter().take(4).map(|b| format!("{:02x}", b)).collect();
-            log::info!("COMMAND received command_type=RunEphemeral program_hash={}", hash_hex);
+            let hash_hex: String = program_hash
+                .iter()
+                .take(4)
+                .map(|b| format!("{:02x}", b))
+                .collect();
+            log::info!(
+                "COMMAND received command_type=RunEphemeral program_hash={}",
+                hash_hex
+            );
         }
     }
 
@@ -376,7 +390,12 @@ where
 
     if let Some(program) = loaded_program {
         // Log BPF execution start (ND-1006).
-        let hash_prefix: String = program.hash.iter().take(4).map(|b| format!("{:02x}", b)).collect();
+        let hash_prefix: String = program
+            .hash
+            .iter()
+            .take(4)
+            .map(|b| format!("{:02x}", b))
+            .collect();
         log::info!("BPF execute program_hash={}", hash_prefix);
         let program_class = if program.is_ephemeral {
             ProgramClass::Ephemeral

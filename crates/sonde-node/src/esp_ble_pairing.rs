@@ -184,9 +184,9 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
             NimbleProperties::WRITE | NimbleProperties::INDICATE,
         );
 
-    // GATT write handler: buffer writes that arrive before LESC pairing
-    // completes (ND-0904 criterion 4). Once authenticated, writes go
-    // directly to pending_write for the main loop to process.
+    // GATT write handler: all writes are stored into `pending_write`.
+    // Writes received before LESC pairing completes (ND-0904 criterion 4)
+    // are accepted but only processed by the main loop on a later poll.
     let write_pending = Arc::clone(&pending_write);
     let write_auth = Arc::clone(&authenticated);
     node_cmd_char.lock().on_write(move |args| {

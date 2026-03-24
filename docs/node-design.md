@@ -547,7 +547,7 @@ The Node Provisioning Service exposes a single characteristic:
 | `0xFE50` (service) | — | Node Provisioning Service |
 | `0xFE51` (characteristic) | Write + Indicate | NODE_PROVISION (write) / NODE_ACK (indicate) |
 
-GATT writes are rejected until LESC pairing completes and the negotiated ATT MTU is ≥ 247 bytes (ND-0904). If a GATT write arrives before pairing completes (e.g. the client writes immediately after connecting), it is buffered in `pending_write` and processed once authentication succeeds (ND-0904 criterion 4). On authentication failure or insufficient MTU the connection is dropped.
+GATT writes received before LESC pairing completes are accepted at the ATT level but not processed immediately: the implementation buffers at most one pre-auth write in `pending_write` and defers it until authentication succeeds and the negotiated ATT MTU is ≥ 247 bytes (ND-0904). Writes that cannot be buffered (for example because a pending write is already present or the payload is invalid/too large) are rejected/ignored according to normal ATT error handling. If authentication fails, or if the post-pairing MTU negotiation results in MTU < 247, any buffered write is discarded and the connection is dropped.
 
 ### 15.3  Security model
 

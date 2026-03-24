@@ -1042,6 +1042,156 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+## 11  Operational logging
+
+### T-N1000  Boot reason log — power-on
+
+**Validates:** ND-1000
+
+**Procedure:**
+1. Cold-boot the node (power-on reset, not deep-sleep wake).
+2. Capture serial output.
+3. Assert: an INFO log line contains "boot_reason=power_on".
+
+---
+
+### T-N1001  Boot reason log — deep-sleep wake
+
+**Validates:** ND-1000
+
+**Procedure:**
+1. Boot the node from deep sleep (previous cycle entered deep sleep).
+2. Capture serial output.
+3. Assert: an INFO log line contains "boot_reason=deep_sleep_wake".
+
+---
+
+### T-N1002  Wake cycle started log
+
+**Validates:** ND-1001
+
+**Procedure:**
+1. Pair the node and let it enter a normal wake cycle.
+2. Assert: an INFO log is emitted containing "wake cycle started" with `key_hint` and `wake_reason`.
+
+---
+
+### T-N1003  WAKE frame sent log
+
+**Validates:** ND-1002
+
+**Procedure:**
+1. Run a wake cycle against a mock gateway.
+2. Assert: an INFO log is emitted containing "WAKE sent" with `key_hint` and `nonce` (hex).
+
+---
+
+### T-N1004  COMMAND received log
+
+**Validates:** ND-1003
+
+**Procedure:**
+1. Mock gateway responds with a valid COMMAND (Nop).
+2. Assert: an INFO log is emitted containing "COMMAND received" and `command_type=Nop`.
+
+---
+
+### T-N1005  PEER_REQUEST sent log
+
+**Validates:** ND-1004
+
+**Procedure:**
+1. Node has PSK but `reg_complete` is not set (PEER_REQUEST path).
+2. Assert: an INFO log is emitted containing "PEER_REQUEST sent" with `key_hint`.
+
+---
+
+### T-N1006  PEER_ACK received log
+
+**Validates:** ND-1005
+
+**Procedure:**
+1. Mock gateway responds with a valid PEER_ACK.
+2. Assert: an INFO log is emitted containing "PEER_ACK received" and "registration complete".
+
+---
+
+### T-N1007  BPF execution log — success
+
+**Validates:** ND-1006
+
+**Procedure:**
+1. Run a wake cycle with a valid resident program.
+2. Assert: an INFO log is emitted containing "BPF execute" and `program_hash` (hex prefix).
+3. Assert: an INFO log is emitted containing the execution result.
+
+---
+
+### T-N1008  Deep sleep entered log
+
+**Validates:** ND-1007
+
+**Procedure:**
+1. Run a wake cycle to completion.
+2. Assert: an INFO log is emitted containing "entering deep sleep" with `duration_seconds` and `reason`.
+
+---
+
+### T-N1009  RNG failure WARN log
+
+**Validates:** ND-1009
+
+**Procedure:**
+1. Configure mock RNG to fail health check.
+2. Run `run_wake_cycle`.
+3. Assert: a WARN log is emitted containing "RNG health check failed".
+
+---
+
+### T-N1010  WAKE retries exhausted WARN log
+
+**Validates:** ND-1009
+
+**Procedure:**
+1. Configure mock gateway to never respond (all timeouts).
+2. Run `run_wake_cycle`.
+3. Assert: a WARN log is emitted containing "WAKE/COMMAND failed".
+
+---
+
+### T-N1011  HMAC verification failure WARN log
+
+**Validates:** ND-1009
+
+**Procedure:**
+1. Configure mock gateway to respond with a frame bearing a corrupted HMAC.
+2. Run `run_wake_cycle`.
+3. Assert: a WARN log is emitted containing "COMMAND verification failed".
+
+---
+
+### T-N1012  BLE pairing mode entry log
+
+**Validates:** ND-1008
+
+**Procedure:**
+1. Boot the node with no PSK provisioned (or with the pairing button held).
+2. Capture serial output.
+3. Assert: an INFO log is emitted containing "entering BLE pairing mode".
+
+---
+
+### T-N1013  BLE pairing mode exit log
+
+**Validates:** ND-1008
+
+**Procedure:**
+1. Complete or abort a BLE pairing session.
+2. Capture serial output.
+3. Assert: a log at INFO or WARN level is emitted containing "BLE pairing mode exited" or "BLE pairing mode failed".
+
+---
+
 ### T-N918  NVS layout includes BLE pairing fields
 
 **Validates:** ND-0916

@@ -162,6 +162,7 @@ jobs:
             lcov.info
             coverage-summary.json
           retention-days: 30
+          if-no-files-found: error
 
   bpf-conformance:
     name: BPF conformance (RFC 9669)

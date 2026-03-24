@@ -259,7 +259,7 @@ On operator selection of a gateway device, the tool MUST connect to the BLE peri
 **Source:** ble-pairing-protocol.md §5.1, §5.2
 
 **Description:**  
-The tool MUST generate a 32-byte challenge from OS CSPRNG, write `REQUEST_GW_INFO` to the Gateway Command characteristic, wait for `GW_INFO_RESPONSE` (timeout: 45 s), and verify the Ed25519 signature over `(challenge ‖ gateway_id)` using the received `gw_public_key`. On failure, the tool MUST disconnect and report "gateway authentication failed — possible impersonation". The 45 s timeout accommodates the operator passkey confirmation window (up to 30 s) plus the GATT write retry window on Windows (up to 30 s for WinRT auth errors).
+The tool MUST generate a 32-byte challenge from OS CSPRNG, write `REQUEST_GW_INFO` to the Gateway Command characteristic, then wait for `GW_INFO_RESPONSE` (timeout: 45 s from completion of the write) and verify the Ed25519 signature over `(challenge ‖ gateway_id)` using the received `gw_public_key`. On failure, the tool MUST disconnect and report "gateway authentication failed — possible impersonation". The 45 s timeout applies only to waiting for the `GW_INFO_RESPONSE` indication after `REQUEST_GW_INFO` has been written. On Windows, the underlying WinRT GATT write of `REQUEST_GW_INFO` may itself be internally retried for up to ~30 s in response to authentication errors (for example, while the operator confirms the Numeric Comparison passkey), so the total wall-clock time from write initiation to timeout can be up to ~75 s.
 
 **Acceptance criteria:**
 
@@ -795,7 +795,7 @@ BLE connections, GATT subscriptions, and platform BLE resources MUST be released
 **Source:** ble-pairing-protocol.md §3.4, §5, §6
 
 **Description:**  
-All timeouts MUST match the protocol specification: `GW_INFO_RESPONSE` 45 s, `PHONE_REGISTERED` 30 s, `NODE_ACK` 5 s, BLE scan default 30 s, BLE connection establishment 10 s.
+All timeouts MUST be deterministic and explicitly configured to the following values: `GW_INFO_RESPONSE` 45 s, `PHONE_REGISTERED` 30 s, `NODE_ACK` 5 s, BLE scan default 30 s, BLE connection establishment 10 s.
 
 **Acceptance criteria:**
 

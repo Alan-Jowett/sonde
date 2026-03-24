@@ -895,12 +895,11 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 **Validates:** MD-0415
 
-**Procedure:**
-1. Send `BLE_ENABLE`. Connect a BLE client but do **not** complete LESC pairing.
-2. Wait 60 seconds without sending any GATT writes or completing pairing.
-3. Assert: the modem disconnects the idle client.
-4. Assert: `BLE_DISCONNECTED` is received on the gateway side.
-5. Assert: if BLE is still enabled, advertising resumes after the disconnect.
+**Procedure (60 s idle-timeout path, pairing not initiated):**
+1. Send `BLE_ENABLE`. Connect a BLE client, but do **not** initiate or accept LESC pairing (do not access characteristics that require encryption/authentication, and reject/ignore any pairing prompts on the client).
+2. Wait at least 60 seconds without sending any GATT writes that trigger security or completing pairing (the connection must remain in an unpaired, idle state).
+3. Assert: the modem disconnects the idle client due to the 60 s BLE idle timeout.
+4. Assert: `BLE_DISCONNECTED` is received on the gateway side as a result of the idle-timeout disconnect.
 
 ---
 

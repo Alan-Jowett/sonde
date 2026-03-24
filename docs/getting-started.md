@@ -561,18 +561,18 @@ docker build -f .github/docker/Dockerfile.android-dev -t sonde-android-dev .
 
 If a node has been previously paired and you need to wipe its credentials and re-provision it, use this procedure:
 
-1. Press and hold the **BOOT** button.
-2. While holding BOOT, press and release the **RESET** button.
-3. Keep holding **BOOT** for at least 1 second after reset.
+1. Press and release the **RESET** button (node reboots into application).
+2. Immediately press and hold the **BOOT** button (within the first 500 ms).
+3. Keep holding **BOOT** for at least 1 second.
 4. Release **BOOT**.
 5. The node enters BLE pairing mode with factory reset armed.
 6. Provision via the pairing tool — old credentials are wiped first.
 
 #### Why this works
 
-Pressing RESET triggers a software reset, NOT download mode. The ROM bootloader only enters download mode when GPIO 9 is LOW during a cold power-on. After reset the application starts and samples GPIO 9 for 500 ms. Since BOOT is still held, all samples read LOW → `button_held = true`.
+Pressing RESET triggers a software reset — the ROM bootloader does NOT check GPIO 9 boot strapping on a software reset, so it boots straight into the application. The application then samples GPIO 9 for 500 ms. Since you pressed BOOT immediately after reset, all samples read LOW → `button_held = true`.
 
-#### Why holding BOOT during power-on does NOT work
+#### Why holding BOOT *before* pressing RESET does NOT work
 
 On cold power-on with GPIO 9 LOW, the ESP32-C3 ROM enters USB/UART download mode. You will see:
 

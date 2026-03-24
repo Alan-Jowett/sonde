@@ -1,0 +1,22 @@
+## Boot test regression — node BLE pairing fails with btleplug/WinRT
+
+Same root cause as PR #441 (modem), now fixed for the node.
+
+### Bug
+
+The node configures LESC Just Works security but never triggers pairing — no `ble_gap_security_initiate()` call in `on_connect`. Clients that don't initiate pairing (btleplug on WinRT) connect without authentication, and all GATT writes are rejected with `not yet authenticated`.
+
+### Fixes
+
+1. Server-initiated LESC pairing: Call `ble_gap_security_initiate(conn_handle)` in `on_connect` (ND-0904 criterion 3).
+2. Pre-auth write buffering: Buffer GATT writes that arrive before LESC completes instead of rejecting them. Main loop only processes `pending_write` once `authenticated` is true (ND-0904 criterion 4).
+
+### Spec updates (spec-first)
+
+- ND-0904: Added criteria 3 (server-initiated pairing) and 4 (pre-auth write buffering)
+- node-design.md: Document `ble_gap_security_initiate`, write buffering, updated event flow
+- node-validation.md: Added T-N903a (passive client pairing) and T-N903b (pre-auth write buffered)
+
+### Also filed
+
+- #442 — Gateway crashes when modem resets (USB-CDC disconnect)

@@ -17,7 +17,7 @@ use esp_idf_hal::modem::Modem;
 use esp_idf_svc::espnow::{EspNow, PeerInfo};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
+use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
 
 use sonde_protocol::modem::ESPNOW_MAX_DATA_SIZE;
 
@@ -188,11 +188,13 @@ impl EspNowTransport {
             return Err(NodeError::Transport("invalid WiFi channel (must be 1–13)"));
         }
 
-        // WiFi STA mode (required for ESP-NOW)
+        // WiFi STA mode (required for ESP-NOW TX)
         let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))
             .map_err(|_| NodeError::Transport("WiFi init failed"))?;
         let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)
             .map_err(|_| NodeError::Transport("WiFi wrap failed"))?;
+        wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))
+            .map_err(|_| NodeError::Transport("WiFi set STA mode failed"))?;
         wifi.start()
             .map_err(|_| NodeError::Transport("WiFi start failed"))?;
 

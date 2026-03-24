@@ -833,7 +833,7 @@ In the post-provision boot path (PSK stored, `reg_complete` NOT set) the node MU
 
 **Acceptance criteria:**
 
-1. ESP-NOW is initialised on the channel stored during provisioning.
+1. ESP-NOW is initialised in WiFi station mode on the channel stored during provisioning.
 2. The frame uses `msg_type` 0x05 and a random 8-byte nonce.
 3. The CBOR payload contains key 1 mapped to `encrypted_payload`.
 4. The HMAC is computed with `node_psk` over header and payload.

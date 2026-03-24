@@ -317,17 +317,13 @@ mod tests {
         assert!(matches!(err, ProgramError::ElfParseError(_)));
     }
 
-    /// Build a minimal valid BPF ELF containing a single `.text` section
-    /// with `mov r0, 0; exit` — the simplest passing eBPF program.
-    fn make_minimal_bpf_elf() -> Vec<u8> {
-        // Construct a minimal 64-bit little-endian ELF relocatable object
-        // with a single .text section containing two BPF instructions.
-        //
-        // Layout: ELF header (64B) | .text (16B) | .shstrtab (17B) | section headers (3*64B)
-        let bpf_code: [u8; 16] = [
-            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
-            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
-        ];
+    /// Build a BPF ELF relocatable object with the given bytecode in a `.text`
+    /// section. The bytecode length must be a multiple of 8 (one BPF instruction).
+    fn make_bpf_elf(bpf_code: &[u8]) -> Vec<u8> {
+        assert!(
+            bpf_code.len().is_multiple_of(8),
+            "BPF bytecode length must be a multiple of 8"
+        );
         let shstrtab: &[u8] = b"\0.text\0.shstrtab\0"; // 17 bytes
 
         let text_offset: u64 = 64; // right after ELF header
@@ -358,7 +354,7 @@ mod tests {
         assert_eq!(elf.len(), 64);
 
         // ── .text section data ──
-        elf.extend_from_slice(&bpf_code);
+        elf.extend_from_slice(bpf_code);
 
         // ── .shstrtab section data ──
         elf.extend_from_slice(shstrtab);
@@ -389,6 +385,15 @@ mod tests {
         elf.extend_from_slice(&sh2);
 
         elf
+    }
+
+    /// Build a minimal valid BPF ELF containing a single `.text` section
+    /// with `mov r0, 0; exit` — the simplest passing eBPF program.
+    fn make_minimal_bpf_elf() -> Vec<u8> {
+        make_bpf_elf(&[
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ])
     }
 
     #[test]
@@ -537,5 +542,44 @@ mod tests {
 
         let image = ProgramImage::decode(&record.image).unwrap();
         assert_eq!(image.bytecode.len(), bpf_code.len());
+    }
+
+    /// E2E verification: a BPF program calling sonde helper `gpio_read` (ID 5)
+    /// must pass verification when using `SondePlatform` (T-0408, GW-0404).
+    #[test]
+    fn ingest_elf_sonde_helper_call_verified() {
+        // BPF: mov r1, 0; call 5 (gpio_read); exit
+        let elf = make_bpf_elf(&[
+            0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r1, 0
+            0x85, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, // call 5 (gpio_read)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ]);
+        let lib = ProgramLibrary::new();
+        let record = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .expect("ELF calling sonde helper gpio_read should pass verification");
+        assert!(!record.hash.is_empty());
+        let image = ProgramImage::decode(&record.image).unwrap();
+        // 3 instructions × 8 bytes = 24 bytes of bytecode
+        assert_eq!(image.bytecode.len(), 24);
+    }
+
+    /// Negative case: a BPF program calling an unsupported helper (ID 0)
+    /// must be rejected by verification (GW-0404).
+    #[test]
+    fn ingest_elf_unsupported_helper_rejected() {
+        // BPF: call 0 (unsupported); exit
+        let elf = make_bpf_elf(&[
+            0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // call 0 (unsupported)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ]);
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .unwrap_err();
+        assert!(
+            matches!(err, ProgramError::VerificationFailed(_)),
+            "unsupported helper call should fail verification, got: {err}"
+        );
     }
 }

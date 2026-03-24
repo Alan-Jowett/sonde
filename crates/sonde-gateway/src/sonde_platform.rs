@@ -429,4 +429,12 @@ mod tests {
             .expect("should have context descriptor");
         assert_eq!(ctx.size, 16);
     }
+
+    #[test]
+    fn unknown_map_type_is_not_array() {
+        let platform = SondePlatform::new();
+        let mt = platform.get_map_type(99);
+        assert!(!mt.is_array);
+        assert_eq!(mt.platform_specific_type, 99);
+    }
 }

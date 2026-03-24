@@ -41,6 +41,15 @@ fn main() {
     info!("sonde-node booting (commit {})", env!("SONDE_GIT_COMMIT"));
     info!("firmware ABI version: {}", sonde_node::FIRMWARE_ABI_VERSION);
 
+    // Log boot reason (ND-1000).
+    let reset_reason = unsafe { esp_idf_svc::sys::esp_reset_reason() };
+    let boot_reason = if reset_reason == esp_idf_svc::sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP {
+        "deep_sleep_wake"
+    } else {
+        "power_on"
+    };
+    info!("boot_reason={} (ND-1000)", boot_reason);
+
     // --- Initialize platform ---
     let peripherals = Peripherals::take().expect("failed to take peripherals");
     let sysloop = EspSystemEventLoop::take().expect("failed to take event loop");

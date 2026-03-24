@@ -93,6 +93,7 @@ where
     //     early-wake flag via take_early_wake_flag().  On RNG failure we
     //     must preserve that flag so the next wake cycle can honour it.
     if !rng.health_check() {
+        log::warn!("RNG health check failed — aborting wake cycle (ND-1009)");
         let (base_interval_s, _) = storage.read_schedule();
         return WakeCycleOutcome::Sleep {
             seconds: base_interval_s,
@@ -101,6 +102,12 @@ where
 
     // 2. Determine wake reason
     let wake_reason = determine_wake_reason(storage);
+
+    log::info!(
+        "wake cycle started key_hint=0x{:04X} wake_reason={:?} (ND-1001)",
+        identity.key_hint,
+        wake_reason,
+    );
 
     // 3. Load schedule
     let (base_interval_s, _active_partition) = storage.read_schedule();
@@ -188,6 +195,7 @@ where
         }
         Err(_) => {
             // WAKE retries exhausted or transport error.
+            log::warn!("WAKE retries exhausted — sleeping (ND-1009)");
             // Self-healing (ND-0915): if reg_complete is set and peer_payload
             // is still present (meaning deferred erasure hasn't happened yet),
             // clear reg_complete so the next boot reverts to PEER_REQUEST.
@@ -204,6 +212,26 @@ where
             };
         }
     };
+
+    // Log the received COMMAND (ND-1003).
+    match &command_payload {
+        CommandPayload::Nop => log::info!("COMMAND received command_type=Nop"),
+        CommandPayload::Reboot => log::info!("COMMAND received command_type=Reboot"),
+        CommandPayload::UpdateSchedule { interval_s } => {
+            log::info!(
+                "COMMAND received command_type=UpdateSchedule interval_s={}",
+                interval_s
+            );
+        }
+        CommandPayload::UpdateProgram { program_hash, .. } => {
+            let hash_hex: String = program_hash.iter().take(4).map(|b| format!("{:02x}", b)).collect();
+            log::info!("COMMAND received command_type=UpdateProgram program_hash={}", hash_hex);
+        }
+        CommandPayload::RunEphemeral { program_hash, .. } => {
+            let hash_hex: String = program_hash.iter().take(4).map(|b| format!("{:02x}", b)).collect();
+            log::info!("COMMAND received command_type=RunEphemeral program_hash={}", hash_hex);
+        }
+    }
 
     // 7. Record gateway timestamp for BPF context
     let command_received_at = clock.elapsed_ms();
@@ -347,6 +375,9 @@ where
     }
 
     if let Some(program) = loaded_program {
+        // Log BPF execution start (ND-1006).
+        let hash_prefix: String = program.hash.iter().take(4).map(|b| format!("{:02x}", b)).collect();
+        log::info!("BPF execute program_hash={}", hash_prefix);
         let program_class = if program.is_ephemeral {
             ProgramClass::Ephemeral
         } else {
@@ -460,6 +491,10 @@ where
         };
 
         // Swallow BPF errors — node sleeps normally regardless (ND-0504).
+        match &exec_result {
+            Ok(rc) => log::info!("BPF execution completed rc={}", rc),
+            Err(err) => log::info!("BPF execution failed: {}", err),
+        }
         let _ = exec_result;
 
         // Flush accumulated trace output (ND-0604 / T-N613).
@@ -476,9 +511,14 @@ where
         }
     }
 
-    WakeCycleOutcome::Sleep {
-        seconds: sleep_mgr.effective_sleep_s(),
-    }
+    let sleep_s = sleep_mgr.effective_sleep_s();
+    log::info!(
+        "entering deep sleep duration_seconds={} reason={:?} (ND-1007)",
+        sleep_s,
+        sleep_mgr.wake_reason(),
+    );
+
+    WakeCycleOutcome::Sleep { seconds: sleep_s }
 }
 
 /// Determine the wake reason from RTC flags.
@@ -527,6 +567,12 @@ fn wake_command_exchange<T: Transport>(
         }
 
         transport.send(&frame)?;
+        log::info!(
+            "WAKE sent key_hint=0x{:04X} nonce=0x{:016X} attempt={} (ND-1002)",
+            identity.key_hint,
+            wake_nonce,
+            attempt,
+        );
 
         // Await COMMAND response
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
@@ -534,8 +580,8 @@ fn wake_command_exchange<T: Transport>(
                 // Try to verify and decode
                 match verify_and_decode_command(&raw_response, identity, wake_nonce, hmac) {
                     Ok(result) => return Ok(result),
-                    Err(_) => {
-                        // Invalid response — discard and retry
+                    Err(e) => {
+                        log::warn!("COMMAND verification failed: {} (ND-1009)", e);
                         continue;
                     }
                 }

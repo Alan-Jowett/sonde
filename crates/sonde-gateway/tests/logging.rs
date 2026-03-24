@@ -246,14 +246,18 @@ async fn t1300_wake_lifecycle_logging() {
 
     // GW-1300 AC3: WAKE received with node_id, seq, battery_mv.
     assert!(logs_contain("WAKE received"));
-    assert!(logs_contain("node-log-1300"));
-    assert!(logs_contain("battery_mv"));
+    assert!(logs_contain("node_id=node-log-1300"));
+    assert!(logs_contain("seq="));
+    assert!(logs_contain("battery_mv=3300"));
 
     // GW-1300 AC5: session created with node_id.
     assert!(logs_contain("session created"));
+    assert!(logs_contain("node_id=node-log-1300"));
 
     // GW-1300 AC4: COMMAND selected with node_id and command_type.
     assert!(logs_contain("COMMAND selected"));
+    assert!(logs_contain("node_id=node-log-1300"));
+    assert!(logs_contain(r#"command_type="Nop""#));
 }
 
 // ── T-1301  Session expiry logging ─────────────────────────────────────
@@ -269,8 +273,9 @@ async fn t1301_session_expiry_logging() {
         .create_session("node-log-1301".to_string(), b"peer".to_vec(), 1, 100)
         .await;
 
-    // Wait for the session to expire.
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    // Wait for the session to expire using paused Tokio time.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(10)).await;
 
     let expired = session_manager.reap_expired().await;
     assert_eq!(expired.len(), 1);
@@ -324,10 +329,12 @@ async fn t1302_peer_request_logging() {
 
     // GW-1300 AC1: PEER_REQUEST processed with result "registered".
     assert!(logs_contain("PEER_REQUEST processed"));
-    assert!(logs_contain("registered"));
+    assert!(logs_contain(r#"result="registered""#));
+    assert!(logs_contain("node_id=node-peer-log"));
 
     // GW-1300 AC2: PEER_ACK frame encoded with node_id.
     assert!(logs_contain("PEER_ACK frame encoded"));
+    assert!(logs_contain("node_id=node-peer-log"));
 }
 
 // ── T-1303  Modem frame debug logging ──────────────────────────────────
@@ -359,6 +366,8 @@ async fn t1303_modem_frame_debug_logging() {
         logs_contain("frame received from modem"),
         "expected RECV debug log"
     );
+    assert!(logs_contain(r#"msg_type="WAKE""#));
+    assert!(logs_contain("len=11"));
 
     // AC2: Send a frame and assert debug log.
     let send_frame = vec![
@@ -376,4 +385,6 @@ async fn t1303_modem_frame_debug_logging() {
         logs_contain("frame sent to modem"),
         "expected SEND debug log"
     );
+    assert!(logs_contain(r#"msg_type="COMMAND""#));
+    assert!(logs_contain("len=11"));
 }

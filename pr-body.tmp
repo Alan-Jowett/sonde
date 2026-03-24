@@ -1,17 +1,19 @@
-## Gateway crashes when modem resets — USB-CDC disconnect (GW-1103)
+## Gateway silently drops duplicate PEER_REQUEST — node stuck in enrollment
 
 ### Bug
 
-When the modem resets (DTR toggle, reflash, power cycle), the USB-CDC serial port disappears. The gateway's serial reader task exits with OS error 995, and the entire gateway process shuts down instead of reconnecting.
+When a node sends a PEER_REQUEST for a node_id already registered, the gateway returns None (no PEER_ACK). If the original PEER_ACK was lost (e.g. modem ESP-NOW TX failure after BLE pairing — #447), the node retries forever but never completes enrollment.
 
 ### Fix
 
-Wrap the modem transport + frame/BLE processing loops in a reconnection loop with exponential backoff (1s to 30s cap). On serial disconnect the gateway logs a warning, waits, reopens the port, and re-executes the modem startup sequence (RESET → MODEM_READY → SET_CHANNEL).
+On duplicate PEER_REQUEST, look up the existing node record and compare PSK:
+- **Matching PSK**: send PEER_ACK anyway so the node can set eg_complete
+- **Different PSK**: silently discard (potential replay/conflict)
 
 ### Spec updates (spec-first)
 
-- **GW-1103:** Added criteria 3-5 for serial disconnect recovery
-- **gateway-design.md §4.2:** Document reconnection backoff loop
-- **gateway-validation.md:** Added T-1104a (reconnection with backoff) and T-1104b (frame loop survives)
+- **GW-1218**: Added criteria 4 (duplicate with matching PSK gets PEER_ACK) and 5 (different PSK discarded)
+- **gateway-design.md §17.5**: Updated step 6 and §17.6
+- **gateway-validation.md**: Added T-1218a and T-1218b
 
-Fixes #442.
+Fixes #465.

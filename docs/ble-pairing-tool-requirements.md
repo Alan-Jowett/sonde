@@ -745,13 +745,15 @@ Test code MUST use clearly non-zero keys (e.g., `[0x42u8; 32]`), not `[0u8; 32]`
 **Description:**  
 The BLE link between the phone and modem MUST be established using LE Secure Connections (LESC) with authenticated pairing (Numeric Comparison). Unauthenticated pairing modes (Just Works, passkey-only without confirmation) MUST NOT be accepted because the pairing exchange carries PSK material that an active MITM could intercept. The transport abstraction MUST expose an explicit, observable signal indicating which pairing method was actually negotiated with the OS BLE stack (e.g., an enum such as `NumericComparison`, `JustWorks`). This signal MUST be available both to the application logic and to the test harness.
 
+On desktop platforms where the BLE library delegates pairing entirely to the OS stack (e.g. btleplug on WinRT, BlueZ, CoreBluetooth), the transport MAY report `None` for the pairing method to indicate that LESC enforcement is OS-managed and not observable by the application. The `enforce_lesc` check MUST treat `None` as acceptable (OS-enforced security), `NumericComparison` as acceptable, and all other values (including `Unknown` and `JustWorks`) as failures that trigger an immediate disconnect.
+
 **Acceptance criteria:**
 
 1. **Precondition:** the modem is configured for LESC with `DisplayYesNo` I/O capability (verified by modem validation, not the pairing tool).
-2. The BLE transport interface exposes a pairing-complete hook that includes the resolved pairing method, with at least `NumericComparison` and `JustWorks` as distinguishable values.
-3. The phone verifies that the negotiated pairing method is Numeric Comparison before proceeding.
-4. A Just Works fallback is treated as a connection failure, not a silent degradation.
-5. The mock BLE transport can be configured to report different pairing methods, and tests for PT-0904 cover both the success and failure cases.
+2. The BLE transport interface exposes a pairing-complete hook that includes the resolved pairing method, with at least `NumericComparison` and `JustWorks` as distinguishable values, plus `None` for OS-managed pairing.
+3. The phone verifies that the negotiated pairing method is Numeric Comparison **or** `None` (OS-enforced) before proceeding.
+4. A Just Works fallback or `Unknown` pairing method is treated as a connection failure, not a silent degradation.
+5. The mock BLE transport can be configured to report different pairing methods, and tests for PT-0904 cover success (`NumericComparison`, `None`) and failure (`JustWorks`, `Unknown`) cases.
 
 ---
 

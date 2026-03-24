@@ -1009,7 +1009,7 @@ The node MUST log the start of each wake cycle at INFO level, including the node
 **Acceptance criteria:**
 
 1. An INFO log is emitted at the start of `run_wake_cycle` containing `key_hint` (hex).
-2. The log includes the `wake_reason` (Scheduled, Early, or ProgramUpdate).
+2. The log includes the `wake_reason` (Scheduled or Early).
 
 ---
 

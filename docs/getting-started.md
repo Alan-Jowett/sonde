@@ -562,7 +562,7 @@ docker build -f .github/docker/Dockerfile.android-dev -t sonde-android-dev .
 If a node has been previously paired and you need to wipe its credentials and re-provision it, use this procedure:
 
 1. Press and release the **RESET** button (node reboots into application).
-2. Immediately press and hold the **BOOT** button (within the first 500 ms).
+2. Immediately press and hold **BOOT** (within the first 500 ms).
 3. Keep holding **BOOT** for at least 1 second.
 4. Release **BOOT**.
 5. The node enters BLE pairing mode with factory reset armed.
@@ -570,11 +570,11 @@ If a node has been previously paired and you need to wipe its credentials and re
 
 #### Why this works
 
-Pressing RESET triggers a software reset — the ROM bootloader does NOT check GPIO 9 boot strapping on a software reset, so it boots straight into the application. The application then samples GPIO 9 for 500 ms. Since you pressed BOOT immediately after reset, all samples read LOW → `button_held = true`.
+The ROM bootloader samples GPIO 9 on every reset to choose the boot mode. Because you release RESET while BOOT is **not** pressed, GPIO 9 reads HIGH → the chip boots normally into the application. The application then samples GPIO 9 for 500 ms (ND-0901). Since you press BOOT immediately after releasing RESET, all samples read LOW → `button_held = true`.
 
 #### Why holding BOOT *before* pressing RESET does NOT work
 
-On cold power-on with GPIO 9 LOW, the ESP32-C3 ROM enters USB/UART download mode. You will see:
+When GPIO 9 is held LOW during any reset (including a RESET-button press), the ESP32-C3 ROM enters USB/UART download mode instead of booting the application. You will see:
 
 ```
 rst:0x1 (POWERON), boot:0x6 (DOWNLOAD(USB/UART0))
@@ -590,5 +590,9 @@ If you cannot use the button-based procedure (e.g., the firmware is not running)
 ```sh
 espflash erase-region -p COM6 0x9000 0x6000
 ```
+
+The offset `0x9000` and size `0x6000` match the NVS partition in the ESP-IDF built-in "Single factory app (large)" partition table selected by `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` in `sdkconfig.defaults`. If the project switches to a custom partition table, update these values to match.
+
+The device must be in ROM download mode for this command to work — hold **BOOT**, press **RESET**, then release **BOOT**.
 
 Replace `COM6` with your device's serial port (`/dev/ttyUSB0` on Linux, `/dev/cu.usbmodem*` on macOS). After erasing NVS, flash new firmware and the node will start in pairing mode.

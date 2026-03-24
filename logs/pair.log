@@ -1,106 +1,519 @@
-2026-03-23T23:46:33.575025Z DEBUG sonde_pair::btleplug_transport: BLE scan started (filter applied in discovery layer) services=[0000fe60-0000-1000-8000-00805f9b34fb, 0000fe50-0000-1000-8000-00805f9b34fb]
-2026-03-23T23:46:35.092561Z DEBUG sonde_pair::btleplug_transport: enumerating 6 peripherals from btleplug
-2026-03-23T23:46:35.092810Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-31)
-2026-03-23T23:46:35.092859Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-57)
-2026-03-23T23:46:35.092892Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[54, 209, 1, 68, 153, 173] services=[] rssi=Some(-102)
-2026-03-23T23:46:35.092918Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-93)
-2026-03-23T23:46:35.092944Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[7, 170, 229, 215, 6, 134] services=[] rssi=Some(-55)
-2026-03-23T23:46:35.092974Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-41)
-2026-03-23T23:46:35.093010Z DEBUG sonde_pair::discovery: refresh: discovered 6 devices
-2026-03-23T23:46:35.093041Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
-2026-03-23T23:46:35.093080Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
-2026-03-23T23:46:35.093101Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[54, 209, 1, 68, 153, 173] uuids=[]
-2026-03-23T23:46:35.093121Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
-2026-03-23T23:46:35.093143Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[7, 170, 229, 215, 6, 134] uuids=[]
-2026-03-23T23:46:35.093164Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
-2026-03-23T23:46:36.579440Z DEBUG sonde_pair::btleplug_transport: enumerating 8 peripherals from btleplug
-2026-03-23T23:46:36.579552Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
-2026-03-23T23:46:36.579583Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-76)
-2026-03-23T23:46:36.579608Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[54, 209, 1, 68, 153, 173] services=[] rssi=Some(-100)
-2026-03-23T23:46:36.579654Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-93)
-2026-03-23T23:46:36.579677Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[14, 254, 74, 139, 44, 68] services=[] rssi=Some(-100)
-2026-03-23T23:46:36.579700Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[7, 170, 229, 215, 6, 134] services=[] rssi=Some(-55)
-2026-03-23T23:46:36.579724Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-41)
-2026-03-23T23:46:36.579747Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[96, 126, 52, 41, 185, 211] services=[] rssi=Some(-97)
-2026-03-23T23:46:36.579780Z DEBUG sonde_pair::discovery: refresh: discovered 8 devices
-2026-03-23T23:46:36.579808Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
-2026-03-23T23:46:36.579923Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
-2026-03-23T23:46:36.579985Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[54, 209, 1, 68, 153, 173] uuids=[]
-2026-03-23T23:46:36.580041Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
-2026-03-23T23:46:36.580093Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[14, 254, 74, 139, 44, 68] uuids=[]
-2026-03-23T23:46:36.580134Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[7, 170, 229, 215, 6, 134] uuids=[]
-2026-03-23T23:46:36.580152Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
-2026-03-23T23:46:36.580175Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[96, 126, 52, 41, 185, 211] uuids=[]
-2026-03-23T23:46:38.079844Z DEBUG sonde_pair::btleplug_transport: enumerating 8 peripherals from btleplug
-2026-03-23T23:46:38.080029Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-31)
-2026-03-23T23:46:38.080075Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-76)
-2026-03-23T23:46:38.080128Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[54, 209, 1, 68, 153, 173] services=[] rssi=Some(-100)
-2026-03-23T23:46:38.080156Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-98)
-2026-03-23T23:46:38.080183Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[14, 254, 74, 139, 44, 68] services=[] rssi=Some(-100)
-2026-03-23T23:46:38.080212Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[7, 170, 229, 215, 6, 134] services=[] rssi=Some(-55)
-2026-03-23T23:46:38.080246Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
-2026-03-23T23:46:38.080274Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[96, 126, 52, 41, 185, 211] services=[] rssi=Some(-97)
-2026-03-23T23:46:38.080302Z DEBUG sonde_pair::discovery: refresh: discovered 8 devices
-2026-03-23T23:46:38.080321Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
-2026-03-23T23:46:38.080347Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
-2026-03-23T23:46:38.080443Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[54, 209, 1, 68, 153, 173] uuids=[]
-2026-03-23T23:46:38.080462Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
-2026-03-23T23:46:38.080481Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[14, 254, 74, 139, 44, 68] uuids=[]
-2026-03-23T23:46:38.080501Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[7, 170, 229, 215, 6, 134] uuids=[]
-2026-03-23T23:46:38.080518Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
-2026-03-23T23:46:38.080540Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[96, 126, 52, 41, 185, 211] uuids=[]
-2026-03-23T23:46:39.581598Z DEBUG sonde_pair::btleplug_transport: enumerating 8 peripherals from btleplug
-2026-03-23T23:46:39.581730Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-31)
-2026-03-23T23:46:39.581768Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-52)
-2026-03-23T23:46:39.581785Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[54, 209, 1, 68, 153, 173] services=[] rssi=Some(-100)
-2026-03-23T23:46:39.581798Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-93)
-2026-03-23T23:46:39.581813Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[14, 254, 74, 139, 44, 68] services=[] rssi=Some(-100)
-2026-03-23T23:46:39.581827Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[7, 170, 229, 215, 6, 134] services=[] rssi=Some(-55)
-2026-03-23T23:46:39.581842Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-41)
-2026-03-23T23:46:39.581856Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[96, 126, 52, 41, 185, 211] services=[] rssi=Some(-93)
-2026-03-23T23:46:39.581880Z DEBUG sonde_pair::discovery: refresh: discovered 8 devices
-2026-03-23T23:46:39.581893Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
-2026-03-23T23:46:39.581910Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
-2026-03-23T23:46:39.581922Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[54, 209, 1, 68, 153, 173] uuids=[]
-2026-03-23T23:46:39.581935Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
-2026-03-23T23:46:39.581949Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[14, 254, 74, 139, 44, 68] uuids=[]
-2026-03-23T23:46:39.581963Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[7, 170, 229, 215, 6, 134] uuids=[]
-2026-03-23T23:46:39.581973Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
-2026-03-23T23:46:39.581984Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[96, 126, 52, 41, 185, 211] uuids=[]
-2026-03-23T23:46:41.084919Z DEBUG sonde_pair::btleplug_transport: enumerating 8 peripherals from btleplug
-2026-03-23T23:46:41.085009Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-31)
-2026-03-23T23:46:41.085053Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-52)
-2026-03-23T23:46:41.085071Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[54, 209, 1, 68, 153, 173] services=[] rssi=Some(-100)
-2026-03-23T23:46:41.085085Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-92)
-2026-03-23T23:46:41.085099Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[14, 254, 74, 139, 44, 68] services=[] rssi=Some(-100)
-2026-03-23T23:46:41.085113Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[7, 170, 229, 215, 6, 134] services=[] rssi=Some(-55)
-2026-03-23T23:46:41.085127Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
-2026-03-23T23:46:41.085140Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[96, 126, 52, 41, 185, 211] services=[] rssi=Some(-93)
-2026-03-23T23:46:41.085153Z DEBUG sonde_pair::discovery: refresh: discovered 8 devices
-2026-03-23T23:46:41.085166Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
-2026-03-23T23:46:41.085184Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
-2026-03-23T23:46:41.085199Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[54, 209, 1, 68, 153, 173] uuids=[]
-2026-03-23T23:46:41.085210Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
-2026-03-23T23:46:41.085223Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[14, 254, 74, 139, 44, 68] uuids=[]
-2026-03-23T23:46:41.085235Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[7, 170, 229, 215, 6, 134] uuids=[]
-2026-03-23T23:46:41.085245Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
-2026-03-23T23:46:41.085256Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[96, 126, 52, 41, 185, 211] uuids=[]
-2026-03-23T23:46:41.526039Z DEBUG sonde_pair::btleplug_transport: BLE scan stopped
-2026-03-23T23:46:41.529815Z  INFO sonde_pair::phase1: connecting to gateway
-2026-03-23T23:46:41.529903Z DEBUG sonde_pair::btleplug_transport: target not in cached peripherals, running short scan
-2026-03-23T23:46:46.776644Z DEBUG sonde_pair::btleplug_transport: connected and discovered services address=E8:F6:0A:A8:C8:E2 services=3
-2026-03-23T23:46:46.776724Z DEBUG sonde_pair::btleplug_transport: btleplug does not expose MTU; reporting conservative default mtu=247
-2026-03-23T23:46:46.776738Z DEBUG sonde_pair::phase1: connected to gateway mtu=247
-2026-03-23T23:46:46.805769Z DEBUG sonde_pair::btleplug_transport: GATT write requires auth ΓÇö waiting for OS pairing dialog
-2026-03-23T23:46:51.813555Z DEBUG sonde_pair::btleplug_transport: retrying GATT write after pairing attempt=1
-2026-03-23T23:46:52.010116Z DEBUG sonde_pair::btleplug_transport: retry failed, will try again error=Error { code: HRESULT(0x80650005), message: "The attribute requires authentication before it can be read or written." }
-2026-03-23T23:46:57.024909Z DEBUG sonde_pair::btleplug_transport: retrying GATT write after pairing attempt=2
-2026-03-23T23:46:57.229069Z DEBUG sonde_pair::btleplug_transport: retry failed, will try again error=Error { code: HRESULT(0x80650005), message: "The attribute requires authentication before it can be read or written." }
-2026-03-23T23:47:02.237225Z DEBUG sonde_pair::btleplug_transport: retrying GATT write after pairing attempt=3
-2026-03-23T23:47:02.448556Z DEBUG sonde_pair::btleplug_transport: retry failed, will try again error=Error { code: HRESULT(0x80650005), message: "The attribute requires authentication before it can be read or written." }
-2026-03-23T23:47:07.450301Z DEBUG sonde_pair::btleplug_transport: retrying GATT write after pairing attempt=4
-2026-03-23T23:47:07.668787Z DEBUG sonde_pair::btleplug_transport: retry failed, will try again error=Error { code: HRESULT(0x80650005), message: "The attribute requires authentication before it can be read or written." }
-2026-03-23T23:47:12.682710Z DEBUG sonde_pair::btleplug_transport: retrying GATT write after pairing attempt=5
-2026-03-23T23:47:12.888176Z DEBUG sonde_pair::btleplug_transport: retry failed, will try again error=Error { code: HRESULT(0x80650005), message: "The attribute requires authentication before it can be read or written." }
-2026-03-23T23:47:17.896362Z DEBUG sonde_pair::btleplug_transport: retrying GATT write after pairing attempt=6
-2026-03-23T23:47:18.120119Z DEBUG sonde_pair::btleplug_transport: disconnected
+2026-03-24T02:28:39.131335Z DEBUG sonde_pair::btleplug_transport: BLE scan started (filter applied in discovery layer) services=[0000fe60-0000-1000-8000-00805f9b34fb, 0000fe50-0000-1000-8000-00805f9b34fb]
+2026-03-24T02:28:40.648432Z DEBUG sonde_pair::btleplug_transport: enumerating 4 peripherals from btleplug
+2026-03-24T02:28:40.648596Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-69)
+2026-03-24T02:28:40.648619Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:40.648640Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-33)
+2026-03-24T02:28:40.648657Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-95)
+2026-03-24T02:28:40.648673Z DEBUG sonde_pair::discovery: refresh: discovered 4 devices
+2026-03-24T02:28:40.648688Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:40.648701Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:40.648713Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:40.648730Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:42.136348Z DEBUG sonde_pair::btleplug_transport: enumerating 7 peripherals from btleplug
+2026-03-24T02:28:42.136482Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-95)
+2026-03-24T02:28:42.136515Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-73)
+2026-03-24T02:28:42.136542Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-103)
+2026-03-24T02:28:42.136567Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-95)
+2026-03-24T02:28:42.136598Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-97)
+2026-03-24T02:28:42.136631Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-33)
+2026-03-24T02:28:42.136660Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-95)
+2026-03-24T02:28:42.136769Z DEBUG sonde_pair::discovery: refresh: discovered 7 devices
+2026-03-24T02:28:42.136794Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:42.136817Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:42.136838Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:42.136860Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:42.136913Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:42.136935Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:42.136962Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:43.649364Z DEBUG sonde_pair::btleplug_transport: enumerating 9 peripherals from btleplug
+2026-03-24T02:28:43.649450Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-40)
+2026-03-24T02:28:43.649470Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-93)
+2026-03-24T02:28:43.649486Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-66)
+2026-03-24T02:28:43.649504Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:43.649523Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-102)
+2026-03-24T02:28:43.649538Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-95)
+2026-03-24T02:28:43.649552Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-97)
+2026-03-24T02:28:43.649568Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-33)
+2026-03-24T02:28:43.649583Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-95)
+2026-03-24T02:28:43.649599Z DEBUG sonde_pair::discovery: refresh: discovered 9 devices
+2026-03-24T02:28:43.649613Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:43.649625Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:43.649637Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:43.649649Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:43.649661Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:43.649672Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:43.649683Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:43.649693Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:43.649713Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:45.150071Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:45.150243Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-40)
+2026-03-24T02:28:45.150278Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-97)
+2026-03-24T02:28:45.150294Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-67)
+2026-03-24T02:28:45.150319Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:45.150339Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:45.150356Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:28:45.150372Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-97)
+2026-03-24T02:28:45.150389Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-33)
+2026-03-24T02:28:45.150406Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-35)
+2026-03-24T02:28:45.150429Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-93)
+2026-03-24T02:28:45.150448Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:45.150466Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:45.150480Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:45.150492Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:45.150518Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:45.150535Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:45.150565Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:45.150577Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:45.150591Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:45.150614Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:45.150632Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:46.645838Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:46.645937Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-42)
+2026-03-24T02:28:46.645966Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-97)
+2026-03-24T02:28:46.645989Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-67)
+2026-03-24T02:28:46.646015Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:46.646039Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:46.646060Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:28:46.646083Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:28:46.646106Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:28:46.646185Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-37)
+2026-03-24T02:28:46.646221Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-99)
+2026-03-24T02:28:46.646241Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:46.646255Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:46.646272Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:46.646289Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:46.646307Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:46.646324Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:46.646339Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:46.646357Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:46.646374Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:46.646395Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:46.646409Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:48.146416Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:48.146597Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:28:48.146639Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-96)
+2026-03-24T02:28:48.146669Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-68)
+2026-03-24T02:28:48.146706Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:48.146736Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:48.146764Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:28:48.146792Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:28:48.146822Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-33)
+2026-03-24T02:28:48.146851Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:28:48.146884Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-91)
+2026-03-24T02:28:48.146913Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:48.146940Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:48.146966Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:48.146988Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:48.147014Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:48.147036Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:48.147059Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:48.147127Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:48.147149Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:48.147204Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:48.147227Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:49.646026Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:49.646243Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:28:49.646301Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-106)
+2026-03-24T02:28:49.646330Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-65)
+2026-03-24T02:28:49.646365Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:49.646426Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:49.646465Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:28:49.646493Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:28:49.646547Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-34)
+2026-03-24T02:28:49.646570Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-28)
+2026-03-24T02:28:49.646591Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-91)
+2026-03-24T02:28:49.646608Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:49.646636Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:49.646649Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:49.646661Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:49.646688Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:49.646700Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:49.646712Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:49.646723Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:49.646734Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:49.646753Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:49.646766Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:51.140374Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:51.140511Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-42)
+2026-03-24T02:28:51.140546Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-94)
+2026-03-24T02:28:51.140573Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-65)
+2026-03-24T02:28:51.140606Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:51.140636Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:51.140664Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:28:51.140722Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:28:51.140750Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:28:51.140808Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-28)
+2026-03-24T02:28:51.140842Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-91)
+2026-03-24T02:28:51.140897Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:51.140953Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:51.141003Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:51.141026Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:51.141050Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:51.141073Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:51.141118Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:51.141140Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:51.141274Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:51.141326Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:51.141349Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:52.646523Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:52.646659Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-42)
+2026-03-24T02:28:52.646696Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-93)
+2026-03-24T02:28:52.646722Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-73)
+2026-03-24T02:28:52.646756Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:52.646784Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:52.646810Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-100)
+2026-03-24T02:28:52.646835Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-102)
+2026-03-24T02:28:52.646861Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:28:52.646888Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:28:52.646919Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-91)
+2026-03-24T02:28:52.646975Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:52.647004Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:52.647026Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:52.647046Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:52.647069Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:52.647089Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:52.647108Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:52.647128Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:52.647147Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:52.647174Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:52.647195Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:54.150459Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:54.150609Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-42)
+2026-03-24T02:28:54.150642Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-105)
+2026-03-24T02:28:54.150661Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-57)
+2026-03-24T02:28:54.150693Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:54.150726Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:54.150751Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-100)
+2026-03-24T02:28:54.150771Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-102)
+2026-03-24T02:28:54.150798Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:28:54.150822Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-38)
+2026-03-24T02:28:54.150847Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-94)
+2026-03-24T02:28:54.150869Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:54.150889Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:54.150906Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:54.150922Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:54.150940Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:54.150957Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:54.150968Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:54.150979Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:54.150990Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:54.151010Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:54.151028Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:55.639449Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:55.639616Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:28:55.639664Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-104)
+2026-03-24T02:28:55.639764Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-57)
+2026-03-24T02:28:55.639797Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-96)
+2026-03-24T02:28:55.639825Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:55.639854Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:28:55.639881Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-102)
+2026-03-24T02:28:55.639908Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:28:55.639935Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-38)
+2026-03-24T02:28:55.639965Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-94)
+2026-03-24T02:28:55.639989Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:55.640012Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:55.640035Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:55.640056Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:55.640079Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:55.640102Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:55.640122Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:55.640146Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:55.640166Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:55.640191Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:55.640246Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:57.147234Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:57.147378Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:28:57.147404Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-103)
+2026-03-24T02:28:57.147421Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-58)
+2026-03-24T02:28:57.147445Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:28:57.147465Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:57.147482Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-95)
+2026-03-24T02:28:57.147498Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-102)
+2026-03-24T02:28:57.147516Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:28:57.147534Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:28:57.147556Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-94)
+2026-03-24T02:28:57.147575Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:57.147592Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:57.147606Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:57.147617Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:57.147631Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:57.147644Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:57.147656Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:57.147668Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:57.147680Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:57.147700Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:57.147718Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:28:58.646311Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:28:58.646456Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:28:58.646495Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-101)
+2026-03-24T02:28:58.646522Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-74)
+2026-03-24T02:28:58.646558Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:28:58.646587Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:28:58.646614Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-95)
+2026-03-24T02:28:58.646673Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-102)
+2026-03-24T02:28:58.646726Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-33)
+2026-03-24T02:28:58.646780Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:28:58.646808Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-94)
+2026-03-24T02:28:58.646831Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:28:58.646867Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:28:58.646898Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:28:58.646924Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:28:58.646941Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:28:58.646955Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:28:58.646981Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:28:58.646997Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:28:58.647010Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:28:58.647030Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:28:58.647043Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:00.144999Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:00.145162Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-42)
+2026-03-24T02:29:00.145203Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-101)
+2026-03-24T02:29:00.145230Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-57)
+2026-03-24T02:29:00.145268Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:00.145298Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:29:00.145326Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-97)
+2026-03-24T02:29:00.145353Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-102)
+2026-03-24T02:29:00.145382Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:29:00.145411Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:29:00.145444Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-94)
+2026-03-24T02:29:00.145472Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:00.145499Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:00.145523Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:00.145576Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:00.145600Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:00.145622Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:00.145651Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:00.145663Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:00.145676Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:00.145709Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:00.145722Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:01.645755Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:01.645948Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:29:01.645977Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-99)
+2026-03-24T02:29:01.645994Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-72)
+2026-03-24T02:29:01.646019Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:01.646037Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:29:01.646054Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:29:01.646071Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-102)
+2026-03-24T02:29:01.646088Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:29:01.646106Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-28)
+2026-03-24T02:29:01.646128Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-95)
+2026-03-24T02:29:01.646173Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:01.646211Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:01.646253Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:01.646324Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:01.646358Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:01.646375Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:01.646393Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:01.646421Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:01.646436Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:01.646460Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:01.646494Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:03.143333Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:03.143454Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:29:03.143483Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-96)
+2026-03-24T02:29:03.143506Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-74)
+2026-03-24T02:29:03.143542Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:03.143632Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:29:03.143711Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-97)
+2026-03-24T02:29:03.143739Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-102)
+2026-03-24T02:29:03.143797Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:29:03.143826Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:29:03.143857Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-95)
+2026-03-24T02:29:03.143911Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:03.143938Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:03.143962Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:03.144010Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:03.144058Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:03.144103Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:03.144150Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:03.144195Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:03.144241Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:03.144293Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:03.144342Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:04.648323Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:04.648496Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:29:04.648536Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-98)
+2026-03-24T02:29:04.648563Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-65)
+2026-03-24T02:29:04.648598Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:04.648627Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-97)
+2026-03-24T02:29:04.648655Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-97)
+2026-03-24T02:29:04.648680Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:29:04.648746Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:29:04.648774Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-28)
+2026-03-24T02:29:04.648808Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-101)
+2026-03-24T02:29:04.648897Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:04.648927Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:04.648951Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:04.648997Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:04.649020Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:04.649042Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:04.649062Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:04.649084Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:04.649130Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:04.649161Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:04.649185Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:06.141282Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:06.141475Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:29:06.141508Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-98)
+2026-03-24T02:29:06.141534Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-69)
+2026-03-24T02:29:06.141565Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:06.141593Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-97)
+2026-03-24T02:29:06.141619Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:29:06.141675Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:29:06.141731Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-39)
+2026-03-24T02:29:06.141758Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:29:06.141796Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-101)
+2026-03-24T02:29:06.141821Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:06.141843Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:06.141894Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:06.141919Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:06.141940Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:06.141986Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:06.142007Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:06.142027Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:06.142047Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:06.142071Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:06.142092Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:07.642571Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:07.642740Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-40)
+2026-03-24T02:29:07.642772Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-101)
+2026-03-24T02:29:07.642797Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-58)
+2026-03-24T02:29:07.642831Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:07.642859Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:29:07.642883Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-94)
+2026-03-24T02:29:07.642907Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:29:07.642934Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-40)
+2026-03-24T02:29:07.642962Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:29:07.642996Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-94)
+2026-03-24T02:29:07.643021Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:07.643046Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:07.643100Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:07.643121Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:07.643142Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:07.643234Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:07.643253Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:07.643272Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:07.643291Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:07.643315Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:07.643336Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:09.145180Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:09.145357Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-40)
+2026-03-24T02:29:09.145398Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-101)
+2026-03-24T02:29:09.145426Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-73)
+2026-03-24T02:29:09.145463Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:09.145494Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:29:09.145523Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-96)
+2026-03-24T02:29:09.145551Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:29:09.145582Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:29:09.145612Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-36)
+2026-03-24T02:29:09.145648Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-94)
+2026-03-24T02:29:09.145700Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:09.145728Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:09.145753Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:09.145775Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:09.145801Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:09.145823Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:09.145845Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:09.145865Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:09.145888Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:09.145919Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:09.145942Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:10.648624Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:10.648792Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-42)
+2026-03-24T02:29:10.648826Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-101)
+2026-03-24T02:29:10.648854Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-73)
+2026-03-24T02:29:10.648889Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:10.648919Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-101)
+2026-03-24T02:29:10.648946Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-95)
+2026-03-24T02:29:10.648973Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:29:10.649002Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-33)
+2026-03-24T02:29:10.649032Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-35)
+2026-03-24T02:29:10.649063Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-97)
+2026-03-24T02:29:10.649092Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:10.649119Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:10.649145Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:10.649167Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:10.649191Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:10.649215Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:10.649237Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:10.649258Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:10.649341Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:10.649368Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:10.649391Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:12.138242Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:12.138377Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-42)
+2026-03-24T02:29:12.138411Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-103)
+2026-03-24T02:29:12.138445Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-65)
+2026-03-24T02:29:12.138479Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:12.138540Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-104)
+2026-03-24T02:29:12.138593Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-93)
+2026-03-24T02:29:12.138675Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:29:12.138728Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-32)
+2026-03-24T02:29:12.138778Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-35)
+2026-03-24T02:29:12.138831Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-97)
+2026-03-24T02:29:12.138886Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:12.138907Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:12.138949Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:12.138988Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:12.139028Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:12.139069Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:12.139087Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:12.139106Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:12.139124Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:12.139146Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:12.139164Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:13.647377Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:13.647552Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-40)
+2026-03-24T02:29:13.647591Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-103)
+2026-03-24T02:29:13.647619Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-74)
+2026-03-24T02:29:13.647656Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:13.647685Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-99)
+2026-03-24T02:29:13.647713Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-95)
+2026-03-24T02:29:13.647772Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:29:13.647827Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-34)
+2026-03-24T02:29:13.647901Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-29)
+2026-03-24T02:29:13.647970Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-97)
+2026-03-24T02:29:13.648008Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:13.648066Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:13.648117Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:13.648162Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:13.648188Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:13.648234Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:13.648255Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:13.648275Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:13.648297Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:13.648325Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:13.648348Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:15.141342Z DEBUG sonde_pair::btleplug_transport: enumerating 10 peripherals from btleplug
+2026-03-24T02:29:15.141429Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[17, 32, 203, 92, 186, 54] services=[] rssi=Some(-41)
+2026-03-24T02:29:15.141450Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[64, 35, 8, 3, 193, 50] services=[] rssi=Some(-103)
+2026-03-24T02:29:15.141464Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[84, 58, 214, 120, 178, 137] services=[] rssi=Some(-59)
+2026-03-24T02:29:15.141482Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("NUS0E") addr=[254, 238, 169, 204, 97, 235] services=[0000feaf-0000-1000-8000-00805f9b34fb] rssi=Some(-95)
+2026-03-24T02:29:15.141498Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[22, 200, 202, 15, 133, 54] services=[] rssi=Some(-99)
+2026-03-24T02:29:15.141513Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=None addr=[188, 69, 91, 113, 204, 87] services=[] rssi=Some(-97)
+2026-03-24T02:29:15.141527Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("living room") addr=[84, 68, 163, 225, 3, 225] services=[] rssi=Some(-101)
+2026-03-24T02:29:15.141541Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-6fde") addr=[172, 235, 230, 130, 111, 222] services=[0000fe50-0000-1000-8000-00805f9b34fb] rssi=Some(-33)
+2026-03-24T02:29:15.141556Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("sonde-modem") addr=[232, 246, 10, 168, 200, 226] services=[0000fe60-0000-1000-8000-00805f9b34fb] rssi=Some(-27)
+2026-03-24T02:29:15.141573Z DEBUG sonde_pair::btleplug_transport: discovered peripheral name=Some("IIXSLITX") addr=[218, 207, 186, 1, 133, 108] services=[20130001-0719-4b6e-be5d-158ab92fa5a4] rssi=Some(-97)
+2026-03-24T02:29:15.141591Z DEBUG sonde_pair::discovery: refresh: discovered 10 devices
+2026-03-24T02:29:15.141609Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[17, 32, 203, 92, 186, 54] uuids=[]
+2026-03-24T02:29:15.141627Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[64, 35, 8, 3, 193, 50] uuids=[]
+2026-03-24T02:29:15.141642Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[84, 58, 214, 120, 178, 137] uuids=[]
+2026-03-24T02:29:15.141656Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=NUS0E addr=[254, 238, 169, 204, 97, 235] uuids=[5165596967843087633859974555972859]
+2026-03-24T02:29:15.141685Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[22, 200, 202, 15, 133, 54] uuids=[]
+2026-03-24T02:29:15.141696Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name= addr=[188, 69, 91, 113, 204, 87] uuids=[]
+2026-03-24T02:29:15.141707Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=living room addr=[84, 68, 163, 225, 3, 225] uuids=[]
+2026-03-24T02:29:15.141732Z DEBUG sonde_pair::discovery: target device found name=sonde-6fde addr=[172, 235, 230, 130, 111, 222]
+2026-03-24T02:29:15.141760Z DEBUG sonde_pair::discovery: target device found name=sonde-modem addr=[232, 246, 10, 168, 200, 226]
+2026-03-24T02:29:15.141783Z DEBUG sonde_pair::discovery: device filtered out (no target UUID) name=IIXSLITX addr=[218, 207, 186, 1, 133, 108] uuids=[42633949586854606606713231220249961892]
+2026-03-24T02:29:16.137681Z DEBUG sonde_pair::btleplug_transport: BLE scan stopped
+2026-03-24T02:29:16.142319Z  INFO sonde_pair::phase1: connecting to gateway
+2026-03-24T02:29:16.142440Z DEBUG sonde_pair::btleplug_transport: target not in cached peripherals, running short scan
+2026-03-24T02:29:21.753707Z DEBUG sonde_pair::btleplug_transport: connected and discovered services address=E8:F6:0A:A8:C8:E2 services=3
+2026-03-24T02:29:21.753789Z DEBUG sonde_pair::btleplug_transport: btleplug does not expose MTU; reporting conservative default mtu=247
+2026-03-24T02:29:21.753807Z DEBUG sonde_pair::phase1: connected to gateway mtu=247
+2026-03-24T02:29:21.780872Z DEBUG sonde_pair::btleplug_transport: GATT write complete characteristic=0000fe61-0000-1000-8000-00805f9b34fb len=35
+2026-03-24T02:29:21.810228Z DEBUG sonde_pair::btleplug_transport: subscribed to indications characteristic=0000fe61-0000-1000-8000-00805f9b34fb
+2026-03-24T02:30:07.053393Z DEBUG sonde_pair::btleplug_transport: disconnected
+[0323/193045.317:ERROR:ui\gfx\win\window_impl.cc:134] Failed to unregister class Chrome_WidgetWin_0. Error = 1411

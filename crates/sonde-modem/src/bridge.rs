@@ -393,6 +393,9 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn handle_send_frame(&mut self, sf: SendFrame) {
+        // NOTE: Radio::send() returns the esp_now_send() queue result, not
+        // the delivery ACK.  Async delivery failures are tracked separately
+        // via the send callback counter (tx_fail_count, MD-0202).
         let ok = self.radio.send(&sf.peer_mac, &sf.frame_data);
         if ok {
             info!(

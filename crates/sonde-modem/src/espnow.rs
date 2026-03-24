@@ -9,7 +9,7 @@ use esp_idf_svc::espnow::{EspNow, PeerInfo, SendStatus};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -314,7 +314,10 @@ impl Radio for EspNowDriver {
         self.counters.inc_tx();
         match self.espnow.send(*peer_mac, data) {
             Ok(()) => true,
-            Err(_) => false,
+            Err(e) => {
+                debug!("esp_now_send error: {:?}", e);
+                false
+            }
         }
     }
 

@@ -1629,15 +1629,18 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1216  Duplicate node_id rejected
+### T-1216  Duplicate node_id handling
 
 **Validates:** GW-1216
 
 **Procedure:**
-1. Successfully pair a node with `node_id` X.
-2. Construct a new `PEER_REQUEST` with the same `node_id` X.
+1. Successfully pair a node with `node_id` X and `node_psk` P.
+2. Construct a new `PEER_REQUEST` with the same `node_id` X and matching `node_psk` P.
 3. Submit the frame.
-4. Assert: the gateway silently discards the frame (duplicate node).
+4. Assert: the gateway returns a valid `PEER_ACK(0x00)` (duplicate with matching PSK — GW-1216 AC2).
+5. Construct a new `PEER_REQUEST` with the same `node_id` X but a **different** `node_psk`.
+6. Submit the frame.
+7. Assert: the gateway silently discards the frame (different PSK — GW-1216 AC3).
 
 ---
 
@@ -1660,6 +1663,27 @@ A configurable stub handler process (or in-process mock) that:
 1. Successfully process a `PEER_REQUEST` from a known phone.
 2. Query the node registry for the new node.
 3. Assert: the record contains `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` set to the phone's stable identifier (not `phone_key_hint`).
+
+### T-1218a  Duplicate PEER_REQUEST with matching PSK sends PEER_ACK
+
+**Validates:** GW-1218 (criterion 4)
+
+**Procedure:**
+1. Successfully process a `PEER_REQUEST` — node is registered, PEER_ACK sent.
+2. Submit a second `PEER_REQUEST` with the same `node_id` and `node_psk` but a different nonce.
+3. Assert: a `PEER_ACK(0x00)` is returned with valid `registration_proof`.
+4. Assert: the `nonce` in the PEER_ACK header matches the second request's nonce.
+5. Assert: the node registry still contains exactly one record for the node (no duplicate).
+
+### T-1218b  Duplicate PEER_REQUEST with different PSK is discarded
+
+**Validates:** GW-1218 (criterion 5)
+
+**Procedure:**
+1. Successfully process a `PEER_REQUEST` — node is registered.
+2. Submit a second `PEER_REQUEST` with the same `node_id` but a **different** `node_psk`.
+3. Assert: no `PEER_ACK` is sent (silent discard).
+4. Assert: the existing node record is unchanged.
 
 ---
 
@@ -1803,6 +1827,61 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 13  Operational logging tests
+
+### T-1300  WAKE lifecycle logging
+
+**Validates:** GW-1300
+
+**Procedure:**
+1. Configure a gateway with `tracing-test` / `#[traced_test]`.
+2. Register a test node.
+3. Submit a valid WAKE frame for the node.
+4. Assert: an `INFO`-level log entry is emitted containing the node's `node_id`, `seq` (starting sequence number), and `battery_mv`.
+5. Assert: an `INFO`-level log entry is emitted for session creation with the node's `node_id`.
+6. Assert: an `INFO`-level log entry is emitted for COMMAND selected with the node's `node_id` and `command_type`.
+
+---
+
+### T-1301  Session expiry logging
+
+**Validates:** GW-1300
+
+**Procedure:**
+1. Configure a gateway with a very short session timeout (e.g., 1 ms) and `#[traced_test]`, and run the test under a deterministic clock (for example, using `tokio::time::pause()` + `tokio::time::advance()` or an injected fake clock).
+2. Register a test node and submit a valid WAKE to create a session.
+3. Advance the test clock until the session timeout has elapsed (e.g., by at least the configured timeout plus a small delta) so that the session is considered expired.
+4. Call `reap_expired()` on the session manager.
+5. Assert: an `INFO`-level log entry is emitted for session expiry with the node's `node_id`.
+
+---
+
+### T-1302  PEER_REQUEST logging
+
+**Validates:** GW-1300
+
+**Procedure:**
+1. Configure a gateway with `#[traced_test]`.
+2. Set up phone trust and gateway identity for BLE pairing.
+3. Submit a valid `PEER_REQUEST` frame.
+4. Assert: an `INFO`-level log entry is emitted with `node_id`, `key_hint`, and `result` = `"registered"`.
+5. Assert: an `INFO`-level log entry is emitted for PEER_ACK frame encoded with `node_id`.
+
+---
+
+### T-1303  Modem frame debug logging
+
+**Validates:** GW-1302
+
+**Procedure:**
+1. Configure a `UsbEspNowTransport` with `#[traced_test]` at `DEBUG` level.
+2. Inject a `RECV_FRAME` from the mock modem.
+3. Assert: a `DEBUG`-level log entry is emitted with fields `msg_type`, `peer_mac`, and `len`.
+4. Call `Transport::send(frame, peer_mac)`.
+5. Assert: a `DEBUG`-level log entry is emitted with fields `msg_type`, `peer_mac`, and `len`.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -1886,3 +1965,6 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1222 | T-1221, T-1222 |
 | GW-1223 | T-1227 |
 | GW-1224 | T-1228 |
+| GW-1300 | T-1300, T-1301, T-1302 |
+| GW-1301 | *(verified by integration/manual testing)* |
+| GW-1302 | T-1303 |

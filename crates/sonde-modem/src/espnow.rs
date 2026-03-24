@@ -8,7 +8,7 @@ use esp_idf_hal::modem::Modem;
 use esp_idf_svc::espnow::{EspNow, PeerInfo, SendStatus};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
+use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
 use log::{debug, info, warn};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -217,10 +217,11 @@ impl EspNowDriver {
             ));
         }
 
-        // Initialize WiFi in station mode (required for ESP-NOW).
+        // Initialize WiFi in station mode (required for ESP-NOW TX — MD-0200).
         let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))?;
         let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)?;
 
+        wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
         wifi.start()?;
         info!("WiFi started in station mode");
 

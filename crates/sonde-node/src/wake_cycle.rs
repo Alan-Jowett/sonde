@@ -43,6 +43,25 @@ const MAX_RESIDENT_IMAGE_SIZE: usize = 4096;
 /// Maximum ephemeral program image size (2 KB, stored in RAM).
 const MAX_EPHEMERAL_IMAGE_SIZE: usize = 2048;
 
+/// Lightweight wrapper that formats the first 4 bytes of a hash as a hex prefix (8 hex chars).
+/// Intended for use in logging without performing any heap allocation.
+struct HashHexPrefix<'a>(&'a [u8]);
+
+impl<'a> core::fmt::Display for HashHexPrefix<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for &b in self.0.iter().take(4) {
+            write!(f, "{:02x}", b)?;
+        }
+        Ok(())
+    }
+}
+
+/// Return a `Display`able view of the first 4 bytes of a hash as a hex prefix (8 hex chars).
+/// This avoids heap allocation; use with formatting macros like `log::info!`.
+fn hash_hex_prefix(hash: &[u8]) -> HashHexPrefix<'_> {
+    HashHexPrefix(hash)
+}
+
 /// Outcome of a wake cycle.
 #[derive(Debug, PartialEq)]
 pub enum WakeCycleOutcome {
@@ -52,6 +71,25 @@ pub enum WakeCycleOutcome {
     Reboot,
     /// Node is unpaired — sleep indefinitely.
     Unpaired,
+}
+
+/// Log the ND-1007 deep-sleep entry and return `WakeCycleOutcome::Sleep`.
+///
+/// Centralises the sleep-entry log so every path that returns `Sleep`
+/// emits the required INFO line with `duration_seconds` and `reason`.
+fn log_and_sleep(sleep_mgr: &SleepManager) -> WakeCycleOutcome {
+    let seconds = sleep_mgr.effective_sleep_s();
+    let reason = match sleep_mgr.wake_reason() {
+        WakeReason::Scheduled => "scheduled",
+        WakeReason::Early => "early_wake",
+        WakeReason::ProgramUpdate => "program_update",
+    };
+    log::info!(
+        "entering deep sleep duration_seconds={} reason={} (ND-1007)",
+        seconds,
+        reason,
+    );
+    WakeCycleOutcome::Sleep { seconds }
 }
 
 /// Run one complete wake cycle.
@@ -93,14 +131,27 @@ where
     //     early-wake flag via take_early_wake_flag().  On RNG failure we
     //     must preserve that flag so the next wake cycle can honour it.
     if !rng.health_check() {
+        log::warn!("RNG health check failed — aborting wake cycle (ND-1009)");
         let (base_interval_s, _) = storage.read_schedule();
+        let effective_sleep_s =
+            SleepManager::new(base_interval_s, WakeReason::Scheduled).effective_sleep_s();
+        log::info!(
+            "entering deep sleep duration_seconds={} reason=scheduled (ND-1007)",
+            effective_sleep_s,
+        );
         return WakeCycleOutcome::Sleep {
-            seconds: base_interval_s,
+            seconds: effective_sleep_s,
         };
     }
 
     // 2. Determine wake reason
     let wake_reason = determine_wake_reason(storage);
+
+    log::info!(
+        "wake cycle started key_hint=0x{:04X} wake_reason={:?} (ND-1001)",
+        identity.key_hint,
+        wake_reason,
+    );
 
     // 3. Load schedule
     let (base_interval_s, _active_partition) = storage.read_schedule();
@@ -131,9 +182,7 @@ where
                 }
                 Ok(false) => {
                     // Timeout — sleep and retry next wake cycle (ND-0910/ND-0911).
-                    return WakeCycleOutcome::Sleep {
-                        seconds: sleep_mgr.effective_sleep_s(),
-                    };
+                    return log_and_sleep(&sleep_mgr);
                 }
                 Err(e) => {
                     // Distinguish permanent errors (malformed payload, oversize)
@@ -144,9 +193,7 @@ where
                         log::warn!("PEER_REQUEST permanent error: {} — erasing peer_payload", e);
                         let _ = storage.erase_peer_payload();
                     }
-                    return WakeCycleOutcome::Sleep {
-                        seconds: sleep_mgr.effective_sleep_s(),
-                    };
+                    return log_and_sleep(&sleep_mgr);
                 }
             }
         }
@@ -186,8 +233,9 @@ where
             }
             cmd
         }
-        Err(_) => {
+        Err(e) => {
             // WAKE retries exhausted or transport error.
+            log::warn!("WAKE/COMMAND failed: {} — sleeping (ND-1009)", e);
             // Self-healing (ND-0915): if reg_complete is set and peer_payload
             // is still present (meaning deferred erasure hasn't happened yet),
             // clear reg_complete so the next boot reverts to PEER_REQUEST.
@@ -199,11 +247,33 @@ where
                     log::warn!("failed to clear reg_complete after WAKE failure: {}", e);
                 }
             }
-            return WakeCycleOutcome::Sleep {
-                seconds: sleep_mgr.effective_sleep_s(),
-            };
+            return log_and_sleep(&sleep_mgr);
         }
     };
+
+    // Log the received COMMAND (ND-1003).
+    match &command_payload {
+        CommandPayload::Nop => log::info!("COMMAND received command_type=Nop"),
+        CommandPayload::Reboot => log::info!("COMMAND received command_type=Reboot"),
+        CommandPayload::UpdateSchedule { interval_s } => {
+            log::info!(
+                "COMMAND received command_type=UpdateSchedule interval_s={}",
+                interval_s
+            );
+        }
+        CommandPayload::UpdateProgram { program_hash, .. } => {
+            log::info!(
+                "COMMAND received command_type=UpdateProgram program_hash={}",
+                hash_hex_prefix(program_hash)
+            );
+        }
+        CommandPayload::RunEphemeral { program_hash, .. } => {
+            log::info!(
+                "COMMAND received command_type=RunEphemeral program_hash={}",
+                hash_hex_prefix(program_hash)
+            );
+        }
+    }
 
     // 7. Record gateway timestamp for BPF context
     let command_received_at = clock.elapsed_ms();
@@ -297,9 +367,7 @@ where
                             )
                             .is_err()
                             {
-                                return WakeCycleOutcome::Sleep {
-                                    seconds: sleep_mgr.effective_sleep_s(),
-                                };
+                                return log_and_sleep(&sleep_mgr);
                             }
 
                             if !is_ephemeral {
@@ -314,19 +382,17 @@ where
                             }
                             loaded_program = Some(program);
                         }
-                        Err(_) => {
+                        Err(e) => {
                             // Hash mismatch or decode failure — discard, sleep
-                            return WakeCycleOutcome::Sleep {
-                                seconds: sleep_mgr.effective_sleep_s(),
-                            };
+                            log::warn!("program install failed: {}", e);
+                            return log_and_sleep(&sleep_mgr);
                         }
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     // Chunk transfer failed — sleep
-                    return WakeCycleOutcome::Sleep {
-                        seconds: sleep_mgr.effective_sleep_s(),
-                    };
+                    log::warn!("chunk transfer failed: {}", e);
+                    return log_and_sleep(&sleep_mgr);
                 }
             }
         }
@@ -360,9 +426,7 @@ where
             // as re-allocating would destroy the resident program's
             // sleep-persistent map state.
             if !program.map_defs.is_empty() {
-                return WakeCycleOutcome::Sleep {
-                    seconds: sleep_mgr.effective_sleep_s(),
-                };
+                return log_and_sleep(&sleep_mgr);
             }
         } else {
             // For resident programs, re-allocate maps when the layout
@@ -375,9 +439,7 @@ where
                 // Map budget exceeded. The newly installed resident
                 // program is already active (install_resident swapped
                 // partitions), so we do not roll back here.
-                return WakeCycleOutcome::Sleep {
-                    seconds: sleep_mgr.effective_sleep_s(),
-                };
+                return log_and_sleep(&sleep_mgr);
             }
         }
 
@@ -444,6 +506,12 @@ where
                     };
                 match interpreter.load(&program.bytecode, load_ptrs, load_defs) {
                     Ok(()) => {
+                        // Log BPF execution start (ND-1006) — after all
+                        // preconditions and load succeed.
+                        log::info!(
+                            "BPF execute program_hash={}",
+                            hash_hex_prefix(&program.hash)
+                        );
                         let ctx_ptr = &ctx as *const SondeContext as u64;
                         interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
                     }
@@ -460,6 +528,10 @@ where
         };
 
         // Swallow BPF errors — node sleeps normally regardless (ND-0504).
+        match &exec_result {
+            Ok(rc) => log::info!("BPF execution completed rc={}", rc),
+            Err(err) => log::info!("BPF execution failed: {}", err),
+        }
         let _ = exec_result;
 
         // Flush accumulated trace output (ND-0604 / T-N613).
@@ -476,9 +548,7 @@ where
         }
     }
 
-    WakeCycleOutcome::Sleep {
-        seconds: sleep_mgr.effective_sleep_s(),
-    }
+    log_and_sleep(&sleep_mgr)
 }
 
 /// Determine the wake reason from RTC flags.
@@ -527,6 +597,12 @@ fn wake_command_exchange<T: Transport>(
         }
 
         transport.send(&frame)?;
+        log::info!(
+            "WAKE sent key_hint=0x{:04X} nonce=0x{:016X} attempt={} (ND-1002)",
+            identity.key_hint,
+            wake_nonce,
+            attempt,
+        );
 
         // Await COMMAND response
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
@@ -534,8 +610,8 @@ fn wake_command_exchange<T: Transport>(
                 // Try to verify and decode
                 match verify_and_decode_command(&raw_response, identity, wake_nonce, hmac) {
                     Ok(result) => return Ok(result),
-                    Err(_) => {
-                        // Invalid response — discard and retry
+                    Err(e) => {
+                        log::warn!("COMMAND verification failed: {} (ND-1009)", e);
                         continue;
                     }
                 }

@@ -19,7 +19,31 @@ use sonde_protocol::modem::{
     ScanResult, SendFrame,
 };
 
+use sonde_protocol::constants::{
+    MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK, MSG_PEER_ACK,
+    MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, OFFSET_MSG_TYPE,
+};
+
 use crate::transport::{PeerAddress, Transport, TransportError};
+
+/// Extract a human-readable protocol message type from a raw frame's header byte.
+fn protocol_msg_type_label(frame: &[u8]) -> &'static str {
+    if frame.len() <= OFFSET_MSG_TYPE {
+        return "unknown";
+    }
+    match frame[OFFSET_MSG_TYPE] {
+        MSG_WAKE => "WAKE",
+        MSG_GET_CHUNK => "GET_CHUNK",
+        MSG_PROGRAM_ACK => "PROGRAM_ACK",
+        MSG_APP_DATA => "APP_DATA",
+        MSG_PEER_REQUEST => "PEER_REQUEST",
+        MSG_COMMAND => "COMMAND",
+        MSG_CHUNK => "CHUNK",
+        MSG_APP_DATA_REPLY => "APP_DATA_REPLY",
+        MSG_PEER_ACK => "PEER_ACK",
+        _ => "unknown",
+    }
+}
 
 /// BLE event received from the modem, forwarded to the gateway's BLE
 /// pairing state machine.
@@ -473,7 +497,17 @@ impl Transport for UsbEspNowTransport {
             frame_data: frame.to_vec(),
         });
 
-        Self::send_encoded(&self.writer, &msg).await
+        Self::send_encoded(&self.writer, &msg).await?;
+
+        // GW-1302 AC2: log frame sent to modem at DEBUG level (after successful send).
+        debug!(
+            msg_type = protocol_msg_type_label(frame),
+            peer_mac = ?peer_mac,
+            len = frame.len(),
+            "frame sent to modem"
+        );
+
+        Ok(())
     }
 }
 
@@ -576,6 +610,13 @@ async fn dispatch_message(
 ) {
     match msg {
         ModemMessage::RecvFrame(rf) => {
+            // GW-1302 AC1: log frame received from modem at DEBUG level.
+            debug!(
+                msg_type = protocol_msg_type_label(&rf.frame_data),
+                peer_mac = ?rf.peer_mac,
+                len = rf.frame_data.len(),
+                "frame received from modem"
+            );
             let peer = rf.peer_mac.to_vec();
             match recv_tx.try_send((rf.frame_data, peer)) {
                 Ok(()) => {}

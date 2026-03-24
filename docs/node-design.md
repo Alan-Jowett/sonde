@@ -658,3 +658,43 @@ pub trait HmacProvider {
 ### 16.3  `no_std` compatibility
 
 The crate uses `#![no_std]` with `alloc` (for `Vec<u8>` in message types). Both the gateway (std) and the node (ESP-IDF std) can use it. The crate has no platform-specific dependencies — all platform behavior is injected via traits.
+
+---
+
+## 17  Operational logging
+
+### 17.1  Logging framework
+
+The node firmware uses the Rust `log` crate (v0.4) as the logging facade. On ESP-IDF targets, `EspLogger::initialize_default()` routes log output through the ESP-IDF logging system, which writes to UART console. No additional logging dependencies are required.
+
+| Level | Usage |
+|---|---|
+| `info!` | Normal operational events: boot, wake cycle transitions, frame send/receive, BPF execution, sleep entry |
+| `warn!` | Recoverable error conditions: RNG failure, transport timeout, HMAC mismatch, storage I/O errors |
+| `error!` | Non-recoverable errors: BPF load/registration failures |
+| `debug!` | Verbose diagnostic output: BPF trace output (`bpf_trace_printk`) |
+
+### 17.2  Log points
+
+The following events are logged per the ND-10xx requirements:
+
+| Event | Level | Module | Key fields | Requirement |
+|---|---|---|---|---|
+| Boot reason | INFO | `bin/node.rs` | `boot_reason` (power_on / deep_sleep_wake) | ND-1000 |
+| Wake cycle started | INFO | `wake_cycle.rs` | `key_hint`, `wake_reason` | ND-1001 |
+| WAKE frame sent | INFO | `wake_cycle.rs` | `key_hint`, `nonce` | ND-1002 |
+| COMMAND received | INFO | `wake_cycle.rs` | `command_type`, `interval_s` (if applicable) | ND-1003 |
+| PEER_REQUEST sent | INFO | `peer_request.rs` | `key_hint` | ND-1004 |
+| PEER_ACK received | INFO | `peer_request.rs` | registration result | ND-1005 |
+| BPF execution | INFO | `wake_cycle.rs` | `program_hash` (truncated), result | ND-1006 |
+| Deep sleep entry | INFO | `wake_cycle.rs` | `duration_seconds`, `reason` | ND-1007 |
+| BLE pairing mode | INFO | `bin/node.rs` | entry/exit (already present) | ND-1008 |
+| RNG failure | WARN | `wake_cycle.rs` | — | ND-1009 |
+| WAKE retries exhausted | WARN | `wake_cycle.rs` | — | ND-1009 |
+| HMAC mismatch | WARN | `wake_cycle.rs` | — | ND-1009 |
+
+### 17.3  Design constraints
+
+- **No heap allocation in error paths.** Log format strings use `&'static str` literals; only field interpolation may allocate (e.g., hex formatting).
+- **No log buffering or remote transmission.** All logs go to UART console via ESP-IDF. Remote log collection is out of scope.
+- **Log volume.** Each wake cycle emits at most ~5–8 INFO lines. This is acceptable for UART at 115200 baud during the ~100 ms awake window.

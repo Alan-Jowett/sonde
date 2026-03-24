@@ -559,7 +559,8 @@ async fn peer_request_duplicate_node_id() {
     let response1 = env.gateway.process_frame(&frame1, peer()).await;
     assert!(response1.is_some(), "first registration must succeed");
 
-    // Second registration with same node_id must fail.
+    // Second registration with same node_id and matching PSK must still
+    // return a PEER_ACK so the node can complete enrollment (GW-1218 AC4).
     let frame2 = build_peer_request(
         &env.identity,
         "node-dup",
@@ -571,8 +572,8 @@ async fn peer_request_duplicate_node_id() {
     );
     let response2 = env.gateway.process_frame(&frame2, peer()).await;
     assert!(
-        response2.is_none(),
-        "duplicate node_id must cause silent discard"
+        response2.is_some(),
+        "duplicate node_id with matching PSK must return PEER_ACK"
     );
 }
 
@@ -1078,7 +1079,7 @@ async fn t_1216_duplicate_node_id_rejected() {
         "first registration must succeed"
     );
 
-    // Same node_id, fresh frame.
+    // Same node_id with matching PSK — must return PEER_ACK (GW-1218 AC4).
     let frame2 = build_peer_request(
         &env.identity,
         "node-t1216",
@@ -1089,8 +1090,8 @@ async fn t_1216_duplicate_node_id_rejected() {
         None,
     );
     assert!(
-        env.gateway.process_frame(&frame2, peer()).await.is_none(),
-        "duplicate node_id must cause silent discard"
+        env.gateway.process_frame(&frame2, peer()).await.is_some(),
+        "duplicate node_id with matching PSK must return PEER_ACK"
     );
 }
 

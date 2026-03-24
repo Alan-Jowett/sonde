@@ -616,6 +616,45 @@ The node registry and program library are accessed through the storage trait beh
 
 ---
 
+## 11A  Operational logging
+
+> **Requirements:** GW-1300 (lifecycle events), GW-1301 (modem transport state), GW-1302 (frame-level debug traces).
+
+The gateway uses the `tracing` crate for structured, levelled logging. All log entries use key=value fields for machine-parseability. Log levels follow a consistent policy:
+
+| Level | Usage |
+|---|---|
+| `ERROR` | Unrecoverable failures: handler crash, storage write failure, serial disconnect |
+| `WARN` | Recoverable anomalies: malformed CBOR, HMAC mismatch, ABI mismatch, modem tx failures |
+| `INFO` | Operator-relevant lifecycle events: node WAKE, COMMAND selected, session create/expire, PEER_REQUEST processed, PEER_ACK frame encoded, modem transport state transitions |
+| `DEBUG` | Developer diagnostics: individual modem frames (send/recv), channel-full drops, health polls |
+
+### 11A.1  Engine lifecycle logging
+
+The `Gateway::process_frame` / `handle_wake` / `handle_peer_request` methods emit structured `info!()` entries for:
+
+- **PEER_REQUEST processed** — `node_id`, `key_hint`, `result` (`"registered"` or `"duplicate"`)
+- **PEER_ACK frame encoded** — `node_id`
+- **WAKE received** — `node_id`, `seq`, `battery_mv`
+- **COMMAND selected** — `node_id`, `command_type`
+- **Session created** — `node_id` (emitted in `handle_wake` after `create_session`)
+- **Session expired** — `node_id` (emitted in `SessionManager::reap_expired`)
+
+### 11A.2  Modem transport state logging
+
+The gateway binary (`bin/gateway.rs`) logs modem transport state transitions at `INFO` level:
+
+- `"modem serial connected"` — after the serial port is opened
+- `"modem transport ready"` — after successful startup handshake
+- `"modem disconnecting"` — when a transport subsystem exits unexpectedly
+- `"modem disconnected — reconnecting"` — before each reconnection backoff sleep, with `backoff_s` indicating the delay in seconds
+
+### 11A.3  Frame-level debug traces
+
+The `UsbEspNowTransport` logs each frame at `DEBUG` level in `dispatch_message` (recv path) and `Transport::send` (send path), with fields `msg_type` (decoded from the protocol frame header, e.g., `"WAKE"`, `"COMMAND"`), `peer_mac`, and `len`. The send-path log is emitted only after a successful write to the modem.
+
+---
+
 ## 12  Error handling
 
 All protocol errors result in **silent discard** — no error response is sent to the node (security.md §6). Errors are logged internally for operational monitoring.
@@ -821,13 +860,13 @@ When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x0
 3. **Phone HMAC verification** — The gateway looks up all non-revoked phone PSKs matching `phone_key_hint` and tries each until one produces a valid HMAC. No match → discard (GW-1213).
 4. **Frame HMAC verification** — The frame HMAC is verified using the extracted `node_psk`. Mismatch → discard (GW-1214).
 5. **Timestamp validation** — The `PairingRequest` timestamp must be within ± 86 400 s of current time. Out of range → discard (GW-1215).
-6. **Node ID uniqueness** — The `node_id` must not already be registered. Duplicate → discard (GW-1216).
+6. **Node ID duplicate handling** — If the `node_id` is already registered **and** the `node_psk` matches the existing record, the gateway skips registration but still proceeds to PEER_ACK generation (GW-1218 AC4). If the `node_id` is registered with a **different** PSK, the frame is silently discarded (potential replay or conflict).
 7. **Key-hint consistency** — The frame header `key_hint` must match the CBOR `node_key_hint`. Mismatch → discard (GW-1217).
 8. **Node registration** — The node is registered with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (GW-1218). The node registry (§7) stores the new record through the storage trait.
 
 ### 17.6  `PEER_ACK` generation
 
-After successful registration, the gateway computes `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1"` ‖ `encrypted_payload`), builds a `PEER_ACK` CBOR message `{1: 0, 2: registration_proof}`, HMACs the frame with `node_psk`, and echoes the `nonce` from the `PEER_REQUEST` header (GW-1219).
+After successful registration **or** duplicate detection with matching PSK, the gateway computes `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1"` ‖ `encrypted_payload`), builds a `PEER_ACK` CBOR message `{1: 0, 2: registration_proof}`, HMACs the frame with `node_psk`, and echoes the `nonce` from the `PEER_REQUEST` header (GW-1219).
 
 ### 17.7  Admin session
 

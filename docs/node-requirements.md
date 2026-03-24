@@ -833,7 +833,7 @@ In the post-provision boot path (PSK stored, `reg_complete` NOT set) the node MU
 
 **Acceptance criteria:**
 
-1. ESP-NOW is initialised on the channel stored during provisioning.
+1. ESP-NOW is initialised in WiFi station mode on the channel stored during provisioning.
 2. The frame uses `msg_type` 0x05 and a random 8-byte nonce.
 3. The CBOR payload contains key 1 mapped to `encrypted_payload`.
 4. The HMAC is computed with `node_psk` over header and payload.
@@ -981,6 +981,158 @@ The ESP-IDF main task stack MUST be at least 16 KB (`CONFIG_ESP_MAIN_TASK_STACK_
 
 ---
 
+## 10  Operational logging
+
+### ND-1000  Boot reason logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log the boot reason at INFO level during startup, distinguishing between power-on reset and deep-sleep wake.
+
+**Acceptance criteria:**
+
+1. On power-on reset the node emits an INFO log containing "boot_reason=power_on".
+2. On deep-sleep wake the node emits an INFO log containing "boot_reason=deep_sleep_wake".
+
+---
+
+### ND-1001  Wake cycle started logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log the start of each wake cycle at INFO level, including the node's `key_hint` and the `wake_reason`.
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted at the start of `run_wake_cycle` containing `key_hint` (hex).
+2. The log includes the `wake_reason` (Scheduled or Early).
+
+---
+
+### ND-1002  WAKE frame sent logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log at INFO level each time a WAKE frame is transmitted, including `key_hint` and `nonce`.
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted after each successful WAKE frame send containing `key_hint` and `nonce` (hex).
+
+---
+
+### ND-1003  COMMAND received logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log at INFO level when a valid COMMAND is received, including the command type and `interval` (if applicable).
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted after COMMAND verification containing the `command_type` name (Nop, Reboot, UpdateSchedule, UpdateProgram, RunEphemeral).
+2. For `UpdateSchedule` commands, the log includes the new `interval_s`.
+
+---
+
+### ND-1004  PEER_REQUEST sent logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log at INFO level when a PEER_REQUEST frame is transmitted, including `key_hint`.
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted after PEER_REQUEST send containing `key_hint` (hex).
+
+---
+
+### ND-1005  PEER_ACK received logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log at INFO level when a valid PEER_ACK is received, including the result.
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted after PEER_ACK verification containing "registration complete".
+
+---
+
+### ND-1006  BPF program execution logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log at INFO level when a BPF program is executed, including the program hash (hex) and the execution result.
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted before BPF execution containing `program_hash` (first 8 hex chars).
+2. An INFO log is emitted after BPF execution containing the result (Ok or Err description).
+
+---
+
+### ND-1007  Deep sleep entered logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log at INFO level when entering deep sleep, including the sleep duration and the reason.
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted before deep sleep containing `duration_seconds` and `reason` (scheduled, early_wake, program_update).
+
+---
+
+### ND-1008  BLE pairing mode logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log at INFO level when entering BLE pairing mode, and MUST log when exiting BLE pairing mode. Exit logs SHOULD use INFO level for normal completion, but MAY use WARN level when pairing fails (for example, `BLE pairing mode failed`).
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted on pairing mode entry.
+2. On pairing mode exit (disconnect, timeout, or failure), a log is emitted indicating that pairing mode has exited and the outcome (success, timeout, disconnect, or failure).
+3. Exit logs for normal completion (disconnect or timeout without error) are at INFO level. Exit logs for failure MAY be at WARN level instead of INFO.
+
+---
+
+### ND-1009  Error condition logging
+
+**Priority:** Must  
+**Source:** issue #459
+
+**Description:**  
+The node MUST log error conditions at WARN level, including RNG health-check failure, transport timeout (WAKE retries exhausted), HMAC verification mismatch, program install failure, and chunk transfer failure.
+
+**Acceptance criteria:**
+
+1. A WARN log is emitted when the RNG health check fails.
+2. A WARN log is emitted when WAKE retries are exhausted.
+3. A WARN log is emitted on HMAC verification failure during frame verification.
+4. A WARN log is emitted when a program install fails (hash mismatch, decode error, or map budget exceeded), including the error description.
+5. A WARN log is emitted when a chunk transfer fails (timeout, size mismatch), including the error description.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1042,3 +1194,13 @@ The ESP-IDF main task stack MUST be at least 16 KB (`CONFIG_ESP_MAIN_TASK_STACK_
 | ND-0916 | NVS layout for BLE pairing artifacts | Must |
 | ND-0917 | Factory reset via BLE | Must |
 | ND-0918 | Main task stack size | Must |
+| ND-1000 | Boot reason logging | Must |
+| ND-1001 | Wake cycle started logging | Must |
+| ND-1002 | WAKE frame sent logging | Must |
+| ND-1003 | COMMAND received logging | Must |
+| ND-1004 | PEER_REQUEST sent logging | Must |
+| ND-1005 | PEER_ACK received logging | Must |
+| ND-1006 | BPF program execution logging | Must |
+| ND-1007 | Deep sleep entered logging | Must |
+| ND-1008 | BLE pairing mode logging | Must |
+| ND-1009 | Error condition logging | Must |

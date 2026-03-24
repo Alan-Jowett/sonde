@@ -874,7 +874,55 @@ Platform-specific BLE transport and storage implementations, plus the Tauri UI s
 
 ---
 
-## 14  Requirement traceability
+## 14  Diagnostic logging
+
+The pairing tool uses the `tracing` crate (§2) for structured, level-filtered diagnostic logging (PT-0702, PT-1207–PT-1212).
+
+### 14.1  Architecture
+
+Logging is implemented as direct `tracing` macro calls (`debug!`, `info!`, `trace!`, `warn!`) at each operational boundary.  The library crate (`sonde-pair`) emits tracing events but does **not** install a subscriber — that is the responsibility of the application entry point (Tauri shell or CLI harness).  This keeps the core crate dependency-free and allows the host to choose the output format and verbosity.
+
+A typical entry point configures:
+
+```rust
+use tracing_subscriber::{fmt, EnvFilter};
+
+tracing_subscriber::fmt()
+    .with_env_filter(EnvFilter::from_default_env()) // RUST_LOG=debug for verbose
+    .with_target(false)
+    .init();
+```
+
+For in-process log capture (e.g., displaying logs in the Tauri UI or capturing in tests), a `tracing_subscriber::fmt::Layer` writing to a ring buffer or channel can be composed alongside the stderr layer.
+
+### 14.2  Log levels
+
+| Level | Purpose | Example |
+|---|---|---|
+| `error!` | Unrecoverable failures | — (errors propagated via `Result`, not logged at `error!` by the library) |
+| `warn!` | Recoverable issues requiring operator attention | Already-paired gateway overwrite (PT-0601) |
+| `info!` | High-level milestones | Phase transitions, pairing complete, signature verified |
+| `debug!` | Operational detail visible in verbose mode | Scan start/stop, device discovered, MTU negotiated, LESC method |
+| `trace!` | Protocol-level detail for deep debugging | GATT writes, indication bytes, ECDH steps, CBOR encoding |
+
+### 14.3  Structured fields
+
+All log events use `tracing` structured fields so they can be machine-parsed:
+
+- **Scan events** (PT-1207): `services`, `name`, `address`, `rssi`, `service_uuids`, `evicted_count`
+- **Connection events** (PT-1208): `address`, `mtu`
+- **GATT events** (PT-1209): `msg`, `characteristic`, `len`
+- **Phase events** (PT-1210): `phase`, `phone_key_hint`, `rf_channel`
+- **LESC events** (PT-1211): `pairing_method`
+- **Error context** (PT-1212): included in `PairingError` display, not separate log events
+
+### 14.4  Security invariant
+
+No log event at any level may include key material: PSKs, ephemeral private keys, shared secrets, AES keys, or raw decrypted payloads (PT-0900).  Key hints (`phone_key_hint`, `node_key_hint`) are safe to log because they are non-reversible 16-bit hashes.
+
+---
+
+## 15  Requirement traceability
 
 | Section | Requirements covered |
 |---|---|
@@ -890,3 +938,4 @@ Platform-specific BLE transport and storage implementations, plus the Tauri UI s
 | §11 RNG provider | PT-0901, PT-0903 |
 | §12 Input validation | PT-0403, PT-0406 |
 | §13 Implementation order | PT-0700, PT-0701, PT-0702, PT-1200–PT-1206 |
+| §14 Diagnostic logging | PT-0702, PT-0900, PT-1207–PT-1212 |

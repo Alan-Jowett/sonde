@@ -1012,3 +1012,102 @@ Before release, the following scenarios MUST be validated on physical hardware: 
 
 1. Each scenario is executed and passes on at least one device per platform.
 2. Results are recorded in a test log.
+
+---
+
+## 15  Diagnostic logging
+
+### PT-1207  BLE scan event logging
+
+**Priority:** Must  
+**Source:** Product requirements §5.3, PT-0702
+
+**Description:**  
+The tool MUST emit DEBUG-level log events when a BLE scan is started (including the UUID filters), when a scan is stopped, and when devices are discovered or evicted.  Discovered-device log events MUST include device name, address, RSSI, and advertised service UUIDs.
+
+**Acceptance criteria:**
+
+1. `debug!` event emitted on scan start with UUID filter list.
+2. `debug!` event emitted on scan stop.
+3. `debug!` event emitted for each newly tracked device (name, address, RSSI, service UUIDs).
+4. `debug!` event emitted when stale devices are evicted (count).
+5. No key material appears in any scan log event (PT-0900).
+
+---
+
+### PT-1208  Connection lifecycle logging
+
+**Priority:** Must  
+**Source:** Product requirements §5.3, PT-0702
+
+**Description:**  
+The tool MUST emit DEBUG-level log events for BLE connection lifecycle transitions: connecting (target address), connected (MTU negotiated), and disconnected.
+
+**Acceptance criteria:**
+
+1. `debug!` event emitted when connection is initiated (target address).
+2. `debug!` event emitted when connected (MTU value).
+3. `debug!` event emitted when disconnected.
+
+---
+
+### PT-1209  GATT write and indication logging
+
+**Priority:** Must  
+**Source:** Product requirements §5.3, PT-0702
+
+**Description:**  
+The tool MUST emit DEBUG-level log events for GATT write operations (message type name, characteristic UUID, payload length, success/failure) and indication receptions (characteristic UUID, payload length).
+
+**Acceptance criteria:**
+
+1. `debug!` or `trace!` event emitted after each GATT write with message type, characteristic, and length.
+2. `debug!` or `trace!` event emitted on indication reception with characteristic and length.
+3. No raw payload bytes appear in default or verbose log output (PT-0900).
+
+---
+
+### PT-1210  Phase transition logging
+
+**Priority:** Must  
+**Source:** Product requirements §5.3, PT-0701, PT-0702
+
+**Description:**  
+The tool MUST emit INFO or DEBUG-level log events at each phase transition: Idle, Scanning, Connecting, Authenticating, Registering (Phase 1), Provisioning (Phase 2), Complete, and Error.
+
+**Acceptance criteria:**
+
+1. `info!` or `debug!` event emitted at each phase transition with the new phase name.
+2. Phase 1 completion logged with `phone_key_hint` and `rf_channel`.
+3. Phase 2 completion logged with confirmation of node provisioned.
+
+---
+
+### PT-1211  LESC pairing status logging
+
+**Priority:** Must  
+**Source:** Product requirements §5.3, PT-0904
+
+**Description:**  
+The tool MUST emit a DEBUG-level log event indicating the observed BLE pairing method after connection (e.g., `NumericComparison`, `JustWorks`, `Unknown`).  This aids debugging of LESC enforcement failures.
+
+**Acceptance criteria:**
+
+1. `debug!` event emitted with the `pairing_method` observed after connection.
+2. The log event is emitted before the LESC enforcement decision.
+
+---
+
+### PT-1212  Error logging with actionable context
+
+**Priority:** Must  
+**Source:** Product requirements §5.3, PT-0500, PT-0501
+
+**Description:**  
+The tool MUST emit DEBUG-level log events on errors that include actionable context: timeout durations for timeout errors, retry counts (when applicable), error category (device/transport/protocol), and the specific operation that failed.
+
+**Acceptance criteria:**
+
+1. Timeout errors include the timeout duration in the log event.
+2. Error log events include the operation name that failed.
+3. Protocol error responses include the status code and any diagnostic message.

@@ -112,6 +112,7 @@ pub async fn provision_node(
             required: BLE_MTU_MIN,
         });
     }
+    debug!(mtu, "connected to node");
 
     // LESC enforcement (PT-0904): reject insecure pairing methods.
     enforce_lesc(transport).await?;
@@ -189,6 +190,11 @@ async fn do_provision_node(
 
     if msg_type == MSG_ERROR {
         let (status, message) = parse_error_body(payload);
+        debug!(
+            status = format_args!("0x{status:02x}"),
+            diagnostic = %message,
+            "node returned error response"
+        );
         return Err(PairingError::NodeErrorResponse { status, message });
     }
     if msg_type != NODE_ACK {
@@ -209,6 +215,7 @@ async fn do_provision_node(
             info!("Phase 2 complete — node provisioned");
         }
         _ => {
+            debug!(status = ?status, "node provision failed");
             return Err(PairingError::NodeProvisionFailed(status));
         }
     }

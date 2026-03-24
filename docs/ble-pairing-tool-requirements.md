@@ -1059,13 +1059,14 @@ The tool MUST emit DEBUG-level log events for BLE connection lifecycle transitio
 **Source:** Product requirements §5.3, PT-0702
 
 **Description:**  
-The tool MUST emit DEBUG-level log events for GATT write operations (message type name, characteristic UUID, payload length, success/failure) and indication receptions (characteristic UUID, payload length).
+The tool MUST emit log events for GATT write operations and indication receptions.  Phase-level code emits `trace!` events with the message type name and payload length; the transport layer emits `debug!` events with the characteristic UUID and length.  Together, these two layers provide full observability without coupling phase logic to transport details.
 
 **Acceptance criteria:**
 
-1. `debug!` or `trace!` event emitted after each GATT write with message type, characteristic, and length.
-2. `debug!` or `trace!` event emitted on indication reception with characteristic and length.
-3. No raw payload bytes appear in default or verbose log output (PT-0900).
+1. `trace!` event emitted at the phase level for each GATT write with message type name (`msg`) and payload length (`len`).
+2. `debug!` event emitted at the transport level for each GATT write with characteristic UUID and length.
+3. `trace!` event emitted on indication reception with message type and length.
+4. No raw payload bytes appear in default or verbose log output (PT-0900).
 
 ---
 

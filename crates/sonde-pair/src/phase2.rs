@@ -103,7 +103,7 @@ pub async fn provision_node(
     trace!("AES-256-GCM encryption succeeded");
 
     // Step 11: Connect to node, check MTU
-    info!("connecting to node");
+    info!(address = ?device_address, "connecting to node");
     let mtu = transport.connect(device_address).await?;
     if mtu < BLE_MTU_MIN {
         transport.disconnect().await.ok();
@@ -190,9 +190,21 @@ async fn do_provision_node(
 
     if msg_type == MSG_ERROR {
         let (status, message) = parse_error_body(payload);
+
+        // Sanitize and truncate diagnostic message for logging to avoid
+        // log injection and excessively large log entries.
+        let mut diagnostic: String = message
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
+            .collect();
+        const MAX_DIAGNOSTIC_LEN: usize = 256;
+        if diagnostic.len() > MAX_DIAGNOSTIC_LEN {
+            diagnostic.truncate(MAX_DIAGNOSTIC_LEN);
+        }
+
         debug!(
             status = format_args!("0x{status:02x}"),
-            diagnostic = %message,
+            diagnostic = %diagnostic,
             "node returned error response"
         );
         return Err(PairingError::NodeErrorResponse { status, message });

@@ -888,9 +888,9 @@ Logging is implemented as direct `tracing` macro calls (`debug!`, `info!`, `trac
 A typical entry point configures:
 
 ```rust
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::EnvFilter;
 
-tracing_subscriber::fmt()
+fmt()
     .with_env_filter(EnvFilter::from_default_env()) // RUST_LOG=debug for verbose
     .with_target(false)
     .init();

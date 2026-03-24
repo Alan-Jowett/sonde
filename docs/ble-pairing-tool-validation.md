@@ -1145,8 +1145,9 @@ TestNode {
 **Procedure:**
 1. Run a Phase 1 happy path with mock transport and `#[traced_test]`.
 2. Assert: captured logs contain `trace` events for each `BLE write` with `msg` type name and `len`.
-3. Assert: captured logs contain `trace` events for each `BLE indication received` with `characteristic` (UUID) and `len` fields (and `msg_type` if present).
-4. Assert: no log event contains raw PSK, private key, or shared secret bytes.
+3. Assert: captured logs contain `trace` events for each `BLE indication received` with `msg_type` and `len` fields.
+4. Assert: transport-level `debug` events for `GATT write complete` include `characteristic` and `len`.
+5. Assert: no log event contains raw PSK, private key, or shared secret bytes.
 
 ---
 
@@ -1179,9 +1180,9 @@ TestNode {
 **Validates:** PT-1212
 
 **Procedure:**
-1. Configure a mock transport to cause a `GW_INFO_RESPONSE` timeout (5 s).
-2. Run Phase 1 and capture the error.
-3. Assert: the `PairingError::Timeout` variant includes the operation name and timeout duration.
+1. Configure a mock transport to cause a `GW_INFO_RESPONSE` timeout (45 s).
+2. Run Phase 1, capture the error, and capture tracing output (e.g., with `#[traced_test]`).
+3. Assert: the error is `PairingError::IndicationTimeout` and the captured logs include an event for the `GW_INFO_RESPONSE` timeout with fields for the operation name and timeout duration (45 s).
 4. Configure a mock transport to return an `ERROR` response with status `0x02`.
 5. Run Phase 1 and capture the error.
 6. Assert: the error includes the status code in its display output.

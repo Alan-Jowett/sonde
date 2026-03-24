@@ -994,6 +994,23 @@ The gateway SHOULD log individual modem frames at `DEBUG` level so that develope
 
 ---
 
+### GW-1303  Build metadata in host binaries
+
+**Priority:** Must
+**Source:** Issue #464
+
+**Description:**
+The gateway and admin binaries MUST embed the git commit hash (short, 7 characters) at build time and display it in the `--version` output and (for the gateway) in the startup log. This matches the firmware behaviour (see `sonde-node` boot log) and allows operators to identify exactly which build is running.
+
+**Acceptance criteria:**
+
+1. `sonde-gateway --version` prints the version string in the format `<semver> (<short-hash>)`, e.g., `0.1.0 (a1b2c3d)`.
+2. `sonde-admin --version` prints the same format.
+3. The gateway startup log includes the version string with the embedded commit hash.
+4. When git metadata is unavailable (e.g., building from a tarball), the hash falls back to `unknown`.
+
+---
+
 ### GW-1103  Modem error handling
 
 **Priority:** Must
@@ -1499,3 +1516,4 @@ The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pa
 | GW-1222 | Admin API — BLE pairing session | Must |
 | GW-1223 | Admin API — phone listing | Must |
 | GW-1224 | Admin API — phone revocation | Must |
+| GW-1303 | Build metadata in host binaries | Must |

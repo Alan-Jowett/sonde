@@ -382,14 +382,16 @@ where
                             }
                             loaded_program = Some(program);
                         }
-                        Err(_) => {
+                        Err(e) => {
                             // Hash mismatch or decode failure — discard, sleep
+                            log::warn!("program install failed: {}", e);
                             return log_and_sleep(&sleep_mgr);
                         }
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     // Chunk transfer failed — sleep
+                    log::warn!("chunk transfer failed: {}", e);
                     return log_and_sleep(&sleep_mgr);
                 }
             }

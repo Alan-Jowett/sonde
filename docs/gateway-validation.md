@@ -1894,6 +1894,20 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1304  Build metadata in `--version` output
+
+**Validates:** GW-1303
+
+**Procedure:**
+1. Build `sonde-gateway` and `sonde-admin` from a git checkout.
+2. Run `sonde-gateway --version`.
+3. Assert: output matches the pattern `sonde-gateway <semver> (<7-char-hash>)`.
+4. Run `sonde-admin --version`.
+5. Assert: output matches the pattern `sonde-admin <semver> (<7-char-hash>)`.
+6. Assert: the hash portion is a valid 7-character hex string (or `unknown` when built outside a git repo).
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -1980,3 +1994,4 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1300 | T-1300, T-1301, T-1302 |
 | GW-1301 | *(verified by integration/manual testing)* |
 | GW-1302 | T-1303 |
+| GW-1303 | T-1304 |

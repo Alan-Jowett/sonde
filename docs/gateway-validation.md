@@ -1331,7 +1331,33 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1105  Health monitoring — tx_fail_count rising
+### T-1104a  Serial disconnect — reconnection with backoff
+
+**Validates:** GW-1103 (criteria 3–5)
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` with a PTY-based `MockModem`. Complete startup.
+2. Close the mock modem's PTY slave fd to simulate a USB-CDC disconnect.
+3. Assert: the serial reader logs a warning (not an error exit).
+4. Assert: the transport enters a reconnection loop with exponential backoff.
+5. Reopen the PTY slave fd (simulating modem reboot and USB-CDC re-enumeration).
+6. Mock modem sends `MODEM_READY`.
+7. Assert: the transport re-executes the startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`).
+8. Send a `RECV_FRAME` from the mock modem.
+9. Assert: `transport.recv()` returns the frame — the gateway did not exit.
+
+### T-1104b  Serial disconnect — frame loop survives reconnection
+
+**Validates:** GW-1103 (criterion 5)
+
+**Procedure:**
+1. Start a full gateway instance with a PTY-based `MockModem`.
+2. Simulate a modem disconnect by closing the PTY slave fd.
+3. Assert: the frame processing loop and BLE event loop do **not** exit.
+4. Reconnect the mock modem (reopen PTY, send `MODEM_READY`).
+5. Assert: the gateway resumes processing frames normally.
+
+---
 
 **Validates:** GW-1102
 

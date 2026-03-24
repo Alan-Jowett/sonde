@@ -952,10 +952,15 @@ The gateway modem transport adapter SHOULD poll `GET_STATUS` periodically (recom
 **Description:**
 On receiving an `ERROR` message from the modem, the gateway MUST log the error code and human-readable message. The gateway MAY attempt a `RESET` to recover.
 
+When the serial port itself becomes unavailable (e.g. USB-CDC disconnect due to modem reset, OS error 995 on Windows), the gateway MUST NOT exit. Instead, the serial reader task MUST signal the transport layer, which MUST attempt to reopen the serial port with exponential backoff (starting at 1 s, capped at 30 s). Once the port reopens, the gateway MUST re-execute the modem startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`). Frame processing and BLE event loops MUST block (not exit) while reconnection is in progress.
+
 **Acceptance criteria:**
 
 1. `ERROR` messages are logged with the error code and message text.
 2. After `RESET`, the startup sequence (§5.1 of modem-protocol.md) is re-executed.
+3. When the serial port disconnects (read returns an OS I/O error), the gateway logs a warning and begins reconnection attempts with exponential backoff.
+4. Once the port is reopened and `MODEM_READY` is received, the gateway resumes normal frame processing without requiring a restart.
+5. The gateway process does not exit due to a transient modem serial disconnect.
 
 ---
 

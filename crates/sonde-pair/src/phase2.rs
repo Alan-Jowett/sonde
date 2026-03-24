@@ -112,7 +112,7 @@ pub async fn provision_node(
             required: BLE_MTU_MIN,
         });
     }
-    debug!(mtu, "connected to node");
+    debug!(address = ?device_address, mtu, "connected to node");
 
     // LESC enforcement (PT-0904): reject insecure pairing methods.
     enforce_lesc(transport).await?;

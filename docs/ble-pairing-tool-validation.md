@@ -1145,7 +1145,7 @@ TestNode {
 **Procedure:**
 1. Run a Phase 1 happy path with mock transport and `#[traced_test]`.
 2. Assert: captured logs contain `trace` events for each `BLE write` with `msg` type name and `len`.
-3. Assert: captured logs contain `trace` events for each `BLE indication received` with `msg_type` and `len`.
+3. Assert: captured logs contain `trace` events for each `BLE indication received` with `characteristic` (UUID) and `len` fields (and `msg_type` if present).
 4. Assert: no log event contains raw PSK, private key, or shared secret bytes.
 
 ---

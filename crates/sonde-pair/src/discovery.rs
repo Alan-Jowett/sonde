@@ -114,7 +114,7 @@ impl<T: BleTransport> DeviceScanner<T> {
         self.scan_started_at = Some(Instant::now());
         self.known.clear();
         debug!(
-            uuids = ?[GATEWAY_SERVICE_UUID, NODE_SERVICE_UUID],
+            services = ?[GATEWAY_SERVICE_UUID, NODE_SERVICE_UUID],
             "scan started"
         );
         Ok(())

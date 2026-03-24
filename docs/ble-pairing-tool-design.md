@@ -906,18 +906,18 @@ For in-process log capture (e.g., displaying logs in the Tauri UI or capturing i
 | `warn!` | Recoverable issues requiring operator attention | Already-paired gateway overwrite (PT-0601) |
 | `info!` | High-level milestones | Phase transitions, pairing complete, signature verified |
 | `debug!` | Operational detail visible in verbose mode | Scan start/stop, device discovered, MTU negotiated, LESC method |
-| `trace!` | Protocol-level detail for deep debugging | GATT writes, indication bytes, ECDH steps, CBOR encoding |
+| `trace!` | Protocol-level detail for deep debugging | GATT writes, CBOR field counts, ECDH steps, CBOR encoding |
 
 ### 14.3  Structured fields
 
 All log events use `tracing` structured fields so they can be machine-parsed:
 
-- **Scan events** (PT-1207): `services`, `name`, `address`, `rssi`, `service_uuids`, `evicted_count`
+- **Scan events** (PT-1207): `services` (service UUID filter), `name`, `address`, `rssi`, `evicted_count`
 - **Connection events** (PT-1208): `address`, `mtu`
 - **GATT events** (PT-1209): `msg`, `characteristic`, `len`
 - **Phase events** (PT-1210): `phase`, `phone_key_hint`, `rf_channel`
 - **LESC events** (PT-1211): `pairing_method`
-- **Error context** (PT-1212): included in `PairingError` display, not separate log events
+- **Error context** (PT-1212): emitted as `debug!` log events with structured fields (e.g., `error_kind`, `phase`, `address`, `characteristic`) and mirrored in `PairingError` display
 
 ### 14.4  Security invariant
 

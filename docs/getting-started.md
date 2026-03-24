@@ -552,3 +552,43 @@ container image. This also works in GitHub Codespaces.
 ```bash
 docker build -f .github/docker/Dockerfile.android-dev -t sonde-android-dev .
 ```
+
+---
+
+## 12  Hardware operations
+
+### 12.1  Factory reset on ESP32-C3 DevKitM-1
+
+If a node has been previously paired and you need to wipe its credentials and re-provision it, use this procedure:
+
+1. Press and hold the **BOOT** button.
+2. While holding BOOT, press and release the **RESET** button.
+3. Keep holding **BOOT** for at least 1 second after reset.
+4. Release **BOOT**.
+5. The node enters BLE pairing mode with factory reset armed.
+6. Provision via the pairing tool — old credentials are wiped first.
+
+#### Why this works
+
+Pressing RESET triggers a software reset, NOT download mode. The ROM bootloader only enters download mode when GPIO 9 is LOW during a cold power-on. After reset the application starts and samples GPIO 9 for 500 ms. Since BOOT is still held, all samples read LOW → `button_held = true`.
+
+#### Why holding BOOT during power-on does NOT work
+
+On cold power-on with GPIO 9 LOW, the ESP32-C3 ROM enters USB/UART download mode. You will see:
+
+```
+rst:0x1 (POWERON), boot:0x6 (DOWNLOAD(USB/UART0))
+waiting for download
+```
+
+The application firmware never starts, so the factory-reset logic never runs.
+
+### 12.2  Erasing NVS via espflash (alternative)
+
+If you cannot use the button-based procedure (e.g., the firmware is not running), you can erase the NVS partition directly:
+
+```sh
+espflash erase-region -p COM6 0x9000 0x6000
+```
+
+Replace `COM6` with your device's serial port (`/dev/ttyUSB0` on Linux, `/dev/cu.usbmodem*` on macOS). After erasing NVS, flash new firmware and the node will start in pairing mode.

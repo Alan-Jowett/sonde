@@ -1269,18 +1269,19 @@ The gateway MUST verify that the `PairingRequest` timestamp is within ±86 400 s
 
 ---
 
-### GW-1216  Node ID uniqueness check
+### GW-1216  Node ID duplicate handling
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §7.3, step 10
 
 **Description:**  
-The gateway MUST verify that the `node_id` in the `PairingRequest` is not already registered and silently discard if it is a duplicate.
+The gateway MUST check whether the `node_id` in the `PairingRequest` is already registered. If the `node_id` is new, proceed to registration. If the `node_id` is already registered with a **matching** `node_psk`, skip registration but still proceed to PEER_ACK generation (see GW-1218 AC4). If the `node_id` is registered with a **different** `node_psk`, silently discard the frame.
 
 **Acceptance criteria:**
 
 1. A `PairingRequest` with a new `node_id` proceeds to registration.
-2. A `PairingRequest` with an already-registered `node_id` is silently discarded.
+2. A `PairingRequest` with an already-registered `node_id` and matching `node_psk` skips registration but proceeds to PEER_ACK generation.
+3. A `PairingRequest` with an already-registered `node_id` and different `node_psk` is silently discarded.
 
 ---
 
@@ -1305,13 +1306,15 @@ The gateway MUST verify that the frame header `key_hint` matches the `node_key_h
 **Source:** ble-pairing-protocol.md §7.3, step 12
 
 **Description:**  
-The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (a stable phone identifier, not `phone_key_hint`).
+The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (a stable phone identifier, not `phone_key_hint`). If a `PEER_REQUEST` arrives for a `node_id` that is already registered with a matching `node_psk`, the gateway MUST still send a `PEER_ACK(0x00)` with valid `registration_proof` so the node can complete enrollment. This ensures enrollment completes even if a prior `PEER_ACK` was lost due to a transient radio failure.
 
 **Acceptance criteria:**
 
 1. After successful PEER_REQUEST processing, the node appears in the registry.
 2. The registration record contains all specified fields.
 3. `registered_by` is the phone's stable identifier, not `phone_key_hint`.
+4. A duplicate `PEER_REQUEST` for an already-registered node with matching PSK receives a `PEER_ACK(0x00)` with valid `registration_proof`.
+5. A duplicate `PEER_REQUEST` with a **different** PSK is silently discarded (potential replay or conflict).
 
 ---
 

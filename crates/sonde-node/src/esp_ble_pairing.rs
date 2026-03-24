@@ -219,6 +219,12 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     let device_name = format!("sonde-{:02x}{:02x}", mac[1], mac[0]);
     info!("BLE: advertising as '{}' (ND-0903)", device_name);
 
+    // Set the GAP device name so connected clients (e.g. Windows) see
+    // the correct name instead of the NimBLE default ("nimble") (ND-0903).
+    if let Err(e) = BLEDevice::set_device_name(&device_name) {
+        warn!("BLE: failed to set GAP device name: {:?}", e);
+    }
+
     let ble_advertising = ble_device.get_advertising();
     let mut adv_data = BLEAdvertisementData::new();
     adv_data.name(&device_name);

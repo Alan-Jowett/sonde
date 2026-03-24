@@ -81,7 +81,7 @@ enum ServiceCommand {
 
 /// Sonde gateway — manages sensor nodes over ESP-NOW radio.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "sonde-gateway", version, about)]
+#[command(name = "sonde-gateway", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"), about)]
 struct Cli {
     /// Service management subcommand (Windows only).
     ///
@@ -236,7 +236,13 @@ async fn run_gateway(
     cli: &Cli,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!(db = %cli.db, port = %cli.port, channel = cli.channel, "starting sonde-gateway");
+    info!(
+        version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"),
+        db = %cli.db,
+        port = %cli.port,
+        channel = cli.channel,
+        "starting sonde-gateway"
+    );
     let mut shutdown = shutdown;
 
     // 1. Load master key for at-rest PSK encryption (GW-0601a).

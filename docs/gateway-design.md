@@ -833,6 +833,39 @@ The gateway is configured via a configuration file (format TBD — TOML recommen
 
 ---
 
+## 14A  Build metadata
+
+> **Requirement:** GW-1303
+
+Both host binaries (`sonde-gateway` and `sonde-admin`) embed the git commit hash at build time using a `build.rs` script. This mirrors the approach already used by `sonde-node` firmware.
+
+### 14A.1  Build script
+
+Each crate's `build.rs` emits a `cargo:rustc-env=SONDE_GIT_COMMIT=<hash>` directive:
+
+1. Check the `SONDE_GIT_COMMIT` environment variable (set by CI with the full SHA).
+2. If unset, run `git rev-parse --short HEAD` to obtain the short hash.
+3. Normalise to 7 characters for consistency between CI and local builds.
+4. Fall back to `"unknown"` if git is unavailable.
+
+Rebuild triggers watch `.git/HEAD`, the resolved branch ref, and `.git/packed-refs`.
+
+### 14A.2  Version string
+
+The clap `#[command]` attribute uses `concat!()` to build a compile-time version string:
+
+```rust
+#[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"))]
+```
+
+This produces output like `sonde-gateway 0.1.0 (a1b2c3d)`.
+
+### 14A.3  Startup log
+
+The gateway emits the version string in its first `info!()` log line so that operators can identify the running build from log output.
+
+---
+
 ## 15  Startup sequence
 
 1. Load configuration.

@@ -534,10 +534,8 @@ where
         }
         let _ = exec_result;
 
-        // Flush accumulated trace output (ND-0604 / T-N613).
-        for entry in &trace_log {
-            log::debug!("bpf_trace_printk: {}", entry);
-        }
+        // Flush accumulated trace output (ND-1006 / T-N613).
+        flush_trace_log(&trace_log);
     }
 
     // 10. Determine sleep duration
@@ -549,6 +547,13 @@ where
     }
 
     log_and_sleep(&sleep_mgr)
+}
+
+/// Emit each accumulated `bpf_trace_printk` entry at INFO level (ND-1006).
+fn flush_trace_log(trace_log: &[String]) {
+    for entry in trace_log {
+        log::info!("bpf_trace_printk: {}", entry);
+    }
 }
 
 /// Determine the wake reason from RTC flags.
@@ -5280,5 +5285,33 @@ mod tests {
         );
         // seq is still incremented (send succeeded).
         assert_eq!(seq, 43);
+    }
+
+    // -- Log-level tests (ND-1006 / T-N1014) ----------------------------------
+
+    use crate::test_log_capture;
+
+    #[test]
+    fn test_flush_trace_log_emits_info() {
+        // ND-1006 / T-N1014: bpf_trace_printk output is flushed at INFO level.
+        test_log_capture::init();
+        test_log_capture::drain_log_records();
+
+        let entries = vec!["hello".to_string(), "world".to_string()];
+        flush_trace_log(&entries);
+
+        let records = test_log_capture::drain_log_records();
+        assert!(
+            records.iter().any(|(level, msg)| *level == log::Level::Info
+                && msg.contains("bpf_trace_printk: hello")),
+            "expected INFO log for 'hello', got: {:?}",
+            records
+        );
+        assert!(
+            records.iter().any(|(level, msg)| *level == log::Level::Info
+                && msg.contains("bpf_trace_printk: world")),
+            "expected INFO log for 'world', got: {:?}",
+            records
+        );
     }
 }

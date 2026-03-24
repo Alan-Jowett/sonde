@@ -274,7 +274,7 @@ impl Drop for DispatchGuard {
 /// Args: r1=handle, r2=buf_ptr, r3=buf_len.
 /// Returns: 0 on success, negative on error.
 pub fn helper_i2c_read(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let handle = r1 as u32;
         let buf_ptr = r2 as *mut u8;
         let buf_len = r3 as usize;
@@ -288,13 +288,15 @@ pub fn helper_i2c_read(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
             (*ctx.hal).i2c_read(handle, buf) as i64 as u64
         }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper i2c_read: result={}", result as i64);
+    result
 }
 
 /// Helper 2: I2C write.
 /// Args: r1=handle, r2=data_ptr, r3=data_len.
 pub fn helper_i2c_write(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let handle = r1 as u32;
         let data_ptr = r2 as *const u8;
         let data_len = r3 as usize;
@@ -306,13 +308,15 @@ pub fn helper_i2c_write(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
             (*ctx.hal).i2c_write(handle, data) as i64 as u64
         }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper i2c_write: result={}", result as i64);
+    result
 }
 
 /// Helper 3: I2C write-then-read.
 /// Args: r1=handle, r2=write_ptr, r3=write_len, r4=read_ptr, r5=read_len.
 pub fn helper_i2c_write_read(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let handle = r1 as u32;
         let write_ptr = r2 as *const u8;
         let write_len = r3 as usize;
@@ -333,13 +337,15 @@ pub fn helper_i2c_write_read(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64
             (*ctx.hal).i2c_write_read(handle, write_data, read_buf) as i64 as u64
         }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper i2c_write_read: result={}", result as i64);
+    result
 }
 
 /// Helper 4: SPI full-duplex transfer.
 /// Args: r1=handle, r2=tx_ptr (0=none), r3=rx_ptr (0=none), r4=len.
 pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let handle = r1 as u32;
         let tx_ptr = r2 as *const u8;
         let rx_ptr = r3 as *mut u8;
@@ -361,46 +367,54 @@ pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 
             (*ctx.hal).spi_transfer(handle, tx, rx, len) as i64 as u64
         }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper spi_transfer: result={}", result as i64);
+    result
 }
 
 /// Helper 5: GPIO read.
 /// Args: r1=pin.
 pub fn helper_gpio_read(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let pin = r1 as u32;
         unsafe { (*ctx.hal).gpio_read(pin) as i64 as u64 }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper gpio_read: result={}", result as i64);
+    result
 }
 
 /// Helper 6: GPIO write.
 /// Args: r1=pin, r2=value.
 pub fn helper_gpio_write(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let pin = r1 as u32;
         let value = r2 as u32;
         unsafe { (*ctx.hal).gpio_write(pin, value) as i64 as u64 }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper gpio_write: result={}", result as i64);
+    result
 }
 
 /// Helper 7: ADC read.
 /// Args: r1=channel.
 /// Returns: raw ADC reading on success, negative on error (invalid channel).
 pub fn helper_adc_read(r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let channel = r1 as u32;
         unsafe { (*ctx.hal).adc_read(channel) as i64 as u64 }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper adc_read: result={}", result as i64);
+    result
 }
 
 /// Helper 8: send (fire-and-forget APP_DATA).
 /// Args: r1=blob_ptr, r2=blob_len.
 /// Returns: 0 on success, negative on error.
 pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
         if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
@@ -420,14 +434,16 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
             }
         }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper send: result={}", result as i64);
+    result
 }
 
 /// Helper 9: send_recv (APP_DATA + wait for APP_DATA_REPLY).
 /// Args: r1=blob_ptr, r2=blob_len, r3=reply_ptr, r4=reply_cap, r5=timeout_ms (0=default).
 /// Returns: reply length on success, negative on error.
 pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
         let reply_ptr = r3 as *mut u8;
@@ -470,7 +486,9 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
             }
         }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper send_recv: result={}", result as i64);
+    result
 }
 
 /// Helper 10: map_lookup_elem.
@@ -2059,6 +2077,153 @@ mod tests {
         assert!(
             !sleep.will_wake_early(),
             "requesting longer than base should not count as early wake"
+        );
+    }
+
+    // -- Log-level tests (ND-1010 / T-N1015) ----------------------------------
+
+    use crate::test_log_capture;
+
+    #[test]
+    fn test_helper_i2c_read_emits_debug_log() {
+        // ND-1010 / T-N1015: I/O helpers emit DEBUG-level logs.
+        test_log_capture::init();
+        test_log_capture::drain_log_records(); // discard prior records
+
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut buf = [0u8; 2];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                let handle = crate::hal::i2c_handle(0, 0x48);
+                helper_i2c_read(
+                    handle as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                    0,
+                    0,
+                );
+            },
+        );
+
+        let records = test_log_capture::drain_log_records();
+        assert!(
+            records
+                .iter()
+                .any(|(level, msg)| *level == log::Level::Debug
+                    && msg.contains("bpf helper i2c_read")
+                    && msg.contains("result=")),
+            "expected DEBUG log for i2c_read helper, got: {:?}",
+            records
+        );
+    }
+
+    #[test]
+    fn test_helper_gpio_read_emits_debug_log() {
+        // ND-1010 / T-N1015: gpio_read emits a DEBUG log with result.
+        test_log_capture::init();
+        test_log_capture::drain_log_records();
+
+        let mut hal = TestHal::new();
+        hal.gpio_states[3] = 1;
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                helper_gpio_read(3, 0, 0, 0, 0);
+            },
+        );
+
+        let records = test_log_capture::drain_log_records();
+        assert!(
+            records
+                .iter()
+                .any(|(level, msg)| *level == log::Level::Debug
+                    && msg.contains("bpf helper gpio_read")
+                    && msg.contains("result=")),
+            "expected DEBUG log for gpio_read helper, got: {:?}",
+            records
+        );
+    }
+
+    #[test]
+    fn test_non_io_helper_does_not_emit_debug_log() {
+        // ND-1010 AC #2: non-I/O helpers must NOT emit DEBUG logs.
+        test_log_capture::init();
+        test_log_capture::drain_log_records();
+
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(1_000);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                // Call several non-I/O helpers.
+                helper_get_time(0, 0, 0, 0, 0);
+                helper_get_battery_mv(0, 0, 0, 0, 0);
+                helper_delay_us(10, 0, 0, 0, 0);
+            },
+        );
+
+        let records = test_log_capture::drain_log_records();
+        let has_debug_helper_log = records
+            .iter()
+            .any(|(level, msg)| *level == log::Level::Debug && msg.contains("bpf helper"));
+        assert!(
+            !has_debug_helper_log,
+            "non-I/O helpers must not emit DEBUG 'bpf helper' logs, got: {:?}",
+            records
         );
     }
 }

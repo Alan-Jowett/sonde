@@ -330,7 +330,7 @@ async fn run_gateway(
 
     loop {
         // 6. Open serial port and create modem transport
-        let serial_port = match (|| async {
+        let serial_port = match async {
             let port = serial2_tokio::SerialPort::open(&cli.port, cli.baud_rate)?;
             let mut drain_buf = [0u8; 4096];
             loop {
@@ -344,7 +344,7 @@ async fn run_gateway(
                 }
             }
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(port)
-        })()
+        }
         .await
         {
             Ok(port) => port,

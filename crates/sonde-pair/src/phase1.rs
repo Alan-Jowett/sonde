@@ -90,7 +90,7 @@ pub async fn pair_with_gateway(
     if let Some(cb) = progress {
         cb.on_phase("Connecting");
     }
-    info!(address = ?device_address, "connecting to gateway");
+    debug!(address = ?device_address, "connecting to gateway");
     let mtu = transport.connect(device_address).await?;
     if mtu < BLE_MTU_MIN {
         transport.disconnect().await.ok();

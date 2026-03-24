@@ -890,7 +890,7 @@ A typical entry point configures:
 ```rust
 use tracing_subscriber::EnvFilter;
 
-fmt()
+tracing_subscriber::fmt()
     .with_env_filter(EnvFilter::from_default_env()) // RUST_LOG=debug for verbose
     .with_target(false)
     .init();

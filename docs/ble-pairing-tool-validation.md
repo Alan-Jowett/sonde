@@ -392,14 +392,14 @@ TestNode {
 
 ---
 
-### T-PT-204  GW_INFO_RESPONSE timeout (5 s)
+### T-PT-204  GW_INFO_RESPONSE timeout (45 s)
 
 **Validates:** PT-0301
 
 **Procedure:**
 1. Configure mock transport to never send `GW_INFO_RESPONSE`.
 2. Initiate Phase 1.
-3. Assert: after 5 s, the tool disconnects.
+3. Assert: after 45 s, the tool disconnects.
 4. Assert: error message indicates timeout on gateway authentication.
 
 ---
@@ -970,7 +970,7 @@ TestNode {
 
 **Procedure:**
 1. Inspect the timeout constants used by the pairing state machine.
-2. Assert: `GW_INFO_RESPONSE` timeout = 5 s.
+2. Assert: `GW_INFO_RESPONSE` timeout = 45 s.
 3. Assert: `PHONE_REGISTERED` timeout = 30 s.
 4. Assert: `NODE_ACK` timeout = 5 s.
 5. Assert: BLE scan default timeout = 30 s.
@@ -1132,7 +1132,7 @@ TestNode {
 | T-PT-201 | PT-0300 | MTU < 247 → disconnect + error |
 | T-PT-202 | PT-0301 | Gateway authentication happy path |
 | T-PT-203 | PT-0301 | Gateway authentication failure (bad signature) |
-| T-PT-204 | PT-0301 | GW_INFO_RESPONSE timeout (5 s) |
+| T-PT-204 | PT-0301 | GW_INFO_RESPONSE timeout (45 s) |
 | T-PT-205 | PT-0302 | TOFU — first connection persists public key |
 | T-PT-206 | PT-0302 | TOFU — mismatched public key rejected |
 | T-PT-207 | PT-0302 | TOFU — operator can clear pinned identity |

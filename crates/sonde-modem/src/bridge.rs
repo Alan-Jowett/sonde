@@ -288,9 +288,14 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
                 Some(rf) => {
                     info!(
                         "ESP-NOW RX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} rssi={}",
-                        rf.peer_mac[0], rf.peer_mac[1], rf.peer_mac[2],
-                        rf.peer_mac[3], rf.peer_mac[4], rf.peer_mac[5],
-                        rf.frame_data.len(), rf.rssi
+                        rf.peer_mac[0],
+                        rf.peer_mac[1],
+                        rf.peer_mac[2],
+                        rf.peer_mac[3],
+                        rf.peer_mac[4],
+                        rf.peer_mac[5],
+                        rf.frame_data.len(),
+                        rf.rssi
                     );
                     let msg = ModemMessage::RecvFrame(rf);
                     if self.send_msg(&msg) {
@@ -379,8 +384,12 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     fn handle_send_frame(&mut self, sf: SendFrame) {
         info!(
             "ESP-NOW TX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={}",
-            sf.peer_mac[0], sf.peer_mac[1], sf.peer_mac[2],
-            sf.peer_mac[3], sf.peer_mac[4], sf.peer_mac[5],
+            sf.peer_mac[0],
+            sf.peer_mac[1],
+            sf.peer_mac[2],
+            sf.peer_mac[3],
+            sf.peer_mac[4],
+            sf.peer_mac[5],
             sf.frame_data.len()
         );
         self.radio.send(&sf.peer_mac, &sf.frame_data);

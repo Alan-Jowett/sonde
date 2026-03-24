@@ -80,13 +80,29 @@ const MAX_RESIDENT_SIZE: u32 = 4096;
 /// Maximum CBOR image size for ephemeral programs (GW-0202 AC3).
 pub(crate) const MAX_EPHEMERAL_SIZE: u32 = 2048;
 
-/// Lightweight check for ELF64 LE map sections (`.maps` / `maps`).
+/// Section names that BPF loaders treat as map-backed.
+///
+/// Includes explicit map definition sections (`.maps`/`maps`) and global
+/// data sections (`.rodata`, `.data`, `.bss`) which libbpf/prevail promote
+/// to array maps.
+const MAP_SECTION_NAMES: &[&str] = &[".maps", "maps", ".rodata", ".data", ".bss"];
+
+/// Section name prefixes that indicate map-backed sections (e.g. `maps/foo`).
+const MAP_SECTION_PREFIXES: &[&str] = &[".maps/", "maps/"];
+
+/// Lightweight check for ELF64 LE sections that produce BPF maps.
 ///
 /// Scans section headers and the section-name string table without invoking
 /// the full prevail loader, so it is safe to call on any platform.
+/// Returns `false` (rather than panicking) on any malformed input.
 fn elf_has_map_sections(data: &[u8]) -> bool {
     // ELF64 header is 64 bytes; bail out on anything too short.
     if data.len() < 64 {
+        return false;
+    }
+
+    // Validate ELF magic, 64-bit class, and little-endian encoding.
+    if data[0..4] != [0x7f, b'E', b'L', b'F'] || data[4] != 2 || data[5] != 1 {
         return false;
     }
 
@@ -114,21 +130,37 @@ fn elf_has_map_sections(data: &[u8]) -> bool {
     }
 
     // Locate the section-name string table (.shstrtab).
-    let str_sh = sh_off + sh_strndx * sh_entsize;
-    if str_sh + 40 > data.len() {
+    let str_sh = match sh_strndx
+        .checked_mul(sh_entsize)
+        .and_then(|offset| sh_off.checked_add(offset))
+    {
+        Some(v) => v,
+        None => return false,
+    };
+    if str_sh > data.len().saturating_sub(40) {
         return false;
     }
     let strtab_off = read_u64(str_sh + 24) as usize;
     let strtab_size = read_u64(str_sh + 32) as usize;
-    if strtab_off.saturating_add(strtab_size) > data.len() {
+    let strtab_end = match strtab_off.checked_add(strtab_size) {
+        Some(end) => end,
+        None => return false,
+    };
+    if strtab_end > data.len() {
         return false;
     }
-    let strtab = &data[strtab_off..strtab_off + strtab_size];
+    let strtab = &data[strtab_off..strtab_end];
 
-    // Scan each section header looking for a map section name.
+    // Scan each section header looking for a map-backed section name.
     for i in 0..sh_num {
-        let hdr = sh_off + i * sh_entsize;
-        if hdr + 4 > data.len() {
+        let hdr = match i
+            .checked_mul(sh_entsize)
+            .and_then(|offset| sh_off.checked_add(offset))
+        {
+            Some(v) => v,
+            None => return false,
+        };
+        if hdr > data.len().saturating_sub(4) {
             break;
         }
         let name_off =
@@ -142,10 +174,8 @@ fn elf_has_map_sections(data: &[u8]) -> bool {
             .position(|&b| b == 0)
             .map_or(strtab.len(), |p| name_off + p);
         if let Ok(name) = std::str::from_utf8(&strtab[name_off..name_end]) {
-            if name == "maps"
-                || name == ".maps"
-                || name.starts_with("maps/")
-                || name.starts_with(".maps/")
+            if MAP_SECTION_NAMES.contains(&name)
+                || MAP_SECTION_PREFIXES.iter().any(|&p| name.starts_with(p))
             {
                 return true;
             }
@@ -204,8 +234,8 @@ impl ProgramLibrary {
     /// Ingest a raw ELF binary with prevail verification (GW-0401).
     ///
     /// Steps:
-    ///   1. Write ELF bytes to a temp file for prevail.
-    ///   2. Reject ephemeral programs that declare map sections (GW-0401 criterion 5).
+    ///   1. Reject ephemeral programs that declare map-backed sections (GW-0401 criterion 5).
+    ///   2. Write ELF bytes to a temp file for prevail.
     ///   3. Parse the ELF with `ElfObject`.
     ///   4. Extract programs and run prevail verification on each extracted program.
     ///   5. Reject ELF files containing multiple programs (ambiguous selection).
@@ -501,8 +531,9 @@ mod tests {
 
     /// Build a minimal BPF ELF that declares one `.maps` entry (an ARRAY map)
     /// while still containing a trivially valid program (`mov r0, 0; exit`).
-    /// The program does *not* reference the map — it merely exists in the ELF
-    /// so that the loader populates `map_descriptors`.
+    /// The program does *not* reference the map — the map is present only so
+    /// that this ELF exercises the pre-Prevail section-scan rejection for
+    /// ephemeral programs that declare maps.
     fn make_minimal_bpf_elf_with_maps() -> Vec<u8> {
         // Layout:
         //   ELF header          64 B

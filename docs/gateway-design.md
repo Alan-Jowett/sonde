@@ -385,7 +385,7 @@ pub enum VerificationProfile {
 ### 8.2  Program ingestion
 
 1. Accept pre-compiled BPF ELF (GW-0400).
-2. Reject ephemeral programs that declare maps — ephemeral programs are stateless and must not carry map definitions (GW-0401 criterion 5). Detected via a lightweight scan of ELF section headers for `.maps`/`maps` sections before invoking prevail.
+2. Reject ephemeral programs that declare maps — ephemeral programs are stateless and must not carry map definitions (GW-0401 criterion 5). Detected via a lightweight scan of ELF section headers for map-backed sections (`.maps`/`maps`, `.rodata`, `.data`, `.bss`) before invoking prevail.
 3. Verify with `prevail-rust` against the appropriate profile (GW-0401). Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`.
 4. Extract bytecode (`.text` section) and map definitions from the ELF.
 5. Encode as CBOR program image using `sonde_protocol::ProgramImage::encode_deterministic()`. See [protocol-crate-design.md §7](protocol-crate-design.md) and [protocol.md § Program image format](protocol.md#program-image-format).

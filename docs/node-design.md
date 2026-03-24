@@ -669,10 +669,10 @@ The node firmware uses the Rust `log` crate (v0.4) as the logging facade. On ESP
 
 | Level | Usage |
 |---|---|
-| `info!` | Normal operational events: boot, wake cycle transitions, frame send/receive, BPF execution, sleep entry |
+| `info!` | Normal operational events: boot, wake cycle transitions, frame send/receive, BPF execution, sleep entry, `bpf_trace_printk` output |
 | `warn!` | Recoverable error conditions: RNG failure, transport timeout, HMAC mismatch, storage I/O errors |
 | `error!` | Non-recoverable errors: BPF load/registration failures |
-| `debug!` | Verbose diagnostic output: BPF trace output (`bpf_trace_printk`) |
+| `debug!` | Verbose diagnostic output: BPF helper I/O calls (helper name + return value) |
 
 ### 17.2  Log points
 
@@ -687,6 +687,8 @@ The following events are logged per the ND-10xx requirements:
 | PEER_REQUEST sent | INFO | `peer_request.rs` | `key_hint` | ND-1004 |
 | PEER_ACK received | INFO | `peer_request.rs` | registration result | ND-1005 |
 | BPF execution | INFO | `wake_cycle.rs` | `program_hash` (truncated), result | ND-1006 |
+| `bpf_trace_printk` output | INFO | `wake_cycle.rs` | trace string | ND-1006 |
+| BPF helper I/O call | DEBUG | `bpf_dispatch.rs` | helper name, result | ND-1010 |
 | Deep sleep entry | INFO | `wake_cycle.rs` | `duration_seconds`, `reason` | ND-1007 |
 | BLE pairing mode | INFO | `bin/node.rs` | entry/exit (already present) | ND-1008 |
 | RNG failure | WARN | `wake_cycle.rs` | — | ND-1009 |

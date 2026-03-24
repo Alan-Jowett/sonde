@@ -1073,15 +1073,16 @@ The node MUST log at INFO level when a valid PEER_ACK is received, including the
 ### ND-1006  BPF program execution logging
 
 **Priority:** Must  
-**Source:** issue #459
+**Source:** issue #459, issue #475
 
 **Description:**  
-The node MUST log at INFO level when a BPF program is executed, including the program hash (hex) and the execution result.
+The node MUST log at INFO level when a BPF program is executed, including the program hash (hex) and the execution result. `bpf_trace_printk` output MUST be emitted at INFO level so it is visible at the default ESP-IDF log level.
 
 **Acceptance criteria:**
 
 1. An INFO log is emitted before BPF execution containing `program_hash` (first 8 hex chars).
 2. An INFO log is emitted after BPF execution containing the result (Ok or Err description).
+3. Each `bpf_trace_printk` entry is emitted at INFO level (not DEBUG).
 
 ---
 
@@ -1112,6 +1113,21 @@ The node MUST log at INFO level when entering BLE pairing mode, and MUST log whe
 1. An INFO log is emitted on pairing mode entry.
 2. On pairing mode exit (disconnect, timeout, or failure), a log is emitted indicating that pairing mode has exited and the outcome (success, timeout, disconnect, or failure).
 3. Exit logs for normal completion (disconnect or timeout without error) are at INFO level. Exit logs for failure MAY be at WARN level instead of INFO.
+
+---
+
+### ND-1010  BPF helper I/O logging
+
+**Priority:** Should  
+**Source:** issue #475
+
+**Description:**  
+BPF helper invocations that perform I/O (send, send_recv, i2c_write, i2c_write_read, gpio_read, gpio_write, adc_read, bus_transfer) SHOULD be logged at DEBUG level with the helper name and return value.
+
+**Acceptance criteria:**
+
+1. A DEBUG log is emitted for each I/O helper call containing the helper name and the return value (cast to `i64`).
+2. Non-I/O helpers (map_lookup_elem, map_update_elem, get_time, get_battery_mv, delay_us, set_next_wake, bpf_trace_printk) do not emit DEBUG logs.
 
 ---
 
@@ -1204,3 +1220,4 @@ The node MUST log error conditions at WARN level, including RNG health-check fai
 | ND-1007 | Deep sleep entered logging | Must |
 | ND-1008 | BLE pairing mode logging | Must |
 | ND-1009 | Error condition logging | Must |
+| ND-1010 | BPF helper I/O logging | Should |

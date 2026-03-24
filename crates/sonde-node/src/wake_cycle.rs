@@ -534,9 +534,9 @@ where
         }
         let _ = exec_result;
 
-        // Flush accumulated trace output (ND-0604 / T-N613).
+        // Flush accumulated trace output (ND-0604 / ND-1006 / T-N613).
         for entry in &trace_log {
-            log::debug!("bpf_trace_printk: {}", entry);
+            log::info!("bpf_trace_printk: {}", entry);
         }
     }
 

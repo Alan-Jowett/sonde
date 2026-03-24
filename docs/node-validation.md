@@ -676,11 +676,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ### T-N613  System helpers — bpf_trace_printk
 
-**Validates:** ND-0604
+**Validates:** ND-0604, ND-1006
 
 **Procedure:**
 1. Install program that calls `bpf_trace_printk("hello")`.
-2. Assert: "hello" appears in debug output.
+2. Assert: "hello" appears in INFO-level log output (not DEBUG).
 
 ---
 
@@ -1124,6 +1124,29 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Run a wake cycle with a valid resident program.
 2. Assert: an INFO log is emitted containing "BPF execute" and `program_hash` (hex prefix).
 3. Assert: an INFO log is emitted containing the execution result.
+
+---
+
+### T-N1014  bpf_trace_printk emitted at INFO level
+
+**Validates:** ND-1006
+
+**Procedure:**
+1. Install program that calls `bpf_trace_printk("hello")`.
+2. Run wake cycle.
+3. Assert: an INFO log is emitted containing `bpf_trace_printk: hello`.
+4. Assert: the message does NOT appear at DEBUG level.
+
+---
+
+### T-N1015  BPF helper I/O logging at DEBUG level
+
+**Validates:** ND-1010
+
+**Procedure:**
+1. Install program that calls `send`, `gpio_read`, `i2c_write`, or `adc_read`.
+2. Run wake cycle.
+3. Assert: a DEBUG log is emitted for each I/O helper call containing the helper name and `result=`.
 
 ---
 

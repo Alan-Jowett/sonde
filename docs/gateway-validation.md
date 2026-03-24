@@ -381,6 +381,18 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0408  Ephemeral program with maps rejected
+
+**Validates:** GW-0401 (criterion 5)
+
+**Procedure:**
+1. Construct a valid BPF ELF that declares one or more map definitions.
+2. Submit it for ingestion with the ephemeral verification profile.
+3. Assert: ingestion fails with an error indicating ephemeral programs must not declare maps.
+4. Assert: no program record is stored.
+
+---
+
 ## 7  Application data tests
 
 ### T-0500  APP_DATA reception and forwarding

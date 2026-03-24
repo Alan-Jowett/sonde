@@ -385,12 +385,13 @@ pub enum VerificationProfile {
 ### 8.2  Program ingestion
 
 1. Accept pre-compiled BPF ELF (GW-0400).
-2. Verify with `prevail-rust` against the appropriate profile (GW-0401). Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`.
-3. Extract bytecode (`.text` section) and map definitions from the ELF.
-4. Encode as CBOR program image using `sonde_protocol::ProgramImage::encode_deterministic()`. See [protocol-crate-design.md §7](protocol-crate-design.md) and [protocol.md § Program image format](protocol.md#program-image-format).
-5. Enforce size limits on the CBOR image: 4 KB resident, 2 KB ephemeral (GW-0403).
-6. Compute `program_hash` using `sonde_protocol::program_hash()` with the gateway's SHA-256 provider (GW-0402).
-7. Store in library. Verification and encoding complete at ingestion time — chunk serving is immediate (GW-0400).
+2. Reject ephemeral programs that declare maps — ephemeral programs are stateless and must not carry map definitions (GW-0401 criterion 5). Detected via a lightweight scan of ELF section headers for `.maps`/`maps` sections before invoking prevail.
+3. Verify with `prevail-rust` against the appropriate profile (GW-0401). Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`.
+4. Extract bytecode (`.text` section) and map definitions from the ELF.
+5. Encode as CBOR program image using `sonde_protocol::ProgramImage::encode_deterministic()`. See [protocol-crate-design.md §7](protocol-crate-design.md) and [protocol.md § Program image format](protocol.md#program-image-format).
+6. Enforce size limits on the CBOR image: 4 KB resident, 2 KB ephemeral (GW-0403).
+7. Compute `program_hash` using `sonde_protocol::program_hash()` with the gateway's SHA-256 provider (GW-0402).
+8. Store in library. Verification and encoding complete at ingestion time — chunk serving is immediate (GW-0400).
 
 ### 8.3  Chunk serving
 

@@ -292,6 +292,7 @@ The gateway MUST verify all BPF programs using the Prevail verifier before distr
 2. Resident programs are verified against the resident profile.
 3. Ephemeral programs are verified against the ephemeral profile.
 4. Programs that fail verification are rejected with a clear diagnostic indicating the reason.
+5. Ephemeral programs that declare maps MUST be rejected at ingestion time with an actionable error message.
 
 ---
 

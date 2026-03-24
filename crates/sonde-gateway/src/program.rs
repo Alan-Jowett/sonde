@@ -80,6 +80,81 @@ const MAX_RESIDENT_SIZE: u32 = 4096;
 /// Maximum CBOR image size for ephemeral programs (GW-0202 AC3).
 pub(crate) const MAX_EPHEMERAL_SIZE: u32 = 2048;
 
+/// Lightweight check for ELF64 LE map sections (`.maps` / `maps`).
+///
+/// Scans section headers and the section-name string table without invoking
+/// the full prevail loader, so it is safe to call on any platform.
+fn elf_has_map_sections(data: &[u8]) -> bool {
+    // ELF64 header is 64 bytes; bail out on anything too short.
+    if data.len() < 64 {
+        return false;
+    }
+
+    let read_u16 = |off: usize| u16::from_le_bytes([data[off], data[off + 1]]);
+    let read_u64 = |off: usize| {
+        u64::from_le_bytes([
+            data[off],
+            data[off + 1],
+            data[off + 2],
+            data[off + 3],
+            data[off + 4],
+            data[off + 5],
+            data[off + 6],
+            data[off + 7],
+        ])
+    };
+
+    let sh_off = read_u64(40) as usize; // e_shoff
+    let sh_entsize = read_u16(58) as usize; // e_shentsize
+    let sh_num = read_u16(60) as usize; // e_shnum
+    let sh_strndx = read_u16(62) as usize; // e_shstrndx
+
+    if sh_strndx >= sh_num || sh_entsize < 64 {
+        return false;
+    }
+
+    // Locate the section-name string table (.shstrtab).
+    let str_sh = sh_off + sh_strndx * sh_entsize;
+    if str_sh + 40 > data.len() {
+        return false;
+    }
+    let strtab_off = read_u64(str_sh + 24) as usize;
+    let strtab_size = read_u64(str_sh + 32) as usize;
+    if strtab_off.saturating_add(strtab_size) > data.len() {
+        return false;
+    }
+    let strtab = &data[strtab_off..strtab_off + strtab_size];
+
+    // Scan each section header looking for a map section name.
+    for i in 0..sh_num {
+        let hdr = sh_off + i * sh_entsize;
+        if hdr + 4 > data.len() {
+            break;
+        }
+        let name_off =
+            u32::from_le_bytes([data[hdr], data[hdr + 1], data[hdr + 2], data[hdr + 3]]) as usize;
+        if name_off >= strtab.len() {
+            continue;
+        }
+        // Extract the NUL-terminated section name.
+        let name_end = strtab[name_off..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(strtab.len(), |p| name_off + p);
+        if let Ok(name) = std::str::from_utf8(&strtab[name_off..name_end]) {
+            if name == "maps"
+                || name == ".maps"
+                || name.starts_with("maps/")
+                || name.starts_with(".maps/")
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Program library: stores verified programs and serves chunks.
 pub struct ProgramLibrary {
     sha256: RustCryptoSha256,
@@ -130,11 +205,12 @@ impl ProgramLibrary {
     ///
     /// Steps:
     ///   1. Write ELF bytes to a temp file for prevail.
-    ///   2. Parse the ELF with `ElfObject`.
-    ///   3. Extract programs and run prevail verification on each extracted program.
-    ///   4. Reject ELF files containing multiple programs (ambiguous selection).
-    ///   5. Serialize bytecode and map definitions into a `ProgramImage`.
-    ///   6. Delegate size-limit enforcement and hashing to `ingest()`.
+    ///   2. Reject ephemeral programs that declare map sections (GW-0401 criterion 5).
+    ///   3. Parse the ELF with `ElfObject`.
+    ///   4. Extract programs and run prevail verification on each extracted program.
+    ///   5. Reject ELF files containing multiple programs (ambiguous selection).
+    ///   6. Serialize bytecode and map definitions into a `ProgramImage`.
+    ///   7. Delegate size-limit enforcement and hashing to `ingest()`.
     pub fn ingest_elf(
         &self,
         elf_bytes: &[u8],
@@ -142,6 +218,14 @@ impl ProgramLibrary {
     ) -> Result<ProgramRecord, ProgramError> {
         if elf_bytes.is_empty() {
             return Err(ProgramError::InvalidImage);
+        }
+
+        // Ephemeral programs are stateless — reject early if the ELF declares
+        // map sections (GW-0401 criterion 5).
+        if profile == VerificationProfile::Ephemeral && elf_has_map_sections(elf_bytes) {
+            return Err(ProgramError::VerificationFailed(
+                "ephemeral programs must not declare maps".into(),
+            ));
         }
 
         // Write ELF bytes to a temp file for prevail's file-based parser.
@@ -413,5 +497,171 @@ mod tests {
         let r1 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
         let r2 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
         assert_eq!(r1.hash, r2.hash);
+    }
+
+    /// Build a minimal BPF ELF that declares one `.maps` entry (an ARRAY map)
+    /// while still containing a trivially valid program (`mov r0, 0; exit`).
+    /// The program does *not* reference the map — it merely exists in the ELF
+    /// so that the loader populates `map_descriptors`.
+    fn make_minimal_bpf_elf_with_maps() -> Vec<u8> {
+        // Layout:
+        //   ELF header          64 B
+        //   .text               16 B  (mov r0, 0; exit)
+        //   .maps               28 B  (one BpfLoadMapDef: 7 × u32)
+        //   .strtab             13 B  ("\0counter_map\0")
+        //   .shstrtab           39 B
+        //   .symtab             48 B  (null + 1 GLOBAL OBJECT in .maps)
+        //   Section headers    384 B  (6 × 64)
+
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        // One BPF_MAP_TYPE_ARRAY map (7 × u32 LE).
+        let mut map_def = Vec::with_capacity(28);
+        map_def.extend_from_slice(&2u32.to_le_bytes()); // map_type = ARRAY
+        map_def.extend_from_slice(&4u32.to_le_bytes()); // key_size
+        map_def.extend_from_slice(&4u32.to_le_bytes()); // value_size
+        map_def.extend_from_slice(&1u32.to_le_bytes()); // max_entries
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // map_flags
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // inner_map_idx
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // numa_node
+
+        let strtab: &[u8] = b"\0counter_map\0"; // 13 bytes
+                                                // shstrtab: "\0.text\0.maps\0.strtab\0.symtab\0.shstrtab\0"
+                                                //   offsets:  0  1     7     13      21      29
+        let shstrtab: &[u8] = b"\0.text\0.maps\0.strtab\0.symtab\0.shstrtab\0"; // 39 bytes
+
+        let text_offset: u64 = 64;
+        let maps_offset: u64 = text_offset + bpf_code.len() as u64; // 80
+        let strtab_offset: u64 = maps_offset + map_def.len() as u64; // 108
+        let shstrtab_offset: u64 = strtab_offset + strtab.len() as u64; // 121
+        let symtab_offset: u64 = shstrtab_offset + shstrtab.len() as u64; // 160
+        let shdr_offset: u64 = symtab_offset + 48; // 208
+
+        let mut elf = Vec::new();
+
+        // ── ELF header (64 bytes) ──
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']); // magic
+        elf.push(2); // EI_CLASS = ELFCLASS64
+        elf.push(1); // EI_DATA = ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]); // padding
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
+        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&6u16.to_le_bytes()); // e_shnum
+        elf.extend_from_slice(&5u16.to_le_bytes()); // e_shstrndx = 5
+        assert_eq!(elf.len(), 64);
+
+        // ── .text section data ──
+        elf.extend_from_slice(&bpf_code);
+
+        // ── .maps section data ──
+        elf.extend_from_slice(&map_def);
+
+        // ── .strtab section data ──
+        elf.extend_from_slice(strtab);
+
+        // ── .shstrtab section data ──
+        elf.extend_from_slice(shstrtab);
+
+        // ── .symtab section data (2 × 24 bytes) ──
+        // [0] Null symbol
+        elf.extend_from_slice(&[0u8; 24]);
+
+        // [1] Symbol for counter_map in .maps section
+        let mut sym = [0u8; 24];
+        sym[0..4].copy_from_slice(&1u32.to_le_bytes()); // st_name = 1
+        sym[4] = 0x11; // st_info = STB_GLOBAL | STT_OBJECT
+        sym[5] = 0; // st_other
+        sym[6..8].copy_from_slice(&2u16.to_le_bytes()); // st_shndx = 2 (.maps)
+        sym[8..16].copy_from_slice(&0u64.to_le_bytes()); // st_value = 0
+        sym[16..24].copy_from_slice(&28u64.to_le_bytes()); // st_size = 28
+        elf.extend_from_slice(&sym);
+
+        // ── Section headers (6 × 64 bytes) ──
+
+        // [0] Null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] .text
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x6u64.to_le_bytes()); // SHF_ALLOC | SHF_EXECINSTR
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [2] .maps
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x2u64.to_le_bytes()); // SHF_ALLOC
+        sh[24..32].copy_from_slice(&maps_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(map_def.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&4u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [3] .strtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&13u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh[24..32].copy_from_slice(&strtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(strtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [4] .symtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&21u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&2u32.to_le_bytes()); // sh_type = SHT_SYMTAB
+        sh[24..32].copy_from_slice(&symtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&48u64.to_le_bytes()); // sh_size = 2 entries
+        sh[40..44].copy_from_slice(&3u32.to_le_bytes()); // sh_link = .strtab index
+        sh[44..48].copy_from_slice(&1u32.to_le_bytes()); // sh_info = first non-local
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        sh[56..64].copy_from_slice(&24u64.to_le_bytes()); // sh_entsize
+        elf.extend_from_slice(&sh);
+
+        // [5] .shstrtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&29u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        elf
+    }
+
+    #[test]
+    fn ingest_elf_ephemeral_with_maps_rejected() {
+        let elf = make_minimal_bpf_elf_with_maps();
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&elf, VerificationProfile::Ephemeral)
+            .unwrap_err();
+        match &err {
+            ProgramError::VerificationFailed(msg) => {
+                assert!(
+                    msg.contains("ephemeral programs must not declare maps"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected VerificationFailed, got: {other:?}"),
+        }
     }
 }

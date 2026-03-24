@@ -860,7 +860,7 @@ When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x0
 3. **Phone HMAC verification** — The gateway looks up all non-revoked phone PSKs matching `phone_key_hint` and tries each until one produces a valid HMAC. No match → discard (GW-1213).
 4. **Frame HMAC verification** — The frame HMAC is verified using the extracted `node_psk`. Mismatch → discard (GW-1214).
 5. **Timestamp validation** — The `PairingRequest` timestamp must be within ± 86 400 s of current time. Out of range → discard (GW-1215).
-6. **Node ID uniqueness** — If the `node_id` is already registered **and** the `node_psk` matches the existing record, the gateway skips registration but still proceeds to PEER_ACK generation (GW-1218 AC4). If the `node_id` is registered with a **different** PSK, the frame is silently discarded (potential replay or conflict).
+6. **Node ID duplicate handling** — If the `node_id` is already registered **and** the `node_psk` matches the existing record, the gateway skips registration but still proceeds to PEER_ACK generation (GW-1218 AC4). If the `node_id` is registered with a **different** PSK, the frame is silently discarded (potential replay or conflict).
 7. **Key-hint consistency** — The frame header `key_hint` must match the CBOR `node_key_hint`. Mismatch → discard (GW-1217).
 8. **Node registration** — The node is registered with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (GW-1218). The node registry (§7) stores the new record through the storage trait.
 

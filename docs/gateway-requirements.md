@@ -1269,18 +1269,19 @@ The gateway MUST verify that the `PairingRequest` timestamp is within ±86 400 s
 
 ---
 
-### GW-1216  Node ID uniqueness check
+### GW-1216  Node ID duplicate handling
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §7.3, step 10
 
 **Description:**  
-The gateway MUST verify that the `node_id` in the `PairingRequest` is not already registered and silently discard if it is a duplicate.
+The gateway MUST check whether the `node_id` in the `PairingRequest` is already registered. If the `node_id` is new, proceed to registration. If the `node_id` is already registered with a **matching** `node_psk`, skip registration but still proceed to PEER_ACK generation (see GW-1218 AC4). If the `node_id` is registered with a **different** `node_psk`, silently discard the frame.
 
 **Acceptance criteria:**
 
 1. A `PairingRequest` with a new `node_id` proceeds to registration.
-2. A `PairingRequest` with an already-registered `node_id` is silently discarded.
+2. A `PairingRequest` with an already-registered `node_id` and matching `node_psk` skips registration but proceeds to PEER_ACK generation.
+3. A `PairingRequest` with an already-registered `node_id` and different `node_psk` is silently discarded.
 
 ---
 

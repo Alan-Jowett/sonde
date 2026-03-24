@@ -1629,15 +1629,18 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1216  Duplicate node_id rejected
+### T-1216  Duplicate node_id handling
 
 **Validates:** GW-1216
 
 **Procedure:**
-1. Successfully pair a node with `node_id` X.
-2. Construct a new `PEER_REQUEST` with the same `node_id` X.
+1. Successfully pair a node with `node_id` X and `node_psk` P.
+2. Construct a new `PEER_REQUEST` with the same `node_id` X and matching `node_psk` P.
 3. Submit the frame.
-4. Assert: the gateway silently discards the frame (duplicate node).
+4. Assert: the gateway returns a valid `PEER_ACK(0x00)` (duplicate with matching PSK — GW-1216 AC2).
+5. Construct a new `PEER_REQUEST` with the same `node_id` X but a **different** `node_psk`.
+6. Submit the frame.
+7. Assert: the gateway silently discards the frame (different PSK — GW-1216 AC3).
 
 ---
 

@@ -472,8 +472,7 @@ impl Gateway {
             nonce: decoded.header.nonce, // echo nonce
         };
 
-        let frame =
-            encode_frame(&ack_header, &ack_cbor_buf, &node_psk, &self.crypto_hmac).ok()?;
+        let frame = encode_frame(&ack_header, &ack_cbor_buf, &node_psk, &self.crypto_hmac).ok()?;
 
         // GW-1300 AC2: log PEER_ACK sent.
         info!(node_id = %record.node_id, "PEER_ACK sent");

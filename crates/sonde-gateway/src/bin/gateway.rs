@@ -547,7 +547,10 @@ async fn run_gateway(
         }
 
         // Transport disconnected — retry after backoff (GW-1103, GW-1301).
-        info!(backoff_s = backoff.as_secs(), "modem disconnected — reconnecting");
+        info!(
+            backoff_s = backoff.as_secs(),
+            "modem disconnected — reconnecting"
+        );
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);
     } // end of reconnect loop

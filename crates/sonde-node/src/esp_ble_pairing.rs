@@ -119,6 +119,18 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         if let Ok(mut h) = handle_connect.lock() {
             *h = Some(desc.conn_handle());
         }
+
+        // Proactively initiate LESC pairing from the server side so that
+        // clients that don't trigger pairing on their own (e.g. btleplug
+        // on WinRT) still go through LESC Just Works (ND-0904 criterion 3).
+        let conn_handle = desc.conn_handle();
+        unsafe {
+            esp_idf_sys::ble_gap_security_initiate(conn_handle);
+        }
+        info!(
+            "BLE: server-initiated security for conn_handle={}",
+            conn_handle
+        );
     });
 
     // --- Disconnect event ---
@@ -172,8 +184,9 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
             NimbleProperties::WRITE | NimbleProperties::INDICATE,
         );
 
-    // GATT write handler: only accept writes after LESC pairing + MTU
-    // exchange completes (ble-pairing-protocol.md section 8.2 step 3).
+    // GATT write handler: buffer writes that arrive before LESC pairing
+    // completes (ND-0904 criterion 4). Once authenticated, writes go
+    // directly to pending_write for the main loop to process.
     let write_pending = Arc::clone(&pending_write);
     let write_auth = Arc::clone(&authenticated);
     node_cmd_char.lock().on_write(move |args| {
@@ -183,8 +196,12 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         }
         let is_auth = write_auth.lock().map(|a| *a).unwrap_or(false);
         if !is_auth {
-            warn!("BLE: GATT write rejected -- not yet authenticated");
-            return;
+            info!(
+                "BLE: GATT write {} bytes buffered (awaiting authentication)",
+                value.len()
+            );
+        } else {
+            info!("BLE: GATT write {} bytes", value.len());
         }
         if let Ok(mut p) = write_pending.lock() {
             *p = Some(value.to_vec());
@@ -231,13 +248,16 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
             }
         }
 
-        // Check for a pending GATT write.
-        let write_data = {
+        // Check for a pending GATT write (only process after auth).
+        let is_auth = authenticated.lock().map(|a| *a).unwrap_or(false);
+        let write_data = if is_auth {
             if let Ok(mut p) = pending_write.lock() {
                 p.take()
             } else {
                 None
             }
+        } else {
+            None
         };
 
         if let Some(data) = write_data {

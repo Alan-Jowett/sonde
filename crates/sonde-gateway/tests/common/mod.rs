@@ -88,6 +88,7 @@ pub async fn create_transport_and_server(channel: u8) -> (UsbEspNowTransport, Du
 }
 
 /// Build an `AdminService` wired to a mock modem transport.
+#[allow(dead_code)]
 pub async fn build_admin_with_modem(
     channel: u8,
 ) -> (

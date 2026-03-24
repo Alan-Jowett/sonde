@@ -5,13 +5,13 @@ use std::fmt;
 use std::io::Write;
 
 use crate::crypto::RustCryptoSha256;
+use crate::sonde_platform::SondePlatform;
 use prevail::crab::ebpf_domain::DomainContext;
 use prevail::crab::var_registry::VariableRegistry;
 use prevail::elf_loader::ElfObject;
 use prevail::fwd_analyzer;
 use prevail::ir::program::Program as PrevailProgram;
 use prevail::ir::unmarshal;
-use prevail::linux::linux_platform::LinuxPlatform;
 use prevail::spec::config::EbpfVerifierOptions;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
@@ -168,8 +168,8 @@ impl ProgramLibrary {
         let mut elf = ElfObject::new(tmp_path, opts)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
 
-        // Extract programs using the Linux platform.
-        let mut platform = LinuxPlatform::new();
+        // Extract programs using the sonde-specific verifier platform (GW-0404).
+        let mut platform = SondePlatform::new();
         let raw_programs = elf
             .get_programs("", "", &mut platform)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;

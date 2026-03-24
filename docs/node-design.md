@@ -547,7 +547,7 @@ The Node Provisioning Service exposes a single characteristic:
 | `0xFE50` (service) | — | Node Provisioning Service |
 | `0xFE51` (characteristic) | Write + Indicate | NODE_PROVISION (write) / NODE_ACK (indicate) |
 
-GATT writes are rejected until LESC pairing completes and the negotiated ATT MTU is ≥ 247 bytes (ND-0904). On authentication failure or insufficient MTU the connection is dropped.
+GATT writes are rejected until LESC pairing completes and the negotiated ATT MTU is ≥ 247 bytes (ND-0904). If a GATT write arrives before pairing completes (e.g. the client writes immediately after connecting), it is buffered in `pending_write` and processed once authentication succeeds (ND-0904 criterion 4). On authentication failure or insufficient MTU the connection is dropped.
 
 ### 15.3  Security model
 
@@ -555,6 +555,7 @@ Security is configured as LESC Just Works:
 
 - `AuthReq::all()` — requests SC (Secure Connections) + Bond + MITM.
 - `SecurityIOCap::NoInputNoOutput` — downgrades MITM to Just Works while keeping LESC. The effective pairing mode is LESC Just Works (ND-0904); `AuthReq::all()` requests the maximum security level, which is then constrained by the `NoInputNoOutput` I/O capability per BT Core Spec Vol 3 Part H §2.3.5.1.
+- The node proactively initiates LESC pairing by calling `ble_gap_security_initiate(conn_handle)` in the `on_connect` callback (ND-0904 criterion 3). This sends an SMP Security Request to the client, ensuring pairing is triggered regardless of client behavior.
 
 This matches the modem's BLE configuration so that the same phone app can pair with both gateway and node endpoints.
 
@@ -567,9 +568,9 @@ The node advertises as `sonde-XXXX` where `XXXX` is the last two bytes of the BL
 ```
 boot → NimBLE init → GATT service register → start advertising
     ↓
-phone connects → LESC pairing → MTU exchange → auth complete
+phone connects → server calls ble_gap_security_initiate() → LESC pairing → MTU exchange → auth complete
     ↓
-GATT write (NODE_PROVISION) → handle_node_provision() → NODE_ACK indicate
+buffered GATT write flushed (if any) → handle_node_provision() → NODE_ACK indicate
     ↓
 phone disconnects → return → reboot (ND-0907)
 ```

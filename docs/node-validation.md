@@ -841,6 +841,27 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 4. Initiate LESC Just Works pairing.
 5. Assert: pairing completes successfully.
 
+### T-N903a  Server-initiated LESC pairing — passive client
+
+**Validates:** ND-0904 (criterion 3)
+
+**Procedure:**
+1. Connect a BLE client to the node that does **not** initiate pairing on its own (plain GATT connect, no `createBond`).
+2. Assert: the node initiates LESC pairing from the server side (the client receives an SMP Security Request).
+3. Assert: LESC Just Works pairing completes successfully.
+
+### T-N903b  Pre-auth GATT write buffered until authentication completes
+
+**Validates:** ND-0904 (criterion 4)
+
+**Procedure:**
+1. Connect a BLE client to the node (plain GATT connect, no client-initiated pairing).
+2. Immediately send a GATT write to the Node Command characteristic **before** LESC pairing completes.
+3. Assert: the write is buffered, not discarded.
+4. Allow server-initiated LESC pairing to complete.
+5. Assert: the buffered write is processed after `authenticated` becomes true.
+6. Assert: a `NODE_ACK` indication is sent in response.
+
 ---
 
 ### T-N904  NODE_PROVISION happy path

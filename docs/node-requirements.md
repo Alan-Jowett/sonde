@@ -746,12 +746,14 @@ The node MUST advertise with the Node Provisioning Service UUID. The advertising
 **Source:** ble-pairing-protocol.md §3.4, §8.2
 
 **Description:**  
-The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LESC Just Works pairing.
+The node MUST negotiate an ATT MTU of at least 247 bytes and MUST accept BLE LESC Just Works pairing. The node MUST proactively initiate LESC pairing from the server side immediately after a BLE client connects, ensuring pairing is triggered regardless of whether the client initiates it.
 
 **Acceptance criteria:**
 
 1. The negotiated ATT MTU is ≥ 247.
 2. LESC Just Works pairing completes successfully.
+3. The node MUST initiate LESC pairing from the server side (via `ble_gap_security_initiate`) in the `on_connect` callback, ensuring pairing is triggered even when the client does not initiate it.
+4. If a GATT write arrives before LESC pairing completes, the node MUST buffer the write and process it once authentication succeeds, rather than discarding it.
 
 ---
 

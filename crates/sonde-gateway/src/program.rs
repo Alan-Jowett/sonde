@@ -5,13 +5,13 @@ use std::fmt;
 use std::io::Write;
 
 use crate::crypto::RustCryptoSha256;
+use crate::sonde_platform::SondePlatform;
 use prevail::crab::ebpf_domain::DomainContext;
 use prevail::crab::var_registry::VariableRegistry;
 use prevail::elf_loader::ElfObject;
 use prevail::fwd_analyzer;
 use prevail::ir::program::Program as PrevailProgram;
 use prevail::ir::unmarshal;
-use prevail::linux::linux_platform::LinuxPlatform;
 use prevail::spec::config::EbpfVerifierOptions;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
@@ -168,8 +168,8 @@ impl ProgramLibrary {
         let mut elf = ElfObject::new(tmp_path, opts)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
 
-        // Extract programs using the Linux platform.
-        let mut platform = LinuxPlatform::new();
+        // Extract programs using the sonde-specific verifier platform (GW-0404).
+        let mut platform = SondePlatform::new();
         let raw_programs = elf
             .get_programs("", "", &mut platform)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
@@ -317,17 +317,13 @@ mod tests {
         assert!(matches!(err, ProgramError::ElfParseError(_)));
     }
 
-    /// Build a minimal valid BPF ELF containing a single `.text` section
-    /// with `mov r0, 0; exit` — the simplest passing eBPF program.
-    fn make_minimal_bpf_elf() -> Vec<u8> {
-        // Construct a minimal 64-bit little-endian ELF relocatable object
-        // with a single .text section containing two BPF instructions.
-        //
-        // Layout: ELF header (64B) | .text (16B) | .shstrtab (17B) | section headers (3*64B)
-        let bpf_code: [u8; 16] = [
-            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
-            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
-        ];
+    /// Build a BPF ELF relocatable object with the given bytecode in a `.text`
+    /// section. The bytecode length must be a multiple of 8 (one BPF instruction).
+    fn make_bpf_elf(bpf_code: &[u8]) -> Vec<u8> {
+        assert!(
+            bpf_code.len().is_multiple_of(8),
+            "BPF bytecode length must be a multiple of 8"
+        );
         let shstrtab: &[u8] = b"\0.text\0.shstrtab\0"; // 17 bytes
 
         let text_offset: u64 = 64; // right after ELF header
@@ -358,7 +354,7 @@ mod tests {
         assert_eq!(elf.len(), 64);
 
         // ── .text section data ──
-        elf.extend_from_slice(&bpf_code);
+        elf.extend_from_slice(bpf_code);
 
         // ── .shstrtab section data ──
         elf.extend_from_slice(shstrtab);
@@ -391,6 +387,15 @@ mod tests {
         elf
     }
 
+    /// Build a minimal valid BPF ELF containing a single `.text` section
+    /// with `mov r0, 0; exit` — the simplest passing eBPF program.
+    fn make_minimal_bpf_elf() -> Vec<u8> {
+        make_bpf_elf(&[
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ])
+    }
+
     #[test]
     fn ingest_elf_valid_minimal_program() {
         let elf = make_minimal_bpf_elf();
@@ -413,5 +418,168 @@ mod tests {
         let r1 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
         let r2 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
         assert_eq!(r1.hash, r2.hash);
+    }
+
+    /// Build a minimal BPF ELF with arbitrary bytecode in a `sonde` section.
+    fn make_sonde_elf(bpf_code: &[u8]) -> Vec<u8> {
+        let shstrtab: &[u8] = b"\0sonde\0.shstrtab\0"; // 17 bytes
+
+        let text_offset: u64 = 64;
+        let shstrtab_offset: u64 = text_offset + bpf_code.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ── ELF header (64 bytes) ──
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2); // EI_CLASS = ELFCLASS64
+        elf.push(1); // EI_DATA = ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]); // padding
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
+        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&3u16.to_le_bytes()); // e_shnum
+        elf.extend_from_slice(&2u16.to_le_bytes()); // e_shstrndx = 2
+        assert_eq!(elf.len(), 64);
+
+        // ── sonde section data ──
+        elf.extend_from_slice(bpf_code);
+
+        // ── .shstrtab section data ──
+        elf.extend_from_slice(shstrtab);
+
+        // ── Section headers (3 entries × 64 bytes each) ──
+
+        // [0] Null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] sonde section header
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name = offset of "sonde"
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        let flags: u64 = 0x6; // SHF_ALLOC | SHF_EXECINSTR
+        sh[8..16].copy_from_slice(&flags.to_le_bytes());
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [2] .shstrtab section header
+        let mut sh2 = [0u8; 64];
+        sh2[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name = offset of ".shstrtab"
+        sh2[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh2[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh2[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh2[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh2);
+
+        elf
+    }
+
+    /// Proves `SondePlatform` recognises helper 3 (`i2c_write_read`), which
+    /// has no Linux equivalent and would fail without the custom platform.
+    #[test]
+    fn ingest_elf_with_sonde_helper_succeeds() {
+        // i2c_write_read(handle, *write_ptr, write_len, *read_ptr, read_len) → i32
+        #[rustfmt::skip]
+        let bpf_code: [u8; 88] = [
+            0x62, 0x0a, 0xf8, 0xff, 0x00, 0x00, 0x00, 0x00, // *(u32*)(r10 - 8) = 0  (init write buf)
+            0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r1 = 0                 (handle)
+            0xbf, 0xa2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = r10
+            0x07, 0x02, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, // r2 += -8               (write_ptr)
+            0xb7, 0x03, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // r3 = 4                 (write_len)
+            0xbf, 0xa4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r4 = r10
+            0x07, 0x04, 0x00, 0x00, 0xf0, 0xff, 0xff, 0xff, // r4 += -16              (read_ptr)
+            0xb7, 0x05, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // r5 = 4                 (read_len)
+            0x85, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, // call 3                 (i2c_write_read)
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        let elf = make_sonde_elf(&bpf_code);
+        let lib = ProgramLibrary::new();
+        let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+
+        assert!(!record.hash.is_empty());
+        assert!(record.size > 0);
+
+        let image = ProgramImage::decode(&record.image).unwrap();
+        assert_eq!(image.bytecode.len(), bpf_code.len());
+    }
+
+    /// Proves `SondePlatform` recognises helper 8 (`send`), the primary
+    /// transmission helper already tested on hardware.
+    #[test]
+    fn ingest_elf_with_sonde_helper_8_succeeds() {
+        // send(*ptr, len) → i32
+        // Initialize stack memory so the readable-pointer arg passes verification.
+        #[rustfmt::skip]
+        let bpf_code: [u8; 56] = [
+            0x62, 0x0a, 0xf8, 0xff, 0x00, 0x00, 0x00, 0x00, // *(u32*)(r10 - 8) = 0
+            0xbf, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r1 = r10
+            0x07, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, // r1 += -8  (blob_ptr)
+            0xb7, 0x02, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // r2 = 4   (blob_len)
+            0x85, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // call 8   (send)
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        let elf = make_sonde_elf(&bpf_code);
+        let lib = ProgramLibrary::new();
+        let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+
+        assert!(!record.hash.is_empty());
+        assert!(record.size > 0);
+
+        let image = ProgramImage::decode(&record.image).unwrap();
+        assert_eq!(image.bytecode.len(), bpf_code.len());
+    }
+
+    /// E2E verification: a BPF program calling sonde helper `gpio_read` (ID 5)
+    /// must pass verification when using `SondePlatform` (T-0408, GW-0404).
+    #[test]
+    fn ingest_elf_sonde_helper_call_verified() {
+        // BPF: mov r1, 0; call 5 (gpio_read); exit
+        let elf = make_bpf_elf(&[
+            0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r1, 0
+            0x85, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, // call 5 (gpio_read)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ]);
+        let lib = ProgramLibrary::new();
+        let record = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .expect("ELF calling sonde helper gpio_read should pass verification");
+        assert!(!record.hash.is_empty());
+        let image = ProgramImage::decode(&record.image).unwrap();
+        // 3 instructions × 8 bytes = 24 bytes of bytecode
+        assert_eq!(image.bytecode.len(), 24);
+    }
+
+    /// Negative case: a BPF program calling an unsupported helper (ID 0)
+    /// must be rejected by verification (GW-0404).
+    #[test]
+    fn ingest_elf_unsupported_helper_rejected() {
+        // BPF: call 0 (unsupported); exit
+        let elf = make_bpf_elf(&[
+            0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // call 0 (unsupported)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ]);
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .unwrap_err();
+        assert!(
+            matches!(err, ProgramError::VerificationFailed(_)),
+            "unsupported helper call should fail verification, got: {err}"
+        );
     }
 }

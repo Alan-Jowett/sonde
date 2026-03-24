@@ -326,6 +326,23 @@ The gateway SHOULD enforce maximum program sizes: 4 KB for resident programs and
 
 ---
 
+### GW-0404  Sonde-specific verifier platform
+
+**Priority:** Must  
+**Source:** Design decision — #474
+
+**Description:**  
+The gateway MUST use a custom Prevail verifier platform (`SondePlatform`) that defines helper prototypes for all sonde BPF helpers (IDs 1–16 as defined in `test-programs/include/sonde_helpers.h`). The platform MUST NOT use the default Linux BPF helper semantics, as sonde assigns different meanings to helper IDs 1–16 than Linux does (e.g., Linux helper 1 = `map_lookup_elem`; sonde helper 1 = `i2c_read`). Using `LinuxPlatform` causes programs that call sonde-specific helpers to fail verification or be verified under incorrect semantics.
+
+**Acceptance criteria:**
+
+1. The verifier platform defines prototypes for helpers 1–16 matching the signatures in `sonde_helpers.h`.
+2. Each prototype specifies the correct return type, argument count, and argument types (including whether arguments are pointers to readable or writable memory).
+3. Programs using sonde-specific helpers (`i2c_read`, `gpio_write`, `send`, etc.) pass verification when the call signatures match the defined prototypes.
+4. The gateway does not pass `LinuxPlatform` directly as the verifier platform and does not use Linux BPF helper semantics; it uses `SondePlatform` with sonde helper prototypes for program verification (it may still reuse `LinuxPlatform` components for ELF/map parsing).
+
+---
+
 ## 7  Application data
 
 ### GW-0500  APP_DATA reception
@@ -1453,6 +1470,7 @@ The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pa
 | GW-0401 | Program verification (Prevail) | Must |
 | GW-0402 | Program identity by content hash | Must |
 | GW-0403 | Program size enforcement | Should |
+| GW-0404 | Sonde-specific verifier platform | Must |
 | GW-0500 | APP_DATA reception | Must |
 | GW-0501 | APP_DATA_REPLY response | Must |
 | GW-0502 | Handler transport (stdin/stdout, length-prefixed CBOR) | Must |

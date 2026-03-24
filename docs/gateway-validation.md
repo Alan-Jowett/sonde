@@ -1661,6 +1661,27 @@ A configurable stub handler process (or in-process mock) that:
 2. Query the node registry for the new node.
 3. Assert: the record contains `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` set to the phone's stable identifier (not `phone_key_hint`).
 
+### T-1218a  Duplicate PEER_REQUEST with matching PSK sends PEER_ACK
+
+**Validates:** GW-1218 (criterion 4)
+
+**Procedure:**
+1. Successfully process a `PEER_REQUEST` — node is registered, PEER_ACK sent.
+2. Submit a second `PEER_REQUEST` with the same `node_id` and `node_psk` but a different nonce.
+3. Assert: a `PEER_ACK(0x00)` is returned with valid `registration_proof`.
+4. Assert: the `nonce` in the PEER_ACK header matches the second request's nonce.
+5. Assert: the node registry still contains exactly one record for the node (no duplicate).
+
+### T-1218b  Duplicate PEER_REQUEST with different PSK is discarded
+
+**Validates:** GW-1218 (criterion 5)
+
+**Procedure:**
+1. Successfully process a `PEER_REQUEST` — node is registered.
+2. Submit a second `PEER_REQUEST` with the same `node_id` but a **different** `node_psk`.
+3. Assert: no `PEER_ACK` is sent (silent discard).
+4. Assert: the existing node record is unchanged.
+
 ---
 
 ### T-1219  PEER_ACK happy path

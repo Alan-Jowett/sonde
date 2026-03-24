@@ -427,23 +427,35 @@ impl Gateway {
         record.sensors = sensors;
         record.registered_by_phone_id = Some(phone_id);
         if !self.storage.insert_node_if_not_exists(&record).await.ok()? {
-            // GW-1300 AC1: log duplicate PEER_REQUEST.
+            // Duplicate node_id. Check if PSK matches the existing record
+            // (GW-1218 AC4). If so, still send PEER_ACK so the node can
+            // complete enrollment after a lost ACK. If PSK differs, discard
+            // silently (GW-1218 AC5).
+            let existing = self.storage.get_node(&record.node_id).await.ok()??;
+            if existing.psk != record.psk {
+                info!(
+                    node_id = %record.node_id,
+                    key_hint = record.key_hint,
+                    result = "duplicate_psk_mismatch",
+                    "PEER_REQUEST processed"
+                );
+                return None;
+            }
             info!(
                 node_id = %record.node_id,
                 key_hint = record.key_hint,
-                result = "duplicate",
+                result = "duplicate_ack_resent",
                 "PEER_REQUEST processed"
             );
-            return None; // node_id already registered
+        } else {
+            // GW-1300 AC1: log successful PEER_REQUEST registration.
+            info!(
+                node_id = %record.node_id,
+                key_hint = record.key_hint,
+                result = "registered",
+                "PEER_REQUEST processed"
+            );
         }
-
-        // GW-1300 AC1: log successful PEER_REQUEST registration.
-        info!(
-            node_id = %record.node_id,
-            key_hint = record.key_hint,
-            result = "registered",
-            "PEER_REQUEST processed"
-        );
 
         // Step 13: Send PEER_ACK (GW-1219).
         // registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" || encrypted_payload)

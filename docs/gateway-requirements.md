@@ -1305,13 +1305,15 @@ The gateway MUST verify that the frame header `key_hint` matches the `node_key_h
 **Source:** ble-pairing-protocol.md §7.3, step 12
 
 **Description:**  
-The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (a stable phone identifier, not `phone_key_hint`).
+The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (a stable phone identifier, not `phone_key_hint`). If a `PEER_REQUEST` arrives for a `node_id` that is already registered with a matching `node_psk`, the gateway MUST still send a `PEER_ACK(0x00)` with valid `registration_proof` so the node can complete enrollment. This ensures enrollment completes even if a prior `PEER_ACK` was lost due to a transient radio failure.
 
 **Acceptance criteria:**
 
 1. After successful PEER_REQUEST processing, the node appears in the registry.
 2. The registration record contains all specified fields.
 3. `registered_by` is the phone's stable identifier, not `phone_key_hint`.
+4. A duplicate `PEER_REQUEST` for an already-registered node with matching PSK receives a `PEER_ACK(0x00)` with valid `registration_proof`.
+5. A duplicate `PEER_REQUEST` with a **different** PSK is silently discarded (potential replay or conflict).
 
 ---
 

@@ -263,18 +263,17 @@ async fn t1300_wake_lifecycle_logging() {
 // ── T-1301  Session expiry logging ─────────────────────────────────────
 
 /// T-1301: Validates GW-1300 AC6 (session expired).
-#[tokio::test]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[traced_test]
 async fn t1301_session_expiry_logging() {
     let session_manager = Arc::new(SessionManager::new(Duration::from_millis(1)));
 
-    // Create a session.
+    // Create a session (clock is already paused via start_paused = true).
     session_manager
         .create_session("node-log-1301".to_string(), b"peer".to_vec(), 1, 100)
         .await;
 
-    // Wait for the session to expire using paused Tokio time.
-    tokio::time::pause();
+    // Advance past the session timeout so it expires deterministically.
     tokio::time::advance(Duration::from_millis(10)).await;
 
     let expired = session_manager.reap_expired().await;

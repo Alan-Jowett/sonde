@@ -146,12 +146,23 @@ jobs:
             --plugin_path "$CARGO_LLVM_COV_TARGET_DIR/debug/sonde_bpf_plugin" \
             --exclude_regex "${{ env.KNOWN_FAILURES }}"
           cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --json --output-path coverage-summary.json
 
       - name: Upload to Coveralls
         uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           file: lcov.info
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coverage-reports
+          path: |
+            lcov.info
+            coverage-summary.json
+          retention-days: 30
+          if-no-files-found: error
 
   bpf-conformance:
     name: BPF conformance (RFC 9669)

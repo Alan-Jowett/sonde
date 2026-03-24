@@ -408,7 +408,7 @@ struct ChannelRadio {
 }
 
 impl Radio for ChannelRadio {
-    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) -> bool {
         assert_eq!(
             peer_mac, &self.node_mac,
             "ChannelRadio: send to unexpected peer MAC {:02x?}, expected {:02x?}",
@@ -416,9 +416,10 @@ impl Radio for ChannelRadio {
         );
         use std::sync::mpsc::TrySendError;
         match self.to_node.try_send(data.to_vec()) {
-            Ok(()) => {}
-            // Node receiver dropped during teardown — harmless.
-            Err(TrySendError::Disconnected(_)) => {}
+            Ok(()) => true,
+            // Node receiver dropped during teardown — return true to
+            // avoid spurious WARN logs from the bridge.
+            Err(TrySendError::Disconnected(_)) => true,
             // Channel full — fail fast rather than deadlocking the bridge thread.
             Err(TrySendError::Full(_)) => {
                 panic!("ChannelRadio: bridge→node channel full (cap 64); node is not draining")

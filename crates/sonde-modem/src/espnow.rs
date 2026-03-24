@@ -314,10 +314,7 @@ impl Radio for EspNowDriver {
         self.counters.inc_tx();
         match self.espnow.send(*peer_mac, data) {
             Ok(()) => true,
-            Err(e) => {
-                warn!("esp_now_send failed: {:?}", e);
-                false
-            }
+            Err(_) => false,
         }
     }
 

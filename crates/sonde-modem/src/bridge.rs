@@ -55,7 +55,6 @@ fn msg_type_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::BleConnected(_) => "BLE_CONNECTED",
         ModemMessage::BleDisconnected(_) => "BLE_DISCONNECTED",
         ModemMessage::BlePairingConfirm(_) => "BLE_PAIRING_CONFIRM",
-        ModemMessage::Unknown { .. } => "UNKNOWN",
         _ => "UNKNOWN",
     }
 }
@@ -208,7 +207,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
                 if ok {
                     debug!("USB-CDC TX: {} len={}", msg_type_label(msg), frame.len());
                 } else {
-                    warn!(
+                    debug!(
                         "USB-CDC TX failed: {} len={}",
                         msg_type_label(msg),
                         frame.len()
@@ -295,20 +294,23 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         for _ in 0..MAX_RX_FRAMES_PER_POLL {
             match self.radio.drain_one() {
                 Some(rf) => {
-                    info!(
-                        "ESP-NOW RX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} rssi={}",
-                        rf.peer_mac[0],
-                        rf.peer_mac[1],
-                        rf.peer_mac[2],
-                        rf.peer_mac[3],
-                        rf.peer_mac[4],
-                        rf.peer_mac[5],
-                        rf.frame_data.len(),
-                        rf.rssi
-                    );
+                    let peer_mac = rf.peer_mac;
+                    let len = rf.frame_data.len();
+                    let rssi = rf.rssi;
                     let msg = ModemMessage::RecvFrame(rf);
                     if self.send_msg(&msg) {
                         self.counters.inc_rx();
+                        info!(
+                            "ESP-NOW RX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} rssi={}",
+                            peer_mac[0],
+                            peer_mac[1],
+                            peer_mac[2],
+                            peer_mac[3],
+                            peer_mac[4],
+                            peer_mac[5],
+                            len,
+                            rssi
+                        );
                     }
                 }
                 None => break,
@@ -404,8 +406,18 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
                 sf.frame_data.len()
             );
         } else {
+            info!(
+                "ESP-NOW TX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} result=fail",
+                sf.peer_mac[0],
+                sf.peer_mac[1],
+                sf.peer_mac[2],
+                sf.peer_mac[3],
+                sf.peer_mac[4],
+                sf.peer_mac[5],
+                sf.frame_data.len()
+            );
             warn!(
-                "ESP-NOW TX failed: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={}",
+                "ESP-NOW TX failed: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} result=fail",
                 sf.peer_mac[0],
                 sf.peer_mac[1],
                 sf.peer_mac[2],

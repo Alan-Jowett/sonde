@@ -417,8 +417,9 @@ impl Radio for ChannelRadio {
         use std::sync::mpsc::TrySendError;
         match self.to_node.try_send(data.to_vec()) {
             Ok(()) => true,
-            // Node receiver dropped during teardown — harmless.
-            Err(TrySendError::Disconnected(_)) => false,
+            // Node receiver dropped during teardown — return true to
+            // avoid spurious WARN logs from the bridge.
+            Err(TrySendError::Disconnected(_)) => true,
             // Channel full — fail fast rather than deadlocking the bridge thread.
             Err(TrySendError::Full(_)) => {
                 panic!("ChannelRadio: bridge→node channel full (cap 64); node is not draining")

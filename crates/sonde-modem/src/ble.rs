@@ -227,7 +227,10 @@ impl EspBleDriver {
             unsafe {
                 esp_idf_sys::ble_gap_security_initiate(conn_handle);
             }
-            info!("BLE: server-initiated security for conn_handle={}", conn_handle);
+            info!(
+                "BLE: server-initiated security for conn_handle={}",
+                conn_handle
+            );
         });
 
         // --- Disconnect event handler ---

@@ -202,7 +202,10 @@ impl BleTransport for BtleplugTransport {
             })?;
 
             let mut devices = Vec::new();
-            debug!("enumerating {} peripherals from btleplug", peripherals.len());
+            debug!(
+                "enumerating {} peripherals from btleplug",
+                peripherals.len()
+            );
             for p in &peripherals {
                 let props = match p.properties().await {
                     Ok(Some(props)) => props,

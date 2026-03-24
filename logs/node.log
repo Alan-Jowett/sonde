@@ -1,0 +1,7 @@
+[2026-03-23T22:47:25Z INFO ] Serial port: 'COM6'
+[2026-03-23T22:47:25Z INFO ] Connecting...
+[2026-03-23T22:47:26Z INFO ] Using flash stub
+Commands:
+    CTRL+R    Reset chip
+    CTRL+C    Exit
+

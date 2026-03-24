@@ -136,13 +136,15 @@ async fn do_pair_with_gateway(
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &request)
         .await?;
 
-    // Step 4: Read indication (timeout 5s) — enters Authenticating sub-phase
+    // Step 4: Read indication — enters Authenticating sub-phase.
+    // The timeout must be long enough to cover the operator passkey
+    // confirmation window (up to 30 s) plus gateway processing time.
     if let Some(cb) = progress {
         cb.on_phase("Authenticating");
     }
-    trace!("waiting for GW_INFO_RESPONSE indication (5 s timeout)");
+    trace!("waiting for GW_INFO_RESPONSE indication (45 s timeout)");
     let response = transport
-        .read_indication(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, 5000)
+        .read_indication(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, 45_000)
         .await?;
     let (msg_type, payload) = parse_envelope(&response)?;
     trace!(

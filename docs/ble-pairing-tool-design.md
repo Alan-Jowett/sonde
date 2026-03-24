@@ -691,8 +691,10 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 ### 9.1  Windows (WinRT Bluetooth stack)
 
 - **BLE library:** `btleplug` uses the WinRT Bluetooth API via `windows` crate bindings.
+- **Scan filter:** WinRT's `BluetoothLEAdvertisementWatcher` does not reliably match 16-bit BLE service UUIDs passed as expanded 128-bit UUIDs in the `ScanFilter`.  The `BtleplugTransport` scans with an empty filter and relies on the `DeviceScanner` application layer for UUID-based filtering.
 - **MTU negotiation:** WinRT handles ATT MTU exchange during connection.  The negotiated MTU is available via `BluetoothLEDevice.MaxPduSize`.  Note that WinRT may negotiate a lower MTU than requested; the protocol layer handles the < 247 rejection.
-- **Numeric Comparison:** The WinRT pairing ceremony handles the Numeric Comparison passkey display.  The `btleplug` integration receives pairing events and can surface the 6-digit passkey to the UI.  A Just Works fallback for gateway connections MUST be treated as a connection failure (PT-0300).
+- **Numeric Comparison:** The modem initiates LESC pairing server-side via `ble_gap_security_initiate` (MD-0404 criterion 5).  WinRT responds to the SMP Security Request by presenting the OS pairing dialog.  `btleplug` does not expose the negotiated pairing method to user-space, so `BtleplugTransport::pairing_method()` returns `None` to indicate OS-enforced security (PT-0904).  A Just Works fallback for gateway connections MUST be treated as a connection failure (PT-0300).
+- **Pre-connect scan:** When `pair_gateway` creates a fresh `BtleplugTransport`, the adapter has no cached peripherals.  The `connect()` method runs a short 3-second scan if the target is not found in the cache.
 - **Storage:** `%APPDATA%\sonde\pairing.json` with restricted file permissions (ACL: user-only read/write).
 - **Known issues:** Some Windows BLE drivers have limited Write Long support.  The transport should fall back to standard writes if the payload fits within (MTU − 3) bytes and only use Write Long for larger messages.
 

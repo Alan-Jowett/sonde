@@ -233,7 +233,7 @@ TestNode {
 1. Connect the pairing tool to a modem (or test peripheral) configured for LESC with `DisplayYesNo` I/O capability.
 2. Initiate Phase 1 gateway pairing from the pairing tool UI.
 3. Observe the platform pairing UX and/or system logs:
-   - Assert: the platform initiates LESC bonding (e.g., Android `createBond()` or equivalent).
+   - Assert: LESC pairing is established — either the platform initiates bonding (e.g., Android `createBond()`) or the modem's server-initiated SMP Security Request triggers the OS pairing dialog (e.g. WinRT, CoreBluetooth).
    - Assert: the pairing method negotiated is Numeric Comparison (a 6-digit comparison dialog is shown, not an implicit "Just Works" pairing).
 4. Accept the Numeric Comparison dialog on both sides (host and peripheral, as applicable).
 5. Assert: pairing completes successfully (bond is created at the OS level) and subsequent GATT operations from the pairing tool proceed without additional pairing prompts.
@@ -250,6 +250,28 @@ TestNode {
 2. Initiate Phase 1 gateway pairing.
 3. Assert: the connection fails with an actionable error indicating that Numeric Comparison is required.
 4. Assert at the transport mock that no PSK-bearing GATT operations occurred before the failure (for example, verify that `write_characteristic` was never called).
+
+### T-PT-109a  OS-enforced pairing (`None`) accepted by `enforce_lesc`
+
+**Validates:** PT-0904 (criterion 3)  
+**Type:** CI / mock transport test
+
+**Procedure:**
+1. Configure the mock `BleTransport` with `pairing_method()` returning `None` (simulating a desktop transport where the OS manages LESC pairing, e.g. btleplug on WinRT).
+2. Call `enforce_lesc` on the connected transport.
+3. Assert: `enforce_lesc` returns `Ok(())` — the connection is not terminated.
+4. Assert: the transport remains connected.
+
+### T-PT-109b  Unknown pairing method rejected by `enforce_lesc`
+
+**Validates:** PT-0904 (criterion 4)  
+**Type:** CI / mock transport test
+
+**Procedure:**
+1. Configure the mock `BleTransport` with `pairing_method()` returning `Some(Unknown)`.
+2. Call `enforce_lesc` on the connected transport.
+3. Assert: `enforce_lesc` returns `Err(InsecurePairingMethod)`.
+4. Assert: the transport is disconnected.
 
 ---
 
@@ -1099,6 +1121,8 @@ TestNode {
 | T-PT-107 | PT-0105 | BLE permissions on Android 6–11 (location) |
 | T-PT-108 | PT-0106, PT-0904 | LESC Numeric Comparison pairing used |
 | T-PT-109 | PT-0106, PT-0904 | Just Works fallback rejected |
+| T-PT-109a | PT-0904 | OS-enforced pairing (`None`) accepted by `enforce_lesc` |
+| T-PT-109b | PT-0904 | Unknown pairing method rejected by `enforce_lesc` |
 | T-PT-110 | PT-0700 | Minimum UI elements present |
 | T-PT-111 | PT-0701 | Phase indication updates |
 | T-PT-112 | PT-0702 | Verbose diagnostic mode |

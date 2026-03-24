@@ -232,8 +232,22 @@ impl hal::Hal for EspHal {
             let err = esp_idf_sys::i2c_master_cmd_begin(port, cmd, I2C_TIMEOUT_TICKS);
             esp_idf_sys::i2c_cmd_link_delete(cmd);
             if err != esp_idf_sys::ESP_OK as i32 {
+                log::warn!(
+                    "i2c_write_read failed: bus={} addr=0x{:02x} write_len={} read_len={} err={}",
+                    bus,
+                    addr,
+                    write_data.len(),
+                    read_buf.len(),
+                    err
+                );
                 return -1;
             }
+            log::info!(
+                "i2c_write_read ok: bus={} addr=0x{:02x} read={:02x?}",
+                bus,
+                addr,
+                &read_buf[..read_buf.len().min(8)]
+            );
             0
         }
     }

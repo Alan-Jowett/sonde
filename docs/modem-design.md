@@ -328,10 +328,25 @@ Connect both ports to the host. Use `idf.py monitor` (or any serial terminal at 
 
 | Level | Usage |
 |-------|-------|
-| `info!` | Startup, channel changes, RESET, MODEM_READY sent, ESP-NOW init |
-| `warn!` | USB write errors, ESP-NOW send failures, peer add failures, encode errors |
+| `info!` | Startup, channel changes, RESET, MODEM_READY sent, ESP-NOW init, ESP-NOW frame received/sent, BLE connect/disconnect, BLE advertising start/stop, BLE GATT writes, BLE pairing events |
+| `debug!` | USB-CDC serial messages sent/received |
+| `warn!` | USB write errors, ESP-NOW send failures, peer add failures, encode errors, BLE pairing failures |
 
 The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_INFO`). The maximum compiled-in level is DEBUG, selectable at runtime via ESP-IDF's `esp_log_level_set()`.
+
+### 14.5  Operational logging (MD-0500 – MD-0504)
+
+The modem emits structured `log` macro calls at key operational boundaries to provide runtime visibility into radio, BLE, and USB-CDC activity. All logging uses the ESP-IDF `log` crate (`log::info!`, `log::debug!`, `log::warn!`) — **not** the `tracing` crate.
+
+**ESP-NOW frames (MD-0500):** Each forwarded received frame logs peer MAC, payload length, and RSSI at INFO level. Each outgoing send logs peer MAC and payload length at INFO level (failures additionally log at WARN).
+
+**BLE lifecycle (MD-0501):** Connection, disconnection, advertising start, and advertising stop are logged at INFO level with relevant metadata (peer address, MTU, HCI reason code).
+
+**BLE GATT writes (MD-0502):** Authenticated writes, pre-auth buffered writes, and post-auth flush events are logged at INFO level with payload length and authentication state.
+
+**USB-CDC messages (MD-0503):** Sent and received serial messages are logged at DEBUG level with message type and length. This keeps the default INFO output clean while allowing detailed relay tracing when DEBUG is enabled.
+
+**BLE pairing (MD-0504):** Server-initiated LESC security, authentication success, and authentication failure are logged at INFO/WARN level as appropriate.
 
 ### 14.3  Configuration
 

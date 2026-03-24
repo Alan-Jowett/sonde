@@ -9,7 +9,7 @@ use esp_idf_svc::espnow::{EspNow, PeerInfo, SendStatus};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -294,7 +294,8 @@ impl EspNowDriver {
 impl Radio for EspNowDriver {
     /// Send an ESP-NOW frame to the specified peer MAC.
     /// Auto-registers the peer if not already in the peer table.
-    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+    /// Returns `true` on success.
+    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) -> bool {
         // Auto-register peer if needed.
         if let Some(evicted) = self.peer_table.ensure_peer(peer_mac) {
             let _ = self.espnow.del_peer(evicted);
@@ -311,8 +312,12 @@ impl Radio for EspNowDriver {
         }
 
         self.counters.inc_tx();
-        if let Err(e) = self.espnow.send(*peer_mac, data) {
-            warn!("esp_now_send failed: {:?}", e);
+        match self.espnow.send(*peer_mac, data) {
+            Ok(()) => true,
+            Err(e) => {
+                debug!("esp_now_send error: {:?}", e);
+                false
+            }
         }
     }
 

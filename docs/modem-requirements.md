@@ -602,6 +602,87 @@ The modem MUST enforce a 60-second idle timeout on BLE connections before SMP pa
 
 ---
 
+## 8  Operational logging
+
+### MD-0500  ESP-NOW frame logging
+
+**Priority:** Must
+**Source:** operational visibility (issue #459)
+
+**Description:**
+The modem MUST log ESP-NOW frame activity to the diagnostic UART so that operators can observe radio traffic without additional tooling.
+
+**Acceptance criteria:**
+
+1. When an ESP-NOW frame is received and forwarded to USB-CDC, the modem logs at INFO level: peer MAC, payload length, and RSSI.
+2. When an ESP-NOW frame is sent, the modem logs at INFO level: peer MAC, payload length, and send result (success or failure).
+
+---
+
+### MD-0501  BLE lifecycle logging
+
+**Priority:** Must
+**Source:** operational visibility (issue #459)
+
+**Description:**
+The modem MUST log BLE connection lifecycle events at INFO level to the diagnostic UART.
+
+**Acceptance criteria:**
+
+1. When a BLE client connects, the modem logs at INFO level: peer address and initial MTU.
+2. When a BLE client disconnects, the modem logs at INFO level: peer address and HCI reason code.
+3. When BLE advertising starts, the modem logs at INFO level.
+4. When BLE advertising stops, the modem logs at INFO level.
+
+---
+
+### MD-0502  BLE GATT write logging
+
+**Priority:** Must
+**Source:** operational visibility (issue #459)
+
+**Description:**
+The modem MUST log BLE GATT write events at INFO level to the diagnostic UART.
+
+**Acceptance criteria:**
+
+1. When an authenticated GATT write is received and forwarded, the modem logs at INFO level: payload length.
+2. When a GATT write is buffered (awaiting authentication), the modem logs at INFO level: payload length and authentication state.
+3. When a buffered GATT write is flushed after authentication, the modem logs at INFO level: payload length.
+
+---
+
+### MD-0503  USB-CDC message logging
+
+**Priority:** Must
+**Source:** operational visibility (issue #459)
+
+**Description:**
+The modem MUST log USB-CDC serial message relay events at DEBUG level to the diagnostic UART.
+
+**Acceptance criteria:**
+
+1. When a USB-CDC serial message is sent to the gateway, the modem logs at DEBUG level: message type and encoded frame length.
+2. When a USB-CDC serial message is received from the gateway, the modem logs at DEBUG level: message type.
+
+---
+
+### MD-0504  BLE pairing event logging
+
+**Priority:** Must
+**Source:** operational visibility (issue #459)
+
+**Description:**
+The modem MUST log BLE pairing events at INFO level to the diagnostic UART.
+
+**Acceptance criteria:**
+
+1. When server-initiated LESC pairing is triggered, the modem logs at INFO level: connection handle.
+2. When authentication completes successfully, the modem logs at INFO level.
+3. When authentication fails, the modem logs at WARN level: failure reason.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -641,3 +722,8 @@ The modem MUST enforce a 60-second idle timeout on BLE connections before SMP pa
 | MD-0413 | BLE_ENABLE / BLE_DISABLE commands | Must |
 | MD-0414 | Numeric Comparison pin relay | Must |
 | MD-0415 | BLE idle timeout | Must |
+| MD-0500 | ESP-NOW frame logging | Must |
+| MD-0501 | BLE lifecycle logging | Must |
+| MD-0502 | BLE GATT write logging | Must |
+| MD-0503 | USB-CDC message logging | Must |
+| MD-0504 | BLE pairing event logging | Must |

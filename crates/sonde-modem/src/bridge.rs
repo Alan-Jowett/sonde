@@ -33,6 +33,32 @@ const MAX_RX_FRAMES_PER_POLL: usize = 16;
 /// Prevents starvation of serial decode and radio under sustained BLE traffic.
 const MAX_BLE_EVENTS_PER_POLL: usize = 16;
 
+/// Human-readable label for a `ModemMessage` variant (used in debug logging).
+fn msg_type_label(msg: &ModemMessage) -> &'static str {
+    match msg {
+        ModemMessage::Reset => "RESET",
+        ModemMessage::SendFrame(_) => "SEND_FRAME",
+        ModemMessage::SetChannel(_) => "SET_CHANNEL",
+        ModemMessage::GetStatus => "GET_STATUS",
+        ModemMessage::ScanChannels => "SCAN_CHANNELS",
+        ModemMessage::ModemReady(_) => "MODEM_READY",
+        ModemMessage::RecvFrame(_) => "RECV_FRAME",
+        ModemMessage::SetChannelAck(_) => "SET_CHANNEL_ACK",
+        ModemMessage::Status(_) => "STATUS",
+        ModemMessage::ScanResult(_) => "SCAN_RESULT",
+        ModemMessage::Error(_) => "ERROR",
+        ModemMessage::BleIndicate(_) => "BLE_INDICATE",
+        ModemMessage::BleEnable => "BLE_ENABLE",
+        ModemMessage::BleDisable => "BLE_DISABLE",
+        ModemMessage::BlePairingConfirmReply(_) => "BLE_PAIRING_CONFIRM_REPLY",
+        ModemMessage::BleRecv(_) => "BLE_RECV",
+        ModemMessage::BleConnected(_) => "BLE_CONNECTED",
+        ModemMessage::BleDisconnected(_) => "BLE_DISCONNECTED",
+        ModemMessage::BlePairingConfirm(_) => "BLE_PAIRING_CONFIRM",
+        _ => "UNKNOWN",
+    }
+}
+
 /// Abstraction over a serial byte stream (USB-CDC on device, PTY in tests).
 pub trait SerialPort {
     /// Read available bytes. Returns `(bytes_read, reconnected)` where
@@ -48,8 +74,8 @@ pub trait SerialPort {
 
 /// Abstraction over the radio layer (ESP-NOW on device, mock in tests).
 pub trait Radio {
-    /// Send a frame to the given peer MAC.
-    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]);
+    /// Send a frame to the given peer MAC. Returns `true` on success.
+    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) -> bool;
     /// Drain one received frame from the queue, or `None` if empty.
     fn drain_one(&self) -> Option<RecvFrame>;
     /// Set the radio channel. Returns a descriptive error on failure.
@@ -176,7 +202,19 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     /// if the write succeeded.
     fn send_msg(&mut self, msg: &ModemMessage) -> bool {
         match encode_modem_frame(msg) {
-            Ok(frame) => self.usb.write(&frame),
+            Ok(frame) => {
+                let ok = self.usb.write(&frame);
+                if ok {
+                    debug!("USB-CDC TX: {} len={}", msg_type_label(msg), frame.len());
+                } else {
+                    debug!(
+                        "USB-CDC TX failed: {} len={}",
+                        msg_type_label(msg),
+                        frame.len()
+                    );
+                }
+                ok
+            }
             Err(e) => {
                 warn!("encode error: {}", e);
                 false
@@ -256,9 +294,23 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
         for _ in 0..MAX_RX_FRAMES_PER_POLL {
             match self.radio.drain_one() {
                 Some(rf) => {
+                    let peer_mac = rf.peer_mac;
+                    let len = rf.frame_data.len();
+                    let rssi = rf.rssi;
                     let msg = ModemMessage::RecvFrame(rf);
                     if self.send_msg(&msg) {
                         self.counters.inc_rx();
+                        info!(
+                            "ESP-NOW RX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} rssi={}",
+                            peer_mac[0],
+                            peer_mac[1],
+                            peer_mac[2],
+                            peer_mac[3],
+                            peer_mac[4],
+                            peer_mac[5],
+                            len,
+                            rssi
+                        );
                     }
                 }
                 None => break,
@@ -298,6 +350,7 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn dispatch(&mut self, msg: ModemMessage) {
+        debug!("USB-CDC RX: {}", msg_type_label(&msg));
         match msg {
             ModemMessage::Reset => self.handle_reset(),
             ModemMessage::SendFrame(sf) => self.handle_send_frame(sf),
@@ -340,7 +393,43 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn handle_send_frame(&mut self, sf: SendFrame) {
-        self.radio.send(&sf.peer_mac, &sf.frame_data);
+        // NOTE: Radio::send() returns the esp_now_send() queue result, not
+        // the delivery ACK.  Async delivery failures are tracked separately
+        // via the send callback counter (tx_fail_count, MD-0202).
+        let ok = self.radio.send(&sf.peer_mac, &sf.frame_data);
+        if ok {
+            info!(
+                "ESP-NOW TX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} result=ok",
+                sf.peer_mac[0],
+                sf.peer_mac[1],
+                sf.peer_mac[2],
+                sf.peer_mac[3],
+                sf.peer_mac[4],
+                sf.peer_mac[5],
+                sf.frame_data.len()
+            );
+        } else {
+            info!(
+                "ESP-NOW TX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} result=fail",
+                sf.peer_mac[0],
+                sf.peer_mac[1],
+                sf.peer_mac[2],
+                sf.peer_mac[3],
+                sf.peer_mac[4],
+                sf.peer_mac[5],
+                sf.frame_data.len()
+            );
+            warn!(
+                "ESP-NOW TX failed: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} result=fail",
+                sf.peer_mac[0],
+                sf.peer_mac[1],
+                sf.peer_mac[2],
+                sf.peer_mac[3],
+                sf.peer_mac[4],
+                sf.peer_mac[5],
+                sf.frame_data.len()
+            );
+        }
     }
 
     fn handle_set_channel(&mut self, channel: u8) {
@@ -513,11 +602,12 @@ mod tests {
     }
 
     impl Radio for MockRadio {
-        fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+        fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) -> bool {
             if !self.peers.contains(peer_mac) {
                 self.peers.push(*peer_mac);
             }
             self.sent.push((data.to_vec(), *peer_mac));
+            true
         }
         fn drain_one(&self) -> Option<RecvFrame> {
             self.rx_queue.borrow_mut().pop_front()

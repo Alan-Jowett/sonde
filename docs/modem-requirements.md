@@ -586,6 +586,22 @@ During BLE LESC Numeric Comparison pairing, the modem MUST send `BLE_PAIRING_CON
 
 ---
 
+### MD-0415  BLE idle timeout
+
+**Priority:** Must
+**Source:** security hardening
+
+**Description:**
+The modem MUST enforce a 60-second idle timeout on BLE connections. If a client connects but does not complete pairing within 60 seconds, the modem MUST disconnect the client. This prevents resource exhaustion from abandoned or malicious connections that occupy the single-client BLE slot indefinitely.
+
+**Acceptance criteria:**
+
+1. A BLE client that connects and remains idle (no completed pairing) for 60 s is disconnected by the modem.
+2. `BLE_DISCONNECTED` is sent to the gateway after the idle disconnect.
+3. If BLE is still enabled, advertising resumes after the idle disconnect.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -624,3 +640,4 @@ During BLE LESC Numeric Comparison pairing, the modem MUST send `BLE_PAIRING_CON
 | MD-0412 | BLE advertising default off | Must |
 | MD-0413 | BLE_ENABLE / BLE_DISABLE commands | Must |
 | MD-0414 | Numeric Comparison pin relay | Must |
+| MD-0415 | BLE idle timeout | Must |

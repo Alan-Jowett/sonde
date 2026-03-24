@@ -259,13 +259,13 @@ On operator selection of a gateway device, the tool MUST connect to the BLE peri
 **Source:** ble-pairing-protocol.md §5.1, §5.2
 
 **Description:**  
-The tool MUST generate a 32-byte challenge from OS CSPRNG, write `REQUEST_GW_INFO` to the Gateway Command characteristic, wait for `GW_INFO_RESPONSE` (timeout: 5 s), and verify the Ed25519 signature over `(challenge ‖ gateway_id)` using the received `gw_public_key`. On failure, the tool MUST disconnect and report "gateway authentication failed — possible impersonation".
+The tool MUST generate a 32-byte challenge from OS CSPRNG, write `REQUEST_GW_INFO` to the Gateway Command characteristic, wait for `GW_INFO_RESPONSE` (timeout: 45 s), and verify the Ed25519 signature over `(challenge ‖ gateway_id)` using the received `gw_public_key`. On failure, the tool MUST disconnect and report "gateway authentication failed — possible impersonation". The 45 s timeout accommodates the operator passkey confirmation window (up to 30 s) plus the GATT write retry window on Windows (up to 30 s for WinRT auth errors).
 
 **Acceptance criteria:**
 
 1. A 32-byte challenge is generated from OS CSPRNG for each attempt.
 2. The tool writes `REQUEST_GW_INFO` and waits for the indication.
-3. On timeout (5 s) the tool disconnects and reports a timeout error.
+3. On timeout (45 s) the tool disconnects and reports a timeout error.
 4. On signature verification failure the tool disconnects and reports authentication failure.
 5. On success the tool proceeds to phone registration.
 
@@ -795,7 +795,7 @@ BLE connections, GATT subscriptions, and platform BLE resources MUST be released
 **Source:** ble-pairing-protocol.md §3.4, §5, §6
 
 **Description:**  
-All timeouts MUST match the protocol specification: `GW_INFO_RESPONSE` 5 s, `PHONE_REGISTERED` 30 s, `NODE_ACK` 5 s, BLE scan default 30 s, BLE connection establishment 10 s.
+All timeouts MUST match the protocol specification: `GW_INFO_RESPONSE` 45 s, `PHONE_REGISTERED` 30 s, `NODE_ACK` 5 s, BLE scan default 30 s, BLE connection establishment 10 s.
 
 **Acceptance criteria:**
 
@@ -947,7 +947,7 @@ A test MUST exercise the complete Phase 1 flow: `REQUEST_GW_INFO` → verify sig
 **Source:** ble-pairing-protocol.md §5
 
 **Description:**  
-Tests MUST cover: signature verification failure, `ERROR(0x02)` (window closed), `ERROR(0x03)` (already paired), decryption failure (bad GCM tag), TOFU rejection (different `gw_public_key`), timeout on `GW_INFO_RESPONSE` (5 s), timeout on `PHONE_REGISTERED` (30 s).
+Tests MUST cover: signature verification failure, `ERROR(0x02)` (window closed), `ERROR(0x03)` (already paired), decryption failure (bad GCM tag), TOFU rejection (different `gw_public_key`), timeout on `GW_INFO_RESPONSE` (45 s), timeout on `PHONE_REGISTERED` (30 s).
 
 **Acceptance criteria:**
 

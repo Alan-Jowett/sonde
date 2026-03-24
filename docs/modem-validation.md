@@ -891,6 +891,19 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0636  BLE idle timeout disconnects unfinished pairing
+
+**Validates:** MD-0415
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect a BLE client but do **not** complete LESC pairing.
+2. Wait 60 seconds without sending any GATT writes or completing pairing.
+3. Assert: the modem disconnects the idle client.
+4. Assert: `BLE_DISCONNECTED` is received on the gateway side.
+5. Assert: if BLE is still enabled, advertising resumes after the disconnect.
+
+---
+
 ## Appendix A  Test index
 
 | ID | Title | Validates |
@@ -957,3 +970,4 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0633 | BLE advertising off after RESET | MD-0407, MD-0412 |
 | T-0634 | Write Long reassembly | MD-0409 |
 | T-0635 | BLE_ENABLE and BLE_DISABLE idempotency | MD-0413 |
+| T-0636 | BLE idle timeout disconnects unfinished pairing | MD-0415 |

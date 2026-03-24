@@ -274,7 +274,7 @@ impl Drop for DispatchGuard {
 /// Args: r1=handle, r2=buf_ptr, r3=buf_len.
 /// Returns: 0 on success, negative on error.
 pub fn helper_i2c_read(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
-    with_ctx(|ctx| {
+    let result = with_ctx(|ctx| {
         let handle = r1 as u32;
         let buf_ptr = r2 as *mut u8;
         let buf_len = r3 as usize;
@@ -288,7 +288,9 @@ pub fn helper_i2c_read(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
             (*ctx.hal).i2c_read(handle, buf) as i64 as u64
         }
     })
-    .unwrap_or((-1i64) as u64)
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper i2c_read: result={}", result as i64);
+    result
 }
 
 /// Helper 2: I2C write.
@@ -2075,6 +2077,107 @@ mod tests {
         assert!(
             !sleep.will_wake_early(),
             "requesting longer than base should not count as early wake"
+        );
+    }
+
+    // -- Log-level tests (ND-1010 / T-N1015) ----------------------------------
+
+    use crate::test_log_capture;
+
+    #[test]
+    fn test_helper_i2c_read_emits_debug_log() {
+        // ND-1010 / T-N1015: I/O helpers emit DEBUG-level logs.
+        test_log_capture::init();
+        test_log_capture::drain_log_records(); // discard prior records
+
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let mut buf = [0u8; 2];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                let handle = crate::hal::i2c_handle(0, 0x48);
+                helper_i2c_read(
+                    handle as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                    0,
+                    0,
+                );
+            },
+        );
+
+        let records = test_log_capture::drain_log_records();
+        assert!(
+            records
+                .iter()
+                .any(|(level, msg)| *level == log::Level::Debug
+                    && msg.contains("bpf helper i2c_read")
+                    && msg.contains("result=")),
+            "expected DEBUG log for i2c_read helper, got: {:?}",
+            records
+        );
+    }
+
+    #[test]
+    fn test_helper_gpio_read_emits_debug_log() {
+        // ND-1010 / T-N1015: gpio_read emits a DEBUG log with result.
+        test_log_capture::init();
+        test_log_capture::drain_log_records();
+
+        let mut hal = TestHal::new();
+        hal.gpio_states[3] = 1;
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                helper_gpio_read(3, 0, 0, 0, 0);
+            },
+        );
+
+        let records = test_log_capture::drain_log_records();
+        assert!(
+            records
+                .iter()
+                .any(|(level, msg)| *level == log::Level::Debug
+                    && msg.contains("bpf helper gpio_read")
+                    && msg.contains("result=")),
+            "expected DEBUG log for gpio_read helper, got: {:?}",
+            records
         );
     }
 }

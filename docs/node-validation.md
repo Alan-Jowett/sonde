@@ -1145,7 +1145,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Configure the node so that ESP-IDF logging for BPF helper logs is set to DEBUG (for example, by setting the default log level to DEBUG or calling `esp_log_level_set` for the helper log tag in the test firmware).
-2. Install program that calls `send`, `gpio_read`, `i2c_write`, or `adc_read`.
+2. Install program that calls `i2c_read`, `send`, `gpio_read`, `i2c_write`, or `adc_read`.
 3. Run wake cycle.
 4. Assert: a DEBUG log is emitted for each I/O helper call containing the helper name and `result=`.
 

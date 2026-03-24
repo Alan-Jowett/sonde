@@ -1122,7 +1122,7 @@ The node MUST log at INFO level when entering BLE pairing mode, and MUST log whe
 **Source:** issue #475
 
 **Description:**  
-BPF helper invocations that perform I/O (send, send_recv, i2c_write, i2c_write_read, gpio_read, gpio_write, adc_read, spi_transfer) SHOULD be logged at DEBUG level with the helper name and return value.
+BPF helper invocations that perform I/O (i2c_read, i2c_write, i2c_write_read, spi_transfer, gpio_read, gpio_write, adc_read, send, send_recv) SHOULD be logged at DEBUG level with the helper name and return value.
 
 **Acceptance criteria:**
 

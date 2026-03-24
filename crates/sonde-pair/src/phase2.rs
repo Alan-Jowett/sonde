@@ -967,4 +967,334 @@ mod tests {
             );
         });
     }
+
+    // --- PT-0408: Error path no-panic ---
+
+    /// PT-0408: `provision_node` returns cleanly on error paths without
+    /// panicking. Ephemeral key zeroing is guaranteed by `Zeroizing`
+    /// wrappers (compile-time, see crypto.rs tests) and is not directly
+    /// observable at runtime.
+    #[test]
+    fn t_pt_0408_error_path_no_panic() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // Error path: node returns an error response
+            let mut transport = MockBleTransport::new(247);
+            let mut error_body = vec![0x03];
+            error_body.extend_from_slice(b"unexpected");
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &error_body).unwrap()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &[0xBB; 6],
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            // Function returned an error cleanly; zeroing of ephemeral keys
+            // and node_psk is handled by `Zeroizing` wrappers by construction.
+            assert!(
+                matches!(result, Err(PairingError::NodeErrorResponse { .. })),
+                "expected NodeErrorResponse, got {result:?}"
+            );
+        });
+    }
+
+    /// PT-0408: `provision_node` returns cleanly on indication timeout
+    /// without panicking. Ephemeral key zeroing is guaranteed by
+    /// `Zeroizing` wrappers by construction.
+    #[test]
+    fn t_pt_0408_timeout_no_panic() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            // No response queued → IndicationTimeout
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &[0xBB; 6],
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            assert!(matches!(result, Err(PairingError::IndicationTimeout)));
+            // Zeroing is handled by `Zeroizing` wrappers by construction.
+        });
+    }
+
+    // --- PT-0405: Fresh ephemeral X25519 per provisioning attempt ---
+
+    /// Two provisioning attempts with different RNG seeds must use different
+    /// ephemeral public keys in the NODE_PROVISION write.
+    #[test]
+    fn t_pt_309_fresh_ephemeral_per_attempt() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let store = store_with_artifacts();
+            let sensors = test_sensors();
+
+            // Attempt 1 with seed 0x42
+            let rng1 = MockRng::new([0x42u8; 32]);
+            let mut transport1 = MockBleTransport::new(247);
+            transport1.queue_response(Ok(build_envelope(NODE_ACK, &[0x00]).unwrap()));
+            provision_node(
+                &mut transport1,
+                &store,
+                &rng1,
+                &[0xBB; 6],
+                "sensor-1",
+                &sensors,
+            )
+            .await
+            .unwrap();
+
+            // Attempt 2 with seed 0x43
+            let rng2 = MockRng::new([0x43u8; 32]);
+            let mut transport2 = MockBleTransport::new(247);
+            transport2.queue_response(Ok(build_envelope(NODE_ACK, &[0x00]).unwrap()));
+            provision_node(
+                &mut transport2,
+                &store,
+                &rng2,
+                &[0xBB; 6],
+                "sensor-2",
+                &sensors,
+            )
+            .await
+            .unwrap();
+
+            // Extract NODE_PROVISION payloads and compare ephemeral public keys
+            assert!(
+                !transport1.written.is_empty(),
+                "transport1 wrote no frames; expected at least one NODE_PROVISION frame"
+            );
+            assert!(
+                !transport2.written.is_empty(),
+                "transport2 wrote no frames; expected at least one NODE_PROVISION frame"
+            );
+            let payload1 = transport1
+                .written
+                .iter()
+                .find_map(|(_, _, data)| {
+                    let (msg_type, payload) = crate::envelope::parse_envelope(data).unwrap();
+                    if msg_type == NODE_PROVISION {
+                        Some(payload.to_vec())
+                    } else {
+                        None
+                    }
+                })
+                .expect("expected at least one NODE_PROVISION frame in transport1.written");
+
+            let payload2 = transport2
+                .written
+                .iter()
+                .find_map(|(_, _, data)| {
+                    let (msg_type, payload) = crate::envelope::parse_envelope(data).unwrap();
+                    if msg_type == NODE_PROVISION {
+                        Some(payload.to_vec())
+                    } else {
+                        None
+                    }
+                })
+                .expect("expected at least one NODE_PROVISION frame in transport2.written");
+
+            // NODE_PROVISION layout:
+            // node_key_hint(2) + node_psk(32) + rf_channel(1) + payload_len(2) + eph_public(32) + ...
+            const NODE_KEY_HINT_LEN: usize = 2;
+            const NODE_PSK_LEN: usize = 32;
+            const RF_CHANNEL_LEN: usize = 1;
+            const PAYLOAD_LEN_FIELD_LEN: usize = 2;
+            const EPH_PUBLIC_LEN: usize = 32;
+
+            let eph_offset =
+                NODE_KEY_HINT_LEN + NODE_PSK_LEN + RF_CHANNEL_LEN + PAYLOAD_LEN_FIELD_LEN;
+            let eph_end = eph_offset + EPH_PUBLIC_LEN;
+            assert!(
+                payload1.len() >= eph_end,
+                "NODE_PROVISION payload1 too short: len={} expected at least {eph_end}",
+                payload1.len()
+            );
+            assert!(
+                payload2.len() >= eph_end,
+                "NODE_PROVISION payload2 too short: len={} expected at least {eph_end}",
+                payload2.len()
+            );
+            let eph1 = &payload1[eph_offset..eph_end];
+            let eph2 = &payload2[eph_offset..eph_end];
+
+            assert_ne!(
+                eph1, eph2,
+                "ephemeral public keys must differ between provisioning attempts"
+            );
+        });
+    }
+
+    // --- PT-0500: Additional error subcategories ---
+
+    /// Unknown NodeAckStatus byte (not 0x00, 0x01, or 0x02) should be reported
+    /// as `NodeProvisionFailed(Unknown(byte))`.
+    #[test]
+    fn t_pt_500_unknown_node_ack_status() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_envelope(NODE_ACK, &[0x99]).unwrap()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &[0xBB; 6],
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            match result {
+                Err(PairingError::NodeProvisionFailed(NodeAckStatus::Unknown(0x99))) => {}
+                other => panic!("expected NodeProvisionFailed(Unknown(0x99)), got {other:?}"),
+            }
+        });
+    }
+
+    /// ERROR(0xFF) from node with status 0x00 and empty diagnostic.
+    #[test]
+    fn t_pt_500b_node_error_empty_diagnostic() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x00]).unwrap()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &[0xBB; 6],
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            match result {
+                Err(PairingError::NodeErrorResponse { status, message }) => {
+                    assert_eq!(status, 0x00);
+                    assert!(message.is_empty());
+                }
+                other => panic!("expected NodeErrorResponse with status 0x00, got {other:?}"),
+            }
+        });
+    }
+
+    /// Unexpected message type (not NODE_ACK or MSG_ERROR) should be
+    /// reported as `InvalidResponse`.
+    #[test]
+    fn t_pt_500c_unexpected_msg_type() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(247);
+            // Respond with an unknown type 0x42
+            transport.queue_response(Ok(build_envelope(0x42, &[0x00]).unwrap()));
+
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &[0xBB; 6],
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            match result {
+                Err(PairingError::InvalidResponse { msg_type, .. }) => {
+                    assert_eq!(msg_type, 0x42);
+                }
+                other => panic!("expected InvalidResponse, got {other:?}"),
+            }
+        });
+    }
+
+    /// MTU too low for Phase 2 should be reported before any writes.
+    #[test]
+    fn t_pt_500d_mtu_too_low() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut transport = MockBleTransport::new(100); // below minimum
+            let store = store_with_artifacts();
+            let rng = MockRng::new([0x42u8; 32]);
+            let sensors = test_sensors();
+
+            let result = provision_node(
+                &mut transport,
+                &store,
+                &rng,
+                &[0xBB; 6],
+                "sensor-1",
+                &sensors[..1],
+            )
+            .await;
+
+            match result {
+                Err(PairingError::MtuTooLow {
+                    negotiated,
+                    required,
+                }) => {
+                    assert_eq!(negotiated, 100);
+                    assert_eq!(required, BLE_MTU_MIN);
+                }
+                other => panic!("expected MtuTooLow, got {other:?}"),
+            }
+            assert!(
+                transport.written.is_empty(),
+                "no writes should occur when MTU is too low"
+            );
+        });
+    }
 }

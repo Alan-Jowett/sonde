@@ -481,6 +481,31 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 > **Note:** This test validates link establishment only. Pin relay accept/reject/timeout semantics are covered by T-0620, T-0621, and T-0622 (MD-0414).
 
+### T-0607a  Server-initiated LESC pairing — passive client
+
+**Validates:** MD-0404 (criterion 5)
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect a BLE client that does **not** initiate pairing on its own (no `createBond` or equivalent — a plain GATT connect).
+2. Assert: the modem initiates LESC pairing from the server side (the client receives an SMP Security Request).
+3. Assert: `BLE_PAIRING_CONFIRM` received on gateway side with a 6-digit passkey.
+4. Send `BLE_PAIRING_CONFIRM_REPLY(0x01)` (accept).
+5. Assert: pairing succeeds, link is encrypted, and `BLE_CONNECTED` received.
+6. Send a GATT write. Assert: write is relayed via `BLE_RECV` (the `authenticated` flag is set).
+
+### T-0607b  Pre-auth GATT write buffered until authentication completes
+
+**Validates:** MD-0404 (criterion 5), MD-0409 (criterion 5)
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Connect a BLE client (plain GATT connect, no client-initiated pairing).
+2. Immediately send a GATT write to the Gateway Command characteristic **before** pairing completes.
+3. Assert: the write is **not** forwarded via `BLE_RECV` yet (it is buffered).
+4. Assert: the modem logs an info message (`GATT write … bytes buffered (awaiting authentication)`).
+5. Allow server-initiated pairing to complete, confirm via `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
+6. Assert: the buffered write is flushed and forwarded via `BLE_RECV` after `authenticated` becomes true.
+7. Assert: `BLE_CONNECTED` is sent after the flushed write.
+
 ---
 
 ### T-0608  BLE disconnect cleanup
@@ -866,6 +891,18 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+### T-0636  BLE idle timeout disconnects unfinished pairing
+
+**Validates:** MD-0415
+
+**Procedure (60 s idle-timeout path, pairing not initiated):**
+1. Send `BLE_ENABLE`. Connect a BLE client, but do **not** initiate or accept LESC pairing (do not access characteristics that require encryption/authentication, and reject/ignore any pairing prompts on the client).
+2. Wait at least 60 seconds without sending any GATT writes that trigger security or completing pairing (the connection must remain in an unpaired, idle state).
+3. Assert: the modem disconnects the idle client due to the 60 s BLE idle timeout.
+4. Assert: `BLE_DISCONNECTED` is received on the gateway side as a result of the idle-timeout disconnect.
+
+---
+
 ## Appendix A  Test index
 
 | ID | Title | Validates |
@@ -932,3 +969,4 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0633 | BLE advertising off after RESET | MD-0407, MD-0412 |
 | T-0634 | Write Long reassembly | MD-0409 |
 | T-0635 | BLE_ENABLE and BLE_DISABLE idempotency | MD-0413 |
+| T-0636 | BLE idle timeout disconnects unfinished pairing | MD-0415 |

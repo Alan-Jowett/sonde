@@ -685,6 +685,13 @@ pub fn run() {
                 .with_target(true)
                 .with_level(true),
         )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .with_target(true)
+                .with_level(true),
+        )
         .with(tracing_subscriber::EnvFilter::new(
             "sonde_pair=debug,sonde_pair_ui=debug",
         ))

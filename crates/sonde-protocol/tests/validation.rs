@@ -9,6 +9,7 @@ use sonde_protocol::*;
 
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 
 // ---------------------------------------------------------------------------
 // Software providers
@@ -1997,5 +1998,389 @@ fn test_p090_command_type_derived_from_payload() {
             panic!("expected GatewayMessage::Command");
         }
         assert_eq!(decoded, msg);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8  Gap coverage tests (issue #356)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// T-P069  §5.1 HMAC constant-time comparison behavior
+//
+// The security invariant is that HMAC verification uses constant-time
+// comparison.  verify_frame() must call HmacProvider::verify() — not
+// compute() + == — so a conforming provider cannot be bypassed.
+//
+// This test creates a tracking provider that asserts verify() is called.
+// ---------------------------------------------------------------------------
+
+struct TrackingHmac {
+    verify_called: Cell<bool>,
+}
+
+impl TrackingHmac {
+    fn new() -> Self {
+        Self {
+            verify_called: Cell::new(false),
+        }
+    }
+}
+
+impl HmacProvider for TrackingHmac {
+    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC can take key of any size");
+        mac.update(data);
+        mac.finalize().into_bytes().into()
+    }
+
+    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
+        self.verify_called.set(true);
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC can take key of any size");
+        mac.update(data);
+        mac.verify_slice(expected).is_ok()
+    }
+}
+
+#[test]
+fn test_p069() {
+    let psk = [0x42u8; 32];
+    let hdr = FrameHeader {
+        key_hint: 0x1234,
+        msg_type: MSG_WAKE,
+        nonce: 0xDEAD_BEEF,
+    };
+    let msg = NodeMessage::Wake {
+        firmware_abi_version: 1,
+        program_hash: vec![0xAA; 32],
+        battery_mv: 3300,
+    };
+    let cbor = msg.encode().unwrap();
+
+    let tracker = TrackingHmac::new();
+    let raw = encode_frame(&hdr, &cbor, &psk, &tracker).unwrap();
+    let frame = decode_frame(&raw).unwrap();
+
+    // Reset tracker before verify_frame call.
+    tracker.verify_called.set(false);
+    let valid = verify_frame(&frame, &psk, &tracker);
+    assert!(valid, "HMAC should verify with correct key");
+    assert!(
+        tracker.verify_called.get(),
+        "verify_frame must call HmacProvider::verify (constant-time path), not compute + =="
+    );
+
+    // Also verify with wrong key — verify() must still be called.
+    let wrong_psk = [0xFFu8; 32];
+    tracker.verify_called.set(false);
+    let invalid = verify_frame(&frame, &wrong_psk, &tracker);
+    assert!(!invalid, "HMAC should fail with wrong key");
+    assert!(
+        tracker.verify_called.get(),
+        "verify_frame must call HmacProvider::verify even for invalid HMACs"
+    );
+
+    // Tampered frame — mismatch at first byte.
+    let mut tampered = raw.clone();
+    let hmac_offset = tampered.len() - HMAC_SIZE;
+    tampered[hmac_offset] ^= 0xFF;
+    let tampered_frame = decode_frame(&tampered).unwrap();
+    tracker.verify_called.set(false);
+    let tampered_result = verify_frame(&tampered_frame, &psk, &tracker);
+    assert!(!tampered_result, "HMAC should fail with tampered tag");
+    assert!(
+        tracker.verify_called.get(),
+        "verify_frame must call HmacProvider::verify for tampered tags"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T-P048  §7.2 Deterministic CBOR — minimal-length integer encoding
+//
+// RFC 8949 §4.2 requires smallest possible encoding for integers.
+// Values 0–23 encode in 1 byte, 24–255 in 2 bytes, etc.
+// This test verifies that encode_deterministic() uses minimal encoding
+// by inspecting raw CBOR byte sequences and comparing against a
+// reference encoder (ciborium, which also uses minimal encoding).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p048() {
+    // Test with values that span encoding boundaries.
+    let img = ProgramImage {
+        bytecode: vec![0xAB],
+        maps: vec![MapDef {
+            map_type: 1,      // 0–23 range → 1-byte encoding
+            key_size: 23,     // boundary: last 1-byte value
+            value_size: 24,   // boundary: first 2-byte value
+            max_entries: 256, // boundary: first 3-byte value
+        }],
+    };
+
+    let cbor = img.encode_deterministic().unwrap();
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+    assert_eq!(decoded, img, "round-trip must preserve all values");
+
+    // Minimal integer encodings for 23, 24, and 256 are validated via the
+    // reference encoder comparison below (ciborium uses minimal-length CBOR
+    // integers), so we do not perform additional raw byte subsequence checks.
+
+    // Build a reference version of the same map using ciborium. ciborium
+    // uses minimal-length CBOR integers, so this is a reference-encoder
+    // comparison proving our encoder matches a known-good implementation.
+    let reference_map = ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Integer(IMG_KEY_BYTECODE.into()),
+            ciborium::Value::Bytes(vec![0xAB]),
+        ),
+        (
+            ciborium::Value::Integer(IMG_KEY_MAPS.into()),
+            ciborium::Value::Array(vec![ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Integer(MAP_KEY_TYPE.into()),
+                    ciborium::Value::Integer(1.into()),
+                ),
+                (
+                    ciborium::Value::Integer(MAP_KEY_KEY_SIZE.into()),
+                    ciborium::Value::Integer(23.into()),
+                ),
+                (
+                    ciborium::Value::Integer(MAP_KEY_VALUE_SIZE.into()),
+                    ciborium::Value::Integer(24.into()),
+                ),
+                (
+                    ciborium::Value::Integer(MAP_KEY_MAX_ENTRIES.into()),
+                    ciborium::Value::Integer(256.into()),
+                ),
+            ])]),
+        ),
+    ]);
+
+    let mut reference_encoded = Vec::new();
+    ciborium::ser::into_writer(&reference_map, &mut reference_encoded).unwrap();
+
+    // Our output must match the reference encoder byte-for-byte.
+    assert_eq!(
+        cbor, reference_encoded,
+        "encode_deterministic must produce the same minimal encoding as ciborium"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T-P049  §7.3 ProgramImage::decode() with malformed CBOR
+// ---------------------------------------------------------------------------
+
+// T-P049a: truncated CBOR
+#[test]
+fn test_p049a() {
+    // Encode a valid image, then truncate at various points.
+    let img = ProgramImage {
+        bytecode: vec![0xAB; 8],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 64,
+            max_entries: 16,
+        }],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+    assert!(cbor.len() > 10, "encoded image must be non-trivial");
+
+    // Truncate to 0 bytes.
+    let err = ProgramImage::decode(&[]).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::CborError(_)),
+        "empty input: expected CborError, got {:?}",
+        err
+    );
+
+    // Truncate to 1 byte.
+    let err = ProgramImage::decode(&cbor[..1]).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::CborError(_)),
+        "1-byte truncation: expected CborError, got {:?}",
+        err
+    );
+
+    // Truncate to half the encoded size.
+    let half = cbor.len() / 2;
+    let err = ProgramImage::decode(&cbor[..half]).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::CborError(_)),
+        "half-truncation: expected CborError, got {:?}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T-P049b  §7.3 ProgramImage::decode() — missing bytecode field
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p049b() {
+    // CBOR map with only the maps field (key 2), no bytecode (key 1).
+    let maps_value = ciborium::Value::Array(vec![ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Integer(MAP_KEY_TYPE.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(MAP_KEY_KEY_SIZE.into()),
+            ciborium::Value::Integer(4.into()),
+        ),
+        (
+            ciborium::Value::Integer(MAP_KEY_VALUE_SIZE.into()),
+            ciborium::Value::Integer(64.into()),
+        ),
+        (
+            ciborium::Value::Integer(MAP_KEY_MAX_ENTRIES.into()),
+            ciborium::Value::Integer(16.into()),
+        ),
+    ])]);
+
+    let map = vec![(ciborium::Value::Integer(IMG_KEY_MAPS.into()), maps_value)];
+
+    let mut cbor = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+    let err = ProgramImage::decode(&cbor).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::MissingField(IMG_KEY_BYTECODE)),
+        "missing bytecode: expected MissingField(IMG_KEY_BYTECODE), got {:?}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T-P049c  §7.3 ProgramImage::decode() — wrong field types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p049c() {
+    // bytecode (key 1) is an integer instead of bytes.
+    {
+        let map = vec![
+            (
+                ciborium::Value::Integer(IMG_KEY_BYTECODE.into()),
+                ciborium::Value::Integer(42.into()),
+            ),
+            (
+                ciborium::Value::Integer(IMG_KEY_MAPS.into()),
+                ciborium::Value::Array(vec![]),
+            ),
+        ];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+        let err = ProgramImage::decode(&cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::InvalidFieldType(IMG_KEY_BYTECODE)),
+            "bytecode as integer: expected InvalidFieldType(IMG_KEY_BYTECODE), got {:?}",
+            err
+        );
+    }
+
+    // maps (key 2) is an integer instead of array.
+    {
+        let map = vec![
+            (
+                ciborium::Value::Integer(IMG_KEY_BYTECODE.into()),
+                ciborium::Value::Bytes(vec![0xAB; 4]),
+            ),
+            (
+                ciborium::Value::Integer(IMG_KEY_MAPS.into()),
+                ciborium::Value::Integer(99.into()),
+            ),
+        ];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+        let err = ProgramImage::decode(&cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::InvalidFieldType(IMG_KEY_MAPS)),
+            "maps as integer: expected InvalidFieldType(IMG_KEY_MAPS), got {:?}",
+            err
+        );
+    }
+
+    // maps array entry is a text string instead of a nested map.
+    {
+        let map = vec![
+            (
+                ciborium::Value::Integer(IMG_KEY_BYTECODE.into()),
+                ciborium::Value::Bytes(vec![0xAB; 4]),
+            ),
+            (
+                ciborium::Value::Integer(IMG_KEY_MAPS.into()),
+                ciborium::Value::Array(vec![ciborium::Value::Text("not a map".into())]),
+            ),
+        ];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+        let err = ProgramImage::decode(&cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::InvalidFieldType(IMG_KEY_MAPS)),
+            "map entry as text: expected InvalidFieldType(IMG_KEY_MAPS), got {:?}",
+            err
+        );
+    }
+
+    // Nested map has MAP_KEY_TYPE as text instead of integer.
+    // The decoder's integer parser returns None for non-integer values,
+    // so the field is treated as missing (MissingField) rather than as
+    // an invalid type. This is the correct decoder behavior — text values
+    // are not silently accepted.
+    {
+        let map = vec![
+            (
+                ciborium::Value::Integer(IMG_KEY_BYTECODE.into()),
+                ciborium::Value::Bytes(vec![0xAB; 4]),
+            ),
+            (
+                ciborium::Value::Integer(IMG_KEY_MAPS.into()),
+                ciborium::Value::Array(vec![ciborium::Value::Map(vec![
+                    (
+                        ciborium::Value::Integer(MAP_KEY_TYPE.into()),
+                        ciborium::Value::Text("wrong".into()),
+                    ),
+                    (
+                        ciborium::Value::Integer(MAP_KEY_KEY_SIZE.into()),
+                        ciborium::Value::Integer(4.into()),
+                    ),
+                    (
+                        ciborium::Value::Integer(MAP_KEY_VALUE_SIZE.into()),
+                        ciborium::Value::Integer(64.into()),
+                    ),
+                    (
+                        ciborium::Value::Integer(MAP_KEY_MAX_ENTRIES.into()),
+                        ciborium::Value::Integer(16.into()),
+                    ),
+                ])]),
+            ),
+        ];
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+        let err = ProgramImage::decode(&cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MissingField(MAP_KEY_TYPE)),
+            "map_type as text: expected MissingField(MAP_KEY_TYPE), got {:?}",
+            err
+        );
+    }
+
+    // Top-level value is not a map (it's an array).
+    {
+        let val = ciborium::Value::Array(vec![ciborium::Value::Integer(1.into())]);
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&val, &mut cbor).unwrap();
+
+        let err = ProgramImage::decode(&cbor).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::CborError(_)),
+            "top-level array: expected CborError, got {:?}",
+            err
+        );
     }
 }

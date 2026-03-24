@@ -157,6 +157,16 @@ A background task polls `GET_STATUS` every 30 seconds and logs:
 
 On `ERROR` from the modem, the adapter logs the error code and message. If the error is unrecoverable, it sends `RESET` and re-executes the startup sequence.
 
+**Serial disconnect recovery (GW-1103 criteria 3–5):**
+
+When the serial reader task encounters an OS I/O error (e.g. USB-CDC disconnect, Windows error 995), it does not exit permanently. Instead:
+
+1. The reader task logs a warning and enters a reconnection loop.
+2. The loop attempts to reopen the serial port with exponential backoff (1 s → 2 s → 4 s → … → 30 s cap).
+3. Once the port reopens, the adapter re-executes the startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`).
+4. The `recv()` and BLE event channels remain open during reconnection — callers block until the transport recovers.
+5. If the port cannot be reopened (e.g. device permanently removed), the backoff loop continues indefinitely; the operator can shut down the gateway via Ctrl-C or service stop.
+
 **`send()` implementation:**
 
 Constructs a `SEND_FRAME` envelope (`peer_mac || frame_data`) and writes it to the serial port. Does not wait for any modem or radio delivery acknowledgement — fire-and-forget at the radio layer, while still awaiting the serial write as needed. The 250-byte ESP-NOW frame limit is enforced by the modem.

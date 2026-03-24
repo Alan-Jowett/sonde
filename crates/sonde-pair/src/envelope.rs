@@ -243,4 +243,64 @@ mod tests {
         assert_eq!(status, 0x03);
         assert_eq!(msg, "already paired");
     }
+
+    // --- PT-1200: Malformed BLE envelope tests ---
+
+    /// Wrong TYPE byte: valid envelope but with an unexpected message type.
+    #[test]
+    fn parse_envelope_unexpected_type_byte() {
+        // Build a valid envelope with type 0xAB (not a known type).
+        let msg = build_envelope(0xAB, &[0x01, 0x02]).unwrap();
+        let (ty, payload) = parse_envelope(&msg).unwrap();
+        // Parsing succeeds — type validation is the caller's responsibility.
+        assert_eq!(ty, 0xAB);
+        assert_eq!(payload, &[0x01, 0x02]);
+    }
+
+    /// Truncated LEN field: only 2 bytes total (type + partial length).
+    #[test]
+    fn parse_envelope_truncated_len() {
+        assert!(parse_envelope(&[0x81, 0x00]).is_err());
+    }
+
+    /// LEN is valid but body shorter than declared.
+    #[test]
+    fn parse_envelope_short_body() {
+        // Header says 10 bytes of body but only 3 follow.
+        let data = [0x01, 0x00, 0x0A, 0xAA, 0xBB, 0xCC];
+        let err = parse_envelope(&data).unwrap_err();
+        assert!(
+            format!("{err}").contains("length field"),
+            "error should mention length mismatch: {err}"
+        );
+    }
+
+    /// LEN is zero but extra trailing bytes present.
+    #[test]
+    fn parse_envelope_extra_trailing_bytes() {
+        // Header says 0 bytes of body but 2 bytes follow.
+        let data = [0x01, 0x00, 0x00, 0xAA, 0xBB];
+        assert!(
+            parse_envelope(&data).is_err(),
+            "trailing bytes after declared body must be rejected"
+        );
+    }
+
+    /// §4.1.1: ERROR(0x01) generic status code parsed correctly.
+    #[test]
+    fn parse_error_body_generic_status() {
+        let (status, msg) = parse_error_body(&[0x01]);
+        assert_eq!(status, 0x01);
+        assert!(msg.is_empty());
+    }
+
+    /// §4.1.1: ERROR(0x01) with diagnostic message.
+    #[test]
+    fn parse_error_body_generic_with_diagnostic() {
+        let mut data = vec![0x01];
+        data.extend_from_slice(b"internal error");
+        let (status, msg) = parse_error_body(&data);
+        assert_eq!(status, 0x01);
+        assert_eq!(msg, "internal error");
+    }
 }

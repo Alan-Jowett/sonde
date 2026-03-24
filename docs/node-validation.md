@@ -824,9 +824,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Boot node into BLE pairing mode.
 2. Scan for BLE advertisements from a test central.
 3. Assert: advertisement contains Node Provisioning Service UUID `0000FE50-0000-1000-8000-00805F9B34FB`.
-4. Assert: device name matches `sonde-XXXX` where XXXX = last 4 hex digits of BLE MAC.
+4. Assert: device name in the advertising payload matches `sonde-XXXX` where XXXX = last 4 hex digits of BLE MAC.
 5. Connect and discover services.
 6. Assert: Node Command characteristic `0000FE51-0000-1000-8000-00805F9B34FB` is present with Write+Indicate properties.
+7. Assert: the GAP device name (read after connecting) matches `sonde-XXXX`, not the NimBLE default (`nimble`) (ND-0903 criterion 3).
 
 ---
 
@@ -840,6 +841,27 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 3. Assert: negotiated MTU is ≥ 247.
 4. Initiate LESC Just Works pairing.
 5. Assert: pairing completes successfully.
+
+### T-N903a  Server-initiated LESC pairing — passive client
+
+**Validates:** ND-0904 (criterion 3)
+
+**Procedure:**
+1. Connect a BLE client to the node that does **not** initiate pairing on its own (plain GATT connect, no `createBond`).
+2. Assert: the node initiates LESC pairing from the server side (the client receives an SMP Security Request).
+3. Assert: LESC Just Works pairing completes successfully.
+
+### T-N903b  Pre-auth GATT write buffered until authentication completes
+
+**Validates:** ND-0904 (criterion 4)
+
+**Procedure:**
+1. Connect a BLE client to the node (plain GATT connect, no client-initiated pairing).
+2. Immediately send a GATT write to the Node Command characteristic **before** LESC pairing completes.
+3. Assert: the write is buffered, not discarded.
+4. Allow server-initiated LESC pairing to complete.
+5. Assert: the buffered write is processed after `authenticated` becomes true.
+6. Assert: a `NODE_ACK` indication is sent in response.
 
 ---
 
@@ -1130,15 +1152,16 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N927  HW RNG health-test failure aborts boot
+### T-N927  RNG health-check failure aborts wake cycle
 
 **Validates:** ND-0304
 
 **Procedure:**
-1. Configure the node's RNG backend (via the `RngProvider` HAL trait) to use a
-   mock that deterministically fails its health-test entry point.
-2. Boot the firmware under the test harness.
-3. Assert: firmware aborts at boot and does not enter the wake cycle.
+1. Configure the node's RNG backend (via the `crate::traits::Rng` trait) to use a
+   mock whose `health_check()` method deterministically fails.
+2. Run the wake cycle under the test harness.
+3. Assert: wake cycle aborts early (returns `WakeCycleOutcome::Sleep` before
+   sending WAKE).
 4. Assert: no WAKE frame is transmitted.
 
 > **Note:** This test requires a build where the RNG is injectable via the HAL
@@ -1160,7 +1183,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N929  Write to read-only `sonde_context` rejected
+### T-N929  Write to read-only `sonde_context` silently ignored
 
 **Validates:** ND-0505
 
@@ -1412,7 +1435,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N500 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update`, `t_e2e_070_full_use_case` | wake_cycle.rs, e2e_tests.rs |
 | T-N501 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update`, `t_e2e_054_bridged_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N502 | `test_program_transfer_hash_mismatch` | wake_cycle.rs |
-| T-N503 | *(not yet covered — current transfer tests use empty map lists; a test with 2 map definitions, LDDW pointer resolution, and RTC SRAM allocation is needed)* | — |
+| T-N503 | `test_program_image_decoding_with_maps` (partial — does not validate LDDW `src=1` map reference resolution) | wake_cycle.rs |
 | T-N504 | `test_chunked_transfer_success`, `t_e2e_010_full_program_update` | wake_cycle.rs, e2e_tests.rs |
 | T-N505 | `test_ephemeral_program_integration`, `t_e2e_022_run_ephemeral` | wake_cycle.rs, e2e_tests.rs |
 | T-N506 | `test_chunked_transfer_success` | wake_cycle.rs |
@@ -1436,6 +1459,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N613 | `test_helper_bpf_trace_printk` | bpf_dispatch.rs |
 | T-N614 | `test_instruction_budget_exceeded_graceful` | wake_cycle.rs |
 | T-N615 | `test_call_depth_exceeded_graceful` | wake_cycle.rs |
+| T-N616 | `test_map_budget_exceeded_rejects_program` | wake_cycle.rs |
 | T-N700 | `test_wake_retries_exhausted` | wake_cycle.rs |
 | T-N701 | `test_chunked_transfer_chunk_retry_exhausted` | wake_cycle.rs |
 | T-N800 | `test_malformed_cbor_discarded` | wake_cycle.rs |
@@ -1460,10 +1484,13 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N916 | `t_e2e_064_onboarding_to_wake`, `t_e2e_065_deferred_erasure` | e2e_tests.rs |
 | T-N917 | `t_e2e_066_self_healing` | e2e_tests.rs |
 | T-N918 | *(hardware — validated on target: NVS layout for BLE pairing artifacts)* | — |
+| T-N927 | `t_n927_rng_health_check_failure_aborts` | wake_cycle.rs |
+| T-N929 | `t_n929_write_to_read_only_context_silently_ignored` | sonde_bpf_adapter.rs |
+| T-N940 | `t_n940_payload_len_exceeds_remaining_data`, `t_n940_payload_len_max_u16_rejected` | ble_pairing.rs |
+| T-N941 | `t_n941_exchange_peer_ack_corrupted_hmac_discarded`, `peer_ack_tampered_hmac` | peer_request.rs |
 
 > **Note:** Spec cases marked *(hardware — validated on target)* require the
 > NimBLE BLE stack or physical peripherals and cannot run in the host-based
-> test suite. T-N503 (map decoding with LDDW pointer resolution),
-> T-N616 (map memory budget enforcement), and T-N702 (response timeout — mock gateway delays
-> \> 50 ms) are host-testable but not yet implemented.
-> T-N919–T-N941: spec procedures added — implementation pending.
+> test suite. T-N702 (response timeout — mock gateway delays
+> \> 50 ms) is host-testable but not yet implemented.
+> T-N919–T-N926, T-N928, T-N930–T-N939: spec procedures added — implementation pending.

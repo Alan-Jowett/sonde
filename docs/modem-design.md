@@ -58,7 +58,7 @@ The firmware is intentionally minimal — no application- or protocol-layer cryp
 | **Counters & status** | `tx_count`, `rx_count`, `tx_fail_count`, `uptime_s` tracking | MD-0303 |
 | **BLE driver** | NimBLE stack init, advertising start/stop, GATT server, LESC pairing | MD-0402, MD-0404, MD-0407, MD-0412 |
 | **BLE GATT service** | Gateway Pairing Service + Gateway Command characteristic; indication pacing; Write Long reassembly | MD-0400, MD-0401, MD-0403, MD-0408, MD-0409 |
-| **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414 |
+| **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications, idle timeout | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414, MD-0415 |
 | **Watchdog** *(cross-cutting)* | Task watchdog feed in main loop; hardware reset on stall | MD-0302 |
 
 ---
@@ -274,7 +274,7 @@ The firmware uses the ESP-IDF task watchdog (`esp_task_wdt`):
 - If the main loop stalls (e.g., deadlock, infinite loop), the watchdog triggers a hardware reset (`CONFIG_ESP_TASK_WDT_PANIC=y`).
 - After reset, the firmware boots normally and sends `MODEM_READY`.
 
-> **sdkconfig note (D9-6):** The root `sdkconfig.defaults.esp32s3` sets `CONFIG_ESP_TASK_WDT_TIMEOUT_S=10`, and the modem crate's `crates/sonde-modem/sdkconfig.defaults` sets it to 35. During the modem build, both files are passed to ESP-IDF via `ESP_IDF_SDKCONFIG_DEFAULTS` in this order: first `sdkconfig.defaults.esp32s3`, then `crates/sonde-modem/sdkconfig.defaults`. ESP-IDF applies overrides in list order, so for a given key the **last** value wins; therefore, the effective watchdog timeout for the modem is 35 seconds. The longer timeout accommodates BLE stack operations (pairing, indication pacing) which can stall the main loop longer than the node firmware's radio-only workload.
+> **sdkconfig note (D9-6):** The root `sdkconfig.defaults.esp32s3` sets `CONFIG_ESP_TASK_WDT_TIMEOUT_S=10`, and the modem crate's `crates/sonde-modem/sdkconfig.defaults` sets it to 35. During the modem build, both files are passed to ESP-IDF via `ESP_IDF_SDKCONFIG_DEFAULTS` in the order `sdkconfig.defaults.esp32s3;crates/sonde-modem/sdkconfig.defaults`. ESP-IDF applies defaults files in list order, with later files overriding earlier ones, so the crate-specific value of 35 seconds takes precedence. The effective watchdog timeout for the modem is therefore 35 seconds.
 
 ---
 
@@ -377,13 +377,14 @@ The characteristic supports Write for phone→gateway messages and Indicate (wit
 
 ### 15.2  LESC pairing
 
-The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-0402, MD-0404). During pairing:
+The modem uses BLE LESC Numeric Comparison as the default pairing method (MD-0402, MD-0404). The modem proactively initiates LESC pairing from the server side by calling `ble_gap_security_initiate(conn_handle)` in the `on_connect` callback (MD-0404 criterion 5). This sends an SMP Security Request to the client, ensuring pairing is triggered regardless of client behavior. During pairing:
 
-1. The NimBLE stack generates a 6-digit passkey.
-2. The modem sends `BLE_PAIRING_CONFIRM` to the gateway with the passkey.
-3. The BLE stack proceeds with LESC key exchange immediately (see D9-5 below — `on_confirm_pin` cannot block). The modem then waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`) — before setting the `authenticated` flag and emitting `BLE_CONNECTED`.
-4. If no reply arrives within 30 seconds, the modem rejects the pairing (MD-0414).
-5. On successful pairing and operator acceptance, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
+1. The `on_connect` callback calls `ble_gap_security_initiate(conn_handle)` to start the SMP exchange.
+2. The NimBLE stack generates a 6-digit passkey.
+3. The modem sends `BLE_PAIRING_CONFIRM` to the gateway with the passkey.
+4. The BLE stack proceeds with LESC key exchange immediately (see D9-5 below — `on_confirm_pin` cannot block). The modem then waits for `BLE_PAIRING_CONFIRM_REPLY` — accept (`0x01`) or reject (`0x00`) — before setting the `authenticated` flag and emitting `BLE_CONNECTED`.
+5. If no reply arrives within 30 seconds, the modem rejects the pairing (MD-0414).
+6. On successful pairing and operator acceptance, the link is encrypted and `BLE_CONNECTED` is sent (MD-0410).
 
 Just Works remains available as a fallback when the phone does not support Numeric Comparison (MD-0404).
 
@@ -391,7 +392,9 @@ Just Works remains available as a fallback when the phone does not support Numer
 
 #### 15.2.1  Write gating on `authenticated` flag (D9-4)
 
-GATT writes to the Gateway Command characteristic are gated on the `authenticated` flag in `BleState` (MD-0402, MD-0414). The flag is `false` at connection time and only set to `true` after LESC pairing completes *and* the operator accepts the Numeric Comparison passkey. While `authenticated` is `false`, inbound GATT writes are ignored/discarded (not forwarded to the gateway) and a warning is logged. This prevents data relay before the session is fully approved.
+GATT writes to the Gateway Command characteristic are gated on the `authenticated` flag in `BleState` (MD-0402, MD-0414). The flag is `false` at connection time and only set to `true` after LESC pairing completes *and* the operator accepts the Numeric Comparison passkey.
+
+Because the modem initiates LESC pairing server-side in `on_connect` (MD-0404 criterion 5), clients may send their first GATT write (e.g. `REQUEST_GW_INFO`) before the SMP handshake and operator confirmation complete. Rather than silently discarding such writes, the modem buffers **one** pre-authentication write in `BleState::pending_write`. When `authenticated` becomes `true`, the buffered write is flushed to the event queue as a `BleEvent::Recv` immediately before the deferred `BleEvent::Connected`. This ensures the gateway receives the write without requiring the client to retry. The buffer is cleared on disconnect.
 
 ### 15.3  ATT MTU and indication pacing
 
@@ -411,6 +414,8 @@ On disconnection:
 - All GATT state is cleaned up; subsequent connections start fresh (MD-0405).
 
 > **Reason code approximation (D10-4):** NimBLE's `on_disconnect` callback provides a `BLEError` result, but the wrapper does not expose a public accessor for the raw HCI reason code. The modem maps `Ok(())` to `0x16` (`BLE_ERR_CONN_TERM_LOCAL`) and any `Err(_)` to `0x13` (`BLE_ERR_REM_USER_CONN_TERM`) as a best-effort default. This means the exact HCI reason code reported in `BLE_DISCONNECTED` may not match the actual reason. This is a NimBLE Rust binding limitation.
+
+The modem enforces a 60-second idle timeout on BLE connections (MD-0415). A timer starts when a client connects. If no BLE pairing procedure is initiated within 60 seconds, the modem disconnects the client, sends `BLE_DISCONNECTED`, and resumes advertising (if enabled). Once Numeric Comparison or passkey confirmation has started, the separate 30-second pairing timeout defined in MD-0414 applies instead of the 60-second idle timeout. This prevents abandoned or malicious connections from blocking the single-client BLE slot indefinitely.
 
 BLE pairing operations do not interfere with concurrent ESP-NOW radio operations (MD-0405).
 

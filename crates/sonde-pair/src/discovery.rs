@@ -141,6 +141,7 @@ impl<T: BleTransport> DeviceScanner<T> {
         let now = Instant::now();
         let discovered = self.transport.get_discovered_devices().await?;
 
+        debug!("refresh: discovered {} devices", discovered.len());
         for device in discovered {
             if is_target_device(&device) {
                 let is_new = !self.known.contains_key(&device.address);
@@ -154,6 +155,13 @@ impl<T: BleTransport> DeviceScanner<T> {
                     );
                 }
                 self.known.insert(device.address, (device, now));
+            } else {
+                debug!(
+                    name = %device.name,
+                    addr = ?device.address,
+                    uuids = ?device.service_uuids,
+                    "device filtered out (no target UUID)"
+                );
             }
         }
 

@@ -676,17 +676,41 @@ fn test_mem_oob() {
 // ── Read-only context tests ────────────────────────────────────────
 
 #[test]
-fn test_read_only_ctx_rejects_store() {
-    // stb [r1+0], 0x42; exit
+fn test_read_only_ctx_ignores_store() {
+    // stb [r1+0], 0x42; r0 = ldxb [r1+0]; exit
+    // The store is silently ignored (ND-0505 AC6), so the load reads the
+    // original value and execution continues normally.
     let prog = prog_from(&[
         insn(ebpf::ST_B_IMM, 1, 0, 0, 0x42),
+        insn(ebpf::LD_B_REG, 0, 1, 0, 0),
         insn(ebpf::EXIT, 0, 0, 0, 0),
     ]);
     let mut mem = [0u8; 16];
-    assert!(matches!(
-        execute_program_no_maps(&prog, &mut mem, &[], true, UNLIMITED_BUDGET),
-        Err(BpfError::ReadOnlyWrite { .. })
-    ));
+    // read_only_ctx = true: write is silently ignored, context unchanged.
+    let result = execute_program_no_maps(&prog, &mut mem, &[], true, UNLIMITED_BUDGET).unwrap();
+    assert_eq!(
+        result, 0,
+        "write must have no effect; load reads original 0"
+    );
+    assert_eq!(mem[0], 0, "context byte must be unchanged");
+}
+
+#[test]
+fn test_read_only_ctx_oob_store_rejected() {
+    // stb [r1+16], 0x42; exit
+    // Out-of-bounds store to read-only context must still be rejected
+    // (bounds validation occurs before the silent-ignore path).
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 1, 0, 16, 0x42),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [0u8; 16];
+    let result = execute_program_no_maps(&prog, &mut mem, &[], true, UNLIMITED_BUDGET);
+    assert!(
+        matches!(result, Err(BpfError::MemoryAccessViolation { .. })),
+        "out-of-bounds store to read-only context must fail: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -757,5 +781,74 @@ fn test_instruction_budget_ld_dw_imm_counts_two_slots() {
     assert_eq!(
         execute_program_no_maps(&prog, &mut mem, &[], false, 3).unwrap(),
         42
+    );
+}
+
+// ── Stack frame boundary tests (bpf-env §3.3, §5.2) ────────────────
+
+#[test]
+fn test_stack_frame_512_byte_boundary_valid() {
+    // Store a byte at the very bottom of the 512-byte frame (r10 - 512)
+    // and read it back. This must succeed.
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 10, 0, -512, 0x42),
+        insn(ebpf::LD_B_REG, 0, 10, -512, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert_eq!(
+        execute_program_no_maps(&prog, &mut mem, &[], false, UNLIMITED_BUDGET).unwrap(),
+        0x42
+    );
+}
+
+#[test]
+fn test_stack_total_boundary_valid() {
+    // The total stack is 512 * 8 = 4096 bytes. Store a byte at the very
+    // bottom (r10 - 4096) and read it back. This must succeed.
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 10, 0, -4096, 0xAB),
+        insn(ebpf::LD_B_REG, 0, 10, -4096, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert_eq!(
+        execute_program_no_maps(&prog, &mut mem, &[], false, UNLIMITED_BUDGET).unwrap(),
+        0xAB
+    );
+}
+
+#[test]
+fn test_stack_total_boundary_exceeded_rejected() {
+    // Attempt to store a byte at r10 - 4097, one byte beyond the total
+    // 4096-byte stack. This must fail with a memory access violation.
+    let prog = prog_from(&[
+        insn(ebpf::ST_B_IMM, 10, 0, -4097, 0x42),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert!(
+        matches!(
+            execute_program_no_maps(&prog, &mut mem, &[], false, UNLIMITED_BUDGET),
+            Err(BpfError::MemoryAccessViolation { .. })
+        ),
+        "store beyond total stack must be rejected"
+    );
+}
+
+#[test]
+fn test_stack_frame_word_at_boundary() {
+    // Store a 4-byte word at the very bottom of the 512-byte frame
+    // (r10 - 512). The access spans bytes [r10-512..r10-509], all within
+    // the frame.
+    let prog = prog_from(&[
+        insn(ebpf::ST_W_IMM, 10, 0, -512, 0x12345678u32 as i32),
+        insn(ebpf::LD_W_REG, 0, 10, -512, 0),
+        insn(ebpf::EXIT, 0, 0, 0, 0),
+    ]);
+    let mut mem = [];
+    assert_eq!(
+        execute_program_no_maps(&prog, &mut mem, &[], false, UNLIMITED_BUDGET).unwrap(),
+        0x12345678
     );
 }

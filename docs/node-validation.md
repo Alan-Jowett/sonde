@@ -824,9 +824,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Boot node into BLE pairing mode.
 2. Scan for BLE advertisements from a test central.
 3. Assert: advertisement contains Node Provisioning Service UUID `0000FE50-0000-1000-8000-00805F9B34FB`.
-4. Assert: device name matches `sonde-XXXX` where XXXX = last 4 hex digits of BLE MAC.
+4. Assert: device name in the advertising payload matches `sonde-XXXX` where XXXX = last 4 hex digits of BLE MAC.
 5. Connect and discover services.
 6. Assert: Node Command characteristic `0000FE51-0000-1000-8000-00805F9B34FB` is present with Write+Indicate properties.
+7. Assert: the GAP device name (read after connecting) matches `sonde-XXXX`, not the NimBLE default (`nimble`) (ND-0903 criterion 3).
 
 ---
 

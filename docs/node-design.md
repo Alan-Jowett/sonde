@@ -561,7 +561,7 @@ This matches the modem's BLE configuration so that the same phone app can pair w
 
 ### 15.4  Advertising
 
-The node advertises as `sonde-XXXX` where `XXXX` is the last two bytes of the BLE MAC in hex (ND-0903). The advertisement includes the `0xFE50` service UUID for phone-side filtering.
+The node advertises as `sonde-XXXX` where `XXXX` is the last two bytes of the BLE MAC in hex (ND-0903). The advertisement includes the `0xFE50` service UUID for phone-side filtering. The GAP device name is set to the same value via `BLEDevice::set_device_name()` before advertising starts (ND-0903 criterion 3), so connected clients see the correct name instead of the NimBLE default (`nimble`).
 
 ### 15.5  Event flow
 

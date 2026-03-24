@@ -1815,7 +1815,7 @@ A configurable stub handler process (or in-process mock) that:
 3. Submit a valid WAKE frame for the node.
 4. Assert: an `INFO`-level log entry is emitted containing the node's `node_id`, `seq` (starting sequence number), and `battery_mv`.
 5. Assert: an `INFO`-level log entry is emitted for session creation with the node's `node_id`.
-6. Assert: an `INFO`-level log entry is emitted for COMMAND sent with the node's `node_id` and `command_type`.
+6. Assert: an `INFO`-level log entry is emitted for COMMAND selected with the node's `node_id` and `command_type`.
 
 ---
 
@@ -1824,9 +1824,9 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-1300
 
 **Procedure:**
-1. Configure a gateway with a very short session timeout (e.g., 1 ms) and `#[traced_test]`.
+1. Configure a gateway with a very short session timeout (e.g., 1 ms) and `#[traced_test]`, and run the test under a deterministic clock (for example, using `tokio::time::pause()` + `tokio::time::advance()` or an injected fake clock).
 2. Register a test node and submit a valid WAKE to create a session.
-3. Wait for the session to expire.
+3. Advance the test clock until the session timeout has elapsed (e.g., by at least the configured timeout plus a small delta) so that the session is considered expired.
 4. Call `reap_expired()` on the session manager.
 5. Assert: an `INFO`-level log entry is emitted for session expiry with the node's `node_id`.
 
@@ -1841,7 +1841,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Set up phone trust and gateway identity for BLE pairing.
 3. Submit a valid `PEER_REQUEST` frame.
 4. Assert: an `INFO`-level log entry is emitted with `node_id`, `key_hint`, and `result` = `"registered"`.
-5. Assert: an `INFO`-level log entry is emitted for PEER_ACK sent with `node_id`.
+5. Assert: an `INFO`-level log entry is emitted for PEER_ACK frame encoded with `node_id`.
 
 ---
 

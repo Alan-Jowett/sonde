@@ -357,6 +357,9 @@ async fn run_gateway(
             }
         };
 
+        // GW-1301: log serial connection.
+        info!("modem serial connected");
+
         let transport = match UsbEspNowTransport::new(serial_port, cli.channel).await {
             Ok(t) => Arc::new(t),
             Err(e) => {
@@ -545,6 +548,9 @@ async fn run_gateway(
                 break; // gRPC failure is not recoverable
             }
         }
+
+        // GW-1301: log modem disconnecting before reconnect attempt.
+        info!("modem disconnecting");
 
         // Transport disconnected — retry after backoff (GW-1103, GW-1301).
         info!(

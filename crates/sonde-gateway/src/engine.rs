@@ -474,8 +474,8 @@ impl Gateway {
 
         let frame = encode_frame(&ack_header, &ack_cbor_buf, &node_psk, &self.crypto_hmac).ok()?;
 
-        // GW-1300 AC2: log PEER_ACK sent.
-        info!(node_id = %record.node_id, "PEER_ACK sent");
+        // GW-1300 AC2: log PEER_ACK frame encoded (transport send happens later).
+        info!(node_id = %record.node_id, "PEER_ACK frame encoded");
 
         Some(frame)
     }
@@ -609,7 +609,7 @@ impl Gateway {
                 .await;
         }
 
-        // GW-1300 AC4: log COMMAND sent.
+        // GW-1300 AC4: log COMMAND selected (transport send happens later).
         let command_type = match &command_payload {
             CommandPayload::Nop => "Nop",
             CommandPayload::UpdateProgram { .. } => "UpdateProgram",
@@ -620,7 +620,7 @@ impl Gateway {
         info!(
             node_id = %node.node_id,
             command_type,
-            "COMMAND sent"
+            "COMMAND selected"
         );
 
         // 5. Encode GatewayMessage::Command response

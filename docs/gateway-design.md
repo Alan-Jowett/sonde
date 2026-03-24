@@ -626,7 +626,7 @@ The gateway uses the `tracing` crate for structured, levelled logging. All log e
 |---|---|
 | `ERROR` | Unrecoverable failures: handler crash, storage write failure, serial disconnect |
 | `WARN` | Recoverable anomalies: malformed CBOR, HMAC mismatch, ABI mismatch, modem tx failures |
-| `INFO` | Operator-relevant lifecycle events: node WAKE, COMMAND sent, session create/expire, PEER_REQUEST processed, PEER_ACK sent, modem transport state transitions |
+| `INFO` | Operator-relevant lifecycle events: node WAKE, COMMAND selected, session create/expire, PEER_REQUEST processed, PEER_ACK frame encoded, modem transport state transitions |
 | `DEBUG` | Developer diagnostics: individual modem frames (send/recv), channel-full drops, health polls |
 
 ### 11A.1  Engine lifecycle logging
@@ -634,9 +634,9 @@ The gateway uses the `tracing` crate for structured, levelled logging. All log e
 The `Gateway::process_frame` / `handle_wake` / `handle_peer_request` methods emit structured `info!()` entries for:
 
 - **PEER_REQUEST processed** — `node_id`, `key_hint`, `result` (`"registered"` or `"duplicate"`)
-- **PEER_ACK sent** — `node_id`
+- **PEER_ACK frame encoded** — `node_id`
 - **WAKE received** — `node_id`, `seq`, `battery_mv`
-- **COMMAND sent** — `node_id`, `command_type`
+- **COMMAND selected** — `node_id`, `command_type`
 - **Session created** — `node_id` (emitted in `handle_wake` after `create_session`)
 - **Session expired** — `node_id` (emitted in `SessionManager::reap_expired`)
 
@@ -644,13 +644,14 @@ The `Gateway::process_frame` / `handle_wake` / `handle_peer_request` methods emi
 
 The gateway binary (`bin/gateway.rs`) logs modem transport state transitions at `INFO` level:
 
+- `"modem serial connected"` — after the serial port is opened
 - `"modem transport ready"` — after successful startup handshake
-- `"modem disconnected — reconnecting"` — when the serial reader exits
-- `"attempting modem reconnection"` — before each reconnection backoff sleep
+- `"modem disconnecting"` — when a transport subsystem exits unexpectedly
+- `"modem disconnected — reconnecting"` — before each reconnection backoff sleep, with `backoff_s` indicating the delay in seconds
 
 ### 11A.3  Frame-level debug traces
 
-The `UsbEspNowTransport` logs each frame at `DEBUG` level in `dispatch_message` (recv path) and `Transport::send` (send path), with fields `msg_type`, `peer_mac`, and `len`.
+The `UsbEspNowTransport` logs each frame at `DEBUG` level in `dispatch_message` (recv path) and `Transport::send` (send path), with fields `msg_type` (decoded from the protocol frame header, e.g., `"WAKE"`, `"COMMAND"`), `peer_mac`, and `len`. The send-path log is emitted only after a successful write to the modem.
 
 ---
 

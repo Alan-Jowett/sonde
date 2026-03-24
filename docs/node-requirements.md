@@ -1105,12 +1105,13 @@ The node MUST log at INFO level when entering deep sleep, including the sleep du
 **Source:** issue #459
 
 **Description:**  
-The node MUST log at INFO level when entering and exiting BLE pairing mode.
+The node MUST log at INFO level when entering BLE pairing mode, and MUST log when exiting BLE pairing mode. Exit logs SHOULD use INFO level for normal completion, but MAY use WARN level when pairing fails (for example, `BLE pairing mode failed`).
 
 **Acceptance criteria:**
 
 1. An INFO log is emitted on pairing mode entry.
-2. An INFO log is emitted on pairing mode exit (disconnect or timeout).
+2. On pairing mode exit (disconnect, timeout, or failure), a log is emitted indicating that pairing mode has exited and the outcome (success, timeout, disconnect, or failure).
+3. Exit logs for normal completion (disconnect or timeout without error) are at INFO level. Exit logs for failure MAY be at WARN level instead of INFO.
 
 ---
 

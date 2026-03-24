@@ -1188,7 +1188,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Complete or abort a BLE pairing session.
 2. Capture serial output.
-3. Assert: an INFO log is emitted containing "BLE pairing mode exited" or "BLE pairing mode failed".
+3. Assert: a log at INFO or WARN level is emitted containing "BLE pairing mode exited" or "BLE pairing mode failed".
 
 ---
 

@@ -43,15 +43,23 @@ const MAX_RESIDENT_IMAGE_SIZE: usize = 4096;
 /// Maximum ephemeral program image size (2 KB, stored in RAM).
 const MAX_EPHEMERAL_IMAGE_SIZE: usize = 2048;
 
-/// Format the first 4 bytes of a hash as a hex prefix (8 hex chars).
-/// Uses `String::with_capacity` and `write!` to avoid per-byte `format!` allocations.
-fn hash_hex_prefix(hash: &[u8]) -> String {
-    use core::fmt::Write;
-    let mut s = String::with_capacity(8);
-    for &b in hash.iter().take(4) {
-        let _ = write!(s, "{:02x}", b);
+/// Lightweight wrapper that formats the first 4 bytes of a hash as a hex prefix (8 hex chars).
+/// Intended for use in logging without performing any heap allocation.
+struct HashHexPrefix<'a>(&'a [u8]);
+
+impl<'a> core::fmt::Display for HashHexPrefix<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for &b in self.0.iter().take(4) {
+            write!(f, "{:02x}", b)?;
+        }
+        Ok(())
     }
-    s
+}
+
+/// Return a `Display`able view of the first 4 bytes of a hash as a hex prefix (8 hex chars).
+/// This avoids heap allocation; use with formatting macros like `log::info!`.
+fn hash_hex_prefix(hash: &[u8]) -> HashHexPrefix<'_> {
+    HashHexPrefix(hash)
 }
 
 /// Outcome of a wake cycle.
@@ -125,12 +133,14 @@ where
     if !rng.health_check() {
         log::warn!("RNG health check failed — aborting wake cycle (ND-1009)");
         let (base_interval_s, _) = storage.read_schedule();
+        let effective_sleep_s =
+            SleepManager::new(base_interval_s, WakeReason::Scheduled).effective_sleep_s();
         log::info!(
             "entering deep sleep duration_seconds={} reason=scheduled (ND-1007)",
-            base_interval_s,
+            effective_sleep_s,
         );
         return WakeCycleOutcome::Sleep {
-            seconds: base_interval_s,
+            seconds: effective_sleep_s,
         };
     }
 

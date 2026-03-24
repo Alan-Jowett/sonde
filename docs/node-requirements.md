@@ -1121,13 +1121,15 @@ The node MUST log at INFO level when entering BLE pairing mode, and MUST log whe
 **Source:** issue #459
 
 **Description:**  
-The node MUST log error conditions at WARN level, including RNG health-check failure, transport timeout (WAKE retries exhausted), and HMAC verification mismatch.
+The node MUST log error conditions at WARN level, including RNG health-check failure, transport timeout (WAKE retries exhausted), HMAC verification mismatch, program install failure, and chunk transfer failure.
 
 **Acceptance criteria:**
 
 1. A WARN log is emitted when the RNG health check fails.
 2. A WARN log is emitted when WAKE retries are exhausted.
 3. A WARN log is emitted on HMAC verification failure during frame verification.
+4. A WARN log is emitted when a program install fails (hash mismatch, decode error, or map budget exceeded), including the error description.
+5. A WARN log is emitted when a chunk transfer fails (timeout, size mismatch), including the error description.
 
 ---
 

@@ -143,7 +143,7 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 │ Authenticating          │
 │ write REQUEST_GW_INFO   │
 │ (32-byte challenge)     │
-│ wait GW_INFO_RESPONSE   │──── timeout 5s ────► Error("timeout")
+│ wait GW_INFO_RESPONSE   │──── timeout 45s ───► Error("timeout")
 │                         │──── bad signature ──► Error("auth failed")
 └────┬────────────────────┘                      disconnect
      │ signature valid
@@ -697,6 +697,7 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 - **Pre-connect scan:** When `pair_gateway` creates a fresh `BtleplugTransport`, the adapter has no cached peripherals.  The `connect()` method runs a short 3-second scan if the target is not found in the cache.
 - **Storage:** `%APPDATA%\sonde\pairing.json` with restricted file permissions (ACL: user-only read/write).
 - **Known issues:** Some Windows BLE drivers have limited Write Long support.  The transport should fall back to standard writes if the payload fits within (MTU − 3) bytes and only use Write Long for larger messages.
+- **GATT write retry (WinRT auth errors):** On Windows, a GATT write issued before WinRT has completed its internal authentication handshake fails with `HRESULT 0x80650005`.  `BtleplugTransport` retries the write up to 6 times with a 5-second delay between attempts, allowing the OS pairing dialog and LESC handshake to complete.  If all retries are exhausted, the write is reported as failed.
 
 ### 9.2  Android (Android BLE API)
 

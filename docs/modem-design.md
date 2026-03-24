@@ -58,7 +58,7 @@ The firmware is intentionally minimal — no application- or protocol-layer cryp
 | **Counters & status** | `tx_count`, `rx_count`, `tx_fail_count`, `uptime_s` tracking | MD-0303 |
 | **BLE driver** | NimBLE stack init, advertising start/stop, GATT server, LESC pairing | MD-0402, MD-0404, MD-0407, MD-0412 |
 | **BLE GATT service** | Gateway Pairing Service + Gateway Command characteristic; indication pacing; Write Long reassembly | MD-0400, MD-0401, MD-0403, MD-0408, MD-0409 |
-| **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414 |
+| **BLE lifecycle** | `BLE_ENABLE`/`BLE_DISABLE` handling, connection/disconnection events, `BLE_CONNECTED`/`BLE_DISCONNECTED` notifications, idle timeout | MD-0405, MD-0410, MD-0411, MD-0413, MD-0414, MD-0415 |
 | **Watchdog** *(cross-cutting)* | Task watchdog feed in main loop; hardware reset on stall | MD-0302 |
 
 ---
@@ -274,7 +274,7 @@ The firmware uses the ESP-IDF task watchdog (`esp_task_wdt`):
 - If the main loop stalls (e.g., deadlock, infinite loop), the watchdog triggers a hardware reset (`CONFIG_ESP_TASK_WDT_PANIC=y`).
 - After reset, the firmware boots normally and sends `MODEM_READY`.
 
-> **sdkconfig note (D9-6):** The root `sdkconfig.defaults.esp32s3` sets `CONFIG_ESP_TASK_WDT_TIMEOUT_S=10`, and the modem crate's `crates/sonde-modem/sdkconfig.defaults` sets it to 35. During the modem build, both files are passed to ESP-IDF via `ESP_IDF_SDKCONFIG_DEFAULTS` in this order: first `sdkconfig.defaults.esp32s3`, then `crates/sonde-modem/sdkconfig.defaults`. ESP-IDF applies overrides in list order, so for a given key the **last** value wins; therefore, the effective watchdog timeout for the modem is 35 seconds. The longer timeout accommodates BLE stack operations (pairing, indication pacing) which can stall the main loop longer than the node firmware's radio-only workload.
+> **sdkconfig note (D9-6):** The root `sdkconfig.defaults.esp32s3` sets `CONFIG_ESP_TASK_WDT_TIMEOUT_S=10`, and the modem crate's `crates/sonde-modem/sdkconfig.defaults` sets it to 35. During the modem build, both files are passed to ESP-IDF via `ESP_IDF_SDKCONFIG_DEFAULTS` in the order `sdkconfig.defaults.esp32s3;crates/sonde-modem/sdkconfig.defaults`. ESP-IDF applies defaults files in list order, with later files overriding earlier ones, so the crate-specific value of 35 seconds takes precedence. The effective watchdog timeout for the modem is therefore 35 seconds.
 
 ---
 
@@ -414,6 +414,8 @@ On disconnection:
 - All GATT state is cleaned up; subsequent connections start fresh (MD-0405).
 
 > **Reason code approximation (D10-4):** NimBLE's `on_disconnect` callback provides a `BLEError` result, but the wrapper does not expose a public accessor for the raw HCI reason code. The modem maps `Ok(())` to `0x16` (`BLE_ERR_CONN_TERM_LOCAL`) and any `Err(_)` to `0x13` (`BLE_ERR_REM_USER_CONN_TERM`) as a best-effort default. This means the exact HCI reason code reported in `BLE_DISCONNECTED` may not match the actual reason. This is a NimBLE Rust binding limitation.
+
+The modem enforces a 60-second idle timeout on BLE connections (MD-0415). A timer starts when a client connects. If no BLE pairing procedure is initiated within 60 seconds, the modem disconnects the client, sends `BLE_DISCONNECTED`, and resumes advertising (if enabled). Once Numeric Comparison or passkey confirmation has started, the separate 30-second pairing timeout defined in MD-0414 applies instead of the 60-second idle timeout. This prevents abandoned or malicious connections from blocking the single-client BLE slot indefinitely.
 
 BLE pairing operations do not interfere with concurrent ESP-NOW radio operations (MD-0405).
 

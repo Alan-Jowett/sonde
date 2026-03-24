@@ -502,6 +502,7 @@ When a phone writes to the Gateway Command characteristic, the modem MUST forwar
 2. Write Long payloads are reassembled before forwarding.
 3. The payload is forwarded unmodified.
 4. Empty GATT writes are silently discarded.
+5. If a GATT write arrives before server-initiated LESC pairing completes (i.e. `authenticated` is still `false`), the modem MUST buffer the write and forward it as `BLE_RECV` once authentication succeeds, rather than discarding it.
 
 ---
 

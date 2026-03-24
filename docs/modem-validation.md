@@ -493,17 +493,18 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 5. Assert: pairing succeeds, link is encrypted, and `BLE_CONNECTED` received.
 6. Send a GATT write. Assert: write is relayed via `BLE_RECV` (the `authenticated` flag is set).
 
-### T-0607b  GATT writes rejected before server-initiated pairing completes
+### T-0607b  Pre-auth GATT write buffered until authentication completes
 
-**Validates:** MD-0404 (criterion 5), MD-0414
+**Validates:** MD-0404 (criterion 5), MD-0409 (criterion 5)
 
 **Procedure:**
 1. Send `BLE_ENABLE`. Connect a BLE client (plain GATT connect, no client-initiated pairing).
 2. Immediately send a GATT write to the Gateway Command characteristic **before** pairing completes.
-3. Assert: the write is silently discarded (not forwarded via `BLE_RECV`).
-4. Assert: the modem logs a warning (`GATT write … bytes rejected (not authenticated)`).
+3. Assert: the write is **not** forwarded via `BLE_RECV` yet (it is buffered).
+4. Assert: the modem logs an info message (`GATT write … bytes buffered (awaiting authentication)`).
 5. Allow server-initiated pairing to complete, confirm via `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
-6. Send a second GATT write. Assert: this write is relayed via `BLE_RECV`.
+6. Assert: the buffered write is flushed and forwarded via `BLE_RECV` after `authenticated` becomes true.
+7. Assert: `BLE_CONNECTED` is sent after the flushed write.
 
 ---
 

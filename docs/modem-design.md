@@ -392,7 +392,9 @@ Just Works remains available as a fallback when the phone does not support Numer
 
 #### 15.2.1  Write gating on `authenticated` flag (D9-4)
 
-GATT writes to the Gateway Command characteristic are gated on the `authenticated` flag in `BleState` (MD-0402, MD-0414). The flag is `false` at connection time and only set to `true` after LESC pairing completes *and* the operator accepts the Numeric Comparison passkey. While `authenticated` is `false`, inbound GATT writes are ignored/discarded (not forwarded to the gateway) and a warning is logged. This prevents data relay before the session is fully approved.
+GATT writes to the Gateway Command characteristic are gated on the `authenticated` flag in `BleState` (MD-0402, MD-0414). The flag is `false` at connection time and only set to `true` after LESC pairing completes *and* the operator accepts the Numeric Comparison passkey.
+
+Because the modem initiates LESC pairing server-side in `on_connect` (MD-0404 criterion 5), clients may send their first GATT write (e.g. `REQUEST_GW_INFO`) before the SMP handshake and operator confirmation complete. Rather than silently discarding such writes, the modem buffers **one** pre-authentication write in `BleState::pending_write`. When `authenticated` becomes `true`, the buffered write is flushed to the event queue as a `BleEvent::Recv` immediately before the deferred `BleEvent::Connected`. This ensures the gateway receives the write without requiring the client to retry. The buffer is cleared on disconnect.
 
 ### 15.3  ATT MTU and indication pacing
 

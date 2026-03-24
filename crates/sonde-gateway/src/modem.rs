@@ -468,6 +468,14 @@ impl Transport for UsbEspNowTransport {
         let mut peer_mac = [0u8; 6];
         peer_mac.copy_from_slice(peer);
 
+        // GW-1302 AC2: log frame sent to modem at DEBUG level.
+        debug!(
+            msg_type = "SEND_FRAME",
+            peer_mac = ?peer_mac,
+            len = frame.len(),
+            "frame sent to modem"
+        );
+
         let msg = ModemMessage::SendFrame(SendFrame {
             peer_mac,
             frame_data: frame.to_vec(),
@@ -576,6 +584,13 @@ async fn dispatch_message(
 ) {
     match msg {
         ModemMessage::RecvFrame(rf) => {
+            // GW-1302 AC1: log frame received from modem at DEBUG level.
+            debug!(
+                msg_type = "RECV_FRAME",
+                peer_mac = ?rf.peer_mac,
+                len = rf.frame_data.len(),
+                "frame received from modem"
+            );
             let peer = rf.peer_mac.to_vec();
             match recv_tx.try_send((rf.frame_data, peer)) {
                 Ok(()) => {}

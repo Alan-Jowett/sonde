@@ -1803,6 +1803,61 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 13  Operational logging tests
+
+### T-1300  WAKE lifecycle logging
+
+**Validates:** GW-1300
+
+**Procedure:**
+1. Configure a gateway with `tracing-test` / `#[traced_test]`.
+2. Register a test node.
+3. Submit a valid WAKE frame for the node.
+4. Assert: an `INFO`-level log entry is emitted containing the node's `node_id`, `seq` (starting sequence number), and `battery_mv`.
+5. Assert: an `INFO`-level log entry is emitted for session creation with the node's `node_id`.
+6. Assert: an `INFO`-level log entry is emitted for COMMAND sent with the node's `node_id` and `command_type`.
+
+---
+
+### T-1301  Session expiry logging
+
+**Validates:** GW-1300
+
+**Procedure:**
+1. Configure a gateway with a very short session timeout (e.g., 1 ms) and `#[traced_test]`.
+2. Register a test node and submit a valid WAKE to create a session.
+3. Wait for the session to expire.
+4. Call `reap_expired()` on the session manager.
+5. Assert: an `INFO`-level log entry is emitted for session expiry with the node's `node_id`.
+
+---
+
+### T-1302  PEER_REQUEST logging
+
+**Validates:** GW-1300
+
+**Procedure:**
+1. Configure a gateway with `#[traced_test]`.
+2. Set up phone trust and gateway identity for BLE pairing.
+3. Submit a valid `PEER_REQUEST` frame.
+4. Assert: an `INFO`-level log entry is emitted with `node_id`, `key_hint`, and `result` = `"registered"`.
+5. Assert: an `INFO`-level log entry is emitted for PEER_ACK sent with `node_id`.
+
+---
+
+### T-1303  Modem frame debug logging
+
+**Validates:** GW-1302
+
+**Procedure:**
+1. Configure a `UsbEspNowTransport` with `#[traced_test]` at `DEBUG` level.
+2. Inject a `RECV_FRAME` from the mock modem.
+3. Assert: a `DEBUG`-level log entry is emitted with fields `msg_type`, `peer_mac`, and `len`.
+4. Call `Transport::send(frame, peer_mac)`.
+5. Assert: a `DEBUG`-level log entry is emitted with fields `msg_type`, `peer_mac`, and `len`.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -1886,3 +1941,6 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1222 | T-1221, T-1222 |
 | GW-1223 | T-1227 |
 | GW-1224 | T-1228 |
+| GW-1300 | T-1300, T-1301, T-1302 |
+| GW-1301 | *(verified by integration/manual testing)* |
+| GW-1302 | T-1303 |

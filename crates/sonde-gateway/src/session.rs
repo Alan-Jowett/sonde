@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::RwLock;
 use tokio::time::Instant;
+use tracing::info;
 
 use crate::transport::PeerAddress;
 
@@ -174,6 +175,8 @@ impl SessionManager {
 
         for id in &expired {
             sessions.remove(id);
+            // GW-1300 AC6: log session expiry.
+            info!(node_id = %id, "session expired");
         }
         expired
     }

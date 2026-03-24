@@ -427,6 +427,11 @@ impl BleTransport for BtleplugTransport {
                 loop {
                     match state.notification_stream.next().await {
                         Some(notif) if notif.uuid == char_uuid => {
+                            debug!(
+                                characteristic = %char_uuid,
+                                len = notif.value.len(),
+                                "GATT indication received"
+                            );
                             return Ok(notif.value);
                         }
                         Some(_) => continue,

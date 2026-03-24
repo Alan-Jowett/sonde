@@ -903,6 +903,66 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 
 ---
 
+## 9  Operational logging tests
+
+### T-0700  ESP-NOW received frame logged
+
+**Validates:** MD-0500
+
+**Procedure:**
+1. Transmit an ESP-NOW frame from a radio peer.
+2. Assert: the diagnostic UART contains an INFO-level log line with the peer MAC, payload length, and RSSI.
+
+---
+
+### T-0701  ESP-NOW sent frame logged
+
+**Validates:** MD-0500
+
+**Procedure:**
+1. Send a `SEND_FRAME` command to the modem via USB-CDC that is expected to succeed.
+2. Assert: the diagnostic UART contains an INFO-level log line with the destination peer MAC, payload length, and send result (success).
+3. Induce an ESP-NOW send failure (for example, by targeting a non-responsive or invalid peer) using a `SEND_FRAME` command.
+4. Assert: the diagnostic UART contains a WARN-level log line with the destination peer MAC, payload length, and send result (failure).
+
+---
+
+### T-0702  USB-CDC messages logged at DEBUG
+
+**Validates:** MD-0503
+
+**Procedure:**
+1. Enable DEBUG-level logging on the modem.
+2. Send a `SEND_FRAME` command from the gateway.
+3. Assert: the diagnostic UART contains a DEBUG-level log line indicating the received message type.
+4. Trigger a `RECV_FRAME` event from the radio.
+5. Assert: the diagnostic UART contains a DEBUG-level log line indicating the sent message type and encoded length.
+
+---
+
+### T-0703  BLE lifecycle events logged
+
+**Validates:** MD-0501
+
+**Procedure:**
+1. Send `BLE_ENABLE`. Assert: INFO log "BLE advertising started".
+2. Connect a BLE client. Assert: INFO log with peer address and MTU.
+3. Complete pairing and disconnect. Assert: INFO log with peer address and reason code.
+4. Send `BLE_DISABLE`. Assert: INFO log "BLE advertising stopped".
+
+---
+
+### T-0704  BLE GATT write logging
+
+**Validates:** MD-0502
+
+**Procedure:**
+1. Connect and authenticate a BLE client.
+2. Write 20 bytes via GATT.
+3. Assert: INFO log indicating GATT write with payload length 20.
+
+---
+
 ## Appendix A  Test index
 
 | ID | Title | Validates |
@@ -970,3 +1030,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0634 | Write Long reassembly | MD-0409 |
 | T-0635 | BLE_ENABLE and BLE_DISABLE idempotency | MD-0413 |
 | T-0636 | BLE idle timeout disconnects unfinished pairing | MD-0415 |
+| T-0700 | ESP-NOW received frame logged | MD-0500 |
+| T-0701 | ESP-NOW sent frame logged | MD-0500 |
+| T-0702 | USB-CDC messages logged at DEBUG | MD-0503 |
+| T-0703 | BLE lifecycle events logged | MD-0501 |
+| T-0704 | BLE GATT write logging | MD-0502 |

@@ -113,6 +113,10 @@ impl<T: BleTransport> DeviceScanner<T> {
         self.scanning = true;
         self.scan_started_at = Some(Instant::now());
         self.known.clear();
+        debug!(
+            services = ?[GATEWAY_SERVICE_UUID, NODE_SERVICE_UUID],
+            "scan started"
+        );
         Ok(())
     }
 
@@ -124,6 +128,7 @@ impl<T: BleTransport> DeviceScanner<T> {
             self.transport.stop_scan().await?;
             self.scanning = false;
             self.scan_started_at = None;
+            debug!("scan stopped");
         }
         Ok(())
     }
@@ -139,7 +144,16 @@ impl<T: BleTransport> DeviceScanner<T> {
         debug!("refresh: discovered {} devices", discovered.len());
         for device in discovered {
             if is_target_device(&device) {
-                debug!(name = %device.name, addr = ?device.address, "target device found");
+                let is_new = !self.known.contains_key(&device.address);
+                if is_new {
+                    debug!(
+                        name = %device.name,
+                        address = ?device.address,
+                        rssi = device.rssi,
+                        service_uuids = ?device.service_uuids,
+                        "device discovered"
+                    );
+                }
                 self.known.insert(device.address, (device, now));
             } else {
                 debug!(
@@ -152,8 +166,13 @@ impl<T: BleTransport> DeviceScanner<T> {
         }
 
         let stale = self.stale_timeout;
+        let before = self.known.len();
         self.known
             .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < stale);
+        let evicted = before - self.known.len();
+        if evicted > 0 {
+            debug!(evicted_count = evicted, "stale devices evicted");
+        }
 
         Ok(())
     }

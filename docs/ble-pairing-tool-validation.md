@@ -1107,6 +1107,88 @@ TestNode {
 
 ---
 
+## 12  Diagnostic logging tests
+
+### T-PT-1207  BLE scan events logged
+
+**Validates:** PT-1207
+
+**Procedure:**
+1. Configure a `MockBleTransport` with two target devices and one unrelated device.
+2. Initialise a `tracing-test` subscriber with `#[traced_test]`.
+3. Create a `DeviceScanner`, call `start()`, then `refresh()`.
+4. Assert: captured logs contain a `debug` event with text "scan started" and the UUID filter list.
+5. Call `stop()`.
+6. Assert: captured logs contain a `debug` event with text "scan stopped".
+7. Assert: captured logs contain `debug` events for each discovered target device with `name`, `address`, `rssi`.
+
+---
+
+### T-PT-1208  Connection lifecycle events logged
+
+**Validates:** PT-1208
+
+**Procedure:**
+1. Configure a `MockBleTransport` with MTU 247.
+2. Initialise a `tracing-test` subscriber with `#[traced_test]`.
+3. Run `pair_with_gateway` or `provision_node` with mock data.
+4. Assert: captured logs contain a `debug` or `info` event with "connecting".
+5. Assert: captured logs contain a `debug` event with `mtu` field.
+6. Assert: captured logs contain a `debug` event with "disconnected".
+
+---
+
+### T-PT-1209  GATT write and indication events logged
+
+**Validates:** PT-1209
+
+**Procedure:**
+1. Run a Phase 1 happy path with mock transport and `#[traced_test]`.
+2. Assert: captured logs contain `trace` events for each `BLE write` with `msg` type name and `len`.
+3. Assert: captured logs contain `trace` events for each `BLE indication received` with `msg_type` and `len` fields.
+4. Assert: transport-level `debug` events for `GATT write complete` include `characteristic` and `len`.
+5. Assert: no log event contains raw PSK, private key, or shared secret bytes.
+
+---
+
+### T-PT-1210  Phase transition events logged
+
+**Validates:** PT-1210
+
+**Procedure:**
+1. Run a Phase 1 happy path with mock transport, progress callback, and `#[traced_test]`.
+2. Assert: captured logs contain `info` events for "connecting to gateway" and "Phase 1 complete".
+3. Assert: the completion log includes `phone_key_hint` and `rf_channel` fields.
+4. Run a Phase 2 happy path.
+5. Assert: captured logs contain `info` events for "connecting to node" and "Phase 2 complete".
+
+---
+
+### T-PT-1211  LESC pairing method logged
+
+**Validates:** PT-1211
+
+**Procedure:**
+1. Run a Phase 1 happy path with a mock transport that reports `PairingMethod::NumericComparison`.
+2. Capture tracing output with `#[traced_test]`.
+3. Assert: captured logs contain a `debug` event with `pairing_method` field.
+
+---
+
+### T-PT-1212  Error context in log output
+
+**Validates:** PT-1212
+
+**Procedure:**
+1. Configure a mock transport to cause a `GW_INFO_RESPONSE` timeout (45 s).
+2. Run Phase 1, capture the error, and capture tracing output (e.g., with `#[traced_test]`).
+3. Assert: the error is `PairingError::IndicationTimeout` and the captured logs include an event for the `GW_INFO_RESPONSE` timeout with fields for the operation name and timeout duration (45 s).
+4. Configure a mock transport to return an `ERROR` response with status `0x02`.
+5. Run Phase 1 and capture the error.
+6. Assert: the error includes the status code in its display output.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Test ID | Requirement | Title |
@@ -1189,3 +1271,9 @@ TestNode {
 | T-PT-902 | PT-1102 | AES-GCM AAD = gateway_id |
 | T-PT-903 | PT-1103 | CBOR deterministic encoding (known test vector) |
 | T-PT-1004 | PT-1004 | Core crate builds and works without platform features |
+| T-PT-1207 | PT-1207 | BLE scan events logged |
+| T-PT-1208 | PT-1208 | Connection lifecycle events logged |
+| T-PT-1209 | PT-1209 | GATT write and indication events logged |
+| T-PT-1210 | PT-1210 | Phase transition events logged |
+| T-PT-1211 | PT-1211 | LESC pairing method logged |
+| T-PT-1212 | PT-1212 | Error context in log output |

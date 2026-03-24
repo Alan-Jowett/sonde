@@ -1004,7 +1004,7 @@ The node MUST log the boot reason at INFO level during startup, distinguishing b
 **Source:** issue #459
 
 **Description:**  
-The node MUST log the start of each wake cycle at INFO level, including the node's `key_hint` and the current sequence context.
+The node MUST log the start of each wake cycle at INFO level, including the node's `key_hint` and the `wake_reason`.
 
 **Acceptance criteria:**
 

@@ -171,7 +171,6 @@ fn main() {
 
     match outcome {
         WakeCycleOutcome::Sleep { seconds } => {
-            info!("entering deep sleep for {} seconds", seconds);
             sleep_ctrl.enter_deep_sleep(seconds);
         }
         WakeCycleOutcome::Reboot => {

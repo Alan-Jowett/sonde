@@ -688,7 +688,7 @@ The following events are logged per the ND-10xx requirements:
 | PEER_ACK received | INFO | `peer_request.rs` | registration result | ND-1005 |
 | BPF execution | INFO | `wake_cycle.rs` | `program_hash` (truncated), result | ND-1006 |
 | Deep sleep entry | INFO | `wake_cycle.rs` | `duration_seconds`, `reason` | ND-1007 |
-| BLE pairing mode | INFO | `esp_ble_pairing.rs` | entry/exit (already present) | ND-1008 |
+| BLE pairing mode | INFO | `bin/node.rs` | entry/exit (already present) | ND-1008 |
 | RNG failure | WARN | `wake_cycle.rs` | — | ND-1009 |
 | WAKE retries exhausted | WARN | `wake_cycle.rs` | — | ND-1009 |
 | HMAC mismatch | WARN | `wake_cycle.rs` | — | ND-1009 |

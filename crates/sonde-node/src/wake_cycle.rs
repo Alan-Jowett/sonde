@@ -43,6 +43,17 @@ const MAX_RESIDENT_IMAGE_SIZE: usize = 4096;
 /// Maximum ephemeral program image size (2 KB, stored in RAM).
 const MAX_EPHEMERAL_IMAGE_SIZE: usize = 2048;
 
+/// Format the first 4 bytes of a hash as a hex prefix (8 hex chars).
+/// Uses `String::with_capacity` and `write!` to avoid per-byte `format!` allocations.
+fn hash_hex_prefix(hash: &[u8]) -> String {
+    use core::fmt::Write;
+    let mut s = String::with_capacity(8);
+    for &b in hash.iter().take(4) {
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
+}
+
 /// Outcome of a wake cycle.
 #[derive(Debug, PartialEq)]
 pub enum WakeCycleOutcome {
@@ -193,9 +204,9 @@ where
             }
             cmd
         }
-        Err(_) => {
+        Err(e) => {
             // WAKE retries exhausted or transport error.
-            log::warn!("WAKE retries exhausted — sleeping (ND-1009)");
+            log::warn!("WAKE/COMMAND failed: {} — sleeping (ND-1009)", e);
             // Self-healing (ND-0915): if reg_complete is set and peer_payload
             // is still present (meaning deferred erasure hasn't happened yet),
             // clear reg_complete so the next boot reverts to PEER_REQUEST.
@@ -224,25 +235,15 @@ where
             );
         }
         CommandPayload::UpdateProgram { program_hash, .. } => {
-            let hash_hex: String = program_hash
-                .iter()
-                .take(4)
-                .map(|b| format!("{:02x}", b))
-                .collect();
             log::info!(
                 "COMMAND received command_type=UpdateProgram program_hash={}",
-                hash_hex
+                hash_hex_prefix(program_hash)
             );
         }
         CommandPayload::RunEphemeral { program_hash, .. } => {
-            let hash_hex: String = program_hash
-                .iter()
-                .take(4)
-                .map(|b| format!("{:02x}", b))
-                .collect();
             log::info!(
                 "COMMAND received command_type=RunEphemeral program_hash={}",
-                hash_hex
+                hash_hex_prefix(program_hash)
             );
         }
     }
@@ -390,13 +391,10 @@ where
 
     if let Some(program) = loaded_program {
         // Log BPF execution start (ND-1006).
-        let hash_prefix: String = program
-            .hash
-            .iter()
-            .take(4)
-            .map(|b| format!("{:02x}", b))
-            .collect();
-        log::info!("BPF execute program_hash={}", hash_prefix);
+        log::info!(
+            "BPF execute program_hash={}",
+            hash_hex_prefix(&program.hash)
+        );
         let program_class = if program.is_ephemeral {
             ProgramClass::Ephemeral
         } else {
@@ -531,10 +529,15 @@ where
     }
 
     let sleep_s = sleep_mgr.effective_sleep_s();
+    let reason = match sleep_mgr.wake_reason() {
+        WakeReason::Scheduled => "scheduled",
+        WakeReason::Early => "early_wake",
+        WakeReason::ProgramUpdate => "program_update",
+    };
     log::info!(
-        "entering deep sleep duration_seconds={} reason={:?} (ND-1007)",
+        "entering deep sleep duration_seconds={} reason={} (ND-1007)",
         sleep_s,
-        sleep_mgr.wake_reason(),
+        reason,
     );
 
     WakeCycleOutcome::Sleep { seconds: sleep_s }

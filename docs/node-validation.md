@@ -1155,7 +1155,40 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Configure mock gateway to never respond (all timeouts).
 2. Run `run_wake_cycle`.
-3. Assert: a WARN log is emitted containing "WAKE retries exhausted".
+3. Assert: a WARN log is emitted containing "WAKE/COMMAND failed".
+
+---
+
+### T-N1011  HMAC verification failure WARN log
+
+**Validates:** ND-1009
+
+**Procedure:**
+1. Configure mock gateway to respond with a frame bearing a corrupted HMAC.
+2. Run `run_wake_cycle`.
+3. Assert: a WARN log is emitted containing "COMMAND verification failed".
+
+---
+
+### T-N1012  BLE pairing mode entry log
+
+**Validates:** ND-1008
+
+**Procedure:**
+1. Boot the node with no PSK provisioned (or with the pairing button held).
+2. Capture serial output.
+3. Assert: an INFO log is emitted containing "entering BLE pairing mode".
+
+---
+
+### T-N1013  BLE pairing mode exit log
+
+**Validates:** ND-1008
+
+**Procedure:**
+1. Complete or abort a BLE pairing session.
+2. Capture serial output.
+3. Assert: an INFO log is emitted containing "BLE pairing mode exited" or "BLE pairing mode failed".
 
 ---
 

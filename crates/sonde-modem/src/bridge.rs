@@ -75,8 +75,8 @@ pub trait SerialPort {
 
 /// Abstraction over the radio layer (ESP-NOW on device, mock in tests).
 pub trait Radio {
-    /// Send a frame to the given peer MAC.
-    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]);
+    /// Send a frame to the given peer MAC. Returns `true` on success.
+    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) -> bool;
     /// Drain one received frame from the queue, or `None` if empty.
     fn drain_one(&self) -> Option<RecvFrame>;
     /// Set the radio channel. Returns a descriptive error on failure.
@@ -204,8 +204,17 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     fn send_msg(&mut self, msg: &ModemMessage) -> bool {
         match encode_modem_frame(msg) {
             Ok(frame) => {
-                debug!("USB-CDC TX: {} len={}", msg_type_label(msg), frame.len());
-                self.usb.write(&frame)
+                let ok = self.usb.write(&frame);
+                if ok {
+                    debug!("USB-CDC TX: {} len={}", msg_type_label(msg), frame.len());
+                } else {
+                    warn!(
+                        "USB-CDC TX failed: {} len={}",
+                        msg_type_label(msg),
+                        frame.len()
+                    );
+                }
+                ok
             }
             Err(e) => {
                 warn!("encode error: {}", e);
@@ -382,17 +391,30 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
     }
 
     fn handle_send_frame(&mut self, sf: SendFrame) {
-        info!(
-            "ESP-NOW TX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={}",
-            sf.peer_mac[0],
-            sf.peer_mac[1],
-            sf.peer_mac[2],
-            sf.peer_mac[3],
-            sf.peer_mac[4],
-            sf.peer_mac[5],
-            sf.frame_data.len()
-        );
-        self.radio.send(&sf.peer_mac, &sf.frame_data);
+        let ok = self.radio.send(&sf.peer_mac, &sf.frame_data);
+        if ok {
+            info!(
+                "ESP-NOW TX: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={} result=ok",
+                sf.peer_mac[0],
+                sf.peer_mac[1],
+                sf.peer_mac[2],
+                sf.peer_mac[3],
+                sf.peer_mac[4],
+                sf.peer_mac[5],
+                sf.frame_data.len()
+            );
+        } else {
+            warn!(
+                "ESP-NOW TX failed: peer={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} len={}",
+                sf.peer_mac[0],
+                sf.peer_mac[1],
+                sf.peer_mac[2],
+                sf.peer_mac[3],
+                sf.peer_mac[4],
+                sf.peer_mac[5],
+                sf.frame_data.len()
+            );
+        }
     }
 
     fn handle_set_channel(&mut self, channel: u8) {
@@ -565,11 +587,12 @@ mod tests {
     }
 
     impl Radio for MockRadio {
-        fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) {
+        fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) -> bool {
             if !self.peers.contains(peer_mac) {
                 self.peers.push(*peer_mac);
             }
             self.sent.push((data.to_vec(), *peer_mac));
+            true
         }
         fn drain_one(&self) -> Option<RecvFrame> {
             self.rx_queue.borrow_mut().pop_front()

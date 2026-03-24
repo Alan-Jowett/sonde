@@ -334,11 +334,11 @@ Connect both ports to the host. Use `idf.py monitor` (or any serial terminal at 
 
 The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_INFO`). The maximum compiled-in level is DEBUG, selectable at runtime via ESP-IDF's `esp_log_level_set()`.
 
-### 14.5  Operational logging (MD-0500 – MD-0504)
+### 14.3  Operational logging (MD-0500 – MD-0504)
 
 The modem emits structured `log` macro calls at key operational boundaries to provide runtime visibility into radio, BLE, and USB-CDC activity. All logging uses the ESP-IDF `log` crate (`log::info!`, `log::debug!`, `log::warn!`) — **not** the `tracing` crate.
 
-**ESP-NOW frames (MD-0500):** Each forwarded received frame logs peer MAC, payload length, and RSSI at INFO level. Each outgoing send logs peer MAC and payload length at INFO level (failures additionally log at WARN).
+**ESP-NOW frames (MD-0500):** Each forwarded received frame logs peer MAC, payload length, and RSSI at INFO level. Each outgoing send logs peer MAC, payload length, and send result (success/failure) at INFO level, with failures additionally logged at WARN.
 
 **BLE lifecycle (MD-0501):** Connection, disconnection, advertising start, and advertising stop are logged at INFO level with relevant metadata (peer address, MTU, HCI reason code).
 
@@ -348,7 +348,7 @@ The modem emits structured `log` macro calls at key operational boundaries to pr
 
 **BLE pairing (MD-0504):** Server-initiated LESC security, authentication success, and authentication failure are logged at INFO/WARN level as appropriate.
 
-### 14.3  Configuration
+### 14.4  Configuration
 
 The following `sdkconfig.defaults` entries control console routing:
 
@@ -358,7 +358,7 @@ CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 ```
 
-### 14.4  Flash configuration
+### 14.5  Flash configuration
 
 The ESP32-S3 modem firmware requires specific flash parameters in `sdkconfig.defaults.esp32s3` so that `elf2image` in CI uses matching values and the merged flash image boots correctly:
 

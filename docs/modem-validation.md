@@ -920,8 +920,10 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Validates:** MD-0500
 
 **Procedure:**
-1. Send a `SEND_FRAME` command to the modem via USB-CDC.
-2. Assert: the diagnostic UART contains an INFO-level log line with the destination peer MAC and payload length.
+1. Send a `SEND_FRAME` command to the modem via USB-CDC that is expected to succeed.
+2. Assert: the diagnostic UART contains an INFO-level log line with the destination peer MAC, payload length, and send result (success).
+3. Induce an ESP-NOW send failure (for example, by targeting a non-responsive or invalid peer) using a `SEND_FRAME` command.
+4. Assert: the diagnostic UART contains a WARN-level log line with the destination peer MAC, payload length, and send result (failure).
 
 ---
 

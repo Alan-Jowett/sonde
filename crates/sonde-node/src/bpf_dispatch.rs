@@ -2180,4 +2180,50 @@ mod tests {
             records
         );
     }
+
+    #[test]
+    fn test_non_io_helper_does_not_emit_debug_log() {
+        // ND-1010 AC #2: non-I/O helpers must NOT emit DEBUG logs.
+        test_log_capture::init();
+        test_log_capture::drain_log_records();
+
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(1_000);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                // Call several non-I/O helpers.
+                helper_get_time(0, 0, 0, 0, 0);
+                helper_get_battery_mv(0, 0, 0, 0, 0);
+                helper_delay_us(10, 0, 0, 0, 0);
+            },
+        );
+
+        let records = test_log_capture::drain_log_records();
+        let has_debug_helper_log = records
+            .iter()
+            .any(|(level, msg)| *level == log::Level::Debug && msg.contains("bpf helper"));
+        assert!(
+            !has_debug_helper_log,
+            "non-I/O helpers must not emit DEBUG 'bpf helper' logs, got: {:?}",
+            records
+        );
+    }
 }

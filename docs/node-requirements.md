@@ -544,7 +544,7 @@ The firmware MUST provide `get_time()`, `get_battery_mv()`, `delay_us()`, `set_n
 3. `delay_us()` busy-waits for the specified microseconds; the firmware enforces a maximum delay value.
 4. `set_next_wake()` sets the interval for the next wake cycle only; the firmware applies `min(requested, base interval)`.
 5. Ephemeral programs calling `set_next_wake()` receive an error.
-6. `bpf_trace_printk()` emits a debug trace message to the platform's debug output.
+6. `bpf_trace_printk()` emits a trace message to the platform's log output (see ND-1006 for log level).
 
 ---
 

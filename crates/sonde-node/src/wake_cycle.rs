@@ -534,7 +534,7 @@ where
         }
         let _ = exec_result;
 
-        // Flush accumulated trace output (ND-0604 / ND-1006 / T-N613).
+        // Flush accumulated trace output (ND-1006 / T-N613).
         flush_trace_log(&trace_log);
     }
 

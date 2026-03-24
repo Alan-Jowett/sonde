@@ -31,37 +31,55 @@ pub mod wake_cycle;
 pub const FIRMWARE_ABI_VERSION: u32 = 1;
 
 /// Shared log-capture utility for tests (ND-1006, ND-1010).
+///
+/// Log records are captured per-thread to avoid cross-test interference
+/// when tests run in parallel (the Rust default).
 #[cfg(test)]
 pub(crate) mod test_log_capture {
     use log::{Level, Log, Metadata, Record};
-    use std::sync::Mutex;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, Once};
+    use std::thread::{self, ThreadId};
 
     struct TestLogger;
 
-    static LOG_RECORDS: Mutex<Vec<(Level, String)>> = Mutex::new(Vec::new());
+    type LogMap = HashMap<ThreadId, Vec<(Level, String)>>;
+    static LOG_RECORDS: Mutex<Option<LogMap>> = Mutex::new(None);
 
     impl Log for TestLogger {
         fn enabled(&self, _metadata: &Metadata) -> bool {
             true
         }
         fn log(&self, record: &Record) {
-            if let Ok(mut records) = LOG_RECORDS.lock() {
-                records.push((record.level(), format!("{}", record.args())));
+            if let Ok(mut guard) = LOG_RECORDS.lock() {
+                let map = guard.get_or_insert_with(HashMap::new);
+                let thread_id = thread::current().id();
+                map.entry(thread_id)
+                    .or_default()
+                    .push((record.level(), format!("{}", record.args())));
             }
         }
         fn flush(&self) {}
     }
 
     static TEST_LOGGER: TestLogger = TestLogger;
+    static INIT: Once = Once::new();
 
     pub fn init() {
-        let _ = log::set_logger(&TEST_LOGGER);
-        log::set_max_level(log::LevelFilter::Trace);
+        INIT.call_once(|| {
+            let _ = log::set_logger(&TEST_LOGGER);
+            log::set_max_level(log::LevelFilter::Trace);
+        });
     }
 
-    /// Drain all captured records, returning them and clearing the buffer.
+    /// Drain all captured records for the current thread, returning them
+    /// and clearing the buffer for this thread only.
     pub fn drain_log_records() -> Vec<(Level, String)> {
-        let mut records = LOG_RECORDS.lock().unwrap();
-        records.drain(..).collect()
+        let thread_id = thread::current().id();
+        let mut guard = LOG_RECORDS.lock().unwrap();
+        guard
+            .get_or_insert_with(HashMap::new)
+            .remove(&thread_id)
+            .unwrap_or_default()
     }
 }

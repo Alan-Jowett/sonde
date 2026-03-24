@@ -21,17 +21,17 @@ use sonde_protocol::modem::{
 
 use sonde_protocol::constants::{
     MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK, MSG_PEER_ACK,
-    MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE,
+    MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, OFFSET_MSG_TYPE,
 };
 
 use crate::transport::{PeerAddress, Transport, TransportError};
 
 /// Extract a human-readable protocol message type from a raw frame's header byte.
 fn protocol_msg_type_label(frame: &[u8]) -> &'static str {
-    if frame.len() < 3 {
+    if frame.len() <= OFFSET_MSG_TYPE {
         return "unknown";
     }
-    match frame[2] {
+    match frame[OFFSET_MSG_TYPE] {
         MSG_WAKE => "WAKE",
         MSG_GET_CHUNK => "GET_CHUNK",
         MSG_PROGRAM_ACK => "PROGRAM_ACK",

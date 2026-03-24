@@ -165,17 +165,23 @@ impl SessionManager {
     /// Remove all sessions that have exceeded the configured timeout.
     /// Returns the node IDs of reaped sessions.
     pub async fn reap_expired(&self) -> Vec<String> {
-        let mut sessions = self.sessions.write().await;
-        let now = Instant::now();
-        let expired: Vec<String> = sessions
-            .iter()
-            .filter(|(_, s)| now.duration_since(s.created_at) > self.timeout)
-            .map(|(id, _)| id.clone())
-            .collect();
+        let expired = {
+            let mut sessions = self.sessions.write().await;
+            let now = Instant::now();
+            let expired: Vec<String> = sessions
+                .iter()
+                .filter(|(_, s)| now.duration_since(s.created_at) > self.timeout)
+                .map(|(id, _)| id.clone())
+                .collect();
 
+            for id in &expired {
+                sessions.remove(id);
+            }
+            expired
+        };
+
+        // GW-1300 AC6: log session expiry after releasing the write-lock.
         for id in &expired {
-            sessions.remove(id);
-            // GW-1300 AC6: log session expiry.
             info!(node_id = %id, "session expired");
         }
         expired

@@ -327,10 +327,13 @@ async fn t1302_peer_request_logging() {
     let resp = gw.process_frame(&frame, peer).await;
     assert!(resp.is_some(), "expected PEER_ACK response");
 
-    // GW-1300 AC1: PEER_REQUEST processed with result "registered".
+    // GW-1300 AC1: PEER_REQUEST processed with result "registered" and key_hint.
     assert!(logs_contain("PEER_REQUEST processed"));
     assert!(logs_contain(r#"result="registered""#));
     assert!(logs_contain("node_id=node-peer-log"));
+    let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
+    let expected_key_hint_field = format!("key_hint={node_key_hint}");
+    assert!(logs_contain(&expected_key_hint_field));
 
     // GW-1300 AC2: PEER_ACK frame encoded with node_id.
     assert!(logs_contain("PEER_ACK frame encoded"));
@@ -367,6 +370,7 @@ async fn t1303_modem_frame_debug_logging() {
         "expected RECV debug log"
     );
     assert!(logs_contain(r#"msg_type="WAKE""#));
+    assert!(logs_contain("peer_mac=[17, 34, 51, 68, 85, 102]"));
     assert!(logs_contain("len=11"));
 
     // AC2: Send a frame and assert debug log.
@@ -386,5 +390,6 @@ async fn t1303_modem_frame_debug_logging() {
         "expected SEND debug log"
     );
     assert!(logs_contain(r#"msg_type="COMMAND""#));
+    assert!(logs_contain("peer_mac=[170, 187, 204, 221, 238, 255]"));
     assert!(logs_contain("len=11"));
 }

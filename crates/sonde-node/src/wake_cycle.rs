@@ -65,6 +65,25 @@ pub enum WakeCycleOutcome {
     Unpaired,
 }
 
+/// Log the ND-1007 deep-sleep entry and return `WakeCycleOutcome::Sleep`.
+///
+/// Centralises the sleep-entry log so every path that returns `Sleep`
+/// emits the required INFO line with `duration_seconds` and `reason`.
+fn log_and_sleep(sleep_mgr: &SleepManager) -> WakeCycleOutcome {
+    let seconds = sleep_mgr.effective_sleep_s();
+    let reason = match sleep_mgr.wake_reason() {
+        WakeReason::Scheduled => "scheduled",
+        WakeReason::Early => "early_wake",
+        WakeReason::ProgramUpdate => "program_update",
+    };
+    log::info!(
+        "entering deep sleep duration_seconds={} reason={} (ND-1007)",
+        seconds,
+        reason,
+    );
+    WakeCycleOutcome::Sleep { seconds }
+}
+
 /// Run one complete wake cycle.
 ///
 /// This is the top-level function that orchestrates the entire wake cycle.
@@ -106,6 +125,10 @@ where
     if !rng.health_check() {
         log::warn!("RNG health check failed — aborting wake cycle (ND-1009)");
         let (base_interval_s, _) = storage.read_schedule();
+        log::info!(
+            "entering deep sleep duration_seconds={} reason=scheduled (ND-1007)",
+            base_interval_s,
+        );
         return WakeCycleOutcome::Sleep {
             seconds: base_interval_s,
         };
@@ -149,9 +172,7 @@ where
                 }
                 Ok(false) => {
                     // Timeout — sleep and retry next wake cycle (ND-0910/ND-0911).
-                    return WakeCycleOutcome::Sleep {
-                        seconds: sleep_mgr.effective_sleep_s(),
-                    };
+                    return log_and_sleep(&sleep_mgr);
                 }
                 Err(e) => {
                     // Distinguish permanent errors (malformed payload, oversize)
@@ -162,9 +183,7 @@ where
                         log::warn!("PEER_REQUEST permanent error: {} — erasing peer_payload", e);
                         let _ = storage.erase_peer_payload();
                     }
-                    return WakeCycleOutcome::Sleep {
-                        seconds: sleep_mgr.effective_sleep_s(),
-                    };
+                    return log_and_sleep(&sleep_mgr);
                 }
             }
         }
@@ -218,9 +237,7 @@ where
                     log::warn!("failed to clear reg_complete after WAKE failure: {}", e);
                 }
             }
-            return WakeCycleOutcome::Sleep {
-                seconds: sleep_mgr.effective_sleep_s(),
-            };
+            return log_and_sleep(&sleep_mgr);
         }
     };
 
@@ -340,9 +357,7 @@ where
                             )
                             .is_err()
                             {
-                                return WakeCycleOutcome::Sleep {
-                                    seconds: sleep_mgr.effective_sleep_s(),
-                                };
+                                return log_and_sleep(&sleep_mgr);
                             }
 
                             if !is_ephemeral {
@@ -359,17 +374,13 @@ where
                         }
                         Err(_) => {
                             // Hash mismatch or decode failure — discard, sleep
-                            return WakeCycleOutcome::Sleep {
-                                seconds: sleep_mgr.effective_sleep_s(),
-                            };
+                            return log_and_sleep(&sleep_mgr);
                         }
                     }
                 }
                 Err(_) => {
                     // Chunk transfer failed — sleep
-                    return WakeCycleOutcome::Sleep {
-                        seconds: sleep_mgr.effective_sleep_s(),
-                    };
+                    return log_and_sleep(&sleep_mgr);
                 }
             }
         }
@@ -408,9 +419,7 @@ where
             // as re-allocating would destroy the resident program's
             // sleep-persistent map state.
             if !program.map_defs.is_empty() {
-                return WakeCycleOutcome::Sleep {
-                    seconds: sleep_mgr.effective_sleep_s(),
-                };
+                return log_and_sleep(&sleep_mgr);
             }
         } else {
             // For resident programs, re-allocate maps when the layout
@@ -423,9 +432,7 @@ where
                 // Map budget exceeded. The newly installed resident
                 // program is already active (install_resident swapped
                 // partitions), so we do not roll back here.
-                return WakeCycleOutcome::Sleep {
-                    seconds: sleep_mgr.effective_sleep_s(),
-                };
+                return log_and_sleep(&sleep_mgr);
             }
         }
 
@@ -528,19 +535,7 @@ where
         }
     }
 
-    let sleep_s = sleep_mgr.effective_sleep_s();
-    let reason = match sleep_mgr.wake_reason() {
-        WakeReason::Scheduled => "scheduled",
-        WakeReason::Early => "early_wake",
-        WakeReason::ProgramUpdate => "program_update",
-    };
-    log::info!(
-        "entering deep sleep duration_seconds={} reason={} (ND-1007)",
-        sleep_s,
-        reason,
-    );
-
-    WakeCycleOutcome::Sleep { seconds: sleep_s }
+    log_and_sleep(&sleep_mgr)
 }
 
 /// Determine the wake reason from RTC flags.

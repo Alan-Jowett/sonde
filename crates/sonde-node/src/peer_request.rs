@@ -231,9 +231,11 @@ pub fn peer_request_exchange<T: Transport, S: PlatformStorage>(
         match transport.recv(recv_timeout)? {
             Some(raw) => {
                 if verify_peer_ack(&raw, identity, nonce, encrypted_payload, hmac).is_ok() {
-                    // Valid PEER_ACK — set reg_complete (ND-0913)
-                    log::info!("PEER_ACK received — registration complete (ND-1005)");
+                    // Valid PEER_ACK — set reg_complete (ND-0913).
+                    // Persist before logging so the log is not emitted if
+                    // the storage write fails.
                     storage.write_reg_complete(true)?;
+                    log::info!("PEER_ACK received — registration complete (ND-1005)");
                     return Ok(true);
                 }
                 // Invalid response — keep listening

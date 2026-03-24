@@ -397,7 +397,7 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Confirm that `ingest_elf()` constructs a `SondePlatform` (not `LinuxPlatform`) for verification.
-2. Assert: the code does not reference `LinuxPlatform` in the verification path.
+2. Assert: `ingest_elf()` passes `SondePlatform` (not `LinuxPlatform`) to the verifier / helper-prototype engine; any `LinuxPlatform` usage is encapsulated inside `SondePlatform` (e.g., for ELF/map parsing), not passed directly to Prevail.
 
 ---
 

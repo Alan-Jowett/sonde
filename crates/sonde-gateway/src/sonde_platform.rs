@@ -300,7 +300,7 @@ impl EbpfPlatform for SondePlatform {
             name: "sonde".to_string(),
             context_descriptor: Some(&SONDE_CONTEXT),
             platform_specific_data: 0,
-            section_prefixes: vec![".text".to_string()],
+            section_prefixes: vec!["sonde".to_string(), ".text".to_string()],
             is_privileged: false,
         }
     }
@@ -420,6 +420,10 @@ mod tests {
         let platform = SondePlatform::new();
         let pt = platform.get_program_type("", "");
         assert_eq!(pt.name, "sonde");
+        assert!(
+            pt.section_prefixes.contains(&"sonde".to_string()),
+            "section_prefixes should include \"sonde\" for SEC(\"sonde\") programs"
+        );
         let ctx = pt
             .context_descriptor
             .expect("should have context descriptor");

@@ -339,7 +339,7 @@ The gateway MUST use a custom Prevail verifier platform (`SondePlatform`) that d
 1. The verifier platform defines prototypes for helpers 1–16 matching the signatures in `sonde_helpers.h`.
 2. Each prototype specifies the correct return type, argument count, and argument types (including whether arguments are pointers to readable or writable memory).
 3. Programs using sonde-specific helpers (`i2c_read`, `gpio_write`, `send`, etc.) pass verification when the call signatures match the defined prototypes.
-4. The gateway does not use `LinuxPlatform` for program verification.
+4. The gateway does not pass `LinuxPlatform` directly as the verifier platform and does not use Linux BPF helper semantics; it uses `SondePlatform` with sonde helper prototypes for program verification (it may still reuse `LinuxPlatform` components for ELF/map parsing).
 
 ---
 

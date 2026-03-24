@@ -699,4 +699,4 @@ The following events are logged per the ND-10xx requirements:
 
 - **No heap allocation in error paths.** Log format strings use `&'static str` literals; only field interpolation may allocate (e.g., hex formatting).
 - **No log buffering or remote transmission.** All logs go to UART console via ESP-IDF. Remote log collection is out of scope.
-- **Log volume.** Each wake cycle emits at most ~5–8 INFO lines. This is acceptable for UART at 115200 baud during the ~100 ms awake window.
+- **Log volume.** Each wake cycle emits ~5–8 INFO lines for operational events, plus any `bpf_trace_printk` output from the running BPF program (also INFO). This is acceptable for UART at 115200 baud during the awake window.

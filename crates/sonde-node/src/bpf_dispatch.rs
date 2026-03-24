@@ -366,7 +366,7 @@ pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 
         }
     })
     .unwrap_or((-1i64) as u64);
-    log::debug!("bpf helper bus_transfer: result={}", result as i64);
+    log::debug!("bpf helper spi_transfer: result={}", result as i64);
     result
 }
 

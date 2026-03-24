@@ -680,7 +680,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Install program that calls `bpf_trace_printk("hello")`.
-2. Assert: "hello" appears in INFO-level log output (not DEBUG).
+2. Assert: log output includes a record for "hello" whose log level is INFO (for example, the line is tagged or prefixed as INFO, not DEBUG).
 
 ---
 
@@ -1135,7 +1135,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Install program that calls `bpf_trace_printk("hello")`.
 2. Run wake cycle.
 3. Assert: an INFO log is emitted containing `bpf_trace_printk: hello`.
-4. Assert: the message does NOT appear at DEBUG level.
+4. Assert: the log entry containing `bpf_trace_printk: hello` is tagged at INFO level (not DEBUG).
 
 ---
 
@@ -1144,9 +1144,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-1010
 
 **Procedure:**
-1. Install program that calls `send`, `gpio_read`, `i2c_write`, or `adc_read`.
-2. Run wake cycle.
-3. Assert: a DEBUG log is emitted for each I/O helper call containing the helper name and `result=`.
+1. Configure the node so that ESP-IDF logging for BPF helper logs is set to DEBUG (for example, by setting the default log level to DEBUG or calling `esp_log_level_set` for the helper log tag in the test firmware).
+2. Install program that calls `send`, `gpio_read`, `i2c_write`, or `adc_read`.
+3. Run wake cycle.
+4. Assert: a DEBUG log is emitted for each I/O helper call containing the helper name and `result=`.
 
 ---
 

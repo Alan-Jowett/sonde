@@ -244,6 +244,9 @@ impl GatewayAdmin for AdminService {
         request: Request<FactoryResetRequest>,
     ) -> Result<Response<Empty>, Status> {
         let node_id = &request.get_ref().node_id;
+        // Verify the node exists before attempting deletion.
+        // We load the full record to check existence (the Storage trait has no
+        // lightweight exists query), so zeroize the PSK copy immediately.
         {
             use zeroize::Zeroize;
             let mut node = self

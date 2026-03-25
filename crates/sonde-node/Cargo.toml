@@ -15,7 +15,7 @@ esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:esp32-nimbl
 sonde-protocol = { path = "../sonde-protocol" }
 ciborium = { version = "0.2", default-features = false }
 hmac = "0.12"
-log = "0.4"
+log = { version = "0.4", features = ["release_max_level_info"] }
 sha2 = "0.10"
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.

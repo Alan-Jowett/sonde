@@ -37,6 +37,12 @@ fn main() {
     // Link ESP-IDF patches and initialize logging.
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
+    // In release/firmware builds, raise the runtime floor to WARN so that
+    // INFO messages (compiled in by `release_max_level_info`) are suppressed
+    // unless the caller explicitly raises the level.  DEBUG/TRACE are already
+    // eliminated at compile time by the `release_max_level_info` log feature.
+    #[cfg(not(debug_assertions))]
+    log::set_max_level(log::LevelFilter::Warn);
 
     info!("sonde-node booting (commit {})", env!("SONDE_GIT_COMMIT"));
     info!("firmware ABI version: {}", sonde_node::FIRMWARE_ABI_VERSION);

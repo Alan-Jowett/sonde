@@ -27,8 +27,13 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=35
 CONFIG_ESP_TASK_WDT_PANIC=y
 
 # --- Logging ---
+# Default runtime level: INFO (firmware builds override to WARN via
+# log::set_max_level in main — see crates/sonde-modem/src/bin/modem.rs).
+# Maximum compiled-in level: INFO — debug/trace log calls are stripped from
+# ESP-IDF C components in the firmware binary, matching the Rust-level
+# `release_max_level_info` feature on the `log` crate.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
-CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
 
 # --- WiFi / ESP-NOW ---
 CONFIG_ESP_WIFI_ENABLED=y

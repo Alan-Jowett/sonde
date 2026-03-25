@@ -596,3 +596,22 @@ The offset `0x9000` and size `0x6000` match the NVS partition in the ESP-IDF bui
 The device must be in ROM download mode for this command to work — hold **BOOT**, press **RESET**, then release **BOOT**.
 
 Replace `COM6` with your device's serial port (`/dev/ttyUSB0` on Linux, `/dev/cu.usbmodem*` on macOS). After erasing NVS, flash new firmware and the node will start in pairing mode.
+
+### 12.3  I2C wiring (ESP32-C3 DevKitM-1)
+
+The node firmware initializes I2C bus 0 on GPIO 0 (SDA) and GPIO 1 (SCL) at 100 kHz standard mode. Use the table below when wiring Qwiic or STEMMA QT sensors.
+
+| Signal | GPIO | Qwiic/STEMMA QT color | Description   |
+|--------|------|-----------------------|---------------|
+| SDA    | 0    | Blue                  | I2C data      |
+| SCL    | 1    | Yellow                | I2C clock     |
+| VCC    | —    | Red                   | 3.3 V         |
+| GND    | —    | Black                 | Ground        |
+
+> **Note:** Swapped SDA/SCL wires cause silent I2C failures — the bus appears to initialize but all reads return errors. Double-check the color-to-pin mapping before powering the board.
+
+#### Supported sensors
+
+| Sensor | I2C address     | Breakout board       | Test program                   |
+|--------|-----------------|----------------------|--------------------------------|
+| TMP102 | 0x48 (ADD0=GND) | SparkFun SEN-13314   | `test-programs/tmp102_sensor.c` |

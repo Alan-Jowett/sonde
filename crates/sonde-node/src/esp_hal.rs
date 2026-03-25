@@ -15,10 +15,10 @@
 use crate::hal;
 use log::warn;
 
-/// I2C0 SDA pin (yellow wire).
+/// I2C0 SDA pin (GPIO 0; Qwiic/STEMMA QT Blue wire).
 const I2C0_SDA: i32 = 0;
 
-/// I2C0 SCL pin (blue wire).
+/// I2C0 SCL pin (GPIO 1; Qwiic/STEMMA QT Yellow wire).
 const I2C0_SCL: i32 = 1;
 const I2C0_FREQ_HZ: u32 = 100_000; // 100 kHz standard mode
 

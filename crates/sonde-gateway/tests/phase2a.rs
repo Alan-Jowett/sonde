@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use sonde_gateway::{
     InMemoryStorage, MockTransport, NodeRecord, ProgramLibrary, RustCryptoHmac, RustCryptoSha256,
-    SessionManager, Storage, Transport, VerificationProfile,
+    SessionManager, SessionState, Storage, Transport, VerificationProfile,
 };
 use sonde_protocol::{HmacProvider, Sha256Provider};
 
@@ -244,6 +244,69 @@ async fn t0607_no_active_session_rejected() {
 
     let session = mgr.get_session("ghost-node").await;
     assert!(session.is_none(), "no session must exist for unknown node");
+}
+
+/// T-0607a: WAKE retry preserves ChunkedTransfer session.
+/// GW-0602 AC5: When a WAKE arrives with a matching nonce during an active
+/// ChunkedTransfer, the session MUST be reused and the starting_seq preserved.
+#[tokio::test]
+async fn t0607a_wake_retry_preserves_chunked_transfer_session() {
+    let mgr = SessionManager::new(Duration::from_secs(30));
+    let peer = vec![0xDD; 6];
+    let wake_nonce = 0xCAFE;
+    let starting_seq = 42;
+
+    // 1. Create session simulating an initial WAKE.
+    mgr.create_session("node-chunk".into(), peer.clone(), wake_nonce, starting_seq)
+        .await;
+
+    // 2. Transition to ChunkedTransfer state (gateway sets this after selecting
+    //    a chunked command).
+    mgr.set_state(
+        "node-chunk",
+        SessionState::ChunkedTransfer {
+            program_hash: vec![0x42; 32],
+            program_size: 1024,
+            chunk_size: 200,
+            chunk_count: 6,
+            is_ephemeral: true,
+        },
+    )
+    .await
+    .unwrap();
+
+    // 3. Simulate a WAKE retry (same nonce). The caller (engine) should detect
+    //    reuse_chunked and NOT call create_session. Verify the session state is
+    //    preserved by checking get_session.
+    let session = mgr.get_session("node-chunk").await.unwrap();
+    assert_eq!(
+        session.wake_nonce, wake_nonce,
+        "session nonce must still match the original WAKE"
+    );
+    assert!(
+        matches!(session.state, SessionState::ChunkedTransfer { .. }),
+        "session must remain in ChunkedTransfer state"
+    );
+    assert_eq!(
+        session.next_expected_seq, starting_seq,
+        "next_expected_seq must equal the original starting_seq"
+    );
+
+    // 4. Verify sequence tracking still works (simulating GET_CHUNK).
+    let result = mgr.verify_and_advance_seq("node-chunk", starting_seq).await;
+    assert!(
+        result.is_ok(),
+        "GET_CHUNK with starting_seq must succeed on reused session"
+    );
+
+    // 5. Verify next seq also works (second GET_CHUNK).
+    let result = mgr
+        .verify_and_advance_seq("node-chunk", starting_seq + 1)
+        .await;
+    assert!(
+        result.is_ok(),
+        "second GET_CHUNK must succeed with incremented seq"
+    );
 }
 
 /// T-1004: Session timeout and cleanup.

@@ -520,19 +520,44 @@ impl Gateway {
                 }
             };
 
-        // 2. Create/replace session (random starting_seq, current timestamp_ms)
-        let starting_seq: u64 = {
-            let mut buf = [0u8; 8];
-            if let Err(err) = getrandom::fill(&mut buf) {
-                warn!(error = ?err, "CSPRNG failure while generating starting_seq; aborting WAKE handling");
-                return None;
-            }
-            u64::from_ne_bytes(buf)
-        };
+        // 2. Create/replace session or reuse existing ChunkedTransfer session
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
+
+        // GW-0602 AC5: If a ChunkedTransfer session is already active for
+        // this node AND the WAKE nonce matches (i.e. this is a retry, not a
+        // new wake cycle), reuse the existing session and its starting_seq —
+        // otherwise the transfer state is lost and the node cannot complete
+        // GET_CHUNK.
+        let existing_session = self.session_manager.get_session(&node.node_id).await;
+        let reuse_chunked = existing_session.as_ref().is_some_and(|s| {
+            matches!(s.state, SessionState::ChunkedTransfer { .. }) && s.wake_nonce == header.nonce
+        });
+
+        let starting_seq: u64 = if reuse_chunked {
+            // Reuse the session's current next_expected_seq so the COMMAND
+            // response matches what the session is tracking.
+            let seq = existing_session.as_ref().unwrap().next_expected_seq;
+            info!(node_id = %node.node_id, seq, "WAKE retry — reusing existing ChunkedTransfer session");
+            seq
+        } else {
+            let seq: u64 = {
+                let mut buf = [0u8; 8];
+                if let Err(err) = getrandom::fill(&mut buf) {
+                    warn!(error = ?err, "CSPRNG failure while generating starting_seq; aborting WAKE handling");
+                    return None;
+                }
+                u64::from_ne_bytes(buf)
+            };
+            let _session = self
+                .session_manager
+                .create_session(node.node_id.clone(), peer, header.nonce, seq)
+                .await;
+            info!(node_id = %node.node_id, seq, "session created");
+            seq
+        };
 
         // GW-1300 AC3: log WAKE received.
         info!(
@@ -541,25 +566,6 @@ impl Gateway {
             battery_mv,
             "WAKE received"
         );
-
-        // GW-0602 AC5: If a ChunkedTransfer session is already active for
-        // this node AND the WAKE nonce matches (i.e. this is a retry, not a
-        // new wake cycle), reuse the existing session — otherwise the transfer
-        // state is lost and the node cannot complete GET_CHUNK.
-        let existing_session = self.session_manager.get_session(&node.node_id).await;
-        let reuse_chunked = existing_session.as_ref().is_some_and(|s| {
-            matches!(s.state, SessionState::ChunkedTransfer { .. }) && s.wake_nonce == header.nonce
-        });
-
-        if reuse_chunked {
-            info!(node_id = %node.node_id, "WAKE retry — reusing existing ChunkedTransfer session");
-        } else {
-            let _session = self
-                .session_manager
-                .create_session(node.node_id.clone(), peer, header.nonce, starting_seq)
-                .await;
-            info!(node_id = %node.node_id, "session created");
-        }
 
         // 3. Determine command
         let command_payload = if reuse_chunked {

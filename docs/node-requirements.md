@@ -1237,3 +1237,4 @@ The node MUST log at DEBUG level when sending `GET_CHUNK` requests and when rece
 | ND-1008 | BLE pairing mode logging | Must |
 | ND-1009 | Error condition logging | Must |
 | ND-1010 | BPF helper I/O logging | Should |
+| ND-1011 | Chunk transfer logging | Must |

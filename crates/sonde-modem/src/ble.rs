@@ -461,6 +461,9 @@ impl Ble for EspBleDriver {
         let ble_device = BLEDevice::take();
         let ble_advertising = ble_device.get_advertising();
 
+        // Re-enable auto re-advertise after disconnect (cleared in disable()).
+        ble_device.get_server().advertise_on_disconnect(true);
+
         let mut adv_data = BLEAdvertisementData::new();
         adv_data.name(BLE_DEVICE_NAME);
         adv_data.add_service_uuid(GATEWAY_SERVICE_UUID);
@@ -484,6 +487,10 @@ impl Ble for EspBleDriver {
         let ble_device = BLEDevice::take();
         let ble_advertising = ble_device.get_advertising();
 
+        // Clear auto re-advertise BEFORE stopping so a concurrent disconnect
+        // cannot race and restart advertising (issue #453, MD-0407).
+        ble_device.get_server().advertise_on_disconnect(false);
+
         if let Err(e) = ble_advertising.lock().stop() {
             warn!("BLE: stop_advertising failed: {:?}", e);
         }
@@ -495,13 +502,6 @@ impl Ble for EspBleDriver {
         };
         if let Some(handle) = conn_handle {
             let _ = ble_device.get_server().disconnect(handle);
-        }
-
-        // NimBLE's advertise_on_disconnect may restart advertising after the
-        // disconnect above.  Stop again to guarantee advertising stays OFF
-        // after BLE_DISABLE/RESET (MD-0407/MD-0412/MD-0413).
-        if let Err(e) = ble_advertising.lock().stop() {
-            warn!("BLE: post-disconnect stop failed: {:?}", e);
         }
 
         if let Ok(mut s) = self.state.lock() {

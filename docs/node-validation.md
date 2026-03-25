@@ -1034,11 +1034,24 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0915
 
 **Procedure:**
-1. Complete BLE pairing and registration (`reg_complete` set).
+1. Complete BLE pairing and registration (`reg_complete` set, `peer_payload` still present in NVS).
 2. Reboot node; node sends WAKE.
 3. Mock gateway does not respond (or responds with invalid HMAC).
 4. Assert: `reg_complete` flag is cleared.
 5. Assert: on next boot the node sends PEER_REQUEST instead of WAKE.
+
+---
+
+### T-N917b  WAKE failure after payload erasure — no self-healing
+
+**Validates:** ND-0915
+
+**Procedure:**
+1. Complete BLE pairing and registration (`reg_complete` set).
+2. Reboot node; node sends WAKE. Mock gateway responds with a valid COMMAND so the first WAKE/COMMAND cycle succeeds and `peer_payload` is erased (ND-0914).
+3. Reboot node; node sends WAKE. Mock gateway does not respond (or responds with invalid HMAC).
+4. Assert: `reg_complete` flag is **not** cleared.
+5. Assert: on next boot the node sends WAKE (not PEER_REQUEST).
 
 ---
 
@@ -1563,7 +1576,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0912 | T-N912, T-N913, T-N914, T-N941 |
 | ND-0913 | T-N915 |
 | ND-0914 | T-N916 |
-| ND-0915 | T-N917 |
+| ND-0915 | T-N917, T-N917b |
 | ND-0916 | T-N918 |
 | ND-0917 | T-N906 |
 | ND-0918 | *(verified by sdkconfig.defaults setting)* |

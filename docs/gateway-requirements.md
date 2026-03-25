@@ -1466,7 +1466,7 @@ The gateway MUST apply build-type–aware log-level policies: compile-time gatin
 3. The runtime default `EnvFilter` is `sonde_gateway=info` in debug builds and `sonde_gateway=warn` in release builds.
 4. `RUST_LOG` overrides the default in both build types (within compile-time limits).
 5. The `tracing` crate dependency specifies `features = ["max_level_trace", "release_max_level_info"]`.
-6. Both console mode and Windows service mode apply the same default policy.
+6. Both console mode and Windows service mode apply the same default `EnvFilter` policy for console/file sinks; in Windows service mode, the ETW sink remains unfiltered and relies on ETW-side filtering.
 
 ---
 

@@ -332,7 +332,7 @@ Connect both ports to the host. Use `idf.py monitor` (or any serial terminal at 
 | `debug!` | USB-CDC serial messages sent/received |
 | `warn!` | USB write errors, ESP-NOW send failures, peer add failures, encode errors, BLE pairing failures |
 
-The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_INFO`). The maximum compiled-in level is DEBUG, selectable at runtime via ESP-IDF's `esp_log_level_set()`.
+The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_INFO`). In debug builds and verbose firmware builds, the maximum compiled-in level is DEBUG, selectable at runtime via ESP-IDF's `esp_log_level_set()`. In release builds without the `verbose` feature, the compile-time maximum is WARN (see §14.2a).
 
 ### 14.2a  Build-type–aware log levels (MD-0505)
 

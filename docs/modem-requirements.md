@@ -689,15 +689,15 @@ The modem MUST log BLE pairing events at INFO level to the diagnostic UART.
 **Source:** issue #496
 
 **Description:**
-The modem MUST apply build-type–aware log-level policies identical to the node (ND-1012) to eliminate logging overhead in release firmware builds.
+The modem MUST apply build-type–aware log-level policies identical to the node (ND-1012) to eliminate logging overhead in release firmware builds. Logging requirements elsewhere in this document that mandate INFO-level logging (MD-0500–MD-0504) apply to debug and verbose firmware builds; in release builds (without the `verbose` feature) those log call-sites are compiled out.
 
 **Acceptance criteria:**
 
 1. In debug builds, the compile-time maximum log level is TRACE.
 2. In release builds, the compile-time maximum log level is WARN (`trace!`, `debug!`, and `info!` call-sites are no-ops).
 3. The runtime default log level is INFO in debug builds and WARN in release builds.
-4. No functional behavior changes when logging is disabled.
-5. The `log` crate dependency specifies `features = ["max_level_trace", "release_max_level_warn"]`.
+4. MD-0500–MD-0504 INFO-level requirements are satisfied by the verbose build variant emitting those events; release builds omit them without functional behavior changes.
+5. The `log` crate dependency specifies `features = ["max_level_trace"]`; the `quiet` (default) and `verbose` features control the release max level.
 
 ---
 

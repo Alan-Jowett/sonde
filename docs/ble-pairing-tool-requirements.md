@@ -1132,3 +1132,4 @@ The pairing tool MUST apply build-type–aware log-level policies: compile-time 
 3. The default `EnvFilter` in the Tauri entry point is `sonde_pair=info,sonde_pair_ui=info` in debug builds and `sonde_pair=warn,sonde_pair_ui=warn` in release builds.
 4. `RUST_LOG` overrides the default in both build types (within compile-time limits).
 5. The `tracing` crate dependency in both `sonde-pair` and `sonde-pair-ui` specifies `features = ["max_level_trace", "release_max_level_info"]`.
+6. PT-1207–PT-1212 requirements that specify DEBUG-level logging are satisfied in debug builds; in release builds those call-sites are compiled out and the requirements are met by the tool functioning correctly without those diagnostic events.

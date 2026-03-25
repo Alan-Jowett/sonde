@@ -608,7 +608,7 @@ The node firmware initializes I2C bus 0 on GPIO 0 (SDA) and GPIO 1 (SCL) at 100 
 | VCC    | —    | Red                   | 3.3 V         |
 | GND    | —    | Black                 | Ground        |
 
-> **Note:** Swapped SDA/SCL wires cause silent I2C failures — the bus appears to initialize but all reads return errors. Double-check the color-to-pin mapping before powering the board.
+> **Note:** Swapped SDA/SCL wires cause I2C transaction failures — the bus may appear to initialize, but reads return error codes from the HAL. This can look “silent” if your program does not log or check the negative return values, so double-check the color-to-pin mapping before powering the board.
 
 #### Supported sensors
 

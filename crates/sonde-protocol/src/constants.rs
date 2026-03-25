@@ -65,3 +65,4 @@ pub const MAP_KEY_TYPE: u64 = 1;
 pub const MAP_KEY_KEY_SIZE: u64 = 2;
 pub const MAP_KEY_VALUE_SIZE: u64 = 3;
 pub const MAP_KEY_MAX_ENTRIES: u64 = 4;
+pub const MAP_KEY_INITIAL_DATA: u64 = 5;

@@ -503,6 +503,26 @@ impl MapStorage {
         Ok(())
     }
 
+    /// Pre-populate maps with initial data from the program image.
+    ///
+    /// Called after `allocate()` when a new program is installed. For each
+    /// map, if `initial_data[i]` is non-empty and matches `value_size`,
+    /// the data is written as the value of entry 0 (the only entry in
+    /// global variable maps). Entries without initial data remain
+    /// zero-filled from allocation.
+    pub fn apply_initial_data(&mut self, initial_data: &[Vec<u8>]) {
+        for (i, data) in initial_data.iter().enumerate() {
+            if data.is_empty() {
+                continue;
+            }
+            if let Some(map) = self.maps.get_mut(i) {
+                if data.len() == map.def.value_size as usize {
+                    let _ = map.update(0, data);
+                }
+            }
+        }
+    }
+
     /// Write the current map definitions to the RTC layout record.
     ///
     /// Called by `allocate()` after successfully setting up maps.

@@ -64,6 +64,7 @@ async fn store_test_program(storage: &InMemoryStorage, bytecode: &[u8]) -> Vec<u
     let image = sonde_protocol::ProgramImage {
         bytecode: bytecode.to_vec(),
         maps: vec![],
+        map_initial_data: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let record = lib

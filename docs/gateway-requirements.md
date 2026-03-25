@@ -344,6 +344,24 @@ The gateway MUST use a custom Prevail verifier platform (`SondePlatform`) that d
 
 ---
 
+### GW-0405  Initial map data extraction from ELF
+
+**Priority:** Must  
+**Source:** protocol.md §6 (Program image format — key 5)
+
+**Description:**  
+The gateway MUST extract `.rodata` and `.data` section content from ingested ELF files and include it as initial data in the corresponding map definitions of the program image. Prevail promotes `.rodata`, `.data`, and `.bss` sections to array maps (one entry, `value_size` = section size). The gateway MUST serialize the ELF section bytes as `initial_data` (CBOR key 5) for each such map. `.bss` sections have no file data and produce empty initial data (zero-filled by the node).
+
+**Acceptance criteria:**
+
+1. An ELF with a `.rodata` section produces a program image where the corresponding map definition includes `initial_data` matching the section bytes.
+2. An ELF with a `.data` section produces a program image where the corresponding map definition includes `initial_data` matching the section bytes.
+3. An ELF with a `.bss` section produces a program image where the corresponding map definition has empty `initial_data`.
+4. The ordering of initial data entries matches the order of global variable map descriptors produced by Prevail.
+5. Explicit maps (`.maps` / `maps` sections) have no initial data.
+
+---
+
 ## 7  Application data
 
 ### GW-0500  APP_DATA reception
@@ -1492,6 +1510,7 @@ The gateway MUST apply build-type–aware log-level policies: compile-time gatin
 | GW-0402 | Program identity by content hash | Must |
 | GW-0403 | Program size enforcement | Should |
 | GW-0404 | Sonde-specific verifier platform | Must |
+| GW-0405 | Initial map data extraction from ELF | Must |
 | GW-0500 | APP_DATA reception | Must |
 | GW-0501 | APP_DATA_REPLY response | Must |
 | GW-0502 | Handler transport (stdin/stdout, length-prefixed CBOR) | Must |

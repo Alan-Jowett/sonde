@@ -580,6 +580,23 @@ On program install, the firmware MUST verify that the new program's map definiti
 
 ---
 
+### ND-0607  Initial map data
+
+**Priority:** Must  
+**Source:** protocol.md §6 (Program image format — key 5)
+
+**Description:**  
+The program image format MUST support optional initial data for each map definition. When present, initial data bytes are written to map entry 0 after allocation. The byte length of the initial data MUST equal the map's `value_size`. Maps without initial data remain zero-filled. This mechanism carries ELF `.rodata` / `.data` section content for global variable maps so that compile-time constants are available to BPF programs at first execution.
+
+**Acceptance criteria:**
+
+1. A program image with `initial_data` (CBOR key 5) in a map definition is accepted and decoded correctly.
+2. After map allocation, entry 0 of each map with non-empty initial data contains the specified bytes.
+3. Maps without initial data (empty or absent key 5) remain zero-filled after allocation.
+4. Initial data whose length does not match `value_size` is silently ignored (map remains zero-filled).
+
+---
+
 ## 9  Timing and retries
 
 ### ND-0700  WAKE retry
@@ -1224,6 +1241,7 @@ The node MUST apply build-type–aware log-level policies to eliminate logging o
 | ND-0604 | System helpers | Must |
 | ND-0605 | Execution constraints | Must |
 | ND-0606 | Map memory budget enforcement | Must |
+| ND-0607 | Initial map data | Must |
 | ND-0700 | WAKE retry | Must |
 | ND-0701 | Chunk transfer retry | Must |
 | ND-0702 | Response timeout | Must |

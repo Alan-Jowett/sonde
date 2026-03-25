@@ -755,3 +755,29 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 3. Call `SoftwareHmac::verify()` with an incorrect tag (e.g., flip one bit in the tag) and assert that verification **fails**.
 
 **Implementation requirement (non-test):** `SoftwareHmac::verify()` must internally use a constant-time comparison primitive (e.g., delegate to `hmac::Mac::verify_slice()` or `subtle::ConstantTimeEq`) and must not compare HMAC digests using `==`, `PartialEq`, or `[u8]::eq()`. This requirement is enforced via code review, not automated tests.
+
+---
+
+### T-P067  ProgramImage initial data round-trip
+
+**Validates:** protocol.md §6 (Program image format — key 5 `initial_data`)
+
+**Procedure:**
+1. Create a `ProgramImage` with one map definition and `map_initial_data[0]` set to non-empty bytes (e.g., `[0xDE, 0xAD, 0xBE, 0xEF]`) whose length equals `value_size`.
+2. Encode with `encode_deterministic()`.
+3. Decode with `ProgramImage::decode()`.
+4. Assert: `decoded.map_initial_data[0]` equals the original bytes.
+5. Assert: the CBOR contains key 5 in the map definition entry.
+
+---
+
+### T-P068  ProgramImage initial data absent when empty
+
+**Validates:** protocol.md §6 (Program image format — key 5 `initial_data` omission)
+
+**Procedure:**
+1. Create a `ProgramImage` with one map definition and `map_initial_data[0]` set to an empty `Vec`.
+2. Encode with `encode_deterministic()`.
+3. Decode the raw CBOR and inspect the map definition entry.
+4. Assert: key 5 (`initial_data`) is **not present** in the CBOR map entry.
+5. Assert: `decoded.map_initial_data[0]` is empty after round-trip.

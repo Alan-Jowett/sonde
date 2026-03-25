@@ -409,7 +409,10 @@ On program install:
 2. If total exceeds the budget → reject installation, keep existing program.
 3. Allocate contiguous regions in RTC SRAM for each map.
 4. Zero-initialize all map storage.
-5. Record the map layout in the RTC SRAM header for use after deep sleep.
+5. Apply initial data: for each map with non-empty `map_initial_data[i]`, write the initial bytes to entry 0 if the data length equals `value_size`. This pre-populates global variable maps (`.rodata`, `.data`) with their ELF section content before BPF execution.
+6. Record the map layout in the RTC SRAM header for use after deep sleep.
+
+Initial data flows through the system as follows: the gateway extracts `.rodata` / `.data` section content from the ELF at ingestion time → embeds it in the CBOR program image as `initial_data` (key 5) in each map definition → the node decodes the program image into `LoadedProgram.map_initial_data` → `MapStorage::apply_initial_data()` writes the data to entry 0 of each corresponding map after allocation.
 
 ### 9.3  Map access helpers
 

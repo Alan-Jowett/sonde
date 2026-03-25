@@ -38,28 +38,7 @@ jobs:
         run: cargo fmt --check --all
 
   check:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-        with:
-          components: clippy
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y \
-            protobuf-compiler libudev-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-  test:
-    name: Test (${{ matrix.profile }})
+    name: Check (${{ matrix.profile }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -69,6 +48,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
@@ -79,6 +60,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y \
             protobuf-compiler libudev-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets ${{ matrix.profile == 'release' && '--release' || '' }} -- -D warnings
 
       - name: Test
         run: cargo test --workspace ${{ matrix.profile == 'release' && '--release' || '' }}

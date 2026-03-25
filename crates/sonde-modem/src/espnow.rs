@@ -386,7 +386,19 @@ impl Radio for EspNowDriver {
     /// Perform a WiFi AP scan across all channels and return per-channel results.
     /// Restores ESP-NOW on `current_channel` after the scan completes.
     fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
-        let scan_result = self.wifi.scan().unwrap_or_default();
+        let scan_result = match self.wifi.scan() {
+            Ok(results) => {
+                info!("WiFi scan found {} APs", results.len());
+                results
+            }
+            Err(e) => {
+                warn!(
+                    "WiFi scan failed: {:?} — treating as 0 APs on all channels",
+                    e
+                );
+                Vec::new()
+            }
+        };
         // Use i8::MIN as sentinel for "no APs seen on this channel".
         let mut channels = [(0u16, i8::MIN); 15];
 

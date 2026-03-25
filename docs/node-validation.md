@@ -1666,5 +1666,5 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 > **Note:** Spec cases marked *(hardware — validated on target)* require the
 > NimBLE BLE stack or physical peripherals and cannot run in the host-based
 > test suite. T-N702 (response timeout — mock gateway delays
-> \> 50 ms) is host-testable but not yet implemented.
+> \> 200 ms) is host-testable but not yet implemented.
 > T-N919–T-N926, T-N928, T-N930–T-N939: spec procedures added — implementation pending.

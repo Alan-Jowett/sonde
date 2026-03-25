@@ -860,11 +860,11 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0602 (criterion 5)
 
 **Procedure:**
-1. Send WAKE with nonce N. Receive COMMAND with `RunEphemeral` (program requires chunked transfer).
+1. Send WAKE with nonce N. Receive COMMAND with `RunEphemeral` or `UpdateProgram` (chunked; program requires chunked transfer).
 2. Assert: session is in `ChunkedTransfer` state.
 3. Send a second WAKE with the same nonce N (simulating a retry).
 4. Assert: the gateway does NOT create a new session — the existing `ChunkedTransfer` session is preserved.
-5. Assert: the COMMAND response re-sends the same `RunEphemeral` with the original program hash.
+5. Assert: the COMMAND response re-sends the same `RunEphemeral` or `UpdateProgram` (chunked) with the original program hash.
 6. Send `GET_CHUNK` with the expected sequence number.
 7. Assert: the gateway responds with the requested chunk data.
 

@@ -601,7 +601,7 @@ The gateway MUST implement per-session replay protection using sequence numbers.
 2. The gateway's `COMMAND` response includes a starting sequence number for the node.
 3. Active sessions are tracked in memory; no durable persistence is required for replay state.
 4. When no `ChunkedTransfer` session is active for the node (see 5), a replayed WAKE creates a new session with a different starting sequence, invalidating captured post-WAKE messages.
-5. If a WAKE arrives while a `ChunkedTransfer` session is active for the same node, the gateway MUST reuse the existing session and re-send the original COMMAND (preserving the transfer state).
+5. If a WAKE arrives with the same nonce as the active session while a `ChunkedTransfer` session is active for the same node (i.e., a WAKE retry), the gateway MUST reuse the existing session and re-send the original COMMAND (preserving the transfer state). A WAKE with a different nonce replaces the session as in criterion 4.
 
 ---
 

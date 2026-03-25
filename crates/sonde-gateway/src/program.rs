@@ -227,9 +227,8 @@ fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
     }
 
     let read_u16 = |off: usize| u16::from_le_bytes([data[off], data[off + 1]]);
-    let read_u32 = |off: usize| {
-        u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-    };
+    let read_u32 =
+        |off: usize| u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
     let read_u64 = |off: usize| {
         u64::from_le_bytes([
             data[off],

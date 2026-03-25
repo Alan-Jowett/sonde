@@ -143,6 +143,7 @@ fn make_cbor_image(bytecode: &[u8]) -> Vec<u8> {
     let image = ProgramImage {
         bytecode: bytecode.to_vec(),
         maps: vec![],
+        map_initial_data: vec![],
     };
     image.encode_deterministic().unwrap()
 }
@@ -181,6 +182,7 @@ async fn store_test_program(storage: &InMemoryStorage, bytecode: &[u8]) -> Vec<u
     let image = ProgramImage {
         bytecode: bytecode.to_vec(),
         maps: vec![],
+        map_initial_data: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let record = lib
@@ -200,6 +202,7 @@ async fn store_test_program_with_profile(
     let image = ProgramImage {
         bytecode: bytecode.to_vec(),
         maps: vec![],
+        map_initial_data: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let record = lib.ingest_unverified(cbor, profile).unwrap();
@@ -239,6 +242,7 @@ fn t0402_deterministic_cbor_sorted_keys_and_shortest_form() {
                 max_entries: 128,
             },
         ],
+        map_initial_data: vec![Vec::new(); 2],
     };
 
     let cbor = image.encode_deterministic().unwrap();
@@ -548,6 +552,7 @@ fn t0402_deterministic_hash_identity() {
             value_size: 8,
             max_entries: 256,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let image_b = image_a.clone();
 

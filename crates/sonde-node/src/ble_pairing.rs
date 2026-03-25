@@ -278,7 +278,10 @@ pub fn handle_node_provision<S: PlatformStorage>(
     // Persist optional pin config (ND-0607). Failure here is non-fatal —
     // the node will use compiled-in defaults.
     if let Some(ref pins) = provision.pin_config {
-        if storage.write_i2c0_pins(pins.i2c0_sda, pins.i2c0_scl).is_err() {
+        if storage
+            .write_i2c0_pins(pins.i2c0_sda, pins.i2c0_scl)
+            .is_err()
+        {
             log::warn!("failed to persist I2C pin config; using defaults");
         }
     }

@@ -433,13 +433,16 @@ where
             // doesn't match OR when a new program was installed this
             // cycle (even with identical layout, map data must be
             // zero-initialized per node-design.md §9.2).
-            if (resident_installed_this_cycle || !map_storage.layout_matches(&program.map_defs))
-                && map_storage.allocate(&program.map_defs).is_err()
-            {
-                // Map budget exceeded. The newly installed resident
-                // program is already active (install_resident swapped
-                // partitions), so we do not roll back here.
-                return log_and_sleep(&sleep_mgr);
+            if resident_installed_this_cycle || !map_storage.layout_matches(&program.map_defs) {
+                if map_storage.allocate(&program.map_defs).is_err() {
+                    // Map budget exceeded. The newly installed resident
+                    // program is already active (install_resident swapped
+                    // partitions), so we do not roll back here.
+                    return log_and_sleep(&sleep_mgr);
+                }
+                // Pre-populate maps with initial data from the program
+                // image (e.g. .rodata / .data section content).
+                map_storage.apply_initial_data(&program.map_initial_data);
             }
         }
 
@@ -1804,6 +1807,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -2378,6 +2382,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -2483,6 +2488,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -2621,6 +2627,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let wrong_hash = [0xFF; 32];
@@ -2685,6 +2692,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -2748,6 +2756,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -2816,6 +2825,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         storage.programs[0] = Some(image_cbor);
@@ -2855,6 +2865,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -3025,6 +3036,7 @@ mod tests {
                 value_size: 4,
                 max_entries: 4,
             }],
+            map_initial_data: vec![Vec::new(); 1],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -3134,6 +3146,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -3185,6 +3198,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -3233,6 +3247,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -3553,6 +3568,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -3610,6 +3626,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -3860,6 +3877,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -4059,6 +4077,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -4110,6 +4129,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -4263,6 +4283,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: bytecode.clone(),
             maps: map_defs.clone(),
+            map_initial_data: vec![Vec::new(); map_defs.len()],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -4406,6 +4427,7 @@ mod tests {
                     max_entries: MAP_MAX_ENTRIES,
                 },
             ],
+            map_initial_data: vec![Vec::new(); 2],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -4446,6 +4468,7 @@ mod tests {
         let existing_image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let existing_cbor = existing_image.encode_deterministic().unwrap();
 
@@ -4769,6 +4792,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);
@@ -4950,6 +4974,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
 
@@ -5040,6 +5065,7 @@ mod tests {
         let image = sonde_protocol::ProgramImage {
             bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             maps: vec![],
+            map_initial_data: vec![],
         };
         let image_cbor = image.encode_deterministic().unwrap();
         let image_hash = TestSha256.hash(&image_cbor);

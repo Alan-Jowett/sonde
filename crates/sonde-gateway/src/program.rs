@@ -90,6 +90,16 @@ const MAP_SECTION_NAMES: &[&str] = &[".maps", "maps", ".rodata", ".data", ".bss"
 /// Section name prefixes that indicate map-backed sections (e.g. `maps/foo`).
 const MAP_SECTION_PREFIXES: &[&str] = &[".maps/", "maps/"];
 
+/// Section names corresponding to global variable maps.
+///
+/// Prevail promotes these to array maps (one entry, `value_size` = section
+/// size). Unlike `.maps`/`maps`, they carry initial data — the ELF section
+/// content — that must be serialized into the program image.
+const GLOBAL_DATA_SECTION_NAMES: &[&str] = &[".rodata", ".data", ".bss"];
+
+/// ELF section type for sections with data (SHT_PROGBITS).
+const SHT_PROGBITS: u32 = 1;
+
 /// Lightweight check for ELF64 LE sections that produce BPF maps.
 ///
 /// Scans section headers and the section-name string table without invoking
@@ -190,6 +200,121 @@ fn elf_has_map_sections(data: &[u8]) -> bool {
     }
 
     false
+}
+
+/// Extract initial data for global variable sections from a BPF ELF.
+///
+/// Returns section content for `.rodata`, `.data`, and `.bss` sections in
+/// the same order they appear in the ELF section header table. Prevail's
+/// `add_global_variable_maps()` iterates sections in this same order, so
+/// the returned entries correspond 1:1 to the `map_type == 0` descriptors
+/// in `RawProgram::info::map_descriptors`.
+///
+/// `.bss` sections (SHT_NOBITS) have no file data — an empty Vec is
+/// returned for them since map storage is already zero-initialized.
+///
+/// Returns an empty Vec if the ELF is malformed.
+fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
+    if data.len() < 64 {
+        return Vec::new();
+    }
+    if data[0..4] != [0x7f, b'E', b'L', b'F'] || data[4] != 2 || data[5] != 1 {
+        return Vec::new();
+    }
+    let e_machine = u16::from_le_bytes([data[18], data[19]]);
+    if e_machine != 0x00F7 {
+        return Vec::new();
+    }
+
+    let read_u16 = |off: usize| u16::from_le_bytes([data[off], data[off + 1]]);
+    let read_u32 =
+        |off: usize| u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+    let read_u64 = |off: usize| {
+        u64::from_le_bytes([
+            data[off],
+            data[off + 1],
+            data[off + 2],
+            data[off + 3],
+            data[off + 4],
+            data[off + 5],
+            data[off + 6],
+            data[off + 7],
+        ])
+    };
+
+    let sh_off = read_u64(40) as usize;
+    let sh_entsize = read_u16(58) as usize;
+    let sh_num = read_u16(60) as usize;
+    let sh_strndx = read_u16(62) as usize;
+
+    if sh_strndx >= sh_num || sh_entsize < 64 {
+        return Vec::new();
+    }
+
+    let str_sh = match sh_strndx
+        .checked_mul(sh_entsize)
+        .and_then(|offset| sh_off.checked_add(offset))
+    {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    if str_sh > data.len().saturating_sub(40) {
+        return Vec::new();
+    }
+    let strtab_off = read_u64(str_sh + 24) as usize;
+    let strtab_size = read_u64(str_sh + 32) as usize;
+    let strtab_end = match strtab_off.checked_add(strtab_size) {
+        Some(end) => end,
+        None => return Vec::new(),
+    };
+    if strtab_end > data.len() {
+        return Vec::new();
+    }
+    let strtab = &data[strtab_off..strtab_end];
+
+    let mut sections = Vec::new();
+    for i in 0..sh_num {
+        let hdr = match i
+            .checked_mul(sh_entsize)
+            .and_then(|offset| sh_off.checked_add(offset))
+        {
+            Some(v) => v,
+            None => return sections,
+        };
+        if hdr + sh_entsize > data.len() {
+            break;
+        }
+        let name_off = read_u32(hdr) as usize;
+        if name_off >= strtab.len() {
+            continue;
+        }
+        let name_end = strtab[name_off..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(strtab.len(), |p| name_off + p);
+        let name = match std::str::from_utf8(&strtab[name_off..name_end]) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if !GLOBAL_DATA_SECTION_NAMES.contains(&name) {
+            continue;
+        }
+        let sh_type = read_u32(hdr + 4);
+        let sec_off = read_u64(hdr + 24) as usize;
+        let sec_size = read_u64(hdr + 32) as usize;
+
+        if sh_type == SHT_PROGBITS {
+            let sec_end = match sec_off.checked_add(sec_size) {
+                Some(end) if end <= data.len() => end,
+                _ => continue,
+            };
+            sections.push(data[sec_off..sec_end].to_vec());
+        } else {
+            // .bss (SHT_NOBITS) — no file data; maps are zero-initialized.
+            sections.push(Vec::new());
+        }
+    }
+    sections
 }
 
 /// Program library: stores verified programs and serves chunks.
@@ -366,7 +491,31 @@ impl ProgramLibrary {
             })
             .collect();
 
-        let image = ProgramImage { bytecode, maps };
+        // Extract initial data for global variable maps (.rodata, .data).
+        // Prevail promotes these sections to map descriptors with map_type == 0
+        // in section header order.  `extract_global_section_data` returns data
+        // in the same order, so we can match them 1:1.
+        let global_sections = extract_global_section_data(elf_bytes);
+        let mut global_iter = global_sections.into_iter();
+        let map_initial_data: Vec<Vec<u8>> = first
+            .info
+            .map_descriptors
+            .iter()
+            .map(|md| {
+                if md.map_type == 0 {
+                    // Global variable map — consume next section data.
+                    global_iter.next().unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+
+        let image = ProgramImage {
+            bytecode,
+            maps,
+            map_initial_data,
+        };
         let cbor = image
             .encode_deterministic()
             .map_err(|e| ProgramError::Internal(format!("CBOR encoding failed: {e}")))?;

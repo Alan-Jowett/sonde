@@ -503,6 +503,26 @@ impl MapStorage {
         Ok(())
     }
 
+    /// Pre-populate maps with initial data from the program image.
+    ///
+    /// Called after `allocate()` when a new program is installed. For each
+    /// map, if `initial_data[i]` is non-empty and matches `value_size`,
+    /// the data is written as the value of entry 0 (the only entry in
+    /// global variable maps). Entries without initial data remain
+    /// zero-filled from allocation.
+    pub fn apply_initial_data(&mut self, initial_data: &[Vec<u8>]) {
+        for (i, data) in initial_data.iter().enumerate() {
+            if data.is_empty() {
+                continue;
+            }
+            if let Some(map) = self.maps.get_mut(i) {
+                if data.len() == map.def.value_size as usize {
+                    let _ = map.update(0, data);
+                }
+            }
+        }
+    }
+
     /// Write the current map definitions to the RTC layout record.
     ///
     /// Called by `allocate()` after successfully setting up maps.
@@ -797,5 +817,67 @@ mod tests {
     fn test_validate_exactly_max_maps() {
         let defs: Vec<MapDef> = (0..MAX_MAPS).map(|_| array_map_def(4, 1)).collect();
         assert!(MapStorage::validate_map_defs(&defs).is_ok());
+    }
+
+    #[test]
+    fn test_apply_initial_data_populates_map() {
+        let mut ms = MapStorage::new(4096);
+        // Single-entry array map with value_size=4.
+        let defs = vec![array_map_def(4, 1)];
+        ms.allocate(&defs).unwrap();
+
+        let initial = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        ms.apply_initial_data(std::slice::from_ref(&initial));
+
+        let stored = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(stored, &initial[..]);
+    }
+
+    #[test]
+    fn test_apply_initial_data_skips_empty() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![array_map_def(4, 1)];
+        ms.allocate(&defs).unwrap();
+
+        // Empty initial data — map should remain zero-filled.
+        ms.apply_initial_data(&[vec![]]);
+
+        let stored = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(
+            stored,
+            &[0, 0, 0, 0],
+            "empty initial_data must leave map zero-filled"
+        );
+    }
+
+    #[test]
+    fn test_apply_initial_data_size_mismatch_ignored() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![array_map_def(4, 1)];
+        ms.allocate(&defs).unwrap();
+
+        // Wrong size — should be silently ignored.
+        ms.apply_initial_data(&[vec![0xFF, 0xFF]]);
+
+        let stored = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(
+            stored,
+            &[0, 0, 0, 0],
+            "mismatched initial_data must be ignored"
+        );
+    }
+
+    #[test]
+    fn test_apply_initial_data_multiple_maps() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![array_map_def(4, 1), array_map_def(2, 1)];
+        ms.allocate(&defs).unwrap();
+
+        let data0 = vec![0x01, 0x02, 0x03, 0x04];
+        let data1 = vec![0xAA, 0xBB];
+        ms.apply_initial_data(&[data0.clone(), data1.clone()]);
+
+        assert_eq!(ms.get(0).unwrap().lookup(0).unwrap(), &data0);
+        assert_eq!(ms.get(1).unwrap().lookup(0).unwrap(), &data1);
     }
 }

@@ -1179,6 +1179,7 @@ fn test_p040() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1195,6 +1196,7 @@ fn test_p041() {
     let img = ProgramImage {
         bytecode: vec![0x01],
         maps: vec![],
+        map_initial_data: vec![],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1211,6 +1213,7 @@ fn test_p042() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let cbor_a = make_img().encode_deterministic().unwrap();
     let cbor_b = make_img().encode_deterministic().unwrap();
@@ -1230,6 +1233,7 @@ fn test_p043() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let cbor = img.encode_deterministic().unwrap();
     let reference_hash = program_hash(&cbor, &SoftwareSha256);
@@ -1250,6 +1254,7 @@ fn test_p044() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let img_b = ProgramImage {
         bytecode,
@@ -1259,6 +1264,7 @@ fn test_p044() {
             value_size: 64,
             max_entries: 32,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let ha = program_hash(&img_a.encode_deterministic().unwrap(), &SoftwareSha256);
     let hb = program_hash(&img_b.encode_deterministic().unwrap(), &SoftwareSha256);
@@ -1276,10 +1282,12 @@ fn test_p045() {
     let img_a = ProgramImage {
         bytecode: vec![0x01],
         maps: maps.clone(),
+        map_initial_data: vec![Vec::new(); maps.len()],
     };
     let img_b = ProgramImage {
         bytecode: vec![0x02],
         maps,
+        map_initial_data: vec![Vec::new()],
     };
     let ha = program_hash(&img_a.encode_deterministic().unwrap(), &SoftwareSha256);
     let hb = program_hash(&img_b.encode_deterministic().unwrap(), &SoftwareSha256);
@@ -1296,6 +1304,7 @@ fn test_p046() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let cbor = img.encode_deterministic().unwrap();
     // Decode as generic CBOR and verify key ordering.
@@ -1332,6 +1341,7 @@ fn test_p047() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1346,11 +1356,175 @@ fn test_p047() {
     let img2 = ProgramImage {
         bytecode: vec![],
         maps: vec![],
+        map_initial_data: vec![],
     };
     let cbor2 = img2.encode_deterministic().unwrap();
     let decoded2 = ProgramImage::decode(&cbor2).unwrap();
     assert!(decoded2.bytecode.is_empty());
     assert!(decoded2.maps.is_empty());
+}
+
+// T-P060  ProgramImage with initial_data round-trips
+#[test]
+fn test_p060_initial_data_round_trip() {
+    let initial = vec![0xAA, 0xBB, 0xCC, 0xDD];
+    let img = ProgramImage {
+        bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![initial.clone()],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+    assert_eq!(decoded.maps.len(), 1);
+    assert_eq!(decoded.map_initial_data.len(), 1);
+    assert_eq!(decoded.map_initial_data[0], initial);
+}
+
+// T-P061  ProgramImage without initial_data decodes with empty vecs (backward compat)
+#[test]
+fn test_p061_missing_initial_data_backward_compat() {
+    // Manually encode a CBOR image without key 5 to simulate an old-format image.
+    let map_entry = ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Integer(4.into()),
+        ),
+        (
+            ciborium::Value::Integer(3.into()),
+            ciborium::Value::Integer(8.into()),
+        ),
+        (
+            ciborium::Value::Integer(4.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+    ]);
+    let outer = ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Bytes(vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        ),
+        (
+            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Array(vec![map_entry]),
+        ),
+    ]);
+    let mut cbor = Vec::new();
+    ciborium::into_writer(&outer, &mut cbor).unwrap();
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+    assert_eq!(decoded.maps.len(), 1);
+    assert_eq!(decoded.map_initial_data.len(), 1);
+    assert!(
+        decoded.map_initial_data[0].is_empty(),
+        "absent key 5 must produce empty initial_data"
+    );
+}
+
+// T-P062  initial_data changes program hash
+#[test]
+fn test_p062_initial_data_changes_hash() {
+    let base = ProgramImage {
+        bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![vec![]],
+    };
+    let with_data = ProgramImage {
+        bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![vec![0xAA, 0xBB, 0xCC, 0xDD]],
+    };
+    let hash_a = program_hash(&base.encode_deterministic().unwrap(), &SoftwareSha256);
+    let hash_b = program_hash(&with_data.encode_deterministic().unwrap(), &SoftwareSha256);
+    assert_ne!(hash_a, hash_b, "initial_data must affect program hash");
+}
+
+// T-P063  Deterministic encoding with initial_data preserves key ordering
+#[test]
+fn test_p063_initial_data_key_ordering() {
+    let img = ProgramImage {
+        bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 2,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![vec![0x42, 0x43]],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+    let val: ciborium::Value = ciborium::de::from_reader(&cbor[..]).unwrap();
+    let outer = match val {
+        ciborium::Value::Map(m) => m,
+        _ => panic!("expected CBOR map"),
+    };
+    // Check the maps array entry has keys in ascending order
+    let maps_arr = match &outer[1].1 {
+        ciborium::Value::Array(a) => a,
+        _ => panic!("expected array"),
+    };
+    let map_entry = match &maps_arr[0] {
+        ciborium::Value::Map(m) => m,
+        _ => panic!("expected map"),
+    };
+    let keys: Vec<i128> = map_entry
+        .iter()
+        .map(|(k, _)| match k {
+            ciborium::Value::Integer(i) => (*i).into(),
+            _ => panic!("expected integer key"),
+        })
+        .collect();
+    assert_eq!(keys, vec![1, 2, 3, 4, 5], "keys must be 1,2,3,4,5 in order");
+}
+
+// T-P064  Multiple maps with mixed initial_data
+#[test]
+fn test_p064_mixed_initial_data() {
+    let img = ProgramImage {
+        bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        maps: vec![
+            MapDef {
+                map_type: 1,
+                key_size: 4,
+                value_size: 8,
+                max_entries: 1,
+            },
+            MapDef {
+                map_type: 1,
+                key_size: 4,
+                value_size: 4,
+                max_entries: 2,
+            },
+        ],
+        map_initial_data: vec![
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            vec![], // no initial data for second map
+        ],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+    assert_eq!(
+        decoded.map_initial_data[0],
+        vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+    );
+    assert!(decoded.map_initial_data[1].is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -1404,6 +1578,7 @@ fn test_p053() {
                 max_entries: 32,
             },
         ],
+        map_initial_data: vec![Vec::new(); 2],
     };
     let cbor = img.encode_deterministic().unwrap();
     let n = chunk_count(cbor.len(), 190).unwrap();
@@ -1563,6 +1738,7 @@ fn test_p062() {
                 max_entries: 8,
             },
         ],
+        map_initial_data: vec![Vec::new(); 3],
     };
     let cbor = img.encode_deterministic().unwrap();
     let hash_orig = program_hash(&cbor, &SoftwareSha256);
@@ -2115,6 +2291,7 @@ fn test_p048() {
             value_size: 24,   // boundary: first 2-byte value
             max_entries: 256, // boundary: first 3-byte value
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
 
     let cbor = img.encode_deterministic().unwrap();
@@ -2182,6 +2359,7 @@ fn test_p049a() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new(); 1],
     };
     let cbor = img.encode_deterministic().unwrap();
     assert!(cbor.len() > 10, "encoded image must be non-trivial");

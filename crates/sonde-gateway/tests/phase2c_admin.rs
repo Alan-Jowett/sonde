@@ -115,6 +115,7 @@ fn make_cbor_image(bytecode: &[u8]) -> Vec<u8> {
     let image = sonde_protocol::ProgramImage {
         bytecode: bytecode.to_vec(),
         maps: vec![],
+        map_initial_data: vec![],
     };
     image.encode_deterministic().unwrap()
 }

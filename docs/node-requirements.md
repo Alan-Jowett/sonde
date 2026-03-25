@@ -924,12 +924,13 @@ After the first successful WAKE/COMMAND exchange (the gateway responds with a va
 **Source:** ble-pairing-protocol.md §8.3.1
 
 **Description:**  
-If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set, the node MUST clear the `reg_complete` flag and revert to sending PEER_REQUEST on the next boot.
+If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set **and** the `peer_payload` NVS key is still present, the node MUST clear the `reg_complete` flag and revert to sending PEER_REQUEST on the next boot. The `peer_payload` is retained between a successful PEER_ACK and the first successful WAKE/COMMAND cycle (see ND-0914); self-healing is only possible during this window because the peer payload contains the encrypted registration material needed to re-run the PEER_REQUEST flow. Once ND-0914 erases `peer_payload`, the node cannot self-heal and must be re-provisioned via BLE if the gateway loses its registration.
 
 **Acceptance criteria:**
 
-1. A WAKE failure when `reg_complete` is set clears the flag.
+1. A WAKE failure when `reg_complete` is set **and** `peer_payload` is present clears the flag.
 2. The next boot enters the PEER_REQUEST path instead of the normal WAKE cycle.
+3. A WAKE failure when `reg_complete` is set but `peer_payload` has been erased (ND-0914) does **not** clear the flag; the node continues normal WAKE retries.
 
 ---
 

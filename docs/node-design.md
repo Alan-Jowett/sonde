@@ -622,7 +622,7 @@ After the first successful WAKE/COMMAND exchange (the gateway responds with a va
 
 **Self-healing on WAKE failure (ND-0915):**
 
-If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state.
+If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set, the node checks whether the `peer_payload` NVS key is still present. If it is, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot — this allows the node to re-register if the gateway lost its registration state. If `peer_payload` has already been erased (ND-0914), the self-healing path is unavailable and the node continues normal WAKE retries; re-provisioning via BLE is required if the gateway has lost its registration.
 
 ---
 

@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa).
+# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa) in both
+# the debug profile (full TRACE/DEBUG compiled in) and the firmware profile
+# (DEBUG/TRACE eliminated at compile time).
 
 name: ESP32-S3 Modem Firmware CI
 
@@ -51,7 +53,30 @@ jobs:
           key: esp32s3-xtensa-${{ hashFiles('crates/sonde-modem/sdkconfig.defaults', 'sdkconfig.defaults.esp32s3', '.github/docker/Dockerfile.esp-dev') }}
 
       # ------------------------------------------------------------------ #
-      # Build
+      # Build — debug profile (full TRACE/DEBUG compiled in)
+      # ------------------------------------------------------------------ #
+
+      - name: Build modem firmware (ESP32-S3, debug profile)
+        # Build without --profile firmware to verify the debug flavor compiles
+        # with debug_assertions enabled, which keeps all log levels (TRACE through
+        # ERROR) compiled in via the `release_max_level_info` log feature.
+        env:
+          ESP_IDF_SDKCONFIG_DEFAULTS: sdkconfig.defaults.esp32s3;crates/sonde-modem/sdkconfig.defaults
+          ESP_IDF_COMPONENT_MANAGER: "off"
+          SONDE_GIT_COMMIT: ${{ github.sha }}
+        run: |
+          . /opt/esp/export-esp.sh
+          find target -name sdkconfig -path "*/esp-idf-sys-*/out/sdkconfig" -delete 2>/dev/null || true
+          find target -name CMakeCache.txt -path "*/esp-idf-sys-*/out/build/CMakeCache.txt" -delete 2>/dev/null || true
+          cargo +esp build \
+            -p sonde-modem \
+            --bin modem \
+            --features esp \
+            --target xtensa-esp32s3-espidf \
+            -Zbuild-std=std,panic_abort
+
+      # ------------------------------------------------------------------ #
+      # Build — firmware profile (DEBUG/TRACE eliminated at compile time)
       # ------------------------------------------------------------------ #
 
       - name: Build modem firmware (ESP32-S3, firmware profile)

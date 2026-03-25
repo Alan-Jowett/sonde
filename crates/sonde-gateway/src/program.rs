@@ -5,13 +5,13 @@ use std::fmt;
 use std::io::Write;
 
 use crate::crypto::RustCryptoSha256;
+use crate::sonde_platform::SondePlatform;
 use prevail::crab::ebpf_domain::DomainContext;
 use prevail::crab::var_registry::VariableRegistry;
 use prevail::elf_loader::ElfObject;
 use prevail::fwd_analyzer;
 use prevail::ir::program::Program as PrevailProgram;
 use prevail::ir::unmarshal;
-use prevail::linux::linux_platform::LinuxPlatform;
 use prevail::spec::config::EbpfVerifierOptions;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
@@ -80,6 +80,118 @@ const MAX_RESIDENT_SIZE: u32 = 4096;
 /// Maximum CBOR image size for ephemeral programs (GW-0202 AC3).
 pub(crate) const MAX_EPHEMERAL_SIZE: u32 = 2048;
 
+/// Section names that BPF loaders treat as map-backed.
+///
+/// Includes explicit map definition sections (`.maps`/`maps`) and global
+/// data sections (`.rodata`, `.data`, `.bss`) which libbpf/prevail promote
+/// to array maps.
+const MAP_SECTION_NAMES: &[&str] = &[".maps", "maps", ".rodata", ".data", ".bss"];
+
+/// Section name prefixes that indicate map-backed sections (e.g. `maps/foo`).
+const MAP_SECTION_PREFIXES: &[&str] = &[".maps/", "maps/"];
+
+/// Lightweight check for ELF64 LE sections that produce BPF maps.
+///
+/// Scans section headers and the section-name string table without invoking
+/// the full prevail loader, so it is safe to call on any platform.
+/// Returns `false` (rather than panicking) on any malformed input.
+fn elf_has_map_sections(data: &[u8]) -> bool {
+    // ELF64 header is 64 bytes; bail out on anything too short.
+    if data.len() < 64 {
+        return false;
+    }
+
+    // Validate ELF magic, 64-bit class, and little-endian encoding.
+    if data[0..4] != [0x7f, b'E', b'L', b'F'] || data[4] != 2 || data[5] != 1 {
+        return false;
+    }
+
+    // Only inspect BPF object files — non-BPF ELFs may have `.data`/`.bss`
+    // sections that are unrelated to BPF maps.
+    let e_machine = u16::from_le_bytes([data[18], data[19]]);
+    if e_machine != 0x00F7 {
+        return false;
+    }
+
+    let read_u16 = |off: usize| u16::from_le_bytes([data[off], data[off + 1]]);
+    let read_u64 = |off: usize| {
+        u64::from_le_bytes([
+            data[off],
+            data[off + 1],
+            data[off + 2],
+            data[off + 3],
+            data[off + 4],
+            data[off + 5],
+            data[off + 6],
+            data[off + 7],
+        ])
+    };
+
+    let sh_off = read_u64(40) as usize; // e_shoff
+    let sh_entsize = read_u16(58) as usize; // e_shentsize
+    let sh_num = read_u16(60) as usize; // e_shnum
+    let sh_strndx = read_u16(62) as usize; // e_shstrndx
+
+    if sh_strndx >= sh_num || sh_entsize < 64 {
+        return false;
+    }
+
+    // Locate the section-name string table (.shstrtab).
+    let str_sh = match sh_strndx
+        .checked_mul(sh_entsize)
+        .and_then(|offset| sh_off.checked_add(offset))
+    {
+        Some(v) => v,
+        None => return false,
+    };
+    if str_sh > data.len().saturating_sub(40) {
+        return false;
+    }
+    let strtab_off = read_u64(str_sh + 24) as usize;
+    let strtab_size = read_u64(str_sh + 32) as usize;
+    let strtab_end = match strtab_off.checked_add(strtab_size) {
+        Some(end) => end,
+        None => return false,
+    };
+    if strtab_end > data.len() {
+        return false;
+    }
+    let strtab = &data[strtab_off..strtab_end];
+
+    // Scan each section header looking for a map-backed section name.
+    for i in 0..sh_num {
+        let hdr = match i
+            .checked_mul(sh_entsize)
+            .and_then(|offset| sh_off.checked_add(offset))
+        {
+            Some(v) => v,
+            None => return false,
+        };
+        if hdr > data.len().saturating_sub(4) {
+            break;
+        }
+        let name_off =
+            u32::from_le_bytes([data[hdr], data[hdr + 1], data[hdr + 2], data[hdr + 3]]) as usize;
+        if name_off >= strtab.len() {
+            continue;
+        }
+        // Extract the NUL-terminated section name.
+        let name_end = strtab[name_off..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(strtab.len(), |p| name_off + p);
+        if let Ok(name) = std::str::from_utf8(&strtab[name_off..name_end]) {
+            if MAP_SECTION_NAMES.contains(&name)
+                || MAP_SECTION_PREFIXES.iter().any(|&p| name.starts_with(p))
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Program library: stores verified programs and serves chunks.
 pub struct ProgramLibrary {
     sha256: RustCryptoSha256,
@@ -129,12 +241,13 @@ impl ProgramLibrary {
     /// Ingest a raw ELF binary with prevail verification (GW-0401).
     ///
     /// Steps:
-    ///   1. Write ELF bytes to a temp file for prevail.
-    ///   2. Parse the ELF with `ElfObject`.
-    ///   3. Extract programs and run prevail verification on each extracted program.
-    ///   4. Reject ELF files containing multiple programs (ambiguous selection).
-    ///   5. Serialize bytecode and map definitions into a `ProgramImage`.
-    ///   6. Delegate size-limit enforcement and hashing to `ingest()`.
+    ///   1. Reject ephemeral programs that declare map-backed sections (GW-0401 criterion 5).
+    ///   2. Write ELF bytes to a temp file for prevail.
+    ///   3. Parse the ELF with `ElfObject`.
+    ///   4. Extract programs and run prevail verification on each extracted program.
+    ///   5. Reject ELF files containing multiple programs (ambiguous selection).
+    ///   6. Serialize bytecode and map definitions into a `ProgramImage`.
+    ///   7. Delegate size-limit enforcement and hashing to `ingest()`.
     pub fn ingest_elf(
         &self,
         elf_bytes: &[u8],
@@ -142,6 +255,14 @@ impl ProgramLibrary {
     ) -> Result<ProgramRecord, ProgramError> {
         if elf_bytes.is_empty() {
             return Err(ProgramError::InvalidImage);
+        }
+
+        // Ephemeral programs are stateless — reject early if the ELF declares
+        // map sections (GW-0401 criterion 5).
+        if profile == VerificationProfile::Ephemeral && elf_has_map_sections(elf_bytes) {
+            return Err(ProgramError::VerificationFailed(
+                "ephemeral programs must not declare maps".into(),
+            ));
         }
 
         // Write ELF bytes to a temp file for prevail's file-based parser.
@@ -168,8 +289,8 @@ impl ProgramLibrary {
         let mut elf = ElfObject::new(tmp_path, opts)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
 
-        // Extract programs using the Linux platform.
-        let mut platform = LinuxPlatform::new();
+        // Extract programs using the sonde-specific verifier platform (GW-0404).
+        let mut platform = SondePlatform::new();
         let raw_programs = elf
             .get_programs("", "", &mut platform)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
@@ -317,17 +438,13 @@ mod tests {
         assert!(matches!(err, ProgramError::ElfParseError(_)));
     }
 
-    /// Build a minimal valid BPF ELF containing a single `.text` section
-    /// with `mov r0, 0; exit` — the simplest passing eBPF program.
-    fn make_minimal_bpf_elf() -> Vec<u8> {
-        // Construct a minimal 64-bit little-endian ELF relocatable object
-        // with a single .text section containing two BPF instructions.
-        //
-        // Layout: ELF header (64B) | .text (16B) | .shstrtab (17B) | section headers (3*64B)
-        let bpf_code: [u8; 16] = [
-            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
-            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
-        ];
+    /// Build a BPF ELF relocatable object with the given bytecode in a `.text`
+    /// section. The bytecode length must be a multiple of 8 (one BPF instruction).
+    fn make_bpf_elf(bpf_code: &[u8]) -> Vec<u8> {
+        assert!(
+            bpf_code.len().is_multiple_of(8),
+            "BPF bytecode length must be a multiple of 8"
+        );
         let shstrtab: &[u8] = b"\0.text\0.shstrtab\0"; // 17 bytes
 
         let text_offset: u64 = 64; // right after ELF header
@@ -358,7 +475,7 @@ mod tests {
         assert_eq!(elf.len(), 64);
 
         // ── .text section data ──
-        elf.extend_from_slice(&bpf_code);
+        elf.extend_from_slice(bpf_code);
 
         // ── .shstrtab section data ──
         elf.extend_from_slice(shstrtab);
@@ -391,6 +508,15 @@ mod tests {
         elf
     }
 
+    /// Build a minimal valid BPF ELF containing a single `.text` section
+    /// with `mov r0, 0; exit` — the simplest passing eBPF program.
+    fn make_minimal_bpf_elf() -> Vec<u8> {
+        make_bpf_elf(&[
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ])
+    }
+
     #[test]
     fn ingest_elf_valid_minimal_program() {
         let elf = make_minimal_bpf_elf();
@@ -413,5 +539,335 @@ mod tests {
         let r1 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
         let r2 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
         assert_eq!(r1.hash, r2.hash);
+    }
+
+    /// Build a minimal BPF ELF that declares one `.maps` entry (an ARRAY map)
+    /// while still containing a trivially valid program (`mov r0, 0; exit`).
+    /// The program does *not* reference the map — the map is present only so
+    /// that this ELF exercises the pre-Prevail section-scan rejection for
+    /// ephemeral programs that declare maps.
+    fn make_minimal_bpf_elf_with_maps() -> Vec<u8> {
+        // Layout:
+        //   ELF header          64 B
+        //   .text               16 B  (mov r0, 0; exit)
+        //   .maps               28 B  (one BpfLoadMapDef: 7 × u32)
+        //   .strtab             13 B  ("\0counter_map\0")
+        //   .shstrtab           39 B
+        //   .symtab             48 B  (null + 1 GLOBAL OBJECT in .maps)
+        //   Section headers    384 B  (6 × 64)
+
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        // One BPF_MAP_TYPE_ARRAY map (7 × u32 LE).
+        let mut map_def = Vec::with_capacity(28);
+        map_def.extend_from_slice(&1u32.to_le_bytes()); // map_type = ARRAY (sonde ABI)
+        map_def.extend_from_slice(&4u32.to_le_bytes()); // key_size
+        map_def.extend_from_slice(&4u32.to_le_bytes()); // value_size
+        map_def.extend_from_slice(&1u32.to_le_bytes()); // max_entries
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // map_flags
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // inner_map_idx
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // numa_node
+
+        let strtab: &[u8] = b"\0counter_map\0"; // 13 bytes
+                                                // shstrtab: "\0.text\0.maps\0.strtab\0.symtab\0.shstrtab\0"
+                                                //   offsets:  0  1     7     13      21      29
+        let shstrtab: &[u8] = b"\0.text\0.maps\0.strtab\0.symtab\0.shstrtab\0"; // 39 bytes
+
+        let text_offset: u64 = 64;
+        let maps_offset: u64 = text_offset + bpf_code.len() as u64; // 80
+        let strtab_offset: u64 = maps_offset + map_def.len() as u64; // 108
+        let shstrtab_offset: u64 = strtab_offset + strtab.len() as u64; // 121
+        let symtab_offset: u64 = shstrtab_offset + shstrtab.len() as u64; // 160
+        let shdr_offset: u64 = symtab_offset + 48; // 208
+
+        let mut elf = Vec::new();
+
+        // ── ELF header (64 bytes) ──
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']); // magic
+        elf.push(2); // EI_CLASS = ELFCLASS64
+        elf.push(1); // EI_DATA = ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]); // padding
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
+        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&6u16.to_le_bytes()); // e_shnum
+        elf.extend_from_slice(&5u16.to_le_bytes()); // e_shstrndx = 5
+        assert_eq!(elf.len(), 64);
+
+        // ── .text section data ──
+        elf.extend_from_slice(&bpf_code);
+
+        // ── .maps section data ──
+        elf.extend_from_slice(&map_def);
+
+        // ── .strtab section data ──
+        elf.extend_from_slice(strtab);
+
+        // ── .shstrtab section data ──
+        elf.extend_from_slice(shstrtab);
+
+        // ── .symtab section data (2 × 24 bytes) ──
+        // [0] Null symbol
+        elf.extend_from_slice(&[0u8; 24]);
+
+        // [1] Symbol for counter_map in .maps section
+        let mut sym = [0u8; 24];
+        sym[0..4].copy_from_slice(&1u32.to_le_bytes()); // st_name = 1
+        sym[4] = 0x11; // st_info = STB_GLOBAL | STT_OBJECT
+        sym[5] = 0; // st_other
+        sym[6..8].copy_from_slice(&2u16.to_le_bytes()); // st_shndx = 2 (.maps)
+        sym[8..16].copy_from_slice(&0u64.to_le_bytes()); // st_value = 0
+        sym[16..24].copy_from_slice(&28u64.to_le_bytes()); // st_size = 28
+        elf.extend_from_slice(&sym);
+
+        // ── Section headers (6 × 64 bytes) ──
+
+        // [0] Null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] .text
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x6u64.to_le_bytes()); // SHF_ALLOC | SHF_EXECINSTR
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [2] .maps
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x2u64.to_le_bytes()); // SHF_ALLOC
+        sh[24..32].copy_from_slice(&maps_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(map_def.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&4u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [3] .strtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&13u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh[24..32].copy_from_slice(&strtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(strtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [4] .symtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&21u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&2u32.to_le_bytes()); // sh_type = SHT_SYMTAB
+        sh[24..32].copy_from_slice(&symtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&48u64.to_le_bytes()); // sh_size = 2 entries
+        sh[40..44].copy_from_slice(&3u32.to_le_bytes()); // sh_link = .strtab index
+        sh[44..48].copy_from_slice(&1u32.to_le_bytes()); // sh_info = first non-local
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        sh[56..64].copy_from_slice(&24u64.to_le_bytes()); // sh_entsize
+        elf.extend_from_slice(&sh);
+
+        // [5] .shstrtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&29u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        elf
+    }
+
+    /// Build a minimal BPF ELF with arbitrary bytecode in a `sonde` section.
+    fn make_sonde_elf(bpf_code: &[u8]) -> Vec<u8> {
+        let shstrtab: &[u8] = b"\0sonde\0.shstrtab\0"; // 17 bytes
+
+        let text_offset: u64 = 64;
+        let shstrtab_offset: u64 = text_offset + bpf_code.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ── ELF header (64 bytes) ──
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2); // EI_CLASS = ELFCLASS64
+        elf.push(1); // EI_DATA = ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]); // padding
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
+        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&3u16.to_le_bytes()); // e_shnum
+        elf.extend_from_slice(&2u16.to_le_bytes()); // e_shstrndx = 2
+        assert_eq!(elf.len(), 64);
+
+        // ── sonde section data ──
+        elf.extend_from_slice(bpf_code);
+
+        // ── .shstrtab section data ──
+        elf.extend_from_slice(shstrtab);
+
+        // ── Section headers (3 entries × 64 bytes each) ──
+
+        // [0] Null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] sonde section header
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name = offset of "sonde"
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        let flags: u64 = 0x6; // SHF_ALLOC | SHF_EXECINSTR
+        sh[8..16].copy_from_slice(&flags.to_le_bytes());
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [2] .shstrtab section header
+        let mut sh2 = [0u8; 64];
+        sh2[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name = offset of ".shstrtab"
+        sh2[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh2[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh2[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh2[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh2);
+
+        elf
+    }
+
+    #[test]
+    fn ingest_elf_ephemeral_with_maps_rejected() {
+        let elf = make_minimal_bpf_elf_with_maps();
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&elf, VerificationProfile::Ephemeral)
+            .unwrap_err();
+        match &err {
+            ProgramError::VerificationFailed(msg) => {
+                assert!(
+                    msg.contains("ephemeral programs must not declare maps"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected VerificationFailed, got: {other:?}"),
+        }
+    }
+
+    /// Proves `SondePlatform` recognises helper 3 (`i2c_write_read`), which
+    /// has no Linux equivalent and would fail without the custom platform.
+    #[test]
+    fn ingest_elf_with_sonde_helper_succeeds() {
+        // i2c_write_read(handle, *write_ptr, write_len, *read_ptr, read_len) → i32
+        #[rustfmt::skip]
+        let bpf_code: [u8; 88] = [
+            0x62, 0x0a, 0xf8, 0xff, 0x00, 0x00, 0x00, 0x00, // *(u32*)(r10 - 8) = 0  (init write buf)
+            0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r1 = 0                 (handle)
+            0xbf, 0xa2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r2 = r10
+            0x07, 0x02, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, // r2 += -8               (write_ptr)
+            0xb7, 0x03, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // r3 = 4                 (write_len)
+            0xbf, 0xa4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r4 = r10
+            0x07, 0x04, 0x00, 0x00, 0xf0, 0xff, 0xff, 0xff, // r4 += -16              (read_ptr)
+            0xb7, 0x05, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // r5 = 4                 (read_len)
+            0x85, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, // call 3                 (i2c_write_read)
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        let elf = make_sonde_elf(&bpf_code);
+        let lib = ProgramLibrary::new();
+        let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+
+        assert!(!record.hash.is_empty());
+        assert!(record.size > 0);
+
+        let image = ProgramImage::decode(&record.image).unwrap();
+        assert_eq!(image.bytecode.len(), bpf_code.len());
+    }
+
+    /// Proves `SondePlatform` recognises helper 8 (`send`), the primary
+    /// transmission helper already tested on hardware.
+    #[test]
+    fn ingest_elf_with_sonde_helper_8_succeeds() {
+        // send(*ptr, len) → i32
+        // Initialize stack memory so the readable-pointer arg passes verification.
+        #[rustfmt::skip]
+        let bpf_code: [u8; 56] = [
+            0x62, 0x0a, 0xf8, 0xff, 0x00, 0x00, 0x00, 0x00, // *(u32*)(r10 - 8) = 0
+            0xbf, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r1 = r10
+            0x07, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, // r1 += -8  (blob_ptr)
+            0xb7, 0x02, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // r2 = 4   (blob_len)
+            0x85, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // call 8   (send)
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        let elf = make_sonde_elf(&bpf_code);
+        let lib = ProgramLibrary::new();
+        let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+
+        assert!(!record.hash.is_empty());
+        assert!(record.size > 0);
+
+        let image = ProgramImage::decode(&record.image).unwrap();
+        assert_eq!(image.bytecode.len(), bpf_code.len());
+    }
+
+    /// E2E verification: a BPF program calling sonde helper `gpio_read` (ID 5)
+    /// must pass verification when using `SondePlatform` (T-0408, GW-0404).
+    #[test]
+    fn ingest_elf_sonde_helper_call_verified() {
+        // BPF: mov r1, 0; call 5 (gpio_read); exit
+        let elf = make_bpf_elf(&[
+            0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r1, 0
+            0x85, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, // call 5 (gpio_read)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ]);
+        let lib = ProgramLibrary::new();
+        let record = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .expect("ELF calling sonde helper gpio_read should pass verification");
+        assert!(!record.hash.is_empty());
+        let image = ProgramImage::decode(&record.image).unwrap();
+        // 3 instructions × 8 bytes = 24 bytes of bytecode
+        assert_eq!(image.bytecode.len(), 24);
+    }
+
+    /// Negative case: a BPF program calling an unsupported helper (ID 0)
+    /// must be rejected by verification (GW-0404).
+    #[test]
+    fn ingest_elf_unsupported_helper_rejected() {
+        // BPF: call 0 (unsupported); exit
+        let elf = make_bpf_elf(&[
+            0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // call 0 (unsupported)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ]);
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .unwrap_err();
+        assert!(
+            matches!(err, ProgramError::VerificationFailed(_)),
+            "unsupported helper call should fail verification, got: {err}"
+        );
     }
 }

@@ -381,6 +381,38 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0408  Ephemeral program with maps rejected
+
+**Validates:** GW-0401 (criterion 5)
+
+**Procedure:**
+1. Construct a valid BPF ELF that declares one or more map definitions.
+2. Submit it for ingestion with the ephemeral verification profile.
+3. Assert: ingestion fails with an error indicating ephemeral programs must not declare maps.
+4. Assert: no program record is stored.
+
+---
+
+### T-0409  Sonde verifier platform — helpers accepted
+
+**Validates:** GW-0404
+
+**Procedure:**
+1. Submit a valid BPF ELF that calls a sonde-specific helper (e.g., `gpio_read`, helper ID 5) with correct argument types.
+2. Assert: verification passes — the program is accepted and stored.
+
+---
+
+### T-0410  Sonde verifier platform — no LinuxPlatform
+
+**Validates:** GW-0404
+
+**Procedure:**
+1. Confirm that `ingest_elf()` constructs a `SondePlatform` (not `LinuxPlatform`) for verification.
+2. Assert: `ingest_elf()` passes `SondePlatform` (not `LinuxPlatform`) to the verifier / helper-prototype engine; any `LinuxPlatform` usage is encapsulated inside `SondePlatform` (e.g., for ELF/map parsing), not passed directly to Prevail.
+
+---
+
 ## 7  Application data tests
 
 ### T-0500  APP_DATA reception and forwarding
@@ -1917,6 +1949,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0401 | T-0402, T-0403, T-0404 |
 | GW-0402 | T-0405, T-0406 |
 | GW-0403 | T-0407 |
+| GW-0404 | T-0408, T-0409 |
 | GW-0500 | T-0500 |
 | GW-0501 | T-0501, T-0502, T-0503 |
 | GW-0502 | T-0504, T-0514 |

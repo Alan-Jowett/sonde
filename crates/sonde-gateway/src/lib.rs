@@ -13,6 +13,7 @@ pub mod phone_trust;
 pub mod program;
 pub mod registry;
 pub mod session;
+pub mod sonde_platform;
 pub mod sqlite_storage;
 pub mod state_bundle;
 pub mod storage;

@@ -385,12 +385,46 @@ pub enum VerificationProfile {
 ### 8.2  Program ingestion
 
 1. Accept pre-compiled BPF ELF (GW-0400).
-2. Verify with `prevail-rust` against the appropriate profile (GW-0401). Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`.
-3. Extract bytecode (`.text` section) and map definitions from the ELF.
-4. Encode as CBOR program image using `sonde_protocol::ProgramImage::encode_deterministic()`. See [protocol-crate-design.md §7](protocol-crate-design.md) and [protocol.md § Program image format](protocol.md#program-image-format).
-5. Enforce size limits on the CBOR image: 4 KB resident, 2 KB ephemeral (GW-0403).
-6. Compute `program_hash` using `sonde_protocol::program_hash()` with the gateway's SHA-256 provider (GW-0402).
-7. Store in library. Verification and encoding complete at ingestion time — chunk serving is immediate (GW-0400).
+2. Reject ephemeral programs that declare maps — ephemeral programs are stateless and must not carry map definitions (GW-0401 criterion 5). Detected via a lightweight scan of ELF section headers for map-backed sections (`.maps`/`maps`, `.rodata`, `.data`, `.bss`) before invoking prevail. The scan also validates `e_machine == EM_BPF` to avoid false positives on non-BPF ELFs.
+3. Verify with `prevail-rust` using `SondePlatform` — a custom Prevail platform that defines helper prototypes for sonde helpers 1–16 (GW-0401, GW-0404). Prevail's loader resolves ELF map relocations to `LDDW src=1, imm=<map_index>`.
+4. Extract bytecode (`.text` section) and map definitions from the ELF.
+5. Encode as CBOR program image using `sonde_protocol::ProgramImage::encode_deterministic()`. See [protocol-crate-design.md §7](protocol-crate-design.md) and [protocol.md § Program image format](protocol.md#program-image-format).
+6. Enforce size limits on the CBOR image: 4 KB resident, 2 KB ephemeral (GW-0403).
+7. Compute `program_hash` using `sonde_protocol::program_hash()` with the gateway's SHA-256 provider (GW-0402).
+8. Store in library. Verification and encoding complete at ingestion time — chunk serving is immediate (GW-0400).
+
+### 8.2.1  Sonde verifier platform (`SondePlatform`)
+
+The gateway uses a custom Prevail platform (`SondePlatform`) instead of `LinuxPlatform` for BPF program verification (GW-0404). Sonde assigns different semantics to helper IDs 1–16 than Linux BPF does, so using `LinuxPlatform` causes programs that call sonde helpers to fail verification or be verified under incorrect (Linux) helper semantics.
+
+`SondePlatform` wraps `LinuxPlatform` via composition — it delegates ELF map parsing, map descriptor management, and conformance group handling to the inner `LinuxPlatform`, and overrides helper-related methods with sonde-specific prototypes.
+
+**Module:** `crate::sonde_platform` (`crates/sonde-gateway/src/sonde_platform.rs`)
+
+**Helper prototypes (IDs 1–16):** each prototype declares its name, return type, argument types (up to 5), and whether any argument is a pointer to readable or writable memory. The prototypes match the signatures defined in `test-programs/include/sonde_helpers.h`.
+
+| ID | Name | Return | Args |
+|----|------|--------|------|
+| 1 | `i2c_read` | `Integer` | `(handle, *writable, size)` |
+| 2 | `i2c_write` | `Integer` | `(handle, *readable, size)` |
+| 3 | `i2c_write_read` | `Integer` | `(handle, *readable, size, *writable, size)` |
+| 4 | `spi_transfer` | `Integer` | `(handle, *readable_or_null, *writable_or_null, size)` |
+| 5 | `gpio_read` | `Integer` | `(pin)` |
+| 6 | `gpio_write` | `Integer` | `(pin, value)` |
+| 7 | `adc_read` | `Integer` | `(channel)` |
+| 8 | `send` | `Integer` | `(*readable, size)` |
+| 9 | `send_recv` | `Integer` | `(*readable, size, *writable, size, timeout)` |
+| 10 | `map_lookup_elem` | `PtrToMapValueOrNull` | `(*map, *key)` |
+| 11 | `map_update_elem` | `Integer` | `(*map, *key, *value)` |
+| 12 | `get_time` | `Integer` | `()` |
+| 13 | `get_battery_mv` | `Integer` | `()` |
+| 14 | `delay_us` | `Integer` | `(microseconds)` |
+| 15 | `set_next_wake` | `Integer` | `(seconds)` |
+| 16 | `bpf_trace_printk` | `Integer` | `(*readable, size)` |
+
+**Program type:** all ELF sections are treated as `"sonde"` program type with a 16-byte context descriptor matching `struct sonde_context`.
+
+**Map type mapping:** sonde's `BPF_MAP_TYPE_ARRAY` (value 1) maps to an array map type. Unknown map types are treated as generic maps.
 
 ### 8.3  Chunk serving
 

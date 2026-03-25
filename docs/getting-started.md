@@ -552,3 +552,66 @@ container image. This also works in GitHub Codespaces.
 ```bash
 docker build -f .github/docker/Dockerfile.android-dev -t sonde-android-dev .
 ```
+
+---
+
+## 12  Hardware operations
+
+### 12.1  Factory reset on ESP32-C3 DevKitM-1
+
+If a node has been previously paired and you need to wipe its credentials and re-provision it, use this procedure:
+
+1. Press and release the **RESET** button (node reboots into application).
+2. Immediately press and hold **BOOT** (within the first 500 ms).
+3. Keep holding **BOOT** for at least 1 second.
+4. Release **BOOT**.
+5. The node enters BLE pairing mode with factory reset armed.
+6. Provision via the pairing tool — old credentials are wiped first.
+
+#### Why this works
+
+The ROM bootloader samples GPIO 9 on every reset to choose the boot mode. Because you release RESET while BOOT is **not** pressed, GPIO 9 reads HIGH → the chip boots normally into the application. The application then samples GPIO 9 for 500 ms (ND-0901). Since you press BOOT immediately after releasing RESET, all samples read LOW → `button_held = true`.
+
+#### Why holding BOOT *before* pressing RESET does NOT work
+
+When GPIO 9 is held LOW during any reset (including a RESET-button press), the ESP32-C3 ROM enters USB/UART download mode instead of booting the application. You will see:
+
+```
+rst:0x1 (POWERON), boot:0x6 (DOWNLOAD(USB/UART0))
+waiting for download
+```
+
+The application firmware never starts, so the factory-reset logic never runs.
+
+### 12.2  Erasing NVS via espflash (alternative)
+
+If you cannot use the button-based procedure (e.g., the firmware is not running), you can erase the NVS partition directly:
+
+```sh
+espflash erase-region -p COM6 0x9000 0x6000
+```
+
+The offset `0x9000` and size `0x6000` match the NVS partition in the ESP-IDF built-in "Single factory app (large)" partition table selected by `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` in `sdkconfig.defaults`. If the project switches to a custom partition table, update these values to match.
+
+The device must be in ROM download mode for this command to work — hold **BOOT**, press **RESET**, then release **BOOT**.
+
+Replace `COM6` with your device's serial port (`/dev/ttyUSB0` on Linux, `/dev/cu.usbmodem*` on macOS). After erasing NVS, flash new firmware and the node will start in pairing mode.
+
+### 12.3  I2C wiring (ESP32-C3 DevKitM-1)
+
+The node firmware initializes I2C bus 0 on GPIO 0 (SDA) and GPIO 1 (SCL) at 100 kHz standard mode. Use the table below when wiring Qwiic or STEMMA QT sensors.
+
+| Signal | GPIO | Qwiic/STEMMA QT color | Description   |
+|--------|------|-----------------------|---------------|
+| SDA    | 0    | Blue                  | I2C data      |
+| SCL    | 1    | Yellow                | I2C clock     |
+| VCC    | —    | Red                   | 3.3 V         |
+| GND    | —    | Black                 | Ground        |
+
+> **Note:** Swapped SDA/SCL wires cause I2C transaction failures — the bus may appear to initialize, but reads return error codes from the HAL. This can look “silent” if your program does not log or check the negative return values, so double-check the color-to-pin mapping before powering the board.
+
+#### Supported sensors
+
+| Sensor | I2C address     | Breakout board       | Test program                   |
+|--------|-----------------|----------------------|--------------------------------|
+| TMP102 | 0x48 (ADD0=GND) | SparkFun SEN-13314   | `test-programs/tmp102_sensor.c` |

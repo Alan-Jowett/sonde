@@ -268,11 +268,18 @@ fn resolve_passphrase(arg: &Option<String>) -> Result<String, String> {
 /// Prompt the user for confirmation before a destructive action.
 ///
 /// Returns `Ok(())` if the user confirms, or `Err` if they decline.
-/// Skips the prompt (auto-confirms) when `--yes` is passed or when stdin
-/// is not a terminal (piped input).
+/// Skips the prompt (auto-confirms) only when `--yes` is passed.
+/// In non-interactive mode (stdin is not a terminal), returns an error
+/// unless `--yes` is provided, to avoid silently bypassing confirmation.
 fn confirm(message: &str, yes: bool) -> Result<(), String> {
-    if yes || !std::io::stdin().is_terminal() {
+    if yes {
         return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(
+            "refusing to proceed without confirmation in non-interactive mode; re-run with --yes"
+                .into(),
+        );
     }
     eprint!("{message} [y/N]: ");
     std::io::Write::flush(&mut std::io::stderr()).ok();
@@ -336,9 +343,9 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
                 NodeAction::Remove { node_id } => {
                     confirm(
-                    &format!("Remove node `{node_id}`? This will delete the PSK and all session state."),
-                    cli.yes,
-                )?;
+                        &format!("Remove node `{node_id}`? This will delete the PSK and all session state."),
+                        cli.yes,
+                    )?;
                     client.remove_node(node_id).await?;
                     if json {
                         print_json(&serde_json::json!({"removed": node_id}))?;

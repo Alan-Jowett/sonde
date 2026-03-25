@@ -164,4 +164,15 @@ pub trait PlatformStorage {
     fn write_reg_complete(&mut self, _complete: bool) -> NodeResult<()> {
         Ok(())
     }
+
+    /// Read I2C0 pin configuration from NVS (ND-0607).
+    /// Returns `(sda_gpio, scl_gpio)`. Defaults to `(0, 1)` if not set.
+    fn read_i2c0_pins(&self) -> (u8, u8) {
+        (0, 1)
+    }
+
+    /// Persist I2C0 pin configuration to NVS (ND-0607).
+    fn write_i2c0_pins(&mut self, _sda: u8, _scl: u8) -> NodeResult<()> {
+        Ok(())
+    }
 }

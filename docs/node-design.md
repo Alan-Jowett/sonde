@@ -445,6 +445,23 @@ Handles pack bus and address into a single `u32` (matching bpf-environment.md §
 
 All HAL helpers return `0` on success, negative on error. Errors include NACK, bus timeout, invalid pin/channel. The BPF program decides how to handle errors — the firmware does not retry.
 
+### 10.3  Configurable I2C pin assignments (ND-0607)
+
+I2C bus GPIO pin numbers are configurable via NVS to support different ESP32-C3 board layouts with a single firmware binary.
+
+**NVS keys** (namespace `"sonde"`):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `"i2c0_sda"` | u32 | 0 | I2C0 SDA GPIO number |
+| `"i2c0_scl"` | u32 | 1 | I2C0 SCL GPIO number |
+
+**Initialization:** At HAL init time, the firmware reads `i2c0_sda` and `i2c0_scl` from NVS. If either key is absent, the compiled-in default is used (GPIO 0 / GPIO 1, matching DevKitM-1 Qwiic mapping).
+
+**Provisioning path:** Pin config is included as optional trailing bytes in the NODE_PROVISION BLE message body (see §BLE pairing). When the node receives a NODE_PROVISION with pin config, it writes the values to NVS before rebooting into PEER_REQUEST mode. An older pairing tool that omits pin config produces no NVS writes — the defaults apply.
+
+**Factory reset:** Pin config keys are NOT erased during factory reset (ND-0917). The board's physical pin mapping does not change when the node is re-provisioned.
+
 ---
 
 ## 11  Sleep manager

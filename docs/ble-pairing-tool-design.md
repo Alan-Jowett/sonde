@@ -230,6 +230,28 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 - `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is zeroed via `Zeroizing` after the `NODE_PROVISION` write succeeds (PT-0408, PT-0804).
 - A fresh ephemeral X25519 keypair is generated for each provisioning attempt (PT-0405).
 
+### 4.1  NODE_PROVISION body wire format
+
+```
+Offset  Size           Field
+──────  ─────────────  ──────────────────────────────────────────
+0       2              node_key_hint     (BE u16)
+2       32             node_psk          (256-bit PSK)
+34      1              rf_channel        (1–13)
+35      2              payload_len       (BE u16, encrypted payload length)
+37      payload_len    encrypted_payload (opaque blob for gateway)
+37+N    remaining      pin_config_cbor   (optional, CBOR map — see below)
+```
+
+**Pin config (ND-0607):** If the NODE_PROVISION body is longer than `37 + payload_len`, the remaining bytes are a deterministic CBOR map (RFC 8949 §4.2) of board-specific pin assignments:
+
+| CBOR key | Field | Type | Default |
+|----------|-------|------|---------|
+| 1 | `i2c0_sda` | uint | 0 |
+| 2 | `i2c0_scl` | uint | 1 |
+
+The node persists these to NVS. If the map is absent (older pairing tool), the node uses compiled-in defaults. Future keys (SPI pins, pairing button GPIO) may be added without breaking backward compatibility.
+
 ---
 
 ## 5  BLE transport layer

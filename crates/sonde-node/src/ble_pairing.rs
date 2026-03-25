@@ -92,6 +92,18 @@ pub struct NodeProvision {
     pub rf_channel: u8,
     /// Opaque encrypted payload for the gateway (ble-pairing-protocol.md §6.4).
     pub encrypted_payload: Vec<u8>,
+    /// Optional I2C pin configuration (ND-0607).
+    /// `None` if the pairing tool did not include pin config (backward compatible).
+    pub pin_config: Option<PinConfig>,
+}
+
+/// Board-specific I2C pin assignments (ND-0607).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinConfig {
+    /// I2C0 SDA GPIO number.
+    pub i2c0_sda: u8,
+    /// I2C0 SCL GPIO number.
+    pub i2c0_scl: u8,
 }
 
 // Re-export BLE envelope codec from sonde-protocol (shared with gateway).
@@ -120,15 +132,55 @@ pub fn parse_node_provision(body: &[u8]) -> Result<NodeProvision, &'static str> 
     if body.len() < expected_len {
         return Err("encrypted_payload truncated");
     }
-    if body.len() != expected_len {
-        return Err("trailing bytes after encrypted_payload");
-    }
     let encrypted_payload = body[37..37 + payload_len].to_vec();
+
+    // Parse optional trailing pin config CBOR (ND-0607).
+    let pin_config = if body.len() > expected_len {
+        parse_pin_config_cbor(&body[expected_len..]).ok()
+    } else {
+        None
+    };
+
     Ok(NodeProvision {
         key_hint,
         psk,
         rf_channel,
         encrypted_payload,
+        pin_config,
+    })
+}
+
+/// Parse a CBOR map of pin assignments from trailing NODE_PROVISION bytes (ND-0607).
+///
+/// CBOR integer keys: 1 = i2c0_sda, 2 = i2c0_scl.
+/// Returns `Err` if the CBOR is malformed or keys are missing.
+fn parse_pin_config_cbor(data: &[u8]) -> Result<PinConfig, &'static str> {
+    let value: ciborium::Value =
+        ciborium::from_reader(data).map_err(|_| "pin_config CBOR decode failed")?;
+    let map = value.as_map().ok_or("pin_config: expected CBOR map")?;
+
+    let mut sda: Option<u8> = None;
+    let mut scl: Option<u8> = None;
+
+    for (k, v) in map {
+        let key = k
+            .as_integer()
+            .and_then(|i| u8::try_from(i).ok())
+            .ok_or("pin_config: non-integer key")?;
+        let val = v
+            .as_integer()
+            .and_then(|i| u8::try_from(i).ok())
+            .ok_or("pin_config: non-integer value")?;
+        match key {
+            1 => sda = Some(val),
+            2 => scl = Some(val),
+            _ => {} // ignore unknown keys for forward compatibility
+        }
+    }
+
+    Ok(PinConfig {
+        i2c0_sda: sda.unwrap_or(0),
+        i2c0_scl: scl.unwrap_or(1),
     })
 }
 
@@ -221,6 +273,14 @@ pub fn handle_node_provision<S: PlatformStorage>(
         let _ = storage.erase_key();
         let _ = storage.erase_peer_payload();
         return NODE_ACK_STORAGE_ERROR;
+    }
+
+    // Persist optional pin config (ND-0607). Failure here is non-fatal —
+    // the node will use compiled-in defaults.
+    if let Some(ref pins) = provision.pin_config {
+        if storage.write_i2c0_pins(pins.i2c0_sda, pins.i2c0_scl).is_err() {
+            log::warn!("failed to persist I2C pin config; using defaults");
+        }
     }
 
     NODE_ACK_SUCCESS
@@ -363,6 +423,7 @@ mod tests {
             psk,
             rf_channel: channel,
             encrypted_payload: payload.to_vec(),
+            pin_config: None,
         }
     }
 
@@ -487,16 +548,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_node_provision_trailing_bytes_rejected() {
-        // Valid 37-byte header + 0-byte payload, but 1 extra trailing byte
+    fn parse_node_provision_trailing_bytes_accepted_as_pin_config() {
+        // Valid 37-byte header + 0-byte payload + CBOR pin config
+        // CBOR: {1: 4, 2: 5} = A2 01 04 02 05
+        let pin_cbor = [0xA2, 0x01, 0x04, 0x02, 0x05];
+        let mut body = vec![0u8; 37 + pin_cbor.len()];
+        body[2..34].fill(0x42); // psk
+        body[34] = 1; // channel 1
+        body[35] = 0x00;
+        body[36] = 0x00; // payload_len = 0
+        body[37..].copy_from_slice(&pin_cbor);
+        let provision = parse_node_provision(&body).unwrap();
+        let pins = provision.pin_config.expect("pin_config should be present");
+        assert_eq!(pins.i2c0_sda, 4);
+        assert_eq!(pins.i2c0_scl, 5);
+    }
+
+    #[test]
+    fn parse_node_provision_trailing_non_cbor_ignored() {
+        // Trailing bytes that aren't valid CBOR — pin_config is None
         let mut body = vec![0u8; 38];
         body[2..34].fill(0x42); // psk
         body[34] = 1; // channel 1
         body[35] = 0x00;
         body[36] = 0x00; // payload_len = 0
-                         // body[37] is the trailing byte
-        let err = parse_node_provision(&body).unwrap_err();
-        assert_eq!(err, "trailing bytes after encrypted_payload");
+        body[37] = 0xFF; // invalid CBOR
+        let provision = parse_node_provision(&body).unwrap();
+        assert!(provision.pin_config.is_none());
     }
 
     #[test]

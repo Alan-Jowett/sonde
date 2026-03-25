@@ -291,4 +291,31 @@ impl crate::traits::PlatformStorage for NvsStorage {
             .set_u32("reg_complete", if complete { 1 } else { 0 })
             .map_err(|_| NodeError::StorageError("reg_complete write failed"))
     }
+
+    fn read_i2c0_pins(&self) -> (u8, u8) {
+        let sda = self
+            .nvs
+            .get_u32("i2c0_sda")
+            .ok()
+            .flatten()
+            .map(|v| v as u8)
+            .unwrap_or(0);
+        let scl = self
+            .nvs
+            .get_u32("i2c0_scl")
+            .ok()
+            .flatten()
+            .map(|v| v as u8)
+            .unwrap_or(1);
+        (sda, scl)
+    }
+
+    fn write_i2c0_pins(&mut self, sda: u8, scl: u8) -> NodeResult<()> {
+        self.nvs
+            .set_u32("i2c0_sda", sda as u32)
+            .map_err(|_| NodeError::StorageError("i2c0_sda write failed"))?;
+        self.nvs
+            .set_u32("i2c0_scl", scl as u32)
+            .map_err(|_| NodeError::StorageError("i2c0_scl write failed"))
+    }
 }

@@ -890,11 +890,21 @@ A typical entry point configures:
 ```rust
 use tracing_subscriber::EnvFilter;
 
+#[cfg(debug_assertions)]
+const DEFAULT_FILTER: &str = "sonde_pair=info,sonde_pair_ui=info";
+#[cfg(not(debug_assertions))]
+const DEFAULT_FILTER: &str = "sonde_pair=warn,sonde_pair_ui=warn";
+
 tracing_subscriber::fmt()
-    .with_env_filter(EnvFilter::from_default_env()) // RUST_LOG=debug for verbose
+    .with_env_filter(
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| DEFAULT_FILTER.into()),
+    )
     .with_target(false)
     .init();
 ```
+
+In debug builds the default is INFO; in release builds the default is WARN. `RUST_LOG` overrides the default in both cases (within compile-time limits — release builds strip DEBUG and TRACE call-sites).
 
 For in-process log capture (e.g., displaying logs in the Tauri UI or capturing in tests), a `tracing_subscriber::fmt::Layer` writing to a ring buffer or channel can be composed alongside the stderr layer.
 

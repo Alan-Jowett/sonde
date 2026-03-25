@@ -16,7 +16,7 @@ getrandom = "0.4"
 ciborium = "0.2"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
-tracing = "0.1"
+tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
 tonic = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"

@@ -927,6 +927,7 @@ async fn t0202_run_ephemeral_dispatch_program_present() {
 /// - not in ListPrograms
 /// - cannot be assigned to a node
 /// - re-ingesting returns the same hash (not cached stale)
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0802_remove_program_verified_gone() {
     let h = TestHarness::new();
@@ -1013,6 +1014,7 @@ async fn t0802_remove_program_verified_gone() {
 
 /// A program must be available for assignment and delivery immediately
 /// after IngestProgram returns — verification is not deferred.
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0400_program_available_immediately_after_ingestion() {
     let h = TestHarness::new();
@@ -1269,6 +1271,7 @@ async fn t0700_registry_entry_all_fields_present() {
 /// GetNode must return all documented fields: node_id, key_hint,
 /// assigned_program_hash, last_battery_mv, last_firmware_abi_version,
 /// last_seen_ms, schedule_interval_s.
+#[cfg(debug_assertions)] // uses raw CBOR program ingestion (debug-only)
 #[tokio::test]
 async fn t0801_get_node_returns_all_fields() {
     let h = TestHarness::new();

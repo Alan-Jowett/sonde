@@ -58,7 +58,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
+      - name: Test (debug)
         run: cargo test --workspace
 
       - name: Test gateway (Python handler tests)
@@ -66,6 +66,9 @@ jobs:
 
       - name: Build gateway and admin (release)
         run: cargo build --release -p sonde-gateway -p sonde-admin
+
+      - name: Test (release)
+        run: cargo test --workspace --release
 
       - name: Upload Linux binaries
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

@@ -674,6 +674,34 @@ The node firmware uses the Rust `log` crate (v0.4) as the logging facade. On ESP
 | `error!` | Non-recoverable errors: BPF load/registration failures |
 | `debug!` | Verbose diagnostic output: BPF helper I/O calls (helper name + return value) |
 
+### 17.1a  Build-type–aware log levels (ND-1012)
+
+To eliminate logging overhead in release and firmware builds, the node applies **compile-time** log-level gating via the `log` crate's Cargo feature flags, combined with a **runtime** default that varies by build type.
+
+**Compile-time filtering:**
+
+| Build profile | Cargo feature | Effect |
+|---|---|---|
+| `dev` (debug) | `max_level_trace` | All levels (`trace!` through `error!`) compiled in |
+| `release` / `firmware` | `release_max_level_warn` | `trace!`, `debug!`, and `info!` macro call-sites are replaced with no-ops at compile time |
+
+The `release_max_level_warn` feature keys on `cfg(not(debug_assertions))`, which is clear for both `--release` and `--profile firmware`.
+
+**Runtime default:**
+
+After `EspLogger::initialize_default()`, the binary sets the runtime filter:
+
+```rust
+#[cfg(debug_assertions)]
+log::set_max_level(log::LevelFilter::Info);
+#[cfg(not(debug_assertions))]
+log::set_max_level(log::LevelFilter::Warn);
+```
+
+This means debug builds default to INFO (operators see lifecycle events without DEBUG/TRACE noise), and release builds default to WARN (only anomalies are logged).
+
+> **Note:** Because release builds strip `info!` at compile time, `bpf_trace_printk` output (ND-1006) is not visible in release firmware. A future change will route `bpf_trace_printk` output via `APP_DATA` to the gateway's handler process instead of relying on local UART logging.
+
 ### 17.2  Log points
 
 The following events are logged per the ND-10xx requirements:

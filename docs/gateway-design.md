@@ -676,6 +676,32 @@ The gateway uses the `tracing` crate for structured, levelled logging. All log e
 | `INFO` | Operator-relevant lifecycle events: node WAKE, COMMAND selected, session create/expire, PEER_REQUEST processed, PEER_ACK frame encoded, modem transport state transitions |
 | `DEBUG` | Developer diagnostics: individual modem frames (send/recv), channel-full drops, health polls |
 
+### 11A.0a  Build-type–aware log levels (GW-1304)
+
+The gateway applies compile-time log-level gating and build-type–aware runtime defaults to reduce overhead in release deployments.
+
+**Compile-time filtering:**
+
+| Build profile | Cargo feature | Effect |
+|---|---|---|
+| `dev` (debug) | `max_level_trace` | All levels compiled in |
+| `release` | `release_max_level_info` | `trace!` and `debug!` call-sites become no-ops; `info!` remains available |
+
+The gateway uses `release_max_level_info` (not `_warn`) so that operators can enable INFO output via `RUST_LOG=sonde_gateway=info` in production when needed.
+
+**Runtime default:**
+
+The `EnvFilter` fallback in the gateway binary varies by build type:
+
+```rust
+#[cfg(debug_assertions)]
+const DEFAULT_FILTER: &str = "sonde_gateway=info";
+#[cfg(not(debug_assertions))]
+const DEFAULT_FILTER: &str = "sonde_gateway=warn";
+```
+
+`RUST_LOG` overrides the default in both builds. In release, `RUST_LOG=sonde_gateway=info` re-enables INFO output (since INFO is still compiled in). `RUST_LOG=sonde_gateway=debug` has no effect in release builds (DEBUG is stripped at compile time).
+
 ### 11A.1  Engine lifecycle logging
 
 The `Gateway::process_frame` / `handle_wake` / `handle_peer_request` methods emit structured `info!()` entries for:

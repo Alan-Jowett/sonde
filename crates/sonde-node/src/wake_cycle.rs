@@ -5305,6 +5305,9 @@ mod tests {
 
     use crate::test_log_capture;
 
+    // Skipped in release builds — `info!()` is stripped at compile time by
+    // `release_max_level_warn` (ND-1012).
+    #[cfg(debug_assertions)]
     #[test]
     fn test_flush_trace_log_emits_info() {
         // ND-1006 / T-N1014: bpf_trace_printk output is flushed at INFO level.

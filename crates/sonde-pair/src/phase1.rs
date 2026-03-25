@@ -1162,6 +1162,10 @@ mod tests {
     /// Enables tracing at TRACE level, runs a full Phase 1, and asserts:
     /// 1. Message type names appear in logs.
     /// 2. Raw key bytes never appear in logs.
+    ///
+    /// Skipped in release builds — `trace!()` call-sites are stripped at
+    /// compile time by `release_max_level_info`.
+    #[cfg(debug_assertions)]
     #[traced_test]
     #[test]
     fn t_pt_112_verbose_mode() {

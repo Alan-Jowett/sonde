@@ -31,6 +31,12 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
 
+    // Build-type–aware runtime log level (MD-0505).
+    #[cfg(debug_assertions)]
+    log::set_max_level(log::LevelFilter::Info);
+    #[cfg(not(debug_assertions))]
+    log::set_max_level(log::LevelFilter::Warn);
+
     info!(
         "sonde-modem firmware starting (commit {})",
         env!("SONDE_GIT_COMMIT")

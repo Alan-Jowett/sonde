@@ -332,6 +332,7 @@ async fn t0705_remove_node_wake_rejected() {
 //  T-0802: IngestProgram + ListPrograms
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0802_ingest_and_list_programs() {
     let h = TestHarness::new();
@@ -408,6 +409,7 @@ async fn t0802c_ingest_empty_image() {
 }
 
 /// T-0802d: IngestProgram with abi_version — round-trip through ListPrograms.
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0802d_ingest_abi_version_round_trip() {
     let h = TestHarness::new();
@@ -443,6 +445,7 @@ async fn t0802d_ingest_abi_version_round_trip() {
     );
 }
 
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0803_assign_program() {
     let h = TestHarness::new();
@@ -533,6 +536,7 @@ async fn t0803c_assign_program_no_program() {
 //  T-0804: RemoveProgram
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0804_remove_program() {
     let h = TestHarness::new();
@@ -673,6 +677,7 @@ async fn t0806_queue_reboot_via_wake() {
 //  T-0807: QueueEphemeral verified via WAKE
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0807_queue_ephemeral_via_wake() {
     let h = TestHarness::new();
@@ -813,6 +818,7 @@ async fn t0808b_status_no_node() {
 //  T-0809: AssignProgram → WAKE delivers UPDATE_PROGRAM
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0809_assign_program_wake_delivers_update() {
     let h = TestHarness::new();
@@ -863,6 +869,7 @@ async fn t0809_assign_program_wake_delivers_update() {
 //  T-0810: ExportState + ImportState (GW-0805)
 // ═══════════════════════════════════════════════════════════════════════
 
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0810_export_state_returns_encrypted_bundle() {
     let h = TestHarness::new();
@@ -918,6 +925,7 @@ async fn t0810_export_empty_passphrase_rejected() {
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
 
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0810_import_state_restores_nodes_and_programs() {
     let h = TestHarness::new();

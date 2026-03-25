@@ -110,6 +110,10 @@ async fn grpc_register_remove_node() {
 }
 
 /// Test: ingest a program and list it.
+///
+/// Skipped in release builds — the gateway rejects raw CBOR program images
+/// in release mode (only ELF binaries verified by Prevail are accepted).
+#[cfg(debug_assertions)]
 #[tokio::test]
 async fn grpc_ingest_list_program() {
     let mut client = start_server_and_connect("ingest_list_program").await;

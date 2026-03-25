@@ -1079,6 +1079,8 @@ The node MUST log at INFO level when a valid PEER_ACK is received, including the
 **Description:**  
 The node MUST log at INFO level when a BPF program is executed, including the program hash (hex) and the execution result. `bpf_trace_printk` output MUST be emitted at INFO level so it is visible at the default ESP-IDF log level.
 
+> **Note (ND-1012 interaction):** In release/firmware builds, INFO-level output is stripped at compile time (see ND-1012). `bpf_trace_printk` output will not appear on the UART in release builds. A future change will route `bpf_trace_printk` via `APP_DATA` to the gateway handler process.
+
 **Acceptance criteria:**
 
 1. An INFO log is emitted before BPF execution containing `program_hash` (first 8 hex chars).
@@ -1165,6 +1167,24 @@ The node MUST log at DEBUG level when sending `GET_CHUNK` requests and when rece
 
 ---
 
+### ND-1012  Build-type–aware log levels
+
+**Priority:** Must  
+**Source:** issue #496
+
+**Description:**  
+The node MUST apply build-type–aware log-level policies to eliminate logging overhead in release and firmware builds. Debug builds retain full diagnostic capability; release builds strip low-priority log call-sites at compile time and default to a higher runtime threshold.
+
+**Acceptance criteria:**
+
+1. In debug builds (`cfg(debug_assertions)`), the compile-time maximum log level is TRACE (all log macros compiled in).
+2. In release builds (`cfg(not(debug_assertions))`), the compile-time maximum log level is WARN (`trace!`, `debug!`, and `info!` call-sites are no-ops).
+3. The runtime default log level is INFO in debug builds and WARN in release builds.
+4. No functional behavior changes when logging is disabled — the node MUST complete wake cycles, BPF execution, and deep-sleep transitions identically regardless of log level.
+5. The `log` crate dependency specifies `features = ["max_level_trace", "release_max_level_warn"]`.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1238,3 +1258,4 @@ The node MUST log at DEBUG level when sending `GET_CHUNK` requests and when rece
 | ND-1009 | Error condition logging | Must |
 | ND-1010 | BPF helper I/O logging | Should |
 | ND-1011 | Chunk transfer logging | Must |
+| ND-1012 | Build-type–aware log levels | Must |

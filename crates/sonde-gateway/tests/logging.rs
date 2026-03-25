@@ -343,6 +343,10 @@ async fn t1302_peer_request_logging() {
 
 /// T-1303: Validates GW-1302 AC1 (recv frame debug log) and AC2 (send
 /// frame debug log).
+///
+/// Skipped in release builds — `debug!()` call-sites are stripped at compile
+/// time by `release_max_level_info`, so the log assertions cannot pass.
+#[cfg(debug_assertions)]
 #[tokio::test]
 #[traced_test]
 async fn t1303_modem_frame_debug_logging() {

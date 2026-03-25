@@ -692,9 +692,15 @@ pub fn run() {
                 .with_target(true)
                 .with_level(true),
         )
-        .with(tracing_subscriber::EnvFilter::new(
-            "sonde_pair=debug,sonde_pair_ui=debug",
-        ))
+        .with({
+            #[cfg(debug_assertions)]
+            const DEFAULT_FILTER: &str = "sonde_pair=info,sonde_pair_ui=info";
+            #[cfg(not(debug_assertions))]
+            const DEFAULT_FILTER: &str = "sonde_pair=warn,sonde_pair_ui=warn";
+
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| DEFAULT_FILTER.into())
+        })
         .init();
 
     let state = AppState {

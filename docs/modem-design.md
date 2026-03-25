@@ -334,6 +334,30 @@ Connect both ports to the host. Use `idf.py monitor` (or any serial terminal at 
 
 The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_INFO`). The maximum compiled-in level is DEBUG, selectable at runtime via ESP-IDF's `esp_log_level_set()`.
 
+### 14.2a  Build-type–aware log levels (MD-0505)
+
+The modem applies the same build-type–aware policy as the node (see ND-1012) to eliminate logging overhead in release firmware builds.
+
+**Compile-time filtering:**
+
+| Build profile | Cargo feature | Effect |
+|---|---|---|
+| `dev` (debug) | `max_level_trace` | All levels compiled in |
+| `release` / `firmware` | `release_max_level_warn` | `trace!`, `debug!`, and `info!` call-sites become no-ops |
+
+**Runtime default:**
+
+After `EspLogger::initialize_default()`, the modem binary sets:
+
+```rust
+#[cfg(debug_assertions)]
+log::set_max_level(log::LevelFilter::Info);
+#[cfg(not(debug_assertions))]
+log::set_max_level(log::LevelFilter::Warn);
+```
+
+Debug builds default to INFO; release builds default to WARN.
+
 ### 14.3  Operational logging (MD-0500 – MD-0504)
 
 The modem emits structured `log` macro calls at key operational boundaries to provide runtime visibility into radio, BLE, and USB-CDC activity. All logging uses the ESP-IDF `log` crate (`log::info!`, `log::debug!`, `log::warn!`) — **not** the `tracing` crate.

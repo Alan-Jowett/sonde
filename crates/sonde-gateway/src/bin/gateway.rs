@@ -701,9 +701,14 @@ fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
-        .with_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| "sonde_gateway=info".into()),
-        );
+        .with_filter({
+            #[cfg(debug_assertions)]
+            const DEFAULT_FILTER: &str = "sonde_gateway=info";
+            #[cfg(not(debug_assertions))]
+            const DEFAULT_FILTER: &str = "sonde_gateway=warn";
+
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| DEFAULT_FILTER.into())
+        });
 
     let etw_layer = tracing_etw::LayerBuilder::new("sonde-gateway")
         .build()
@@ -845,10 +850,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── Console mode (default on all platforms) ──────────────────────────────
+
+    #[cfg(debug_assertions)]
+    const DEFAULT_FILTER: &str = "sonde_gateway=info";
+    #[cfg(not(debug_assertions))]
+    const DEFAULT_FILTER: &str = "sonde_gateway=warn";
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sonde_gateway=info".into()),
+                .unwrap_or_else(|_| DEFAULT_FILTER.into()),
         )
         .init();
 

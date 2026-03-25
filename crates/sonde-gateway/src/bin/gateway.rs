@@ -312,11 +312,15 @@ async fn run_gateway(
             "loaded handler config"
         );
         let router = Arc::new(HandlerRouter::new(configs));
-        Arc::new(Gateway::new_with_handler(
+        // Use new_with_pending to share pending_commands with the admin
+        // API, then set the handler router separately (D-485).
+        let mut gw = Gateway::new_with_pending(
             storage.clone(),
-            Duration::from_secs(cli.session_timeout),
-            router,
-        ))
+            pending_commands.clone(),
+            session_manager.clone(),
+        );
+        gw.set_handler_router(router);
+        Arc::new(gw)
     } else {
         Arc::new(Gateway::new_with_pending(
             storage.clone(),

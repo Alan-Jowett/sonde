@@ -117,6 +117,15 @@ impl Gateway {
             .push(cmd);
     }
 
+    /// Set the handler router for APP_DATA dispatch (GW-0504 AC4).
+    ///
+    /// Called after construction when `--handler-config` is provided,
+    /// allowing the gateway to share `pending_commands` with the admin
+    /// API while also routing APP_DATA to handler processes.
+    pub fn set_handler_router(&mut self, router: Arc<HandlerRouter>) {
+        self.handler_router = Some(router);
+    }
+
     /// Expose the session manager for test inspection.
     pub fn session_manager(&self) -> &SessionManager {
         self.session_manager.as_ref()

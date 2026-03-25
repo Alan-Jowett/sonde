@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+use std::io::IsTerminal;
 use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -22,6 +23,11 @@ struct Cli {
     /// Output format.
     #[arg(long, default_value = "text", global = true)]
     format: OutputFormat,
+
+    /// Skip confirmation prompts for destructive commands. Required when running
+    /// non-interactively (e.g. when stdin is piped or redirected).
+    #[arg(long = "yes", short = 'y', global = true)]
+    yes: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -260,69 +266,108 @@ fn resolve_passphrase(arg: &Option<String>) -> Result<String, String> {
     Ok(pass)
 }
 
+/// Prompt the user for confirmation before a destructive action.
+///
+/// Returns `Ok(())` if the user confirms, or `Err` if they decline.
+/// Skips the prompt (auto-confirms) only when `--yes` is passed.
+/// In non-interactive mode (stdin is not a terminal), returns an error
+/// unless `--yes` is provided, to avoid silently bypassing confirmation.
+fn confirm(message: &str, yes: bool) -> Result<(), String> {
+    if yes {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(
+            "refusing to proceed without confirmation in non-interactive mode; re-run with --yes"
+                .into(),
+        );
+    }
+    eprint!("{message} [y/N]: ");
+    std::io::Write::flush(&mut std::io::stderr()).ok();
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_line(&mut buf)
+        .map_err(|e| format!("failed to read confirmation: {e}"))?;
+    if buf.trim().eq_ignore_ascii_case("y") {
+        Ok(())
+    } else {
+        Err("aborted".into())
+    }
+}
+
 async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let json = matches!(cli.format, OutputFormat::Json);
 
     match &cli.command {
-        Commands::Node { action } => match action {
-            NodeAction::List => {
-                let nodes = client.list_nodes().await?;
-                if json {
-                    print_json(&nodes.iter().map(node_to_json).collect::<Vec<_>>())?;
-                } else {
-                    if nodes.is_empty() {
-                        println!("No nodes registered.");
+        Commands::Node { action } => {
+            match action {
+                NodeAction::List => {
+                    let nodes = client.list_nodes().await?;
+                    if json {
+                        print_json(&nodes.iter().map(node_to_json).collect::<Vec<_>>())?;
+                    } else {
+                        if nodes.is_empty() {
+                            println!("No nodes registered.");
+                        }
+                        for n in &nodes {
+                            print_node(n);
+                        }
                     }
-                    for n in &nodes {
-                        print_node(n);
+                }
+                NodeAction::Get { node_id } => {
+                    let node = client.get_node(node_id).await?;
+                    if json {
+                        print_json(&node_to_json(&node))?;
+                    } else {
+                        print_node(&node);
+                    }
+                }
+                NodeAction::Register {
+                    node_id,
+                    key_hint,
+                    psk_hex,
+                } => {
+                    let psk = hex::decode(psk_hex)?;
+                    if psk.len() != 32 {
+                        return Err(format!(
+                            "PSK must be exactly 32 bytes (64 hex chars), got {} bytes",
+                            psk.len()
+                        )
+                        .into());
+                    }
+                    let id = client.register_node(node_id, *key_hint as u32, psk).await?;
+                    if json {
+                        print_json(&serde_json::json!({"node_id": id}))?;
+                    } else {
+                        println!("Registered node: {id}");
+                    }
+                }
+                NodeAction::Remove { node_id } => {
+                    confirm(
+                        &format!("Remove node `{node_id}`? This will delete the PSK and all session state."),
+                        cli.yes,
+                    )?;
+                    client.remove_node(node_id).await?;
+                    if json {
+                        print_json(&serde_json::json!({"removed": node_id}))?;
+                    } else {
+                        println!("Removed node: {node_id}");
+                    }
+                }
+                NodeAction::FactoryReset { node_id } => {
+                    confirm(
+                        &format!("Factory reset node '{node_id}'? This will zeroize the node's PSK and remove it from the registry."),
+                        cli.yes,
+                    )?;
+                    client.factory_reset(node_id).await?;
+                    if json {
+                        print_json(&serde_json::json!({"factory_reset": node_id}))?;
+                    } else {
+                        println!("Factory reset node: {node_id}");
                     }
                 }
             }
-            NodeAction::Get { node_id } => {
-                let node = client.get_node(node_id).await?;
-                if json {
-                    print_json(&node_to_json(&node))?;
-                } else {
-                    print_node(&node);
-                }
-            }
-            NodeAction::Register {
-                node_id,
-                key_hint,
-                psk_hex,
-            } => {
-                let psk = hex::decode(psk_hex)?;
-                if psk.len() != 32 {
-                    return Err(format!(
-                        "PSK must be exactly 32 bytes (64 hex chars), got {} bytes",
-                        psk.len()
-                    )
-                    .into());
-                }
-                let id = client.register_node(node_id, *key_hint as u32, psk).await?;
-                if json {
-                    print_json(&serde_json::json!({"node_id": id}))?;
-                } else {
-                    println!("Registered node: {id}");
-                }
-            }
-            NodeAction::Remove { node_id } => {
-                client.remove_node(node_id).await?;
-                if json {
-                    print_json(&serde_json::json!({"removed": node_id}))?;
-                } else {
-                    println!("Removed node: {node_id}");
-                }
-            }
-            NodeAction::FactoryReset { node_id } => {
-                client.factory_reset(node_id).await?;
-                if json {
-                    print_json(&serde_json::json!({"factory_reset": node_id}))?;
-                } else {
-                    println!("Factory reset node: {node_id}");
-                }
-            }
-        },
+        }
 
         Commands::Program { action } => match action {
             ProgramAction::Ingest { file, profile } => {
@@ -383,6 +428,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
             ProgramAction::Remove { program_hash } => {
+                confirm(&format!("Remove program `{program_hash}`?"), cli.yes)?;
                 let hash = hex::decode(program_hash)?;
                 client.remove_program(hash).await?;
                 if json {
@@ -477,6 +523,10 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
             StateAction::Import { file, passphrase } => {
+                confirm(
+                    &format!("Import state from `{file}`? This will overwrite all gateway state."),
+                    cli.yes,
+                )?;
                 let pass = resolve_passphrase(passphrase)?;
                 let data = std::fs::read(file)?;
                 client.import_state(data, &pass).await?;
@@ -602,6 +652,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
             PairingAction::Stop => {
+                confirm("Close BLE pairing window?", cli.yes)?;
                 client.close_ble_pairing().await?;
                 if json {
                     print_json(&serde_json::json!({"status": "closed"}))?;
@@ -640,6 +691,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                 }
             }
             PairingAction::RevokePhone { phone_id } => {
+                confirm(&format!("Revoke phone `{phone_id}`?"), cli.yes)?;
                 client.revoke_phone(*phone_id).await?;
                 if json {
                     print_json(&serde_json::json!({"phone_id": phone_id, "status": "revoked"}))?;

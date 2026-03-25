@@ -223,6 +223,11 @@ impl GatewayAdmin for AdminService {
             .delete_node(node_id)
             .await
             .map_err(storage_err)?;
+
+        // Invalidate any active in-memory session so the node cannot
+        // continue communicating after removal.
+        self.session_manager.remove_session(node_id).await;
+
         Ok(Response::new(Empty {}))
     }
 
@@ -257,6 +262,10 @@ impl GatewayAdmin for AdminService {
             .delete_node(node_id)
             .await
             .map_err(storage_err)?;
+
+        // Invalidate any active in-memory session so the node is
+        // immediately treated as unknown (GW-0705 AC1).
+        self.session_manager.remove_session(node_id).await;
 
         // Clear any pending commands for the removed node.
         self.pending_commands.write().await.remove(node_id);

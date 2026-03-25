@@ -102,10 +102,11 @@ fn main() {
 
         const SAMPLE_INTERVAL_MS: u32 = 10;
         const SAMPLE_COUNT: u32 = 500 / SAMPLE_INTERVAL_MS; // 50 samples over 500 ms
-        let mut held_count: u32 = 0;
+        let mut held = true;
         for _ in 0..SAMPLE_COUNT {
-            if button.is_low() {
-                held_count += 1;
+            if button.is_high() {
+                held = false;
+                break; // not pressed — no point sampling further
             }
             // Busy-wait 10 ms between samples
             unsafe {
@@ -114,7 +115,6 @@ fn main() {
                 );
             }
         }
-        let held = held_count == SAMPLE_COUNT;
         if held {
             info!("pairing button held ≥ 500 ms — will factory reset on BLE provision");
         }

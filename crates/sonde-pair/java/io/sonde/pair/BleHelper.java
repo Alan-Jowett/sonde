@@ -86,6 +86,20 @@ public class BleHelper {
     private volatile boolean bondReceiverRegistered;
     private volatile BluetoothDevice bondTarget;
 
+    // --- Pairing method observation (PT-0904) -----------------------------
+    // PAIRING_VARIANT_* constants are @SystemApi; use raw int values.
+    private static final int VARIANT_PASSKEY_CONFIRMATION = 2; // Numeric Comparison
+    private static final int VARIANT_CONSENT = 3;              // Just Works
+
+    /** Pairing method result codes returned by {@link #getPairingMethod()}. */
+    private static final int PM_UNKNOWN = 0;
+    private static final int PM_NUMERIC_COMPARISON = 1;
+    private static final int PM_JUST_WORKS = 2;
+
+    /** Pairing variant observed via {@code ACTION_PAIRING_REQUEST}, or -1. */
+    private volatile int observedPairingVariant = -1;
+    private volatile boolean pairingReceiverRegistered;
+
     private final BroadcastReceiver bondReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context ctx, Intent intent) {
@@ -114,6 +128,29 @@ public class BleHelper {
                 CountDownLatch l = bondLatch;
                 if (l != null) l.countDown();
             }
+        }
+    };
+
+    /**
+     * Observes {@code ACTION_PAIRING_REQUEST} to capture the negotiated
+     * pairing variant (Numeric Comparison vs Just Works).  Registered before
+     * {@code createBond()} and unregistered in {@link #disconnectInner()}.
+     */
+    private final BroadcastReceiver pairingReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context ctx, Intent intent) {
+            if (!BluetoothDevice.ACTION_PAIRING_REQUEST.equals(intent.getAction())) {
+                return;
+            }
+            BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            if (device == null || bondTarget == null
+                    || !device.getAddress().equals(bondTarget.getAddress())) {
+                return;
+            }
+            int variant = intent.getIntExtra(
+                    BluetoothDevice.EXTRA_PAIRING_VARIANT, -1);
+            Log.i("BleHelper", "pairing request variant: " + variant);
+            observedPairingVariant = variant;
         }
     };
 
@@ -439,8 +476,22 @@ public class BleHelper {
             bondTarget = device;
             bondLatch = new CountDownLatch(1);
             lastError = null;
+            observedPairingVariant = -1;
 
-            // Register receiver before calling createBond to avoid races
+            // Register receivers before calling createBond to avoid races.
+            if (!pairingReceiverRegistered) {
+                IntentFilter pairingFilter = new IntentFilter(
+                        BluetoothDevice.ACTION_PAIRING_REQUEST);
+                try {
+                    context.registerReceiver(pairingReceiver, pairingFilter);
+                    pairingReceiverRegistered = true;
+                } catch (SecurityException | IllegalArgumentException e) {
+                    Log.w("BleHelper",
+                            "failed to register pairing receiver: " + e.getMessage());
+                    // Non-fatal — getPairingMethod() will return PM_UNKNOWN,
+                    // which enforce_lesc() treats as a rejection (fail-secure).
+                }
+            }
             if (!bondReceiverRegistered) {
                 IntentFilter filter = new IntentFilter(
                         BluetoothDevice.ACTION_BOND_STATE_CHANGED);
@@ -525,6 +576,11 @@ public class BleHelper {
         indicationQueues.clear();
         bondTarget = null;
         bondingStarted = false;
+        if (pairingReceiverRegistered) {
+            try { context.unregisterReceiver(pairingReceiver); }
+            catch (Exception ignored) { }
+            pairingReceiverRegistered = false;
+        }
         if (bondReceiverRegistered) {
             try { context.unregisterReceiver(bondReceiver); }
             catch (Exception ignored) { }
@@ -537,6 +593,27 @@ public class BleHelper {
             try { g.disconnect(); } catch (Exception ignored) { }
             try { g.close(); } catch (Exception ignored) { }
         }
+    }
+
+    /**
+     * Return the observed BLE pairing method for the last connection.
+     *
+     * <p>Maps the {@code EXTRA_PAIRING_VARIANT} captured by the
+     * {@link #pairingReceiver} to one of:
+     * <ul>
+     *   <li>{@link #PM_NUMERIC_COMPARISON} (1) — LESC Numeric Comparison</li>
+     *   <li>{@link #PM_JUST_WORKS} (2) — Just Works (insecure)</li>
+     *   <li>{@link #PM_UNKNOWN} (0) — variant was not observed</li>
+     * </ul>
+     *
+     * <p>Called from Rust via JNI after a successful {@link #connect} to
+     * verify that LESC Numeric Comparison was negotiated (PT-0904).
+     */
+    public int getPairingMethod() {
+        int v = observedPairingVariant;
+        if (v == VARIANT_PASSKEY_CONFIRMATION) return PM_NUMERIC_COMPARISON;
+        if (v == VARIANT_CONSENT) return PM_JUST_WORKS;
+        return PM_UNKNOWN;
     }
 
     // --- GATT operations ---------------------------------------------------

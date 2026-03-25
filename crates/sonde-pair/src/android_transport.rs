@@ -22,6 +22,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
@@ -71,6 +72,9 @@ pub struct AndroidBleTransport {
 struct JniState {
     vm: JavaVM,
     helper: Global<JObject<'static>>,
+    /// Pairing method reported by Java `BleHelper.getPairingMethod()`.
+    /// 0 = Unknown, 1 = NumericComparison, 2 = JustWorks.
+    pairing_method: AtomicU8,
 }
 
 // SAFETY: JavaVM is Send+Sync and GlobalRef is Send.  We only access the
@@ -118,6 +122,7 @@ impl AndroidBleTransport {
             inner: Arc::new(JniState {
                 vm,
                 helper: helper_ref,
+                pairing_method: AtomicU8::new(0),
             }),
         })
     }
@@ -395,6 +400,8 @@ impl BleTransport for AndroidBleTransport {
     ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
         let inner = self.inner.clone();
         let addr = *address;
+        // Reset pairing method before new connection attempt.
+        self.inner.pairing_method.store(0, Ordering::Release);
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 inner
@@ -415,7 +422,20 @@ impl BleTransport for AndroidBleTransport {
                             .i()
                             .map_err(jni_err)?;
 
-                        debug!(address = ?addr, mtu, "connected");
+                        // Query the observed pairing method (PT-0904).
+                        let pm = env
+                            .call_method(
+                                inner.helper.as_obj(),
+                                jni_str!("getPairingMethod"),
+                                jni_sig!("()I"),
+                                &[],
+                            )
+                            .map_err(|e| jni_exception_or(env, "getPairingMethod", e))?
+                            .i()
+                            .map_err(jni_err)?;
+                        inner.pairing_method.store(pm as u8, Ordering::Release);
+
+                        debug!(address = ?addr, mtu, pairing_method = pm, "connected");
                         Ok(mtu as u16)
                     })
                     .map_err(|e| match e {
@@ -567,12 +587,20 @@ impl BleTransport for AndroidBleTransport {
         })
     }
 
-    /// Android can observe the pairing method via `onBondStateChanged`.
-    /// TODO: Wire up JNI callback to report the actual negotiated method.
-    /// Until the JNI callback is wired up, report `None` to indicate that the
-    /// pairing method is currently unknown on Android.
+    /// Returns the pairing method observed during the last Android BLE
+    /// connection via `BleHelper.getPairingMethod()` (PT-0904).
+    ///
+    /// Android does **not** enforce LESC at the OS level — Just Works can
+    /// occur silently — so this method never returns `None`.  If the
+    /// pairing variant could not be observed (e.g. the `ACTION_PAIRING_REQUEST`
+    /// broadcast was not delivered), `Unknown` is returned, which
+    /// `enforce_lesc()` treats as a rejection (fail-secure).
     fn pairing_method(&self) -> Option<PairingMethod> {
-        None
+        match self.inner.pairing_method.load(Ordering::Acquire) {
+            1 => Some(PairingMethod::NumericComparison),
+            2 => Some(PairingMethod::JustWorks),
+            _ => Some(PairingMethod::Unknown),
+        }
     }
 }
 

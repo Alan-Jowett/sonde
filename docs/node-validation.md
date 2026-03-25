@@ -143,7 +143,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Boot node. Mock gateway does not respond.
-2. Assert: node sends WAKE, retries up to 3 times (100 ms apart).
+2. Assert: node sends WAKE, retries up to 3 times (400 ms apart).
 3. Assert: after 3 failures, node sleeps without executing BPF.
 
 ---
@@ -726,7 +726,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Mock gateway does not respond.
 2. Assert: node sends exactly 4 WAKE frames (1 initial + 3 retries).
-3. Assert: ~100 ms between each attempt.
+3. Assert: ~400 ms between each attempt.
 4. Assert: node sleeps after final retry.
 
 ---
@@ -1437,7 +1437,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N936  Chunked transfer inter-retry delay ≈ 100 ms
+### T-N936  Chunked transfer inter-retry delay ≈ 400 ms
 
 **Validates:** ND-0701
 
@@ -1445,7 +1445,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Begin a chunked transfer.
 2. Simulate a missing-chunk scenario that triggers retries.
 3. Measure the delay between consecutive retry transmissions.
-4. Assert: the inter-retry delay is approximately 100 ms (±20 ms).
+4. Assert: the inter-retry delay is approximately 400 ms (±20 ms).
 
 ---
 

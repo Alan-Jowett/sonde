@@ -1111,3 +1111,68 @@ async fn t0705_abi_incompatibility_skips_run_ephemeral() {
         "gateway MUST issue RUN_EPHEMERAL when ABI versions match"
     );
 }
+
+/// T-0607a: WAKE retry during active ChunkedTransfer reuses session.
+/// GW-0602 AC5: When a WAKE arrives with a matching nonce during an active
+/// ChunkedTransfer, the gateway MUST reuse the session and its starting_seq
+/// so that subsequent GET_CHUNK succeeds.
+#[tokio::test]
+#[traced_test]
+async fn t0607a_wake_retry_preserves_chunked_transfer_end_to_end() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-607a", 0x607A, [0x6A; 32]);
+
+    // Store a multi-chunk program so WAKE triggers UPDATE_PROGRAM.
+    let bytecode = vec![0xBE; 400];
+    let assigned_hash = store_test_program(&storage, &bytecode).await;
+
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(assigned_hash.clone());
+    storage.upsert_node(&record).await.unwrap();
+
+    let wake_nonce = 0xDEAD;
+
+    // 1. First WAKE → COMMAND (UPDATE_PROGRAM) with a starting_seq.
+    let (seq1, _, payload1) = do_wake(&gw, &node, wake_nonce, &[0u8; 32]).await;
+    let chunk_count = match &payload1 {
+        CommandPayload::UpdateProgram { chunk_count, .. } => *chunk_count,
+        other => panic!("expected UpdateProgram, got {:?}", other),
+    };
+    assert!(chunk_count > 1, "need multiple chunks for this test");
+
+    // 2. Duplicate WAKE with the SAME nonce (simulating a retry before
+    //    any chunks were fetched). The gateway must reuse the session
+    //    and return the same starting_seq.
+    let (seq2, _, payload2) = do_wake(&gw, &node, wake_nonce, &[0u8; 32]).await;
+    assert_eq!(
+        seq2, seq1,
+        "duplicate WAKE must return the same starting_seq"
+    );
+    assert_eq!(
+        payload2.command_type(),
+        payload1.command_type(),
+        "duplicate WAKE must return the same command type"
+    );
+
+    // 3. Fetch all chunks — must succeed because the session was preserved.
+    for i in 0..chunk_count {
+        let seq = seq2.wrapping_add(i as u64);
+        let chunk_frame = node.build_get_chunk(seq, i);
+        let resp = gw
+            .process_frame(&chunk_frame, node.peer_address())
+            .await
+            .unwrap_or_else(|| panic!("chunk {} must succeed after WAKE retry reuse", i));
+        let (_, msg) = decode_response(&resp, &node.psk);
+        match msg {
+            GatewayMessage::Chunk { chunk_index, .. } => assert_eq!(chunk_index, i),
+            other => panic!("expected Chunk for index {}, got {:?}", i, other),
+        }
+    }
+
+    assert!(
+        logs_contain("WAKE retry"),
+        "expected log message about WAKE retry reuse"
+    );
+}

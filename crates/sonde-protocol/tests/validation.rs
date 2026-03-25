@@ -2399,3 +2399,71 @@ fn test_p049c() {
         );
     }
 }
+
+/// T-P070: ProgramImage initial data round-trip (protocol-crate-validation.md).
+///
+/// Validates: protocol.md §6 — key 5 `initial_data`.
+#[test]
+fn test_p070() {
+    let initial = vec![0xDE, 0xAD, 0xBE, 0xEF];
+    let img = ProgramImage {
+        bytecode: vec![0x01],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![initial.clone()],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+
+    // Round-trip: initial data survives encode → decode.
+    assert_eq!(decoded.map_initial_data.len(), 1);
+    assert_eq!(decoded.map_initial_data[0], initial);
+
+    // Verify raw CBOR contains key 5 in the map definition entry.
+    let raw: ciborium::Value = ciborium::from_reader(cbor.as_slice()).unwrap();
+    let maps_arr = raw.as_map().unwrap()[1].1.as_array().unwrap();
+    let map_entry = maps_arr[0].as_map().unwrap();
+    let has_key5 = map_entry
+        .iter()
+        .any(|(k, _)| k.as_integer() == Some(ciborium::value::Integer::from(5)));
+    assert!(has_key5, "key 5 (initial_data) must be present in CBOR");
+}
+
+/// T-P071: ProgramImage initial data absent when empty (protocol-crate-validation.md).
+///
+/// Validates: protocol.md §6 — key 5 omission for empty initial data.
+#[test]
+fn test_p071() {
+    let img = ProgramImage {
+        bytecode: vec![0x01],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 64,
+            max_entries: 16,
+        }],
+        map_initial_data: vec![Vec::new()],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+
+    // Raw CBOR must NOT contain key 5 when initial data is empty.
+    let raw: ciborium::Value = ciborium::from_reader(cbor.as_slice()).unwrap();
+    let maps_arr = raw.as_map().unwrap()[1].1.as_array().unwrap();
+    let map_entry = maps_arr[0].as_map().unwrap();
+    let has_key5 = map_entry
+        .iter()
+        .any(|(k, _)| k.as_integer() == Some(ciborium::value::Integer::from(5)));
+    assert!(
+        !has_key5,
+        "key 5 (initial_data) must be absent when data is empty"
+    );
+
+    // Round-trip: decoded initial data is empty.
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+    assert_eq!(decoded.map_initial_data.len(), 1);
+    assert!(decoded.map_initial_data[0].is_empty());
+}

@@ -494,9 +494,10 @@ impl ProgramLibrary {
 
         // Extract initial data for global variable maps (.rodata, .data).
         // Prevail promotes these sections to map descriptors with map_type == 0
-        // in section header order.  `extract_global_section_data` returns data
-        // in the same order, so we can match them 1:1.
+        // in section header order (GW-0405).  `extract_global_section_data`
+        // returns data in the same order, so we can match them 1:1.
         let global_sections = extract_global_section_data(elf_bytes);
+        let global_count = global_sections.len();
         let mut global_iter = global_sections.into_iter();
         let map_initial_data: Vec<Vec<u8>> = first
             .info
@@ -511,6 +512,21 @@ impl ProgramLibrary {
                 }
             })
             .collect();
+
+        // Verify 1:1 correspondence between ELF global sections and
+        // Prevail map_type==0 descriptors (GW-0405 criterion 4).
+        let type0_count = first
+            .info
+            .map_descriptors
+            .iter()
+            .filter(|md| md.map_type == 0)
+            .count();
+        if type0_count != global_count {
+            return Err(ProgramError::ElfParseError(format!(
+                "global section count mismatch: ELF has {} sections but Prevail reports {} map_type==0 descriptors",
+                global_count, type0_count
+            )));
+        }
 
         let image = ProgramImage {
             bytecode,

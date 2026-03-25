@@ -154,9 +154,10 @@ impl ProgramImage {
                                 MAP_KEY_VALUE_SIZE => value_size = mval,
                                 MAP_KEY_MAX_ENTRIES => max_entries = mval,
                                 MAP_KEY_INITIAL_DATA => {
-                                    if let Some(bytes) = mv.as_bytes() {
-                                        initial_data = bytes.to_vec();
-                                    }
+                                    initial_data = mv
+                                        .as_bytes()
+                                        .ok_or(DecodeError::InvalidFieldType(MAP_KEY_INITIAL_DATA))?
+                                        .to_vec();
                                 }
                                 _ => {} // ignore unknown keys
                             }

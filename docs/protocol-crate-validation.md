@@ -758,7 +758,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
-### T-P067  ProgramImage initial data round-trip
+### T-P070  ProgramImage initial data round-trip
 
 **Validates:** protocol.md §6 (Program image format — key 5 `initial_data`)
 
@@ -771,7 +771,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
-### T-P068  ProgramImage initial data absent when empty
+### T-P071  ProgramImage initial data absent when empty
 
 **Validates:** protocol.md §6 (Program image format — key 5 `initial_data` omission)
 

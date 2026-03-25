@@ -72,6 +72,14 @@ impl Gateway {
     }
 
     /// Create a new gateway with a handler router for APP_DATA dispatch.
+    ///
+    /// # Warning
+    ///
+    /// This constructor allocates its own `pending_commands` and
+    /// `SessionManager`. It is **not** suitable for production use where
+    /// the admin API must share those objects. Use [`new_with_pending`]
+    /// followed by [`set_handler_router`] instead. This method exists
+    /// for test convenience only (D-485).
     pub fn new_with_handler(
         storage: Arc<dyn Storage>,
         session_timeout: Duration,
@@ -115,6 +123,21 @@ impl Gateway {
             .entry(node_id.to_string())
             .or_default()
             .push(cmd);
+    }
+
+    /// Set the handler router for APP_DATA dispatch (GW-0504 AC4).
+    ///
+    /// Called after construction when `--handler-config` is provided,
+    /// allowing the gateway to share `pending_commands` with the admin
+    /// API while also routing APP_DATA to handler processes.
+    pub fn set_handler_router(&mut self, router: Arc<HandlerRouter>) -> Result<(), &'static str> {
+        if self.handler_router.is_some() {
+            return Err(
+                "handler_router is already set; set_handler_router must only be called once during initialization",
+            );
+        }
+        self.handler_router = Some(router);
+        Ok(())
     }
 
     /// Expose the session manager for test inspection.

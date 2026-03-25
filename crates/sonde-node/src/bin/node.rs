@@ -37,10 +37,13 @@ fn main() {
     // Link ESP-IDF patches and initialize logging.
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
-    // In release/firmware builds, raise the runtime floor to WARN so that
-    // INFO messages (compiled in by `release_max_level_info`) are suppressed
-    // unless the caller explicitly raises the level.  DEBUG/TRACE are already
-    // eliminated at compile time by the `release_max_level_info` log feature.
+    // Set runtime log level based on build type:
+    // - Debug builds: DEBUG so that all compiled-in log calls (TRACE through
+    //   ERROR) are emitted by default, giving full observability during development.
+    // - Release/firmware builds: WARN to suppress INFO and below. DEBUG/TRACE are
+    //   already eliminated at compile time by the `release_max_level_info` log feature.
+    #[cfg(debug_assertions)]
+    log::set_max_level(log::LevelFilter::Debug);
     #[cfg(not(debug_assertions))]
     log::set_max_level(log::LevelFilter::Warn);
 

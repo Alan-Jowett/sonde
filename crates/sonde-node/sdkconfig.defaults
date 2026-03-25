@@ -22,10 +22,11 @@ CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=n
 
-# Log level: INFO captures the boot-marker lines the smoke test asserts on.
-# Release/firmware builds override the runtime level to WARN via
-# log::set_max_level (see crates/sonde-node/src/bin/node.rs). DEBUG/TRACE calls are
-# eliminated at compile time by the `release_max_level_info` log feature.
+# Log level: INFO is the ESP-IDF C-component default; the Rust entry point
+# overrides the runtime level immediately after logger init:
+#   debug builds  → DEBUG  (full observability during development)
+#   firmware builds → WARN  (minimal output; release_max_level_info strips DEBUG/TRACE)
+# See crates/sonde-node/src/bin/node.rs.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
 # Size optimizations — reduce firmware binary size.

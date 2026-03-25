@@ -27,8 +27,11 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=35
 CONFIG_ESP_TASK_WDT_PANIC=y
 
 # --- Logging ---
-# Default runtime level: INFO (firmware builds override to WARN via
-# log::set_max_level in main — see crates/sonde-modem/src/bin/modem.rs).
+# INFO is the ESP-IDF C-component default; the Rust entry point overrides the
+# runtime level immediately after logger init:
+#   debug builds    → DEBUG  (full observability during development)
+#   firmware builds → WARN   (minimal output; release_max_level_info strips DEBUG/TRACE)
+# See crates/sonde-modem/src/bin/modem.rs.
 # Maximum compiled-in level: INFO — debug/trace log calls are stripped from
 # ESP-IDF C components in the firmware binary, matching the Rust-level
 # `release_max_level_info` feature on the `log` crate.

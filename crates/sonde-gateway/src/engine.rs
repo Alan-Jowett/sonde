@@ -123,6 +123,10 @@ impl Gateway {
     /// allowing the gateway to share `pending_commands` with the admin
     /// API while also routing APP_DATA to handler processes.
     pub fn set_handler_router(&mut self, router: Arc<HandlerRouter>) {
+        assert!(
+            self.handler_router.is_none(),
+            "handler_router is already set; set_handler_router must only be called once during initialization"
+        );
         self.handler_router = Some(router);
     }
 

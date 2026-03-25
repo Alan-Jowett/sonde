@@ -319,7 +319,8 @@ async fn run_gateway(
             pending_commands.clone(),
             session_manager.clone(),
         );
-        gw.set_handler_router(router);
+        gw.set_handler_router(router)
+            .expect("handler_router must not already be set during gateway init");
         Arc::new(gw)
     } else {
         Arc::new(Gateway::new_with_pending(

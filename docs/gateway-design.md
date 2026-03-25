@@ -463,14 +463,18 @@ pub struct HandlerConfig {
 
 Multiple program hashes can map to the same handler (GW-0504).
 
-> **Shared state (D-485):** The `Gateway` instance MUST be constructed
-> so that the admin API and the handler router share the same
-> `pending_commands`/`SessionManager`. In practice, `new_with_handler`
-> MUST either accept the shared `pending_commands` or delegate
-> internally to `new_with_pending` + `set_handler_router`, rather than
-> creating its own map. D-485 occurred when a constructor created a
-> separate `pending_commands` map, breaking the admin→engine path;
-> that pattern is forbidden.
+> **Shared state (D-485):** The `Gateway` instance MUST be wired so
+> that the admin API and the handler router share the same
+> `pending_commands`/`SessionManager`. In production, construct the
+> gateway via `new_with_pending` and then call `set_handler_router`
+> with the same shared state; do **not** create an independent
+> `pending_commands` map for the handler path. D-485 occurred when a
+> constructor created a separate `pending_commands` map, breaking the
+> admin→engine path; that pattern is forbidden. The convenience
+> constructor `new_with_handler` currently allocates its own internal
+> `pending_commands`/`SessionManager` and is only safe to use in
+> contexts that do not expose the admin API or otherwise require
+> shared state.
 
 ### 9.2  Routing
 

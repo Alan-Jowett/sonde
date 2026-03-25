@@ -392,7 +392,10 @@ impl Radio for EspNowDriver {
                 results
             }
             Err(e) => {
-                warn!("WiFi scan failed: {:?} — returning empty results", e);
+                warn!(
+                    "WiFi scan failed: {:?} — treating as 0 APs on all channels",
+                    e
+                );
                 Vec::new()
             }
         };

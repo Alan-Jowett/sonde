@@ -2082,6 +2082,7 @@ mod tests {
 
     // -- Log-level tests (ND-1010 / T-N1015) ----------------------------------
 
+    #[cfg(debug_assertions)]
     use crate::test_log_capture;
 
     // Skipped in release builds — `debug!()` is stripped at compile time by

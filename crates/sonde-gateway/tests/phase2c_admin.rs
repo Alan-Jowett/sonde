@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+// Some imports and helpers are only used by debug-gated tests (raw CBOR
+// ingestion is rejected in release builds).
+#![allow(unused_imports, dead_code)]
+
 //! Phase 2C-ii integration tests: gRPC admin API (T-0800 to T-0810).
 //!
 //! Tests call `AdminService` methods directly via tonic `Request`/`Response`

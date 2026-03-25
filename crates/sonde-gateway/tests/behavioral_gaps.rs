@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+// Some imports and helpers are only used by debug-gated tests (raw CBOR
+// ingestion is rejected in release builds).
+#![allow(unused_imports, dead_code)]
+
 //! Behavioral verification tests for gateway structural gaps (Issue #357).
 //!
 //! These tests go beyond structural (output-exists) checks to verify behavioral

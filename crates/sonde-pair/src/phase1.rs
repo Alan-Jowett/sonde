@@ -346,7 +346,6 @@ mod tests {
     use crate::validation::compute_key_hint;
     use ed25519_dalek::{Signer, SigningKey};
     use sha2::{Digest, Sha512};
-    use tracing_test::traced_test;
 
     /// Convert an Ed25519 signing key seed to an X25519 static secret.
     fn ed25519_seed_to_x25519_secret(seed: &[u8; 32]) -> x25519_dalek::StaticSecret {
@@ -1166,7 +1165,7 @@ mod tests {
     /// Skipped in release builds — `trace!()` call-sites are stripped at
     /// compile time by `release_max_level_info`.
     #[cfg(debug_assertions)]
-    #[traced_test]
+    #[tracing_test::traced_test]
     #[test]
     fn t_pt_112_verbose_mode() {
         let rt = tokio::runtime::Builder::new_current_thread()

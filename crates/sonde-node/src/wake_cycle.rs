@@ -26,8 +26,8 @@ use crate::FIRMWARE_ABI_VERSION;
 
 /// Retry and timing constants (protocol.md §9).
 const WAKE_MAX_RETRIES: u32 = 3;
-const RETRY_DELAY_MS: u32 = 100;
-const RESPONSE_TIMEOUT_MS: u32 = 50;
+const RETRY_DELAY_MS: u32 = 400;
+const RESPONSE_TIMEOUT_MS: u32 = 200;
 
 /// Default instruction budget for BPF execution.
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
@@ -832,6 +832,11 @@ fn get_chunk_with_retry<T: Transport>(
             .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
 
         transport.send(&frame)?;
+        log::debug!(
+            "GET_CHUNK sent chunk_index={} attempt={} (ND-1011)",
+            chunk_index,
+            attempt
+        );
         *current_seq += 1;
 
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
@@ -843,7 +848,14 @@ fn get_chunk_with_retry<T: Transport>(
                     chunk_index,
                     hmac,
                 ) {
-                    Ok(data) => return Ok(data),
+                    Ok(data) => {
+                        log::debug!(
+                            "CHUNK received chunk_index={} len={} (ND-1011)",
+                            chunk_index,
+                            data.len()
+                        );
+                        return Ok(data);
+                    }
                     Err(_) => continue,
                 }
             }
@@ -5163,14 +5175,15 @@ mod tests {
     }
 
     #[test]
-    fn test_response_timeout_constant_is_50ms() {
-        // ND-0702: On ESP-NOW, the response timeout MUST be 50 ms.
-        assert_eq!(RESPONSE_TIMEOUT_MS, 50);
+    fn test_response_timeout_constant_is_200ms() {
+        // ND-0702: On ESP-NOW with USB-CDC modem bridge, the response timeout
+        // MUST be 200 ms to account for serial round-trip latency.
+        assert_eq!(RESPONSE_TIMEOUT_MS, 200);
     }
 
     #[test]
     fn test_response_timeout_send_recv_deadline() {
-        // ND-0702 / T-N702: send_recv uses the 50 ms timeout as a
+        // ND-0702 / T-N702: send_recv uses the 200 ms timeout as a
         // deadline. With a clock that advances, once the deadline
         // expires the node returns Timeout even if recv would produce
         // a frame later.

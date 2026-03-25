@@ -542,18 +542,64 @@ impl Gateway {
             "WAKE received"
         );
 
-        let _session = self
-            .session_manager
-            .create_session(node.node_id.clone(), peer, header.nonce, starting_seq)
-            .await;
+        // GW-0602 AC5: If a ChunkedTransfer session is already active for
+        // this node AND the WAKE nonce matches (i.e. this is a retry, not a
+        // new wake cycle), reuse the existing session — otherwise the transfer
+        // state is lost and the node cannot complete GET_CHUNK.
+        let existing_session = self.session_manager.get_session(&node.node_id).await;
+        let reuse_chunked = existing_session.as_ref().is_some_and(|s| {
+            matches!(s.state, SessionState::ChunkedTransfer { .. }) && s.wake_nonce == header.nonce
+        });
 
-        // GW-1300 AC5: log session created.
-        info!(node_id = %node.node_id, "session created");
+        if reuse_chunked {
+            info!(node_id = %node.node_id, "WAKE retry — reusing existing ChunkedTransfer session");
+        } else {
+            let _session = self
+                .session_manager
+                .create_session(node.node_id.clone(), peer, header.nonce, starting_seq)
+                .await;
+            info!(node_id = %node.node_id, "session created");
+        }
 
-        // 3. Determine command (check pending commands, then program_hash match, then NOP)
-        let command_payload = self
-            .select_command(node, &program_hash, firmware_abi_version)
-            .await?;
+        // 3. Determine command
+        let command_payload = if reuse_chunked {
+            // Re-send the same chunked transfer command from the existing session.
+            let session = existing_session.unwrap();
+            match &session.state {
+                SessionState::ChunkedTransfer {
+                    program_hash: ph,
+                    program_size,
+                    chunk_size,
+                    chunk_count,
+                    is_ephemeral,
+                } => {
+                    if *is_ephemeral {
+                        CommandPayload::RunEphemeral {
+                            program_hash: ph.clone(),
+                            program_size: *program_size,
+                            chunk_size: *chunk_size,
+                            chunk_count: *chunk_count,
+                        }
+                    } else {
+                        CommandPayload::UpdateProgram {
+                            program_hash: ph.clone(),
+                            program_size: *program_size,
+                            chunk_size: *chunk_size,
+                            chunk_count: *chunk_count,
+                        }
+                    }
+                }
+                _ => unreachable!(), // we checked reuse_chunked
+            }
+        } else {
+            match self
+                .select_command(node, &program_hash, firmware_abi_version)
+                .await
+            {
+                Some(cmd) => cmd,
+                None => return None,
+            }
+        };
 
         // If the command involves a chunked transfer, update session state
         match &command_payload {

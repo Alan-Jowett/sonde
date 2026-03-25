@@ -593,7 +593,7 @@ HSM/PKCS#11, cloud KMS) without changes to the gateway startup code.
 **Source:** security.md § Replay protection
 
 **Description:**  
-The gateway MUST implement per-session replay protection using sequence numbers. On each valid `WAKE`, the gateway creates an active session for that node (replacing any previous session), assigns a random starting sequence number in its `COMMAND` response (CBOR key `starting_seq`), and tracks the expected next sequence. The gateway maintains at most one active session per node (keyed by PSK); any new valid `WAKE` replaces the previous session. Post-WAKE frames do not carry an explicit session identifier on the wire: a post-WAKE message is considered to match the active session if it is authenticated under the node's PSK and carries the expected next sequence number. The gateway MUST reject any post-WAKE message that does not correspond to an active session or does not carry the expected sequence number. No persistent replay-protection state is required.
+The gateway MUST implement per-session replay protection using sequence numbers. On each valid `WAKE`, the gateway creates an active session for that node (replacing any previous session), assigns a random starting sequence number in its `COMMAND` response (CBOR key `starting_seq`), and tracks the expected next sequence. The gateway maintains at most one active session per node (keyed by PSK); any new valid `WAKE` replaces the previous session. However, if the existing session is in `ChunkedTransfer` state (a program transfer is in progress), a WAKE retry MUST reuse the existing session and re-send the same COMMAND rather than creating a new session — otherwise the chunked transfer state is lost and the node cannot complete the program download. Post-WAKE frames do not carry an explicit session identifier on the wire: a post-WAKE message is considered to match the active session if it is authenticated under the node's PSK and carries the expected next sequence number. The gateway MUST reject any post-WAKE message that does not correspond to an active session or does not carry the expected sequence number. No persistent replay-protection state is required.
 
 **Acceptance criteria:**
 
@@ -601,6 +601,7 @@ The gateway MUST implement per-session replay protection using sequence numbers.
 2. The gateway's `COMMAND` response includes a starting sequence number for the node.
 3. Active sessions are tracked in memory; no durable persistence is required for replay state.
 4. A replayed WAKE creates a new session with a different starting sequence, invalidating captured post-WAKE messages.
+5. If a WAKE arrives while a `ChunkedTransfer` session is active for the same node, the gateway MUST reuse the existing session and re-send the original COMMAND (preserving the transfer state).
 
 ---
 

@@ -748,8 +748,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0702
 
 **Procedure:**
-1. Mock gateway delays response by 100 ms (>50 ms timeout).
-2. Assert: node treats it as timeout and retries.
+1. Mock gateway delays response by 300 ms (>200 ms timeout).
+2. Assert: node treats it as timeout and retries after 400 ms delay.
 
 ---
 
@@ -1449,15 +1449,15 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N937  Response timeout boundary at 50 ms
+### T-N937  Response timeout boundary at 200 ms
 
 **Validates:** ND-0702
 
 **Procedure:**
 1. Node sends a request.
-2. Mock gateway responds at 40 ms after the request.
-3. Assert: node accepts the response (under timeout).
-4. Repeat: node sends a request; mock gateway responds at 60 ms.
+2. Mock gateway responds at 150 ms after the request.
+3. Assert: node accepts the response (under 200 ms timeout).
+4. Repeat: node sends a request; mock gateway responds at 250 ms.
 5. Assert: node treats the late response as a timeout.
 
 ---

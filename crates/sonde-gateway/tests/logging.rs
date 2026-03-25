@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+// Some imports are only used by the debug-gated modem frame test.
+#![allow(unused_imports, dead_code)]
+
 //! Operational logging tests (GW-1300, GW-1302).
 //!
 //! Validates that the gateway emits the structured tracing events specified
@@ -26,6 +29,7 @@ use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::{PeerAddress, Transport};
 
+#[cfg(debug_assertions)]
 use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, RecvFrame};
 use sonde_protocol::{
     encode_frame, FrameHeader, HmacProvider, NodeMessage, Sha256Provider, MSG_PEER_REQUEST,
@@ -343,6 +347,10 @@ async fn t1302_peer_request_logging() {
 
 /// T-1303: Validates GW-1302 AC1 (recv frame debug log) and AC2 (send
 /// frame debug log).
+///
+/// Skipped in release builds — `debug!()` call-sites are stripped at compile
+/// time by `release_max_level_info`, so the log assertions cannot pass.
+#[cfg(debug_assertions)]
 #[tokio::test]
 #[traced_test]
 async fn t1303_modem_frame_debug_logging() {

@@ -683,6 +683,25 @@ The modem MUST log BLE pairing events at INFO level to the diagnostic UART.
 
 ---
 
+### MD-0505  Build-type–aware log levels
+
+**Priority:** Must
+**Source:** issue #496
+
+**Description:**
+The modem MUST apply build-type–aware log-level policies identical to the node (ND-1012) to eliminate logging overhead in release firmware builds. Logging requirements elsewhere in this document that mandate INFO-level logging (MD-0500–MD-0504) apply to debug and verbose firmware builds; in release builds (without the `verbose` feature) those log call-sites are compiled out.
+
+**Acceptance criteria:**
+
+1. In debug builds, the compile-time maximum log level is TRACE.
+2. In release `quiet` builds (the default, without the `verbose` feature), the compile-time maximum log level is WARN (`trace!`, `debug!`, and `info!` call-sites are no-ops).
+3. In release `verbose` builds (with `feature = "verbose"` enabled), the compile-time maximum log level is DEBUG (`trace!` call-sites are no-ops; `debug!` and `info!` call-sites remain compiled in).
+4. The runtime default log level is INFO in debug and release `verbose` builds, and WARN in release `quiet` builds.
+5. MD-0500–MD-0504 INFO-level requirements are satisfied by the verbose build variant emitting those events; release `quiet` builds omit them without functional behavior changes.
+6. The `quiet` and `verbose` features are mutually exclusive; a `compile_error!` fires if both are enabled.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -727,3 +746,4 @@ The modem MUST log BLE pairing events at INFO level to the diagnostic UART.
 | MD-0502 | BLE GATT write logging | Must |
 | MD-0503 | USB-CDC message logging | Must |
 | MD-0504 | BLE pairing event logging | Must |
+| MD-0505 | Build-type–aware log levels | Must |

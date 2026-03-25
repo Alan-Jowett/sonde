@@ -2082,8 +2082,12 @@ mod tests {
 
     // -- Log-level tests (ND-1010 / T-N1015) ----------------------------------
 
+    #[cfg(debug_assertions)]
     use crate::test_log_capture;
 
+    // Skipped in release builds — `debug!()` is stripped at compile time by
+    // `release_max_level_warn`.
+    #[cfg(debug_assertions)]
     #[test]
     fn test_helper_i2c_read_emits_debug_log() {
         // ND-1010 / T-N1015: I/O helpers emit DEBUG-level logs.
@@ -2136,6 +2140,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_helper_gpio_read_emits_debug_log() {
         // ND-1010 / T-N1015: gpio_read emits a DEBUG log with result.
@@ -2181,6 +2186,7 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn test_non_io_helper_does_not_emit_debug_log() {
         // ND-1010 AC #2: non-I/O helpers must NOT emit DEBUG logs.

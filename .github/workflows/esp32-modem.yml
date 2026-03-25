@@ -25,11 +25,24 @@ concurrency:
 
 jobs:
   esp32s3-modem-build:
-    name: Build ESP32-S3 modem firmware
+    name: Build ESP32-S3 modem firmware (${{ matrix.variant }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [default, verbose]
+        include:
+          - variant: default
+            features: esp
+            artifact: modem-firmware
+          - variant: verbose
+            features: esp,verbose
+            no_default_features: --no-default-features
+            artifact: modem-firmware-verbose
 
     container:
       # Pre-built ESP32 dev container with Rust stable, ESP Rust toolchain,
@@ -71,7 +84,8 @@ jobs:
           cargo +esp build \
             -p sonde-modem \
             --bin modem \
-            --features esp \
+            --features ${{ matrix.features }} \
+            ${{ matrix.no_default_features || '' }} \
             --profile firmware \
             --target xtensa-esp32s3-espidf \
             -Zbuild-std=std,panic_abort
@@ -160,7 +174,7 @@ jobs:
       - name: Upload modem firmware
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: modem-firmware
+          name: ${{ matrix.artifact }}
           path: flash_image.bin
           if-no-files-found: error
           retention-days: 7

@@ -1114,3 +1114,22 @@ The tool MUST emit DEBUG-level log events on errors that include actionable cont
 1. Timeout errors include the timeout duration in the log event.
 2. Error log events include the operation name that failed.
 3. Protocol error responses include the status code and any diagnostic message.
+
+---
+
+### PT-1213  Build-type–aware log levels
+
+**Priority:** Must  
+**Source:** issue #496
+
+**Description:**  
+The pairing tool MUST apply build-type–aware log-level policies: compile-time gating to strip DEBUG/TRACE call-sites in release builds, and a runtime default that differs between debug and release. The `sonde-pair` library crate and the `sonde-pair-ui` application crate both apply compile-time gating via `tracing` Cargo features.
+
+**Acceptance criteria:**
+
+1. In debug builds, the compile-time maximum tracing level is TRACE.
+2. In release builds, the compile-time maximum tracing level is INFO (`trace!` and `debug!` call-sites are no-ops).
+3. The default `EnvFilter` in the Tauri entry point is `sonde_pair=info,sonde_pair_ui=info` in debug builds and `sonde_pair=warn,sonde_pair_ui=warn` in release builds.
+4. `RUST_LOG` overrides the default in both build types (within compile-time limits).
+5. The `tracing` crate dependency in both `sonde-pair` and `sonde-pair-ui` specifies `features = ["max_level_trace", "release_max_level_info"]`.
+6. PT-1207–PT-1212 requirements that specify DEBUG-level logging are satisfied in debug builds; in release builds those call-sites are compiled out and the requirements are met by the tool functioning correctly without those diagnostic events.

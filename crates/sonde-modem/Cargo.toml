@@ -6,17 +6,26 @@ license = "MIT"
 description = "ESP32-S3 radio modem firmware — USB-CDC to ESP-NOW bridge"
 
 [features]
-default = []
+default = ["quiet"]
 # Enable ESP-IDF platform support (required for firmware builds).
 # Without this feature, only platform-independent modules compile,
 # enabling host-side testing of bridge logic, peer table, and status.
 esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:embuild", "dep:esp32-nimble"]
 # Enable device integration tests (requires serialport + libudev on Linux).
 device-tests = ["dep:serialport"]
+# Default log level policy: strip info!/debug!/trace! at compile time in
+# release builds for minimal overhead and lowest power. Mutually exclusive
+# with `verbose`.
+quiet = ["log/release_max_level_warn"]
+# Verbose logging: keep all levels up to debug! compiled in for release
+# firmware so operators can diagnose issues without reflashing. Runtime
+# default is INFO. Build with `--features esp,verbose --no-default-features`
+# (MD-0505).
+verbose = ["log/release_max_level_debug"]
 
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol", default-features = false }
-log = "0.4"
+log = { version = "0.4", features = ["max_level_trace"] }
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.
 esp-idf-hal = { version = "0.46", optional = true }

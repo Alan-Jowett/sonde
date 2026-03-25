@@ -5,17 +5,26 @@ edition = "2021"
 description = "Sonde node firmware — wake cycle engine, BPF runtime, and platform abstractions"
 
 [features]
-default = []
+default = ["quiet"]
 # Enable ESP-IDF platform support (required for firmware builds).
 # Without this feature, only platform-independent modules compile,
 # enabling host-side testing of the wake cycle engine and protocol logic.
 esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:esp32-nimble", "dep:embuild"]
+# Default log level policy: strip info!/debug!/trace! at compile time in
+# release builds for minimal overhead and lowest power. Mutually exclusive
+# with `verbose`.
+quiet = ["log/release_max_level_warn"]
+# Verbose logging: keep all levels up to debug! compiled in for release
+# firmware so operators can diagnose issues without reflashing. Runtime
+# default is INFO. Build with `--features esp,verbose --no-default-features`
+# (ND-1012).
+verbose = ["log/release_max_level_debug"]
 
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
 ciborium = { version = "0.2", default-features = false }
 hmac = "0.12"
-log = "0.4"
+log = { version = "0.4", features = ["max_level_trace"] }
 sha2 = "0.10"
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.

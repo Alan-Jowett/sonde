@@ -1451,6 +1451,25 @@ The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pa
 
 ---
 
+### GW-1304  Build-type–aware log levels
+
+**Priority:** Must  
+**Source:** Issue #496
+
+**Description:**  
+The gateway MUST apply build-type–aware log-level policies: compile-time gating to strip DEBUG/TRACE call-sites in release builds, and a runtime default that differs between debug and release.
+
+**Acceptance criteria:**
+
+1. In debug builds, the compile-time maximum tracing level is TRACE.
+2. In release builds, the compile-time maximum tracing level is INFO (`trace!` and `debug!` call-sites are no-ops).
+3. The runtime default `EnvFilter` is `sonde_gateway=info` in debug builds and `sonde_gateway=warn` in release builds.
+4. `RUST_LOG` overrides the default in both build types (within compile-time limits).
+5. The `tracing` crate dependency specifies `features = ["max_level_trace", "release_max_level_info"]`.
+6. Both console mode and Windows service mode apply the same default `EnvFilter` policy for console/file sinks; in Windows service mode, the ETW sink remains unfiltered and relies on ETW-side filtering.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1536,3 +1555,4 @@ The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pa
 | GW-1223 | Admin API — phone listing | Must |
 | GW-1224 | Admin API — phone revocation | Must |
 | GW-1303 | Build metadata in host binaries | Must |
+| GW-1304 | Build-type–aware log levels | Must |

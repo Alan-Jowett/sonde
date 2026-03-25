@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+// ND-1012: `quiet` and `verbose` are mutually exclusive log-level features.
+#[cfg(all(feature = "quiet", feature = "verbose"))]
+compile_error!(
+    "features `quiet` and `verbose` are mutually exclusive; \
+     use `--features esp,verbose --no-default-features` for verbose builds"
+);
+
 pub mod ble_pairing;
 pub mod bpf_dispatch;
 pub mod bpf_helpers;
@@ -34,7 +41,11 @@ pub const FIRMWARE_ABI_VERSION: u32 = 1;
 ///
 /// Log records are captured per-thread to avoid cross-test interference
 /// when tests run in parallel (the Rust default).
-#[cfg(test)]
+///
+/// Only available in debug test builds — all callers are gated with
+/// `#[cfg(debug_assertions)]` because the log levels they assert on are
+/// stripped at compile time in release builds (ND-1012).
+#[cfg(all(test, debug_assertions))]
 pub(crate) mod test_log_capture {
     use log::{Level, Log, Metadata, Record};
     use std::collections::HashMap;

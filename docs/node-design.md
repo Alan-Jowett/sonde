@@ -676,31 +676,32 @@ The node firmware uses the Rust `log` crate (v0.4) as the logging facade. On ESP
 
 ### 17.1a  Build-type–aware log levels (ND-1012)
 
-To eliminate logging overhead in release and firmware builds, the node applies **compile-time** log-level gating via the `log` crate's Cargo feature flags, combined with a **runtime** default that varies by build type.
+To eliminate logging overhead in release and firmware builds, the node applies **compile-time** log-level gating via the `log` crate's Cargo feature flags, combined with a **runtime** default that varies by build type and feature selection.
 
 **Compile-time filtering:**
 
 | Build profile | Cargo feature | Effect |
 |---|---|---|
 | `dev` (debug) | `max_level_trace` | All levels (`trace!` through `error!`) compiled in |
-| `release` / `firmware` | `release_max_level_warn` | `trace!`, `debug!`, and `info!` macro call-sites are replaced with no-ops at compile time |
+| `release` / `firmware` (quiet, default) | `quiet` → `log/release_max_level_warn` | `trace!`, `debug!`, and `info!` macro call-sites are replaced with no-ops |
+| `release` / `firmware` (verbose) | `verbose` → `log/release_max_level_debug` | `trace!` call-sites are no-ops; `debug!` and `info!` remain compiled in |
 
-The `release_max_level_warn` feature keys on `cfg(not(debug_assertions))`, which is clear for both `--release` and `--profile firmware`.
+The `quiet` and `verbose` features are **mutually exclusive**; `quiet` is the default. A `compile_error!` fires if both are enabled. To build a verbose firmware: `--features esp,verbose --no-default-features`.
 
 **Runtime default:**
 
 After `EspLogger::initialize_default()`, the binary sets the runtime filter:
 
 ```rust
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "verbose"))]
 log::set_max_level(log::LevelFilter::Info);
-#[cfg(not(debug_assertions))]
+#[cfg(not(any(debug_assertions, feature = "verbose")))]
 log::set_max_level(log::LevelFilter::Warn);
 ```
 
-This means debug builds default to INFO (operators see lifecycle events without DEBUG/TRACE noise), and release builds default to WARN (only anomalies are logged).
+Debug and verbose builds default to INFO (operators see lifecycle events without DEBUG/TRACE noise). Release quiet builds default to WARN (only anomalies are logged).
 
-> **Note:** Because release builds strip `info!` at compile time, `bpf_trace_printk` output (ND-1006) is not visible in release firmware. A future change will route `bpf_trace_printk` output via `APP_DATA` to the gateway's handler process instead of relying on local UART logging.
+> **Note:** Because quiet release builds strip `info!` at compile time, `bpf_trace_printk` output (ND-1006) is not visible in quiet firmware. Use the verbose firmware variant for diagnostics, or a future change will route `bpf_trace_printk` output via `APP_DATA` to the gateway's handler process.
 
 ### 17.2  Log points
 

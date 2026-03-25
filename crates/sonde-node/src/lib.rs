@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+// ND-1012: `quiet` and `verbose` are mutually exclusive log-level features.
+#[cfg(all(feature = "quiet", feature = "verbose"))]
+compile_error!(
+    "features `quiet` and `verbose` are mutually exclusive; \
+     use `--features esp,verbose --no-default-features` for verbose builds"
+);
+
 pub mod ble_pairing;
 pub mod bpf_dispatch;
 pub mod bpf_helpers;

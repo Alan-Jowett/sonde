@@ -12,6 +12,13 @@
 //! the `esp` feature and the Xtensa toolchain. The firmware entry point
 //! is in `src/bin/modem.rs`.
 
+// MD-0505: `quiet` and `verbose` are mutually exclusive log-level features.
+#[cfg(all(feature = "quiet", feature = "verbose"))]
+compile_error!(
+    "features `quiet` and `verbose` are mutually exclusive; \
+     use `--features esp,verbose --no-default-features` for verbose builds"
+);
+
 pub mod bridge;
 pub mod peer_table;
 pub mod status;

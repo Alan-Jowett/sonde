@@ -694,10 +694,11 @@ The modem MUST apply build-type–aware log-level policies identical to the node
 **Acceptance criteria:**
 
 1. In debug builds, the compile-time maximum log level is TRACE.
-2. In release builds, the compile-time maximum log level is WARN (`trace!`, `debug!`, and `info!` call-sites are no-ops).
-3. The runtime default log level is INFO in debug builds and WARN in release builds.
-4. MD-0500–MD-0504 INFO-level requirements are satisfied by the verbose build variant emitting those events; release builds omit them without functional behavior changes.
-5. The `log` crate dependency specifies `features = ["max_level_trace"]`; the `quiet` (default) and `verbose` features control the release max level.
+2. In release `quiet` builds (the default, without the `verbose` feature), the compile-time maximum log level is WARN (`trace!`, `debug!`, and `info!` call-sites are no-ops).
+3. In release `verbose` builds (with `feature = "verbose"` enabled), the compile-time maximum log level is DEBUG (`trace!` call-sites are no-ops; `debug!` and `info!` call-sites remain compiled in).
+4. The runtime default log level is INFO in debug and release `verbose` builds, and WARN in release `quiet` builds.
+5. MD-0500–MD-0504 INFO-level requirements are satisfied by the verbose build variant emitting those events; release `quiet` builds omit them without functional behavior changes.
+6. The `quiet` and `verbose` features are mutually exclusive; a `compile_error!` fires if both are enabled.
 
 ---
 

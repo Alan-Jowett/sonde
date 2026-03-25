@@ -336,27 +336,30 @@ The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_I
 
 ### 14.2a  Build-type–aware log levels (MD-0505)
 
-The modem applies the same build-type–aware policy as the node (see ND-1012) to eliminate logging overhead in release firmware builds.
+The modem applies the same build-type–aware policy as the node (see ND-1012) to eliminate logging overhead in release firmware builds. Two mutually exclusive Cargo features control the release compile-time max level.
 
 **Compile-time filtering:**
 
 | Build profile | Cargo feature | Effect |
 |---|---|---|
 | `dev` (debug) | `max_level_trace` | All levels compiled in |
-| `release` / `firmware` | `release_max_level_warn` | `trace!`, `debug!`, and `info!` call-sites become no-ops |
+| `release` / `firmware` (quiet, default) | `quiet` → `log/release_max_level_warn` | `trace!`, `debug!`, and `info!` call-sites become no-ops |
+| `release` / `firmware` (verbose) | `verbose` → `log/release_max_level_debug` | `trace!` call-sites become no-ops; `debug!` and `info!` remain compiled in |
+
+A `compile_error!` fires if both `quiet` and `verbose` are enabled. To build verbose firmware: `--features esp,verbose --no-default-features`.
 
 **Runtime default:**
 
-After `EspLogger::initialize_default()`, the modem binary sets:
+After `EspLogger::initialize_default()`, the modem binary sets the runtime level based on build type and feature:
 
 ```rust
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "verbose"))]
 log::set_max_level(log::LevelFilter::Info);
-#[cfg(not(debug_assertions))]
+#[cfg(not(any(debug_assertions, feature = "verbose")))]
 log::set_max_level(log::LevelFilter::Warn);
 ```
 
-Debug builds default to INFO; release builds default to WARN.
+Debug and verbose builds default to INFO; release quiet builds default to WARN. Note: `esp_log_level_set()` can lower the runtime level further but cannot re-enable call-sites that were stripped at compile time.
 
 ### 14.3  Operational logging (MD-0500 – MD-0504)
 

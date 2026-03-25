@@ -1,0 +1,4 @@
+handlers:
+  - program_hash: "*"
+    command: "python"
+    args: ["test-programs/tmp102_handler.py"]

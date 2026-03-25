@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 
 use crate::ble_pairing::BlePairingController;
 use crate::engine::PendingCommand;
+use crate::handler::HandlerConfig;
 use crate::modem::UsbEspNowTransport;
 use crate::program::{ProgramLibrary, VerificationProfile};
 use crate::registry::NodeRecord;
@@ -32,6 +33,7 @@ pub struct AdminService {
     session_manager: Arc<SessionManager>,
     ble_controller: Option<Arc<BlePairingController>>,
     transport: Option<Arc<UsbEspNowTransport>>,
+    handler_configs: Vec<HandlerConfig>,
 }
 
 impl AdminService {
@@ -47,6 +49,7 @@ impl AdminService {
             session_manager,
             ble_controller: None,
             transport: None,
+            handler_configs: Vec::new(),
         }
     }
 
@@ -58,6 +61,12 @@ impl AdminService {
     ) -> Self {
         self.ble_controller = Some(controller);
         self.transport = Some(transport);
+        self
+    }
+
+    /// Set the handler routing configurations for full state export.
+    pub fn with_handler_configs(mut self, configs: Vec<HandlerConfig>) -> Self {
+        self.handler_configs = configs;
         self
     }
 }
@@ -214,6 +223,44 @@ impl GatewayAdmin for AdminService {
             .delete_node(node_id)
             .await
             .map_err(storage_err)?;
+        Ok(Response::new(Empty {}))
+    }
+
+    /// Trigger a factory reset for a node (GW-0705).
+    ///
+    /// Removes the node from the registry and clears any pending commands.
+    ///
+    /// **Note:** Full factory reset requires a protocol-level command sent to
+    /// the node while it is still authenticated (erasing PSK, maps, and
+    /// resident program on the node side). That protocol extension is not yet
+    /// implemented; this RPC currently performs the gateway-side cleanup only.
+    async fn factory_reset(
+        &self,
+        request: Request<FactoryResetRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let node_id = &request.get_ref().node_id;
+        {
+            use zeroize::Zeroize;
+            let mut node = self
+                .storage
+                .get_node(node_id)
+                .await
+                .map_err(storage_err)?
+                .ok_or_else(|| Status::not_found(format!("node `{node_id}` not found")))?;
+            node.psk.zeroize();
+        }
+
+        // TODO: GW-0705 / T-0706 — send a protocol-level factory reset
+        // command to the node during its next WAKE cycle before removing
+        // the registry entry. Requires a new command type in sonde-protocol.
+        self.storage
+            .delete_node(node_id)
+            .await
+            .map_err(storage_err)?;
+
+        // Clear any pending commands for the removed node.
+        self.pending_commands.write().await.remove(node_id);
+
         Ok(Response::new(Empty {}))
     }
 
@@ -476,11 +523,25 @@ impl GatewayAdmin for AdminService {
         }
         let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
         let programs = self.storage.list_programs().await.map_err(storage_err)?;
+        let identity = self
+            .storage
+            .load_gateway_identity()
+            .await
+            .map_err(storage_err)?;
+        let phone_psks = self.storage.list_phone_psks().await.map_err(storage_err)?;
+        let handler_configs = self.handler_configs.clone();
         let passphrase = Zeroizing::new(req.passphrase);
         // Offload CPU-bound PBKDF2 + AES-GCM encryption to a blocking thread
         // so the Tokio runtime is not stalled.
         let data = tokio::task::spawn_blocking(move || {
-            crate::state_bundle::encrypt_state(&nodes, &programs, &passphrase)
+            crate::state_bundle::encrypt_state_full(
+                &nodes,
+                &programs,
+                identity.as_ref(),
+                &phone_psks,
+                &handler_configs,
+                &passphrase,
+            )
         })
         .await
         .map_err(|e| Status::internal(format!("encrypt task failed: {e}")))?

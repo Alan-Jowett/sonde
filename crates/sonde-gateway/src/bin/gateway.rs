@@ -301,7 +301,7 @@ async fn run_gateway(
         Arc::new(RwLock::new(HashMap::new()));
 
     // 5. Gateway engine — wire up handler router when a config file was given
-    let gateway = if let Some(config_path) = &cli.handler_config {
+    let (gateway, handler_configs) = if let Some(config_path) = &cli.handler_config {
         let configs = load_handler_configs(config_path).map_err(|e| {
             error!("failed to load handler config: {e}");
             e
@@ -311,6 +311,7 @@ async fn run_gateway(
             count = configs.len(),
             "loaded handler config"
         );
+        let configs_for_admin = configs.clone();
         let router = Arc::new(HandlerRouter::new(configs));
         // Use new_with_pending to share pending_commands with the admin
         // API, then set the handler router separately (D-485).
@@ -321,13 +322,16 @@ async fn run_gateway(
         );
         gw.set_handler_router(router)
             .expect("handler_router must not already be set during gateway init");
-        Arc::new(gw)
+        (Arc::new(gw), configs_for_admin)
     } else {
-        Arc::new(Gateway::new_with_pending(
-            storage.clone(),
-            pending_commands.clone(),
-            session_manager.clone(),
-        ))
+        (
+            Arc::new(Gateway::new_with_pending(
+                storage.clone(),
+                pending_commands.clone(),
+                session_manager.clone(),
+            )),
+            Vec::new(),
+        )
     };
 
     // 6–9. Modem transport + processing loops with reconnection (GW-1103).
@@ -392,7 +396,8 @@ async fn run_gateway(
             pending_commands.clone(),
             session_manager.clone(),
         )
-        .with_ble(Arc::clone(&ble_controller), Arc::clone(&transport));
+        .with_ble(Arc::clone(&ble_controller), Arc::clone(&transport))
+        .with_handler_configs(handler_configs.clone());
         let admin_socket = cli.admin_socket.clone();
 
         let grpc_handle = tokio::spawn(async move {
@@ -542,10 +547,19 @@ async fn run_gateway(
             }
         });
 
+        // 8b. Modem health monitor (GW-1102).
+        let health_cancel = tokio_util::sync::CancellationToken::new();
+        let health_handle = sonde_gateway::modem::spawn_health_monitor(
+            Arc::downgrade(&transport),
+            Duration::from_secs(30),
+            health_cancel.clone(),
+        );
+
         // 9. Wait for shutdown signal, or for any subsystem to exit unexpectedly.
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutdown signal received, stopping gateway");
+                health_cancel.cancel();
                 break; // exit the outer reconnect loop
             }
             _ = frame_loop => {
@@ -556,7 +570,11 @@ async fn run_gateway(
             }
             _ = grpc_handle => {
                 error!("gRPC server exited unexpectedly");
+                health_cancel.cancel();
                 break; // gRPC failure is not recoverable
+            }
+            _ = health_handle => {
+                error!("health monitor exited — modem likely disconnected");
             }
         }
 

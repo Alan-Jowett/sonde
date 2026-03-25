@@ -115,6 +115,13 @@ enum NodeAction {
         /// Node identifier.
         node_id: String,
     },
+    /// Factory reset a node (GW-0705).
+    ///
+    /// Removes the node from the gateway registry and clears pending commands.
+    FactoryReset {
+        /// Node identifier.
+        node_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -305,6 +312,14 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     print_json(&serde_json::json!({"removed": node_id}))?;
                 } else {
                     println!("Removed node: {node_id}");
+                }
+            }
+            NodeAction::FactoryReset { node_id } => {
+                client.factory_reset(node_id).await?;
+                if json {
+                    print_json(&serde_json::json!({"factory_reset": node_id}))?;
+                } else {
+                    println!("Factory reset node: {node_id}");
                 }
             }
         },

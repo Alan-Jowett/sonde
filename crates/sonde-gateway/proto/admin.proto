@@ -6,6 +6,7 @@ service GatewayAdmin {
     rpc GetNode(GetNodeRequest) returns (NodeInfo);
     rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
     rpc RemoveNode(RemoveNodeRequest) returns (Empty);
+    rpc FactoryReset(FactoryResetRequest) returns (Empty);
     rpc IngestProgram(IngestProgramRequest) returns (IngestProgramResponse);
     rpc ListPrograms(Empty) returns (ListProgramsResponse);
     rpc AssignProgram(AssignProgramRequest) returns (Empty);
@@ -54,6 +55,7 @@ message GetNodeRequest { string node_id = 1; }
 message RegisterNodeRequest { string node_id = 1; uint32 key_hint = 2; bytes psk = 3; }
 message RegisterNodeResponse { string node_id = 1; }
 message RemoveNodeRequest { string node_id = 1; }
+message FactoryResetRequest { string node_id = 1; }
 
 message ProgramInfo {
     bytes hash = 1;

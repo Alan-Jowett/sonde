@@ -36,6 +36,7 @@ pub enum PendingCommand {
     RunEphemeral { program_hash: Vec<u8> },
     UpdateSchedule { interval_s: u32 },
     Reboot,
+    FactoryReset,
 }
 
 /// The core protocol engine. Ties together authentication, session management,

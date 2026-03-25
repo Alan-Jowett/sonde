@@ -119,6 +119,15 @@ impl AdminClient {
         Ok(())
     }
 
+    pub async fn factory_reset(&mut self, node_id: &str) -> Result<(), tonic::Status> {
+        self.inner
+            .factory_reset(FactoryResetRequest {
+                node_id: node_id.to_string(),
+            })
+            .await?;
+        Ok(())
+    }
+
     // -- Program management --
 
     pub async fn ingest_program(

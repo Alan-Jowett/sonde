@@ -332,7 +332,7 @@ Connect both ports to the host. Use `idf.py monitor` (or any serial terminal at 
 | `debug!` | USB-CDC serial messages sent/received |
 | `warn!` | USB write errors, ESP-NOW send failures, peer add failures, encode errors, BLE pairing failures |
 
-The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_INFO`). In debug builds and verbose firmware builds, the maximum compiled-in level is DEBUG, selectable at runtime via ESP-IDF's `esp_log_level_set()`. In release builds without the `verbose` feature, the compile-time maximum is WARN (see §14.2a).
+The default log level is INFO (`sdkconfig.defaults`: `CONFIG_LOG_DEFAULT_LEVEL_INFO`). In debug builds, the maximum compiled-in level is TRACE (all Rust `log` levels are included), and the modem sets the Rust `log` facade's runtime maximum via `log::set_max_level(...)`. ESP-IDF's `esp_log_level_set()` may further restrict output below that runtime maximum but cannot raise it. In release builds without the `verbose` feature, the compile-time maximum is WARN (see §14.2a).
 
 ### 14.2a  Build-type–aware log levels (MD-0505)
 
@@ -359,7 +359,7 @@ log::set_max_level(log::LevelFilter::Info);
 log::set_max_level(log::LevelFilter::Warn);
 ```
 
-Debug and verbose builds default to INFO; release quiet builds default to WARN. Note: `esp_log_level_set()` can lower the runtime level further but cannot re-enable call-sites that were stripped at compile time.
+Debug and verbose builds default to INFO; release quiet builds default to WARN. Note: the effective runtime gate for Rust logs is `log::set_max_level(...)` as shown above; `esp_log_level_set()` may further restrict ESP-IDF tag output, but it cannot raise the level above this max or re-enable call-sites that were stripped at compile time.
 
 ### 14.3  Operational logging (MD-0500 – MD-0504)
 

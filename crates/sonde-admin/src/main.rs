@@ -24,7 +24,8 @@ struct Cli {
     #[arg(long, default_value = "text", global = true)]
     format: OutputFormat,
 
-    /// Skip confirmation prompts for destructive commands.
+    /// Skip confirmation prompts for destructive commands. Required when running
+    /// non-interactively (e.g. when stdin is piped or redirected).
     #[arg(long = "yes", short = 'y', global = true)]
     yes: bool,
 
@@ -353,48 +354,20 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                         println!("Removed node: {node_id}");
                     }
                 }
-            }
-            NodeAction::Get { node_id } => {
-                let node = client.get_node(node_id).await?;
-                if json {
-                    print_json(&node_to_json(&node))?;
-                } else {
-                    print_node(&node);
+                NodeAction::FactoryReset { node_id } => {
+                    confirm(
+                        &format!("Factory reset node '{node_id}'? This will zeroize the node's PSK and remove it from the registry."),
+                        cli.yes,
+                    )?;
+                    client.factory_reset(node_id).await?;
+                    if json {
+                        print_json(&serde_json::json!({"factory_reset": node_id}))?;
+                    } else {
+                        println!("Factory reset node: {node_id}");
+                    }
                 }
             }
-            NodeAction::Register {
-                node_id,
-                key_hint,
-                psk_hex,
-            } => {
-                let psk = hex::decode(psk_hex)?;
-                if psk.len() != 32 {
-                    return Err(format!(
-                        "PSK must be exactly 32 bytes (64 hex chars), got {} bytes",
-                        psk.len()
-                    )
-                    .into());
-                }
-                let id = client.register_node(node_id, *key_hint as u32, psk).await?;
-                if json {
-                    print_json(&serde_json::json!({"node_id": id}))?;
-                } else {
-                    println!("Registered node: {id}");
-                }
-            }
-            NodeAction::FactoryReset { node_id } => {
-                confirm(
-                    &format!("Factory reset node '{node_id}'? This will zeroize the node's PSK and remove it from the registry."),
-                    cli.yes,
-                )?;
-                client.factory_reset(node_id).await?;
-                if json {
-                    print_json(&serde_json::json!({"factory_reset": node_id}))?;
-                } else {
-                    println!("Factory reset node: {node_id}");
-                }
-            }
-        },
+        }
 
         Commands::Program { action } => match action {
             ProgramAction::Ingest { file, profile } => {

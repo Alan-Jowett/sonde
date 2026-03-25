@@ -423,19 +423,41 @@ impl BleTransport for AndroidBleTransport {
                             .map_err(jni_err)?;
 
                         // Query the observed pairing method (PT-0904).
-                        let pm = env
+                        // If this fails after a successful connect, treat
+                        // it as Unknown and let `enforce_lesc()` handle
+                        // rejection+disconnect rather than leaking a GATT
+                        // connection.
+                        let pm_result = env
                             .call_method(
                                 inner.helper.as_obj(),
                                 jni_str!("getPairingMethod"),
                                 jni_sig!("()I"),
                                 &[],
                             )
-                            .map_err(|e| jni_exception_or(env, "getPairingMethod", e))?
-                            .i()
-                            .map_err(jni_err)?;
-                        inner.pairing_method.store(pm as u8, Ordering::Release);
+                            .map_err(|e| jni_exception_or(env, "getPairingMethod", e))
+                            .and_then(|v| v.i().map_err(jni_err));
 
-                        debug!(address = ?addr, mtu, pairing_method = pm, "connected");
+                        match pm_result {
+                            Ok(pm) => {
+                                // Only 0..=2 are valid; anything else → Unknown (0).
+                                let clamped: u8 = match pm {
+                                    0..=2 => pm as u8,
+                                    _ => 0,
+                                };
+                                inner.pairing_method.store(clamped, Ordering::Release);
+                                debug!(address = ?addr, mtu, pairing_method = pm, "connected");
+                            }
+                            Err(err) => {
+                                // pairing_method stays at its reset value (0 = Unknown).
+                                debug!(
+                                    address = ?addr,
+                                    mtu,
+                                    error = ?err,
+                                    "getPairingMethod failed; treating pairing method as Unknown"
+                                );
+                            }
+                        }
+
                         Ok(mtu as u16)
                     })
                     .map_err(|e| match e {

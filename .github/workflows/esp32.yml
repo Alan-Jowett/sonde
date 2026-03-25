@@ -26,11 +26,24 @@ concurrency:
 
 jobs:
   esp32c3-node-build-and-smoke:
-    name: Build ESP32-C3 node firmware and QEMU smoke test
+    name: Build ESP32-C3 node firmware (${{ matrix.variant }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [default, verbose]
+        include:
+          - variant: default
+            features: esp
+            artifact: node-firmware
+          - variant: verbose
+            features: esp,verbose
+            no_default_features: --no-default-features
+            artifact: node-firmware-verbose
 
     container:
       image: ghcr.io/alan-jowett/sonde-esp-dev:latest
@@ -78,7 +91,8 @@ jobs:
           cargo +esp build \
             -p sonde-node \
             --bin node \
-            --features esp \
+            --features ${{ matrix.features }} \
+            ${{ matrix.no_default_features || '' }} \
             --profile firmware \
             --target riscv32imc-esp-espidf \
             -Zbuild-std=std,panic_abort
@@ -236,7 +250,7 @@ jobs:
       - name: Upload node firmware
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: node-firmware
+          name: ${{ matrix.artifact }}
           path: flash_image.bin
           if-no-files-found: error
           retention-days: 7

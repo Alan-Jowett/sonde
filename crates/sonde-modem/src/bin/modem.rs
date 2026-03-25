@@ -32,9 +32,11 @@ fn main() {
     EspLogger::initialize_default();
 
     // Build-type–aware runtime log level (MD-0505).
-    #[cfg(debug_assertions)]
+    // In debug builds or with the `verbose` feature, default to INFO.
+    // In release builds without `verbose`, default to WARN.
+    #[cfg(any(debug_assertions, feature = "verbose"))]
     log::set_max_level(log::LevelFilter::Info);
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "verbose")))]
     log::set_max_level(log::LevelFilter::Warn);
 
     info!(

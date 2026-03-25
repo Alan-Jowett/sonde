@@ -855,6 +855,19 @@ A configurable stub handler process (or in-process mock) that:
 1. Without sending WAKE, send APP_DATA with arbitrary sequence number.
 2. Assert: silently discarded (no active session).
 
+### T-0607a  WAKE retry preserves ChunkedTransfer session
+
+**Validates:** GW-0602 (criterion 5)
+
+**Procedure:**
+1. Send WAKE with nonce N. Receive COMMAND with `RunEphemeral` or `UpdateProgram` (chunked; program requires chunked transfer).
+2. Assert: session is in `ChunkedTransfer` state.
+3. Send a second WAKE with the same nonce N (simulating a retry).
+4. Assert: the gateway does NOT create a new session — the existing `ChunkedTransfer` session is preserved.
+5. Assert: the COMMAND response re-sends the same `RunEphemeral` or `UpdateProgram` (chunked) with the original program hash.
+6. Send `GET_CHUNK` with the expected sequence number.
+7. Assert: the gateway responds with the requested chunk data.
+
 ---
 
 ### T-0608  Frame overhead budget
@@ -1963,7 +1976,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0601 | T-0602, T-0603 |
 | GW-0601a | T-0610 |
 | GW-0601b | T-0603a, T-0603b, T-0603c, T-0603d, T-0603e, T-0603f, T-0603g, T-0603h, T-0603i, T-0603j, T-0603k |
-| GW-0602 | T-0604, T-0605, T-0606, T-0607, T-1004 |
+| GW-0602 | T-0604, T-0605, T-0606, T-0607, T-0607a, T-1004 |
 | GW-0603 | T-0608 |
 | GW-0700 | T-0700 |
 | GW-0701 | T-0201, T-0701 |

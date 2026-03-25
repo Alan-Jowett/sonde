@@ -588,12 +588,12 @@ On program install, the firmware MUST verify that the new program's map definiti
 **Source:** protocol.md §9.1
 
 **Description:**  
-If the node sends `WAKE` and receives no `COMMAND` response within the transport timeout, the node MUST retry up to 3 times with 100 ms delay between attempts. After max retries, the node MUST sleep until the next scheduled wake interval.
+If the node sends `WAKE` and receives no `COMMAND` response within the transport timeout, the node MUST retry up to 3 times with 400 ms delay between attempts. After max retries, the node MUST sleep until the next scheduled wake interval.
 
 **Acceptance criteria:**
 
 1. The node retries up to 3 times.
-2. The delay between retries is 100 ms.
+2. The delay between retries is 400 ms.
 3. After 3 failures, the node sleeps without executing BPF.
 
 ---
@@ -604,7 +604,7 @@ If the node sends `WAKE` and receives no `COMMAND` response within the transport
 **Source:** protocol.md §9.2
 
 **Description:**  
-If the node sends `GET_CHUNK` and receives no `CHUNK` response, the node MUST retry up to 3 times per chunk with 100 ms delay. After max retries, the node MUST abort the transfer and sleep. On the next wake, the transfer restarts from chunk 0.
+If the node sends `GET_CHUNK` and receives no `CHUNK` response, the node MUST retry up to 3 times per chunk with 400 ms delay. After max retries, the node MUST abort the transfer and sleep. On the next wake, the transfer restarts from chunk 0.
 
 **Acceptance criteria:**
 
@@ -620,13 +620,14 @@ If the node sends `GET_CHUNK` and receives no `CHUNK` response, the node MUST re
 **Source:** protocol.md §9.3
 
 **Description:**  
-The node MUST wait for a response for the transport-appropriate timeout before retrying or moving on. On ESP-NOW, the timeout is 50 ms.
+The node MUST wait for a response for the transport-appropriate timeout before retrying or moving on. On ESP-NOW with a USB-CDC modem bridge, the response timeout is 200 ms to account for the serial round-trip latency (node → ESP-NOW → modem → USB-CDC → gateway → USB-CDC → modem → ESP-NOW → node). The retry delay between attempts is 400 ms.
 
 **Acceptance criteria:**
 
-1. On ESP-NOW, the node uses a response timeout of 50 ms, measured from completion of frame transmission to the point where the node treats the response as lost.
-2. The node waits the full configured timeout interval before treating a response as lost or initiating a retry.
-3. For transports other than ESP-NOW, the transport definition MUST specify a numeric response timeout in milliseconds.
+1. On ESP-NOW with a USB-CDC modem bridge, the node uses a response timeout of 200 ms, measured from completion of frame transmission to the point where the node treats the response as lost.
+2. The retry delay between attempts is 400 ms.
+3. The node waits the full configured timeout interval before treating a response as lost or initiating a retry.
+4. For transports other than ESP-NOW, the transport definition MUST specify a numeric response timeout in milliseconds.
 
 ---
 
@@ -1149,6 +1150,21 @@ The node MUST log error conditions at WARN level, including RNG health-check fai
 
 ---
 
+### ND-1011  Chunk transfer logging
+
+**Priority:** Must  
+**Source:** issue #468
+
+**Description:**  
+The node MUST log at DEBUG level when sending `GET_CHUNK` requests and when receiving `CHUNK` responses during program transfers, including the chunk index and attempt number.
+
+**Acceptance criteria:**
+
+1. A DEBUG log is emitted for each `GET_CHUNK` request sent, including `chunk_index` and `attempt`.
+2. A DEBUG log is emitted for each `CHUNK` response received, including `chunk_index` and data length.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1221,3 +1237,4 @@ The node MUST log error conditions at WARN level, including RNG health-check fai
 | ND-1008 | BLE pairing mode logging | Must |
 | ND-1009 | Error condition logging | Must |
 | ND-1010 | BPF helper I/O logging | Should |
+| ND-1011 | Chunk transfer logging | Must |

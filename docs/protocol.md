@@ -172,7 +172,7 @@ Each entry in the `maps` array is a CBOR map:
 | 4 | `max_entries` | uint | Maximum number of entries. |
 | 5 | `initial_data` | bstr | Initial bytes for the map value. Absent if the map has no initial data (e.g. `.bss`, explicit maps). Present for `.rodata` / `.data` global variable maps. |
 
-Key 5 (`initial_data`) carries the ELF section content for global variable maps (`.rodata`, `.data`) so the node can pre-populate map memory before BPF execution. The field is optional: decoders MUST tolerate its absence (maps without initial data are zero-filled). The byte length MUST equal `value_size` when present.
+Key 5 (`initial_data`) carries the ELF section content for global variable maps (`.rodata`, `.data`) so the node can pre-populate map memory before BPF execution. The field is optional: decoders MUST tolerate its absence (maps without initial data are zero-filled). Encoders (e.g., the gateway) MUST only emit `initial_data` whose byte length equals `value_size`. Decoders, including nodes, MUST treat any present `initial_data` whose length does not equal `value_size` as if it were absent (the map value remains zero-filled).
 
 #### Program hash
 

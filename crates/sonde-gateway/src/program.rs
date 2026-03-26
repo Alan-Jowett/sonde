@@ -279,7 +279,7 @@ fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
             .and_then(|offset| sh_off.checked_add(offset))
         {
             Some(v) => v,
-            None => return sections,
+            None => return Vec::new(),
         };
         if hdr + sh_entsize > data.len() {
             break;

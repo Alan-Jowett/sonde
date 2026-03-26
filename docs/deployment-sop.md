@@ -119,11 +119,16 @@ The node will boot into BLE pairing mode (no PSK in NVS yet).
 | `--db` | SQLite database (created if absent) |
 | `--master-key-file` | 64-hex-char key file (back this up securely!) |
 | `--generate-master-key` | Auto-generate key if file missing |
+| `--channel` | ESP-NOW radio channel 1–14 (default 1) — must match the channel chosen during node provisioning (step 5) |
 | `--handler-config` | YAML handler routing — add after creating `handlers.yaml` in step 8 |
 
 The gateway logs `modem transport ready` when the modem handshake completes.
 
-Admin socket: `\\.\pipe\sonde-admin` (Windows), `/var/run/sonde/admin.sock` (Linux).
+Admin socket (configurable via `--admin-socket`):
+- Windows: `\\.\pipe\sonde-admin`
+- Linux: `/var/run/sonde/admin.sock` (may require root)
+- For local/dev runs on macOS or unprivileged Linux, use e.g. `--admin-socket ./admin.sock`
+  and point `sonde-admin` at that path with the same flag.
 
 ## 5. Pair a node (BLE provisioning)
 

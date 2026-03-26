@@ -127,28 +127,31 @@ Admin socket: `\\.\pipe\sonde-admin` (Windows), `/var/run/sonde/admin.sock` (Lin
 
 ## 5. Pair a node (BLE provisioning)
 
-### Download and launch the pairing tool
+### Download the pairing tool
 
 **Windows (PowerShell):**
 ```powershell
-$runId = (gh run list -w "Tauri Desktop Build" --json databaseId -q ".[0].databaseId")
+$runId = (gh run list --branch $BRANCH -w "Tauri Desktop Build" --json databaseId -q ".[0].databaseId")
 gh run download $runId --name sonde-pair-windows --dir .\pairing-tool\
 # Run the .exe installer from .\pairing-tool\
 ```
 
 **Linux:**
 ```sh
-gh run download "$(gh run list -w 'Tauri Desktop Build' \
+gh run download "$(gh run list --branch "$BRANCH" -w 'Tauri Desktop Build' \
   --json databaseId -q '.[0].databaseId')" \
   --name sonde-pair-linux --dir ./pairing-tool/
 # Install the .deb package
 sudo dpkg -i ./pairing-tool/*.deb
 ```
 
-### Pairing flow
+### Phase 1: Register provisioning device with gateway
+
+Before you can provision nodes, the pairing tool (laptop/phone) must
+register itself with the gateway. This is a one-time step per device.
 
 1. **Start the gateway** (step 4) — it must be running with the modem connected.
-2. **Open a BLE pairing window** from the admin CLI:
+2. **Open a registration window** from the admin CLI:
 
    **Linux:**
    ```sh
@@ -159,11 +162,21 @@ sudo dpkg -i ./pairing-tool/*.deb
    .\bin\sonde-admin.exe pairing start --duration-s 120
    ```
 3. **Launch the pairing tool** on a machine with Bluetooth.
-4. The tool scans for sonde nodes advertising the pairing service.
-5. Select the node, confirm the passkey, and enter a label + RF channel.
-6. The tool provisions the node with PSK, key_hint, RF channel, and the
-   encrypted registration payload.
-7. The node reboots, sends `PEER_REQUEST`, and the gateway registers it.
+4. The tool connects to the modem's BLE GATT service, performs ECDH key
+   exchange, and receives a phone PSK and RF channel from the gateway.
+5. Confirm the passkey to complete registration.
+
+### Phase 2: Provision a node over BLE
+
+Once your provisioning device is registered (Phase 1), you can provision
+individual nodes. Repeat this phase for each new node.
+
+1. **Launch the pairing tool** (already registered from Phase 1).
+2. The tool scans for sonde nodes advertising the pairing service.
+3. Select the node, confirm the passkey, and enter a label + RF channel.
+4. The tool generates a node PSK and provisions the node with PSK,
+   key_hint, RF channel, and the encrypted registration payload.
+5. The node reboots, sends `PEER_REQUEST`, and the gateway registers it.
 
 Verify registration:
 

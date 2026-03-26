@@ -1179,6 +1179,7 @@ fn test_p040() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new()],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1195,6 +1196,7 @@ fn test_p041() {
     let img = ProgramImage {
         bytecode: vec![0x01],
         maps: vec![],
+        map_initial_data: vec![],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1211,6 +1213,7 @@ fn test_p042() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new()],
     };
     let cbor_a = make_img().encode_deterministic().unwrap();
     let cbor_b = make_img().encode_deterministic().unwrap();
@@ -1230,6 +1233,7 @@ fn test_p043() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new()],
     };
     let cbor = img.encode_deterministic().unwrap();
     let reference_hash = program_hash(&cbor, &SoftwareSha256);
@@ -1250,6 +1254,7 @@ fn test_p044() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new()],
     };
     let img_b = ProgramImage {
         bytecode,
@@ -1259,6 +1264,7 @@ fn test_p044() {
             value_size: 64,
             max_entries: 32,
         }],
+        map_initial_data: vec![Vec::new()],
     };
     let ha = program_hash(&img_a.encode_deterministic().unwrap(), &SoftwareSha256);
     let hb = program_hash(&img_b.encode_deterministic().unwrap(), &SoftwareSha256);
@@ -1276,9 +1282,11 @@ fn test_p045() {
     let img_a = ProgramImage {
         bytecode: vec![0x01],
         maps: maps.clone(),
+        map_initial_data: vec![Vec::new(); maps.len()],
     };
     let img_b = ProgramImage {
         bytecode: vec![0x02],
+        map_initial_data: vec![Vec::new(); maps.len()],
         maps,
     };
     let ha = program_hash(&img_a.encode_deterministic().unwrap(), &SoftwareSha256);
@@ -1296,6 +1304,7 @@ fn test_p046() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new()],
     };
     let cbor = img.encode_deterministic().unwrap();
     // Decode as generic CBOR and verify key ordering.
@@ -1332,6 +1341,7 @@ fn test_p047() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new()],
     };
     let cbor = img.encode_deterministic().unwrap();
     let decoded = ProgramImage::decode(&cbor).unwrap();
@@ -1346,6 +1356,7 @@ fn test_p047() {
     let img2 = ProgramImage {
         bytecode: vec![],
         maps: vec![],
+        map_initial_data: vec![],
     };
     let cbor2 = img2.encode_deterministic().unwrap();
     let decoded2 = ProgramImage::decode(&cbor2).unwrap();
@@ -1404,6 +1415,7 @@ fn test_p053() {
                 max_entries: 32,
             },
         ],
+        map_initial_data: vec![Vec::new(); 2],
     };
     let cbor = img.encode_deterministic().unwrap();
     let n = chunk_count(cbor.len(), 190).unwrap();
@@ -1563,6 +1575,7 @@ fn test_p062() {
                 max_entries: 8,
             },
         ],
+        map_initial_data: vec![Vec::new(); 3],
     };
     let cbor = img.encode_deterministic().unwrap();
     let hash_orig = program_hash(&cbor, &SoftwareSha256);
@@ -2115,6 +2128,7 @@ fn test_p048() {
             value_size: 24,   // boundary: first 2-byte value
             max_entries: 256, // boundary: first 3-byte value
         }],
+        map_initial_data: vec![Vec::new()],
     };
 
     let cbor = img.encode_deterministic().unwrap();
@@ -2182,6 +2196,7 @@ fn test_p049a() {
             value_size: 64,
             max_entries: 16,
         }],
+        map_initial_data: vec![Vec::new()],
     };
     let cbor = img.encode_deterministic().unwrap();
     assert!(cbor.len() > 10, "encoded image must be non-trivial");
@@ -2383,4 +2398,92 @@ fn test_p049c() {
             err
         );
     }
+}
+
+/// T-P070: ProgramImage initial data round-trip (protocol-crate-validation.md).
+///
+/// Validates: protocol.md §6 — key 5 `initial_data`.
+#[test]
+fn test_p070() {
+    let initial = vec![0xDE, 0xAD, 0xBE, 0xEF];
+    let img = ProgramImage {
+        bytecode: vec![0x01],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![initial.clone()],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+
+    // Round-trip: initial data survives encode → decode.
+    assert_eq!(decoded.map_initial_data.len(), 1);
+    assert_eq!(decoded.map_initial_data[0], initial);
+
+    // Verify raw CBOR contains key 5 in the map definition entry.
+    let raw: ciborium::Value = ciborium::from_reader(cbor.as_slice()).unwrap();
+    let maps_arr = raw.as_map().unwrap()[1].1.as_array().unwrap();
+    let map_entry = maps_arr[0].as_map().unwrap();
+    let has_key5 = map_entry
+        .iter()
+        .any(|(k, _)| k.as_integer() == Some(ciborium::value::Integer::from(5)));
+    assert!(has_key5, "key 5 (initial_data) must be present in CBOR");
+}
+
+/// T-P071: ProgramImage initial data absent when empty (protocol-crate-validation.md).
+///
+/// Validates: protocol.md §6 — key 5 omission for empty initial data.
+#[test]
+fn test_p071() {
+    let img = ProgramImage {
+        bytecode: vec![0x01],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 64,
+            max_entries: 16,
+        }],
+        map_initial_data: vec![Vec::new()],
+    };
+    let cbor = img.encode_deterministic().unwrap();
+
+    // Raw CBOR must NOT contain key 5 when initial data is empty.
+    let raw: ciborium::Value = ciborium::from_reader(cbor.as_slice()).unwrap();
+    let maps_arr = raw.as_map().unwrap()[1].1.as_array().unwrap();
+    let map_entry = maps_arr[0].as_map().unwrap();
+    let has_key5 = map_entry
+        .iter()
+        .any(|(k, _)| k.as_integer() == Some(ciborium::value::Integer::from(5)));
+    assert!(
+        !has_key5,
+        "key 5 (initial_data) must be absent when data is empty"
+    );
+
+    // Round-trip: decoded initial data is empty.
+    let decoded = ProgramImage::decode(&cbor).unwrap();
+    assert_eq!(decoded.map_initial_data.len(), 1);
+    assert!(decoded.map_initial_data[0].is_empty());
+}
+
+/// Encode rejects `map_initial_data` / `maps` length mismatch.
+///
+/// Validates: protocol.md §6 — `map_initial_data` is parallel to `maps`.
+#[test]
+fn test_p072() {
+    let img = ProgramImage {
+        bytecode: vec![0x01],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        // 2 entries vs 1 map — mismatch
+        map_initial_data: vec![vec![0xDE, 0xAD, 0xBE, 0xEF], vec![0x01, 0x02, 0x03, 0x04]],
+    };
+    let result = img.encode_deterministic();
+    assert!(result.is_err(), "length mismatch must be rejected");
 }

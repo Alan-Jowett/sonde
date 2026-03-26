@@ -413,6 +413,29 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0411  ELF with .rodata produces initial data
+
+**Validates:** GW-0405
+
+**Procedure:**
+1. Ingest a BPF ELF that contains a `.rodata` section with known content (e.g., compile-time constants).
+2. Decode the resulting CBOR program image.
+3. Assert: the map definition corresponding to the `.rodata` section includes `initial_data` (key 5) matching the section bytes.
+4. Assert: other map definitions (explicit maps, `.bss`) have empty or absent `initial_data`.
+
+---
+
+### T-0412  ELF with .bss produces empty initial data
+
+**Validates:** GW-0405
+
+**Procedure:**
+1. Ingest a BPF ELF that contains a `.bss` section (SHT_NOBITS).
+2. Decode the resulting CBOR program image.
+3. Assert: the map definition corresponding to the `.bss` section has empty `initial_data` (key 5 absent or empty bytes).
+
+---
+
 ## 7  Application data tests
 
 ### T-0500  APP_DATA reception and forwarding
@@ -1963,6 +1986,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0402 | T-0405, T-0406 |
 | GW-0403 | T-0407 |
 | GW-0404 | T-0408, T-0409 |
+| GW-0405 | T-0411, T-0412 |
 | GW-0500 | T-0500 |
 | GW-0501 | T-0501, T-0502, T-0503 |
 | GW-0502 | T-0504, T-0514 |

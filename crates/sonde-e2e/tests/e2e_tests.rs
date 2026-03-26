@@ -51,6 +51,7 @@ fn make_program_from_bytecode(
     let image = ProgramImage {
         bytecode: bytecode.to_vec(),
         maps: vec![],
+        map_initial_data: vec![],
     };
     let cbor = image.encode_deterministic().unwrap();
     let sha = TestSha256;
@@ -2268,6 +2269,7 @@ async fn t_e2e_081_ephemeral_restrictions() {
             value_size: 4,
             max_entries: 1,
         }],
+        map_initial_data: vec![vec![]],
     };
     let resident_cbor = resident_image.encode_deterministic().unwrap();
     let sha = TestSha256;

@@ -717,6 +717,28 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N617  Initial map data applied on program install
+
+**Validates:** ND-0607
+
+**Procedure:**
+1. Create a program image with one map definition (`value_size` = 4, `max_entries` = 1) and `map_initial_data[0]` = `[0xDE, 0xAD, 0xBE, 0xEF]`.
+2. Install the program and run a wake cycle that triggers map allocation.
+3. Assert: after allocation, entry 0 of the map contains `[0xDE, 0xAD, 0xBE, 0xEF]`.
+
+---
+
+### T-N618  Initial map data size mismatch ignored
+
+**Validates:** ND-0607
+
+**Procedure:**
+1. Create a program image with one map definition (`value_size` = 4) and `map_initial_data[0]` = `[0x01, 0x02]` (length ≠ `value_size`).
+2. Install the program and run a wake cycle.
+3. Assert: entry 0 of the map remains zero-filled (size mismatch causes silent skip).
+
+---
+
 ## 9  Timing and retry tests
 
 ### T-N700  WAKE retry count and timing
@@ -1555,6 +1577,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933 |
 | ND-0605 | T-N614, T-N615, T-N934 |
 | ND-0606 | T-N616, T-N935 |
+| ND-0607 | T-N617, T-N618 |
 | ND-0700 | T-N201, T-N700 |
 | ND-0701 | T-N701, T-N936 |
 | ND-0702 | T-N702, T-N937 |

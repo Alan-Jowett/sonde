@@ -23,18 +23,37 @@ pub struct MapDef {
 pub struct ProgramImage {
     pub bytecode: Vec<u8>,
     pub maps: Vec<MapDef>,
+    /// Initial data for each map, parallel to `maps`.
+    ///
+    /// `map_initial_data[i]` contains the initial bytes for `maps[i]`.
+    /// An empty `Vec<u8>` means the map has no initial data (zero-filled).
+    /// For global variable maps (`.rodata` / `.data`), this carries the
+    /// ELF section content so the node can pre-populate map memory before
+    /// BPF execution.
+    pub map_initial_data: Vec<Vec<u8>>,
 }
 
 impl ProgramImage {
     /// Encode using CBOR deterministic encoding (RFC 8949 §4.2).
     /// Keys are sorted in ascending numeric order with minimal-length encoding.
     pub fn encode_deterministic(&self) -> Result<Vec<u8>, EncodeError> {
+        // `map_initial_data` is parallel to `maps` — enforce unconditionally
+        // so callers cannot accidentally omit initial data entries.
+        if self.map_initial_data.len() != self.maps.len() {
+            return Err(EncodeError::CborError(format!(
+                "map_initial_data length ({}) != maps length ({})",
+                self.map_initial_data.len(),
+                self.maps.len()
+            )));
+        }
+
         let map_values: Vec<Value> = self
             .maps
             .iter()
-            .map(|m| {
-                // Keys in ascending order: 1, 2, 3, 4
-                Value::Map(alloc::vec![
+            .enumerate()
+            .map(|(i, m)| {
+                // Keys in ascending order: 1, 2, 3, 4, (5 if initial_data present)
+                let mut entries = alloc::vec![
                     (
                         Value::Integer(MAP_KEY_TYPE.into()),
                         Value::Integer(m.map_type.into()),
@@ -51,7 +70,17 @@ impl ProgramImage {
                         Value::Integer(MAP_KEY_MAX_ENTRIES.into()),
                         Value::Integer(m.max_entries.into()),
                     ),
-                ])
+                ];
+                // Include initial_data (key 5) only when non-empty.
+                if let Some(data) = self.map_initial_data.get(i) {
+                    if !data.is_empty() {
+                        entries.push((
+                            Value::Integer(MAP_KEY_INITIAL_DATA.into()),
+                            Value::Bytes(data.clone()),
+                        ));
+                    }
+                }
+                Value::Map(entries)
             })
             .collect();
 
@@ -88,6 +117,7 @@ impl ProgramImage {
 
         let mut bytecode: Option<Vec<u8>> = None;
         let mut maps: Vec<MapDef> = Vec::new();
+        let mut map_initial_data: Vec<Vec<u8>> = Vec::new();
 
         for (k, v) in fields {
             let key = k
@@ -116,6 +146,7 @@ impl ProgramImage {
                         let mut key_size = None;
                         let mut value_size = None;
                         let mut max_entries = None;
+                        let mut initial_data: Vec<u8> = Vec::new();
 
                         for (mk, mv) in map_fields {
                             let mkey = mk
@@ -132,6 +163,12 @@ impl ProgramImage {
                                 MAP_KEY_KEY_SIZE => key_size = mval,
                                 MAP_KEY_VALUE_SIZE => value_size = mval,
                                 MAP_KEY_MAX_ENTRIES => max_entries = mval,
+                                MAP_KEY_INITIAL_DATA => {
+                                    initial_data = mv
+                                        .as_bytes()
+                                        .ok_or(DecodeError::InvalidFieldType(MAP_KEY_INITIAL_DATA))?
+                                        .to_vec();
+                                }
                                 _ => {} // ignore unknown keys
                             }
                         }
@@ -145,6 +182,7 @@ impl ProgramImage {
                             max_entries: max_entries
                                 .ok_or(DecodeError::MissingField(MAP_KEY_MAX_ENTRIES))?,
                         });
+                        map_initial_data.push(initial_data);
                     }
                 }
                 _ => {} // ignore unknown keys
@@ -154,6 +192,7 @@ impl ProgramImage {
         Ok(ProgramImage {
             bytecode: bytecode.ok_or(DecodeError::MissingField(IMG_KEY_BYTECODE))?,
             maps,
+            map_initial_data,
         })
     }
 }

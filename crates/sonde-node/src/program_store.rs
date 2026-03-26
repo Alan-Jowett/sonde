@@ -15,6 +15,11 @@ pub struct LoadedProgram {
     pub bytecode: Vec<u8>,
     /// Map definitions from the program image.
     pub map_defs: Vec<MapDef>,
+    /// Initial data for each map, parallel to `map_defs`.
+    ///
+    /// `map_initial_data[i]` carries the initial bytes for `map_defs[i]`.
+    /// An empty `Vec<u8>` means the map has no initial data (zero-filled).
+    pub map_initial_data: Vec<Vec<u8>>,
     /// SHA-256 hash of the CBOR program image.
     pub hash: Vec<u8>,
     /// Whether this is an ephemeral program (stored in RAM, run once).
@@ -68,6 +73,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
             .map(|image| LoadedProgram {
                 bytecode: image.bytecode,
                 map_defs: image.maps,
+                map_initial_data: image.map_initial_data,
                 hash,
                 is_ephemeral: false,
             })
@@ -141,6 +147,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         Ok(LoadedProgram {
             bytecode: image.bytecode,
             map_defs: image.maps,
+            map_initial_data: image.map_initial_data,
             hash: actual_hash.to_vec(),
             is_ephemeral: false,
         })
@@ -181,6 +188,7 @@ impl<'a, S: PlatformStorage> ProgramStore<'a, S> {
         Ok(LoadedProgram {
             bytecode: image.bytecode,
             map_defs: image.maps,
+            map_initial_data: image.map_initial_data,
             hash: actual_hash.to_vec(),
             is_ephemeral: true,
         })
@@ -272,6 +280,7 @@ mod tests {
         let image = ProgramImage {
             bytecode: bytecode.to_vec(),
             maps: maps.to_vec(),
+            map_initial_data: vec![Vec::new(); maps.len()],
         };
         let cbor = image.encode_deterministic().unwrap();
         let hash = TestSha256.hash(&cbor).to_vec();

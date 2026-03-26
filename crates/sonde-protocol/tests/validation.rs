@@ -2467,3 +2467,23 @@ fn test_p071() {
     assert_eq!(decoded.map_initial_data.len(), 1);
     assert!(decoded.map_initial_data[0].is_empty());
 }
+
+/// Encode rejects `map_initial_data` / `maps` length mismatch.
+///
+/// Validates: protocol.md §6 — `map_initial_data` is parallel to `maps`.
+#[test]
+fn test_p072() {
+    let img = ProgramImage {
+        bytecode: vec![0x01],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        // 2 entries vs 1 map — mismatch
+        map_initial_data: vec![vec![0xDE, 0xAD, 0xBE, 0xEF], vec![0x01, 0x02, 0x03, 0x04]],
+    };
+    let result = img.encode_deterministic();
+    assert!(result.is_err(), "length mismatch must be rejected");
+}

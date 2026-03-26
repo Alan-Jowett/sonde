@@ -37,6 +37,16 @@ impl ProgramImage {
     /// Encode using CBOR deterministic encoding (RFC 8949 §4.2).
     /// Keys are sorted in ascending numeric order with minimal-length encoding.
     pub fn encode_deterministic(&self) -> Result<Vec<u8>, EncodeError> {
+        // `map_initial_data` is parallel to `maps` — length mismatch would
+        // silently drop or ignore initial data, corrupting program_hash.
+        if !self.map_initial_data.is_empty() && self.map_initial_data.len() != self.maps.len() {
+            return Err(EncodeError::CborError(format!(
+                "map_initial_data length ({}) != maps length ({})",
+                self.map_initial_data.len(),
+                self.maps.len()
+            )));
+        }
+
         let map_values: Vec<Value> = self
             .maps
             .iter()

@@ -1036,4 +1036,192 @@ mod tests {
             "unsupported helper call should fail verification, got: {err}"
         );
     }
+
+    /// Build a BPF ELF that includes a `.rodata` section with the given
+    /// content. Used to test `extract_global_section_data` (GW-0405).
+    fn make_bpf_elf_with_rodata(rodata: &[u8]) -> Vec<u8> {
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        // shstrtab: "\0.text\0.rodata\0.shstrtab\0"
+        //   offsets:  0  1     7       15
+        let shstrtab: &[u8] = b"\0.text\0.rodata\0.shstrtab\0"; // 25 bytes
+
+        let text_offset: u64 = 64;
+        let rodata_offset: u64 = text_offset + bpf_code.len() as u64;
+        let shstrtab_offset: u64 = rodata_offset + rodata.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ── ELF header (64 bytes) ──
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2); // EI_CLASS = ELFCLASS64
+        elf.push(1); // EI_DATA = ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]); // padding
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
+        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&4u16.to_le_bytes()); // e_shnum (null + .text + .rodata + .shstrtab)
+        elf.extend_from_slice(&3u16.to_le_bytes()); // e_shstrndx = 3
+        assert_eq!(elf.len(), 64);
+
+        // ── .text section data ──
+        elf.extend_from_slice(&bpf_code);
+
+        // ── .rodata section data ──
+        elf.extend_from_slice(rodata);
+
+        // ── .shstrtab section data ──
+        elf.extend_from_slice(shstrtab);
+
+        // ── Section headers (4 × 64 bytes) ──
+
+        // [0] Null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] .text
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x6u64.to_le_bytes()); // SHF_ALLOC | SHF_EXECINSTR
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [2] .rodata
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name = offset of ".rodata"
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x2u64.to_le_bytes()); // SHF_ALLOC
+        sh[24..32].copy_from_slice(&rodata_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(rodata.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&4u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [3] .shstrtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&15u32.to_le_bytes()); // sh_name = offset of ".shstrtab"
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        elf
+    }
+
+    /// T-0411: ELF .rodata section data is extracted correctly (GW-0405).
+    #[test]
+    fn extract_global_section_data_rodata() {
+        let rodata_content = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let elf = make_bpf_elf_with_rodata(&rodata_content);
+
+        let sections = extract_global_section_data(&elf);
+        assert_eq!(
+            sections.len(),
+            1,
+            "expected one global data section (.rodata)"
+        );
+        assert_eq!(sections[0], rodata_content);
+    }
+
+    /// T-0412: ELF .bss section (SHT_NOBITS) produces empty data (GW-0405).
+    #[test]
+    fn extract_global_section_data_bss() {
+        // Build ELF with a .bss section (SHT_NOBITS, type 8).
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x95, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+        let shstrtab: &[u8] = b"\0.text\0.bss\0.shstrtab\0"; // 22 bytes
+
+        let text_offset: u64 = 64;
+        let shstrtab_offset: u64 = text_offset + bpf_code.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ELF header
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2);
+        elf.push(1);
+        elf.push(1);
+        elf.extend_from_slice(&[0; 9]);
+        elf.extend_from_slice(&1u16.to_le_bytes());
+        elf.extend_from_slice(&247u16.to_le_bytes());
+        elf.extend_from_slice(&1u32.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&shdr_offset.to_le_bytes());
+        elf.extend_from_slice(&0u32.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes());
+        elf.extend_from_slice(&4u16.to_le_bytes()); // 4 sections
+        elf.extend_from_slice(&3u16.to_le_bytes()); // shstrndx = 3
+        assert_eq!(elf.len(), 64);
+
+        elf.extend_from_slice(&bpf_code);
+        elf.extend_from_slice(shstrtab);
+
+        // [0] Null
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] .text
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes());
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&16u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [2] .bss (SHT_NOBITS = 8)
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&7u32.to_le_bytes()); // offset of ".bss"
+        sh[4..8].copy_from_slice(&8u32.to_le_bytes()); // SHT_NOBITS
+        sh[8..16].copy_from_slice(&0x3u64.to_le_bytes()); // SHF_WRITE | SHF_ALLOC
+        sh[32..40].copy_from_slice(&64u64.to_le_bytes()); // sh_size = 64
+        elf.extend_from_slice(&sh);
+
+        // [3] .shstrtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&12u32.to_le_bytes()); // offset of ".shstrtab"
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB
+        sh[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        let sections = extract_global_section_data(&elf);
+        assert_eq!(sections.len(), 1, "expected one global data section (.bss)");
+        assert!(
+            sections[0].is_empty(),
+            ".bss section should produce empty data"
+        );
+    }
+
+    /// Non-BPF ELF (wrong e_machine) returns no sections.
+    #[test]
+    fn extract_global_section_data_non_bpf() {
+        let sections = extract_global_section_data(&[
+            0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, // e_type
+            0, 0, // e_machine = 0 (not BPF)
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        assert!(sections.is_empty());
+    }
 }

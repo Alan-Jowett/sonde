@@ -818,4 +818,74 @@ mod tests {
         let defs: Vec<MapDef> = (0..MAX_MAPS).map(|_| array_map_def(4, 1)).collect();
         assert!(MapStorage::validate_map_defs(&defs).is_ok());
     }
+
+    /// T-N617: initial data applied when length matches value_size (ND-0607).
+    #[test]
+    fn test_apply_initial_data_matching_size() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![array_map_def(4, 1)]; // value_size=4, max_entries=1
+        ms.allocate(&defs).unwrap();
+
+        let initial = vec![vec![0xDE, 0xAD, 0xBE, 0xEF]];
+        ms.apply_initial_data(&initial);
+
+        let val = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(val, &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    /// T-N618: initial data silently skipped when length != value_size (ND-0607).
+    #[test]
+    fn test_apply_initial_data_size_mismatch_ignored() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![array_map_def(4, 1)]; // value_size=4
+        ms.allocate(&defs).unwrap();
+
+        // Initial data is 2 bytes, doesn't match value_size of 4.
+        let initial = vec![vec![0x01, 0x02]];
+        ms.apply_initial_data(&initial);
+
+        // Map entry remains zero-filled.
+        let val = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(val, &[0, 0, 0, 0]);
+    }
+
+    /// Empty initial data leaves map zero-filled (ND-0607 criterion 3).
+    #[test]
+    fn test_apply_initial_data_empty_is_noop() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![array_map_def(4, 1)];
+        ms.allocate(&defs).unwrap();
+
+        let initial = vec![Vec::new()]; // empty = no initial data
+        ms.apply_initial_data(&initial);
+
+        let val = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(val, &[0, 0, 0, 0]);
+    }
+
+    /// Multiple maps: initial data applied only where sizes match (ND-0607).
+    #[test]
+    fn test_apply_initial_data_multiple_maps() {
+        let mut ms = MapStorage::new(4096);
+        let defs = vec![
+            array_map_def(4, 1), // map 0: value_size=4
+            array_map_def(8, 1), // map 1: value_size=8
+        ];
+        ms.allocate(&defs).unwrap();
+
+        let initial = vec![
+            vec![0xDE, 0xAD, 0xBE, 0xEF],                         // matches map 0
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], // matches map 1
+        ];
+        ms.apply_initial_data(&initial);
+
+        assert_eq!(
+            ms.get(0).unwrap().lookup(0).unwrap(),
+            &[0xDE, 0xAD, 0xBE, 0xEF]
+        );
+        assert_eq!(
+            ms.get(1).unwrap().lookup(0).unwrap(),
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
+    }
 }

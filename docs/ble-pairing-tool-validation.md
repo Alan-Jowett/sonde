@@ -1189,6 +1189,33 @@ TestNode {
 
 ---
 
+### T-PT-1214a  Pin config included in NODE_PROVISION when provided
+
+**Validates:** PT-1214 (AC 1, 2, 4)  
+**Status:** Deferred — `sonde-pair` does not yet implement pin config encoding.
+
+**Procedure:**
+1. Call `provision_node(...)` with pin config `Some(PinConfig { i2c0_sda: 4, i2c0_scl: 5 })`.
+2. Capture the NODE_PROVISION message body written to the mock BLE transport.
+3. Assert: the body contains the encrypted payload followed by a deterministic CBOR map.
+4. Decode the trailing CBOR map and assert: integer key 1 = 4 (`i2c0_sda`), integer key 2 = 5 (`i2c0_scl`).
+5. Assert: the CBOR map uses deterministic encoding (RFC 8949 §4.2).
+
+---
+
+### T-PT-1214b  No pin config in NODE_PROVISION — backward compatible
+
+**Validates:** PT-1214 (AC 1, 3)  
+**Status:** Deferred — `sonde-pair` does not yet implement pin config encoding.
+
+**Procedure:**
+1. Call `provision_node(...)` with pin config `None`.
+2. Capture the NODE_PROVISION message body written to the mock BLE transport.
+3. Assert: the body is identical to the existing format (encrypted payload only, no trailing bytes).
+4. Assert: provisioning completes successfully (NODE_ACK received).
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Test ID | Requirement | Title |
@@ -1277,3 +1304,5 @@ TestNode {
 | T-PT-1210 | PT-1210 | Phase transition events logged |
 | T-PT-1211 | PT-1211 | LESC pairing method logged |
 | T-PT-1212 | PT-1212 | Error context in log output |
+| T-PT-1214a | PT-1214 | Pin config included in NODE_PROVISION when provided |
+| T-PT-1214b | PT-1214 | No pin config in NODE_PROVISION — backward compatible |

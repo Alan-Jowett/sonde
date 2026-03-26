@@ -409,10 +409,7 @@ On program install:
 2. If total exceeds the budget → reject installation, keep existing program.
 3. Allocate contiguous regions in RTC SRAM for each map.
 4. Zero-initialize all map storage.
-5. Apply initial data: for each map with non-empty `map_initial_data[i]`, write the initial bytes to entry 0 if the data length equals `value_size`. This pre-populates global variable maps (`.rodata`, `.data`) with their ELF section content before BPF execution.
-6. Record the map layout in the RTC SRAM header for use after deep sleep.
-
-Initial data flows through the system as follows: the gateway extracts `.rodata` / `.data` section content from the ELF at ingestion time → embeds it in the CBOR program image as `initial_data` (key 5) in each map definition → the node decodes the program image into `LoadedProgram.map_initial_data` → `MapStorage::apply_initial_data()` writes the data to entry 0 of each corresponding map after allocation.
+5. Record the map layout in the RTC SRAM header for use after deep sleep.
 
 ### 9.3  Map access helpers
 
@@ -447,6 +444,23 @@ Handles pack bus and address into a single `u32` (matching bpf-environment.md §
 ### 10.2  Error handling
 
 All HAL helpers return `0` on success, negative on error. Errors include NACK, bus timeout, invalid pin/channel. The BPF program decides how to handle errors — the firmware does not retry.
+
+### 10.3  Configurable I2C pin assignments (ND-0608)
+
+I2C bus GPIO pin numbers are configurable via NVS to support different ESP32-C3 board layouts with a single firmware binary.
+
+**NVS keys** (namespace `"sonde"`):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `"i2c0_sda"` | u32 | 0 | I2C0 SDA GPIO number |
+| `"i2c0_scl"` | u32 | 1 | I2C0 SCL GPIO number |
+
+**Initialization:** At HAL init time, the firmware reads `i2c0_sda` and `i2c0_scl` from NVS. If either key is absent, the compiled-in default is used (GPIO 0 / GPIO 1, matching DevKitM-1 Qwiic mapping).
+
+**Provisioning path:** Pin config is included as optional trailing bytes in the NODE_PROVISION BLE message body (see §BLE pairing). When the node receives a NODE_PROVISION with pin config, it writes the values to NVS before rebooting into PEER_REQUEST mode. An older pairing tool that omits pin config produces no NVS writes — the defaults apply.
+
+**Factory reset:** Pin config keys are NOT erased during factory reset (ND-0917). The board's physical pin mapping does not change when the node is re-provisioned.
 
 ---
 
@@ -625,7 +639,7 @@ After the first successful WAKE/COMMAND exchange (the gateway responds with a va
 
 **Self-healing on WAKE failure (ND-0915):**
 
-If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set, the node checks whether the `peer_payload` NVS key is still present. If it is, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot — this allows the node to re-register if the gateway lost its registration state. If `peer_payload` has already been erased (ND-0914), the self-healing path is unavailable and the node continues normal WAKE retries; re-provisioning via BLE is required if the gateway has lost its registration.
+If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state.
 
 ---
 

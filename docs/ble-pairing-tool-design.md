@@ -230,6 +230,28 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 - `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is zeroed via `Zeroizing` after the `NODE_PROVISION` write succeeds (PT-0408, PT-0804).
 - A fresh ephemeral X25519 keypair is generated for each provisioning attempt (PT-0405).
 
+### 4.1  NODE_PROVISION body wire format
+
+```
+Offset  Size           Field
+──────  ─────────────  ──────────────────────────────────────────
+0       2              node_key_hint     (BE u16)
+2       32             node_psk          (256-bit PSK)
+34      1              rf_channel        (1–13)
+35      2              payload_len       (BE u16, encrypted payload length)
+37      payload_len    encrypted_payload (opaque blob for gateway)
+37+N    remaining      pin_config_cbor   (optional, CBOR map — see below)
+```
+
+**Pin config (ND-0608):** If the NODE_PROVISION body is longer than `37 + payload_len`, the remaining bytes are a deterministic CBOR map (RFC 8949 §4.2) of board-specific pin assignments:
+
+| CBOR key | Field | Type | Default |
+|----------|-------|------|---------|
+| 1 | `i2c0_sda` | uint | 0 |
+| 2 | `i2c0_scl` | uint | 1 |
+
+The node persists these to NVS. If the map is absent (older pairing tool), the node uses compiled-in defaults. Future keys (SPI pins, pairing button GPIO) may be added without breaking backward compatibility.
+
 ---
 
 ## 5  BLE transport layer
@@ -555,12 +577,6 @@ When a `PskProtector` is configured (e.g. the DPAPI protector on Windows or the 
 2. The next `save_artifacts()` call writes the PSK through the configured protector, producing a `phone_psk_protected` field and omitting the plaintext `phone_psk` field.
 3. This migration is idempotent and requires no operator action.  The warning log provides visibility into the one-time upgrade.
 
-Error cases:
-
-- **Encrypted PSK without protector:** If `phone_psk_protected` is present but no `PskProtector` is configured, `load_artifacts()` returns `PairingError::StoreLoadFailed`.  This prevents silent fallback to plaintext.
-- **Missing PSK fields:** If neither `phone_psk` nor `phone_psk_protected` is present, `load_artifacts()` returns `PairingError::StoreCorrupted`.
-- **Crash safety:** The re-encrypted file is written atomically (write to temp file, fsync, rename) so a crash during migration cannot lose the PSK (§7.4).
-
 #### Android (`AndroidPairingStore`)
 
 - Backend: Android `EncryptedSharedPreferences` backed by the Android Keystore
@@ -709,8 +725,8 @@ The tool does not silently retry failed protocol operations (PT-1003).  BLE-leve
 
 - **BLE library:** Android BLE API accessed via JNI bridge (Tauri Mobile).  `btleplug` does not support Android, so the `BleTransport` trait implementation calls the Android `BluetoothGatt` API through JNI.
 - **Permissions:** The Android manifest must declare `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` for Android 12+ (API 31+) BLE scanning.  For pre-31 devices, BLE scanning requires a location permission such as `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`.  The app must request the relevant runtime permissions before starting a scan (PT-0105).
-- **MTU negotiation:** Call `BluetoothGatt.requestMtu(517)` after connection.  The actual negotiated MTU is reported via `onMtuChanged()`.
-- **Just Works / Numeric Comparison:** Android handles LESC pairing via the system pairing dialog.  Numeric Comparison displays a 6-digit passkey for user confirmation.  Just Works proceeds without user interaction.  The app must verify that LESC Numeric Comparison was used; a Just Works fallback must be treated as a connection failure (PT-0106, PT-0904).  `BleHelper` registers a `BroadcastReceiver` for `ACTION_PAIRING_REQUEST` before calling `createBond()` and records the `EXTRA_PAIRING_VARIANT` (variant 2 = Numeric Comparison, variant 3 = Just Works).  After `connect()` returns, the Rust transport calls `BleHelper.getPairingMethod()` via JNI and stores the result.  `AndroidBleTransport::pairing_method()` maps the stored value to `PairingMethod::NumericComparison`, `PairingMethod::JustWorks`, or `PairingMethod::Unknown`.  It never returns `None` because Android does not enforce LESC at the OS level — `enforce_lesc()` must explicitly verify the method.  If the `ACTION_PAIRING_REQUEST` broadcast is not delivered (e.g. missing permission), `Unknown` is returned and `enforce_lesc()` rejects the connection (fail-secure).
+- **MTU negotiation:** Call `BluetoothGatt.requestMtu(247)` after connection.  The actual negotiated MTU is reported via `onMtuChanged()`.
+- **Just Works / Numeric Comparison:** Android handles LESC pairing via the system pairing dialog.  Numeric Comparison displays a 6-digit passkey for user confirmation.  Just Works proceeds without user interaction.  The app must verify that LESC Numeric Comparison was used; a Just Works fallback must be treated as a connection failure (PT-0106, PT-0904).
 - **Storage:** `EncryptedSharedPreferences` backed by the Android Keystore for PSK protection.
 - **Lifecycle:** The BLE connection must be managed carefully around Android activity lifecycle events (pause/resume).  The transport implementation should disconnect on pause and reconnect on resume if a pairing flow was in progress (PT-0107).
 - **JNI classloader caching:** App-defined Java classes (`BleHelper`, `SecureStore`) must be resolved and cached as `GlobalRef` from `JNI_OnLoad` or another Java-attached thread that uses the application classloader.  Tokio worker threads use the system classloader, which cannot find app-defined classes via `FindClass` (PT-0108).

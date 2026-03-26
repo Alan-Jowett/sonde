@@ -151,7 +151,9 @@ fn main() {
     let sha = SoftwareSha256;
     let mut rng = EspRng;
     let clock = EspClock;
-    let mut hal = EspHal::new();
+    // Read I2C pin config from NVS (ND-0608), falling back to defaults.
+    let (i2c0_sda, i2c0_scl) = storage.read_i2c0_pins();
+    let mut hal = EspHal::new(i2c0_sda, i2c0_scl);
     let battery = EspBatteryReader;
 
     // Read the stored WiFi channel (falls back to channel 1 if not yet set).

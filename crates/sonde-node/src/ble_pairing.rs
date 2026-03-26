@@ -92,6 +92,18 @@ pub struct NodeProvision {
     pub rf_channel: u8,
     /// Opaque encrypted payload for the gateway (ble-pairing-protocol.md §6.4).
     pub encrypted_payload: Vec<u8>,
+    /// Optional I2C pin configuration (ND-0608).
+    /// `None` if the pairing tool did not include pin config (backward compatible).
+    pub pin_config: Option<PinConfig>,
+}
+
+/// Board-specific I2C pin assignments (ND-0608).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinConfig {
+    /// I2C0 SDA GPIO number.
+    pub i2c0_sda: u8,
+    /// I2C0 SCL GPIO number.
+    pub i2c0_scl: u8,
 }
 
 // Re-export BLE envelope codec from sonde-protocol (shared with gateway).
@@ -120,15 +132,99 @@ pub fn parse_node_provision(body: &[u8]) -> Result<NodeProvision, &'static str> 
     if body.len() < expected_len {
         return Err("encrypted_payload truncated");
     }
-    if body.len() != expected_len {
-        return Err("trailing bytes after encrypted_payload");
-    }
     let encrypted_payload = body[37..37 + payload_len].to_vec();
+
+    // Parse optional trailing pin config CBOR (ND-0608).
+    // Best-effort: if trailing bytes exist but fail to decode as valid
+    // CBOR pin config, treat as "no pin config" so provisioning still
+    // succeeds (ND-0608 AC#6 backward compatibility).
+    let pin_config = if body.len() > expected_len {
+        parse_pin_config_cbor(&body[expected_len..]).ok()
+    } else {
+        None
+    };
+
     Ok(NodeProvision {
         key_hint,
         psk,
         rf_channel,
         encrypted_payload,
+        pin_config,
+    })
+}
+
+/// Parse a CBOR map of pin assignments from trailing NODE_PROVISION bytes (ND-0608).
+///
+/// CBOR integer keys: 1 = i2c0_sda, 2 = i2c0_scl. Unknown keys are ignored for
+/// forward compatibility (values of unknown keys are not validated). Returns
+/// `Err` if the CBOR is malformed, a known key has a non-integer value,
+/// trailing bytes remain after the map, SDA == SCL, or a pin exceeds the
+/// ESP32-C3 GPIO range (0–21); missing keys are allowed and fall back
+/// to defaults (`i2c0_sda = 0`, `i2c0_scl = 1`).
+fn parse_pin_config_cbor(data: &[u8]) -> Result<PinConfig, &'static str> {
+    // Decode from a mutable slice reference so ciborium advances it past
+    // the consumed bytes — lets us detect trailing data (ND-0608).
+    let mut remaining = data;
+    let value: ciborium::Value =
+        ciborium::from_reader(&mut remaining).map_err(|_| "pin_config CBOR decode failed")?;
+    if !remaining.is_empty() {
+        return Err("pin_config: trailing bytes after CBOR map");
+    }
+
+    let map = value.as_map().ok_or("pin_config: expected CBOR map")?;
+
+    let mut sda: Option<u8> = None;
+    let mut scl: Option<u8> = None;
+
+    for (k, v) in map {
+        // Parse keys as i128 so future keys >255 are silently ignored
+        // instead of erroring out (forward compatibility).
+        let key = k
+            .as_integer()
+            .map(i128::from)
+            .ok_or("pin_config: non-integer key")?;
+        match key {
+            1 => {
+                let val = v
+                    .as_integer()
+                    .and_then(|i| u8::try_from(i).ok())
+                    .ok_or("pin_config: non-integer value for key 1")?;
+                sda = Some(val);
+            }
+            2 => {
+                let val = v
+                    .as_integer()
+                    .and_then(|i| u8::try_from(i).ok())
+                    .ok_or("pin_config: non-integer value for key 2")?;
+                scl = Some(val);
+            }
+            _ => {
+                // Ignore unknown keys for forward compatibility without
+                // validating their value type.
+            }
+        }
+    }
+
+    // Apply defaults for missing keys (backward-compatible with older
+    // provisioners that omit the pin config entirely).
+    let sda = sda.unwrap_or(0);
+    let scl = scl.unwrap_or(1);
+
+    // Semantic validation: SDA and SCL must be distinct and within the
+    // ESP32-C3 GPIO range (0–21). Returning Err causes parse_node_provision
+    // to treat pin_config as absent rather than persisting an invalid,
+    // non-recoverable config (factory reset does not erase pin config).
+    const MAX_GPIO: u8 = 21;
+    if sda == scl {
+        return Err("pin_config: SDA and SCL must be different pins");
+    }
+    if sda > MAX_GPIO || scl > MAX_GPIO {
+        return Err("pin_config: GPIO number out of range (0-21)");
+    }
+
+    Ok(PinConfig {
+        i2c0_sda: sda,
+        i2c0_scl: scl,
     })
 }
 
@@ -214,13 +310,28 @@ pub fn handle_node_provision<S: PlatformStorage>(
         return NODE_ACK_STORAGE_ERROR;
     }
 
-    // Persist the RF channel last so a failure in any earlier write does
-    // not leave a stale channel value that could leak across pairing
-    // attempts (ND-0908).
+    // Persist the RF channel last among the critical fields so a failure
+    // in any earlier write does not leave a stale channel value that could
+    // leak across pairing attempts (ND-0908). Pin config (below) is
+    // best-effort and non-fatal, so it is written after the channel.
     if storage.write_channel(provision.rf_channel).is_err() {
         let _ = storage.erase_key();
         let _ = storage.erase_peer_payload();
         return NODE_ACK_STORAGE_ERROR;
+    }
+
+    // Persist optional pin config (ND-0608) on a best-effort basis.
+    // Pin config is non-fatal: if the pairing tool provided a pin config
+    // but we fail to persist it, log a warning and continue with
+    // NODE_ACK_SUCCESS. The node is effectively provisioned (PSK + peer
+    // payload + channel persisted) and pin config falls back to defaults.
+    if let Some(ref pins) = provision.pin_config {
+        if storage
+            .write_i2c0_pins(pins.i2c0_sda, pins.i2c0_scl)
+            .is_err()
+        {
+            log::warn!("failed to persist I2C pin config during provisioning");
+        }
     }
 
     NODE_ACK_SUCCESS
@@ -243,10 +354,12 @@ mod tests {
         channel: Option<u8>,
         peer_payload: Option<Vec<u8>>,
         reg_complete: bool,
+        i2c0_pins: Option<(u8, u8)>,
         fail_write_key: bool,
         fail_write_channel: bool,
         fail_write_peer_payload: bool,
         fail_write_reg_complete: bool,
+        fail_write_i2c0_pins: bool,
     }
 
     impl MockStorage {
@@ -256,10 +369,12 @@ mod tests {
                 channel: None,
                 peer_payload: None,
                 reg_complete: false,
+                i2c0_pins: None,
                 fail_write_key: false,
                 fail_write_channel: false,
                 fail_write_peer_payload: false,
                 fail_write_reg_complete: false,
+                fail_write_i2c0_pins: false,
             }
         }
 
@@ -353,6 +468,16 @@ mod tests {
             self.reg_complete = complete;
             Ok(())
         }
+        fn read_i2c0_pins(&self) -> (u8, u8) {
+            self.i2c0_pins.unwrap_or((0, 1))
+        }
+        fn write_i2c0_pins(&mut self, sda: u8, scl: u8) -> NodeResult<()> {
+            if self.fail_write_i2c0_pins {
+                return Err(NodeError::StorageError("injected write_i2c0_pins failure"));
+            }
+            self.i2c0_pins = Some((sda, scl));
+            Ok(())
+        }
     }
 
     // --- Helper ---
@@ -363,6 +488,7 @@ mod tests {
             psk,
             rf_channel: channel,
             encrypted_payload: payload.to_vec(),
+            pin_config: None,
         }
     }
 
@@ -487,16 +613,198 @@ mod tests {
     }
 
     #[test]
-    fn parse_node_provision_trailing_bytes_rejected() {
-        // Valid 37-byte header + 0-byte payload, but 1 extra trailing byte
+    fn parse_node_provision_trailing_bytes_accepted_as_pin_config() {
+        // Valid 37-byte header + 0-byte payload + CBOR pin config
+        // CBOR: {1: 4, 2: 5} = A2 01 04 02 05
+        let pin_cbor = [0xA2, 0x01, 0x04, 0x02, 0x05];
+        let mut body = vec![0u8; 37 + pin_cbor.len()];
+        body[2..34].fill(0x42); // psk
+        body[34] = 1; // channel 1
+        body[35] = 0x00;
+        body[36] = 0x00; // payload_len = 0
+        body[37..].copy_from_slice(&pin_cbor);
+        let provision = parse_node_provision(&body).unwrap();
+        let pins = provision.pin_config.expect("pin_config should be present");
+        assert_eq!(pins.i2c0_sda, 4);
+        assert_eq!(pins.i2c0_scl, 5);
+    }
+
+    #[test]
+    fn parse_node_provision_trailing_non_cbor_treated_as_no_pin_config() {
+        // Trailing bytes that aren't valid CBOR — best-effort parsing
+        // treats this as "no pin config" (ND-0608 AC#6 backward compat).
         let mut body = vec![0u8; 38];
         body[2..34].fill(0x42); // psk
         body[34] = 1; // channel 1
         body[35] = 0x00;
         body[36] = 0x00; // payload_len = 0
-                         // body[37] is the trailing byte
-        let err = parse_node_provision(&body).unwrap_err();
-        assert_eq!(err, "trailing bytes after encrypted_payload");
+        body[37] = 0xFF; // invalid CBOR
+        let provision = parse_node_provision(&body).unwrap();
+        assert!(
+            provision.pin_config.is_none(),
+            "invalid trailing CBOR should be treated as no pin config"
+        );
+    }
+
+    #[test]
+    fn parse_pin_config_cbor_trailing_bytes_rejected() {
+        // Valid CBOR map followed by extra bytes — now rejected because
+        // parse_pin_config_cbor enforces full consumption (ND-0608 wire
+        // format: trailing bytes are exactly the CBOR map, no junk).
+        // CBOR: {1: 4, 2: 5} = A2 01 04 02 05, then 0x00 trailing
+        let data = [0xA2, 0x01, 0x04, 0x02, 0x05, 0x00];
+        let result = parse_pin_config_cbor(&data);
+        assert!(
+            result.is_err(),
+            "trailing bytes after CBOR map should be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_node_provision_cbor_trailing_junk_treated_as_no_pin_config() {
+        // Valid CBOR map + trailing junk at provision level — best-effort
+        // catches the error from parse_pin_config_cbor and sets pin_config=None.
+        // CBOR: {1: 4, 2: 5} = A2 01 04 02 05, then 0x00 trailing
+        let data = [0xA2, 0x01, 0x04, 0x02, 0x05, 0x00];
+        let mut body = vec![0u8; 37 + data.len()];
+        body[2..34].fill(0x42); // psk
+        body[34] = 1; // channel 1
+        body[35] = 0x00;
+        body[36] = 0x00; // payload_len = 0
+        body[37..].copy_from_slice(&data);
+        let provision = parse_node_provision(&body).unwrap();
+        assert!(
+            provision.pin_config.is_none(),
+            "CBOR trailing junk should be treated as no pin config"
+        );
+    }
+
+    #[test]
+    fn parse_pin_config_cbor_unknown_key_non_integer_value_ignored() {
+        // Unknown key 99 with a text string value — should be ignored
+        // without failing, even though the value isn't an integer.
+        // CBOR: {1: 4, 2: 5, 99: "x"} — forward compatibility.
+        let mut buf = Vec::new();
+        ciborium::into_writer(
+            &ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Integer(1.into()),
+                    ciborium::Value::Integer(4.into()),
+                ),
+                (
+                    ciborium::Value::Integer(2.into()),
+                    ciborium::Value::Integer(5.into()),
+                ),
+                (
+                    ciborium::Value::Integer(99.into()),
+                    ciborium::Value::Text("x".into()),
+                ),
+            ]),
+            &mut buf,
+        )
+        .unwrap();
+        let result = parse_pin_config_cbor(&buf).unwrap();
+        assert_eq!(result.i2c0_sda, 4);
+        assert_eq!(result.i2c0_scl, 5);
+    }
+
+    #[test]
+    fn parse_pin_config_cbor_key_above_255_ignored() {
+        // Key 256 exceeds u8 range — should be silently ignored (forward
+        // compat), not cause a parse error.
+        let mut buf = Vec::new();
+        ciborium::into_writer(
+            &ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Integer(1.into()),
+                    ciborium::Value::Integer(4.into()),
+                ),
+                (
+                    ciborium::Value::Integer(2.into()),
+                    ciborium::Value::Integer(5.into()),
+                ),
+                (
+                    ciborium::Value::Integer(256.into()),
+                    ciborium::Value::Integer(42.into()),
+                ),
+            ]),
+            &mut buf,
+        )
+        .unwrap();
+        let result = parse_pin_config_cbor(&buf).unwrap();
+        assert_eq!(result.i2c0_sda, 4);
+        assert_eq!(result.i2c0_scl, 5);
+    }
+
+    #[test]
+    fn parse_pin_config_cbor_sda_equals_scl_rejected() {
+        // SDA == SCL is invalid — would disable I2C. Should return Err so
+        // parse_node_provision treats it as absent (backward-compatible).
+        // CBOR: {1: 4, 2: 4}
+        let mut buf = Vec::new();
+        ciborium::into_writer(
+            &ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Integer(1.into()),
+                    ciborium::Value::Integer(4.into()),
+                ),
+                (
+                    ciborium::Value::Integer(2.into()),
+                    ciborium::Value::Integer(4.into()),
+                ),
+            ]),
+            &mut buf,
+        )
+        .unwrap();
+        let err = parse_pin_config_cbor(&buf).unwrap_err();
+        assert_eq!(err, "pin_config: SDA and SCL must be different pins");
+    }
+
+    #[test]
+    fn parse_pin_config_cbor_gpio_out_of_range_rejected() {
+        // GPIO 22 is out of range for ESP32-C3 (0–21). Should return Err.
+        // CBOR: {1: 4, 2: 22}
+        let mut buf = Vec::new();
+        ciborium::into_writer(
+            &ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Integer(1.into()),
+                    ciborium::Value::Integer(4.into()),
+                ),
+                (
+                    ciborium::Value::Integer(2.into()),
+                    ciborium::Value::Integer(22.into()),
+                ),
+            ]),
+            &mut buf,
+        )
+        .unwrap();
+        let err = parse_pin_config_cbor(&buf).unwrap_err();
+        assert_eq!(err, "pin_config: GPIO number out of range (0-21)");
+    }
+
+    #[test]
+    fn parse_pin_config_cbor_boundary_gpio_21_accepted() {
+        // GPIO 21 is the maximum valid pin for ESP32-C3 — should succeed.
+        // CBOR: {1: 20, 2: 21}
+        let mut buf = Vec::new();
+        ciborium::into_writer(
+            &ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Integer(1.into()),
+                    ciborium::Value::Integer(20.into()),
+                ),
+                (
+                    ciborium::Value::Integer(2.into()),
+                    ciborium::Value::Integer(21.into()),
+                ),
+            ]),
+            &mut buf,
+        )
+        .unwrap();
+        let result = parse_pin_config_cbor(&buf).unwrap();
+        assert_eq!(result.i2c0_sda, 20);
+        assert_eq!(result.i2c0_scl, 21);
     }
 
     #[test]
@@ -758,6 +1066,64 @@ mod tests {
         // Key and peer_payload must be rolled back (ND-0908)
         assert!(storage.read_key().is_none());
         assert!(storage.read_peer_payload().is_none());
+    }
+
+    // --- handle_node_provision: pin config persistence (ND-0608) ---
+
+    /// Pin config present → persisted to NVS and NODE_ACK_SUCCESS returned.
+    #[test]
+    fn handle_provision_with_pin_config_persists() {
+        let mut storage = MockStorage::new();
+        let mut maps = MapStorage::new(1024);
+        let provision = NodeProvision {
+            key_hint: 0x0001,
+            psk: [0x42u8; 32],
+            rf_channel: 6,
+            encrypted_payload: vec![0xAA],
+            pin_config: Some(PinConfig {
+                i2c0_sda: 4,
+                i2c0_scl: 5,
+            }),
+        };
+
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
+        assert_eq!(status, NODE_ACK_SUCCESS);
+        assert_eq!(storage.read_i2c0_pins(), (4, 5));
+    }
+
+    /// Pin config write failure → NODE_ACK_SUCCESS (non-fatal, ND-0608).
+    /// The node is effectively provisioned; pin config falls back to defaults.
+    #[test]
+    fn handle_provision_pin_config_write_failure() {
+        let mut storage = MockStorage::new();
+        storage.fail_write_i2c0_pins = true;
+        let mut maps = MapStorage::new(1024);
+        let provision = NodeProvision {
+            key_hint: 0x0001,
+            psk: [0x42u8; 32],
+            rf_channel: 6,
+            encrypted_payload: vec![0xAA],
+            pin_config: Some(PinConfig {
+                i2c0_sda: 4,
+                i2c0_scl: 5,
+            }),
+        };
+
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
+        assert_eq!(status, NODE_ACK_SUCCESS);
+    }
+
+    /// Pin config absent → NVS pins untouched, NODE_ACK_SUCCESS returned (backward compat).
+    #[test]
+    fn handle_provision_without_pin_config_ok() {
+        let mut storage = MockStorage::new();
+        let mut maps = MapStorage::new(1024);
+        let provision = make_provision(0x0001, [0x42u8; 32], 6, &[0xAA]);
+
+        let status = handle_node_provision(&provision, &mut storage, &mut maps, false, false);
+        assert_eq!(status, NODE_ACK_SUCCESS);
+        // No pin config → NVS pins should still be default
+        assert!(storage.i2c0_pins.is_none());
     }
 
     // --- Full round-trip: parse envelope → handle → encode ACK ---

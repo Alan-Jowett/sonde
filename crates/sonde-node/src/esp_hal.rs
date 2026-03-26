@@ -15,11 +15,6 @@
 use crate::hal;
 use log::warn;
 
-/// I2C0 SDA pin (GPIO 0; Qwiic/STEMMA QT Blue wire).
-const I2C0_SDA: i32 = 0;
-
-/// I2C0 SCL pin (GPIO 1; Qwiic/STEMMA QT Yellow wire).
-const I2C0_SCL: i32 = 1;
 const I2C0_FREQ_HZ: u32 = 100_000; // 100 kHz standard mode
 
 // Timeout for I2C operations in FreeRTOS ticks (1 tick ≈ 1 ms at default rate).
@@ -59,7 +54,9 @@ impl crate::traits::Clock for EspClock {
 
 /// Real ESP32 HAL backed by ESP-IDF sys APIs.
 ///
-/// Initializes I2C bus 0 on construction. Additional buses and
+/// Initializes I2C bus 0 on construction using caller-supplied pin
+/// assignments (typically loaded from NVS with a compiled-in default
+/// fallback by higher-level code; see ND-0608). Additional buses and
 /// SPI are left as stubs until needed. GPIO and ADC use direct
 /// ESP-IDF calls with no pre-initialization.
 pub struct EspHal {
@@ -72,18 +69,20 @@ pub struct EspHal {
 }
 
 impl EspHal {
-    pub fn new() -> Self {
+    /// Create a new HAL with the given I2C0 pin assignments.
+    /// Call with `storage.read_i2c0_pins()` from the platform storage.
+    pub fn new(i2c0_sda: u8, i2c0_scl: u8) -> Self {
         let mut hal = Self {
             i2c0_initialized: false,
             adc_width_configured: false,
             gpio_output_configured: 0,
             adc_channels_configured: 0,
         };
-        hal.init_i2c0();
+        hal.init_i2c0(i2c0_sda as i32, i2c0_scl as i32);
         hal
     }
 
-    fn init_i2c0(&mut self) {
+    fn init_i2c0(&mut self, sda: i32, scl: i32) {
         unsafe {
             let port = esp_idf_sys::i2c_port_t_I2C_NUM_0;
 
@@ -91,8 +90,8 @@ impl EspHal {
             // bindgen layout differences across esp-idf-sys versions.
             let mut conf: esp_idf_sys::i2c_config_t = core::mem::zeroed();
             conf.mode = esp_idf_sys::i2c_mode_t_I2C_MODE_MASTER;
-            conf.sda_io_num = I2C0_SDA;
-            conf.scl_io_num = I2C0_SCL;
+            conf.sda_io_num = sda;
+            conf.scl_io_num = scl;
             conf.sda_pullup_en = true;
             conf.scl_pullup_en = true;
             conf.__bindgen_anon_1.master.clk_speed = I2C0_FREQ_HZ;

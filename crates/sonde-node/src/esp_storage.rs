@@ -12,6 +12,7 @@
 //! - Programs: `"prog_a"` (blob, ≤4096 B), `"prog_b"` (blob, ≤4096 B)
 //! - WiFi channel: `"channel"` (u32, 1–13)
 //! - BLE pairing (ND-0916): `"peer_payload"` (blob, variable), `"reg_complete"` (u32, 0 or 1)
+//! - I2C pin config (ND-0608): `"i2c0_sda"` (u32, default 0), `"i2c0_scl"` (u32, default 1)
 //!
 //! The early-wake flag is stored in RTC slow SRAM (`.rtc.data` section)
 //! rather than NVS, so it survives deep sleep without incurring flash wear.
@@ -290,5 +291,60 @@ impl crate::traits::PlatformStorage for NvsStorage {
         self.nvs
             .set_u32("reg_complete", if complete { 1 } else { 0 })
             .map_err(|_| NodeError::StorageError("reg_complete write failed"))
+    }
+
+    fn read_i2c0_pins(&self) -> (u8, u8) {
+        const MAX_GPIO: u8 = 21;
+        let sda = self
+            .nvs
+            .get_u32("i2c0_sda")
+            .ok()
+            .flatten()
+            .and_then(|v| u8::try_from(v).ok())
+            .filter(|&v| v <= MAX_GPIO)
+            .unwrap_or(0);
+        let scl = self
+            .nvs
+            .get_u32("i2c0_scl")
+            .ok()
+            .flatten()
+            .and_then(|v| u8::try_from(v).ok())
+            .filter(|&v| v <= MAX_GPIO)
+            .unwrap_or(1);
+        // If both decoded to the same pin, fall back to defaults to
+        // avoid initializing I2C with SDA==SCL (ND-0608).
+        if sda == scl {
+            return (0, 1);
+        }
+        (sda, scl)
+    }
+
+    fn write_i2c0_pins(&mut self, sda: u8, scl: u8) -> NodeResult<()> {
+        // Validate before persisting — an invalid config survives factory
+        // reset (ND-0608 AC#4) and could permanently disable I2C.
+        const MAX_GPIO: u8 = 21;
+        if sda > MAX_GPIO || scl > MAX_GPIO {
+            return Err(NodeError::StorageError("i2c0 pin out of GPIO range"));
+        }
+        if sda == scl {
+            return Err(NodeError::StorageError("i2c0 SDA and SCL must differ"));
+        }
+
+        // Best-effort atomicity: if updating SCL fails after SDA was written,
+        // restore the previous SDA value to avoid leaving a mismatched pair.
+        let (old_sda, _old_scl) = self.read_i2c0_pins();
+
+        self.nvs
+            .set_u32("i2c0_sda", sda as u32)
+            .map_err(|_| NodeError::StorageError("i2c0_sda write failed"))?;
+
+        if let Err(_e) = self.nvs.set_u32("i2c0_scl", scl as u32) {
+            // Attempt to roll back SDA; ignore rollback failure since we
+            // can't do better than best-effort here.
+            let _ = self.nvs.set_u32("i2c0_sda", old_sda as u32);
+            return Err(NodeError::StorageError("i2c0_scl write failed"));
+        }
+
+        Ok(())
     }
 }

@@ -597,6 +597,25 @@ The program image format MUST support optional initial data for each map definit
 
 ---
 
+### ND-0608  Configurable I2C pin assignments
+
+**Priority:** Should  
+**Source:** issue #490
+
+**Description:**  
+The firmware MUST support configurable I2C bus GPIO pin assignments so that a single firmware binary works across ESP32-C3 boards with different Qwiic/I2C pin mappings. Pin assignments are provided during BLE provisioning as optional fields in the NODE_PROVISION message body and persisted to NVS. If no pin config is provided, the firmware uses compiled-in defaults (GPIO 0 = SDA, GPIO 1 = SCL).
+
+**Acceptance criteria:**
+
+1. I2C0 SDA and SCL GPIO pin numbers are read from NVS at HAL initialization time.
+2. If the NVS keys are absent, the firmware falls back to compiled-in defaults (SDA=0, SCL=1).
+3. Pin assignments persist across deep-sleep cycles and power-on resets.
+4. Factory reset (ND-0917) does NOT erase pin config — the board hardware does not change.
+5. The NODE_PROVISION BLE message body may include optional pin config bytes after the encrypted payload; the node parses and persists them to NVS.
+6. Backward compatibility: a NODE_PROVISION body without pin config bytes (from an older pairing tool) is accepted without error.
+
+---
+
 ## 9  Timing and retries
 
 ### ND-0700  WAKE retry
@@ -1243,6 +1262,7 @@ The node MUST apply build-type–aware log-level policies to eliminate logging o
 | ND-0605 | Execution constraints | Must |
 | ND-0606 | Map memory budget enforcement | Must |
 | ND-0607 | Initial map data | Must |
+| ND-0608 | Configurable I2C pin assignments | Should |
 | ND-0700 | WAKE retry | Must |
 | ND-0701 | Chunk transfer retry | Must |
 | ND-0702 | Response timeout | Must |

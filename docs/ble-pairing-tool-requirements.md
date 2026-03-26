@@ -1133,3 +1133,22 @@ The pairing tool MUST apply build-type–aware log-level policies: compile-time 
 4. `RUST_LOG` overrides the default in both build types (within compile-time limits).
 5. The `tracing` crate dependency in both `sonde-pair` and `sonde-pair-ui` specifies `features = ["max_level_trace", "release_max_level_info"]`.
 6. PT-1207–PT-1212 requirements that specify DEBUG-level logging are satisfied in debug builds; in release builds those call-sites are compiled out and the requirements are met by the tool functioning correctly without those diagnostic events.
+
+---
+
+### PT-1214  Board pin configuration in NODE_PROVISION
+
+**Priority:** Should (deferred — `sonde-pair` does not yet implement this)  
+**Source:** issue #490, ND-0608
+
+**Description:**  
+The pairing tool SHOULD support including optional board-specific pin configuration (I2C SDA/SCL GPIO numbers) in the NODE_PROVISION message body so that a single firmware binary works across different ESP32-C3 boards.
+
+The node-side parsing (ND-0608) is implemented; the pairing-tool encoding side is tracked as future work. The `sonde-pair` API (`provision_node`) does **not** yet accept a pin-config parameter and the NODE_PROVISION payload does **not** yet include a trailing CBOR map for pin configuration.
+
+**Acceptance criteria:**
+
+1. The `provision_node(...)` API (which constructs/sends NODE_PROVISION during Phase 2) accepts an optional pin config parameter.
+2. When provided, pin config is encoded as a deterministic CBOR map and appended to the NODE_PROVISION body after the encrypted payload.
+3. When not provided, the NODE_PROVISION body is identical to the existing format (backward compatible).
+4. The CBOR map uses integer keys: 1 = `i2c0_sda` (uint), 2 = `i2c0_scl` (uint).

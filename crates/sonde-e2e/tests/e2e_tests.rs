@@ -1010,6 +1010,7 @@ async fn t_e2e_062_node_ble_provisioning() {
         psk: node_psk,
         rf_channel,
         encrypted_payload: encrypted_payload.clone(),
+        pin_config: None,
     };
     let mut node = NodeProxy::new_unpaired();
     let status = handle_node_provision(
@@ -1435,6 +1436,7 @@ async fn t_e2e_068_factory_reset_reprovision() {
         psk: new_node_psk,
         rf_channel,
         encrypted_payload: new_encrypted_payload,
+        pin_config: None,
     };
     let status = handle_node_provision(
         &provision,

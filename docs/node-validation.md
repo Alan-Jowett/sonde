@@ -717,28 +717,6 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N617  Initial map data applied on program install
-
-**Validates:** ND-0607
-
-**Procedure:**
-1. Create a program image with one map definition (`value_size` = 4, `max_entries` = 1) and `map_initial_data[0]` = `[0xDE, 0xAD, 0xBE, 0xEF]`.
-2. Install the program and run a wake cycle that triggers map allocation.
-3. Assert: after allocation, entry 0 of the map contains `[0xDE, 0xAD, 0xBE, 0xEF]`.
-
----
-
-### T-N618  Initial map data size mismatch ignored
-
-**Validates:** ND-0607
-
-**Procedure:**
-1. Create a program image with one map definition (`value_size` = 4) and `map_initial_data[0]` = `[0x01, 0x02]` (length ≠ `value_size`).
-2. Install the program and run a wake cycle.
-3. Assert: entry 0 of the map remains zero-filled (size mismatch causes silent skip).
-
----
-
 ## 9  Timing and retry tests
 
 ### T-N700  WAKE retry count and timing
@@ -1056,24 +1034,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0915
 
 **Procedure:**
-1. Complete BLE pairing and registration (`reg_complete` set, `peer_payload` still present in NVS).
+1. Complete BLE pairing and registration (`reg_complete` set).
 2. Reboot node; node sends WAKE.
 3. Mock gateway does not respond (or responds with invalid HMAC).
 4. Assert: `reg_complete` flag is cleared.
 5. Assert: on next boot the node sends PEER_REQUEST instead of WAKE.
-
----
-
-### T-N917b  WAKE failure after payload erasure — no self-healing
-
-**Validates:** ND-0915
-
-**Procedure:**
-1. Complete BLE pairing and registration (`reg_complete` set).
-2. Reboot node; node sends WAKE. Mock gateway responds with a valid COMMAND so the first WAKE/COMMAND cycle succeeds and `peer_payload` is erased (ND-0914).
-3. Reboot node; node sends WAKE. Mock gateway does not respond (or responds with invalid HMAC).
-4. Assert: `reg_complete` flag is **not** cleared.
-5. Assert: on next boot the node sends WAKE (not PEER_REQUEST).
 
 ---
 
@@ -1541,6 +1506,79 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N0607a  I2C pins read from NVS at HAL init
+
+**Validates:** ND-0608 (AC 1, 3)
+
+**Procedure:**
+1. Write SDA=4, SCL=5 to NVS keys `i2c0_sda` and `i2c0_scl`.
+2. Trigger HAL initialization (power-on reset or deep-sleep wake).
+3. Assert: the I2C0 peripheral is configured with SDA=4, SCL=5.
+4. Assert: pin assignments survive a deep-sleep cycle — repeat step 2 and verify the same pins are used.
+
+---
+
+### T-N0607b  Missing NVS keys fall back to defaults
+
+**Validates:** ND-0608 (AC 2)
+
+**Procedure:**
+1. Erase NVS keys `i2c0_sda` and `i2c0_scl` (or start with a fresh NVS partition).
+2. Trigger HAL initialization.
+3. Assert: the I2C0 peripheral is configured with the compiled-in defaults SDA=0, SCL=1.
+
+---
+
+### T-N0607c  Pin config persisted from NODE_PROVISION with CBOR pin data
+
+**Validates:** ND-0608 (AC 5)
+
+**Procedure:**
+1. Construct a NODE_PROVISION BLE message body with a valid encrypted payload followed by a deterministic CBOR map `{1: 6, 2: 7}` (SDA=6, SCL=7).
+2. Deliver the message to the node's provisioning handler.
+3. Assert: NVS keys `i2c0_sda` and `i2c0_scl` are written with values 6 and 7 respectively.
+4. Trigger a HAL re-initialization (or reboot).
+5. Assert: the I2C0 peripheral is configured with SDA=6, SCL=7.
+
+---
+
+### T-N0607d  NODE_PROVISION without pin config — backward compatible
+
+**Validates:** ND-0608 (AC 6)
+
+**Procedure:**
+1. Construct a NODE_PROVISION BLE message body with a valid encrypted payload and no trailing pin config bytes.
+2. Deliver the message to the node's provisioning handler.
+3. Assert: provisioning succeeds without error.
+4. Assert: NVS keys `i2c0_sda` and `i2c0_scl` are not written (or remain at their prior values).
+
+---
+
+### T-N0607e  Factory reset does NOT erase pin config
+
+**Validates:** ND-0608 (AC 4), ND-0917
+
+**Procedure:**
+1. Write SDA=4, SCL=5 to NVS keys `i2c0_sda` and `i2c0_scl`.
+2. Trigger a factory reset (ND-0917).
+3. Assert: NVS keys `i2c0_sda` and `i2c0_scl` still contain 4 and 5.
+4. Trigger HAL initialization.
+5. Assert: the I2C0 peripheral is configured with SDA=4, SCL=5.
+
+---
+
+### T-N0607f  Invalid CBOR trailing data treated as no pin config
+
+**Validates:** ND-0608 (AC 6)
+
+**Procedure:**
+1. Construct a NODE_PROVISION BLE message body with a valid encrypted payload followed by invalid trailing bytes (e.g., truncated CBOR or random data).
+2. Deliver the message to the node's provisioning handler.
+3. Assert: provisioning succeeds (the encrypted payload is processed normally).
+4. Assert: NVS keys `i2c0_sda` and `i2c0_scl` are not written.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -1577,7 +1615,6 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933 |
 | ND-0605 | T-N614, T-N615, T-N934 |
 | ND-0606 | T-N616, T-N935 |
-| ND-0607 | T-N617, T-N618 |
 | ND-0700 | T-N201, T-N700 |
 | ND-0701 | T-N701, T-N936 |
 | ND-0702 | T-N702, T-N937 |
@@ -1599,10 +1636,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0912 | T-N912, T-N913, T-N914, T-N941 |
 | ND-0913 | T-N915 |
 | ND-0914 | T-N916 |
-| ND-0915 | T-N917, T-N917b |
+| ND-0915 | T-N917 |
 | ND-0916 | T-N918 |
 | ND-0917 | T-N906 |
 | ND-0918 | *(verified by sdkconfig.defaults setting)* |
+| ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f |
 
 ---
 

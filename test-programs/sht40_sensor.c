@@ -110,13 +110,13 @@ int program(struct sonde_context *ctx)
      *         = -45000 + (175000 * t_raw)/65535
      */
     __s32 temp_mC = -45000;
-    temp_mC += (__s32)(((__u32)175000u * (__u32)t_raw) / 65535u);
+    temp_mC += (__s32)(((__u64)175000u * (__u64)t_raw) / 65535u);
 
     /* rh_mpermille = (-6 + 125 * rh_raw/65535) * 1000
      *              = -6000 + (125000 * rh_raw)/65535
      */
     __s32 rh_mpermille = -6000;
-    rh_mpermille += (__s32)(((__u32)125000u * (__u32)rh_raw) / 65535u);
+    rh_mpermille += (__s32)(((__u64)125000u * (__u64)rh_raw) / 65535u);
 
     /* Build payload, avoiding unaligned access. */
     __u8 payload[14];

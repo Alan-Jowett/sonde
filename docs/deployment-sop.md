@@ -99,17 +99,37 @@ it defaults to `/var/run/sonde/admin.sock`.
 
 ## 5. Pair a node (BLE provisioning)
 
+### Download and launch the pairing tool
+
 ```sh
-# Open a 120-second BLE registration window on the gateway
-./bin/sonde-admin pairing start --duration-s 120
+# Download the Windows pairing tool from CI
+gh run download "$(gh run list -w 'Tauri Desktop Build' \
+  --json databaseId -q '.[0].databaseId')" \
+  --name sonde-pair-windows --dir ./pairing-tool/
+```
 
-# The phone pairing app (sonde-pair) connects to the node via BLE,
-# negotiates LESC, and provisions the node with:
-#   - PSK, key_hint, RF channel
-#   - Encrypted payload for gateway registration
-#   - Optional I2C pin config (ND-0608)
+On Windows, run the `.exe` installer from the `pairing-tool/` directory.
+The app opens a GUI that walks through the pairing flow.
 
-# The node reboots, sends PEER_REQUEST, gateway registers it
+On Linux, download `sonde-pair-linux` instead (`.deb` package).
+
+### Pairing flow
+
+1. **Start the gateway** (step 4) — it must be running with the modem connected.
+2. **Open a BLE pairing window** from the admin CLI:
+   ```sh
+   ./bin/sonde-admin pairing start --duration-s 120
+   ```
+3. **Launch the pairing tool** on a machine with Bluetooth (Windows laptop, etc.).
+4. The tool scans for sonde nodes advertising the pairing service.
+5. Select the node, confirm the passkey, and enter a label + RF channel.
+6. The tool provisions the node with PSK, key_hint, RF channel, and the
+   encrypted registration payload.
+7. The node reboots, sends `PEER_REQUEST`, and the gateway registers it.
+
+```sh
+# Verify registration
+./bin/sonde-admin node list
 ```
 
 ## 6. Compile a BPF program

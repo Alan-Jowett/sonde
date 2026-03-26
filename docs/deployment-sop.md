@@ -95,8 +95,12 @@ The node will boot into BLE pairing mode (no PSK in NVS yet).
 
 ## 4. Start the gateway
 
+Release builds default to WARN-level logging. Set `RUST_LOG` to see
+lifecycle events during initial testing:
+
 **Linux / macOS:**
 ```sh
+export RUST_LOG=sonde_gateway=info
 ./bin/sonde-gateway \
   --port /dev/ttyACM0 \
   --db sonde.db \
@@ -106,6 +110,7 @@ The node will boot into BLE pairing mode (no PSK in NVS yet).
 
 **Windows (PowerShell):**
 ```powershell
+$env:RUST_LOG = "sonde_gateway=info"
 .\bin\sonde-gateway.exe `
   --port COM5 `
   --db sonde.db `
@@ -113,13 +118,16 @@ The node will boot into BLE pairing mode (no PSK in NVS yet).
   --generate-master-key
 ```
 
+> **Note:** `--generate-master-key` is only needed on first run. Once
+> `master-key.hex` exists, omit it.
+
 | Flag | Purpose |
 |------|---------|
 | `--port` | Serial port of the modem's USB-CDC connector |
 | `--db` | SQLite database (created if absent) |
 | `--master-key-file` | 64-hex-char key file (back this up securely!) |
 | `--generate-master-key` | Auto-generate key if file missing |
-| `--channel` | ESP-NOW radio channel 1–14 (default 1) — must match the channel chosen during node provisioning (step 5) |
+| `--channel` | ESP-NOW radio channel 1–14 (default 1) — must match the channel chosen during node provisioning (step 6) |
 | `--handler-config` | YAML handler routing — add after creating `handlers.yaml` in step 8 |
 
 The gateway logs `modem transport ready` when the modem handshake completes.
@@ -130,7 +138,36 @@ Admin socket (configurable via `--admin-socket`):
 - For local/dev runs on macOS or unprivileged Linux, use e.g. `--admin-socket ./admin.sock`
   and point `sonde-admin` at that path with the same flag.
 
-## 5. Pair a node (BLE provisioning)
+## 5. Choose an ESP-NOW channel
+
+ESP-NOW shares the 2.4 GHz band with WiFi. Pick a channel with the
+fewest nearby access points to minimize interference:
+
+**Linux:** `./bin/sonde-admin modem scan`  
+**Windows:** `.\bin\sonde-admin.exe modem scan`
+
+Example output:
+```
+Channel    APs        Best RSSI
+1          2          -91 dBm
+2          2          -73 dBm
+3          0          0 dBm        ← good choice
+6          5          -26 dBm      ← busy, avoid
+9          0          0 dBm        ← good choice
+```
+
+**How to read it:**
+- **APs** = number of WiFi access points visible on that channel
+- **Best RSSI** = signal strength of the strongest AP (closer to 0 = stronger = more interference)
+- **Pick a channel with 0 APs** — no WiFi traffic to compete with
+
+Set the gateway to your chosen channel (must match the channel used
+during node provisioning in the next step):
+
+**Linux:** `./bin/sonde-admin modem set-channel 3`  
+**Windows:** `.\bin\sonde-admin.exe modem set-channel 3`
+
+## 6. Pair a node (BLE provisioning)
 
 ### Download the pairing tool
 
@@ -188,7 +225,7 @@ Verify registration:
 **Linux:** `./bin/sonde-admin node list`  
 **Windows:** `.\bin\sonde-admin.exe node list`
 
-## 6. Compile a BPF program
+## 7. Compile a BPF program
 
 ```sh
 cd test-programs
@@ -204,7 +241,7 @@ The output is a BPF ELF object file. The gateway converts ELF → CBOR
 program image internally (extracting bytecode, map definitions, and
 .rodata/.data initial values).
 
-## 7. Deploy the BPF program
+## 8. Deploy the BPF program
 
 **Linux:**
 ```sh
@@ -226,7 +263,7 @@ Profiles:
 - `resident` — stored in node flash, runs every wake cycle
 - `ephemeral` — one-shot diagnostic, discarded after execution
 
-## 8. Configure a handler
+## 9. Configure a handler
 
 Create `handlers.yaml`:
 
@@ -264,7 +301,7 @@ Restart the gateway with `--handler-config handlers.yaml`:
   --handler-config handlers.yaml
 ```
 
-## 9. Verify end-to-end
+## 10. Verify end-to-end
 
 **Linux:** `./bin/sonde-admin status my-node-001`  
 **Windows:** `.\bin\sonde-admin.exe status my-node-001`
@@ -287,7 +324,7 @@ BPF execution completed rc=0
 entering deep sleep duration_seconds=60 reason=scheduled (ND-1007)
 ```
 
-## 10. Switch to production firmware
+## 11. Switch to production firmware
 
 Once verified, flash the quiet (production) firmware:
 
@@ -302,7 +339,7 @@ minimal power consumption. To debug later, reflash the verbose variant.
 
 | Symptom | Check |
 |---------|-------|
-| Node stuck in BLE pairing mode | No PSK in NVS — pair via BLE (step 5) |
+| Node stuck in BLE pairing mode | No PSK in NVS — pair via BLE (step 6) |
 | WAKE timeout (no COMMAND) | Gateway not running, wrong channel, modem not connected |
 | `0 APs on all channels` | WiFi scan error — check modem UART for error code |
 | Handler not receiving data | Check `handlers.yaml` path, ensure handler is executable |

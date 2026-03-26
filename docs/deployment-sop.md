@@ -81,8 +81,7 @@ The node will boot into BLE pairing mode (no PSK in NVS yet).
   --port /dev/ttyACM0 \
   --db sonde.db \
   --master-key-file master-key.hex \
-  --generate-master-key \
-  --handler-config handlers.yaml
+  --generate-master-key
 ```
 
 | Flag | Purpose |
@@ -91,31 +90,14 @@ The node will boot into BLE pairing mode (no PSK in NVS yet).
 | `--db` | SQLite database (created if absent) |
 | `--master-key-file` | 64-hex-char key file (backs up securely!) |
 | `--generate-master-key` | Auto-generate if file missing |
-| `--handler-config` | YAML handler routing (see step 8) |
+| `--handler-config` | YAML handler routing — add after creating `handlers.yaml` in step 8 |
 
 The gateway logs `modem transport ready` when the modem handshake completes.
 
 On Windows, the admin socket is `\\.\pipe\sonde-admin`. On Linux/macOS,
 it defaults to `/var/run/sonde/admin.sock`.
 
-## 5. Register a node
-
-```sh
-# Generate a PSK (32 random bytes as 64 hex chars)
-PSK=$(openssl rand -hex 32)
-
-# Compute the key_hint: SHA-256(PSK)[30..32] as big-endian u16
-KEY_HINT=$(echo -n "$PSK" | xxd -r -p | sha256sum | cut -c61-64)
-KEY_HINT_DEC=$((16#$KEY_HINT))
-
-./bin/sonde-admin node register my-node-001 "$KEY_HINT_DEC" "$PSK"
-```
-
-> **Note:** In practice, use the BLE pairing tool (`sonde-admin pairing`)
-> to provision nodes automatically — it handles PSK generation, key_hint
-> derivation, and encrypted payload exchange.
-
-### BLE pairing flow (preferred)
+## 5. Pair a node (BLE provisioning)
 
 ```sh
 # Open a 120-second BLE registration window on the gateway
@@ -178,8 +160,15 @@ Handlers receive `APP_DATA` from nodes via length-prefixed CBOR on stdin
 and can reply via stdout. See `test-programs/tmp102_handler.py` for a
 working example.
 
-Restart the gateway with `--handler-config handlers.yaml` if it wasn't
-started with one.
+Restart the gateway with `--handler-config handlers.yaml`:
+
+```sh
+./bin/sonde-gateway \
+  --port /dev/ttyACM0 \
+  --db sonde.db \
+  --master-key-file master-key.hex \
+  --handler-config handlers.yaml
+```
 
 ## 9. Verify end-to-end
 
@@ -189,19 +178,20 @@ started with one.
 
 # Watch gateway logs for WAKE/COMMAND cycle
 # Expected log sequence:
-#   WAKE received: node_id=my-node-001, seq=1
-#   COMMAND selected: node_id=my-node-001, command_type=UpdateProgram
-#   session created: node_id=my-node-001
+#   session created node_id=my-node-001 seq=...
+#   WAKE received node_id=my-node-001 seq=... battery_mv=...
+#   COMMAND selected node_id=my-node-001 command_type=UpdateProgram
 ```
 
 On the node UART (verbose firmware):
 ```
 sonde-node booting (commit xxxxxxx)
-boot_reason=deep_sleep_wake
-WAKE frame sent: key_hint=XXXX
-COMMAND received: command_type=UpdateProgram
-BPF execution: program_hash=XXXXXXXX, result=Ok(0)
-deep sleep entry: duration_seconds=60
+boot_reason=deep_sleep_wake (ND-1000)
+WAKE sent key_hint=0x.... nonce=0x................ attempt=0 (ND-1002)
+COMMAND received command_type=UpdateProgram program_hash=........
+BPF execute program_hash=........
+BPF execution completed rc=0
+entering deep sleep duration_seconds=60 reason=scheduled (ND-1007)
 ```
 
 ## 10. Switch to production firmware
@@ -219,7 +209,7 @@ minimal power consumption. To debug later, reflash the verbose variant.
 
 | Symptom | Check |
 |---------|-------|
-| Node stuck in BLE pairing mode | No PSK in NVS — pair via BLE or register manually |
+| Node stuck in BLE pairing mode | No PSK in NVS — pair via BLE (step 5) |
 | WAKE timeout (no COMMAND) | Gateway not running, wrong channel, modem not connected |
 | `0 APs on all channels` | WiFi scan error — check modem UART for error code |
 | Handler not receiving data | Check `handlers.yaml` path, ensure handler is executable |

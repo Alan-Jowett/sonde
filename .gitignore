@@ -26,3 +26,4 @@ logcat*.txt
 apk/
 apk-nightly/
 installer/logs/
+master-key.hex

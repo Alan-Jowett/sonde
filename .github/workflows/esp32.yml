@@ -108,8 +108,8 @@ jobs:
             exit 1
           fi
           echo "Generated sdkconfig: $SDKCONFIG"
-          grep -q 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384' "$SDKCONFIG" \
-            || { echo "ERROR: CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384 not found in sdkconfig — sdkconfig.defaults may not have been applied" >&2; exit 1; }
+          grep -q 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576' "$SDKCONFIG" \
+            || { echo "ERROR: CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576 not found in sdkconfig — sdkconfig.defaults may not have been applied" >&2; exit 1; }
           grep -q 'CONFIG_FREERTOS_HZ=1000' "$SDKCONFIG" \
             || { echo "ERROR: CONFIG_FREERTOS_HZ=1000 not found in sdkconfig" >&2; exit 1; }
           echo "sdkconfig.defaults verified ✓"

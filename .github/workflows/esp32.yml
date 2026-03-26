@@ -108,8 +108,13 @@ jobs:
             exit 1
           fi
           echo "Generated sdkconfig: $SDKCONFIG"
-          grep -q 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384' "$SDKCONFIG" \
-            || { echo "ERROR: CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384 not found in sdkconfig — sdkconfig.defaults may not have been applied" >&2; exit 1; }
+          EXPECTED_STACK_SIZE=$(grep '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=' crates/sonde-node/sdkconfig.defaults | head -n1 | cut -d'=' -f2)
+          if [ -z "$EXPECTED_STACK_SIZE" ]; then
+            echo "ERROR: CONFIG_ESP_MAIN_TASK_STACK_SIZE not found in crates/sonde-node/sdkconfig.defaults" >&2
+            exit 1
+          fi
+          grep -q "CONFIG_ESP_MAIN_TASK_STACK_SIZE=${EXPECTED_STACK_SIZE}" "$SDKCONFIG" \
+            || { echo "ERROR: CONFIG_ESP_MAIN_TASK_STACK_SIZE=${EXPECTED_STACK_SIZE} not found in sdkconfig — sdkconfig.defaults may not have been applied" >&2; exit 1; }
           grep -q 'CONFIG_FREERTOS_HZ=1000' "$SDKCONFIG" \
             || { echo "ERROR: CONFIG_FREERTOS_HZ=1000 not found in sdkconfig" >&2; exit 1; }
           echo "sdkconfig.defaults verified ✓"

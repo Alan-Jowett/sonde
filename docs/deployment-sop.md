@@ -213,15 +213,24 @@ during node provisioning in the next step):
 
 ## 7. Pair a node (BLE provisioning)
 
-> **⚠️ Channel mismatch warning:** The pairing tool currently defaults to
-> channel 1 and does **not** auto-detect the gateway channel (see
-> [issue #518](https://github.com/alan-jowett/sonde/issues/518)).
-> Operators must manually set the node's RF channel during provisioning
-> to match the gateway/modem channel selected in step 6.
+> **ℹ️ Channel handling:** During Phase 1 registration, the gateway
+> passes its current RF channel to the pairing tool via
+> `PHONE_REGISTERED`. The pairing tool pre-fills this channel when
+> provisioning nodes, so it will match the modem channel automatically —
+> provided you select the channel (step 6) **before** pairing.
+> Changing the modem channel **after** nodes are provisioned will strand
+> them on the old channel
+> ([issue #518](https://github.com/alan-jowett/sonde/issues/518)).
 
-The pairing tool was downloaded in step 1. On Windows, run the NSIS
-installer (`Sonde Pairing Tool_X.X.X_x64-setup.exe`) from `.\pairing-tool\`.
-On Linux, the `.deb` package was already installed.
+The pairing tool was downloaded in step 1. On Linux, the `.deb`
+package was already installed. On Windows, run the NSIS installer from
+`.\pairing-tool\`:
+
+```powershell
+Start-Process ".\pairing-tool\Sonde Pairing Tool_X.X.X_x64-setup.exe"
+```
+
+(Replace `X.X.X` with the version number shown in the downloaded filename.)
 
 ### Phase 1: Register provisioning device with gateway
 
@@ -252,7 +261,8 @@ individual nodes. Repeat this phase for each new node.
 1. **Launch the pairing tool** (already registered from Phase 1).
 2. The tool scans for sonde nodes advertising the pairing service.
 3. Select the node, confirm the passkey, and enter a label + RF channel.
-   **Ensure the RF channel matches the gateway/modem channel (step 6).**
+   The channel should be pre-filled from the gateway (see note above) —
+   **verify it matches the modem channel (step 6) before confirming.**
 4. The tool generates a node PSK and provisions the node with PSK,
    key_hint, RF channel, and the encrypted registration payload.
 5. The node reboots, sends `PEER_REQUEST`, and the gateway registers it.
@@ -386,4 +396,4 @@ minimal power consumption. To debug later, reflash the verbose variant.
 | `espflash` "port busy" error | Close any open serial monitor (e.g., `espflash monitor`, PuTTY) before flashing |
 | Gateway only shows WARN logs | Set `RUST_LOG=sonde_gateway=info` before starting the gateway (step 4) |
 | `NODE_ACK` indication warning in pairing tool | Non-fatal — the node is provisioned successfully. Verify with `sonde-admin node list` |
-| Node not responding after pairing | Ensure the node's RF channel matches the modem/gateway channel (step 6) |
+| Node not responding after pairing | Verify the node's RF channel matches the modem/gateway channel (step 6). If you changed the modem channel after pairing, re-pair the node on the new channel |

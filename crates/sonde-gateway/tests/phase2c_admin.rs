@@ -1095,6 +1095,159 @@ async fn t0810_import_replaces_existing_state() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  T-1005: Export plaintext key leakage (GW-1001)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// T-1005 — Verify that exported state bundles do not leak key material
+/// in plaintext.
+///
+/// Procedure (from gateway-validation.md):
+/// 1. Register nodes with known PSKs.
+/// 2. Call `ExportState` with a known export passphrase.
+/// 3. Inspect the raw export bytes (encrypted bundle).
+/// 4. Assert: no PSK value appears as a contiguous substring in the export payload.
+/// 5. Attempt import with incorrect passphrase — assert rejected and state unchanged.
+/// 6. Import into a fresh gateway using the correct passphrase.
+/// 7. Assert: nodes are restored and PSKs are functional (WAKE accepted).
+#[tokio::test]
+async fn t1005_export_plaintext_key_leakage() {
+    // Use clearly non-zero, distinctive PSKs so substring scanning is meaningful.
+    let psk_a = [0x42u8; 32];
+    let psk_b = [0xDEu8; 32];
+
+    let node_a = TestNode::new("leak-node-a", 0x00AA, psk_a);
+    let node_b = TestNode::new("leak-node-b", 0x00BB, psk_b);
+
+    let h = TestHarness::new();
+
+    // Step 1: Register nodes with known PSKs.
+    h.admin
+        .register_node(Request::new(RegisterNodeRequest {
+            node_id: node_a.node_id.clone(),
+            key_hint: node_a.key_hint as u32,
+            psk: psk_a.to_vec(),
+        }))
+        .await
+        .unwrap();
+    h.admin
+        .register_node(Request::new(RegisterNodeRequest {
+            node_id: node_b.node_id.clone(),
+            key_hint: node_b.key_hint as u32,
+            psk: psk_b.to_vec(),
+        }))
+        .await
+        .unwrap();
+
+    // Step 2: Export state with a known passphrase.
+    let passphrase = "test-export-passphrase";
+    let export_resp = h
+        .admin
+        .export_state(Request::new(ExportStateRequest {
+            passphrase: passphrase.into(),
+        }))
+        .await
+        .unwrap();
+    let bundle = export_resp.into_inner().data;
+
+    // Step 3–4: Scan the raw export bytes for PSK byte sequences.
+    // No PSK must appear as a contiguous substring anywhere in the bundle.
+    assert!(
+        !contains_subsequence(&bundle, &psk_a),
+        "PSK A ({:#04X} repeated) found as plaintext in export bundle",
+        psk_a[0]
+    );
+    assert!(
+        !contains_subsequence(&bundle, &psk_b),
+        "PSK B ({:#04X} repeated) found as plaintext in export bundle",
+        psk_b[0]
+    );
+
+    // Step 5: Import with incorrect passphrase — must be rejected.
+    let err = h
+        .admin
+        .import_state(Request::new(ImportStateRequest {
+            data: bundle.clone(),
+            passphrase: "wrong-passphrase".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code(),
+        tonic::Code::InvalidArgument,
+        "import with wrong passphrase should fail"
+    );
+
+    // Verify state is unchanged after the failed import: check node count, IDs,
+    // and key_hints, then validate WAKE for both nodes against the original gateway.
+    let nodes_after_fail = h
+        .admin
+        .list_nodes(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .nodes;
+    assert_eq!(
+        nodes_after_fail.len(),
+        2,
+        "state must be unchanged after failed import"
+    );
+    let mut fail_ids: Vec<&str> = nodes_after_fail
+        .iter()
+        .map(|n| n.node_id.as_str())
+        .collect();
+    fail_ids.sort();
+    assert_eq!(fail_ids, vec!["leak-node-a", "leak-node-b"]);
+    for n in &nodes_after_fail {
+        match n.node_id.as_str() {
+            "leak-node-a" => assert_eq!(n.key_hint, 0x00AA),
+            "leak-node-b" => assert_eq!(n.key_hint, 0x00BB),
+            other => panic!("unexpected node after failed import: {other}"),
+        }
+    }
+
+    let gw = h.make_gateway();
+    let _cmd_a = do_wake(&gw, &node_a, 1, &[0u8; 32]).await;
+    let _cmd_b = do_wake(&gw, &node_b, 2, &[0u8; 32]).await;
+
+    // Step 6: Import into a fresh gateway using the correct passphrase.
+    let h2 = TestHarness::new();
+    h2.admin
+        .import_state(Request::new(ImportStateRequest {
+            data: bundle,
+            passphrase: passphrase.into(),
+        }))
+        .await
+        .unwrap();
+
+    // Step 7: Verify nodes are restored and PSKs are functional.
+    let restored_nodes = h2
+        .admin
+        .list_nodes(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .nodes;
+    assert_eq!(restored_nodes.len(), 2, "both nodes must be restored");
+
+    let mut restored_ids: Vec<&str> = restored_nodes.iter().map(|n| n.node_id.as_str()).collect();
+    restored_ids.sort();
+    assert_eq!(restored_ids, vec!["leak-node-a", "leak-node-b"]);
+
+    // WAKE from both restored nodes must be accepted (PSKs functional).
+    let gw2 = h2.make_gateway();
+    let _cmd_a = do_wake(&gw2, &node_a, 3, &[0u8; 32]).await;
+    let _cmd_b = do_wake(&gw2, &node_b, 4, &[0u8; 32]).await;
+}
+
+/// Returns `true` if `needle` appears as a contiguous subsequence in `haystack`.
+fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  T-0800 transport: gRPC API availability over Unix domain socket
 //  Validates GW-0800 end-to-end (server binds UDS, client connects, RPC works).
 // ═══════════════════════════════════════════════════════════════════════

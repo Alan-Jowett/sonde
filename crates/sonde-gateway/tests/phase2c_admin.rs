@@ -5,7 +5,7 @@
 // ingestion is rejected in release builds).
 #![allow(unused_imports, dead_code)]
 
-//! Phase 2C-ii integration tests: gRPC admin API (T-0800 to T-0810).
+//! Phase 2C-ii integration tests: gRPC admin API (T-0800 to T-0810, T-1005).
 //!
 //! Tests call `AdminService` methods directly via tonic `Request`/`Response`
 //! (no gRPC transport needed). Combined admin+protocol tests also create a
@@ -1150,6 +1150,13 @@ async fn t1005_export_plaintext_key_leakage() {
         .await
         .unwrap();
     let bundle = export_resp.into_inner().data;
+
+    // Sanity: a vacuously-empty bundle would make the substring scan below
+    // pass without providing any security signal.
+    assert!(
+        !bundle.is_empty(),
+        "Exported state bundle is empty; ExportState may be returning an invalid payload"
+    );
 
     // Step 3–4: Scan the raw export bytes for PSK byte sequences.
     // No PSK must appear as a contiguous substring anywhere in the bundle.

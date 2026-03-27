@@ -490,13 +490,13 @@ The flag for `WAKE_EARLY` is stored in RTC SRAM and cleared after reading.
 
 Before entering deep sleep, `prepare_for_sleep()` is called to eliminate GPIO leakage current (ND-1013).
 
-1. Enumerate all I2C bus GPIOs (SDA and SCL for each configured bus) and reset them to a disabled/high-impedance state with no pull resistors via `gpio_reset_pin()`.
+1. Enumerate the I2C0 bus GPIOs (SDA and SCL for the currently supported I2C bus) and reset them to a disabled/high-impedance state with no pull resistors via `gpio_reset_pin()`. Additional I2C buses may be added in future revisions.
 2. Enumerate any GPIOs that were configured as outputs by BPF helper calls (`gpio_write`) during the current wake cycle and reset them to a disabled state.
 3. Skip RTC-domain pins required for wake-up sources (e.g., pairing button GPIO) — these must retain their configured state.
 
 **Implementation notes:**
 
-- `prepare_for_sleep()` is called from `SleepManager` immediately before step 3 (deep sleep entry) in §11.1.
+- `prepare_for_sleep()` is called from the node main loop (deep sleep entry in `bin/node.rs`) immediately before step 3 in §11.1.
 - The HAL layer tracks which GPIOs were configured during the wake cycle via a small bitset.
 - `gpio_reset_pin()` restores the ESP-IDF default: input-disabled, output-disabled, no pull-up/pull-down.
 

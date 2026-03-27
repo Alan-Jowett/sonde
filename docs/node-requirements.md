@@ -1228,7 +1228,7 @@ The node MUST apply build-type–aware log-level policies to eliminate logging o
 ### ND-1013  GPIO sleep preparation
 
 **Priority:** Must  
-**Source:** PR #534
+**Source:** issue #517
 
 **Description:**  
 Before entering deep sleep, the firmware MUST reset all bus peripheral GPIOs (I2C SDA/SCL, any BPF-configured output GPIOs) to a disabled state with no pull resistors to minimize sleep leakage current.

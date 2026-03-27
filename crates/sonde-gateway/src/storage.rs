@@ -95,6 +95,10 @@ pub trait Storage: Send + Sync {
 
     /// Atomically replace all phone PSK registrations with the given set.
     ///
+    /// `phone_id` values on the incoming records are ignored — each
+    /// implementation assigns fresh IDs (auto-increment for SQLite,
+    /// sequential counter for in-memory).
+    ///
     /// Implementations should perform the replacement in a single transaction
     /// where possible. The default implementation is non-atomic (delete-then-insert).
     async fn replace_phone_psks(&self, records: &[PhonePskRecord]) -> Result<(), StorageError> {

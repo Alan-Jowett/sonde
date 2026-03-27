@@ -248,13 +248,16 @@ async fn main() {
     if let Err(e) = result {
         if let Some(status) = e.downcast_ref::<tonic::Status>() {
             let msg = status.message();
-            // Detect verification failures by the summary prefix
-            // produced by ProgramLibrary::ingest_elf (GW-1305).
-            let is_verification =
-                msg.starts_with("verification failed:") || msg.contains("failed verification");
+            // Show full diagnostics in verbose mode; otherwise show a
+            // compact summary.  The --verbose hint is only useful when
+            // the message actually contains multi-line diagnostics
+            // (i.e. Prevail invariants), not for single-line
+            // verification errors like "ephemeral programs must not
+            // declare maps" (GW-1305 criterion 3).
+            let has_diagnostics = msg.contains('\n');
             if cli.verbose {
                 eprintln!("Error: {msg}");
-            } else if is_verification {
+            } else if has_diagnostics {
                 // Without --verbose, show the summary line and the first
                 // verifier error, then a hint (GW-1305 criterion 3).
                 // The gateway places find_first_error() output as the

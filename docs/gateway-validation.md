@@ -1962,6 +1962,8 @@ A configurable stub handler process (or in-process mock) that:
 5. Assert: output matches the pattern `sonde-admin <semver> (<7-char-hash>)`.
 6. Assert: the hash portion is a valid 7-character hex string (or `unknown` when built outside a git repo).
 
+---
+
 ### T-1305a  Verification failure includes instruction-level diagnostics
 
 **Validates:** GW-1305

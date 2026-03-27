@@ -7,8 +7,11 @@
 
 A systematic code compliance audit was performed on the sonde gateway
 implementation (`crates/sonde-gateway/src/`) against the gateway
-requirements specification (`docs/gateway-requirements.md`) covering all
-73 requirements (GW-0100 through GW-1304). Of the 73 requirements, 65
+requirements specification (`docs/gateway-requirements.md`), which
+defines 83 requirements in the range GW-0100 through GW-1304. This
+report assesses 73 gateway-implementation requirements from that set
+(the remaining 10 apply only to external tooling or deployment
+concerns outside the gateway crate). Of the 73 requirements, 65
 are **IMPLEMENTED** (89%), 4 are **PARTIALLY IMPLEMENTED** (5.5%), and
 4 are **NOT IMPLEMENTED** (5.5%). The unimplemented requirements are
 concentrated in the factory-reset protocol command (GW-0705), modem

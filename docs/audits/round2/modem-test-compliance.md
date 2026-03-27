@@ -4,11 +4,11 @@
 
 ## 1. Executive Summary
 
-This audit assessed the sonde-modem test suite against the modem validation plan (57 active test cases across T-01xx–T-07xx) and 40 active requirements (MD-0100–MD-0505, excluding superseded MD-0406). Of 57 active test cases, 14 are manual/hardware-only and excluded from the automated-test audit scope, leaving 43 automatable candidates. Of those 43, **31 are fully implemented**, **2 are partially implemented** (D12/D13 findings), and **10 are not implemented** (D11 findings). The dominant gap is in BLE pairing relay tests that require real BLE hardware or a BLE simulator not present in the test harness. Remediation should prioritize T-0607/T-0607a/T-0607b (LESC pairing) and T-0636 (idle timeout), which cover security-critical requirements.
+This audit assessed the sonde-modem test suite against the modem validation plan (54 active test cases across T-01xx–T-07xx, after excluding 3 superseded/removed) and 40 active requirements (MD-0100–MD-0505, excluding superseded MD-0406). Of 54 active test cases, 14 are manual/hardware-only and excluded from the automated-test audit scope, leaving 40 automatable candidates. Of those 40, **28 are fully implemented**, **2 are partially implemented** (D12/D13 findings), and **10 are not implemented** (D11 findings). The dominant gap is in BLE pairing relay tests that require real BLE hardware or a BLE simulator not present in the test harness. Remediation should prioritize T-0607/T-0607a/T-0607b (LESC pairing) and T-0636 (idle timeout), which cover security-critical requirements.
 
 ## 2. Problem Statement
 
-The modem validation plan defines 57 active test cases (excluding 3 superseded/removed: T-0610, T-0617, T-0618). The question is whether the automated test suite—comprising unit tests in `bridge.rs`, `peer_table.rs`, and `status.rs`, plus device integration tests in `tests/device_tests.rs`—faithfully implements each test case with correct assertions. Gaps create illusory coverage: requirements appear tested in the validation plan but are not actually verified by CI or device tests.
+The modem validation plan defines 57 total test cases, of which 3 are superseded/removed (T-0610, T-0617, T-0618), leaving 54 active test cases. The question is whether the automated test suite—comprising unit tests in `bridge.rs`, `peer_table.rs`, and `status.rs`, plus device integration tests in `tests/device_tests.rs`—faithfully implements each test case with correct assertions. Gaps create illusory coverage: requirements appear tested in the validation plan but are not actually verified by CI or device tests.
 
 ## 3. Investigation Scope
 

@@ -65,7 +65,7 @@ these three artifacts before implementation proceeds further.
 | 16 | §7.1 | HMAC-SHA256 computation |
 | 17 | §10 | Protocol evolution: unknown keys ignored, firmware_abi_version gating |
 
-**Design (protocol-crate-design.md) — 9 modules:**
+**Design (protocol-crate-design.md) — 10 modules:**
 
 | # | Section | Module |
 |---|---------|--------|

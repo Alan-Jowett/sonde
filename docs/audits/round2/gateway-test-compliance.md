@@ -5,9 +5,9 @@
 
 ## 1. Executive Summary
 
-This audit examined 131 automatable test cases from the gateway validation
-plan (`gateway-validation.md`) against 311 test functions in the
-`sonde-gateway` crate. **112 test cases are fully implemented, 5 are
+This audit examined 131 test cases from the gateway validation
+plan (`gateway-validation.md`) — 130 automatable and 1 manual/deferred — against 311 test functions in the
+`sonde-gateway` crate.**112 test cases are fully implemented, 5 are
 partially implemented with assertion gaps, and 14 have no implementing
 test.** The primary gaps are in admin CLI integration tests (T-0812,
 T-0816, T-0817), modem admin API tests (T-0813–T-0815), serial
@@ -42,7 +42,7 @@ the actual test checks something different.
   - `crates/sonde-gateway/src/` — `#[cfg(test)]` modules in 9 source
     files (152 unit tests)
 - **Documents examined:**
-  - `docs/gateway-validation.md` — 131 automatable test cases
+  - `docs/gateway-validation.md` — 131 test cases (130 automatable + 1 manual/deferred)
     (T-0100 through T-1304)
   - `docs/gateway-requirements.md` — 83 requirements (GW-0100 through
     GW-1304, including GW-0601a/GW-0601b)

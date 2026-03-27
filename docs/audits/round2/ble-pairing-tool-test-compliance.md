@@ -13,7 +13,7 @@ The validation plan specifies 85 test cases (T-PT-100 through T-PT-1212). Of the
 
 ## 3. Investigation Scope
 
-- **Codebase examined:** `F:\s3\crates\sonde-pair\src\` — all 21 `.rs` files
+- **Codebase examined:** `crates/sonde-pair/src/` — all 21 `.rs` files
 - **Documents examined:**
   - `docs/ble-pairing-tool-requirements.md` (requirements PT-0100 through PT-1213)
   - `docs/ble-pairing-tool-validation.md` (test cases T-PT-100 through T-PT-1212)

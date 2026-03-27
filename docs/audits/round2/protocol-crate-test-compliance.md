@@ -180,7 +180,7 @@ The test suite thoroughly covers the validation plan.
 | D11 (unimplemented) findings | 0 |
 | D12 (untested acceptance criterion) findings | 1 (Low severity) |
 | D13 (assertion mismatch) findings | 2 (Low severity) |
-| Unmatched test functions (no VP mapping) | 7 (see below) |
+| Unmatched test functions (no VP mapping) | 8 (see below) |
 
 ### Unmatched Tests (test code → validation plan)
 

@@ -323,7 +323,7 @@ The findings cluster into three root causes:
 
 | Metric | Value |
 |--------|-------|
-| **Total requirements** | 62 (58 Must, 4 Should) |
+| **Total requirements** | 72 (68 Must, 4 Should) |
 | **Requirements → Design (forward)** | 59/62 = **95.2%** (missing: ND-0403 [Should], ND-0403a [Should], ND-0607 [Must]) |
 | **Requirements → Validation (forward)** | 59/62 = **95.2%** (missing: ND-0607, ND-1011, ND-1012 [all Must]) |
 | **Design → Requirements (backward)** | 11/11 modules = **100%** (all modules trace to requirements) |

@@ -316,6 +316,221 @@ and generate a board-specific design without manual schematic editing.
 
 ---
 
+## 9  Configuration format
+
+### HW-0700  Board configuration schema
+
+**Priority:** Must
+
+The board configuration MUST be expressed as a YAML file with a
+well-defined schema that captures all parameterizable options.
+
+**Acceptance criteria:**
+
+1. The schema is documented as a JSON Schema or equivalent formal definition.
+2. The configuration file includes:
+   - `mcu`: module variant (e.g., `esp32-c3-mini-1`)
+   - `flash_size`: 4 / 8 / 16 MB
+   - `connectors.qwiic`: count (0–2)
+   - `connectors.spi`: boolean
+   - `connectors.one_wire`: boolean
+   - `connectors.gpio_header`: boolean
+   - `connectors.battery`: boolean (JST-PH)
+   - `sensors[]`: list of sensor IDs from the supported catalog (HW-0301)
+   - `power.sensor_gating`: boolean
+   - `power.regulator`: LDO or switching
+   - `board.size`: `compact` | `standard`
+   - `board.layers`: 2 | 4
+   - `board.fab`: JLCPCB | PCBWay | OSHPark | custom DRC rules
+3. Unknown keys are rejected (strict parsing).
+4. A `sonde-hw validate config.yaml` command checks the configuration
+   against the schema and reports errors before generation.
+
+---
+
+### HW-0701  Configuration example
+
+**Priority:** Must
+
+**Acceptance criteria:**
+
+1. The repository includes at least three example configurations:
+   - `hw/configs/minimal.yaml` — ESP32-C3 + USB-C + 1× Qwiic
+   - `hw/configs/soil-monitor.yaml` — battery + soil moisture ADC + DS18B20
+   - `hw/configs/environmental.yaml` — BME280 + VEML7700 + 2× Qwiic
+2. Each example passes schema validation and produces a valid board.
+
+---
+
+## 10  Output formats
+
+### HW-0800  Schematic output
+
+**Priority:** Must
+
+**Acceptance criteria:**
+
+1. The tool produces a KiCad 8 schematic file (`.kicad_sch`).
+2. The schematic uses KiCad standard library symbols where available;
+   custom symbols are included in the repository.
+3. The schematic is human-readable and can be opened in KiCad for
+   manual review or modification.
+4. Net names match the firmware's GPIO naming (e.g., `I2C0_SDA`,
+   `I2C0_SCL`, `SENSOR_PWR_EN`).
+
+---
+
+### HW-0801  PCB layout output
+
+**Priority:** Must
+
+**Acceptance criteria:**
+
+1. The tool produces a KiCad 8 PCB file (`.kicad_pcb`).
+2. Component placement follows a deterministic algorithm:
+   - MCU centered on the board
+   - USB-C connector on one edge
+   - Antenna at the opposite edge with keepout enforced
+   - Connectors along board edges
+   - Decoupling capacitors adjacent to power pins
+3. Trace routing uses KiCad's autorouter or a scripted routing
+   algorithm. Manual routing adjustments are allowed post-generation.
+4. The layout includes a ground pour on the bottom layer.
+5. All footprints have 3D models for visual review.
+
+---
+
+### HW-0802  Manufacturing outputs
+
+**Priority:** Must
+
+**Acceptance criteria:**
+
+1. The tool generates Gerber files (RS-274X) for all layers.
+2. The tool generates an NC drill file (Excellon format).
+3. The tool generates a BOM in CSV format with:
+   - Component reference, value, footprint, manufacturer part number,
+     supplier (LCSC / DigiKey / Mouser), unit cost, quantity.
+4. The tool generates a component placement file (pick-and-place CPL)
+   for SMT assembly.
+5. All outputs are placed in a `hw/output/<config-name>/` directory.
+
+---
+
+## 11  Deterministic KiCad workflow
+
+### HW-0900  Reproducible generation
+
+**Priority:** Must
+
+Given the same configuration file and tool version, the generation
+pipeline MUST produce bit-identical outputs.
+
+**Acceptance criteria:**
+
+1. Running the tool twice with the same config produces identical
+   `.kicad_sch`, `.kicad_pcb`, Gerber, and BOM files.
+2. No timestamps, random UUIDs, or non-deterministic elements in
+   the output files (or they are pinned to the config hash).
+3. The tool version and config hash are embedded in the schematic
+   title block and Gerber file comments for traceability.
+
+---
+
+### HW-0901  KiCad CLI integration
+
+**Priority:** Must
+
+The generation pipeline MUST be fully automatable via command-line
+tools (no GUI interaction required).
+
+**Acceptance criteria:**
+
+1. Schematic generation uses KiCad's Python scripting API or
+   direct file generation (no GUI).
+2. ERC is run via `kicad-cli sch erc` or equivalent.
+3. DRC is run via `kicad-cli pcb drc` or equivalent.
+4. Gerber export is run via `kicad-cli pcb export gerbers` or equivalent.
+5. The full pipeline (`validate → generate → ERC → DRC → Gerber`)
+   is a single command: `sonde-hw build config.yaml`.
+
+---
+
+### HW-0902  CI integration
+
+**Priority:** Should
+
+**Acceptance criteria:**
+
+1. A GitHub Actions workflow builds all example configurations on
+   every push to `hw/` or `docs/hw-*.md`.
+2. The workflow runs ERC + DRC and fails on violations.
+3. The workflow uploads Gerber + BOM artifacts for download.
+
+---
+
+## 12  Verification and validation
+
+### HW-1000  Electrical rule check (ERC)
+
+**Priority:** Must
+
+**Acceptance criteria:**
+
+1. The generated schematic passes KiCad ERC with zero errors.
+2. ERC warnings are documented and justified (e.g., intentional
+   unconnected pins on the ESP32-C3 module).
+3. ERC is run automatically as part of the build pipeline.
+
+---
+
+### HW-1001  Design rule check (DRC)
+
+**Priority:** Must
+
+**Acceptance criteria:**
+
+1. The generated PCB passes KiCad DRC with zero errors using
+   the design rules for the selected fabrication house.
+2. DRC rules are stored as `.kicad_dru` files per fab house
+   (e.g., `hw/rules/jlcpcb.kicad_dru`).
+3. DRC is run automatically as part of the build pipeline.
+
+---
+
+### HW-1002  Netlist verification
+
+**Priority:** Must
+
+**Acceptance criteria:**
+
+1. The tool verifies that the PCB netlist matches the schematic
+   netlist (no unconnected nets, no extra nets).
+2. Critical nets are explicitly checked:
+   - 3.3V power rail connected to ESP32-C3 VDD
+   - GND connected to ESP32-C3 GND
+   - USB D+/D- connected to USB-C connector
+   - I2C SDA/SCL connected to Qwiic connector pin 2/3
+3. Netlist check is run automatically as part of the build pipeline.
+
+---
+
+### HW-1003  Simulation and emulation
+
+**Priority:** Should
+
+**Acceptance criteria:**
+
+1. The tool can export a SPICE netlist for power rail simulation
+   (regulator input/output, decoupling capacitor effectiveness).
+2. An optional power budget calculator estimates battery life
+   based on: deep sleep current, wake cycle duration, sensor power
+   draw, and wake interval.
+3. The power budget output is included in the build artifacts
+   alongside the BOM.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -338,3 +553,15 @@ and generate a board-specific design without manual schematic editing.
 | HW-0502 | Antenna keepout | Must |
 | HW-0600 | Parameterized design tool | Must |
 | HW-0601 | Default configuration | Must |
+| HW-0700 | Board configuration schema | Must |
+| HW-0701 | Configuration examples | Must |
+| HW-0800 | Schematic output | Must |
+| HW-0801 | PCB layout output | Must |
+| HW-0802 | Manufacturing outputs | Must |
+| HW-0900 | Reproducible generation | Must |
+| HW-0901 | KiCad CLI integration | Must |
+| HW-0902 | CI integration | Should |
+| HW-1000 | Electrical rule check (ERC) | Must |
+| HW-1001 | Design rule check (DRC) | Must |
+| HW-1002 | Netlist verification | Must |
+| HW-1003 | Simulation and emulation | Should |

@@ -251,8 +251,18 @@ async fn main() {
             if cli.verbose {
                 eprintln!("Error: {msg}");
             } else {
-                // Without --verbose, show only the summary line.
-                eprintln!("Error: {}", msg.lines().next().unwrap_or(msg));
+                // Without --verbose, show the summary line and the first error,
+                // then a hint — matching the Prevail CLI's default output.
+                let mut lines = msg.lines();
+                let summary = lines.next().unwrap_or(msg);
+                eprintln!("Error: {summary}");
+                if let Some(first_error) = lines.next() {
+                    let first_error = first_error.trim();
+                    if !first_error.is_empty() {
+                        eprintln!("{first_error}");
+                    }
+                }
+                eprintln!("Hint: run with --verbose for full invariants.");
             }
         } else {
             eprintln!("Error: {e}");

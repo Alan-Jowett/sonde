@@ -12,6 +12,7 @@ use prevail::elf_loader::ElfObject;
 use prevail::fwd_analyzer;
 use prevail::ir::program::Program as PrevailProgram;
 use prevail::ir::unmarshal;
+use prevail::printing;
 use prevail::spec::config::EbpfVerifierOptions;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
@@ -455,28 +456,59 @@ impl ProgramLibrary {
             let result = fwd_analyzer::analyze(&program, &ctx, &mut registry);
 
             if result.failed {
-                // Collect unmarshal-stage notes (instruction-level parsing diagnostics).
-                let unmarshal_diag: Vec<String> = notes.into_iter().flatten().collect();
+                // Build diagnostics matching the Prevail CLI output format
+                // (GW-1305).
+                //
+                // Line 1: summary (always present).
+                // Line 2: first error from `find_first_error()`.
+                // Lines 3+: full invariant state from `print_invariants()`.
+                // Unmarshal-stage notes are prepended when present.
 
-                // Collect forward-analysis errors (type mismatches, unknown helpers, etc.)
-                // from the per-instruction invariant map (GW-1305).
-                let verifier_errors: Vec<String> = result
-                    .invariants
-                    .iter()
-                    .filter_map(|(_, pair)| pair.error.as_ref().map(|e| e.to_string()))
-                    .collect();
+                let mut diag = String::new();
 
-                let mut all_diag = unmarshal_diag;
-                all_diag.extend(verifier_errors);
+                // Unmarshal-stage notes (instruction-level parsing diagnostics).
+                let unmarshal_notes: Vec<String> = notes.into_iter().flatten().collect();
+                for note in &unmarshal_notes {
+                    diag.push('\n');
+                    diag.push_str(note);
+                }
 
-                let diag_str = if all_diag.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", all_diag.join("\n"))
-                };
+                // First forward-analysis error via `find_first_error()`.
+                if let Some(first_error) = result.find_first_error() {
+                    let mut buf = Vec::new();
+                    let _ = printing::print_error(&mut buf, &first_error);
+                    if let Ok(s) = String::from_utf8(buf) {
+                        let s = s.trim_end();
+                        if !s.is_empty() {
+                            diag.push('\n');
+                            diag.push_str(s);
+                        }
+                    }
+                }
+
+                // Full invariant state (equivalent to Prevail's `-v` flag).
+                {
+                    let mut buf = Vec::new();
+                    let _ = printing::print_invariants(
+                        &mut buf,
+                        &program,
+                        &raw_prog.info,
+                        false,
+                        &result,
+                        &registry,
+                    );
+                    if let Ok(s) = String::from_utf8(buf) {
+                        let s = s.trim_end();
+                        if !s.is_empty() {
+                            diag.push('\n');
+                            diag.push_str(s);
+                        }
+                    }
+                }
+
                 return Err(ProgramError::VerificationFailed(format!(
                     "program `{}` failed verification{}",
-                    raw_prog.function_name, diag_str
+                    raw_prog.function_name, diag
                 )));
             }
         }

@@ -1492,13 +1492,13 @@ The gateway MUST apply build-type–aware log-level policies: compile-time gatin
 **Source:** Issue #530
 
 **Description:**  
-When the gateway rejects a program due to Prevail verification failure, the error response MUST include instruction-level diagnostic details from the verifier (instruction index, error description, register/type state). This enables operators to diagnose and fix BPF programs without access to gateway internals.
+When the gateway rejects a program due to Prevail verification failure, the error response MUST include Prevail-format diagnostic output: the first error from `find_first_error()` (instruction label and error description) and the full invariant state from `print_invariants()` (register/type state at every reachable instruction). This matches the output format of the Prevail CLI tool.
 
 **Acceptance criteria:**
 
-1. Verification failure errors include at least one instruction-level diagnostic when Prevail produces invariant violations.
-2. The `sonde-admin` CLI displays the full diagnostic output when `--verbose` is passed.
-3. Without `--verbose`, the CLI displays a summary error message suitable for non-expert users.
+1. On verification failure, the error response MUST include the output of `find_first_error()` — the instruction label and error description for the first verification error.
+2. With `--verbose`, the `sonde-admin` CLI MUST display the full invariant state (equivalent to Prevail's `-v` flag), showing pre/post invariants and verification errors at each instruction.
+3. Without `--verbose`, the CLI MUST display the first error and a hint suggesting `--verbose` for full invariants.
 
 ---
 

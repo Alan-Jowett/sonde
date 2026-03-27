@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
 use tonic::Request;
@@ -1043,13 +1043,15 @@ async fn t0810_import_state_restores_identity_phones_and_handlers() {
     let orig_public_key = *identity.public_key();
     storage.store_gateway_identity(&identity).await.unwrap();
 
-    // Seed a phone PSK.
+    // Seed a phone PSK.  Use a fixed timestamp so the second-granularity
+    // CBOR encoding round-trips without sub-second precision loss.
+    let fixed_issued_at = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let phone_psk = PhonePskRecord {
         phone_id: 0, // auto-assigned by storage
         phone_key_hint: 0x1234,
         psk: Zeroizing::new([0x42u8; 32]),
         label: "test-phone".into(),
-        issued_at: SystemTime::now(),
+        issued_at: fixed_issued_at,
         status: PhonePskStatus::Active,
     };
     storage.store_phone_psk(&phone_psk).await.unwrap();
@@ -1109,6 +1111,7 @@ async fn t0810_import_state_restores_identity_phones_and_handlers() {
     assert_eq!(restored_psks[0].phone_key_hint, 0x1234);
     assert_eq!(*restored_psks[0].psk, [0x42u8; 32]);
     assert_eq!(restored_psks[0].label, "test-phone");
+    assert_eq!(restored_psks[0].issued_at, fixed_issued_at);
     assert_eq!(restored_psks[0].status, PhonePskStatus::Active);
 
     // Verify handler configs were restored by exporting again and

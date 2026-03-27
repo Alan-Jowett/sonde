@@ -560,14 +560,18 @@ impl GatewayAdmin for AdminService {
 
     /// Import gateway state from a bundle previously produced by `export_state`.
     ///
-    /// Replaces the current node registry, program library, phone PSK
-    /// registrations, and handler routing configuration with the bundle
-    /// contents. Restores the gateway identity if present in the bundle;
-    /// otherwise, the existing gateway identity is left unchanged. Rejects
-    /// the request with `FAILED_PRECONDITION` if any node sessions are active
-    /// (the gateway should be quiescent before import). Pending commands are
-    /// cleared after a successful import to prevent stale commands from being
-    /// delivered to nodes whose records were replaced.
+    /// Replaces the current node registry, program library, and phone PSK
+    /// registrations with the bundle contents. Updates the stored handler
+    /// configuration ([`AdminService::handler_configs`], used for subsequent
+    /// `export_state` calls) to match the bundle. This does **not** reconfigure
+    /// the live handler router used by the running gateway engine; handler
+    /// routing remains whatever was set at initialization time. Restores the
+    /// gateway identity if present in the bundle; otherwise, the existing
+    /// gateway identity is left unchanged. Rejects the request with
+    /// `FAILED_PRECONDITION` if any node sessions are active (the gateway
+    /// should be quiescent before import). Pending commands are cleared after
+    /// a successful import to prevent stale commands from being delivered to
+    /// nodes whose records were replaced.
     ///
     /// **Security note:** see [`export_state`] — this RPC accepts key material
     /// and should only be exposed on a local-only or authenticated transport.

@@ -61,6 +61,10 @@ impl crate::traits::Clock for EspClock {
 /// ESP-IDF calls with no pre-initialization.
 pub struct EspHal {
     i2c0_initialized: bool,
+    /// I2C0 SDA pin number (stored for sleep cleanup).
+    i2c0_sda: i32,
+    /// I2C0 SCL pin number (stored for sleep cleanup).
+    i2c0_scl: i32,
     adc_width_configured: bool,
     /// Bitmask of GPIO pins already configured as output.
     gpio_output_configured: u64,
@@ -74,11 +78,13 @@ impl EspHal {
     pub fn new(i2c0_sda: u8, i2c0_scl: u8) -> Self {
         let mut hal = Self {
             i2c0_initialized: false,
+            i2c0_sda: i2c0_sda as i32,
+            i2c0_scl: i2c0_scl as i32,
             adc_width_configured: false,
             gpio_output_configured: 0,
             adc_channels_configured: 0,
         };
-        hal.init_i2c0(i2c0_sda as i32, i2c0_scl as i32);
+        hal.init_i2c0(hal.i2c0_sda, hal.i2c0_scl);
         hal
     }
 
@@ -306,6 +312,63 @@ impl hal::Hal for EspHal {
             }
             esp_idf_sys::adc1_get_raw(channel)
         }
+    }
+
+    fn prepare_for_sleep(&mut self) {
+        // GPIO hygiene for low-power deep sleep (issue #517).
+        //
+        // Every peripheral and GPIO touched during this wake cycle is
+        // placed into the lowest-leakage state:
+        //   • I2C driver deleted → SDA/SCL pins released
+        //   • BPF-configured output GPIOs → disabled (no I/O, no pulls)
+        //   • ADC tracking flags → cleared
+        //
+        // Pins are set to GPIO_MODE_DISABLE (input buffer off, output
+        // driver off) with pull-up and pull-down disabled. This is the
+        // lowest-current state for an ESP32 GPIO.
+
+        // 1. Deinitialize I2C bus 0 and reset its pins.
+        if self.i2c0_initialized {
+            unsafe {
+                esp_idf_sys::i2c_driver_delete(esp_idf_sys::i2c_port_t_I2C_NUM_0);
+            }
+            self.i2c0_initialized = false;
+
+            // gpio_reset_pin detaches the pin from the I2C peripheral
+            // (IOMUX) and returns it to GPIO function. We then disable
+            // the I/O buffer and pull resistors.
+            for pin in [self.i2c0_sda, self.i2c0_scl] {
+                unsafe {
+                    esp_idf_sys::gpio_reset_pin(pin);
+                    esp_idf_sys::gpio_set_direction(
+                        pin,
+                        esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
+                    );
+                    esp_idf_sys::gpio_pullup_dis(pin);
+                    esp_idf_sys::gpio_pulldown_dis(pin);
+                }
+            }
+        }
+
+        // 2. Reset every GPIO that BPF programs configured as output.
+        let mut mask = self.gpio_output_configured;
+        while mask != 0 {
+            let pin = mask.trailing_zeros();
+            unsafe {
+                esp_idf_sys::gpio_set_direction(
+                    pin as i32,
+                    esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
+                );
+                esp_idf_sys::gpio_pullup_dis(pin as i32);
+                esp_idf_sys::gpio_pulldown_dis(pin as i32);
+            }
+            mask &= !(1u64 << pin);
+        }
+        self.gpio_output_configured = 0;
+
+        // 3. Clear ADC tracking so a fresh wake cycle re-configures.
+        self.adc_width_configured = false;
+        self.adc_channels_configured = 0;
     }
 }
 

@@ -817,7 +817,7 @@ The admin API SHOULD support exporting and importing the gateway's portable stat
 1. `ExportState` returns the complete gateway state as a portable binary.
 2. `ImportState` restores state from a previously exported binary.
 3. Export and import operations require authenticated and authorized administrative access, and exported state is protected (e.g., via encryption) in accordance with GW-0601a.
-4. After import, all nodes and programs are available.
+4. After import, all state components are restored: nodes, programs, gateway identity (if present in the export), phone PSKs, and handler configs.
 
 ---
 
@@ -891,12 +891,12 @@ All gateway instances in a failover group MUST serve identical program bytes for
 **Source:** README § Gateway failover
 
 **Description:**  
-The gateway SHOULD support exporting and importing its full state (node registry, keys, program assignments, schedules) to enable failover and backup.
+The gateway SHOULD support exporting and importing its full state (node registry, keys, program assignments, schedules, gateway identity, phone PSKs, and handler configs) to enable failover and backup. `ImportState` MUST restore ALL state components present in the export: nodes, programs, gateway identity (conditionally, when present), phone PSKs, and handler routing configurations.
 
 **Acceptance criteria:**
 
-1. The gateway can export its state to a portable format.
-2. A fresh gateway instance can import the state and resume operation.
+1. The gateway can export its state to a portable format that includes nodes, programs, gateway identity, phone PSKs, and handler configs.
+2. A fresh gateway instance can import the state and resume operation with all exported components restored.
 3. The export format does not leak keys in plaintext unless explicitly requested.
 
 ---

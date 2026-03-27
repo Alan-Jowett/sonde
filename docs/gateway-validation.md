@@ -1332,6 +1332,22 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1005b  Import restores identity, phone PSKs, and handler configs
+
+**Validates:** GW-0805, GW-1001
+
+**Procedure:**
+1. Start a gateway, register nodes, ingest programs, store a gateway identity, register phone PSKs, and configure handler routing entries.
+2. Call `ExportState` with an export passphrase.
+3. Start a fresh gateway with no pre-existing state.
+4. Call `ImportState` with the exported bytes and passphrase.
+5. Assert: gateway identity is restored — `gateway_id` and `public_key` match the original.
+6. Assert: all phone PSKs are restored with correct `phone_key_hint`, PSK value, label, `issued_at`, and status.
+7. Assert: handler configs are restored with correct command, args, and `reply_timeout`.
+8. Assert: nodes and programs are also restored (full-state round-trip).
+
+---
+
 ## 11  Modem transport adapter tests
 
 ### T-1100  UsbEspNowTransport — recv delivers RECV_FRAME
@@ -2034,11 +2050,11 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0802 | T-0803, T-0804, T-0805 |
 | GW-0803 | T-0805, T-0806, T-0807, T-0808 |
 | GW-0804 | T-0809 |
-| GW-0805 | T-0810 |
+| GW-0805 | T-0810, T-1005b |
 | GW-0806 | T-0812, T-0816, T-0817 |
 | GW-0807 | T-0813, T-0814, T-0815 |
 | GW-1000 | T-1000 |
-| GW-1001 | T-1002, T-1005 |
+| GW-1001 | T-1002, T-1005, T-1005b |
 | GW-1002 | T-0609 |
 | GW-1003 | T-1003 |
 | GW-1004 | T-1001 |

@@ -33,7 +33,7 @@ pub struct AdminService {
     session_manager: Arc<SessionManager>,
     ble_controller: Option<Arc<BlePairingController>>,
     transport: Option<Arc<UsbEspNowTransport>>,
-    handler_configs: Vec<HandlerConfig>,
+    handler_configs: RwLock<Vec<HandlerConfig>>,
 }
 
 impl AdminService {
@@ -49,7 +49,7 @@ impl AdminService {
             session_manager,
             ble_controller: None,
             transport: None,
-            handler_configs: Vec::new(),
+            handler_configs: RwLock::new(Vec::new()),
         }
     }
 
@@ -66,7 +66,7 @@ impl AdminService {
 
     /// Set the handler routing configurations for full state export.
     pub fn with_handler_configs(mut self, configs: Vec<HandlerConfig>) -> Self {
-        self.handler_configs = configs;
+        self.handler_configs = RwLock::new(configs);
         self
     }
 }
@@ -510,11 +510,8 @@ impl GatewayAdmin for AdminService {
         }))
     }
 
-    /// Export gateway state (nodes + programs) as an AES-256-GCM-encrypted
-    /// CBOR bundle.
-    ///
-    /// Note: Handler routing configuration is not included in this export.
-    /// Only node registry entries and program images are bundled.
+    /// Export full gateway state (nodes, programs, identity, phone PSKs,
+    /// and handler configs) as an AES-256-GCM-encrypted CBOR bundle.
     ///
     /// The passphrase is used to derive the encryption key via
     /// PBKDF2-HMAC-SHA256.
@@ -541,7 +538,7 @@ impl GatewayAdmin for AdminService {
             .await
             .map_err(storage_err)?;
         let phone_psks = self.storage.list_phone_psks().await.map_err(storage_err)?;
-        let handler_configs = self.handler_configs.clone();
+        let handler_configs = self.handler_configs.read().await.clone();
         let passphrase = Zeroizing::new(req.passphrase);
         // Offload CPU-bound PBKDF2 + AES-GCM encryption to a blocking thread
         // so the Tokio runtime is not stalled.
@@ -563,11 +560,18 @@ impl GatewayAdmin for AdminService {
 
     /// Import gateway state from a bundle previously produced by `export_state`.
     ///
-    /// Replaces the current node registry and program library with the bundle
-    /// contents.  Rejects the request with `FAILED_PRECONDITION` if any node
-    /// sessions are active (the gateway should be quiescent before import).
-    /// Pending commands are cleared after a successful import to prevent stale
-    /// commands from being delivered to nodes whose records were replaced.
+    /// Replaces the current node registry, program library, and phone PSK
+    /// registrations with the bundle contents. Updates the stored handler
+    /// configuration ([`AdminService::handler_configs`], used for subsequent
+    /// `export_state` calls) to match the bundle. This does **not** reconfigure
+    /// the live handler router used by the running gateway engine; handler
+    /// routing remains whatever was set at initialization time. Restores the
+    /// gateway identity if present in the bundle; otherwise, the existing
+    /// gateway identity is left unchanged. Rejects the request with
+    /// `FAILED_PRECONDITION` if any node sessions are active (the gateway
+    /// should be quiescent before import). Pending commands are cleared after
+    /// a successful import to prevent stale commands from being delivered to
+    /// nodes whose records were replaced.
     ///
     /// **Security note:** see [`export_state`] — this RPC accepts key material
     /// and should only be exposed on a local-only or authenticated transport.
@@ -597,12 +601,13 @@ impl GatewayAdmin for AdminService {
         let data = req.data;
         let passphrase = Zeroizing::new(req.passphrase);
         // Offload CPU-bound PBKDF2 + AES-GCM decryption to a blocking thread.
-        let (nodes, programs) = tokio::task::spawn_blocking(move || {
-            crate::state_bundle::decrypt_state(&data, &passphrase)
-        })
-        .await
-        .map_err(|e| Status::internal(format!("decrypt task failed: {e}")))?
-        .map_err(bundle_err)?;
+        let (nodes, programs, identity, phone_psks, handler_cfgs) =
+            tokio::task::spawn_blocking(move || {
+                crate::state_bundle::decrypt_state_full(&data, &passphrase)
+            })
+            .await
+            .map_err(|e| Status::internal(format!("decrypt task failed: {e}")))?
+            .map_err(bundle_err)?;
 
         // Replace all nodes and programs with the bundle contents.
         // SqliteStorage performs this in a single transaction; other backends
@@ -611,6 +616,25 @@ impl GatewayAdmin for AdminService {
             .replace_state(&nodes, &programs)
             .await
             .map_err(storage_err)?;
+
+        // Restore gateway identity if present in the bundle.
+        if let Some(ref id) = identity {
+            self.storage
+                .store_gateway_identity(id)
+                .await
+                .map_err(storage_err)?;
+        }
+
+        // Replace phone PSK registrations atomically.
+        // SqliteStorage performs this in a single transaction; other backends
+        // use the default non-atomic delete-then-insert fallback.
+        self.storage
+            .replace_phone_psks(&phone_psks)
+            .await
+            .map_err(storage_err)?;
+
+        // Restore handler routing configuration.
+        *self.handler_configs.write().await = handler_cfgs;
 
         // Clear any pending commands queued for the old node set.
         self.pending_commands.write().await.clear();

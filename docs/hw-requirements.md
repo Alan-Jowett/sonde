@@ -1,4 +1,13 @@
+<!-- SPDX-License-Identifier: MIT
+  Copyright (c) 2026 sonde contributors -->
 # Sonde Sensor Node — Hardware Requirements
+
+> **Document status:** Draft
+> **Source:** Original specification for the sonde hardware design pipeline.
+> **Scope:** This document covers the sonde **hardware** (sensor node PCB) component only.
+> **Related:** [hw-design.md](hw-design.md), [node-requirements.md](node-requirements.md)
+
+---
 
 ## 1  Purpose
 
@@ -71,7 +80,7 @@ accepts a range of input voltages and provides 3.3V to the ESP32-C3.
 
 **Acceptance criteria:**
 
-1. Input voltage range: 3.5V–6V (USB 5V + battery headroom).
+1. Input voltage range: 3.0V–6V (covers single-cell LiPo discharge down to 3.0V cutoff and USB 5V).
 2. Output: 3.3V ± 5%, minimum 500 mA continuous.
 3. Quiescent current ≤ 10 µA (for battery-powered deep sleep).
 4. Reverse polarity protection on battery input.
@@ -89,6 +98,9 @@ The board SHOULD support direct battery power for untethered deployment.
 1. JST-PH 2-pin connector for single-cell LiPo (3.7V nominal).
 2. Battery voltage readable via ADC for firmware battery monitoring.
 3. USB and battery inputs safely coexist (USB preferred when present).
+4. Battery sense path (divider, buffer, or switch) MUST be high-impedance
+   or switchable in deep sleep so that total deep-sleep current, including
+   sensing leakage, complies with HW-0400 (≤ 20 µA).
 
 ---
 
@@ -106,7 +118,9 @@ for plug-and-play sensor modules.
 1. I2C0 SDA and SCL routed to at least one 4-pin Qwiic/STEMMA QT
    connector (JST-SH 1.0mm pitch).
 2. 4.7 kΩ pull-up resistors on SDA and SCL.
-3. Second Qwiic connector for daisy-chaining (Should priority).
+3. *Recommendation:* a second Qwiic connector for daisy-chaining is
+   encouraged but not required for HW-0200 compliance (see HW-0200
+   as a Should-priority enhancement).
 4. GPIO pin assignments configurable via NVS (ND-0608) — the PCB
    default pin mapping is documented and matches the firmware defaults.
 
@@ -149,7 +163,7 @@ The board MUST expose unused GPIO pins for application-specific wiring.
 
 **Acceptance criteria:**
 
-1. All GPIO pins not consumed by I2C, SPI, USB, or boot strapping
+1. All GPIO pins not consumed by I2C, SPI, USB, or bootstrapping
    are routed to 0.1" (2.54mm) pin headers.
 2. Pin header silkscreen labels match GPIO numbers.
 3. At least 4 GPIO pins available after I2C + USB allocation.
@@ -288,7 +302,7 @@ and generate a board-specific design without manual schematic editing.
 
 **Acceptance criteria:**
 
-1. A configuration file (YAML or TOML) specifies:
+1. A configuration file (YAML) specifies:
    - Number and type of Qwiic connectors (0, 1, or 2)
    - SPI header (yes/no)
    - 1-Wire header (yes/no)

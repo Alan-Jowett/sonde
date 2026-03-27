@@ -1,4 +1,13 @@
+<!-- SPDX-License-Identifier: MIT
+  Copyright (c) 2026 sonde contributors -->
 # Sonde Sensor Node — Hardware Design (Generation Tool)
+
+> **Document status:** Draft
+> **Source:** Derived from [hw-requirements.md](hw-requirements.md).
+> **Scope:** This document covers the architecture of the sonde hardware generation tool (`sonde-hw`).
+> **Related:** [hw-requirements.md](hw-requirements.md), [node-design.md](node-design.md)
+
+---
 
 ## 1  Overview
 
@@ -30,7 +39,7 @@ and netlist checks.
               └────────────┬────────────┘
                            │
                 ┌──────────▼──────────┐
-                │  Schematic (.sch)   │ HW-0800
+                │  Schematic (.kicad_sch) │ HW-0800
                 └──────────┬──────────┘
                            │
                     ┌──────▼──────┐

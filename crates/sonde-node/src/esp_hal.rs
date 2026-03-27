@@ -353,8 +353,14 @@ impl hal::Hal for EspHal {
                 if err != esp_idf_sys::ESP_OK as i32 {
                     warn!("gpio_set_direction({pin}, DISABLE) failed: {err}");
                 }
-                esp_idf_sys::gpio_pullup_dis(pin);
-                esp_idf_sys::gpio_pulldown_dis(pin);
+                let err = esp_idf_sys::gpio_pullup_dis(pin);
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    warn!("gpio_pullup_dis({pin}) failed: {err}");
+                }
+                let err = esp_idf_sys::gpio_pulldown_dis(pin);
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    warn!("gpio_pulldown_dis({pin}) failed: {err}");
+                }
             }
         }
 
@@ -370,8 +376,14 @@ impl hal::Hal for EspHal {
                 if err != esp_idf_sys::ESP_OK as i32 {
                     warn!("gpio_set_direction({pin}, DISABLE) failed: {err}");
                 }
-                esp_idf_sys::gpio_pullup_dis(pin as i32);
-                esp_idf_sys::gpio_pulldown_dis(pin as i32);
+                let err = esp_idf_sys::gpio_pullup_dis(pin as i32);
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    warn!("gpio_pullup_dis({pin}) failed: {err}");
+                }
+                let err = esp_idf_sys::gpio_pulldown_dis(pin as i32);
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    warn!("gpio_pulldown_dis({pin}) failed: {err}");
+                }
             }
             mask &= !(1u64 << pin);
         }

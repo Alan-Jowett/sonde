@@ -1225,6 +1225,24 @@ The node MUST apply build-type–aware log-level policies to eliminate logging o
 
 ---
 
+### ND-1013  GPIO sleep preparation
+
+**Priority:** Must  
+**Source:** PR #534
+
+**Description:**  
+Before entering deep sleep, the firmware MUST reset all bus peripheral GPIOs (I2C SDA/SCL, any BPF-configured output GPIOs) to a disabled state with no pull resistors to minimize sleep leakage current.
+
+**Acceptance criteria:**
+
+1. A `prepare_for_sleep()` function is called before `esp_deep_sleep_start()`.
+2. All I2C bus GPIOs (SDA, SCL) are reset to a disabled/high-impedance state with pull resistors removed.
+3. Any GPIOs configured as outputs by BPF helper calls during the wake cycle are reset to a disabled state.
+4. After `prepare_for_sleep()` completes, no GPIO pin sources leakage current through an active pull resistor or driven output.
+5. The GPIO reset does not affect RTC-domain pins required for wake-up (e.g., the pairing button GPIO).
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1301,3 +1319,4 @@ The node MUST apply build-type–aware log-level policies to eliminate logging o
 | ND-1010 | BPF helper I/O logging | Should |
 | ND-1011 | Chunk transfer logging | Must |
 | ND-1012 | Build-type–aware log levels | Must |
+| ND-1013 | GPIO sleep preparation | Must |

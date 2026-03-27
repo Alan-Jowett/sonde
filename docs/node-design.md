@@ -75,7 +75,7 @@ The node firmware is divided into eleven functional modules arranged in two tier
 | **BPF Runtime** | `sonde-bpf` interpreter, helper dispatch, execution constraints | ND-0504–0506, ND-0600–0606 |
 | **Map Storage** | Sleep-persistent maps in RTC slow SRAM | ND-0603, ND-0606 |
 | **HAL** | I2C, SPI, GPIO, ADC bus access for BPF helpers | ND-0601 |
-| **Sleep Manager** | Deep sleep entry, wake interval, RTC memory management | ND-0203 |
+| **Sleep Manager** | Deep sleep entry, wake interval, RTC memory management, GPIO sleep preparation | ND-0203, ND-1013 |
 | **Auth** | HMAC-SHA256 (hardware), nonce generation, response verification | ND-0300–0304 |
 | **BLE Pairing** | NimBLE stack, GATT provisioning service, PEER_REQUEST registration | ND-0900–0918 |
 
@@ -485,6 +485,20 @@ On wake, the firmware checks:
 | Otherwise | `WAKE_SCHEDULED` (0x00) |
 
 The flag for `WAKE_EARLY` is stored in RTC SRAM and cleared after reading.
+
+### 11.3  GPIO sleep preparation
+
+Before entering deep sleep, `prepare_for_sleep()` is called to eliminate GPIO leakage current (ND-1013).
+
+1. Enumerate all I2C bus GPIOs (SDA and SCL for each configured bus) and reset them to a disabled/high-impedance state with no pull resistors via `gpio_reset_pin()`.
+2. Enumerate any GPIOs that were configured as outputs by BPF helper calls (`gpio_write`) during the current wake cycle and reset them to a disabled state.
+3. Skip RTC-domain pins required for wake-up sources (e.g., pairing button GPIO) — these must retain their configured state.
+
+**Implementation notes:**
+
+- `prepare_for_sleep()` is called from `SleepManager` immediately before step 3 (deep sleep entry) in §11.1.
+- The HAL layer tracks which GPIOs were configured during the wake cycle via a small bitset.
+- `gpio_reset_pin()` restores the ESP-IDF default: input-disabled, output-disabled, no pull-up/pull-down.
 
 ---
 

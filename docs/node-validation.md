@@ -1151,6 +1151,21 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N1016  GPIO state after sleep preparation
+
+**Validates:** ND-1013
+
+**Procedure:**
+1. Provision a node with non-default I2C pins (e.g., SDA=5, SCL=6).
+2. Install a BPF program that calls `gpio_write` on an additional output GPIO (e.g., GPIO 7).
+3. Run a complete wake cycle so that I2C and GPIO peripherals are active.
+4. Assert: `prepare_for_sleep()` is called before deep sleep entry.
+5. Assert: I2C SDA and SCL GPIOs are reset to disabled/high-impedance with no pull resistors.
+6. Assert: the BPF-configured output GPIO is reset to a disabled state.
+7. Assert: the RTC wake-up GPIO (pairing button) retains its configured state.
+
+---
+
 ### T-N1008  Deep sleep entered log
 
 **Validates:** ND-1007
@@ -1641,6 +1656,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0917 | T-N906 |
 | ND-0918 | *(verified by sdkconfig.defaults setting)* |
 | ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f |
+| ND-1013 | T-N1016 |
 
 ---
 
@@ -1736,6 +1752,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N929 | `t_n929_write_to_read_only_context_silently_ignored` | sonde_bpf_adapter.rs |
 | T-N940 | `t_n940_payload_len_exceeds_remaining_data`, `t_n940_payload_len_max_u16_rejected` | ble_pairing.rs |
 | T-N941 | `t_n941_exchange_peer_ack_corrupted_hmac_discarded`, `peer_ack_tampered_hmac` | peer_request.rs |
+| T-N1016 | *(hardware — validated on target: GPIO state after sleep preparation)* | — |
 
 > **Note:** Spec cases marked *(hardware — validated on target)* require the
 > NimBLE BLE stack or physical peripherals and cannot run in the host-based

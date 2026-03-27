@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT
+     Copyright (c) 2026 sonde contributors
+
+     Windows Performance Recorder Profile for sonde-gateway ETW traces.
+
+     Usage:
+       wpr -start deploy\sonde-gateway.wprp
+       # ... reproduce the issue ...
+       wpr -stop trace.etl
+       # Open trace.etl in Windows Performance Analyzer (WPA)
+
+     The provider GUID is derived from the name "sonde-gateway" using the
+     TraceLogging name-hashing algorithm (UUID v5, ETW namespace).
+-->
+<WindowsPerformanceRecorder Version="1.0" Author="sonde contributors">
+  <Profiles>
+
+    <!-- Event collector: buffer settings for the sonde-gateway provider -->
+    <EventCollector Id="SondeCollector" Name="Sonde Gateway Collector">
+      <BufferSize Value="64" />
+      <Buffers Value="16" />
+    </EventCollector>
+
+    <!-- sonde-gateway TraceLogging provider.
+         GUID derived from name "sonde-gateway" via TraceLogging name-hash.
+         Use both Name and Id to match regardless of registration method. -->
+    <EventProvider Id="SondeGatewayProvider"
+                   Name="*sonde-gateway" />
+    <!-- Prefix '*' tells WPR this is a TraceLogging provider (name-based GUID). -->
+
+    <!-- Profile definition -->
+    <Profile Id="SondeGateway.Verbose.File"
+             Name="SondeGateway"
+             Description="Capture all sonde-gateway ETW events"
+             LoggingMode="File"
+             DetailLevel="Verbose">
+      <Collectors>
+        <EventCollectorId Value="SondeCollector">
+          <EventProviders>
+            <EventProviderId Value="SondeGatewayProvider" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+
+    <Profile Id="SondeGateway.Verbose.Memory"
+             Name="SondeGateway"
+             Description="Capture all sonde-gateway ETW events (circular buffer)"
+             LoggingMode="Memory"
+             DetailLevel="Verbose"
+             Base="SondeGateway.Verbose.File" />
+
+  </Profiles>
+</WindowsPerformanceRecorder>

@@ -1,0 +1,21 @@
+; SPDX-License-Identifier: MIT
+; Copyright (c) 2026 sonde contributors
+;
+; ETW provider GUID file for sonde-gateway TraceLogging provider.
+;
+; Usage (real-time trace):
+;   tracelog -start SondeTrace -guid deploy\sonde-gateway.guid -rt -level 5
+;   tracefmt -rt SondeTrace -displayonly -jsonMeta 0
+;   tracelog -stop SondeTrace
+;
+; Usage (file trace):
+;   tracelog -start SondeTrace -guid deploy\sonde-gateway.guid -o trace.etl -level 5
+;   tracelog -stop SondeTrace
+;   tracefmt trace.etl -displayonly -jsonMeta 0
+;
+; The GUID is derived from the provider name "sonde-gateway" using the
+; TraceLogging name-hashing algorithm (EventSource convention).
+;
+; Level 5 = Verbose (all events including DEBUG/TRACE)
+
+*sonde-gateway

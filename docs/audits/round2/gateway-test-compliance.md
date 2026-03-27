@@ -44,8 +44,8 @@ the actual test checks something different.
 - **Documents examined:**
   - `docs/gateway-validation.md` — 131 automatable test cases
     (T-0100 through T-1304)
-  - `docs/gateway-requirements.md` — 72 requirements (GW-0100 through
-    GW-1304)
+  - `docs/gateway-requirements.md` — 83 requirements (GW-0100 through
+    GW-1304, including GW-0601a/GW-0601b)
 - **Tools used:** Grep/glob pattern search, source file inspection,
   cross-reference of test function names against T-XXXX identifiers
 - **Limitations:**

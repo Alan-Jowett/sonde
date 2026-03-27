@@ -5,7 +5,7 @@
 
 ## 1. Executive Summary
 
-The sonde-modem codebase was audited against 35 active requirements (MD-0100 through MD-0505, excluding superseded MD-0406) and the modem design specification. **33 of 35 requirements (94%) are implemented and traceable to code.** Two requirements are partially implemented, and no requirements are completely unimplemented. Five findings of undocumented behavior (D9) were identified — all are benign infrastructure or documented design notes in the design spec. Three constraint-related findings (D10) were identified, all at Medium or Informational severity. The codebase demonstrates strong spec-to-code alignment with comprehensive test coverage at the bridge layer.
+The sonde-modem codebase was audited against 40 active requirements (MD-0100 through MD-0505, excluding superseded MD-0406) and the modem design specification. **38 of 40 requirements (95%) are implemented and traceable to code.** Two requirements are partially implemented, and no requirements are completely unimplemented. Five findings of undocumented behavior (D9) were identified — all are benign infrastructure or documented design notes in the design spec. Three constraint-related findings (D10) were identified, all at Medium or Informational severity. The codebase demonstrates strong spec-to-code alignment with comprehensive test coverage at the bridge layer.
 
 ## 2. Problem Statement
 
@@ -177,9 +177,9 @@ This audit determines whether the modem firmware source code implements the beha
 
 | Metric | Value |
 |--------|-------|
-| Total requirements (active) | 35 (MD-0406 superseded, excluded) |
-| Implemented | 33 (94%) |
-| Partially implemented | 2 (6%) — F-001 (MD-0302 design mismatch), F-003 (MD-0303 semantic ambiguity) |
+| Total requirements (active) | 40 (MD-0406 superseded, excluded) |
+| Implemented | 38 (95%) |
+| Partially implemented | 2 (5%) — F-001 (MD-0302 design mismatch), F-003 (MD-0303 semantic ambiguity) |
 | Unimplemented (D8) | 0 (0%) |
 | Undocumented behaviors (D9) | 5 (F-003, F-004, F-006, F-007, F-008) |
 | Constraint violations (D10) | 1 finding (F-001), 1 confirmation (F-002) |

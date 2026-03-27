@@ -6,18 +6,18 @@
 ## 1. Executive Summary
 
 A systematic traceability audit of the sonde gateway specification set
-(requirements, design, validation) across all 58 requirements (GW-0100
-through GW-1304) identified **10 findings** of specification drift. Two
-are **High** severity: an untested security-relevant requirement
-(GW-1304, build-type–aware log levels) and illusory test coverage for
-the REBOOT command priority (T-0205 vs GW-0204). Five are **Medium**
-severity, covering untested modem logging (GW-1301), four requirements
-whose REQ-IDs are absent from the design document despite their behavior
-being addressed, and a systemic absence of documented assumptions. Three
-are **Low** severity, comprising minor traceability labeling gaps and a
-stale internal cross-reference. Overall specification integrity is
-**high** — forward traceability to both design and validation exceeds
-93 %, and no constraint violations (D6) were found.
+(requirements, design, validation) across all 83 requirements (GW-0100
+through GW-1304, including GW-0601a/GW-0601b) identified **10 findings**
+of specification drift. Two are **High** severity: an untested
+security-relevant requirement (GW-1304, build-type–aware log levels) and
+illusory test coverage for the REBOOT command priority (T-0205 vs
+GW-0204). Five are **Medium** severity, covering untested modem logging
+(GW-1301), four requirements whose REQ-IDs are absent from the design
+document despite their behavior being addressed, and a systemic absence
+of documented assumptions. Three are **Low** severity, comprising minor
+traceability labeling gaps and a stale internal cross-reference. Overall
+specification integrity is **high** — no constraint violations (D6) were
+found.
 
 ## 2. Problem Statement
 
@@ -37,7 +37,7 @@ illusory test coverage, and scope creep.
 ## 3. Investigation Scope
 
 - **Codebase / components examined:**
-  - `docs/gateway-requirements.md` — 58 REQ-IDs (GW-0100 through GW-1304)
+  - `docs/gateway-requirements.md` — 83 REQ-IDs (GW-0100 through GW-1304, including GW-0601a/GW-0601b)
   - `docs/gateway-design.md` — 19 sections, 10 modules, 17 design decisions
   - `docs/gateway-validation.md` — ~130 test cases (T-0100 through T-1304, including variants)
 - **Time period:** Audit conducted against current HEAD of each document.
@@ -382,10 +382,10 @@ illusory test coverage, and scope creep.
 
 | Metric | Value |
 |--------|-------|
-| **Total requirements** | 58 |
-| **Requirements → Design (traced)** | 54 of 58 (93.1 %) |
+| **Total requirements** | 83 |
+| **Requirements → Design (traced)** | 54 of 83 (65.1 %) |
 | **Requirements → Design (untraced by REQ-ID)** | GW-0807, GW-1216, GW-1223, GW-1224 (all 4 have behavior addressed but REQ-ID not cited) |
-| **Requirements → Validation (traced)** | 56 of 58 (96.6 %) |
+| **Requirements → Validation (traced)** | 56 of 83 (67.5 %) |
 | **Requirements → Validation (untested)** | GW-1301 (deferred to manual), GW-1304 (absent) |
 | **Design → Requirements (orphaned)** | 0 — all design components trace to at least one requirement |
 | **Validation → Requirements (orphaned)** | 0 — all test cases reference valid REQ-IDs |

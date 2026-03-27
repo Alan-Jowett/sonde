@@ -19,7 +19,7 @@ The validation plan (`node-validation.md`) specifies integration test cases for 
 
 - **Codebase / components examined:**
   - `docs/node-validation.md` — 99 automatable test cases (T-N100 through T-N0607f)
-  - `docs/node-requirements.md` — 53 requirements (ND-0100 through ND-1012)
+  - `docs/node-requirements.md` — 73 requirements (ND-0100 through ND-1012, including ND-0403a/ND-0501a)
   - `crates/sonde-node/src/*.rs` — 12 files with `#[cfg(test)]` modules
 - **Tools used:** grep, file view, manual cross-reference of test functions to validation plan IDs
 - **Method:** Forward traceability (validation plan → test code) for all 99 automatable test cases, plus backward traceability (test code → validation plan) for exploratory/regression tests

@@ -6,13 +6,15 @@
 ## 1. Executive Summary
 
 A code compliance audit of the sonde-node firmware was performed against
-the Node Requirements Specification (`node-requirements.md`, 51
-requirements ND-0100 through ND-1012) and the Node Design Specification
-(`node-design.md`). The implementation is broadly compliant: **48 of 51
-requirements are fully implemented**, with **1 partially implemented
-(ND-1008)** and **2 "Should"-priority requirements not yet implemented
-(ND-0403, ND-0403a)**. Three findings are reported below, all Medium
-severity or lower. No Critical or High severity gaps were identified.
+the Node Requirements Specification (`node-requirements.md`, 73
+requirements ND-0100 through ND-1012, including ND-0403a/ND-0501a) and
+the Node Design Specification (`node-design.md`). The implementation is
+broadly compliant: **67 of 73 requirements are fully implemented**, with
+**1 partially implemented (ND-1008)**, **2 "Should"-priority requirements
+not yet implemented (ND-0403, ND-0403a)**, and **3 not examined in this
+audit (ND-0401 intentionally unassigned, ND-0607, ND-0608)**. Three
+findings are reported below, all Medium severity or lower. No Critical
+or High severity gaps were identified.
 
 ## 2. Problem Statement
 
@@ -41,7 +43,7 @@ direction — specified-but-not-built (D8) or built-but-not-specified (D9)
   - `crates/sonde-node/src/bin/node.rs` — firmware entry point (ND-1000,
     ND-0901)
 - **Specification documents examined**:
-  - `docs/node-requirements.md` (51 requirements)
+  - `docs/node-requirements.md` (73 requirements)
   - `docs/node-design.md` (17 sections)
 - **Tools used**: Static code analysis via grep, glob, and targeted
   file reading. No runtime testing performed.
@@ -166,14 +168,15 @@ direction — specified-but-not-built (D8) or built-but-not-specified (D9)
 
 | Metric | Value |
 |--------|-------|
-| Total requirements | 51 |
-| Fully implemented | 48 (94.1%) |
+| Total requirements | 73 |
+| Fully implemented | 67 (91.8%) |
 | Partially implemented | 1 (ND-1008) |
 | Not implemented (Should priority) | 2 (ND-0403, ND-0403a) |
+| Not examined in this audit | 3 (ND-0401 unassigned, ND-0607, ND-0608) |
 | D8 findings (unimplemented) | 2 |
 | D9 findings (undocumented behavior) | 0 |
 | D10 findings (constraint violation) | 1 |
-| Must-priority compliance | 48/49 (98.0%) |
+| Must-priority compliance | 67/68 (98.5%) |
 | Should-priority compliance | 0/2 (0%) |
 
 ### Requirement-by-Requirement Traceability
@@ -296,4 +299,4 @@ requirements indirectly and does not constitute undocumented behavior.
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
-| 1.0 | 2025-07-09 | Copilot (audit agent) | Initial audit — 51 requirements traced, 3 findings |
+| 1.0 | 2025-07-09 | Copilot (audit agent) | Initial audit — 73 requirements traced, 3 findings |

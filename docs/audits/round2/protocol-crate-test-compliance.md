@@ -6,10 +6,10 @@
 ## 1. Executive Summary
 
 The `sonde-protocol` crate's automated test suite was audited against the
-validation plan (`protocol-crate-validation.md`, 48 test cases T-P001–T-P072)
-and the protocol specification (`protocol.md`). All 48 automatable test cases
+validation plan (`protocol-crate-validation.md`, 62 test cases T-P001–T-P071)
+and the protocol specification (`protocol.md`). All 62 automatable test cases
 defined in the validation plan have corresponding automated tests in the test
-code. Of the 48, 45 are fully compliant (IMPLEMENTED) with correct assertions
+code. Of the 62, 59 are fully compliant (IMPLEMENTED) with correct assertions
 matching the validation plan's expected results. Three findings were identified:
 two D13 assertion mismatches where the test code's naming/structure diverges
 from the validation plan's test ID mapping, and one D12 untested acceptance
@@ -29,7 +29,7 @@ assertions verify something different.
 ## 3. Investigation Scope
 
 - **Codebase / components examined**:
-  - Validation plan: `docs/protocol-crate-validation.md` (48 test cases:
+  - Validation plan: `docs/protocol-crate-validation.md` (62 test cases:
     T-P001–T-P004, T-P010–T-P019c, T-P020–T-P039, T-P040–T-P049,
     T-P050–T-P055, T-P060–T-P066, T-P070–T-P071)
   - Requirements: `docs/protocol.md` (§3–§10)
@@ -170,13 +170,13 @@ The test suite thoroughly covers the validation plan.
 
 | Metric | Value |
 |--------|-------|
-| Total test cases in validation plan | 48 |
-| Automatable test cases | 48 |
+| Total test cases in validation plan | 62 |
+| Automatable test cases | 62 |
 | Manual-only test cases | 0 |
 | Deferred test cases | 0 |
-| **Test implementation rate** | **48/48 (100%)** |
-| Test cases with full assertion coverage | 45/48 (94%) |
-| Test cases with partial assertion coverage | 3/48 (6%) — F-001, F-002, F-003 |
+| **Test implementation rate** | **62/62 (100%)** |
+| Test cases with full assertion coverage | 59/62 (95%) |
+| Test cases with partial assertion coverage | 3/62 (5%) — F-001, F-002, F-003 |
 | D11 (unimplemented) findings | 0 |
 | D12 (untested acceptance criterion) findings | 1 (Low severity) |
 | D13 (assertion mismatch) findings | 2 (Low severity) |

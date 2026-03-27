@@ -14,9 +14,9 @@ message types (`PEER_REQUEST` 0x05, `PEER_ACK` 0x84) defined in the
 protocol spec but absent from both design and validation; (2) three
 design-document modules (`key_hint_from_psk`, modem serial codec, BLE
 envelope codec) with zero test coverage in the validation plan; and (3) the
-validation plan claims 66 test cases but only 60 are enumerated. No
+validation plan claims 66 test cases but only 62 are enumerated. No
 constraint violations (D6) or acceptance-criteria mismatches (D7) were
-found. Recommended action: add the six missing test areas and reconcile the
+found. Recommended action: add the four missing test cases and reconcile the
 test count.
 
 ## 2. Problem Statement
@@ -33,7 +33,7 @@ these three artifacts before implementation proceeds further.
 - **Documents examined:**
   - Requirements: `docs/protocol.md` (§1–§10, draft)
   - Design: `docs/protocol-crate-design.md` (§1–§11, draft)
-  - Validation: `docs/protocol-crate-validation.md` (§1–§7, draft, 60 enumerated test cases)
+  - Validation: `docs/protocol-crate-validation.md` (§1–§7, draft, 62 enumerated test cases)
 - **Time period:** Round 2 audit
 - **Tools used:** Manual cross-document traceability analysis, identifier enumeration, structural comparison
 - **Limitations:**
@@ -80,7 +80,7 @@ these three artifacts before implementation proceeds further.
 | 9 | §10 | Modem serial codec (`modem.rs`) |
 | 10 | §11 | BLE envelope codec (`ble_envelope.rs`) |
 
-**Validation (protocol-crate-validation.md) — 60 test cases enumerated (66 claimed):**
+**Validation (protocol-crate-validation.md) — 62 test cases enumerated (66 claimed):**
 
 | Section | ID range | Count | Area |
 |---------|----------|-------|------|
@@ -90,7 +90,8 @@ these three artifacts before implementation proceeds further.
 | §5 | T-P040 – T-P049 | 10 | Program image |
 | §6 | T-P050 – T-P055 | 6 | Chunking helpers |
 | §7 | T-P060 – T-P066 | 7 | Full integration |
-| | **Total** | **60** | |
+| §8 | T-P070 – T-P071 | 2 | Additional |
+| | **Total** | **62** | |
 
 ## 4. Findings
 
@@ -106,7 +107,7 @@ these three artifacts before implementation proceeds further.
   This function is used by both the gateway and node to derive the 2-byte
   key_hint from a pre-shared key. No test case in the validation plan
   exercises this function.
-- **Evidence:** Searched all 60 test cases (T-P001 through T-P066) for
+- **Evidence:** Searched all 62 test cases (T-P001 through T-P071) for
   references to `key_hint_from_psk`, `key_hint` derivation, `SHA-256(PSK)`,
   or bytes `[30..32]`. No matches found. The only `key_hint` references in
   the validation plan are in T-P001 through T-P004 (header round-trip), which
@@ -331,16 +332,16 @@ these three artifacts before implementation proceeds further.
 
 ---
 
-### Finding F-009: Validation plan claims 66 test cases but only 60 are enumerated
+### Finding F-009: Validation plan claims 66 test cases but only 62 are enumerated
 
 - **Severity:** Low
 - **Category:** D5_ASSUMPTION_DRIFT
 - **Location:**
   - Validation: `protocol-crate-validation.md` §1 — "There are 66 test cases total"
-  - Validation: §2–§7 — 60 test cases enumerated (T-P001–T-P004, T-P010–T-P019c, T-P020–T-P039, T-P040–T-P049, T-P050–T-P055, T-P060–T-P066)
+  - Validation: §2–§8 — 62 test cases enumerated (T-P001–T-P004, T-P010–T-P019c, T-P020–T-P039, T-P040–T-P049, T-P050–T-P055, T-P060–T-P066, T-P070–T-P071)
 - **Description:** The overview section states the document contains 66 test
-  cases, but a complete enumeration yields only 60 distinct test case IDs.
-  The 6-test discrepancy is unexplained.
+  cases, but a complete enumeration yields only 62 distinct test case IDs.
+  The 4-test discrepancy is unexplained.
 - **Evidence:** Count by section:
   - §2 Frame header: 4 (T-P001–T-P004)
   - §3 Frame codec: 13 (T-P010–T-P019c)
@@ -348,14 +349,15 @@ these three artifacts before implementation proceeds further.
   - §5 Program image: 10 (T-P040–T-P049)
   - §6 Chunking helpers: 6 (T-P050–T-P055)
   - §7 Integration: 7 (T-P060–T-P066)
-  - Total: 60
+  - §8 Additional: 2 (T-P070–T-P071)
+  - Total: 62
 - **Root Cause:** [INFERRED] The count may reflect a previous revision that
-  included 6 additional test cases (possibly for key_hint derivation, modem,
+  included 4 additional test cases (possibly for key_hint derivation, modem,
   or BLE modules) that were subsequently removed or deferred without
   updating the count.
 - **Impact:** Stakeholders relying on the stated count may overestimate test
   coverage.
-- **Remediation:** Either update the count to 60, or add the 6 missing test
+- **Remediation:** Either update the count to 62, or add the 4 missing test
   cases (candidates: key_hint_from_psk tests, modem codec tests, BLE
   envelope tests — see F-001, F-002, F-003).
 - **Confidence:** High (count is mechanically verifiable)
@@ -473,10 +475,10 @@ mismatch between protocol.md (node ↔ gateway wire protocol) and the crate
 
 **Backward traceability (Tests → Requirements):**
 
-All 60 enumerated test cases include a "Validates" field referencing
+All 62 enumerated test cases include a "Validates" field referencing
 `protocol.md` section numbers.
 
-**Result: 60/60 = 100% traced to requirements.**
+**Result: 62/62 = 100% traced to requirements.**
 
 **Design modules with zero test coverage in validation plan:**
 
@@ -510,7 +512,7 @@ violations or acceptance-criteria mismatches of high severity were found.
 | 4 | F-002 | Add modem serial codec test cases to validation plan (or separate doc) | M | Low |
 | 5 | F-003 | Add BLE envelope codec test cases to validation plan (or separate doc) | S | Low |
 | 6 | F-005 | Document u32 narrowing assumption in design; add overflow test | S | Low |
-| 7 | F-009 | Correct test case count in validation plan §1 (66 → 60, or add missing tests) | S | Low |
+| 7 | F-009 | Correct test case count in validation plan §1 (66 → 62, or add missing tests) | S | Low |
 | 8 | F-007 | Add scope note to design §10 referencing `modem-protocol.md` | S | Low |
 | 9 | F-008 | Add scope note to design §11 referencing `ble-pairing-protocol.md` | S | Low |
 | 10 | F-010 | Resolve BLE scope inconsistency (add message types or add scope note) | S | Low |
@@ -542,7 +544,7 @@ violations or acceptance-criteria mismatches of high severity were found.
    pointer to the other document). **Resolution:** Check `security.md` for
    the derivation formula.
 
-2. **Are the 6 missing test cases (66 − 60) intentionally removed or
+2. **Are the 4 missing test cases (66 − 62) intentionally removed or
    planned?** The discrepancy may reflect deferred test cases for
    key_hint, modem, or BLE functionality. **Resolution:** Check version
    control history of `protocol-crate-validation.md` for removed test cases.

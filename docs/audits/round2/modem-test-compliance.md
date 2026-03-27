@@ -4,7 +4,7 @@
 
 ## 1. Executive Summary
 
-This audit assessed the sonde-modem test suite against the modem validation plan (57 active test cases across T-01xx–T-07xx) and 35 active requirements (MD-0100–MD-0505). Of 57 active test cases, 14 are manual/hardware-only and excluded from the automated-test audit scope, leaving 43 automatable candidates. Of those 43, **31 are fully implemented**, **2 are partially implemented** (D12/D13 findings), and **10 are not implemented** (D11 findings). The dominant gap is in BLE pairing relay tests that require real BLE hardware or a BLE simulator not present in the test harness. Remediation should prioritize T-0607/T-0607a/T-0607b (LESC pairing) and T-0636 (idle timeout), which cover security-critical requirements.
+This audit assessed the sonde-modem test suite against the modem validation plan (57 active test cases across T-01xx–T-07xx) and 40 active requirements (MD-0100–MD-0505, excluding superseded MD-0406). Of 57 active test cases, 14 are manual/hardware-only and excluded from the automated-test audit scope, leaving 43 automatable candidates. Of those 43, **31 are fully implemented**, **2 are partially implemented** (D12/D13 findings), and **10 are not implemented** (D11 findings). The dominant gap is in BLE pairing relay tests that require real BLE hardware or a BLE simulator not present in the test harness. Remediation should prioritize T-0607/T-0607a/T-0607b (LESC pairing) and T-0636 (idle timeout), which cover security-critical requirements.
 
 ## 2. Problem Statement
 
@@ -18,7 +18,7 @@ The modem validation plan defines 57 active test cases (excluding 3 superseded/r
   - `crates/sonde-modem/src/status.rs` — counter unit tests (lines 90–205)
   - `crates/sonde-modem/tests/device_tests.rs` — device integration tests (lines 1–422)
 - **Documents examined**:
-  - `docs/modem-requirements.md` — 35 active requirements (MD-0100–MD-0505)
+  - `docs/modem-requirements.md` — 40 active requirements (MD-0100–MD-0505, excluding superseded MD-0406)
   - `docs/modem-validation.md` — 57 active test cases (T-0100–T-0704)
 - **Tools used**: Static analysis of test code against validation plan specifications. File search via `grep` and `glob`.
 - **Limitations**:

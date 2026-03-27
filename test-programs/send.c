@@ -10,13 +10,12 @@
 
 #include "include/sonde_helpers.h"
 
-/** Fixed payload — deterministic so tests can match on content. */
-static const __u8 SEND_BLOB[] = { 0xAA, 0xBB };
-
+/** Fixed payload — on stack to avoid .rodata global map (prevail-rust#1). */
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {
     (void)ctx;
-    send(SEND_BLOB, sizeof(SEND_BLOB));
+    __u8 blob[] = { 0xAA, 0xBB };
+    send(blob, sizeof(blob));
     return 0;
 }

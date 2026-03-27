@@ -29,6 +29,7 @@ fn main() {
     use sonde_node::esp_sleep::EspSleepController;
     use sonde_node::esp_storage::NvsStorage;
     use sonde_node::esp_transport::EspNowTransport;
+    use sonde_node::hal::Hal;
     use sonde_node::map_storage::{MapStorage, MAP_BUDGET};
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
     use sonde_node::traits::{PlatformStorage, SleepController};
@@ -181,6 +182,7 @@ fn main() {
 
     match outcome {
         WakeCycleOutcome::Sleep { seconds } => {
+            hal.prepare_for_sleep();
             sleep_ctrl.enter_deep_sleep(seconds);
         }
         WakeCycleOutcome::Reboot => {

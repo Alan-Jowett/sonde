@@ -53,6 +53,21 @@ pub trait Hal {
     /// Read a raw value from an ADC channel.
     /// Returns the ADC reading on success, negative on error.
     fn adc_read(&mut self, channel: u32) -> i32;
+
+    /// Prepare hardware for deep sleep by placing all peripherals and
+    /// GPIOs into low-power states.
+    ///
+    /// Implementations should:
+    /// - Deinitialize bus peripherals (I2C, SPI) to release their pins
+    /// - Reset GPIO pins configured during the wake cycle to disabled
+    ///   (no input buffer, no output driver, no pull resistors)
+    /// - Clear ADC configuration
+    ///
+    /// This must be called immediately before entering deep sleep to
+    /// minimize leakage current. See issue #517 for background.
+    ///
+    /// The default implementation is a no-op (suitable for test mocks).
+    fn prepare_for_sleep(&mut self) {}
 }
 
 /// Read the current battery voltage in millivolts.

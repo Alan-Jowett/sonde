@@ -1370,6 +1370,77 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    async fn replace_phone_psks(&self, records: &[PhonePskRecord]) -> Result<(), StorageError> {
+        use crate::phone_trust::PHONE_LABEL_MAX_BYTES;
+
+        for r in records {
+            if r.label.len() > PHONE_LABEL_MAX_BYTES {
+                return Err(StorageError::Internal(format!(
+                    "phone label exceeds {PHONE_LABEL_MAX_BYTES}-byte limit: {} bytes",
+                    r.label.len()
+                )));
+            }
+        }
+
+        let mk = self.master_key.clone();
+        let records = records.to_vec();
+        self.with_conn(move |conn| {
+            conn.execute_batch("BEGIN IMMEDIATE").map_err(map_err)?;
+
+            let result = (|| -> Result<(), StorageError> {
+                conn.execute("DELETE FROM phone_psks", [])
+                    .map_err(map_err)?;
+
+                for record in &records {
+                    let issued_at = system_time_to_epoch_s(&record.issued_at);
+
+                    // Insert with a placeholder PSK to get the auto-increment id.
+                    conn.execute(
+                        "INSERT INTO phone_psks \
+                         (phone_key_hint, psk, label, issued_at_epoch_s, status) \
+                         VALUES (?1, X'00', ?2, ?3, ?4)",
+                        params![
+                            record.phone_key_hint as u32,
+                            &record.label,
+                            issued_at,
+                            record.status.to_string(),
+                        ],
+                    )
+                    .map_err(map_err)?;
+
+                    let rowid = conn.last_insert_rowid();
+                    let phone_id = u32::try_from(rowid).map_err(|_| {
+                        StorageError::Internal(format!("phone_id rowid {rowid} exceeds u32::MAX"))
+                    })?;
+
+                    // Encrypt PSK with the actual phone_id as AAD and update.
+                    let encrypted_psk = encrypt_phone_psk(&mk, phone_id, &record.psk)?;
+                    conn.execute(
+                        "UPDATE phone_psks SET psk = ?1 WHERE phone_id = ?2",
+                        params![encrypted_psk, phone_id],
+                    )
+                    .map_err(map_err)?;
+                }
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => {
+                    conn.execute_batch("COMMIT").map_err(|e| {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        map_err(e)
+                    })?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

@@ -625,17 +625,13 @@ impl GatewayAdmin for AdminService {
                 .map_err(storage_err)?;
         }
 
-        // Replace phone PSK registrations.
-        let existing_psks = self.storage.list_phone_psks().await.map_err(storage_err)?;
-        for p in &existing_psks {
-            self.storage
-                .delete_phone_psk(p.phone_id)
-                .await
-                .map_err(storage_err)?;
-        }
-        for p in &phone_psks {
-            self.storage.store_phone_psk(p).await.map_err(storage_err)?;
-        }
+        // Replace phone PSK registrations atomically.
+        // SqliteStorage performs this in a single transaction; other backends
+        // use the default non-atomic delete-then-insert fallback.
+        self.storage
+            .replace_phone_psks(&phone_psks)
+            .await
+            .map_err(storage_err)?;
 
         // Restore handler routing configuration.
         *self.handler_configs.write().await = handler_cfgs;

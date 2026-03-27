@@ -92,6 +92,22 @@ pub trait Storage: Send + Sync {
     async fn store_phone_psk(&self, record: &PhonePskRecord) -> Result<u32, StorageError>;
     async fn revoke_phone_psk(&self, phone_id: u32) -> Result<(), StorageError>;
     async fn delete_phone_psk(&self, phone_id: u32) -> Result<(), StorageError>;
+
+    /// Atomically replace all phone PSK registrations with the given set.
+    ///
+    /// Implementations should perform the replacement in a single transaction
+    /// where possible. The default implementation is non-atomic (delete-then-insert).
+    async fn replace_phone_psks(&self, records: &[PhonePskRecord]) -> Result<(), StorageError> {
+        // Default: non-atomic fallback for backends that don't support transactions.
+        let existing = self.list_phone_psks().await?;
+        for p in existing {
+            self.delete_phone_psk(p.phone_id).await?;
+        }
+        for p in records {
+            self.store_phone_psk(p).await?;
+        }
+        Ok(())
+    }
 }
 
 /// In-memory storage backend for testing.
@@ -259,6 +275,33 @@ impl Storage for InMemoryStorage {
     async fn delete_phone_psk(&self, phone_id: u32) -> Result<(), StorageError> {
         let mut psks = self.phone_psks.write().await;
         psks.retain(|p| p.phone_id != phone_id);
+        Ok(())
+    }
+
+    async fn replace_phone_psks(&self, records: &[PhonePskRecord]) -> Result<(), StorageError> {
+        use crate::phone_trust::PHONE_LABEL_MAX_BYTES;
+
+        for r in records {
+            if r.label.len() > PHONE_LABEL_MAX_BYTES {
+                return Err(StorageError::Internal(format!(
+                    "phone label exceeds {PHONE_LABEL_MAX_BYTES}-byte limit: {} bytes",
+                    r.label.len()
+                )));
+            }
+        }
+
+        let mut psks = self.phone_psks.write().await;
+        let mut next_id = self.next_phone_id.write().await;
+        psks.clear();
+        for r in records {
+            let id = *next_id;
+            let mut stored = r.clone();
+            stored.phone_id = id;
+            *next_id = id
+                .checked_add(1)
+                .ok_or_else(|| StorageError::Internal("phone_id overflow".into()))?;
+            psks.push(stored);
+        }
         Ok(())
     }
 }

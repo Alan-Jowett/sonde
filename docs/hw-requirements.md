@@ -118,9 +118,8 @@ for plug-and-play sensor modules.
 1. I2C0 SDA and SCL routed to at least one 4-pin Qwiic/STEMMA QT
    connector (JST-SH 1.0mm pitch).
 2. 4.7 kΩ pull-up resistors on SDA and SCL.
-3. *Recommendation:* a second Qwiic connector for daisy-chaining is
-   encouraged but not required for HW-0200 compliance (see HW-0200
-   as a Should-priority enhancement).
+3. *Recommendation:* provide a second Qwiic connector for daisy-chaining;
+   this is encouraged but not required for HW-0200 compliance.
 4. GPIO pin assignments configurable via NVS (ND-0608) — the PCB
    default pin mapping is documented and matches the firmware defaults.
 
@@ -355,7 +354,7 @@ well-defined schema that captures all parameterizable options.
    - `power.regulator`: LDO or switching
    - `board.size`: `compact` | `standard`
    - `board.layers`: 2 | 4
-   - `board.fab`: JLCPCB | PCBWay | OSHPark | custom DRC rules
+   - `board.fab`: JLCPCB | PCBWay | oshpark | custom DRC rules
 3. Unknown keys are rejected (strict parsing).
 4. A `sonde-hw validate config.yaml` command checks the configuration
    against the schema and reports errors before generation.

@@ -248,11 +248,18 @@ async fn main() {
     if let Err(e) = result {
         if let Some(status) = e.downcast_ref::<tonic::Status>() {
             let msg = status.message();
+            // Detect verification failures by the summary prefix
+            // produced by ProgramLibrary::ingest_elf (GW-1305).
+            let is_verification =
+                msg.starts_with("verification failed:") || msg.contains("failed verification");
             if cli.verbose {
                 eprintln!("Error: {msg}");
-            } else {
-                // Without --verbose, show the summary line and the first error,
-                // then a hint — matching the Prevail CLI's default output.
+            } else if is_verification {
+                // Without --verbose, show the summary line and the first
+                // verifier error, then a hint (GW-1305 criterion 3).
+                // The gateway places find_first_error() output as the
+                // first line after the summary, so lines.next() is
+                // reliable here.
                 let mut lines = msg.lines();
                 let summary = lines.next().unwrap_or(msg);
                 eprintln!("Error: {summary}");
@@ -263,6 +270,8 @@ async fn main() {
                     }
                 }
                 eprintln!("Hint: run with --verbose for full invariants.");
+            } else {
+                eprintln!("Error: {msg}");
             }
         } else {
             eprintln!("Error: {e}");

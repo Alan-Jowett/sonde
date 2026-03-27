@@ -460,20 +460,18 @@ impl ProgramLibrary {
                 // (GW-1305).
                 //
                 // Line 1: summary (always present).
-                // Line 2: first error from `find_first_error()`.
-                // Lines 3+: full invariant state from `print_invariants()`.
-                // Unmarshal-stage notes are prepended when present.
+                // Line 2: first error from `find_first_error()` — clients
+                //         rely on this being the very first line after the
+                //         summary for non-verbose display (GW-1305 criterion 3).
+                // Lines 3+: unmarshal-stage notes, then full invariant state
+                //           from `print_invariants()`.
 
                 let mut diag = String::new();
 
-                // Unmarshal-stage notes (instruction-level parsing diagnostics).
-                let unmarshal_notes: Vec<String> = notes.into_iter().flatten().collect();
-                for note in &unmarshal_notes {
-                    diag.push('\n');
-                    diag.push_str(note);
-                }
-
-                // First forward-analysis error via `find_first_error()`.
+                // First forward-analysis error via `find_first_error()`
+                // (GW-1305 criterion 1). Placed first so clients can
+                // reliably extract it as the line immediately after the
+                // summary.
                 if let Some(first_error) = result.find_first_error() {
                     let mut buf = Vec::new();
                     let _ = printing::print_error(&mut buf, &first_error);
@@ -486,7 +484,17 @@ impl ProgramLibrary {
                     }
                 }
 
-                // Full invariant state (equivalent to Prevail's `-v` flag).
+                // Unmarshal-stage notes (instruction-level parsing
+                // diagnostics). Placed after find_first_error() so they
+                // don't displace the primary verifier error.
+                let unmarshal_notes: Vec<String> = notes.into_iter().flatten().collect();
+                for note in &unmarshal_notes {
+                    diag.push('\n');
+                    diag.push_str(note);
+                }
+
+                // Full invariant state (equivalent to Prevail's `-v` flag,
+                // GW-1305 criterion 2).
                 {
                     let mut buf = Vec::new();
                     let _ = printing::print_invariants(

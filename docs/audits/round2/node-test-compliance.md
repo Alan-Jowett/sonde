@@ -244,8 +244,8 @@ The validation plan (`node-validation.md`) specifies integration test cases for 
 
 - **Severity**: Medium
 - **Category**: D11_UNIMPLEMENTED_TEST_CASE
-- **Location**: `node-validation.md` §T-N1000 through §T-N1013 → None (12 test cases)
-- **Description**: Twelve logging test cases are defined in the validation plan:
+- **Location**: `node-validation.md` §T-N1000 through §T-N1013 → None (14 test cases)
+- **Description**: Fourteen logging test cases are defined in the validation plan:
   - T-N1000: Boot reason log — power-on (ND-1000)
   - T-N1001: Boot reason log — deep-sleep wake (ND-1000)
   - T-N1002: Wake cycle started log (ND-1001)
@@ -265,7 +265,7 @@ The validation plan (`node-validation.md`) specifies integration test cases for 
 
 - **Evidence**: grep for `T-N100[0-9]|T-N101[0-3]` across `crates/sonde-node/src/` returns no matches.
 - **Root Cause**: Logging assertions require a log-capture facility (`test_log_capture` module) that is only used by T-N1014 and T-N1015 tests so far. The remaining logging tests have not been written.
-- **Impact**: Medium — 12 logging requirements (ND-1000–ND-1009) are unverified in CI. Logging regressions (wrong level, missing fields) would go undetected.
+- **Impact**: Medium — 14 logging test cases covering ND-1000–ND-1009 are unverified in CI. Logging regressions (wrong level, missing fields) would go undetected.
 - **Remediation**: Implement all 14 logging test cases using the existing `test_log_capture` facility. These are straightforward: run a wake cycle, drain log records, assert expected log lines at the correct level.
 - **Confidence**: High
 

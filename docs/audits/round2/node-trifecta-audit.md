@@ -4,16 +4,16 @@
 
 ## 1. Executive Summary
 
-A systematic traceability audit of the node firmware specification set (62 requirements in `node-requirements.md`, 17 design sections in `node-design.md`, and 120+ test cases in `node-validation.md`) found **15 findings** across 4 severity levels. The most impactful is a **D6 constraint violation** where the design specifies response timeout and retry delay values (50 ms / 100 ms) that directly conflict with the requirements (200 ms / 400 ms), which would cause the system to be non-functional on the reference USB-CDC modem bridge hardware. Six **D7 acceptance-criteria mismatches** create false coverage — test cases are linked to requirements but do not actually verify specific acceptance criteria. Three **D2 untested requirements** and four **D1 untraced requirements** round out the gaps. Overall forward traceability is strong (95.2% requirements→design, 95.2% requirements→validation), but the acceptance-criteria–level coverage has systemic blind spots in constraint enforcement, edge cases, and logging.
+A systematic traceability audit of the node firmware specification set (72 requirements in `node-requirements.md`, 17 design sections in `node-design.md`, and 120+ test cases in `node-validation.md`) found **15 findings** across 4 severity levels. The most impactful is a **D6 constraint violation** where the design specifies response timeout and retry delay values (50 ms / 100 ms) that directly conflict with the requirements (200 ms / 400 ms), which would cause the system to be non-functional on the reference USB-CDC modem bridge hardware. Six **D7 acceptance-criteria mismatches** create false coverage — test cases are linked to requirements but do not actually verify specific acceptance criteria. Three **D2 untested requirements** and four **D1 untraced requirements** round out the gaps. Overall forward traceability is strong (95.2% requirements→design, 95.2% requirements→validation), but the acceptance-criteria–level coverage has systemic blind spots in constraint enforcement, edge cases, and logging.
 
 ## 2. Problem Statement
 
-The node firmware specification set (requirements, design, validation) must be internally consistent to ensure the implementation meets all stated requirements. This audit was conducted to detect specification drift — gaps, conflicts, and divergence — across the three documents before implementation proceeds further. The audit covers all 62 requirements (ND-0100 through ND-1012).
+The node firmware specification set (requirements, design, validation) must be internally consistent to ensure the implementation meets all stated requirements. This audit was conducted to detect specification drift — gaps, conflicts, and divergence — across the three documents before implementation proceeds further. The audit covers all 72 requirements (ND-0100 through ND-1012).
 
 ## 3. Investigation Scope
 
 - **Documents examined:**
-  - `docs/node-requirements.md` — 62 requirements (58 Must, 4 Should)
+  - `docs/node-requirements.md` — 72 requirements (68 Must, 4 Should)
   - `docs/node-design.md` — 17 major sections, 11 functional modules
   - `docs/node-validation.md` — 120+ test cases, traceability matrix (Appendix A)
 - **Tools used:** Manual cross-document traceability analysis; systematic enumeration of REQ-IDs, test case IDs, and design section references.
@@ -374,4 +374,4 @@ The findings cluster into three root causes:
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
-| 1.0 | 2025-07-14 | Specification Audit (Copilot) | Initial audit — 15 findings across all 62 node requirements |
+| 1.0 | 2025-07-14 | Specification Audit (Copilot) | Initial audit — 15 findings across all 72 node requirements |

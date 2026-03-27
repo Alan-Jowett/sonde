@@ -1492,12 +1492,12 @@ The gateway MUST apply build-type–aware log-level policies: compile-time gatin
 **Source:** Issue #530
 
 **Description:**  
-When the gateway rejects a program due to Prevail verification failure, the error response MUST include Prevail-format diagnostic output: the first error from `find_first_error()` (instruction label and error description) and the full invariant state from `print_invariants()` (register/type state at every reachable instruction). This matches the output format of the Prevail CLI tool.
+When the gateway rejects a program due to Prevail verification failure, the error response MUST include Prevail-format diagnostic output: at minimum, the first error from `find_first_error()` (instruction label and error description) and the invariant state from `print_invariants()` (register/type state at reachable instructions) as produced by the verifier. The gateway and CLI MAY truncate large diagnostic payloads to an implementation-defined maximum length, but any truncation MUST be explicitly indicated in-band (for example, by appending a clearly recognizable marker such as `"[... diagnostics truncated]"`) and MUST NOT remove the first error information. This remains format-compatible with the Prevail CLI tool.
 
 **Acceptance criteria:**
 
-1. On verification failure, the error response MUST include the output of `find_first_error()` — the instruction label and error description for the first verification error.
-2. With `--verbose`, the `sonde-admin` CLI MUST display the full invariant state (equivalent to Prevail's `-v` flag), showing pre/post invariants and verification errors at each instruction.
+1. On verification failure, the error response MUST include the output of `find_first_error()` — the instruction label and error description for the first verification error — and MUST preserve this information even if additional diagnostic text is truncated. If truncation occurs, the response MUST clearly indicate that further invariant output has been omitted.
+2. With `--verbose`, the `sonde-admin` CLI MUST display verifier invariant output (equivalent in content to Prevail's `-v` flag). The CLI MAY truncate very large invariant listings, but any truncation MUST be explicitly indicated.
 3. Without `--verbose`, the CLI MUST display the first error and a hint suggesting `--verbose` for full invariants.
 
 ---

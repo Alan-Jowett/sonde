@@ -13,19 +13,23 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::RwLock;
 use tonic::Request;
+use zeroize::Zeroizing;
 
 use sonde_gateway::admin::pb::gateway_admin_server::GatewayAdmin;
 use sonde_gateway::admin::pb::*;
 use sonde_gateway::admin::AdminService;
 use sonde_gateway::crypto::RustCryptoHmac;
 use sonde_gateway::engine::{Gateway, PendingCommand};
+use sonde_gateway::gateway_identity::GatewayIdentity;
+use sonde_gateway::handler::{HandlerConfig, ProgramMatcher};
+use sonde_gateway::phone_trust::{PhonePskRecord, PhonePskStatus};
 use sonde_gateway::program::ProgramLibrary;
 use sonde_gateway::session::SessionManager;
-use sonde_gateway::storage::InMemoryStorage;
+use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::PeerAddress;
 
 use sonde_protocol::{
@@ -1022,6 +1026,110 @@ async fn t0810_import_wrong_passphrase_rejected() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+/// Import must restore gateway identity, phone PSKs, and handler configs
+/// — not just nodes and programs.
+#[tokio::test]
+async fn t0810_import_state_restores_identity_phones_and_handlers() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
+
+    // Seed a gateway identity.
+    let identity = GatewayIdentity::generate().unwrap();
+    let orig_gateway_id = *identity.gateway_id();
+    let orig_public_key = *identity.public_key();
+    storage.store_gateway_identity(&identity).await.unwrap();
+
+    // Seed a phone PSK.
+    let phone_psk = PhonePskRecord {
+        phone_id: 0, // auto-assigned by storage
+        phone_key_hint: 0x1234,
+        psk: Zeroizing::new([0x42u8; 32]),
+        label: "test-phone".into(),
+        issued_at: SystemTime::now(),
+        status: PhonePskStatus::Active,
+    };
+    storage.store_phone_psk(&phone_psk).await.unwrap();
+
+    // Build the admin service with handler configs.
+    let handler_configs = vec![HandlerConfig {
+        matchers: vec![ProgramMatcher::Any],
+        command: "/usr/bin/handler".into(),
+        args: vec!["--verbose".into()],
+        reply_timeout: Some(Duration::from_secs(5)),
+    }];
+    let admin = AdminService::new(
+        storage.clone(),
+        pending_commands.clone(),
+        session_manager.clone(),
+    )
+    .with_handler_configs(handler_configs);
+
+    // Export the full state.
+    let bundle = admin
+        .export_state(Request::new(ExportStateRequest {
+            passphrase: "full-state-pass".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .data;
+
+    // Import into a fresh gateway (no identity, no phone PSKs, no handler
+    // configs).
+    let storage2 = Arc::new(InMemoryStorage::new());
+    let pending2: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let sm2 = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let admin2 = AdminService::new(storage2.clone(), pending2.clone(), sm2.clone());
+
+    admin2
+        .import_state(Request::new(ImportStateRequest {
+            data: bundle,
+            passphrase: "full-state-pass".into(),
+        }))
+        .await
+        .unwrap();
+
+    // Verify gateway identity was restored.
+    let restored_id = storage2
+        .load_gateway_identity()
+        .await
+        .unwrap()
+        .expect("identity should be present after import");
+    assert_eq!(*restored_id.gateway_id(), orig_gateway_id);
+    assert_eq!(*restored_id.public_key(), orig_public_key);
+
+    // Verify phone PSKs were restored.
+    let restored_psks = storage2.list_phone_psks().await.unwrap();
+    assert_eq!(restored_psks.len(), 1);
+    assert_eq!(restored_psks[0].phone_key_hint, 0x1234);
+    assert_eq!(*restored_psks[0].psk, [0x42u8; 32]);
+    assert_eq!(restored_psks[0].label, "test-phone");
+    assert_eq!(restored_psks[0].status, PhonePskStatus::Active);
+
+    // Verify handler configs were restored by exporting again and
+    // round-tripping through decrypt_state_full.
+    let re_exported = admin2
+        .export_state(Request::new(ExportStateRequest {
+            passphrase: "re-export".into(),
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .data;
+    let (_, _, _, _, restored_handlers) =
+        sonde_gateway::state_bundle::decrypt_state_full(&re_exported, "re-export").unwrap();
+    assert_eq!(restored_handlers.len(), 1);
+    assert_eq!(restored_handlers[0].command, "/usr/bin/handler");
+    assert_eq!(restored_handlers[0].args, vec!["--verbose"]);
+    assert_eq!(
+        restored_handlers[0].reply_timeout,
+        Some(Duration::from_secs(5))
+    );
 }
 
 #[tokio::test]

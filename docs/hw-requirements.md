@@ -544,6 +544,139 @@ tools (no GUI interaction required).
 
 ---
 
+## 13  Machine-checkable Power + I/O contract
+
+A **machine-checkable Power + I/O contract** is a structured, versioned
+specification that describes what the board guarantees (power rails,
+electrical limits, I/O behavior) and what the firmware must assume — in
+a way that can be validated automatically against the schematic, netlist,
+BOM, and firmware pin configuration.
+
+It is the hardware equivalent of an API contract: instead of function
+signatures, it defines **rails, pins, states, and limits**. The goal is
+to turn common integration failures into lintable violations (ERC-like
+checks), rather than tribal knowledge discovered during bring-up.
+
+### HW-1100  Contract format
+
+**Priority:** Must
+
+The board design MUST include a machine-checkable Power + I/O contract
+expressed as a YAML file with a stable, versioned schema.
+
+**Acceptance criteria:**
+
+1. The contract is a YAML file (`hw/contract.yaml`) validated against
+   a JSON Schema (`hw/contract-schema.json`).
+2. The contract includes normative fields (numbers, enums, pin names,
+   states, thresholds) — not prose-only guidance.
+3. Unknown or missing required fields are rejected by schema validation.
+4. The contract version is included as a top-level field.
+
+---
+
+### HW-1101  Power contract (rails + states + budgets)
+
+**Priority:** Must
+
+The contract MUST define every power rail, operating state, and current
+budget so that power integrity can be verified automatically.
+
+**Acceptance criteria:**
+
+1. Every power rail is defined with: name, type (source/regulated/switched),
+   voltage operating window (min/typ/max), source description, and load
+   envelope (peak/average current per operating state).
+2. Operating states are enumerated: at minimum `shipping`, `deep_sleep`,
+   `active`, and `radio_tx_burst`.
+3. Each rail specifies a current budget per operating state (max mA).
+4. Sequencing constraints are defined: which rails must be stable before
+   others are enabled (e.g., "3V3 must settle before sensor power gate").
+5. Brownout behavior is specified: below what VBAT threshold the firmware
+   must enter a defined safe state.
+
+---
+
+### HW-1102  I/O contract (pins + electrical behavior + ownership)
+
+**Priority:** Must
+
+The contract MUST define every externally meaningful pin with its
+electrical role, limits, and per-state behavior.
+
+**Acceptance criteria:**
+
+1. Every pin entry includes: MCU pin name, board net name, connector pin
+   (if applicable), electrical role (input/output/open-drain/analog/strap/
+   interrupt/wake), and peripheral binding (I2C0_SCL, SPI_MISO, etc.).
+2. Electrical limits are specified per pin: voltage domain, tolerance,
+   required pull-ups/pull-downs (value + rail), max sink/source current.
+3. Default and reset states are specified per pin: state at reset
+   (Hi-Z/pulled/pushed) and state in each operating mode.
+4. Firmware ownership rules are specified where relevant (e.g., "must not
+   drive high while sensor rail is off", "input-only during shipping mode").
+
+---
+
+### HW-1103  Contract invariant checks
+
+**Priority:** Must
+
+The generation tool MUST validate the following invariants against the
+contract, schematic, and firmware pin configuration.
+
+**Acceptance criteria:**
+
+**Power checks:**
+
+1. State budgets satisfied: sum of known always-on loads + pull resistor
+   leakage ≤ rail budget for each operating state.
+2. Peak current envelope: worst-case state (radio TX burst) must not
+   exceed source capability.
+3. Sequencing: any pin that can source current into a rail must be Hi-Z
+   when that rail is off.
+4. Brownout safety: below VBAT_min, firmware must enter the defined safe
+   state.
+
+**I/O checks:**
+
+5. Voltage domain compatibility: no pin connected to a net that exceeds
+   the pin's tolerance in any operating state.
+6. Backpower prevention: no path from a driven-high I/O into an
+   unpowered peripheral rail via protection diodes.
+7. Bootstrap pin safety: MCU strap pins are not overridden by external
+   pull networks or peripherals at reset.
+8. Bus integrity: I2C pull-ups exist, connect to the correct rail, and
+   are within the acceptable range for the bus speed.
+9. Sleep leakage accounting: pull-ups, pull-downs, and voltage dividers
+   do not violate the sleep-state current budget.
+
+**Firmware binding checks:**
+
+10. Pin mux matches contract: firmware NVS pin config sets the correct
+    mode (open-drain for I2C, push-pull for power gate, etc.).
+11. Power-state pin behavior: firmware drives or tri-states pins as
+    specified per operating state.
+12. Forbidden combinations: e.g., "radio TX when VBAT below threshold"
+    or "sensor enabled in shipping mode".
+
+---
+
+### HW-1104  Contract validation in CI
+
+**Priority:** Should
+
+**Acceptance criteria:**
+
+1. The CI pipeline validates the contract schema on every push.
+2. When both a contract and a generated schematic exist, invariant
+   checks (HW-1103) run automatically and fail on violations.
+3. Invariant check failures produce precise error messages (e.g.,
+   "GPIO4 pull-up to 3V3 leaks 0.7 mA in deep_sleep, exceeding rail
+   budget of 0.05 mA").
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -578,3 +711,8 @@ tools (no GUI interaction required).
 | HW-1001 | Design rule check (DRC) | Must |
 | HW-1002 | Netlist verification | Must |
 | HW-1003 | Simulation and emulation | Should |
+| HW-1100 | Contract format | Must |
+| HW-1101 | Power contract (rails + states + budgets) | Must |
+| HW-1102 | I/O contract (pins + electrical behavior) | Must |
+| HW-1103 | Contract invariant checks | Must |
+| HW-1104 | Contract validation in CI | Should |

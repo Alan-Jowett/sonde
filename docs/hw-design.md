@@ -310,7 +310,54 @@ To ensure reproducible builds:
 
 ---
 
-## 7  Cross-references
+## 7  Power + I/O contract integration
+
+The generation tool produces a machine-checkable Power + I/O contract
+(`hw/output/<config>/contract.yaml`) alongside the schematic and PCB
+files (HW-1100–HW-1104).
+
+### 7.1  Contract generation
+
+The contract is derived from:
+- The board configuration (YAML) — which peripherals, sensors, and
+  power options are selected
+- The schematic template data — rail voltages, pull-up values, pin
+  assignments
+- The ESP32-C3 datasheet — pin voltage domains, max currents, strap pins
+
+The tool generates the contract during schematic generation (step 3 in
+the pipeline). Each template block contributes its power and I/O entries
+to the contract.
+
+### 7.2  Contract checks in the pipeline
+
+Contract invariant checks (HW-1103) run after DRC, before Gerber export:
+
+```
+validate → generate schematic → ERC → generate PCB → DRC
+→ contract invariant checks → Gerber export
+```
+
+If any invariant check fails, the pipeline stops and reports the
+violation with a precise error message. The operator can override
+specific checks with `--allow <check-id>` for known-acceptable
+deviations (documented in the config).
+
+### 7.3  Firmware binding validation
+
+When the firmware's NVS pin configuration (ND-0608) is available, the
+tool can cross-check it against the contract:
+
+```
+sonde-hw check-firmware contract.yaml --nvs-config firmware-pins.yaml
+```
+
+This validates that the firmware's I2C pin assignments, power gate
+GPIO, and peripheral modes match the board's electrical contract.
+
+---
+
+## 8  Cross-references
 
 | Requirement | Design section |
 |---|---|
@@ -328,3 +375,8 @@ To ensure reproducible builds:
 | HW-1001 | §5.2 Post-generation checks |
 | HW-1002 | §5.2 Post-generation checks |
 | HW-1003 | §5.3 Output verification |
+| HW-1100 | §7.1 Contract generation |
+| HW-1101 | §7.1 Contract generation |
+| HW-1102 | §7.1 Contract generation |
+| HW-1103 | §7.2 Contract checks in the pipeline |
+| HW-1104 | §7.2 Contract checks in the pipeline |

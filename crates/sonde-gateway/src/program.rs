@@ -503,6 +503,11 @@ impl ProgramLibrary {
 
                 // Full invariant state (equivalent to Prevail's `-v` flag,
                 // GW-1305 criterion 2).
+                //
+                // gRPC status messages are carried in HTTP/2 trailers whose
+                // total size is typically capped at 8–16 KiB.  To avoid
+                // turning a verification failure into a transport-level error
+                // we cap the diagnostics string and indicate truncation.
                 {
                     let mut buf = Vec::new();
                     let _ = printing::print_invariants(
@@ -520,6 +525,20 @@ impl ProgramLibrary {
                             diag.push_str(s);
                         }
                     }
+                }
+
+                // Cap total message length to stay within gRPC metadata
+                // limits.  The summary + first-error line are always
+                // preserved; only the verbose invariant tail is truncated.
+                const MAX_DIAG_BYTES: usize = 7 * 1024; // 7 KiB — well within the 8-16 KiB gRPC trailer limit
+                if diag.len() > MAX_DIAG_BYTES {
+                    // Truncate on a char boundary.
+                    let mut end = MAX_DIAG_BYTES;
+                    while end > 0 && !diag.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    diag.truncate(end);
+                    diag.push_str("\n... [diagnostics truncated]");
                 }
 
                 return Err(ProgramError::VerificationFailed(format!(

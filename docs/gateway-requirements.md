@@ -1486,6 +1486,20 @@ The gateway MUST apply build-type–aware log-level policies: compile-time gatin
 5. The `tracing` crate dependency specifies `features = ["max_level_trace", "release_max_level_info"]`.
 6. Both console mode and Windows service mode apply the same default `EnvFilter` policy for console/file sinks; in Windows service mode, the ETW sink remains unfiltered and relies on ETW-side filtering.
 
+### GW-1305  Verification failure diagnostics
+
+**Priority:** Must  
+**Source:** Issue #530
+
+**Description:**  
+When the gateway rejects a program due to Prevail verification failure, the error response MUST include Prevail-format diagnostic output: at minimum, the first error from `find_first_error()` (instruction label and error description) and the invariant state from `print_invariants()` (register/type state at reachable instructions) as produced by the verifier. The gateway and CLI MAY truncate large diagnostic payloads to an implementation-defined maximum length, but any truncation MUST be explicitly indicated in-band (for example, by appending a clearly recognizable marker such as `"[... diagnostics truncated]"`) and MUST NOT remove the first error information. This remains format-compatible with the Prevail CLI tool.
+
+**Acceptance criteria:**
+
+1. On verification failure, the error response MUST include the output of `find_first_error()` — the instruction label and error description for the first verification error — and MUST preserve this information even if additional diagnostic text is truncated. If truncation occurs, the response MUST clearly indicate that further invariant output has been omitted.
+2. With `--verbose`, the `sonde-admin` CLI MUST display verifier invariant output (equivalent in content to Prevail's `-v` flag). The CLI MAY truncate very large invariant listings, but any truncation MUST be explicitly indicated.
+3. Without `--verbose`, the CLI MUST display the first error and a hint suggesting `--verbose` for full invariants.
+
 ---
 
 ## Appendix A  Requirement index
@@ -1575,3 +1589,4 @@ The gateway MUST apply build-type–aware log-level policies: compile-time gatin
 | GW-1224 | Admin API — phone revocation | Must |
 | GW-1303 | Build metadata in host binaries | Must |
 | GW-1304 | Build-type–aware log levels | Must |
+| GW-1305 | Verification failure diagnostics | Must |

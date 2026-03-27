@@ -12,6 +12,7 @@ use prevail::elf_loader::ElfObject;
 use prevail::fwd_analyzer;
 use prevail::ir::program::Program as PrevailProgram;
 use prevail::ir::unmarshal;
+use prevail::printing;
 use prevail::spec::config::EbpfVerifierOptions;
 use sonde_protocol::{MapDef, ProgramImage, Sha256Provider};
 
@@ -455,16 +456,94 @@ impl ProgramLibrary {
             let result = fwd_analyzer::analyze(&program, &ctx, &mut registry);
 
             if result.failed {
-                // Collect verifier notes for diagnostics.
-                let diag: Vec<String> = notes.into_iter().flatten().collect();
-                let diag_str = if diag.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {}", diag.join("; "))
-                };
+                // Build diagnostics matching the Prevail CLI output format
+                // (GW-1305).
+                //
+                // Line 1: summary (always present).
+                // Line 2: first error from `find_first_error()` — clients
+                //         rely on this being the very first line after the
+                //         summary for non-verbose display (GW-1305 criterion 3).
+                // Lines 3+: unmarshal-stage notes, then full invariant state
+                //           from `print_invariants()`.
+
+                let mut diag = String::new();
+
+                // First forward-analysis error via `find_first_error()`
+                // (GW-1305 criterion 1). Placed first so clients can
+                // reliably extract it as the line immediately after the
+                // summary.
+                //
+                // The admin client relies on this line always being present.
+                // If `find_first_error()` does not yield a usable string,
+                // fall back to a placeholder to preserve the contract.
+                let first_error_line = result
+                    .find_first_error()
+                    .and_then(|first_error| {
+                        let mut buf = Vec::new();
+                        let _ = printing::print_error(&mut buf, &first_error);
+                        String::from_utf8(buf).ok().map(|s| s.trim_end().to_owned())
+                    })
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| {
+                        "verifier failed but no primary error was reported; see diagnostics below"
+                            .to_owned()
+                    });
+
+                diag.push('\n');
+                diag.push_str(&first_error_line);
+
+                // Unmarshal-stage notes (instruction-level parsing
+                // diagnostics). Placed after find_first_error() so they
+                // don't displace the primary verifier error.
+                let unmarshal_notes: Vec<String> = notes.into_iter().flatten().collect();
+                for note in &unmarshal_notes {
+                    diag.push('\n');
+                    diag.push_str(note);
+                }
+
+                // Full invariant state (equivalent to Prevail's `-v` flag,
+                // GW-1305 criterion 2).
+                //
+                // gRPC status messages are carried in HTTP/2 trailers whose
+                // total size is typically capped at 8–16 KiB.  To avoid
+                // turning a verification failure into a transport-level error
+                // we cap the diagnostics string and indicate truncation.
+                {
+                    let mut buf = Vec::new();
+                    let _ = printing::print_invariants(
+                        &mut buf,
+                        &program,
+                        &raw_prog.info,
+                        false,
+                        &result,
+                        &registry,
+                    );
+                    if let Ok(s) = String::from_utf8(buf) {
+                        let s = s.trim_end();
+                        if !s.is_empty() {
+                            diag.push('\n');
+                            diag.push_str(s);
+                        }
+                    }
+                }
+
+                // Cap total message length to stay within gRPC metadata
+                // limits.  The summary + first-error line are always
+                // preserved; only the verbose invariant tail is truncated.
+                const MAX_DIAG_BYTES: usize = 7 * 1024; // 7 KiB — well within the 8-16 KiB gRPC trailer limit
+                if diag.len() > MAX_DIAG_BYTES {
+                    // Truncate on a char boundary.
+                    let mut end = MAX_DIAG_BYTES;
+                    while end > 0 && !diag.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    diag.truncate(end);
+                    diag.push_str("\n... [diagnostics truncated]");
+                }
+
                 return Err(ProgramError::VerificationFailed(format!(
                     "program `{}` failed verification{}",
-                    raw_prog.function_name, diag_str
+                    raw_prog.function_name, diag
                 )));
             }
         }
@@ -1035,6 +1114,57 @@ mod tests {
             matches!(err, ProgramError::VerificationFailed(_)),
             "unsupported helper call should fail verification, got: {err}"
         );
+    }
+
+    /// Verification failures must include per-instruction diagnostic notes from
+    /// Prevail's forward analysis (GW-1305).
+    #[test]
+    fn ingest_elf_verification_failure_includes_diagnostics() {
+        // BPF program that fails forward analysis (not control flow):
+        // overwrite r1 (context pointer) with 0, then dereference it.
+        #[rustfmt::skip]
+        let bpf_code: [u8; 24] = [
+            0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r1, 0
+            0x79, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = *(u64*)(r1 + 0)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+        let elf = make_bpf_elf(&bpf_code);
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .unwrap_err();
+        match &err {
+            ProgramError::VerificationFailed(msg) => {
+                // The message must contain the summary AND per-instruction notes.
+                assert!(
+                    msg.contains("failed verification"),
+                    "should contain summary: {msg}"
+                );
+                // Assert structurally that we have multi-line diagnostics
+                // and that at least one subsequent line looks like a
+                // per-instruction verifier diagnostic with an instruction
+                // label (e.g. "0: ..."). This avoids brittleness on
+                // Prevail's exact wording while still verifying GW-1305.
+                let lines: Vec<&str> = msg.lines().collect();
+                assert!(
+                    lines.len() >= 2,
+                    "expected multi-line verifier diagnostics, got: {msg}"
+                );
+                let has_instruction_label = lines.iter().skip(1).any(|line| {
+                    let trimmed = line.trim_start();
+                    trimmed
+                        .split_once(':')
+                        .map(|(idx, _)| !idx.is_empty() && idx.chars().all(|c| c.is_ascii_digit()))
+                        .unwrap_or(false)
+                });
+                assert!(
+                    has_instruction_label,
+                    "expected per-instruction verifier diagnostic with an \
+                     instruction label, got: {msg}"
+                );
+            }
+            other => panic!("expected VerificationFailed, got: {other:?}"),
+        }
     }
 
     /// Build a BPF ELF that includes a `.rodata` section with the given

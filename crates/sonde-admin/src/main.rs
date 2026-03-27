@@ -29,6 +29,10 @@ struct Cli {
     #[arg(long = "yes", short = 'y', global = true)]
     yes: bool,
 
+    /// Show verbose diagnostics on errors (e.g. per-instruction verifier notes).
+    #[arg(long, short = 'v', global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -242,7 +246,39 @@ async fn main() {
 
     let result = run(&mut client, &cli).await;
     if let Err(e) = result {
-        eprintln!("Error: {e}");
+        if let Some(status) = e.downcast_ref::<tonic::Status>() {
+            let msg = status.message();
+            // Show full diagnostics in verbose mode; otherwise show a
+            // compact summary.  The --verbose hint is only useful when
+            // the message actually contains multi-line diagnostics
+            // (i.e. Prevail invariants), not for single-line
+            // verification errors like "ephemeral programs must not
+            // declare maps" (GW-1305 criterion 3).
+            let has_diagnostics = msg.contains('\n');
+            if cli.verbose {
+                eprintln!("Error: {msg}");
+            } else if has_diagnostics {
+                // Without --verbose, show the summary line and the first
+                // verifier error, then a hint (GW-1305 criterion 3).
+                // The gateway places find_first_error() output as the
+                // first line after the summary, so lines.next() is
+                // reliable here.
+                let mut lines = msg.lines();
+                let summary = lines.next().unwrap_or(msg);
+                eprintln!("Error: {summary}");
+                if let Some(first_error) = lines.next() {
+                    let first_error = first_error.trim();
+                    if !first_error.is_empty() {
+                        eprintln!("{first_error}");
+                    }
+                }
+                eprintln!("Hint: run with --verbose for full invariants.");
+            } else {
+                eprintln!("Error: {msg}");
+            }
+        } else {
+            eprintln!("Error: {e}");
+        }
         process::exit(1);
     }
 }

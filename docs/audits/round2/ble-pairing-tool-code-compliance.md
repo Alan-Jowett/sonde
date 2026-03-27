@@ -5,7 +5,7 @@
 
 ## 1. Executive Summary
 
-The `sonde-pair` crate was audited against 53 requirements (PT-0100 through PT-1213; PT-1214 is excluded as an out-of-scope manual hardware/runtime validation requirement) from the BLE Pairing Tool Requirements Specification and the companion Design Specification. Of 53 requirements, **40 are IMPLEMENTED** (75%), **3 are PARTIALLY IMPLEMENTED** (6%), **7 are NOT IMPLEMENTED** (13%), and **3 are INCONCLUSIVE** (6%) because they require runtime/platform verification outside the scope of static analysis. Five constraint violations (D10) and two instances of undocumented behavior (D9) were also identified. The overall code-to-spec alignment is strong for core protocol, cryptographic, and transport abstraction requirements. The primary gaps are in UI/UX requirements (which are out of scope for the library crate), platform-specific runtime behaviors, and a Cargo dependency divergence from the design specification.
+The `sonde-pair` crate was audited against 53 requirements (PT-0100 through PT-1213; PT-1214 is excluded as an out-of-scope manual hardware/runtime validation requirement) from the BLE Pairing Tool Requirements Specification and the companion Design Specification. Of 53 requirements, **40 are IMPLEMENTED** (75%), **3 are PARTIALLY IMPLEMENTED** (6%), **7 are NOT IMPLEMENTED** (13%), and **3 are INCONCLUSIVE** (6%) because they require runtime/platform verification outside the scope of static analysis. Fifteen findings were raised in total. Six constraint violations (D10) and two instances of undocumented behavior (D9) were also identified. The overall code-to-spec alignment is strong for core protocol, cryptographic, and transport abstraction requirements. The primary gaps are in UI/UX requirements (which are out of scope for the library crate), platform-specific runtime behaviors, and a Cargo dependency divergence from the design specification.
 
 ## 2. Problem Statement
 
@@ -250,9 +250,9 @@ The 3 INCONCLUSIVE requirements:
 | Security (no key in logs) | 1 | 0 | 0 |
 | Protocol (timeouts) | 3 | 0 | 0 |
 | Protocol (payload size) | 1 | 0 | 0 |
-| API/design structure | 0 | 5 | 0 |
+| API/design structure | 0 | 6 | 0 |
 
-The 5 API/design structure violations (F-001 through F-005) are all structural divergences from the design document — the implementations are functionally correct but use different API signatures, naming, or module organization than specified.
+The 6 API/design structure violations (F-001 through F-005 and F-014) are all structural divergences from the design document — the implementations are functionally correct but use different API signatures, naming, or module organization than specified.
 
 ### Detailed requirement tracing
 

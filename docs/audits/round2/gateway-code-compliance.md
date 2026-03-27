@@ -8,19 +8,21 @@
 A systematic code compliance audit was performed on the sonde gateway
 implementation (`crates/sonde-gateway/src/`) against the gateway
 requirements specification (`docs/gateway-requirements.md`), which
-defines 83 requirements in the range GW-0100 through GW-1304. This
+defines 86 requirements in the range GW-0100 through GW-1304. This
 report assesses 73 gateway-implementation requirements from that set
-(the remaining 10 apply only to external tooling or deployment
-concerns outside the gateway crate). Of the 73 requirements, 65
+(the remaining 13 apply only to external tooling or deployment
+concerns outside the gateway crate).Of the 73 requirements, 65
 are **IMPLEMENTED** (89%), 4 are **PARTIALLY IMPLEMENTED** (5.5%), and
 4 are **NOT IMPLEMENTED** (5.5%). The unimplemented requirements are
 concentrated in the factory-reset protocol command (GW-0705), modem
 serial reconnection (GW-1103 — partially in binary, not in library),
-and two secondary admin-API serving gaps. Eight findings are raised, one
-Critical (factory reset sends no protocol-level command to the node),
-three High (serial reconnection not in library, missing GW-0205
-FACTORY_RESET command type, missing APP_DATA_REPLY nonce echo
-verification gap), and four Medium-severity items. The recommended
+and two secondary admin-API serving gaps. Ten findings are raised
+(F-001 through F-010; two were withdrawn after verification): three
+High (factory reset sends no protocol-level command, missing
+FACTORY_RESET command type, state import does not restore identity),
+three Medium (serial reconnection not in library, APP_DATA_REPLY nonce
+echo gap, state export/import handler configs), and four Low-severity
+items. The recommended
 remediation priority is to close the factory-reset gap, then formalize
 the reconnection logic, and address remaining findings in order.
 

@@ -327,38 +327,49 @@ impl hal::Hal for EspHal {
         // driver off) with pull-up and pull-down disabled. This is the
         // lowest-current state for an ESP32 GPIO.
 
-        // 1. Deinitialize I2C bus 0 and reset its pins.
+        // 1. Delete the I2C driver if it was installed.
         if self.i2c0_initialized {
-            unsafe {
-                esp_idf_sys::i2c_driver_delete(esp_idf_sys::i2c_port_t_I2C_NUM_0);
-            }
-            self.i2c0_initialized = false;
-
-            // gpio_reset_pin detaches the pin from the I2C peripheral
-            // (IOMUX) and returns it to GPIO function. We then disable
-            // the I/O buffer and pull resistors.
-            for pin in [self.i2c0_sda, self.i2c0_scl] {
-                unsafe {
-                    esp_idf_sys::gpio_reset_pin(pin);
-                    esp_idf_sys::gpio_set_direction(
-                        pin,
-                        esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
-                    );
-                    esp_idf_sys::gpio_pullup_dis(pin);
-                    esp_idf_sys::gpio_pulldown_dis(pin);
-                }
+            let err = unsafe { esp_idf_sys::i2c_driver_delete(esp_idf_sys::i2c_port_t_I2C_NUM_0) };
+            if err == esp_idf_sys::ESP_OK as i32 {
+                self.i2c0_initialized = false;
+            } else {
+                warn!("i2c_driver_delete failed: {err}");
             }
         }
 
-        // 2. Reset every GPIO that BPF programs configured as output.
+        // 2. Always reset I2C SDA/SCL pins regardless of driver state.
+        //    `i2c_param_config` enables internal pull-ups even when the
+        //    subsequent `i2c_driver_install` fails, so these pins must be
+        //    cleaned up unconditionally.
+        for pin in [self.i2c0_sda, self.i2c0_scl] {
+            unsafe {
+                // gpio_reset_pin detaches from the I2C peripheral (IOMUX)
+                // and returns the pin to GPIO function.
+                esp_idf_sys::gpio_reset_pin(pin);
+                let err = esp_idf_sys::gpio_set_direction(
+                    pin,
+                    esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
+                );
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    warn!("gpio_set_direction({pin}, DISABLE) failed: {err}");
+                }
+                esp_idf_sys::gpio_pullup_dis(pin);
+                esp_idf_sys::gpio_pulldown_dis(pin);
+            }
+        }
+
+        // 3. Reset every GPIO that BPF programs configured as output.
         let mut mask = self.gpio_output_configured;
         while mask != 0 {
             let pin = mask.trailing_zeros();
             unsafe {
-                esp_idf_sys::gpio_set_direction(
+                let err = esp_idf_sys::gpio_set_direction(
                     pin as i32,
                     esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
                 );
+                if err != esp_idf_sys::ESP_OK as i32 {
+                    warn!("gpio_set_direction({pin}, DISABLE) failed: {err}");
+                }
                 esp_idf_sys::gpio_pullup_dis(pin as i32);
                 esp_idf_sys::gpio_pulldown_dis(pin as i32);
             }
@@ -366,7 +377,7 @@ impl hal::Hal for EspHal {
         }
         self.gpio_output_configured = 0;
 
-        // 3. Clear ADC tracking so a fresh wake cycle re-configures.
+        // 4. Clear ADC tracking so a fresh wake cycle re-configures.
         self.adc_width_configured = false;
         self.adc_channels_configured = 0;
     }

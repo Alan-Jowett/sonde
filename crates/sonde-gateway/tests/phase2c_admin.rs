@@ -1106,7 +1106,9 @@ async fn t0810_import_replaces_existing_state() {
 /// 2. Call `ExportState` with a known export passphrase.
 /// 3. Inspect the raw export bytes (encrypted bundle).
 /// 4. Assert: no PSK value appears as a contiguous substring in the export payload.
-/// 5. Attempt import with incorrect passphrase — assert rejected and state unchanged.
+/// 5. Attempt import with incorrect passphrase — assert rejected and state unchanged
+///    (tested against both the original gateway and a fresh gateway to verify nodes
+///    are not restored and WAKE is rejected).
 /// 6. Import into a fresh gateway using the correct passphrase.
 /// 7. Assert: nodes are restored and PSKs are functional (WAKE accepted).
 #[tokio::test]
@@ -1162,7 +1164,8 @@ async fn t1005_export_plaintext_key_leakage() {
         psk_b[0]
     );
 
-    // Step 5: Import with incorrect passphrase — must be rejected.
+    // Step 5a: Import with incorrect passphrase against the original gateway —
+    // must be rejected and existing state must remain intact.
     let err = h
         .admin
         .import_state(Request::new(ImportStateRequest {
@@ -1208,6 +1211,56 @@ async fn t1005_export_plaintext_key_leakage() {
     let gw = h.make_gateway();
     let _cmd_a = do_wake(&gw, &node_a, 1, &[0u8; 32]).await;
     let _cmd_b = do_wake(&gw, &node_b, 2, &[0u8; 32]).await;
+
+    // Step 5b: Import with incorrect passphrase against a fresh gateway (no
+    // pre-existing nodes). Validates that nodes are NOT restored and WAKE is
+    // rejected, per T-1005 step 5 in gateway-validation.md.
+    let h_fresh = TestHarness::new();
+    let fresh_err = h_fresh
+        .admin
+        .import_state(Request::new(ImportStateRequest {
+            data: bundle.clone(),
+            passphrase: "wrong-passphrase".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        fresh_err.code(),
+        tonic::Code::InvalidArgument,
+        "import with wrong passphrase into fresh gateway should fail"
+    );
+
+    // Nodes must not be restored after failed import.
+    let fresh_nodes = h_fresh
+        .admin
+        .list_nodes(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner()
+        .nodes;
+    assert!(
+        fresh_nodes.is_empty(),
+        "fresh gateway must have no nodes after failed import"
+    );
+
+    // WAKE from both nodes must be silently discarded.
+    let gw_fresh = h_fresh.make_gateway();
+    let frame_a = node_a.build_wake(5, 1, &[0u8; 32], 3300);
+    let resp_a = gw_fresh
+        .process_frame(&frame_a, node_a.peer_address())
+        .await;
+    assert!(
+        resp_a.is_none(),
+        "WAKE from node_a must be rejected on fresh gateway after failed import"
+    );
+    let frame_b = node_b.build_wake(6, 1, &[0u8; 32], 3300);
+    let resp_b = gw_fresh
+        .process_frame(&frame_b, node_b.peer_address())
+        .await;
+    assert!(
+        resp_b.is_none(),
+        "WAKE from node_b must be rejected on fresh gateway after failed import"
+    );
 
     // Step 6: Import into a fresh gateway using the correct passphrase.
     let h2 = TestHarness::new();

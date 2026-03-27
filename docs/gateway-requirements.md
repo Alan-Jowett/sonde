@@ -293,6 +293,7 @@ The gateway MUST verify all BPF programs using the Prevail verifier before distr
 3. Ephemeral programs are verified against the ephemeral profile.
 4. Programs that fail verification are rejected with a clear diagnostic indicating the reason.
 5. Ephemeral programs that declare maps MUST be rejected at ingestion time with an actionable error message.
+6. Verification failure diagnostics MUST include per-instruction verifier notes from Prevail (e.g. type mismatches, unknown helpers) in the gRPC error message returned by `IngestProgram`.
 
 ---
 

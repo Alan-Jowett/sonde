@@ -29,6 +29,10 @@ struct Cli {
     #[arg(long = "yes", short = 'y', global = true)]
     yes: bool,
 
+    /// Show verbose diagnostics on errors (e.g. per-instruction verifier notes).
+    #[arg(long, short = 'v', global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -242,7 +246,17 @@ async fn main() {
 
     let result = run(&mut client, &cli).await;
     if let Err(e) = result {
-        eprintln!("Error: {e}");
+        if let Some(status) = e.downcast_ref::<tonic::Status>() {
+            let msg = status.message();
+            if cli.verbose {
+                eprintln!("Error: {msg}");
+            } else {
+                // Without --verbose, show only the summary line.
+                eprintln!("Error: {}", msg.lines().next().unwrap_or(msg));
+            }
+        } else {
+            eprintln!("Error: {e}");
+        }
         process::exit(1);
     }
 }

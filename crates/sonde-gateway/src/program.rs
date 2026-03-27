@@ -455,12 +455,24 @@ impl ProgramLibrary {
             let result = fwd_analyzer::analyze(&program, &ctx, &mut registry);
 
             if result.failed {
-                // Collect verifier notes for diagnostics.
-                let diag: Vec<String> = notes.into_iter().flatten().collect();
-                let diag_str = if diag.is_empty() {
+                // Collect unmarshal-stage notes (instruction-level parsing diagnostics).
+                let unmarshal_diag: Vec<String> = notes.into_iter().flatten().collect();
+
+                // Collect forward-analysis errors (type mismatches, unknown helpers, etc.)
+                // from the per-instruction invariant map (GW-0401 criterion 6).
+                let verifier_errors: Vec<String> = result
+                    .invariants
+                    .iter()
+                    .filter_map(|(_, pair)| pair.error.as_ref().map(|e| e.to_string()))
+                    .collect();
+
+                let mut all_diag = unmarshal_diag;
+                all_diag.extend(verifier_errors);
+
+                let diag_str = if all_diag.is_empty() {
                     String::new()
                 } else {
-                    format!(": {}", diag.join("; "))
+                    format!("\n{}", all_diag.join("\n"))
                 };
                 return Err(ProgramError::VerificationFailed(format!(
                     "program `{}` failed verification{}",
@@ -1035,6 +1047,40 @@ mod tests {
             matches!(err, ProgramError::VerificationFailed(_)),
             "unsupported helper call should fail verification, got: {err}"
         );
+    }
+
+    /// Verification failures must include per-instruction diagnostic notes from
+    /// Prevail's forward analysis (GW-0401 criterion 6).
+    #[test]
+    fn ingest_elf_verification_failure_includes_diagnostics() {
+        // BPF program that fails forward analysis (not control flow):
+        // overwrite r1 (context pointer) with 0, then dereference it.
+        #[rustfmt::skip]
+        let bpf_code: [u8; 24] = [
+            0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r1, 0
+            0x79, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = *(u64*)(r1 + 0)
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+        let elf = make_bpf_elf(&bpf_code);
+        let lib = ProgramLibrary::new();
+        let err = lib
+            .ingest_elf(&elf, VerificationProfile::Resident)
+            .unwrap_err();
+        match &err {
+            ProgramError::VerificationFailed(msg) => {
+                // The message must contain the summary AND per-instruction notes.
+                assert!(
+                    msg.contains("failed verification"),
+                    "should contain summary: {msg}"
+                );
+                // Prevail forward-analysis errors should produce multi-line output.
+                assert!(
+                    msg.contains('\n'),
+                    "expected multi-line diagnostics with verifier notes, got: {msg}"
+                );
+            }
+            other => panic!("expected VerificationFailed, got: {other:?}"),
+        }
     }
 
     /// Build a BPF ELF that includes a `.rodata` section with the given

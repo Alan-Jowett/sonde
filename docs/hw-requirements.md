@@ -406,8 +406,10 @@ well-defined schema that captures all parameterizable options.
    - Antenna at the opposite edge with keepout enforced
    - Connectors along board edges
    - Decoupling capacitors adjacent to power pins
-3. Trace routing uses KiCad's autorouter or a scripted routing
-   algorithm. Manual routing adjustments are allowed post-generation.
+3. Trace routing is performed by either (a) a deterministic scripted
+   routing algorithm (e.g., a KiCad Action Plugin or external autorouter
+   invoked via script) or (b) a documented, replayable set of interactive
+   routing steps. Manual routing adjustments are allowed post-generation.
 4. The layout includes a ground pour on the bottom layer.
 5. All footprints have 3D models for visual review.
 
@@ -566,8 +568,9 @@ expressed as a YAML file with a stable, versioned schema.
 
 **Acceptance criteria:**
 
-1. The contract is a YAML file (`hw/contract.yaml`) validated against
-   a JSON Schema (`hw/contract-schema.json`).
+1. Each hardware configuration has a generated YAML contract file
+   at `hw/output/<config>/contract.yaml`, validated against a stable
+   JSON Schema at `hw/contract-schema.json`.
 2. The contract includes normative fields (numbers, enums, pin names,
    states, thresholds) — not prose-only guidance.
 3. Unknown or missing required fields are rejected by schema validation.

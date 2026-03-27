@@ -93,11 +93,14 @@ Python is chosen over Rust because:
 ### 2.2  CLI interface
 
 ```
-sonde-hw validate <config.yaml>    # Schema check only
-sonde-hw build <config.yaml>       # Full pipeline
-sonde-hw build <config.yaml> --skip-drc  # Generate without DRC (for iteration)
-sonde-hw export <config.yaml>      # Gerber + BOM + CPL only (assumes .kicad_pcb exists)
-sonde-hw budget <config.yaml>      # Power budget calculator
+sonde-hw validate <config.yaml>                     # Schema check only
+sonde-hw validate <config.yaml> --allow <check-id>  # Schema + rules, allowing specific checks
+sonde-hw build <config.yaml>                        # Full pipeline
+sonde-hw build <config.yaml> --skip-drc             # Generate without DRC (for iteration)
+sonde-hw export <config.yaml>                       # Gerber + BOM + CPL only (assumes .kicad_pcb exists)
+sonde-hw budget <config.yaml>                       # Power budget calculator
+sonde-hw check-firmware <contract.yaml> --nvs-config <firmware-pins.yaml>  # Check firmware against hardware contract
+# Commands that perform checks accept repeated --allow <check-id> flags to waive specific findings.
 ```
 
 ### 2.3  Directory structure
@@ -291,8 +294,9 @@ To ensure reproducible builds:
    generates deterministic UUIDs from a hash of (config hash + component
    path), e.g., `UUID = SHA256(config_hash + "U1")[:32]`.
 
-2. **No timestamps**: all KiCad file timestamps are set to the config
-   file's modification time or a fixed epoch.
+2. **Deterministic timestamps**: KiCad file timestamps are either
+   omitted or set to a value derived from the config hash or a fixed
+   epoch; filesystem modification times are never used.
 
 3. **Sorted outputs**: component lists, net lists, and BOM rows are
    sorted alphabetically to avoid ordering differences.

@@ -135,7 +135,9 @@ hw/
 │       ├── board.kicad_pcb
 │       ├── gerber/
 │       ├── bom.csv
-│       └── cpl.csv
+│       ├── cpl.csv
+│       └── contract.yaml       # Generated hardware contract for this config
+├── contract-schema.json        # JSON Schema for contract validation (HW-1100)
 ├── schema.json                 # YAML config schema
 └── sonde-hw.py                 # Generation tool
 ```

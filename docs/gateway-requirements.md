@@ -293,7 +293,6 @@ The gateway MUST verify all BPF programs using the Prevail verifier before distr
 3. Ephemeral programs are verified against the ephemeral profile.
 4. Programs that fail verification are rejected with a clear diagnostic indicating the reason.
 5. Ephemeral programs that declare maps MUST be rejected at ingestion time with an actionable error message.
-6. Verification failure diagnostics MUST include per-instruction verifier notes from Prevail (e.g. type mismatches, unknown helpers) in the gRPC error message returned by `IngestProgram`.
 
 ---
 
@@ -1487,6 +1486,20 @@ The gateway MUST apply build-type–aware log-level policies: compile-time gatin
 5. The `tracing` crate dependency specifies `features = ["max_level_trace", "release_max_level_info"]`.
 6. Both console mode and Windows service mode apply the same default `EnvFilter` policy for console/file sinks; in Windows service mode, the ETW sink remains unfiltered and relies on ETW-side filtering.
 
+### GW-1305  Verification failure diagnostics
+
+**Priority:** Must  
+**Source:** Issue #530
+
+**Description:**  
+When the gateway rejects a program due to Prevail verification failure, the error response MUST include instruction-level diagnostic details from the verifier (instruction index, error description, register/type state). This enables operators to diagnose and fix BPF programs without access to gateway internals.
+
+**Acceptance criteria:**
+
+1. Verification failure errors include at least one instruction-level diagnostic when Prevail produces invariant violations.
+2. The `sonde-admin` CLI displays the full diagnostic output when `--verbose` is passed.
+3. Without `--verbose`, the CLI displays a summary error message suitable for non-expert users.
+
 ---
 
 ## Appendix A  Requirement index
@@ -1576,3 +1589,4 @@ The gateway MUST apply build-type–aware log-level policies: compile-time gatin
 | GW-1224 | Admin API — phone revocation | Must |
 | GW-1303 | Build metadata in host binaries | Must |
 | GW-1304 | Build-type–aware log levels | Must |
+| GW-1305 | Verification failure diagnostics | Must |

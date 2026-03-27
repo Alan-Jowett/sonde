@@ -459,7 +459,7 @@ impl ProgramLibrary {
                 let unmarshal_diag: Vec<String> = notes.into_iter().flatten().collect();
 
                 // Collect forward-analysis errors (type mismatches, unknown helpers, etc.)
-                // from the per-instruction invariant map (GW-0401 criterion 6).
+                // from the per-instruction invariant map (GW-1305).
                 let verifier_errors: Vec<String> = result
                     .invariants
                     .iter()
@@ -1050,7 +1050,7 @@ mod tests {
     }
 
     /// Verification failures must include per-instruction diagnostic notes from
-    /// Prevail's forward analysis (GW-0401 criterion 6).
+    /// Prevail's forward analysis (GW-1305).
     #[test]
     fn ingest_elf_verification_failure_includes_diagnostics() {
         // BPF program that fails forward analysis (not control flow):
@@ -1073,10 +1073,13 @@ mod tests {
                     msg.contains("failed verification"),
                     "should contain summary: {msg}"
                 );
-                // Prevail forward-analysis errors should produce multi-line output.
+                // The diagnostic must include a Prevail forward-analysis verifier
+                // note — not just any newline.  The program dereferences a
+                // number-typed register, so Prevail should report a type error
+                // mentioning the expected pointer types.
                 assert!(
-                    msg.contains('\n'),
-                    "expected multi-line diagnostics with verifier notes, got: {msg}"
+                    msg.contains("Invalid type"),
+                    "expected Prevail type-error diagnostic, got: {msg}"
                 );
             }
             other => panic!("expected VerificationFailed, got: {other:?}"),

@@ -1962,6 +1962,26 @@ A configurable stub handler process (or in-process mock) that:
 5. Assert: output matches the pattern `sonde-admin <semver> (<7-char-hash>)`.
 6. Assert: the hash portion is a valid 7-character hex string (or `unknown` when built outside a git repo).
 
+### T-1305a  Verification failure includes instruction-level diagnostics
+
+**Validates:** GW-1305
+
+**Procedure:**
+1. Ingest a BPF ELF that triggers a Prevail forward-analysis failure (e.g. an invalid helper call or type violation).
+2. Assert: the gRPC error message contains at least one instruction-level diagnostic line from the verifier.
+3. Assert: the diagnostic includes verifier-specific context (e.g. type mismatch description, register state).
+
+---
+
+### T-1305b  Successful verification produces no diagnostics
+
+**Validates:** GW-1305
+
+**Procedure:**
+1. Ingest a valid BPF ELF that passes Prevail verification.
+2. Assert: the success response contains no diagnostic messages.
+3. Assert: the program is stored and retrievable by hash.
+
 ---
 
 ## Appendix A  Test-to-requirement traceability
@@ -2053,3 +2073,4 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1301 | *(verified by integration/manual testing)* |
 | GW-1302 | T-1303 |
 | GW-1303 | T-1304 |
+| GW-1305 | T-1305a, T-1305b |

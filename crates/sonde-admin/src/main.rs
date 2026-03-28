@@ -435,15 +435,12 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                         &programs
                             .iter()
                             .map(|p| {
-                                let mut obj = serde_json::json!({
+                                serde_json::json!({
                                     "hash": hex::encode(&p.hash),
                                     "size": p.size,
                                     "profile": profile_name(p.verification_profile),
-                                });
-                                if let Some(f) = &p.source_filename {
-                                    obj["source_filename"] = serde_json::Value::String(f.clone());
-                                }
-                                obj
+                                    "source_filename": p.source_filename.as_deref(),
+                                })
                             })
                             .collect::<Vec<_>>(),
                     )?;

@@ -458,6 +458,69 @@ async fn t0802d_ingest_abi_version_round_trip() {
     );
 }
 
+/// T-0414: source_filename round-trip through IngestProgram → ListPrograms.
+#[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
+#[tokio::test]
+async fn t0414_ingest_source_filename_round_trip() {
+    let h = TestHarness::new();
+
+    // Ingest with a source filename.
+    let cbor_a = make_cbor_image(&[0xCC, 0xDD]);
+    let resp_a = h
+        .admin
+        .ingest_program(Request::new(IngestProgramRequest {
+            image_data: cbor_a,
+            verification_profile: VerificationProfile::Resident.into(),
+            abi_version: None,
+            source_filename: Some("tmp102_sensor.o".into()),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Ingest without a source filename.
+    let cbor_b = make_cbor_image(&[0xEE, 0xFF]);
+    let resp_b = h
+        .admin
+        .ingest_program(Request::new(IngestProgramRequest {
+            image_data: cbor_b,
+            verification_profile: VerificationProfile::Ephemeral.into(),
+            abi_version: None,
+            source_filename: None,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let list = h
+        .admin
+        .list_programs(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let prog_a = list
+        .programs
+        .iter()
+        .find(|p| p.hash == resp_a.program_hash)
+        .expect("program A not found");
+    assert_eq!(
+        prog_a.source_filename.as_deref(),
+        Some("tmp102_sensor.o"),
+        "source_filename must round-trip through IngestProgram / ListPrograms"
+    );
+
+    let prog_b = list
+        .programs
+        .iter()
+        .find(|p| p.hash == resp_b.program_hash)
+        .expect("program B not found");
+    assert!(
+        prog_b.source_filename.is_none(),
+        "source_filename must be None when not provided"
+    );
+}
+
 #[cfg(debug_assertions)] // raw CBOR ingestion only accepted in debug builds
 #[tokio::test]
 async fn t0803_assign_program() {

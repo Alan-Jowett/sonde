@@ -428,10 +428,12 @@ impl ProgramLibrary {
         let mut elf = ElfObject::new(tmp_path, opts)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
 
-        // Extract programs using the sonde-specific verifier platform (GW-0404).
+        // Extract programs from the `sonde` ELF section only (GW-0401 criterion 6).
+        // The section filter ensures helper functions in other sections (e.g. `.text`)
+        // are ignored, matching the `SEC("sonde")` annotation used by all sonde BPF programs.
         let mut platform = SondePlatform::new();
         let raw_programs = elf
-            .get_programs("", "", &mut platform)
+            .get_programs("sonde", "", &mut platform)
             .map_err(|e| ProgramError::ElfParseError(e.to_string()))?;
 
         if raw_programs.is_empty() {
@@ -700,88 +702,13 @@ mod tests {
         assert!(matches!(err, ProgramError::ElfParseError(_)));
     }
 
-    /// Build a BPF ELF relocatable object with the given bytecode in a `.text`
-    /// section. The bytecode length must be a multiple of 8 (one BPF instruction).
-    fn make_bpf_elf(bpf_code: &[u8]) -> Vec<u8> {
-        assert!(
-            bpf_code.len().is_multiple_of(8),
-            "BPF bytecode length must be a multiple of 8"
-        );
-        let shstrtab: &[u8] = b"\0.text\0.shstrtab\0"; // 17 bytes
-
-        let text_offset: u64 = 64; // right after ELF header
-        let shstrtab_offset: u64 = text_offset + bpf_code.len() as u64;
-        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
-
-        let mut elf = Vec::new();
-
-        // ── ELF header (64 bytes) ──
-        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']); // e_ident magic
-        elf.push(2); // EI_CLASS = ELFCLASS64
-        elf.push(1); // EI_DATA = ELFDATA2LSB
-        elf.push(1); // EI_VERSION
-        elf.extend_from_slice(&[0; 9]); // padding
-        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
-        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
-        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
-        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
-        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
-        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
-        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
-        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
-        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
-        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
-        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
-        elf.extend_from_slice(&3u16.to_le_bytes()); // e_shnum (null + .text + .shstrtab)
-        elf.extend_from_slice(&2u16.to_le_bytes()); // e_shstrndx = 2
-        assert_eq!(elf.len(), 64);
-
-        // ── .text section data ──
-        elf.extend_from_slice(bpf_code);
-
-        // ── .shstrtab section data ──
-        elf.extend_from_slice(shstrtab);
-
-        // ── Section headers (3 entries × 64 bytes each) ──
-
-        // [0] Null section header
-        elf.extend_from_slice(&[0u8; 64]);
-
-        // [1] .text section header
-        let mut sh = [0u8; 64];
-        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name = offset of ".text" in shstrtab
-        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
-        let flags: u64 = 0x6; // SHF_ALLOC | SHF_EXECINSTR
-        sh[8..16].copy_from_slice(&flags.to_le_bytes()); // sh_flags
-        sh[24..32].copy_from_slice(&text_offset.to_le_bytes()); // sh_offset
-        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes()); // sh_size
-        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
-        elf.extend_from_slice(&sh);
-
-        // [2] .shstrtab section header
-        let mut sh2 = [0u8; 64];
-        sh2[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name = offset of ".shstrtab"
-        sh2[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
-        sh2[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes()); // sh_offset
-        sh2[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes()); // sh_size
-        sh2[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
-        elf.extend_from_slice(&sh2);
-
-        elf
-    }
-
-    /// Build a minimal valid BPF ELF containing a single `.text` section
-    /// with `mov r0, 0; exit` — the simplest passing eBPF program.
-    fn make_minimal_bpf_elf() -> Vec<u8> {
-        make_bpf_elf(&[
-            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
-            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
-        ])
-    }
-
     #[test]
     fn ingest_elf_valid_minimal_program() {
-        let elf = make_minimal_bpf_elf();
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+        let elf = make_sonde_elf(&bpf_code);
         let lib = ProgramLibrary::new();
         let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
 
@@ -796,7 +723,11 @@ mod tests {
 
     #[test]
     fn ingest_elf_content_hash_is_deterministic() {
-        let elf = make_minimal_bpf_elf();
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+        let elf = make_sonde_elf(&bpf_code);
         let lib = ProgramLibrary::new();
         let r1 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
         let r2 = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
@@ -1099,7 +1030,7 @@ mod tests {
     #[test]
     fn ingest_elf_sonde_helper_call_verified() {
         // BPF: mov r1, 0; call 5 (gpio_read); exit
-        let elf = make_bpf_elf(&[
+        let elf = make_sonde_elf(&[
             0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r1, 0
             0x85, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, // call 5 (gpio_read)
             0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
@@ -1119,7 +1050,7 @@ mod tests {
     #[test]
     fn ingest_elf_unsupported_helper_rejected() {
         // BPF: call 0 (unsupported); exit
-        let elf = make_bpf_elf(&[
+        let elf = make_sonde_elf(&[
             0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // call 0 (unsupported)
             0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
         ]);
@@ -1145,7 +1076,7 @@ mod tests {
             0x79, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // r0 = *(u64*)(r1 + 0)
             0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
         ];
-        let elf = make_bpf_elf(&bpf_code);
+        let elf = make_sonde_elf(&bpf_code);
         let lib = ProgramLibrary::new();
         let err = lib
             .ingest_elf(&elf, VerificationProfile::Resident)
@@ -1572,5 +1503,116 @@ mod tests {
             !elf_has_map_sections(&elf),
             "`.rodataXYZ` should not match (no dot separator)"
         );
+    }
+
+    /// Build a BPF ELF with two executable sections: `sonde` (with `sonde_code`)
+    /// and `.text` (with `text_code`). Used to test that `ingest_elf` filters
+    /// to the `sonde` section (GW-0401 criterion 6).
+    fn make_multi_section_bpf_elf(sonde_code: &[u8], text_code: &[u8]) -> Vec<u8> {
+        assert!(sonde_code.len().is_multiple_of(8));
+        assert!(text_code.len().is_multiple_of(8));
+
+        // shstrtab: "\0sonde\0.text\0.shstrtab\0"
+        //   offsets:  0  1     7     13
+        let shstrtab: &[u8] = b"\0sonde\0.text\0.shstrtab\0"; // 23 bytes
+
+        let sonde_offset: u64 = 64; // right after ELF header
+        let text_offset: u64 = sonde_offset + sonde_code.len() as u64;
+        let shstrtab_offset: u64 = text_offset + text_code.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ── ELF header (64 bytes) ──
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']); // e_ident magic
+        elf.push(2); // EI_CLASS = ELFCLASS64
+        elf.push(1); // EI_DATA = ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]); // padding
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
+        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&4u16.to_le_bytes()); // e_shnum (null + sonde + .text + .shstrtab)
+        elf.extend_from_slice(&3u16.to_le_bytes()); // e_shstrndx = 3
+        assert_eq!(elf.len(), 64);
+
+        // ── sonde section data ──
+        elf.extend_from_slice(sonde_code);
+
+        // ── .text section data ──
+        elf.extend_from_slice(text_code);
+
+        // ── .shstrtab section data ──
+        elf.extend_from_slice(shstrtab);
+
+        // ── Section headers (4 entries × 64 bytes each) ──
+
+        // [0] Null section header
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] sonde section header
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name = offset of "sonde"
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        let flags: u64 = 0x6; // SHF_ALLOC | SHF_EXECINSTR
+        sh[8..16].copy_from_slice(&flags.to_le_bytes());
+        sh[24..32].copy_from_slice(&sonde_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(sonde_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh);
+
+        // [2] .text section header
+        let mut sh2 = [0u8; 64];
+        sh2[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name = offset of ".text"
+        sh2[4..8].copy_from_slice(&1u32.to_le_bytes()); // sh_type = SHT_PROGBITS
+        sh2[8..16].copy_from_slice(&flags.to_le_bytes());
+        sh2[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh2[32..40].copy_from_slice(&(text_code.len() as u64).to_le_bytes());
+        sh2[48..56].copy_from_slice(&8u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh2);
+
+        // [3] .shstrtab section header
+        let mut sh3 = [0u8; 64];
+        sh3[0..4].copy_from_slice(&13u32.to_le_bytes()); // sh_name = offset of ".shstrtab"
+        sh3[4..8].copy_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        sh3[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh3[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh3[48..56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        elf.extend_from_slice(&sh3);
+
+        elf
+    }
+
+    /// Multi-section ELF with both `sonde` and `.text` sections should succeed,
+    /// extracting only the `sonde` section program (GW-0401 criterion 6, T-0413).
+    #[test]
+    fn ingest_elf_multi_section_filters_to_sonde() {
+        #[rustfmt::skip]
+        let sonde_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+        #[rustfmt::skip]
+        let text_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // mov r0, 1
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        let elf = make_multi_section_bpf_elf(&sonde_code, &text_code);
+        let lib = ProgramLibrary::new();
+        let record = lib.ingest_elf(&elf, VerificationProfile::Resident).unwrap();
+
+        // Verify the stored bytecode is from the sonde section (mov r0, 0),
+        // not the .text section (mov r0, 1).
+        let image = ProgramImage::decode(&record.image).unwrap();
+        assert_eq!(image.bytecode, sonde_code);
     }
 }

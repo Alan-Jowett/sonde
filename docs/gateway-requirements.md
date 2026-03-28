@@ -962,6 +962,23 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 
 ---
 
+### GW-1400  Bounded shutdown time
+
+**Priority:** Must  
+**Source:** Issue #551
+
+**Description:**  
+The gateway MUST exit cleanly within a bounded time after receiving a shutdown signal (Ctrl-C in console mode, `SERVICE_CONTROL_STOP` / `SERVICE_CONTROL_SHUTDOWN` in Windows service mode). If the graceful shutdown sequence (§16 of the design document) does not complete within 5 seconds, the gateway MUST force-exit via `std::process::exit(0)`. This prevents the process from hanging indefinitely when serial I/O, transport `Drop` implementations, or background tasks are blocked on a faulted USB-CDC device.
+
+**Acceptance criteria:**
+
+1. After a shutdown signal, the gateway process terminates within 5 seconds even if the serial port is in an error state (e.g., OS error 22).
+2. During normal operation (no serial errors), the gateway still shuts down gracefully — the 5-second timeout is only a backstop.
+3. The force-exit path logs a warning before calling `std::process::exit(0)`.
+4. The behavior is identical in console mode and Windows service mode.
+
+---
+
 ## 11  Modem transport adapter
 
 ### GW-1100  Modem transport trait implementation
@@ -1638,3 +1655,4 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 | GW-1304 | Build-type–aware log levels | Must |
 | GW-1305 | Verification failure diagnostics | Must |
 | GW-1306 | Service-mode logging and monitoring | Must |
+| GW-1400 | Bounded shutdown time | Must |

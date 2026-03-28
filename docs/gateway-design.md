@@ -971,12 +971,36 @@ The gateway emits the version string in its first `info!()` log line so that ope
 
 ## 16  Shutdown sequence
 
+> **Requirement:** GW-1400.
+
 1. Stop accepting new frames.
 2. Wait for in-flight sessions to complete (with timeout).
 3. Terminate handler processes (SIGTERM, then SIGKILL after timeout).
 4. Flush any pending storage writes.
 5. Close transport.
 6. Exit.
+
+### 16.1  Shutdown timeout (GW-1400)
+
+The entire graceful shutdown sequence (steps 1–6 above) is wrapped in a
+5-second `tokio::time::timeout`. The implementation lives in
+`bin/gateway.rs` and works as follows:
+
+1. When `run_gateway` returns, the caller (`main` for console mode,
+   `service_entry` for Windows service mode) starts a **force-exit
+   watchdog**: a detached `tokio::spawn` that sleeps for 5 seconds and
+   then calls `std::process::exit(0)`.
+2. If the async runtime shuts down normally (all tasks complete, `Drop`
+   impls finish) before the watchdog fires, the process exits cleanly
+   via the normal return path.
+3. If any task or `Drop` impl blocks beyond the deadline — for example
+   a serial port `Drop` stuck on a pending I/O operation — the watchdog
+   fires and force-terminates the process.
+4. Before calling `std::process::exit(0)`, the watchdog logs a
+   `WARN`-level message so the hang is visible in logs.
+
+This ensures the process never hangs after logging "gateway stopped",
+regardless of serial port state (Issue #551).
 
 ---
 

@@ -717,6 +717,30 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N619  Global variable map (map_type 0) accepted
+
+**Validates:** ND-0606
+
+**Procedure:**
+1. Build map definitions containing a `map_type` 0 map (global variable map from `.rodata`/`.data`).
+2. Call `validate_map_defs()`.
+3. Assert: validation succeeds.
+4. Allocate the maps.
+5. Assert: allocation succeeds and the map is usable (lookup/update work).
+
+---
+
+### T-N620  Unsupported map_type rejected
+
+**Validates:** ND-0606
+
+**Procedure:**
+1. Build map definitions containing a `map_type` 2 map (unsupported type).
+2. Call `validate_map_defs()`.
+3. Assert: validation fails with `ProgramDecodeFailed`.
+
+---
+
 ## 9  Timing and retry tests
 
 ### T-N700  WAKE retry count and timing
@@ -1629,7 +1653,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0603 | T-N607, T-N608, T-N609, T-N932 |
 | ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933 |
 | ND-0605 | T-N614, T-N615, T-N934 |
-| ND-0606 | T-N616, T-N935 |
+| ND-0606 | T-N616, T-N619, T-N620, T-N935 |
 | ND-0700 | T-N201, T-N700 |
 | ND-0701 | T-N701, T-N936 |
 | ND-0702 | T-N702, T-N937 |
@@ -1724,6 +1748,8 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N614 | `test_instruction_budget_exceeded_graceful` | wake_cycle.rs |
 | T-N615 | `test_call_depth_exceeded_graceful` | wake_cycle.rs |
 | T-N616 | `test_map_budget_exceeded_rejects_program` | wake_cycle.rs |
+| T-N619 | `test_validate_accepts_global_variable_map_type_0` | map_storage.rs |
+| T-N620 | `test_validate_rejects_unsupported_map_type` | map_storage.rs |
 | T-N700 | `test_wake_retries_exhausted` | wake_cycle.rs |
 | T-N701 | `test_chunked_transfer_chunk_retry_exhausted` | wake_cycle.rs |
 | T-N800 | `test_malformed_cbor_discarded` | wake_cycle.rs |

@@ -416,8 +416,12 @@ impl MapStorage {
                 "program defines too many maps (exceeds MAX_MAPS)",
             ));
         }
-        for def in map_defs {
+        for (i, def) in map_defs.iter().enumerate() {
             if def.map_type != BPF_MAP_TYPE_ARRAY && def.map_type != BPF_MAP_TYPE_GLOBAL_VARIABLE {
+                log::warn!(
+                    "unsupported map_type {} at map index {}: only 0 (global variable) and 1 (BPF_MAP_TYPE_ARRAY) are supported",
+                    def.map_type, i
+                );
                 return Err(NodeError::ProgramDecodeFailed(
                     "unsupported map type: only global variable (0) and \
                      BPF_MAP_TYPE_ARRAY (1) are supported",
@@ -899,7 +903,7 @@ mod tests {
     #[test]
     fn test_validate_accepts_global_variable_map_type_0() {
         let defs = vec![MapDef {
-            map_type: 0, // BPF_MAP_TYPE_GLOBAL_VARIABLE
+            map_type: BPF_MAP_TYPE_GLOBAL_VARIABLE,
             key_size: 4,
             value_size: 8,
             max_entries: 1,

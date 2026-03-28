@@ -858,6 +858,29 @@ The admin API MUST support querying modem status (radio channel, TX/RX/fail coun
 
 ---
 
+### GW-0808  ESP-NOW channel persistence
+
+**Priority:** Must  
+**Source:** Issue #558, Issue #541, Issue #555
+
+**Description:**  
+The gateway MUST persist the current ESP-NOW radio channel in the database so that the value survives gateway and modem restarts.
+
+1. The `--channel` CLI flag seeds the initial channel value **only** if no channel entry exists in the database yet. If a persisted channel exists, the database value takes precedence.
+2. `SetModemChannel` (admin RPC) MUST update both the modem and the database atomically — if the modem channel change succeeds, the new channel MUST be written to the database before the RPC returns.
+3. On modem reconnect (GW-1103), the gateway MUST restore the channel from the database (not the CLI `--channel` value).
+4. BLE pairing (`REGISTER_PHONE` response) MUST include the `rf_channel` read from the database, not the CLI startup value.
+
+**Acceptance criteria:**
+
+1. After `SetModemChannel(7)`, restarting the gateway (without `--channel`) uses channel 7 from the database.
+2. After `SetModemChannel(7)`, a modem reconnect sends `SET_CHANNEL(7)` (not the CLI default).
+3. After `SetModemChannel(7)`, a BLE `REGISTER_PHONE` response contains `rf_channel = 7`.
+4. On a fresh database with `--channel 3`, the database is seeded with channel 3.
+5. On an existing database with persisted channel 7, `--channel 3` is ignored — the gateway starts on channel 7.
+
+---
+
 ## 10  Operational requirements
 
 ### GW-1000  Gateway failover / replaceability
@@ -1060,7 +1083,7 @@ The gateway and admin binaries MUST embed the git commit hash (short, 7 characte
 **Description:**
 On receiving an `ERROR` message from the modem, the gateway MUST log the error code and human-readable message. The gateway MAY attempt a `RESET` to recover.
 
-When the serial port itself becomes unavailable (e.g. USB-CDC disconnect due to modem reset, OS error 995 on Windows), the gateway MUST NOT exit. Instead, the serial reader task MUST signal the transport layer, which MUST attempt to reopen the serial port with exponential backoff (starting at 1 s, capped at 30 s). Once the port reopens, the gateway MUST re-execute the modem startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`). Frame processing and BLE event loops MUST block (not exit) while reconnection is in progress.
+When the serial port itself becomes unavailable (e.g. USB-CDC disconnect due to modem reset, OS error 995 on Windows), the gateway MUST NOT exit. Instead, the serial reader task MUST signal the transport layer, which MUST attempt to reopen the serial port with exponential backoff (starting at 1 s, capped at 30 s). Once the port reopens, the gateway MUST re-execute the modem startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`), using the persisted channel from the database (GW-0808), not the CLI `--channel` startup value. Frame processing and BLE event loops MUST block (not exit) while reconnection is in progress.
 
 **Acceptance criteria:**
 
@@ -1574,6 +1597,7 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 | GW-0805 | Admin API — state export/import | Should |
 | GW-0806 | Admin CLI tool | Must |
 | GW-0807 | Admin API — modem management | Must |
+| GW-0808 | ESP-NOW channel persistence | Must |
 | GW-1000 | Gateway failover / replaceability | Must |
 | GW-1004 | Program hash consistency across failover group | Must |
 | GW-1001 | Exportable / importable state | Should |

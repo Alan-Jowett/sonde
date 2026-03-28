@@ -93,6 +93,12 @@ pub trait Storage: Send + Sync {
     async fn revoke_phone_psk(&self, phone_id: u32) -> Result<(), StorageError>;
     async fn delete_phone_psk(&self, phone_id: u32) -> Result<(), StorageError>;
 
+    // ── Gateway config (GW-0808) ───────────────────────────────
+    /// Retrieve a gateway configuration value by key.
+    async fn get_config(&self, key: &str) -> Result<Option<String>, StorageError>;
+    /// Set a gateway configuration value (insert or update).
+    async fn set_config(&self, key: &str, value: &str) -> Result<(), StorageError>;
+
     /// Atomically replace all phone PSK registrations with the given set.
     ///
     /// `phone_id` values on the incoming records are ignored — each
@@ -121,6 +127,7 @@ pub struct InMemoryStorage {
     identity: RwLock<Option<GatewayIdentity>>,
     phone_psks: RwLock<Vec<PhonePskRecord>>,
     next_phone_id: RwLock<u32>,
+    config: RwLock<HashMap<String, String>>,
 }
 
 impl InMemoryStorage {
@@ -131,6 +138,7 @@ impl InMemoryStorage {
             identity: RwLock::new(None),
             phone_psks: RwLock::new(Vec::new()),
             next_phone_id: RwLock::new(1),
+            config: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -306,6 +314,19 @@ impl Storage for InMemoryStorage {
                 .ok_or_else(|| StorageError::Internal("phone_id overflow".into()))?;
             psks.push(stored);
         }
+        Ok(())
+    }
+
+    // ── Gateway config ─────────────────────────────────────────
+
+    async fn get_config(&self, key: &str) -> Result<Option<String>, StorageError> {
+        let config = self.config.read().await;
+        Ok(config.get(key).cloned())
+    }
+
+    async fn set_config(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        let mut config = self.config.write().await;
+        config.insert(key.to_owned(), value.to_owned());
         Ok(())
     }
 }

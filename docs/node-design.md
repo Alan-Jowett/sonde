@@ -405,7 +405,7 @@ Maps are stored in RTC slow SRAM, which survives deep sleep. The layout is deter
 ### 9.2  Map allocation
 
 On program install:
-1. Validate map definitions: reject any `map_type` other than 0 or 1 (ND-0606). `map_type` 0 (global variable maps from `.rodata`/`.data` ELF sections) is treated identically to `map_type` 1 (`BPF_MAP_TYPE_ARRAY`) — both are stored as arrays of `max_entries` entries, each `value_size` bytes, keyed by a `u32` index. Global variable maps typically have `max_entries == 1` and carry `initial_data` (ND-0607).
+1. Validate map definitions: reject any `map_type` other than 0 or 1 (ND-0606). `map_type` 0 (global variable maps from `.rodata`/`.data` ELF sections) is treated identically to `map_type` 1 (`BPF_MAP_TYPE_ARRAY`) — both are stored as array maps with `max_entries` entries, each `value_size` bytes, keyed by a `u32` index. Global variable maps typically have `max_entries == 1` and may carry `initial_data` (ND-0607).
 2. Calculate total map storage needed: `sum(max_entries * (key_size + value_size))` for all maps.
 3. If total exceeds the budget → reject installation, keep existing program.
 4. Allocate contiguous regions in RTC SRAM for each map.

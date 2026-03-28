@@ -895,7 +895,7 @@ mod tests {
         );
     }
 
-    /// T-N617: global variable map (map_type 0) passes validation and is usable.
+    /// T-N619: global variable map (map_type 0) passes validation and is usable.
     #[test]
     fn test_validate_accepts_global_variable_map_type_0() {
         let defs = vec![MapDef {
@@ -906,15 +906,25 @@ mod tests {
         }];
         MapStorage::validate_map_defs(&defs).unwrap();
 
-        // Also verify allocation and usage work.
+        // Also verify allocation and usage (lookup/update) work.
         let mut ms = MapStorage::new(4096);
         ms.allocate(&defs).unwrap();
         assert_eq!(ms.map_count(), 1);
+
+        // Initial contents should be zeroed.
         let val = ms.get(0).unwrap().lookup(0).unwrap();
         assert_eq!(val, &[0, 0, 0, 0, 0, 0, 0, 0]);
+
+        // Write a value and verify it round-trips.
+        ms.get_mut(0)
+            .unwrap()
+            .update(0, &[0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44])
+            .unwrap();
+        let updated = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(updated, &[0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44]);
     }
 
-    /// T-N618: unsupported map_type is rejected.
+    /// T-N620: unsupported map_type is rejected.
     #[test]
     fn test_validate_rejects_unsupported_map_type() {
         let defs = vec![MapDef {

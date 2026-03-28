@@ -258,8 +258,28 @@ async fn run_gateway(
     info!(provider = ?cli.key_provider, "master key loaded");
 
     // 2. Open persistent storage
-    let storage = Arc::new(SqliteStorage::open(&cli.db, master_key)?);
+    let storage: Arc<SqliteStorage> = Arc::new(SqliteStorage::open(&cli.db, master_key)?);
     info!("storage opened: {}", cli.db);
+
+    // 2b. Seed or load persisted ESP-NOW channel (GW-0808).
+    //     If the database already has a channel, use it (ignoring --channel).
+    //     Otherwise, seed the database with the CLI --channel value.
+    let persisted_channel: u8 = match storage.get_config("espnow_channel").await? {
+        Some(v) => v
+            .parse::<u8>()
+            .map_err(|e| format!("invalid persisted espnow_channel `{v}`: {e}"))?,
+        None => {
+            storage
+                .set_config("espnow_channel", &cli.channel.to_string())
+                .await?;
+            cli.channel
+        }
+    };
+    info!(
+        persisted_channel,
+        cli_channel = cli.channel,
+        "ESP-NOW channel resolved (GW-0808)"
+    );
 
     // 2a. Load or generate gateway identity (GW-1200, GW-1201)
     {
@@ -375,7 +395,15 @@ async fn run_gateway(
         // GW-1301: log serial connection.
         info!("modem serial connected");
 
-        let transport = match UsbEspNowTransport::new(serial_port, cli.channel).await {
+        // GW-0808: read the current channel from the database on each
+        // reconnect iteration so that `SetModemChannel` changes survive
+        // modem restarts.
+        let channel_for_transport = match storage.get_config("espnow_channel").await {
+            Ok(Some(v)) => v.parse::<u8>().unwrap_or(persisted_channel),
+            _ => persisted_channel,
+        };
+
+        let transport = match UsbEspNowTransport::new(serial_port, channel_for_transport).await {
             Ok(t) => Arc::new(t),
             Err(e) => {
                 error!("modem startup failed: {e}");
@@ -385,7 +413,7 @@ async fn run_gateway(
                 continue;
             }
         };
-        info!(channel = cli.channel, "modem transport ready");
+        info!(channel = channel_for_transport, "modem transport ready");
         backoff = Duration::from_secs(1); // reset on success
 
         // 7. Start gRPC admin server (only on first iteration)
@@ -435,7 +463,9 @@ async fn run_gateway(
         // 8a. BLE event processing loop (Phase 1 phone pairing via modem relay).
         let ble_transport = transport.clone();
         let ble_storage: Arc<dyn Storage> = storage.clone();
-        let ble_channel = cli.channel;
+        // GW-0808: read channel from the database for each BLE pairing request
+        // rather than capturing the CLI startup value.
+        let ble_channel = channel_for_transport;
         let ble_ctrl = Arc::clone(&ble_controller);
         let ble_loop = tokio::spawn(async move {
             use sonde_gateway::ble_pairing::handle_ble_recv;
@@ -469,12 +499,20 @@ async fn run_gateway(
 
                 match ble_transport.recv_ble_event().await {
                     Some(BleEvent::Recv(br)) => {
+                        // GW-0808: read the current channel from the database
+                        // so BLE pairing always returns the latest persisted
+                        // channel, even if SetModemChannel was called after
+                        // the BLE loop started.
+                        let current_channel = match ble_storage.get_config("espnow_channel").await {
+                            Ok(Some(v)) => v.parse::<u8>().unwrap_or(ble_channel),
+                            _ => ble_channel,
+                        };
                         if let Some(response) = handle_ble_recv(
                             &br.ble_data,
                             &identity,
                             &ble_storage,
                             &mut window,
-                            ble_channel,
+                            current_channel,
                             Some(&ble_ctrl),
                         )
                         .await

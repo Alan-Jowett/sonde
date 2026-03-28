@@ -7,8 +7,13 @@ use core::marker::PhantomData;
 use crate::error::{NodeError, NodeResult};
 use sonde_protocol::MapDef;
 
-/// The only supported map type. Other types are rejected at allocation time.
+/// Array map type. Alongside `BPF_MAP_TYPE_GLOBAL_VARIABLE`, the only
+/// supported map types.
 const BPF_MAP_TYPE_ARRAY: u32 = 1;
+
+/// Global variable maps (`.rodata`/`.data` ELF sections) use map_type 0.
+/// Treated identically to `BPF_MAP_TYPE_ARRAY` (ND-0606).
+const BPF_MAP_TYPE_GLOBAL_VARIABLE: u32 = 0;
 
 /// Expected key size for array maps (u32 index).
 const ARRAY_MAP_KEY_SIZE: u32 = 4;
@@ -412,9 +417,10 @@ impl MapStorage {
             ));
         }
         for def in map_defs {
-            if def.map_type != BPF_MAP_TYPE_ARRAY {
+            if def.map_type != BPF_MAP_TYPE_ARRAY && def.map_type != BPF_MAP_TYPE_GLOBAL_VARIABLE {
                 return Err(NodeError::ProgramDecodeFailed(
-                    "unsupported map type: only BPF_MAP_TYPE_ARRAY (1) is supported",
+                    "unsupported map type: only global variable (0) and \
+                     BPF_MAP_TYPE_ARRAY (1) are supported",
                 ));
             }
             if def.key_size != ARRAY_MAP_KEY_SIZE {
@@ -887,5 +893,46 @@ mod tests {
             ms.get(1).unwrap().lookup(0).unwrap(),
             &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
         );
+    }
+
+    /// T-N617: global variable map (map_type 0) passes validation and is usable.
+    #[test]
+    fn test_validate_accepts_global_variable_map_type_0() {
+        let defs = vec![MapDef {
+            map_type: 0, // BPF_MAP_TYPE_GLOBAL_VARIABLE
+            key_size: 4,
+            value_size: 8,
+            max_entries: 1,
+        }];
+        MapStorage::validate_map_defs(&defs).unwrap();
+
+        // Also verify allocation and usage work.
+        let mut ms = MapStorage::new(4096);
+        ms.allocate(&defs).unwrap();
+        assert_eq!(ms.map_count(), 1);
+        let val = ms.get(0).unwrap().lookup(0).unwrap();
+        assert_eq!(val, &[0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    /// T-N618: unsupported map_type is rejected.
+    #[test]
+    fn test_validate_rejects_unsupported_map_type() {
+        let defs = vec![MapDef {
+            map_type: 2, // unsupported
+            key_size: 4,
+            value_size: 8,
+            max_entries: 1,
+        }];
+        let result = MapStorage::validate_map_defs(&defs);
+        match result {
+            Err(NodeError::ProgramDecodeFailed(msg)) => {
+                assert!(
+                    msg.contains("unsupported map type"),
+                    "error message should mention unsupported map type: {msg}"
+                );
+            }
+            Err(other) => panic!("expected ProgramDecodeFailed, got: {other}"),
+            Ok(()) => panic!("expected error for unsupported map type"),
+        }
     }
 }

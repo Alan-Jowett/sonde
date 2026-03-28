@@ -405,16 +405,17 @@ Maps are stored in RTC slow SRAM, which survives deep sleep. The layout is deter
 ### 9.2  Map allocation
 
 On program install:
-1. Calculate total map storage needed: `sum(max_entries * (key_size + value_size))` for all maps.
-2. If total exceeds the budget → reject installation, keep existing program.
-3. Allocate contiguous regions in RTC SRAM for each map.
-4. Zero-initialize all map storage.
-5. Record the map layout in the RTC SRAM header for use after deep sleep.
+1. Validate map definitions: reject any `map_type` other than 0 or 1 (ND-0606). `map_type` 0 (global variable maps from `.rodata`/`.data` ELF sections) is treated identically to `map_type` 1 (`BPF_MAP_TYPE_ARRAY`) — both are stored as arrays of `max_entries` entries, each `value_size` bytes, keyed by a `u32` index. Global variable maps typically have `max_entries == 1` and carry `initial_data` (ND-0607).
+2. Calculate total map storage needed: `sum(max_entries * (key_size + value_size))` for all maps.
+3. If total exceeds the budget → reject installation, keep existing program.
+4. Allocate contiguous regions in RTC SRAM for each map.
+5. Zero-initialize all map storage.
+6. Record the map layout in the RTC SRAM header for use after deep sleep.
 
 ### 9.3  Map access helpers
 
 - `map_lookup_elem(map, key)` → pointer to value, or NULL.
-- `map_update_elem(map, key, value)` → writes value at key. Only `BPF_MAP_TYPE_ARRAY` is supported (key is an integer index).
+- `map_update_elem(map, key, value)` → writes value at key. `map_type` 0 (global variable) and `map_type` 1 (`BPF_MAP_TYPE_ARRAY`) are supported (key is an integer index).
 
 Bounds checking is performed on every access: key must be within `[0, max_entries)`.
 

@@ -436,6 +436,18 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0413  Multi-section ELF filters to sonde section
+
+**Validates:** GW-0401 (criterion 6)
+
+**Procedure:**
+1. Construct a BPF ELF containing two executable sections: a `sonde` section with a valid program (`mov r0, 0; exit`) and a `.text` section with a different valid program.
+2. Submit it for ingestion with the resident verification profile.
+3. Assert: ingestion succeeds — exactly one program is extracted (the `sonde` section program).
+4. Assert: the stored bytecode matches the `sonde` section, not the `.text` section.
+
+---
+
 ## 7  Application data tests
 
 ### T-0500  APP_DATA reception and forwarding

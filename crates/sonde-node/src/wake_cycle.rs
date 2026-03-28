@@ -24,10 +24,10 @@ use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
 use crate::FIRMWARE_ABI_VERSION;
 
-/// Retry and timing constants (protocol.md §9).
+/// Retry and timing constants (protocol.md §9, node-requirements.md ND-0700/ND-0702).
 const WAKE_MAX_RETRIES: u32 = 3;
-const RETRY_DELAY_MS: u32 = 400;
-const RESPONSE_TIMEOUT_MS: u32 = 200;
+const RETRY_DELAY_MS: u32 = 100;
+const RESPONSE_TIMEOUT_MS: u32 = 50;
 
 /// Default instruction budget for BPF execution.
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
@@ -3707,12 +3707,12 @@ mod tests {
     }
 
     // ===================================================================
-    // Gap 1 (ND-0701): Chunk retry delay timing — 400 ms between retries
+    // Gap 1 (ND-0701): Chunk retry delay timing — 100 ms between retries
     // ===================================================================
 
     #[test]
     fn test_chunk_retry_delay_timing() {
-        // T-N701 gap: Verify 400 ms delay between chunk retries.
+        // T-N701 gap: Verify 100 ms delay between chunk retries.
         // Existing T-N701 checks retry count but never asserts the delay.
         let psk = [0x71; 32];
         let key_hint = 1u16;
@@ -3760,8 +3760,8 @@ mod tests {
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 
-        // Chunk retries should have 400 ms delay between each attempt.
-        // The first attempt has no delay; retries 2, 3, 4 each delay 400 ms.
+        // Chunk retries should have 100 ms delay between each attempt.
+        // The first attempt has no delay; retries 2, 3, 4 each delay 100 ms.
         let delays = clock.recorded_delays();
         let retry_delays: Vec<_> = delays
             .iter()
@@ -3790,15 +3790,15 @@ mod tests {
 
     #[test]
     fn test_response_accepted_under_timeout() {
-        // T-N702 gap: A valid response arriving within the 200 ms timeout
-        // must be accepted. Existing test only proves >200 ms triggers timeout.
+        // T-N702 gap: A valid response arriving within the 50 ms timeout
+        // must be accepted. Existing test only proves >50 ms triggers timeout.
         // Uses RecordingTransport to verify the production code passes the
         // correct RESPONSE_TIMEOUT_MS to recv().
         let psk = [0x72; 32];
         let key_hint = 1u16;
         let mut transport = RecordingTransport::new();
 
-        // Queue a valid COMMAND response (arrives immediately = ~0 ms < 200 ms)
+        // Queue a valid COMMAND response (arrives immediately = ~0 ms < 50 ms)
         let command_frame =
             build_command_response(&psk, key_hint, 1, 1000, 1710000000000, CommandPayload::Nop);
         transport.queue_response(Some(command_frame));
@@ -3832,7 +3832,7 @@ mod tests {
 
         // Verify the production code used the correct timeout constant.
         // The first recv() call (WAKE/COMMAND exchange) must use
-        // RESPONSE_TIMEOUT_MS (200 ms).
+        // RESPONSE_TIMEOUT_MS (50 ms).
         assert!(!transport.recv_timeouts.is_empty());
         assert_eq!(
             transport.recv_timeouts[0], RESPONSE_TIMEOUT_MS,
@@ -5174,7 +5174,7 @@ mod tests {
         assert_eq!(seq, 43, "seq must still advance after send");
     }
 
-    // --- Gap 6: ND-0702 — Response timeout (200 ms) ---
+    // --- Gap 6: ND-0702 — Response timeout (50 ms) ---
 
     /// Clock whose elapsed_ms advances by a fixed step each call.
     struct AdvancingClock {
@@ -5201,15 +5201,15 @@ mod tests {
     }
 
     #[test]
-    fn test_response_timeout_constant_is_200ms() {
+    fn test_response_timeout_constant_is_50ms() {
         // ND-0702: On ESP-NOW with USB-CDC modem bridge, the response timeout
-        // MUST be 200 ms to account for serial round-trip latency.
-        assert_eq!(RESPONSE_TIMEOUT_MS, 200);
+        // MUST be 50 ms to account for serial round-trip latency.
+        assert_eq!(RESPONSE_TIMEOUT_MS, 50);
     }
 
     #[test]
     fn test_response_timeout_send_recv_deadline() {
-        // ND-0702 / T-N702: send_recv uses the 200 ms timeout as a
+        // ND-0702 / T-N702: send_recv uses the 50 ms timeout as a
         // deadline. With a clock that advances, once the deadline
         // expires the node returns Timeout even if recv would produce
         // a frame later.
@@ -5224,13 +5224,13 @@ mod tests {
 
         let identity = NodeIdentity { key_hint, psk };
         let mut seq = 42u64;
-        // Clock starts at 0, advances 30ms per call.
-        // Call 1 (deadline calc): elapsed=0, deadline=200
-        // Call 2 (loop check): elapsed=30, 30<200 → recv
+        // Clock starts at 0, advances 10ms per call.
+        // Call 1 (deadline calc): elapsed=0, deadline=50
+        // Call 2 (loop check): elapsed=10, 10<50 → recv
         // recv returns wrong-nonce frame → continue
-        // Call 3 (loop check): elapsed=60, ...
-        // Eventually elapsed >= 200 → Timeout
-        let clock = AdvancingClock::new(0, 30);
+        // Call 3 (loop check): elapsed=20, ...
+        // Eventually elapsed >= 50 → Timeout
+        let clock = AdvancingClock::new(0, 10);
 
         let result = send_recv_app_data(
             &mut transport,
@@ -5244,13 +5244,13 @@ mod tests {
 
         assert!(
             matches!(result, Err(NodeError::Timeout)),
-            "must timeout when clock exceeds 200 ms deadline"
+            "must timeout when clock exceeds 50 ms deadline"
         );
     }
 
     #[test]
     fn test_wake_command_timeout_retries() {
-        // ND-0702 / T-N702: WAKE/COMMAND exchange uses 200 ms timeout.
+        // ND-0702 / T-N702: WAKE/COMMAND exchange uses 50 ms timeout.
         // First response times out (None), second succeeds.
         let psk = [0xC9; 32];
         let key_hint = 1u16;

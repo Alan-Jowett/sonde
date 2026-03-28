@@ -691,12 +691,14 @@ impl GatewayAdmin for AdminService {
 
         // Read the current persisted channel before changing the modem so we
         // can roll back if the DB write fails.
-        let previous_channel = self
-            .storage
-            .get_config("espnow_channel")
-            .await
-            .ok()
-            .flatten();
+        let previous_channel = match self.storage.get_config("espnow_channel").await {
+            Ok(val) => val,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "failed to read current modem channel from storage: {e}"
+                )));
+            }
+        };
 
         transport
             .change_channel(channel as u8)

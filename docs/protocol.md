@@ -547,7 +547,7 @@ If the node sends `WAKE` and receives no `COMMAND` response:
 | Parameter | Value |
 |---|---|
 | Retry count | 3 |
-| Retry delay | Fixed, 400 ms between attempts |
+| Retry delay | Fixed, 100 ms between attempts |
 | After max retries | Sleep until next scheduled wake interval. |
 
 Exponential backoff is unnecessary — if the gateway isn't responding after 3 attempts, it's likely unavailable. Sleeping preserves battery.
@@ -559,7 +559,7 @@ If the node sends `GET_CHUNK` and receives no `CHUNK` response:
 | Parameter | Value |
 |---|---|
 | Retry count | 3 per chunk |
-| Retry delay | Fixed, 400 ms between attempts |
+| Retry delay | Fixed, 100 ms between attempts |
 | Sequence numbers | Each `GET_CHUNK` retry MUST use the next sequence number (not reuse the original). This maintains strict session sequencing and lets the gateway reject duplicates when the original request was received but the response was lost; it also provides replay protection as a secondary benefit. |
 | After max retries | Abort transfer, sleep. Retry from chunk 0 on next wake. |
 
@@ -569,7 +569,7 @@ The node waits for a response before considering it lost and retrying (or sleepi
 
 | Transport | Timeout |
 |---|---|
-| ESP-NOW (with USB-CDC modem bridge) | 200 ms |
+| ESP-NOW (with USB-CDC modem bridge) | 50 ms |
 
 The timeout must comfortably exceed the round-trip time for the full transport path (node → ESP-NOW → modem → USB-CDC → gateway → USB-CDC → modem → ESP-NOW → node) plus gateway processing. Implementations may make this configurable.
 

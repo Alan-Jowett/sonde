@@ -88,8 +88,12 @@ pub(crate) const MAX_EPHEMERAL_SIZE: u32 = 2048;
 /// to array maps.
 const MAP_SECTION_NAMES: &[&str] = &[".maps", "maps", ".rodata", ".data", ".bss"];
 
-/// Section name prefixes that indicate map-backed sections (e.g. `maps/foo`).
-const MAP_SECTION_PREFIXES: &[&str] = &[".maps/", "maps/"];
+/// Section name prefixes that indicate map-backed sections.
+///
+/// Covers explicit map sections (`maps/foo`) and global variable section
+/// variants that Prevail promotes to maps (`.rodata.str1.1`, `.data.rel.ro`,
+/// etc.).
+const MAP_SECTION_PREFIXES: &[&str] = &[".maps/", "maps/", ".rodata.", ".data.", ".bss."];
 
 /// Section names corresponding to global variable maps.
 ///
@@ -1453,5 +1457,120 @@ mod tests {
             "prefixed .rodata.str1.1 should be matched"
         );
         assert_eq!(sections[0], rodata_content);
+    }
+
+    /// Build a minimal BPF ELF whose only non-`.text` section has the given
+    /// name. Used to test `elf_has_map_sections` against arbitrary section
+    /// names without invoking the full Prevail loader.
+    fn make_bpf_elf_with_named_section(section_name: &str) -> Vec<u8> {
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+        // Build shstrtab: "\0.text\0<section_name>\0.shstrtab\0"
+        let mut shstrtab = Vec::new();
+        shstrtab.push(0); // index 0: empty
+        shstrtab.extend_from_slice(b".text");
+        shstrtab.push(0); // index 1..6
+        let sec_name_off = shstrtab.len();
+        shstrtab.extend_from_slice(section_name.as_bytes());
+        shstrtab.push(0);
+        let shstrtab_name_off = shstrtab.len();
+        shstrtab.extend_from_slice(b".shstrtab");
+        shstrtab.push(0);
+
+        // Section data (the named section carries 2 bytes of dummy data).
+        let sec_data: [u8; 2] = [0xAB, 0xCD];
+
+        let text_offset: u64 = 64;
+        let sec_data_offset: u64 = text_offset + bpf_code.len() as u64;
+        let shstrtab_offset: u64 = sec_data_offset + sec_data.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ELF header (64 bytes)
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2); // EI_CLASS = ELFCLASS64
+        elf.push(1); // EI_DATA = ELFDATA2LSB
+        elf.push(1); // EI_VERSION
+        elf.extend_from_slice(&[0; 9]);
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&shdr_offset.to_le_bytes()); // e_shoff
+        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&4u16.to_le_bytes()); // e_shnum
+        elf.extend_from_slice(&3u16.to_le_bytes()); // e_shstrndx = 3
+        assert_eq!(elf.len(), 64);
+
+        elf.extend_from_slice(&bpf_code);
+        elf.extend_from_slice(&sec_data);
+        elf.extend_from_slice(&shstrtab);
+
+        // [0] Null
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] .text
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes()); // sh_name
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x6u64.to_le_bytes()); // SHF_ALLOC | SHF_EXECINSTR
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [2] named section
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&(sec_name_off as u32).to_le_bytes());
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x2u64.to_le_bytes()); // SHF_ALLOC
+        sh[24..32].copy_from_slice(&sec_data_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(sec_data.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&4u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [3] .shstrtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&(shstrtab_name_off as u32).to_le_bytes());
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB
+        sh[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        elf
+    }
+
+    /// `elf_has_map_sections` detects prefixed global data section names
+    /// (e.g. `.rodata.str1.1`), consistent with `extract_global_section_data`.
+    #[test]
+    fn elf_has_map_sections_detects_prefixed_global_data() {
+        for name in &[".rodata.str1.1", ".data.rel.ro", ".bss.my_var"] {
+            let elf = make_bpf_elf_with_named_section(name);
+            assert!(
+                elf_has_map_sections(&elf),
+                "`elf_has_map_sections` should detect `{name}` as a map section"
+            );
+        }
+    }
+
+    /// `elf_has_map_sections` does not match unrelated sections whose names
+    /// happen to share a character prefix (e.g. `.rodataXYZ` without a dot
+    /// separator is NOT `.rodata.<suffix>`).
+    #[test]
+    fn elf_has_map_sections_ignores_non_dot_prefix() {
+        let elf = make_bpf_elf_with_named_section(".rodataXYZ");
+        assert!(
+            !elf_has_map_sections(&elf),
+            "`.rodataXYZ` should not match (no dot separator)"
+        );
     }
 }

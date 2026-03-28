@@ -506,7 +506,7 @@ mod tests {
             max_entries: 1,
             inner_map_fd: 0,
         };
-        platform.sync_map_descriptors(&[desc.clone()]);
+        platform.sync_map_descriptors(std::slice::from_ref(&desc));
 
         let found = platform
             .get_map_descriptor(42)

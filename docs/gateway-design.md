@@ -675,7 +675,7 @@ The node registry and program library are accessed through the storage trait beh
 
 ## 11A  Operational logging
 
-> **Requirements:** GW-1300 (lifecycle events), GW-1301 (modem transport state), GW-1302 (frame-level debug traces).
+> **Requirements:** GW-1300 (lifecycle events), GW-1301 (modem transport state), GW-1302 (frame-level debug traces), GW-1306 (service-mode logging).
 
 The gateway uses the `tracing` crate for structured, levelled logging. All log entries use key=value fields for machine-parseability. Log levels follow a consistent policy:
 
@@ -735,6 +735,16 @@ The gateway binary (`bin/gateway.rs`) logs modem transport state transitions at 
 ### 11A.3  Frame-level debug traces
 
 The `UsbEspNowTransport` logs each frame at `DEBUG` level in `dispatch_message` (recv path) and `Transport::send` (send path), with fields `msg_type` (decoded from the protocol frame header, e.g., `"WAKE"`, `"COMMAND"`), `peer_mac`, and `len`. The send-path log is emitted only after a successful write to the modem.
+
+### 11A.4  Service-mode logging and monitoring (GW-1306)
+
+When the gateway runs as a Windows service, three logging sinks are active:
+
+1. **File sink** — writes to `<db-path>.log` (e.g., `gateway.db.log` next to the database). The file sink uses the same build-type–aware `EnvFilter` default as console mode (§ 11A.0a): `sonde_gateway=warn` in release, `sonde_gateway=info` in debug. If the log file cannot be created, opened, or written to (at startup or during runtime), the gateway logs an `ERROR` to the ETW sink and continues without file logging.
+
+2. **ETW sink** — registers provider name `sonde-gateway`. The sink is unfiltered; all events up to the compile-time maximum level are forwarded to any active ETW tracing session. Operators use standard ETW tooling (`logman`, `tracelog`, WPR) to capture and filter events.
+
+3. **Runtime log-level reload** — operators can change the file sink filter without restarting the service. The gateway watches for a platform-appropriate reload signal (e.g., `SERVICE_CONTROL_PARAMCHANGE` on Windows) and re-reads `RUST_LOG` from the environment, applying the new `EnvFilter` within 5 seconds. This uses the `tracing-subscriber` `reload` layer.
 
 ---
 

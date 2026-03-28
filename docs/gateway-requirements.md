@@ -1505,6 +1505,22 @@ When the gateway rejects a program due to Prevail verification failure, the erro
 2. With `--verbose`, the `sonde-admin` CLI MUST display verifier invariant output (equivalent in content to Prevail's `-v` flag). The CLI MAY truncate very large invariant listings, but any truncation MUST be explicitly indicated.
 3. Without `--verbose`, the CLI MUST display the first error and a hint suggesting `--verbose` for full invariants.
 
+### GW-1306  Service-mode logging and monitoring
+
+**Priority:** Must  
+**Source:** Issue #525
+
+**Description:**  
+When the gateway runs as a Windows service (no interactive console), it MUST provide file-based logging and ETW-based monitoring so that operators can diagnose issues without attaching a debugger. The file log path MUST be derived deterministically from the database path (`<db-path>.log`), and the default file sink `EnvFilter` in release builds MUST be `sonde_gateway=warn` (i.e., WARN-level logs for the `sonde_gateway` target, matching the console-mode default from GW-1304). The gateway MUST register an ETW provider named `sonde-gateway` so that operators can capture real-time traces via standard ETW tooling (e.g., `logman`, `tracelog`, Windows Performance Recorder). The ETW sink MUST remain unfiltered (all compiled-in levels are forwarded; ETW-side sessions control what is captured). Operators MUST be able to change the file log level at runtime without restarting the service by setting the `RUST_LOG` environment variable and sending a service control signal (e.g., `SERVICE_CONTROL_PARAMCHANGE` on Windows). The runtime reload mechanism MUST apply the new filter within 5 seconds and MUST NOT require a service restart.
+
+**Acceptance criteria:**
+
+1. In Windows service mode, the gateway writes log output to a file at `<db-path>.log` where `<db-path>` is the configured database file path (e.g., if the database is `C:\ProgramData\sonde\gateway.db`, the log file is `C:\ProgramData\sonde\gateway.db.log`).
+2. The default `EnvFilter` for the file sink in release builds is `sonde_gateway=warn`, consistent with the console-mode default (GW-1304 criterion 3).
+3. The gateway registers an ETW provider with the name `sonde-gateway`. The ETW sink is unfiltered; all events up to the compile-time maximum level (`INFO` in release, `TRACE` in debug) are forwarded to any active ETW session.
+4. The file log level can be changed at runtime without restarting the service: setting `RUST_LOG` and delivering a platform-appropriate reload signal causes the gateway to re-read the environment variable and apply the new `EnvFilter` within 5 seconds.
+5. If the log file cannot be created or written (e.g., permission denied), the gateway MUST log an `ERROR`-level diagnostic to the ETW sink and continue operating without file logging rather than failing to start.
+
 ---
 
 ## Appendix A  Requirement index
@@ -1595,3 +1611,4 @@ When the gateway rejects a program due to Prevail verification failure, the erro
 | GW-1303 | Build metadata in host binaries | Must |
 | GW-1304 | Build-type–aware log levels | Must |
 | GW-1305 | Verification failure diagnostics | Must |
+| GW-1306 | Service-mode logging and monitoring | Must |

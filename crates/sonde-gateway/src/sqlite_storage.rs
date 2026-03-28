@@ -414,6 +414,11 @@ CREATE TABLE IF NOT EXISTS battery_readings (
     battery_mv INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_battery_readings_node ON battery_readings(node_id, timestamp_epoch_s);
+
+CREATE TABLE IF NOT EXISTS gateway_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 ";
 
 /// SQLite-backed persistent storage for the gateway.
@@ -1441,6 +1446,37 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    // ── Gateway config (GW-0808) ───────────────────────────────
+
+    async fn get_config(&self, key: &str) -> Result<Option<String>, StorageError> {
+        let key = key.to_owned();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT value FROM gateway_config WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(map_err)
+        })
+        .await
+    }
+
+    async fn set_config(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        let key = key.to_owned();
+        let value = value.to_owned();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO gateway_config (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -2063,5 +2099,35 @@ mod tests {
         // (the oldest 5 were pruned).
         assert_eq!(loaded.battery_history[0].battery_mv, 3005);
         assert_eq!(loaded.battery_history[99].battery_mv, 3104);
+    }
+
+    // ── Gateway config (GW-0808) ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_config_set_and_get() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        // Initially empty.
+        assert_eq!(store.get_config("espnow_channel").await.unwrap(), None);
+
+        // Set a value.
+        store.set_config("espnow_channel", "7").await.unwrap();
+        assert_eq!(
+            store.get_config("espnow_channel").await.unwrap(),
+            Some("7".to_string())
+        );
+
+        // Overwrite the value (upsert).
+        store.set_config("espnow_channel", "11").await.unwrap();
+        assert_eq!(
+            store.get_config("espnow_channel").await.unwrap(),
+            Some("11".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_config_unknown_key_returns_none() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+        assert_eq!(store.get_config("nonexistent").await.unwrap(), None);
     }
 }

@@ -143,7 +143,7 @@ pub struct UsbEspNowTransport {
 3. Send `RESET`.
 4. Wait for `MODEM_READY` (timeout: 5 seconds, up to 3 retries).
 5. Extract `firmware_version` and `mac_address` from `MODEM_READY`; log both.
-6. Send `SET_CHANNEL` with the configured channel.
+6. Send `SET_CHANNEL` with the persisted channel from the database (GW-0808). If no channel is persisted yet, seed the database with the CLI `--channel` value and use that.
 7. Wait for `SET_CHANNEL_ACK` (timeout: 2 seconds).
 8. Start the health monitor task.
 
@@ -163,7 +163,7 @@ When the serial reader task encounters an OS I/O error (e.g. USB-CDC disconnect,
 
 1. The reader task logs a warning and enters a reconnection loop.
 2. The loop attempts to reopen the serial port with exponential backoff (1 s → 2 s → 4 s → … → 30 s cap).
-3. Once the port reopens, the adapter re-executes the startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`).
+3. Once the port reopens, the adapter re-executes the startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`), reading the channel from the database (GW-0808) rather than the CLI startup value.
 4. The `recv()` and BLE event channels remain open during reconnection — callers block until the transport recovers.
 5. If the port cannot be reopened (e.g. device permanently removed), the backoff loop continues indefinitely; the operator can shut down the gateway via Ctrl-C or service stop.
 
@@ -573,6 +573,27 @@ The storage trait is async to support different backends (file, SQLite, network)
 
 Storage implementations SHOULD encrypt PSK material at rest (GW-0601a). The `NodeRecord.psk` field contains the raw 256-bit key — implementations are responsible for encrypting it before persisting and decrypting on read. The storage trait itself is agnostic to the encryption mechanism.
 
+### 10.1  Gateway configuration storage (GW-0808)
+
+The storage trait includes methods for persisting gateway-level configuration values such as the ESP-NOW radio channel:
+
+```rust
+// Gateway config (GW-0808)
+async fn get_config(&self, key: &str) -> Result<Option<String>, StorageError>;
+async fn set_config(&self, key: &str, value: &str) -> Result<(), StorageError>;
+```
+
+The `SqliteStorage` backend stores these in a `gateway_config` table:
+
+```sql
+CREATE TABLE IF NOT EXISTS gateway_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+```
+
+The `espnow_channel` key stores the current radio channel. The `--channel` CLI flag seeds this value on first startup only; subsequent changes via `SetModemChannel` update the database entry. On modem reconnect and BLE pairing, the persisted value is read from the database.
+
 ---
 
 ## 10a  Master key provider
@@ -828,7 +849,7 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Export state | `ExportState` | Serializes gateway state (node registry, program library, and registered identity/phone PSKs, if applicable). Does not include handler routing configuration (deferred). Encrypted with AES-256-GCM using an operator-supplied passphrase. |
 | Import state | `ImportState` | Restores node registry, program library, and registered identity/phone PSKs from a previously exported, encrypted bundle. Handler routing configuration is not restored (deferred and not part of the bundle). |
 | Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |
-| Set modem channel | `SetModemChannel` | Sets the ESP-NOW radio channel (1–14). |
+| Set modem channel | `SetModemChannel` | Sets the ESP-NOW radio channel (1–14). Persists the new channel in the database (GW-0808). |
 | Scan channels | `ScanModemChannels` | Scans all WiFi channels for AP activity, returns AP counts and RSSI per channel. |
 | Open BLE pairing | `OpenBlePairing` | Opens the phone registration window and sends `BLE_ENABLE` to modem. Server-streaming RPC returning events (passkey, phone connected/disconnected/registered, window closed). |
 | Close BLE pairing | `CloseBlePairing` | Closes the registration window and sends `BLE_DISABLE` to modem. |
@@ -931,7 +952,7 @@ The gateway emits the version string in its first `info!()` log line so that ope
 1. Load configuration.
 2. Initialize storage backend.
 3. Load node registry and program library from storage.
-4. Initialize transport (e.g., open ESP-NOW interface, or for USB modem: open serial port → `RESET` → `MODEM_READY` → `SET_CHANNEL`; see §4.2).
+4. Initialize transport (e.g., open ESP-NOW interface, or for USB modem: open serial port → `RESET` → `MODEM_READY` → `SET_CHANNEL`; see §4.2). The channel is read from the database (GW-0808); if no value is persisted, the CLI `--channel` flag seeds the database.
 5. Start gRPC admin API server.
 6. Start handler processes for configured handlers.
 7. Start session reaper background task.

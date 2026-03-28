@@ -1239,6 +1239,64 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0815a  Channel persisted after SetModemChannel
+
+**Validates:** GW-0808
+
+**Procedure:**
+1. Open a gateway with an in-memory or temporary database; CLI `--channel 1`.
+2. Call `SetModemChannel(7)`.
+3. Read the `espnow_channel` config value from the database.
+4. Assert: the persisted value is `"7"`.
+
+---
+
+### T-0815b  Modem reconnect restores persisted channel
+
+**Validates:** GW-0808, GW-1103
+
+**Procedure:**
+1. Start gateway with `--channel 1`.
+2. Call `SetModemChannel(7)` — channel 7 is persisted.
+3. Simulate a modem disconnect and reconnect.
+4. Assert: the reconnect startup sequence sends `SET_CHANNEL(7)`, not `SET_CHANNEL(1)`.
+
+---
+
+### T-0815c  BLE pairing uses persisted channel
+
+**Validates:** GW-0808
+
+**Procedure:**
+1. Start gateway with `--channel 1`.
+2. Call `SetModemChannel(7)`.
+3. Trigger a `REGISTER_PHONE` BLE pairing flow.
+4. Assert: the encrypted response contains `rf_channel = 7`, not `1`.
+
+---
+
+### T-0815d  CLI --channel seeds database on first startup
+
+**Validates:** GW-0808
+
+**Procedure:**
+1. Start gateway with `--channel 3` and a fresh (empty) database.
+2. Assert: the database `espnow_channel` config value is `"3"`.
+3. Assert: modem startup sends `SET_CHANNEL(3)`.
+
+---
+
+### T-0815e  Persisted channel overrides CLI --channel
+
+**Validates:** GW-0808
+
+**Procedure:**
+1. Pre-populate a database with `espnow_channel = "7"`.
+2. Start gateway with `--channel 3`.
+3. Assert: modem startup sends `SET_CHANNEL(7)` (database wins).
+
+---
+
 ### T-0816  Admin CLI JSON output
 
 **Validates:** GW-0806
@@ -2065,6 +2123,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-0805 | T-0810, T-1005b |
 | GW-0806 | T-0812, T-0816, T-0817 |
 | GW-0807 | T-0813, T-0814, T-0815 |
+| GW-0808 | T-0815a, T-0815b, T-0815c, T-0815d, T-0815e |
 | GW-1000 | T-1000 |
 | GW-1001 | T-1002, T-1005, T-1005b |
 | GW-1002 | T-0609 |

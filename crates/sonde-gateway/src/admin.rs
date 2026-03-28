@@ -670,6 +670,11 @@ impl GatewayAdmin for AdminService {
     }
 
     /// Set the modem's ESP-NOW radio channel.
+    ///
+    /// Persists the new channel in the database (GW-0808) after a successful
+    /// modem channel change so that reconnects and BLE pairing use the
+    /// updated value. If persistence fails, the modem is rolled back to the
+    /// previous channel to avoid inconsistency.
     async fn set_modem_channel(
         &self,
         request: Request<SetModemChannelRequest>,
@@ -684,10 +689,35 @@ impl GatewayAdmin for AdminService {
             return Err(Status::invalid_argument("channel must be between 1 and 14"));
         }
 
+        // Read the current persisted channel before changing the modem so we
+        // can roll back if the DB write fails.
+        let previous_channel = self
+            .storage
+            .get_config("espnow_channel")
+            .await
+            .ok()
+            .flatten();
+
         transport
             .change_channel(channel as u8)
             .await
             .map_err(|e| Status::internal(format!("set modem channel failed: {e}")))?;
+
+        // GW-0808: persist the new channel so reconnects and BLE pairing use it.
+        if let Err(e) = self
+            .storage
+            .set_config("espnow_channel", &channel.to_string())
+            .await
+        {
+            // Roll back the modem to the previous channel to avoid
+            // inconsistency between modem and database.
+            if let Some(prev) = &previous_channel {
+                if let Ok(prev_ch) = prev.parse::<u8>() {
+                    let _ = transport.change_channel(prev_ch).await;
+                }
+            }
+            return Err(Status::internal(format!("persist channel failed: {e}")));
+        }
 
         Ok(Response::new(Empty {}))
     }

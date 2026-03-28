@@ -1094,6 +1094,7 @@ When the serial port itself becomes unavailable (e.g. USB-CDC disconnect due to 
 3. When the serial port disconnects (read returns an OS I/O error), the gateway logs a warning and begins reconnection attempts with exponential backoff.
 4. Once the port is reopened and `MODEM_READY` is received, the gateway resumes normal frame processing without requiring a restart.
 5. The gateway process does not exit due to a transient modem serial disconnect.
+6. When the health monitor detects N consecutive poll failures (default 3), it MUST log at `ERROR` level and signal the caller that a modem reconnect is needed. The failure counter MUST reset to zero on any successful poll.
 
 ---
 

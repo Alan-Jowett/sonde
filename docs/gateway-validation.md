@@ -1527,6 +1527,19 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1104c  Health poll — sustained failures trigger reconnect
+
+**Validates:** GW-1103 (criterion 6)
+
+**Procedure:**
+1. Create a `UsbEspNowTransport` and wrap it in `Arc`. Complete startup.
+2. Spawn the health monitor with a short interval (10 ms), `max_consecutive_failures = 3`, and a `Weak` reference to the transport.
+3. Drop the server side of the serial connection so that every `poll_status` call fails.
+4. Await the health monitor `JoinHandle`.
+5. Assert: the monitor returns `true` (reconnect needed).
+
+---
+
 **Validates:** GW-1102
 
 **Procedure:**

@@ -153,6 +153,8 @@ A background task polls `GET_STATUS` every 30 seconds and logs:
 - `tx_fail_count` delta since last poll (warns on rising failures).
 - `uptime_s` decrease (indicates unexpected modem reboot).
 
+The health monitor tracks consecutive poll failures. When `poll_status()` returns an error, the counter increments; on success, it resets to zero. After `max_consecutive_failures` (default `DEFAULT_MAX_HEALTH_POLL_FAILURES = 3`) consecutive failures, the monitor logs at `ERROR` level and exits with `true`, signalling the caller that a modem reconnect is needed. The caller (gateway main loop) should then drop the transport and re-execute the startup sequence.
+
 **Error handling (GW-1103):**
 
 On `ERROR` from the modem, the adapter logs the error code and message. If the error is unrecoverable, it sends `RESET` and re-executes the startup sequence.

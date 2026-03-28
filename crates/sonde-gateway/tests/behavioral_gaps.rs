@@ -959,6 +959,7 @@ async fn t0802_remove_program_verified_gone() {
             image_data: cbor.clone(),
             verification_profile: PbVerificationProfile::Ephemeral.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -1007,6 +1008,7 @@ async fn t0802_remove_program_verified_gone() {
             image_data: cbor,
             verification_profile: PbVerificationProfile::Ephemeral.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -1046,6 +1048,7 @@ async fn t0400_program_available_immediately_after_ingestion() {
             image_data: cbor,
             verification_profile: PbVerificationProfile::Resident.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -1312,6 +1315,7 @@ async fn t0801_get_node_returns_all_fields() {
             image_data: cbor,
             verification_profile: PbVerificationProfile::Resident.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()

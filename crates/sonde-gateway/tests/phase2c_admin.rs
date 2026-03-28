@@ -353,6 +353,7 @@ async fn t0802_ingest_and_list_programs() {
             image_data: cbor.clone(),
             verification_profile: VerificationProfile::Resident.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -394,6 +395,7 @@ async fn t0802b_ingest_invalid_profile() {
             image_data: make_cbor_image(&[0x01]),
             verification_profile: 99,
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap_err();
@@ -411,6 +413,7 @@ async fn t0802c_ingest_empty_image() {
             image_data: vec![],
             verification_profile: VerificationProfile::Resident.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap_err();
@@ -430,6 +433,7 @@ async fn t0802d_ingest_abi_version_round_trip() {
             image_data: cbor,
             verification_profile: VerificationProfile::Resident.into(),
             abi_version: Some(3),
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -475,6 +479,7 @@ async fn t0803_assign_program() {
             image_data: cbor,
             verification_profile: VerificationProfile::Resident.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -557,6 +562,7 @@ async fn t0804_remove_program() {
             image_data: cbor,
             verification_profile: VerificationProfile::Ephemeral.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -709,6 +715,7 @@ async fn t0807_queue_ephemeral_via_wake() {
             image_data: cbor,
             verification_profile: VerificationProfile::Ephemeral.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -849,6 +856,7 @@ async fn t0809_assign_program_wake_delivers_update() {
             image_data: cbor,
             verification_profile: VerificationProfile::Resident.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap()
@@ -898,6 +906,7 @@ async fn t0810_export_state_returns_encrypted_bundle() {
             image_data: cbor,
             verification_profile: VerificationProfile::Resident.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap();
@@ -955,6 +964,7 @@ async fn t0810_import_state_restores_nodes_and_programs() {
             image_data: cbor,
             verification_profile: VerificationProfile::Resident.into(),
             abi_version: None,
+            source_filename: None,
         }))
         .await
         .unwrap();

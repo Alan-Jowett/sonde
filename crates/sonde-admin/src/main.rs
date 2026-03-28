@@ -408,12 +408,17 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
 
         Commands::Program { action } => match action {
             ProgramAction::Ingest { file, profile } => {
+                let source_filename = std::path::Path::new(&file)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
                 let image_data = std::fs::read(file)?;
                 let profile_val = match profile {
                     Profile::Resident => 1,
                     Profile::Ephemeral => 2,
                 };
-                let (hash, size) = client.ingest_program(image_data, profile_val, None).await?;
+                let (hash, size) = client
+                    .ingest_program(image_data, profile_val, None, source_filename)
+                    .await?;
                 if json {
                     print_json(&serde_json::json!({
                         "program_hash": hex::encode(&hash),
@@ -430,11 +435,15 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                         &programs
                             .iter()
                             .map(|p| {
-                                serde_json::json!({
+                                let mut obj = serde_json::json!({
                                     "hash": hex::encode(&p.hash),
                                     "size": p.size,
                                     "profile": profile_name(p.verification_profile),
-                                })
+                                });
+                                if let Some(f) = &p.source_filename {
+                                    obj["source_filename"] = serde_json::Value::String(f.clone());
+                                }
+                                obj
                             })
                             .collect::<Vec<_>>(),
                     )?;
@@ -443,12 +452,22 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                         println!("No programs stored.");
                     }
                     for p in &programs {
-                        println!(
-                            "  {} ({} bytes, {})",
-                            hex::encode(&p.hash),
-                            p.size,
-                            profile_name(p.verification_profile)
-                        );
+                        if let Some(f) = &p.source_filename {
+                            println!(
+                                "  {} {} ({} bytes, {})",
+                                hex::encode(&p.hash),
+                                f,
+                                p.size,
+                                profile_name(p.verification_profile)
+                            );
+                        } else {
+                            println!(
+                                "  {} ({} bytes, {})",
+                                hex::encode(&p.hash),
+                                p.size,
+                                profile_name(p.verification_profile)
+                            );
+                        }
                     }
                 }
             }

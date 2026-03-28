@@ -135,6 +135,7 @@ impl AdminClient {
         image_data: Vec<u8>,
         profile: i32,
         abi_version: Option<u32>,
+        source_filename: Option<String>,
     ) -> Result<(Vec<u8>, u32), tonic::Status> {
         let resp = self
             .inner
@@ -142,6 +143,7 @@ impl AdminClient {
                 image_data,
                 verification_profile: profile,
                 abi_version,
+                source_filename,
             })
             .await?;
         let inner = resp.into_inner();

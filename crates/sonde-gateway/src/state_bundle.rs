@@ -88,6 +88,7 @@ const PROG_KEY_IMAGE: i64 = 2;
 const PROG_KEY_SIZE: i64 = 3;
 const PROG_KEY_PROFILE: i64 = 4;
 const PROG_KEY_ABI: i64 = 5;
+const PROG_KEY_SRC_FILENAME: i64 = 6;
 
 // ── CBOR key IDs (gateway identity map) ─────────────────────────────────────
 
@@ -490,6 +491,13 @@ fn program_to_cbor(p: &ProgramRecord) -> ciborium::value::Value {
         (
             Value::Integer(PROG_KEY_ABI.into()),
             opt_u32_val(p.abi_version),
+        ),
+        (
+            Value::Integer(PROG_KEY_SRC_FILENAME.into()),
+            match &p.source_filename {
+                Some(s) => Value::Text(s.clone()),
+                None => Value::Null,
+            },
         ),
     ])
 }
@@ -986,6 +994,7 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
     let mut size: Option<u32> = None;
     let mut profile_int: Option<u32> = None;
     let mut abi_version: Option<Option<u32>> = None;
+    let mut source_filename: Option<String> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -1023,6 +1032,17 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
                 }
                 Some(PROG_KEY_ABI) => {
                     abi_version = Some(opt_u32_from_cbor(v, "abi_version")?);
+                }
+                Some(PROG_KEY_SRC_FILENAME) => {
+                    source_filename = match v {
+                        Value::Text(s) => Some(s),
+                        Value::Null => None,
+                        _ => {
+                            return Err(BundleError::Decode(
+                                "source_filename must be text or null".into(),
+                            ))
+                        }
+                    };
                 }
                 _ => {}
             }
@@ -1069,6 +1089,7 @@ fn program_from_cbor(v: ciborium::value::Value) -> Result<ProgramRecord, BundleE
         size,
         verification_profile,
         abi_version: abi_version.flatten(),
+        source_filename,
     })
 }
 
@@ -1422,6 +1443,7 @@ mod tests {
             size: 64,
             verification_profile: profile,
             abi_version: None,
+            source_filename: None,
         }
     }
 
@@ -1569,6 +1591,7 @@ mod tests {
             size: 48,
             verification_profile: VerificationProfile::Ephemeral,
             abi_version: Some(2),
+            source_filename: None,
         };
 
         let bundle = encrypt_state(&[node], &[prog], "abi-pass").unwrap();
@@ -1576,6 +1599,33 @@ mod tests {
 
         assert_eq!(out_nodes[0].firmware_abi_version, Some(3));
         assert_eq!(out_programs[0].abi_version, Some(2));
+    }
+
+    #[test]
+    fn roundtrip_source_filename() {
+        let mut prog_with = make_program(0xAA, VerificationProfile::Resident);
+        prog_with.source_filename = Some("tmp102_sensor.o".to_string());
+
+        let prog_without = make_program(0xBB, VerificationProfile::Ephemeral);
+
+        let bundle = encrypt_state(&[], &[prog_with, prog_without], "fn-pass").unwrap();
+        let (_nodes, out_programs) = decrypt_state(&bundle, "fn-pass").unwrap();
+
+        assert_eq!(out_programs.len(), 2);
+        let with_fn: Vec<_> = out_programs
+            .iter()
+            .filter(|p| p.source_filename.is_some())
+            .collect();
+        assert_eq!(with_fn.len(), 1);
+        assert_eq!(
+            with_fn[0].source_filename.as_deref(),
+            Some("tmp102_sensor.o")
+        );
+        let without_fn: Vec<_> = out_programs
+            .iter()
+            .filter(|p| p.source_filename.is_none())
+            .collect();
+        assert_eq!(without_fn.len(), 1);
     }
 
     #[test]

@@ -62,6 +62,7 @@ message ProgramInfo {
     uint32 size = 2;
     VerificationProfile verification_profile = 3;
     optional uint32 abi_version = 4;
+    optional string source_filename = 5;
 }
 
 enum VerificationProfile {
@@ -79,7 +80,7 @@ enum VerificationProfile {
 // and are intended strictly for test-only / development use (for example,
 // injecting known-good images); do not rely on the CBOR path for untrusted
 // programs or in production deployments.
-message IngestProgramRequest { bytes image_data = 1; VerificationProfile verification_profile = 2; optional uint32 abi_version = 3; }
+message IngestProgramRequest { bytes image_data = 1; VerificationProfile verification_profile = 2; optional uint32 abi_version = 3; optional string source_filename = 4; }
 message IngestProgramResponse { bytes program_hash = 1; uint32 program_size = 2; }
 message ListProgramsResponse { repeated ProgramInfo programs = 1; }
 message AssignProgramRequest { string node_id = 1; bytes program_hash = 2; }

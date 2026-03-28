@@ -38,6 +38,8 @@ pub struct ProgramRecord {
     pub verification_profile: VerificationProfile,
     /// ABI version this program was compiled for (`None` = any ABI).
     pub abi_version: Option<u32>,
+    /// Original filename passed at ingestion time (operator-supplied metadata).
+    pub source_filename: Option<String>,
 }
 
 /// Errors from program library operations.
@@ -374,6 +376,7 @@ impl ProgramLibrary {
             size,
             verification_profile: profile,
             abi_version: None,
+            source_filename: None,
         })
     }
 

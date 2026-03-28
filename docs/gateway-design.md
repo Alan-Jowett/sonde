@@ -374,6 +374,7 @@ pub struct ProgramRecord {
     pub image: Vec<u8>,        // CBOR-encoded program image (bytecode + map definitions)
     pub size: u32,             // byte length of the CBOR image
     pub verification_profile: VerificationProfile,
+    pub source_filename: Option<String>, // original filename passed at ingestion time
 }
 
 pub enum VerificationProfile {
@@ -381,6 +382,11 @@ pub enum VerificationProfile {
     Ephemeral,
 }
 ```
+
+The `source_filename` is operator-supplied metadata: the original file path
+passed to `IngestProgram`. It is stored in the `programs` table as a nullable
+`TEXT` column (`source_filename TEXT`) and returned in `ListPrograms` responses.
+It does NOT affect the program hash — the hash covers only the CBOR image.
 
 ### 8.2  Program ingestion
 

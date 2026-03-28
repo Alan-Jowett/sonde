@@ -136,9 +136,9 @@ enum NodeAction {
 
 #[derive(Subcommand)]
 enum ProgramAction {
-    /// Ingest a CBOR program image.
+    /// Ingest a BPF ELF program.
     Ingest {
-        /// Path to the CBOR program image file.
+        /// Path to the BPF ELF object file.
         file: String,
         /// Verification profile.
         #[arg(long)]

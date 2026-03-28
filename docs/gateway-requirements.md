@@ -836,6 +836,7 @@ A CLI tool (`sonde-admin` or equivalent) MUST be provided that wraps the gRPC ad
 
 1. The CLI provides commands for: list/get/remove nodes, ingest/list/assign/remove programs, set schedule, queue reboot, queue ephemeral, export/import state.
 2. All commands produce machine-readable output (JSON) when requested.
+3. Timestamps displayed in human-readable output MUST be formatted as human-readable UTC dates (e.g., `2026-03-28 03:23:15 UTC`), not raw milliseconds. JSON output retains the numeric `_ms` fields for machine consumption.
 
 ---
 

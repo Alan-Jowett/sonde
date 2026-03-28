@@ -6,6 +6,7 @@ use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use sonde_admin::format_epoch_ms;
 use sonde_admin::grpc_client::AdminClient;
 use sonde_admin::pb;
 
@@ -534,7 +535,7 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     println!("ABI:      {abi}");
                 }
                 if let Some(ms) = status.last_seen_ms {
-                    println!("Last seen: {ms} ms (epoch)");
+                    println!("Last seen: {}", format_epoch_ms(ms));
                 }
                 println!(
                     "Session:  {}",
@@ -721,7 +722,11 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     for p in &phones {
                         println!(
                             "{:<8} 0x{:04x}       {:<20} {:<12} {}",
-                            p.phone_id, p.phone_key_hint, p.label, p.status, p.issued_at_ms
+                            p.phone_id,
+                            p.phone_key_hint,
+                            p.label,
+                            p.status,
+                            format_epoch_ms(p.issued_at_ms)
                         );
                     }
                 }
@@ -758,7 +763,7 @@ fn print_node(n: &pb::NodeInfo) {
         println!("    battery:  {mv} mV");
     }
     if let Some(ms) = n.last_seen_ms {
-        println!("    last seen: {ms} ms");
+        println!("    last seen: {}", format_epoch_ms(ms));
     }
     if let Some(s) = n.schedule_interval_s {
         println!("    schedule: {s}s");

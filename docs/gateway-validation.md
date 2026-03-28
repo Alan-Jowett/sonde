@@ -448,6 +448,20 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0414  Source filename round-trip
+
+**Validates:** GW-0400 (criterion 7), GW-0402 (criterion 4)
+
+**Procedure:**
+1. Ingest a valid BPF program with `source_filename` set to `"tmp102_sensor.o"`.
+2. Call `ListPrograms`.
+3. Assert: the returned `ProgramInfo` for that hash includes `source_filename == "tmp102_sensor.o"`.
+4. Ingest a second program **without** a `source_filename`.
+5. Call `ListPrograms`.
+6. Assert: the second program's `source_filename` is empty / absent.
+
+---
+
 ## 7  Application data tests
 
 ### T-0500  APP_DATA reception and forwarding

@@ -389,7 +389,8 @@ CREATE TABLE IF NOT EXISTS programs (
     image BLOB NOT NULL,
     size INTEGER NOT NULL,
     verification_profile TEXT NOT NULL,
-    abi_version INTEGER
+    abi_version INTEGER,
+    source_filename TEXT
 );
 
 CREATE TABLE IF NOT EXISTS gateway_identity (
@@ -469,6 +470,18 @@ impl SqliteStorage {
         if !has_abi {
             conn.execute_batch("ALTER TABLE programs ADD COLUMN abi_version INTEGER")
                 .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+        }
+        // Migration: add source_filename column to programs table if it does not exist
+        // (for databases created before this field was introduced).
+        {
+            let prog_cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(programs)")
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
+                .map_err(|e| StorageError::Internal(format!("migration check: {e}")))?;
+            if !prog_cols.iter().any(|n| n == "source_filename") {
+                conn.execute_batch("ALTER TABLE programs ADD COLUMN source_filename TEXT")
+                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+            }
         }
         // Migration: add BLE pairing columns to nodes table if they don't exist.
         // Each column is checked and added independently to handle partial migrations.
@@ -929,23 +942,24 @@ impl Storage for SqliteStorage {
         let hash = hash.to_vec();
         self.with_conn(move |conn| {
             conn.query_row(
-                "SELECT hash, image, size, verification_profile, abi_version FROM programs WHERE hash = ?1",
+                "SELECT hash, image, size, verification_profile, abi_version, source_filename FROM programs WHERE hash = ?1",
                 params![hash],
                 |row| {
                     let profile_str: String = row.get(3)?;
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str, row.get(4)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, profile_str, row.get(4)?, row.get(5)?))
                 },
             )
             .optional()
             .map_err(map_err)?
             .map(
-                |(hash, image, size, profile_str, abi_version): (Vec<u8>, Vec<u8>, u32, String, Option<u32>)| {
+                |(hash, image, size, profile_str, abi_version, source_filename): (Vec<u8>, Vec<u8>, u32, String, Option<u32>, Option<String>)| {
                     Ok(ProgramRecord {
                         hash,
                         image,
                         size,
                         verification_profile: parse_profile(&profile_str)?,
                         abi_version,
+                        source_filename,
                     })
                 },
             )
@@ -958,18 +972,20 @@ impl Storage for SqliteStorage {
         let record = record.clone();
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO programs (hash, image, size, verification_profile, abi_version) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
                  ON CONFLICT(hash) DO UPDATE SET \
                  image=excluded.image, size=excluded.size, \
                  verification_profile=excluded.verification_profile, \
-                 abi_version=excluded.abi_version",
+                 abi_version=excluded.abi_version, \
+                 source_filename=excluded.source_filename",
                 params![
                     record.hash,
                     record.image,
                     record.size,
                     profile_to_str(&record.verification_profile),
                     record.abi_version,
+                    record.source_filename,
                 ],
             )
             .map_err(map_err)?;
@@ -992,7 +1008,7 @@ impl Storage for SqliteStorage {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT hash, image, size, verification_profile, abi_version FROM programs",
+                    "SELECT hash, image, size, verification_profile, abi_version, source_filename FROM programs",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -1004,17 +1020,19 @@ impl Storage for SqliteStorage {
                         row.get(2)?,
                         profile_str,
                         row.get(4)?,
+                        row.get(5)?,
                     ))
                 })
                 .map_err(map_err)?;
             let mut programs = Vec::new();
             for row in rows {
-                let (hash, image, size, profile_str, abi_version): (
+                let (hash, image, size, profile_str, abi_version, source_filename): (
                     Vec<u8>,
                     Vec<u8>,
                     u32,
                     String,
                     Option<u32>,
+                    Option<String>,
                 ) = row.map_err(map_err)?;
                 programs.push(ProgramRecord {
                     hash,
@@ -1022,6 +1040,7 @@ impl Storage for SqliteStorage {
                     size,
                     verification_profile: parse_profile(&profile_str)?,
                     abi_version,
+                    source_filename,
                 });
             }
             Ok(programs)
@@ -1046,14 +1065,15 @@ impl Storage for SqliteStorage {
 
                 for record in &programs {
                     conn.execute(
-                        "INSERT INTO programs (hash, image, size, verification_profile, abi_version) \
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        "INSERT INTO programs (hash, image, size, verification_profile, abi_version, source_filename) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                         params![
                             &record.hash,
                             &record.image,
                             record.size,
                             profile_to_str(&record.verification_profile),
                             record.abi_version,
+                            &record.source_filename,
                         ],
                     )
                     .map_err(map_err)?;
@@ -1517,6 +1537,7 @@ mod tests {
             size: image.len() as u32,
             verification_profile: VerificationProfile::Resident,
             abi_version: None,
+            source_filename: None,
         }
     }
 
@@ -1579,6 +1600,41 @@ mod tests {
         store.delete_program(&prog.hash).await.unwrap();
         assert!(store.get_program(&prog.hash).await.unwrap().is_none());
         assert!(store.list_programs().await.unwrap().is_empty());
+    }
+
+    /// T-0414: source_filename round-trip through store → get/list.
+    #[tokio::test]
+    async fn test_program_source_filename_roundtrip() {
+        let store = SqliteStorage::in_memory(test_key()).unwrap();
+
+        // Program with a source filename.
+        let mut prog_with = make_program(0x10);
+        prog_with.source_filename = Some("tmp102_sensor.o".to_string());
+        store.store_program(&prog_with).await.unwrap();
+
+        let fetched = store.get_program(&prog_with.hash).await.unwrap().unwrap();
+        assert_eq!(fetched.source_filename.as_deref(), Some("tmp102_sensor.o"));
+
+        // Program without a source filename.
+        let prog_without = make_program(0x20);
+        store.store_program(&prog_without).await.unwrap();
+
+        let fetched2 = store
+            .get_program(&prog_without.hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(fetched2.source_filename.is_none());
+
+        // List round-trip.
+        let all = store.list_programs().await.unwrap();
+        assert_eq!(all.len(), 2);
+        let with_fn: Vec<_> = all.iter().filter(|p| p.source_filename.is_some()).collect();
+        assert_eq!(with_fn.len(), 1);
+        assert_eq!(
+            with_fn[0].source_filename.as_deref(),
+            Some("tmp102_sensor.o")
+        );
     }
 
     #[tokio::test]

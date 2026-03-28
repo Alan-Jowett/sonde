@@ -267,6 +267,7 @@ The gateway MUST accept BPF programs as pre-compiled ELF files. On ingestion, th
 4. The gateway rejects files that are not valid BPF ELF binaries with a clear diagnostic.
 5. The gateway does not depend on LLVM, clang, or any compiler toolchain at build time or runtime.
 6. Chunk serving (GW-0300) reads from the pre-built CBOR image with no additional processing.
+7. When an optional `source_filename` is provided with the ingestion request, the gateway stores it alongside the program record for display in program listings.
 
 ---
 
@@ -310,6 +311,7 @@ The gateway MUST identify programs by the SHA-256 hash of their CBOR-encoded pro
 1. The gateway computes the hash over the CBOR-encoded program image, not the original ELF.
 2. The gateway compares this hash with the `program_hash` reported by a node to determine whether an update is needed.
 3. Identical program content (bytecode + maps) always produces the same hash.
+4. When listing programs, the gateway includes the `source_filename` (if present) alongside hash, size, and verification profile.
 
 ---
 

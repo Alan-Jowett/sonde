@@ -63,6 +63,7 @@ fn make_program_from_bytecode(
         size,
         verification_profile: profile,
         abi_version: None,
+        source_filename: None,
     };
     (record, hash)
 }
@@ -2283,6 +2284,7 @@ async fn t_e2e_081_ephemeral_restrictions() {
         size: resident_size,
         verification_profile: VerificationProfile::Resident,
         abi_version: None,
+        source_filename: None,
     };
     env.storage.store_program(&resident_record).await.unwrap();
 

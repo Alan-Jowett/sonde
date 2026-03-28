@@ -134,7 +134,10 @@ async fn grpc_ingest_list_program() {
     cbor.push(0x80); // array(0)
 
     // Profile 1 = Resident (sonde_admin::pb::VerificationProfile::Resident).
-    let (hash, size) = client.ingest_program(cbor.clone(), 1, None).await.unwrap();
+    let (hash, size) = client
+        .ingest_program(cbor.clone(), 1, None, None)
+        .await
+        .unwrap();
     assert!(!hash.is_empty(), "program hash must not be empty");
     assert!(size > 0, "program size must be non-zero");
 

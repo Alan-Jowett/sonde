@@ -311,6 +311,7 @@ impl GatewayAdmin for AdminService {
         };
 
         record.abi_version = req.abi_version;
+        record.source_filename = req.source_filename;
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
             program_size: record.size,
@@ -335,6 +336,7 @@ impl GatewayAdmin for AdminService {
                 size: p.size,
                 verification_profile: profile_to_proto(&p.verification_profile),
                 abi_version: p.abi_version,
+                source_filename: p.source_filename.clone(),
             })
             .collect();
         Ok(Response::new(ListProgramsResponse { programs }))

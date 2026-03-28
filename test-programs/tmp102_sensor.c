@@ -35,8 +35,6 @@
  *   temp_mC = raw_12bit * 625 / 10
  * This gives integer millidegrees Celsius (e.g., 25125 = 25.125 °C). */
 
-/* Error messages — on stack to avoid .rodata global map (prevail-rust#1). */
-
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {

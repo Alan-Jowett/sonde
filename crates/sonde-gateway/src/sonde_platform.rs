@@ -284,8 +284,8 @@ static SONDE_HELPERS: [HelperPrototype; 16] = [
 /// to the platform's internal map store.
 pub struct SondePlatform {
     inner: LinuxPlatform,
-    /// Mirror of map descriptors populated during `parse_maps_section`.
-    /// Updated with global variable maps via `add_map_descriptors`.
+    /// Mirror of map descriptors populated via `sync_map_descriptors` after
+    /// program/ELF parsing (including global variable maps from .rodata/.data).
     map_descriptors: Vec<EbpfMapDescriptor>,
 }
 
@@ -297,8 +297,12 @@ impl SondePlatform {
         }
     }
 
-    /// Add map descriptors that were not passed through `parse_maps_section`
-    /// (e.g., global variable maps from .rodata/.data sections).
+    /// Mirror the full set of map descriptors from the ELF loader into this
+    /// platform, replacing any previously stored descriptors.
+    ///
+    /// This is needed because `prevail-rust` adds global variable map
+    /// descriptors (`.rodata`, `.data`, `.bss`) to the ELF loader's internal
+    /// state but does not propagate them through `parse_maps_section`.
     /// Call this after `ElfObject::get_programs` with the descriptors from
     /// `RawProgram.info.map_descriptors`.
     pub fn sync_map_descriptors(&mut self, descriptors: &[EbpfMapDescriptor]) {
@@ -473,5 +477,42 @@ mod tests {
         let mt = platform.get_map_type(99);
         assert!(!mt.is_array);
         assert_eq!(mt.platform_specific_type, 99);
+    }
+
+    /// GW-0404 criterion 5: map_type 0 (global variable maps) is array-typed.
+    #[test]
+    fn global_variable_map_type_0_is_array() {
+        let platform = SondePlatform::new();
+        let mt = platform.get_map_type(0);
+        assert!(mt.is_array, "map_type 0 must be array-typed for LDDW");
+        assert_eq!(mt.platform_specific_type, 0);
+    }
+
+    /// GW-0404 criterion 6: `sync_map_descriptors` makes descriptors visible
+    /// via `get_map_descriptor`, and they take precedence over `inner`.
+    #[test]
+    fn sync_map_descriptors_returns_synced_descriptor() {
+        let mut platform = SondePlatform::new();
+        assert!(
+            platform.get_map_descriptor(42).is_none(),
+            "descriptor should not exist before sync"
+        );
+
+        let desc = EbpfMapDescriptor {
+            original_fd: 42,
+            map_type: 0,
+            key_size: 4,
+            value_size: 128,
+            max_entries: 1,
+            inner_map_fd: 0,
+        };
+        platform.sync_map_descriptors(&[desc.clone()]);
+
+        let found = platform
+            .get_map_descriptor(42)
+            .expect("descriptor should exist after sync");
+        assert_eq!(found.original_fd, 42);
+        assert_eq!(found.value_size, 128);
+        assert_eq!(found.map_type, 0);
     }
 }

@@ -299,9 +299,12 @@ fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
         };
         // Match global data sections by prefix (Prevail promotes .rodata.str1.1,
         // .data.rel.ro, etc. — not just exact .rodata/.data/.bss).
-        let is_global = GLOBAL_DATA_SECTION_NAMES
-            .iter()
-            .any(|prefix| name == *prefix || name.starts_with(&format!("{prefix}.")));
+        let is_global = GLOBAL_DATA_SECTION_NAMES.iter().any(|prefix| {
+            name == *prefix
+                || name
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        });
         if !is_global {
             continue;
         }
@@ -1363,5 +1366,92 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ]);
         assert!(sections.is_empty());
+    }
+
+    /// GW-0405 criterion 6: prefix matching captures `.rodata.str1.1` etc.
+    #[test]
+    fn extract_global_section_data_rodata_prefix() {
+        let rodata_content = vec![0xCA, 0xFE];
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x95, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+
+        // shstrtab with prefixed name: ".rodata.str1.1"
+        // "\0.text\0.rodata.str1.1\0.shstrtab\0"
+        //   0  1     7              22
+        let shstrtab: &[u8] = b"\0.text\0.rodata.str1.1\0.shstrtab\0"; // 32 bytes
+
+        let text_offset: u64 = 64;
+        let rodata_offset: u64 = text_offset + bpf_code.len() as u64;
+        let shstrtab_offset: u64 = rodata_offset + rodata_content.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ELF header (64 bytes)
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2);
+        elf.push(1);
+        elf.push(1);
+        elf.extend_from_slice(&[0; 9]);
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&shdr_offset.to_le_bytes());
+        elf.extend_from_slice(&0u32.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes());
+        elf.extend_from_slice(&4u16.to_le_bytes()); // 4 sections
+        elf.extend_from_slice(&3u16.to_le_bytes()); // shstrndx = 3
+        assert_eq!(elf.len(), 64);
+
+        elf.extend_from_slice(&bpf_code);
+        elf.extend_from_slice(&rodata_content);
+        elf.extend_from_slice(shstrtab);
+
+        // [0] Null
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] .text
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes());
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x6u64.to_le_bytes());
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [2] .rodata.str1.1
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&7u32.to_le_bytes()); // sh_name offset
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x2u64.to_le_bytes()); // SHF_ALLOC
+        sh[24..32].copy_from_slice(&rodata_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(rodata_content.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&4u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [3] .shstrtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&22u32.to_le_bytes()); // offset of ".shstrtab"
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB
+        sh[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        let sections = extract_global_section_data(&elf);
+        assert_eq!(
+            sections.len(),
+            1,
+            "prefixed .rodata.str1.1 should be matched"
+        );
+        assert_eq!(sections[0], rodata_content);
     }
 }

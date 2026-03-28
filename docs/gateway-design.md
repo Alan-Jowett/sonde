@@ -740,7 +740,7 @@ The `UsbEspNowTransport` logs each frame at `DEBUG` level in `dispatch_message` 
 
 When the gateway runs as a Windows service, three logging sinks are active:
 
-1. **File sink** — writes to `<db-path>.log` (e.g., `gateway.db.log` next to the database). The file sink uses the same build-type–aware `EnvFilter` default as console mode (§ 11A.0a): `sonde_gateway=warn` in release, `sonde_gateway=info` in debug. If the file cannot be opened, the gateway logs an `ERROR` to the ETW sink and continues without file logging.
+1. **File sink** — writes to `<db-path>.log` (e.g., `gateway.db.log` next to the database). The file sink uses the same build-type–aware `EnvFilter` default as console mode (§ 11A.0a): `sonde_gateway=warn` in release, `sonde_gateway=info` in debug. If the log file cannot be created, opened, or written to (at startup or during runtime), the gateway logs an `ERROR` to the ETW sink and continues without file logging.
 
 2. **ETW sink** — registers provider name `sonde-gateway`. The sink is unfiltered; all events up to the compile-time maximum level are forwarded to any active ETW tracing session. Operators use standard ETW tooling (`logman`, `tracelog`, WPR) to capture and filter events.
 

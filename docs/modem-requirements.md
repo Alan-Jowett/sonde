@@ -700,6 +700,21 @@ The modem MUST apply build-type–aware log-level policies identical to the node
 5. MD-0500–MD-0504 INFO-level requirements are satisfied by the verbose build variant emitting those events; release `quiet` builds omit them without functional behavior changes.
 6. The `quiet` and `verbose` features are mutually exclusive; a `compile_error!` fires if both are enabled.
 
+### MD-0506  Error diagnostic observability
+
+**Priority:** Must  
+**Source:** issue #532
+
+**Description:**  
+When the modem encounters an error at an operator-visible boundary (BLE GATT operations, ESP-NOW transmission, USB-CDC I/O), the error log MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "BLE GATT write", "NODE_ACK indication", "ESP-NOW send"), (2) the input or parameters that triggered it (e.g., peer address, characteristic UUID, frame type), (3) the specific error from the underlying subsystem (e.g., NimBLE return code, ESP-NOW status), and (4) actionable guidance where possible (e.g., "check BLE connection state", "verify peer is in range").
+
+**Acceptance criteria:**
+
+1. Every error log entry at an operator-visible boundary includes the failed operation name, the triggering input/parameters, and the underlying subsystem error.
+2. Where a corrective action is known, the error includes actionable guidance text.
+3. BLE indication failures (e.g., NODE_ACK) include the NimBLE return code, the current connection state, and the characteristic handle rather than a generic "invalid arguments" message.
+4. ESP-NOW send failures include the target peer MAC address and the ESP-NOW status code.
+
 ---
 
 ## Appendix A  Requirement index
@@ -747,3 +762,4 @@ The modem MUST apply build-type–aware log-level policies identical to the node
 | MD-0503 | USB-CDC message logging | Must |
 | MD-0504 | BLE pairing event logging | Must |
 | MD-0505 | Build-type–aware log levels | Must |
+| MD-0506 | Error diagnostic observability | Must |

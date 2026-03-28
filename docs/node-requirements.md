@@ -1244,6 +1244,21 @@ Before entering deep sleep, the firmware MUST reset all bus peripheral GPIOs (I2
 4. After `prepare_for_sleep()` completes on the wake-cycle path, no GPIO pin sources leakage current through an active pull resistor or driven output.
 5. The GPIO reset does not affect RTC-domain pins required for wake-up (e.g., the pairing button GPIO).
 
+### ND-1014  Error diagnostic observability
+
+**Priority:** Must  
+**Source:** issue #532
+
+**Description:**  
+When the node encounters an error at an operator-visible boundary (WiFi scan, HMAC validation, program hash verification, storage I/O, deep-sleep entry), the error log MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "WiFi scan", "HMAC verification", "program hash check"), (2) the input or parameters that triggered it (e.g., SSID, program hash, NVS key), (3) the specific error from the underlying subsystem (e.g., ESP-IDF error code, NVS status), and (4) actionable guidance where possible (e.g., "check WiFi credentials", "re-provision node").
+
+**Acceptance criteria:**
+
+1. Every error log entry at an operator-visible boundary includes the failed operation name, the triggering input/parameters, and the underlying subsystem error.
+2. Where a corrective action is known, the error includes actionable guidance text.
+3. WiFi scan failures include the ESP-IDF error code and scan parameters rather than being silently swallowed.
+4. NVS storage errors include the NVS key/namespace and the ESP-IDF status code.
+
 ---
 
 ## Appendix A  Requirement index
@@ -1323,3 +1338,4 @@ Before entering deep sleep, the firmware MUST reset all bus peripheral GPIOs (I2
 | ND-1011 | Chunk transfer logging | Must |
 | ND-1012 | Build-type–aware log levels | Must |
 | ND-1013 | GPIO sleep preparation | Must |
+| ND-1014 | Error diagnostic observability | Must |

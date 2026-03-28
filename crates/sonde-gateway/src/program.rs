@@ -297,7 +297,12 @@ fn extract_global_section_data(data: &[u8]) -> Vec<Vec<u8>> {
             Ok(n) => n,
             Err(_) => continue,
         };
-        if !GLOBAL_DATA_SECTION_NAMES.contains(&name) {
+        // Match global data sections by prefix (Prevail promotes .rodata.str1.1,
+        // .data.rel.ro, etc. — not just exact .rodata/.data/.bss).
+        let is_global = GLOBAL_DATA_SECTION_NAMES
+            .iter()
+            .any(|prefix| name == *prefix || name.starts_with(&format!("{prefix}.")));
+        if !is_global {
             continue;
         }
         let sh_type = read_u32(hdr + 4);
@@ -433,6 +438,11 @@ impl ProgramLibrary {
                 raw_programs.len()
             )));
         }
+
+        // Sync map descriptors from the ELF loader into the platform so
+        // that get_map_descriptor() can find global variable maps (.rodata,
+        // .data) which are not passed through parse_maps_section.
+        platform.sync_map_descriptors(&raw_programs[0].info.map_descriptors);
 
         // Verify each program with prevail.
         for raw_prog in &raw_programs {

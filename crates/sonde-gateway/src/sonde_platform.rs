@@ -276,15 +276,33 @@ static SONDE_HELPERS: [HelperPrototype; 16] = [
 ///
 /// Wraps `LinuxPlatform` for ELF/map parsing and overrides helper prototypes
 /// and program type resolution with sonde-specific definitions.
+///
+/// Also maintains a mirror of all map descriptors (including global variable
+/// maps from .rodata/.data) so that `get_map_descriptor` can find them.
+/// This works around a prevail-rust issue where global variable map
+/// descriptors are added to the ELF loader's state but never propagated
+/// to the platform's internal map store.
 pub struct SondePlatform {
     inner: LinuxPlatform,
+    /// Mirror of map descriptors populated during `parse_maps_section`.
+    /// Updated with global variable maps via `add_map_descriptors`.
+    map_descriptors: Vec<EbpfMapDescriptor>,
 }
 
 impl SondePlatform {
     pub fn new() -> Self {
         Self {
             inner: LinuxPlatform::new(),
+            map_descriptors: Vec::new(),
         }
+    }
+
+    /// Add map descriptors that were not passed through `parse_maps_section`
+    /// (e.g., global variable maps from .rodata/.data sections).
+    /// Call this after `ElfObject::get_programs` with the descriptors from
+    /// `RawProgram.info.map_descriptors`.
+    pub fn sync_map_descriptors(&mut self, descriptors: &[EbpfMapDescriptor]) {
+        self.map_descriptors = descriptors.to_vec();
     }
 }
 
@@ -341,11 +359,30 @@ impl EbpfPlatform for SondePlatform {
     }
 
     fn get_map_descriptor(&self, map_fd: i32) -> Option<&EbpfMapDescriptor> {
+        // First check our mirror (includes global variable maps).
+        if let Some(desc) = self
+            .map_descriptors
+            .iter()
+            .find(|d| d.original_fd == map_fd)
+        {
+            return Some(desc);
+        }
+        // Fall back to the inner platform for maps parsed via parse_maps_section.
         self.inner.get_map_descriptor(map_fd)
     }
 
     fn get_map_type(&self, platform_specific_type: u32) -> EbpfMapType {
         match platform_specific_type {
+            // Map type 0: global variable maps (.rodata, .data, .bss).
+            // Prevail promotes ELF data sections to map descriptors with
+            // map_type == 0. These must be array-typed so that LDDW
+            // references produce shared-typed value pointers.
+            0 => EbpfMapType {
+                platform_specific_type: 0,
+                name: "global".to_string(),
+                is_array: true,
+                value_type: EbpfMapValueType::Any,
+            },
             // Sonde BPF_MAP_TYPE_ARRAY = 1 (differs from Linux's value of 2).
             1 => EbpfMapType {
                 platform_specific_type: 1,

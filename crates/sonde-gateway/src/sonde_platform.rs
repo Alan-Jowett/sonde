@@ -276,15 +276,37 @@ static SONDE_HELPERS: [HelperPrototype; 16] = [
 ///
 /// Wraps `LinuxPlatform` for ELF/map parsing and overrides helper prototypes
 /// and program type resolution with sonde-specific definitions.
+///
+/// Also maintains a mirror of all map descriptors (including global variable
+/// maps from .rodata/.data) so that `get_map_descriptor` can find them.
+/// This works around a prevail-rust issue where global variable map
+/// descriptors are added to the ELF loader's state but never propagated
+/// to the platform's internal map store.
 pub struct SondePlatform {
     inner: LinuxPlatform,
+    /// Mirror of map descriptors populated via `sync_map_descriptors` after
+    /// program/ELF parsing (including global variable maps from .rodata/.data).
+    map_descriptors: Vec<EbpfMapDescriptor>,
 }
 
 impl SondePlatform {
     pub fn new() -> Self {
         Self {
             inner: LinuxPlatform::new(),
+            map_descriptors: Vec::new(),
         }
+    }
+
+    /// Mirror the full set of map descriptors from the ELF loader into this
+    /// platform, replacing any previously stored descriptors.
+    ///
+    /// This is needed because `prevail-rust` adds global variable map
+    /// descriptors (`.rodata`, `.data`, `.bss`) to the ELF loader's internal
+    /// state but does not propagate them through `parse_maps_section`.
+    /// Call this after `ElfObject::get_programs` with the descriptors from
+    /// `RawProgram.info.map_descriptors`.
+    pub fn sync_map_descriptors(&mut self, descriptors: &[EbpfMapDescriptor]) {
+        self.map_descriptors = descriptors.to_vec();
     }
 }
 
@@ -341,11 +363,30 @@ impl EbpfPlatform for SondePlatform {
     }
 
     fn get_map_descriptor(&self, map_fd: i32) -> Option<&EbpfMapDescriptor> {
+        // First check our mirror (includes global variable maps).
+        if let Some(desc) = self
+            .map_descriptors
+            .iter()
+            .find(|d| d.original_fd == map_fd)
+        {
+            return Some(desc);
+        }
+        // Fall back to the inner platform for maps parsed via parse_maps_section.
         self.inner.get_map_descriptor(map_fd)
     }
 
     fn get_map_type(&self, platform_specific_type: u32) -> EbpfMapType {
         match platform_specific_type {
+            // Map type 0: global variable maps (.rodata, .data, .bss).
+            // Prevail promotes ELF data sections to map descriptors with
+            // map_type == 0. These must be array-typed so that LDDW
+            // references produce shared-typed value pointers.
+            0 => EbpfMapType {
+                platform_specific_type: 0,
+                name: "global".to_string(),
+                is_array: true,
+                value_type: EbpfMapValueType::Any,
+            },
             // Sonde BPF_MAP_TYPE_ARRAY = 1 (differs from Linux's value of 2).
             1 => EbpfMapType {
                 platform_specific_type: 1,
@@ -436,5 +477,42 @@ mod tests {
         let mt = platform.get_map_type(99);
         assert!(!mt.is_array);
         assert_eq!(mt.platform_specific_type, 99);
+    }
+
+    /// GW-0404 criterion 5: map_type 0 (global variable maps) is array-typed.
+    #[test]
+    fn global_variable_map_type_0_is_array() {
+        let platform = SondePlatform::new();
+        let mt = platform.get_map_type(0);
+        assert!(mt.is_array, "map_type 0 must be array-typed for LDDW");
+        assert_eq!(mt.platform_specific_type, 0);
+    }
+
+    /// GW-0404 criterion 6: `sync_map_descriptors` makes descriptors visible
+    /// via `get_map_descriptor`.
+    #[test]
+    fn sync_map_descriptors_returns_synced_descriptor() {
+        let mut platform = SondePlatform::new();
+        assert!(
+            platform.get_map_descriptor(42).is_none(),
+            "descriptor should not exist before sync"
+        );
+
+        let desc = EbpfMapDescriptor {
+            original_fd: 42,
+            map_type: 0,
+            key_size: 4,
+            value_size: 128,
+            max_entries: 1,
+            inner_map_fd: 0,
+        };
+        platform.sync_map_descriptors(std::slice::from_ref(&desc));
+
+        let found = platform
+            .get_map_descriptor(42)
+            .expect("descriptor should exist after sync");
+        assert_eq!(found.original_fd, 42);
+        assert_eq!(found.value_size, 128);
+        assert_eq!(found.map_type, 0);
     }
 }

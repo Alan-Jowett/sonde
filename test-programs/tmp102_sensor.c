@@ -35,9 +35,6 @@
  *   temp_mC = raw_12bit * 625 / 10
  * This gives integer millidegrees Celsius (e.g., 25125 = 25.125 °C). */
 
-/* Error messages for trace output. */
-static const char err_read[] = "tmp102: read failed\n";
-
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {
@@ -48,7 +45,8 @@ int program(struct sonde_context *ctx)
     __u8 raw[2];
     int rc = i2c_write_read(TMP102_HANDLE, &reg, 1, raw, 2);
     if (rc < 0) {
-        bpf_trace_printk(err_read, (__u32)(sizeof(err_read) - 1));
+        char err[] = "tmp102: read failed\n";
+        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
         return 0;
     }
 

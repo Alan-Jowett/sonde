@@ -341,6 +341,8 @@ The gateway MUST use a custom Prevail verifier platform (`SondePlatform`) that d
 2. Each prototype specifies the correct return type, argument count, and argument types (including whether arguments are pointers to readable or writable memory).
 3. Programs using sonde-specific helpers (`i2c_read`, `gpio_write`, `send`, etc.) pass verification when the call signatures match the defined prototypes.
 4. The gateway does not pass `LinuxPlatform` directly as the verifier platform and does not use Linux BPF helper semantics; it uses `SondePlatform` with sonde helper prototypes for program verification (it may still reuse `LinuxPlatform` components for ELF/map parsing).
+5. The platform MUST support global variable maps (map_type 0) from `.rodata`, `.data`, and `.bss` ELF sections. `get_map_type(0)` MUST return an array-typed map descriptor so that `LDDW` references to global variable maps produce `shared`-typed value pointers, not `ctx`.
+6. `get_map_descriptor` MUST return a valid descriptor for global variable map FDs. Because `prevail-rust` adds global variable map descriptors to the ELF loader's internal state but does not propagate them through `parse_maps_section` to the platform, `SondePlatform` MUST mirror descriptors from the ELF loader after program loading (via `sync_map_descriptors`).
 
 ---
 
@@ -359,6 +361,7 @@ The gateway MUST extract `.rodata` and `.data` section content from ingested ELF
 3. An ELF with a `.bss` section produces a program image where the corresponding map definition has empty `initial_data`.
 4. The ordering of initial data entries matches the order of global variable map descriptors produced by Prevail.
 5. Explicit maps (`.maps` / `maps` sections) have no initial data.
+6. Section name matching uses prefix comparison (e.g., `.rodata.str1.1`, `.data.rel.ro`) — not just exact matches — to capture all global data sections that Prevail promotes to maps.
 
 ---
 

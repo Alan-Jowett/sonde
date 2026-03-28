@@ -60,11 +60,6 @@ crc8_sensirion_2bytes(const __u8 *data)
     return crc;
 }
 
-static const char err_write[] = "sht40: write failed\n";
-static const char err_delay[] = "sht40: delay failed\n";
-static const char err_read[]  = "sht40: read failed\n";
-static const char err_crc[]   = "sht40: crc mismatch\n";
-
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {
@@ -74,14 +69,16 @@ int program(struct sonde_context *ctx)
     __u8 cmd = SHT4X_CMD_MEASURE_HIGH;
     int rc = i2c_write(SHT40_HANDLE, &cmd, 1);
     if (rc < 0) {
-        bpf_trace_printk(err_write, (__u32)(sizeof(err_write) - 1));
+        char err[] = "sht40: write failed\n";
+        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
         return 0;
     }
 
     /* 2) Wait for conversion */
     rc = delay_us(SHT4X_DELAY_HIGH_US);
     if (rc < 0) {
-        bpf_trace_printk(err_delay, (__u32)(sizeof(err_delay) - 1));
+        char err[] = "sht40: delay failed\n";
+        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
         return 0;
     }
 
@@ -89,7 +86,8 @@ int program(struct sonde_context *ctx)
     __u8 buf[6];
     rc = i2c_read(SHT40_HANDLE, buf, sizeof(buf));
     if (rc < 0) {
-        bpf_trace_printk(err_read, (__u32)(sizeof(err_read) - 1));
+        char err[] = "sht40: read failed\n";
+        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
         return 0;
     }
 
@@ -97,7 +95,8 @@ int program(struct sonde_context *ctx)
     __u8 t_crc  = crc8_sensirion_2bytes(&buf[0]);
     __u8 rh_crc = crc8_sensirion_2bytes(&buf[3]);
     if (t_crc != buf[2] || rh_crc != buf[5]) {
-        bpf_trace_printk(err_crc, (__u32)(sizeof(err_crc) - 1));
+        char err[] = "sht40: crc mismatch\n";
+        bpf_trace_printk(err, (__u32)(sizeof(err) - 1));
         return 0;
     }
 

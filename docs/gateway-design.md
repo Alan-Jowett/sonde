@@ -425,7 +425,15 @@ The gateway uses a custom Prevail platform (`SondePlatform`) instead of `LinuxPl
 
 **Program type:** all ELF sections are treated as `"sonde"` program type with a 16-byte context descriptor matching `struct sonde_context`.
 
-**Map type mapping:** sonde's `BPF_MAP_TYPE_ARRAY` (value 1) maps to an array map type. Unknown map types are treated as generic maps.
+**Map type mapping:** sonde's `BPF_MAP_TYPE_ARRAY` (value 1) maps to an array map type. Map type 0 (global variable maps from `.rodata`/`.data`/`.bss` sections) maps to an array map type so that `LDDW` references produce `shared`-typed value pointers. Unknown map types are treated as generic maps.
+
+#### 8.2.1.1  Global variable map descriptor sync (`sync_map_descriptors`)
+
+`prevail-rust` promotes `.rodata`, `.data`, and `.bss` ELF sections to map descriptors (map_type 0) during `ElfObject::get_programs`. These descriptors are added to the ELF loader's internal state via `add_global_variable_maps()`, but are **not** propagated through `parse_maps_section` to the platform. As a result, `SondePlatform::get_map_descriptor()` returns `None` for global variable map FDs, causing the verifier to type `LDDW`-loaded registers as `ctx` instead of `shared` — which leads to spurious verification failures.
+
+**Workaround:** after calling `get_programs`, the gateway copies the full set of map descriptors from `RawProgram.info.map_descriptors` into `SondePlatform` via `sync_map_descriptors(&[EbpfMapDescriptor])`. `SondePlatform` maintains a mirror `Vec<EbpfMapDescriptor>` that is checked first in `get_map_descriptor()`, falling back to the inner `LinuxPlatform` for maps parsed via `parse_maps_section`.
+
+**Section name prefix matching:** the initial data extraction (step 5 above) uses prefix matching rather than exact equality for global data section names. Prevail promotes sections such as `.rodata.str1.1` and `.data.rel.ro` — not just `.rodata` and `.data` — so the scanner matches any section whose name equals or starts with a known global data prefix followed by `.`.
 
 ### 8.3  Chunk serving
 

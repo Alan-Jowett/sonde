@@ -837,7 +837,7 @@ sonde-admin node remove <node-id>
 
 sonde-admin program ingest <elf-file> --profile resident|ephemeral
 # <elf-file> is a BPF ELF object file (required in release/production builds).
-# A pre-encoded CBOR image is only accepted in debug/development builds when enabled.
+# A pre-encoded CBOR image is only accepted in debug/development builds.
 sonde-admin program list
 sonde-admin program assign <node-id> <program-hash>
 sonde-admin program remove <program-hash>

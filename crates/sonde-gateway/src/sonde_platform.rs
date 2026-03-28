@@ -489,7 +489,7 @@ mod tests {
     }
 
     /// GW-0404 criterion 6: `sync_map_descriptors` makes descriptors visible
-    /// via `get_map_descriptor`, and they take precedence over `inner`.
+    /// via `get_map_descriptor`.
     #[test]
     fn sync_map_descriptors_returns_synced_descriptor() {
         let mut platform = SondePlatform::new();

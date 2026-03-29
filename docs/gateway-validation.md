@@ -2332,12 +2332,14 @@ A configurable stub handler process (or in-process mock) that:
 3. Assert: the `sonde` user is a member of the `dialout` group.
 4. Assert: `/lib/systemd/system/sonde-gateway.service` exists.
 5. Assert: `/etc/sonde/environment` exists and contains `SERIAL_PORT=/dev/ttyUSB0`.
-6. Edit `/etc/sonde/environment` to set the correct serial port if it differs from `/dev/ttyUSB0`.
-7. Run `systemctl start sonde-gateway`.
-8. Assert: the service starts and the gateway log contains `"modem transport ready"`.
-9. Remove the package: `sudo dpkg -r sonde`.
-10. Assert: the service is stopped and disabled.
-11. Assert: `/var/lib/sonde/gateway.db` is preserved (not deleted by removal).
+6. Assert: `systemctl is-enabled sonde-gateway.service` returns `enabled` (the `postinst` script enables the unit).
+7. Edit `/etc/sonde/environment` to set the correct serial port if it differs from `/dev/ttyUSB0`.
+8. Run `systemctl start sonde-gateway`.
+9. Assert: `systemctl is-active sonde-gateway.service` returns `active`.
+10. Assert: the gateway log contains `"modem transport ready"`.
+11. Remove the package: `sudo dpkg -r sonde`.
+12. Assert: the service is stopped and disabled.
+13. Assert: `/var/lib/sonde/gateway.db` is preserved (not deleted by removal).
 
 ---
 

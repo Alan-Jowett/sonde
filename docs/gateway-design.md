@@ -1112,7 +1112,7 @@ sonde-gateway install --port COM5 --db C:\ProgramData\sonde\gateway.db \
 
 1. Validate that the process is running as Administrator (check via `OpenProcessToken` + `TokenElevation`). Exit with error code 1 and a clear message if not elevated.
 2. Validate that `--port` is provided. Exit with error code 1 if omitted.
-3. Build the `ImagePath` string: `"<exe_path>" run --port <PORT> --db <DB> --master-key-file <KEY> [--channel <CH>]`. The `run` subcommand is the normal gateway entry point used when launched by SCM.
+3. Build the `ImagePath` string: `"<exe_path>" --service --port <PORT> --db <DB> --master-key-file <KEY> [--channel <CH>]`. The `--service` flag is the normal gateway entry point used when launched by SCM.
 4. Call `OpenSCManagerW` with `SC_MANAGER_CREATE_SERVICE` access.
 5. Call `CreateServiceW` with:
    - `lpServiceName` = `"sonde-gateway"`
@@ -1133,11 +1133,14 @@ sudo sonde-gateway install --port /dev/ttyACM0 --db /var/lib/sonde/gateway.db \
 
 1. Validate that the effective UID is 0 (root). Exit with error code 1 if not.
 2. Validate that `--port` is provided.
-3. Write (or update) `SERIAL_PORT` in `/etc/sonde/environment`:
+3. Write (or update) all parameters in `/etc/sonde/environment`:
    ```
    SERIAL_PORT=/dev/ttyACM0
+   DB_PATH=/var/lib/sonde/gateway.db
+   KEY_PROVIDER=file
+   # MASTER_KEY_FILE and CHANNEL are written only if provided
    ```
-   The systemd unit file hard-codes `--db /var/lib/sonde/gateway.db` and `--key-provider file`, so only `SERIAL_PORT` needs to be set via the environment file.
+   The systemd unit reads all runtime parameters from this environment file via `EnvironmentFile=`; no parameters are hard-coded in the unit.
 4. Verify that `/lib/systemd/system/sonde-gateway.service` exists (shipped by the `.deb` package or manually installed).
 5. Run `systemctl daemon-reload`.
 6. Run `systemctl enable sonde-gateway.service`.
@@ -1188,7 +1191,7 @@ The `.deb` package (built by `installer/linux/build-deb.sh`) ships:
 
 **systemd unit file** (`sonde-gateway.service`):
 
-The unit runs as the `sonde` user with `SupplementaryGroups=dialout`, reads `SERIAL_PORT` from `EnvironmentFile=/etc/sonde/environment`, and applies security hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/var/lib/sonde`). See `installer/linux/sonde-gateway.service` for the full unit definition.
+The unit runs as the `sonde` user with `SupplementaryGroups=dialout`, reads all runtime parameters (`SERIAL_PORT`, `DB_PATH`, `KEY_PROVIDER`, `MASTER_KEY_FILE`, `CHANNEL`) from `EnvironmentFile=/etc/sonde/environment`, and applies security hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/var/lib/sonde`). See `installer/linux/sonde-gateway.service` for the full unit definition.
 
 ### 18.5  Configuration file locations
 

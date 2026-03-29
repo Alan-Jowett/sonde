@@ -1613,7 +1613,7 @@ The `sonde-gateway` binary MUST support a `sonde-gateway install` subcommand tha
 **Acceptance criteria:**
 
 1. `sonde-gateway install --port COM5 --db C:\ProgramData\sonde\gateway.db --master-key-file C:\ProgramData\sonde\master-key.hex` registers a Windows service named `sonde-gateway` with the correct `ImagePath` (including CLI flags).
-2. `sonde-gateway install --port /dev/ttyACM0 --db /var/lib/sonde/gateway.db --key-provider file` writes `SERIAL_PORT=/dev/ttyACM0` to `/etc/sonde/environment` and runs `systemctl enable sonde-gateway.service`. The systemd unit file hard-codes `--db` and `--key-provider file`, so only `SERIAL_PORT` is written to the environment file.
+2. `sonde-gateway install --port /dev/ttyACM0 --db /var/lib/sonde/gateway.db --key-provider file` writes all parameters (`SERIAL_PORT`, `DB_PATH`, `KEY_PROVIDER`, `MASTER_KEY_FILE`, `CHANNEL`) to `/etc/sonde/environment` and runs `systemctl enable sonde-gateway.service`. The systemd unit reads all runtime parameters from the environment file via `EnvironmentFile=`; no parameters are hard-coded in the unit.
 3. If the service is already registered, the command updates the existing registration (idempotent).
 4. The command requires elevated privileges (Administrator on Windows, root on Linux) and exits with a clear error message if run unprivileged.
 5. The `--port` parameter is required; the command exits with an error if omitted.

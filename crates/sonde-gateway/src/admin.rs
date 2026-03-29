@@ -7,16 +7,18 @@ use std::time::UNIX_EPOCH;
 
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
+use tracing::warn;
 use zeroize::Zeroizing;
 
 use crate::ble_pairing::BlePairingController;
 use crate::engine::PendingCommand;
 use crate::handler::HandlerConfig;
+use crate::handler::ProgramMatcher;
 use crate::modem::UsbEspNowTransport;
 use crate::program::{ProgramLibrary, VerificationProfile};
 use crate::registry::NodeRecord;
 use crate::session::SessionManager;
-use crate::storage::Storage;
+use crate::storage::{HandlerRecord, Storage};
 
 pub mod pb {
     tonic::include_proto!("sonde.admin");
@@ -68,6 +70,43 @@ impl AdminService {
     pub fn with_handler_configs(mut self, configs: Vec<HandlerConfig>) -> Self {
         self.handler_configs = RwLock::new(configs);
         self
+    }
+
+    /// Reload handler configs from storage into the in-memory cache.
+    async fn reload_handler_configs(&self) {
+        match self.storage.list_handlers().await {
+            Ok(records) => {
+                let configs: Vec<HandlerConfig> =
+                    records.into_iter().map(handler_record_to_config).collect();
+                *self.handler_configs.write().await = configs;
+            }
+            Err(e) => {
+                warn!("failed to reload handler configs: {e}");
+            }
+        }
+    }
+}
+
+/// Convert a [`HandlerRecord`] into a [`HandlerConfig`].
+fn handler_record_to_config(r: HandlerRecord) -> HandlerConfig {
+    let matcher = if r.program_hash == "*" {
+        ProgramMatcher::Any
+    } else {
+        let bytes = (0..r.program_hash.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(&r.program_hash[i..i + 2], 16).ok())
+            .collect();
+        ProgramMatcher::Hash(bytes)
+    };
+    HandlerConfig {
+        matchers: vec![matcher],
+        command: r.command,
+        args: r.args,
+        reply_timeout: r
+            .reply_timeout_ms
+            .filter(|&ms| ms > 0)
+            .map(std::time::Duration::from_millis),
+        working_dir: r.working_dir,
     }
 }
 
@@ -122,6 +161,26 @@ fn bundle_err(e: crate::state_bundle::BundleError) -> Status {
         crate::state_bundle::BundleError::Rng => Status::internal(e.to_string()),
         _ => Status::invalid_argument(e.to_string()),
     }
+}
+
+/// Parse a program hash string: `"*"` → `ProgramMatcher::Any`, otherwise
+/// validate as 64-char lowercase hex → `ProgramMatcher::Hash`.
+fn validate_program_hash(s: &str) -> Result<ProgramMatcher, Status> {
+    if s == "*" {
+        return Ok(ProgramMatcher::Any);
+    }
+    if s.len() != 64 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Status::invalid_argument(
+            "`program_hash` must be \"*\" or a 64-char hex string",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(32);
+    for i in (0..s.len()).step_by(2) {
+        let byte = u8::from_str_radix(&s[i..i + 2], 16)
+            .map_err(|e| Status::invalid_argument(format!("invalid hex in `program_hash`: {e}")))?;
+        bytes.push(byte);
+    }
+    Ok(ProgramMatcher::Hash(bytes))
 }
 
 #[tonic::async_trait]
@@ -636,12 +695,145 @@ impl GatewayAdmin for AdminService {
             .map_err(storage_err)?;
 
         // Restore handler routing configuration.
+        // Convert HandlerConfig → HandlerRecord for storage, then update
+        // in-memory cache.
+        if !handler_cfgs.is_empty() {
+            let records: Vec<HandlerRecord> = handler_cfgs
+                .iter()
+                .map(|cfg| {
+                    use std::fmt::Write;
+                    let program_hash = cfg
+                        .matchers
+                        .first()
+                        .map(|m| match m {
+                            ProgramMatcher::Any => "*".to_string(),
+                            ProgramMatcher::Hash(bytes) => {
+                                let mut s = String::with_capacity(bytes.len() * 2);
+                                for b in bytes {
+                                    let _ = write!(s, "{b:02x}");
+                                }
+                                s
+                            }
+                        })
+                        .unwrap_or_default();
+                    HandlerRecord {
+                        program_hash,
+                        command: cfg.command.clone(),
+                        args: cfg.args.clone(),
+                        working_dir: cfg.working_dir.clone(),
+                        reply_timeout_ms: cfg.reply_timeout.map(|d| d.as_millis() as u64),
+                    }
+                })
+                .collect();
+            self.storage
+                .replace_handlers(&records)
+                .await
+                .map_err(storage_err)?;
+        }
         *self.handler_configs.write().await = handler_cfgs;
 
         // Clear any pending commands queued for the old node set.
         self.pending_commands.write().await.clear();
 
         Ok(Response::new(Empty {}))
+    }
+
+    /// Add a handler configuration (GW-1402).
+    async fn add_handler(
+        &self,
+        request: Request<AddHandlerRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        if req.command.is_empty() {
+            return Err(Status::invalid_argument("`command` must not be empty"));
+        }
+        // Validate program_hash format (also normalises to lowercase).
+        let _ = validate_program_hash(&req.program_hash)?;
+
+        let program_hash = if req.program_hash == "*" {
+            "*".to_string()
+        } else {
+            req.program_hash.to_ascii_lowercase()
+        };
+
+        let working_dir = if req.working_dir.is_empty() {
+            None
+        } else {
+            Some(req.working_dir)
+        };
+
+        let record = HandlerRecord {
+            program_hash,
+            command: req.command,
+            args: req.args,
+            working_dir,
+            reply_timeout_ms: req.reply_timeout_ms.filter(|&ms| ms > 0),
+        };
+
+        let inserted = self
+            .storage
+            .add_handler(&record)
+            .await
+            .map_err(storage_err)?;
+        if !inserted {
+            return Err(Status::already_exists(format!(
+                "handler for `{}` already exists",
+                record.program_hash
+            )));
+        }
+
+        // Update in-memory cache.
+        self.reload_handler_configs().await;
+        Ok(Response::new(Empty {}))
+    }
+
+    /// Remove a handler configuration by program hash (GW-1402).
+    async fn remove_handler(
+        &self,
+        request: Request<RemoveHandlerRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        let _ = validate_program_hash(&req.program_hash)?;
+        let program_hash = if req.program_hash == "*" {
+            "*".to_string()
+        } else {
+            req.program_hash.to_ascii_lowercase()
+        };
+
+        let removed = self
+            .storage
+            .remove_handler(&program_hash)
+            .await
+            .map_err(storage_err)?;
+        if !removed {
+            return Err(Status::not_found(format!(
+                "no handler found for `{}`",
+                program_hash
+            )));
+        }
+
+        // Update in-memory cache.
+        self.reload_handler_configs().await;
+        Ok(Response::new(Empty {}))
+    }
+
+    /// List all handler configurations (GW-1402).
+    async fn list_handlers(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ListHandlersResponse>, Status> {
+        let records = self.storage.list_handlers().await.map_err(storage_err)?;
+        let handlers = records
+            .iter()
+            .map(|r| HandlerInfo {
+                program_hash: r.program_hash.clone(),
+                command: r.command.clone(),
+                args: r.args.clone(),
+                working_dir: r.working_dir.clone().unwrap_or_default(),
+                reply_timeout_ms: r.reply_timeout_ms,
+            })
+            .collect();
+        Ok(Response::new(ListHandlersResponse { handlers }))
     }
 
     /// Get modem status (channel, counters, uptime).

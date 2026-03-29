@@ -625,6 +625,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
         command: cmd.to_string(),
         args,
         reply_timeout: None,
+        working_dir: None,
     };
     let router = Arc::new(HandlerRouter::new(vec![config]));
 

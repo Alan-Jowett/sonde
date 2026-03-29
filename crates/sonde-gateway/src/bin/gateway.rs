@@ -10,7 +10,7 @@ use clap::Parser;
 #[cfg(windows)]
 use clap::Subcommand;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
@@ -323,21 +323,99 @@ async fn run_gateway(
     let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    // 5. Gateway engine — wire up handler router when a config file was given
-    let (gateway, handler_configs) = if let Some(config_path) = &cli.handler_config {
-        let configs = load_handler_configs(config_path).map_err(|e| {
-            error!("failed to load handler config: {e}");
-            e
-        })?;
+    // 5. Handler configuration (GW-1401, GW-1405)
+    //
+    // If --handler-config is provided, bootstrap YAML entries into the
+    // database (merge: insert new, skip existing). Then load the
+    // authoritative handler set from the database.
+    if let Some(config_path) = &cli.handler_config {
+        match load_handler_configs(config_path) {
+            Ok(configs) => {
+                info!(
+                    path = %config_path.display(),
+                    count = configs.len(),
+                    "loaded handler config for bootstrap"
+                );
+                for cfg in &configs {
+                    for matcher in &cfg.matchers {
+                        let program_hash = match matcher {
+                            sonde_gateway::ProgramMatcher::Any => "*".to_string(),
+                            sonde_gateway::ProgramMatcher::Hash(bytes) => {
+                                use std::fmt::Write;
+                                let mut s = String::with_capacity(bytes.len() * 2);
+                                for b in bytes {
+                                    let _ = write!(s, "{b:02x}");
+                                }
+                                s
+                            }
+                        };
+                        let record = sonde_gateway::storage::HandlerRecord {
+                            program_hash: program_hash.clone(),
+                            command: cfg.command.clone(),
+                            args: cfg.args.clone(),
+                            working_dir: cfg.working_dir.clone(),
+                            reply_timeout_ms: cfg.reply_timeout.map(|d| d.as_millis() as u64),
+                        };
+                        match storage.add_handler(&record).await {
+                            Ok(true) => {
+                                info!(program_hash = %program_hash, "bootstrapped handler from YAML");
+                            }
+                            Ok(false) => {
+                                debug!(program_hash = %program_hash, "handler already in database, skipping");
+                            }
+                            Err(e) => {
+                                warn!(program_hash = %program_hash, error = %e, "failed to bootstrap handler");
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "failed to parse handler config {}: {e}",
+                    config_path.display()
+                );
+            }
+        }
+    }
+
+    // Load handler configuration from database (GW-1401).
+    let handler_records = storage.list_handlers().await.unwrap_or_else(|e| {
+        warn!("failed to load handlers from database: {e}");
+        Vec::new()
+    });
+    let handler_configs: Vec<sonde_gateway::HandlerConfig> = handler_records
+        .iter()
+        .filter_map(|r| {
+            let matcher = if r.program_hash == "*" {
+                sonde_gateway::ProgramMatcher::Any
+            } else {
+                let bytes = (0..r.program_hash.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&r.program_hash[i..i + 2], 16))
+                    .collect::<Result<Vec<u8>, _>>()
+                    .ok()?;
+                if bytes.len() != 32 {
+                    return None;
+                }
+                sonde_gateway::ProgramMatcher::Hash(bytes)
+            };
+            Some(sonde_gateway::HandlerConfig {
+                matchers: vec![matcher],
+                command: r.command.clone(),
+                args: r.args.clone(),
+                reply_timeout: r.reply_timeout_ms.map(std::time::Duration::from_millis),
+                working_dir: r.working_dir.clone(),
+            })
+        })
+        .collect();
+
+    let gateway = if !handler_configs.is_empty() {
         info!(
-            path = %config_path.display(),
-            count = configs.len(),
-            "loaded handler config"
+            count = handler_configs.len(),
+            "loaded handlers from database"
         );
-        let configs_for_admin = configs.clone();
-        let router = Arc::new(HandlerRouter::new(configs));
-        // Use new_with_pending to share pending_commands with the admin
-        // API, then set the handler router separately (D-485).
+        let router = Arc::new(HandlerRouter::new(handler_configs.clone()));
         let mut gw = Gateway::new_with_pending(
             storage.clone(),
             pending_commands.clone(),
@@ -345,16 +423,13 @@ async fn run_gateway(
         );
         gw.set_handler_router(router)
             .expect("handler_router must not already be set during gateway init");
-        (Arc::new(gw), configs_for_admin)
+        Arc::new(gw)
     } else {
-        (
-            Arc::new(Gateway::new_with_pending(
-                storage.clone(),
-                pending_commands.clone(),
-                session_manager.clone(),
-            )),
-            Vec::new(),
-        )
+        Arc::new(Gateway::new_with_pending(
+            storage.clone(),
+            pending_commands.clone(),
+            session_manager.clone(),
+        ))
     };
 
     // 6–9. Modem transport + processing loops with reconnection (GW-1103).

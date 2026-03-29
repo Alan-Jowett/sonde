@@ -321,6 +321,8 @@ pub struct HandlerConfig {
     /// Falls back to the default 30 s when `None`. Useful for tests that
     /// need a shorter timeout.
     pub reply_timeout: Option<Duration>,
+    /// Optional working directory for the handler process.
+    pub working_dir: Option<String>,
 }
 
 // --- HandlerProcess ---
@@ -345,11 +347,19 @@ impl HandlerProcess {
     fn ensure_running(&mut self) -> io::Result<()> {
         if let Some(child) = &mut self.child {
             if let Some(status) = child.try_wait()? {
-                if !status.success() {
+                // GW-1308 AC5: handler exited with code.
+                let code = status.code().unwrap_or(-1);
+                if status.success() {
+                    info!(
+                        command = %self.config.command,
+                        code = code,
+                        "handler exited"
+                    );
+                } else {
                     error!(
                         command = %self.config.command,
-                        exit_code = ?status.code(),
-                        "handler exited with non-zero status"
+                        code = code,
+                        "handler exited"
                     );
                 }
                 self.stdin = None;
@@ -359,13 +369,16 @@ impl HandlerProcess {
         }
 
         if self.child.is_none() {
-            let mut child = Command::new(&self.config.command)
-                .args(&self.config.args)
+            let mut cmd = Command::new(&self.config.command);
+            cmd.args(&self.config.args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
-                .kill_on_drop(true)
-                .spawn()?;
+                .kill_on_drop(true);
+            if let Some(ref dir) = self.config.working_dir {
+                cmd.current_dir(dir);
+            }
+            let mut child = cmd.spawn()?;
 
             self.stdin = child.stdin.take();
             self.stdout_reader = child.stdout.take().map(BufReader::new);
@@ -695,6 +708,7 @@ pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerCo
                 command: entry.command,
                 args: entry.args,
                 reply_timeout: None,
+                working_dir: None,
             })
         })
         .collect()
@@ -752,8 +766,19 @@ impl HandlerRouter {
         request_id: u64,
     ) -> Option<Vec<u8>> {
         let idx = self.find_handler(program_hash)?;
-        let (_, process_mutex) = &self.handlers[idx];
+        let (config, process_mutex) = &self.handlers[idx];
+
+        // GW-1308 AC2: handler matched with program_hash and command.
+        info!(
+            program_hash = %hex::encode(program_hash),
+            command = %config.command,
+            "handler matched"
+        );
+
         let mut process = process_mutex.lock().await;
+
+        // GW-1308 AC3: handler invoked with command.
+        info!(command = %config.command, "handler invoked");
 
         let msg = HandlerMessage::Data {
             request_id,
@@ -769,6 +794,8 @@ impl HandlerRouter {
                 if data.is_empty() {
                     None
                 } else {
+                    // GW-1308 AC4: handler replied with len.
+                    info!(len = data.len(), "handler replied");
                     Some(data)
                 }
             }
@@ -914,12 +941,14 @@ mod tests {
                 command: "handler_a".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Hash(vec![0xBB])],
                 command: "handler_b".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
         ]);
 
@@ -936,12 +965,14 @@ mod tests {
                 command: "handler_a".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Any],
                 command: "catch_all".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
         ]);
 
@@ -957,12 +988,14 @@ mod tests {
                 command: "catch_all".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Hash(vec![0xAA])],
                 command: "exact".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
         ]);
 
@@ -981,6 +1014,7 @@ mod tests {
             command: "multi".to_string(),
             args: vec![],
             reply_timeout: None,
+            working_dir: None,
         }]);
 
         assert_eq!(router.find_handler(&[0xAA]), Some(0));

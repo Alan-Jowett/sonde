@@ -32,5 +32,5 @@ pub use program::{ProgramLibrary, ProgramRecord, VerificationProfile};
 pub use registry::{BatteryReading, NodeRecord, SensorDescriptor};
 pub use session::{Session, SessionManager, SessionState};
 pub use sqlite_storage::SqliteStorage;
-pub use storage::{InMemoryStorage, Storage, StorageError};
+pub use storage::{HandlerRecord, InMemoryStorage, Storage, StorageError};
 pub use transport::{MockTransport, PeerAddress, Transport, TransportError};

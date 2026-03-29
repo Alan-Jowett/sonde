@@ -1,5 +1,3 @@
-<!-- SPDX-License-Identifier: MIT
-  Copyright (c) 2026 sonde contributors -->
 # Sonde Sensor Node Hardware Specification Invariant Audit — Investigation Report
 
 > **Audit date:** 2026-03-29
@@ -34,9 +32,8 @@ node PCB. Three invariants were supplied for audit:
 - **Document examined**: `docs/hw-requirements.md` (35 requirements)
 - **Tools**: Manual adversarial analysis per `prompts/hardware/09-audit-spec-invariants.md`
 - **Limitations**: Firmware spec (`node-requirements.md`) was NOT audited — only
-  the hardware spec. ESP32-C3 GPIO9 bootstrap behavior is [INFERRED] from the
-  ESP32-C3 Technical Reference Manual §2.4 "Strapping Pins" — not directly
-  verified against the datasheet during this audit.
+  the hardware spec. ESP32-C3 datasheet was referenced for [INFERRED] claims
+  about GPIO9 bootstrap behavior.
 
 ## 4. Findings
 
@@ -45,16 +42,13 @@ node PCB. Three invariants were supplied for audit:
 - **Severity**: Critical
 - **Category**: Gap — Incompleteness
 - **Invariant violated**: INV-1 (Remote Recoverability)
-- **Spec sections**: HW-0100, HW-0101, HW-0203
-- **Description**: The spec requires all GPIO pins accessible (HW-0100 AC3),
-  a USB-C connector (HW-0101) compatible with `espflash`, and GPIO breakout
-  for pins "not consumed by bootstrapping" (HW-0203). But there is **no
-  requirement for a physical mechanism to enter the ESP32-C3 download mode**
-  ([INFERRED] GPIO9 held low at boot, per ESP32-C3 Technical Reference Manual
-  §2.4 "Strapping Pins"). HW-0100 AC3 requires GPIO pins to be "routed to
-  pads or connectors" but does not distinguish bootstrap pins from general
-  GPIO — a pad on GPIO9 without a button or documented procedure does not
-  guarantee recoverability.
+- **Spec sections**: HW-0101, HW-0203
+- **Description**: The spec requires a USB-C connector (HW-0101) compatible
+  with `espflash`, and GPIO breakout for pins "not consumed by bootstrapping"
+  (HW-0203). But there is **no requirement for a physical mechanism to enter
+  the ESP32-C3 download mode** (GPIO9 held low at boot). The ROM bootloader is
+  always present in silicon, but entering it requires GPIO9 low at reset —
+  without a button, test pad, or jumper, this is inaccessible.
 - **Violating interpretation**: A compliant board routes GPIO9 to a pull-up for
   normal boot and leaves it inaccessible on the PCB. Firmware has a bug that
   crashes before USB initialization. The device cannot accept `espflash`

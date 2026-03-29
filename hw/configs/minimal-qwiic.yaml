@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Board configuration: minimal-qwiic
+# Description: Variant of minimal ESP32-C3 sensor node with 2x Qwiic connectors.
+#              No on-board sensors — all sensing via external Qwiic modules.
+# Notes:       Supplements hw/configs/minimal.yaml required by HW-0701 and
+#              does not replace the canonical minimal example config.
+# Design doc:  docs/hw-schematic-design.md
+
+# --- MCU ---
+mcu: esp32-c3-mini-1
+flash_size: 4  # MB
+
+# --- Connectors ---
+connectors:
+  qwiic: 2           # 2x Qwiic/STEMMA QT (JST-SH 4-pin, daisy-chain)
+  spi: false          # No SPI header
+  one_wire: false     # No 1-Wire header
+  gpio_header: true   # 2x5 pin header with remaining GPIOs
+  battery: true       # JST-PH 2-pin LiPo connector
+
+# --- Sensors ---
+sensors: []  # No on-board sensors; connect via Qwiic
+
+# --- Power ---
+power:
+  regulator: ldo
+  regulator_part: MCP1700-3302E/TT   # 1.6 µA Iq, 250 mA, SOT-23-3
+  sensor_gating: true                 # P-FET power gate on sensor rail
+  sensor_gate_gpio: 3                 # GPIO3 controls SENSOR_3V3
+  battery_monitor: true
+  battery_adc_gpio: 0                 # GPIO0 (ADC1_CH0) for VBAT sense
+  battery_divider_r_top: 10_000_000   # 10 MΩ (ohms)
+  battery_divider_r_bot: 10_000_000   # 10 MΩ (ohms)
+
+# --- Board ---
+board:
+  size: standard      # 50mm x 30mm
+  layers: 2           # 2-layer PCB
+  fab: jlcpcb         # JLCPCB manufacturing rules
+
+# --- Pin assignments ---
+# Board I2C is wired to SDA=GPIO4 / SCL=GPIO5 for Qwiic.
+# NOTE: Node firmware defaults to i2c0_sda=0 / i2c0_scl=1 when NVS is unset.
+#       ND-0608 NVS config (or equivalent provisioning) MUST set i2c0_sda=4
+#       and i2c0_scl=5 for this board, or the firmware defaults must be
+#       changed to match the pinout.
+pins:
+  i2c0_sda: 4         # GPIO4
+  i2c0_scl: 5         # GPIO5
+  usb_dp: 19          # GPIO19 (USB D+)
+  usb_dm: 18          # GPIO18 (USB D-)
+  sensor_pwr_en: 3              # GPIO3 (active LOW for P-FET)
+  sensor_pwr_en_active_low: true
+  vbat_adc: 0                   # GPIO0 (ADC1_CH0)
+  boot_button: 9                # GPIO9 (BOOT, active LOW)
+
+# --- Strapping pins ---
+strapping:
+  gpio2: pull_up_10k  # Must be HIGH at boot (SPI flash mode)
+  gpio8: pull_up_10k  # Must be HIGH at boot
+  gpio9: pull_up_10k  # HIGH = SPI boot, LOW = UART download (BOOT btn)
+
+# --- GPIO breakout header (J6, 2x5 @ 2.54mm) ---
+gpio_header_pins:
+  - { pin: 1, net: "3V3",    label: "3V3" }
+  - { pin: 2, net: "GND",    label: "GND" }
+  - { pin: 3, net: "GPIO1",  label: "IO1/ADC" }
+  - { pin: 4, net: "GPIO2",  label: "IO2" }
+  - { pin: 5, net: "GPIO6",  label: "IO6" }
+  - { pin: 6, net: "GPIO7",  label: "IO7" }
+  - { pin: 7, net: "GPIO8",  label: "IO8" }
+  - { pin: 8, net: "GPIO10", label: "IO10" }
+  - { pin: 9, net: "GPIO20", label: "RX" }
+  - { pin: 10, net: "GPIO21", label: "TX" }
+
+# --- Component overrides (LCSC part numbers for JLCPCB assembly) ---
+bom_overrides:
+  U1: { lcsc: "C2838502", mpn: "ESP32-C3-MINI-1-N4" }
+  U2: { lcsc: "C54447",   mpn: "MCP1700-3302E/TT" }
+  U3: { lcsc: "C7519",    mpn: "USBLC6-2SC6" }
+  Q1: { lcsc: "C306861",  mpn: "Si2301" }
+  J1: { lcsc: "C145956",  mpn: "SM04B-SRSS-TB" }
+  J2: { lcsc: "C145956",  mpn: "SM04B-SRSS-TB" }
+  J3: { lcsc: "C295747",  mpn: "S2B-PH-SM4-TB" }
+  J4: { lcsc: "C2765186", mpn: "TYPE-C-16PIN-2MD-073" }

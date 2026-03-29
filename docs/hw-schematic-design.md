@@ -114,7 +114,7 @@ HW-0201 (SPI bus), HW-0202 (1-Wire), HW-0300/HW-0301 (on-board sensors).
 
 - **Responsibility:** High-side switch for sensor power gating.
 - **Interfaces:** Source ← 3V3, Drain → SENSOR_3V3, Gate ← GPIO3
-  (via 10 kΩ pull-up to 3V3 + N-FET level shift or direct drive).
+  (via 10 kΩ pull-up resistor R9 to 3V3 and series resistor R10 from GPIO3).
 - **Constraints:** Rds(on) ≈ 110 mΩ at Vgs = −4.5 V.
 
 #### J1, J2 — Qwiic/STEMMA QT Connectors
@@ -310,11 +310,12 @@ Per the ESP32-C3 datasheet, strapping pin states are sampled at reset:
 | GPIO9 | HIGH = SPI boot, LOW = download | 10 kΩ pull-up to 3V3 (R5) + BOOT button to GND |
 
 **BOOT button (SW1):** Pressing SW1 pulls GPIO9 LOW during reset,
-entering UART download mode for firmware flashing via `espflash`.
+entering USB/UART download mode for firmware flashing via `espflash`.
 Per audit finding F-001.
 
-**[KNOWN]** GPIO2 and GPIO8 must be HIGH at boot for normal SPI flash
-boot. GPIO9 LOW at reset enters download mode.
+**[INFERRED]** GPIO2 and GPIO8 must be HIGH at boot for normal SPI flash
+boot. GPIO9 LOW at reset enters download mode (per ESP32-C3 TRM;
+see audit finding F-001 for confidence notes).
 
 #### 4.3.3 Reset Circuit (EN Pin)
 
@@ -647,26 +648,26 @@ LCSC C318884.
 
 1. Connect USB-C cable to host PC.
 2. Hold BOOT button (SW1), press RESET (SW2), release BOOT.
-3. ESP32-C3 enters UART download mode.
-4. Flash firmware with `espflash flash --port COMx firmware.bin`.
+3. ESP32-C3 enters USB/UART download mode.
+4. Flash firmware using the merged CI image with `espflash write-bin -p PORT 0x0 ./firmware/flash_image.bin` (replace `PORT` with your serial port).
 5. Press RESET to boot normally.
 
 ### 7.2 Battery Life Estimation
 
 | Parameter | Value |
 |-----------|-------|
-| Battery capacity | 2000 mAh (typical 18650 LiPo) |
+| Battery capacity | 2000 mAh (typical 18650 Li‑ion) |
 | Deep sleep current | 7 µA (typical) |
 | Wake cycle current | 80 mA avg (sensor read + radio) |
 | Wake cycle duration | 2 seconds |
 | Wake interval | 15 minutes |
-| Average current | 7 + (80 × 2) / (15 × 60) ≈ 7.18 µA |
-| Estimated battery life | 2000 mAh / 0.00718 mA ≈ **279,000 hours ≈ 31.8 years** |
+| Average current | 0.007 mA + (80 mA × 2 s) / (15 × 60 s) ≈ 0.185 mA (≈ 185 µA) |
+| Estimated battery life | 2000 mAh / 0.185 mA ≈ **10,800 hours ≈ 450 days ≈ 1.2 years** |
 
-**[ASSUMPTION]** This estimate does not account for battery self-discharge
-(typically 2–3% per month for LiPo), which dominates at these current
-levels. Realistic battery life is limited by self-discharge to
-approximately **12–18 months** for a 2000 mAh cell.
+**[ASSUMPTION]** The simple average-current estimate above ignores battery
+self-discharge and capacity fade. For a 2000 mAh Li‑ion cell with
+≈0.185 mA average load, realistic battery life is typically limited to
+approximately **12–18 months**.
 
 ### 7.3 Thermal Considerations
 
@@ -752,7 +753,7 @@ Component count: 33 components (28 unique line items).
 
 | Net Name | Connected Components |
 |----------|---------------------|
-| `GND` | U1, U2, U3, Q1(bypass), J1-J4, J6, D1, D2, R12-R14, C1-C6, SW1, SW2 |
+| `GND` | U1, U2, U3, J1-J4, J6, D1, D2, R12-R14, C1-C6, SW1, SW2 |
 | `VUSB` | J4 VBUS, D1 anode, U3 VBUS |
 | `VBAT` | J3 pin 1, D2 anode, R11 |
 | `VIN` | D1 cathode, D2 cathode, U2 VIN, C3 |

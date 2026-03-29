@@ -2,8 +2,10 @@
 # Copyright (c) 2026 sonde contributors
 #
 # Board configuration: minimal-qwiic
-# Description: Minimal ESP32-C3 sensor node with 2x Qwiic connectors.
+# Description: Variant of minimal ESP32-C3 sensor node with 2x Qwiic connectors.
 #              No on-board sensors — all sensing via external Qwiic modules.
+# Notes:       Supplements hw/configs/minimal.yaml required by HW-0701 and
+#              does not replace the canonical minimal example config.
 # Design doc:  docs/hw-schematic-design.md
 
 # --- MCU ---
@@ -45,9 +47,10 @@ pins:
   i2c0_scl: 5         # GPIO5
   usb_dp: 19          # GPIO19 (USB D+)
   usb_dm: 18          # GPIO18 (USB D-)
-  sensor_pwr_en: 3    # GPIO3 (active LOW for P-FET)
-  vbat_adc: 0         # GPIO0 (ADC1_CH0)
-  boot_button: 9      # GPIO9 (BOOT, active LOW)
+  sensor_pwr_en: 3              # GPIO3 (active LOW for P-FET)
+  sensor_pwr_en_active_low: true
+  vbat_adc: 0                   # GPIO0 (ADC1_CH0)
+  boot_button: 9                # GPIO9 (BOOT, active LOW)
 
 # --- Strapping pins ---
 strapping:

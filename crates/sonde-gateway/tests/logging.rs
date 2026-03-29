@@ -422,7 +422,11 @@ fn python_cmd() -> &'static str {
     if cfg!(windows) {
         for cmd in &["py", "python3", "python"] {
             if let Ok(output) = std::process::Command::new(cmd)
-                .args(if *cmd == "py" { vec!["-3", "--version"] } else { vec!["--version"] })
+                .args(if *cmd == "py" {
+                    vec!["-3", "--version"]
+                } else {
+                    vec!["--version"]
+                })
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output()

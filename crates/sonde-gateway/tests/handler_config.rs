@@ -391,7 +391,7 @@ handlers:
                 working_dir: None,
                 reply_timeout_ms: None,
             };
-            store.add_handler(&record).await.ok();
+            store.add_handler(&record).await.unwrap();
         }
     }
 

@@ -1519,10 +1519,17 @@ impl Storage for SqliteStorage {
             let rows = stmt
                 .query_map([], |row| {
                     let args_json: String = row.get(2)?;
-                    let args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
+                    let args: Vec<String> = serde_json::from_str(&args_json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
                     let working_dir: Option<String> = row.get(3)?;
-                    let reply_timeout_ms: Option<u64> =
-                        row.get::<_, Option<i64>>(4)?.map(|v| v as u64);
+                    let reply_timeout_ms: Option<u64> = row
+                        .get::<_, Option<i64>>(4)?
+                        .and_then(|v| u64::try_from(v).ok());
                     Ok(crate::storage::HandlerRecord {
                         program_hash: row.get(0)?,
                         command: row.get(1)?,

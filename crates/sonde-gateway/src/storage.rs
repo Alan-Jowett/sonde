@@ -143,7 +143,10 @@ pub trait Storage: Send + Sync {
     /// removed, `false` if none matched.
     async fn remove_handler(&self, program_hash: &str) -> Result<bool, StorageError>;
 
-    /// Atomically replace all handler records with the given set.
+    /// Replace all handler records with the given set.
+    ///
+    /// Implementations should perform the replacement in a single transaction
+    /// where possible. The default implementation is non-atomic (delete-then-insert).
     async fn replace_handlers(&self, records: &[HandlerRecord]) -> Result<(), StorageError> {
         let existing = self.list_handlers().await?;
         for h in &existing {

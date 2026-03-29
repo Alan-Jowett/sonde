@@ -92,11 +92,20 @@ fn handler_record_to_config(r: HandlerRecord) -> HandlerConfig {
     let matcher = if r.program_hash == "*" {
         ProgramMatcher::Any
     } else {
-        let bytes = (0..r.program_hash.len())
-            .step_by(2)
-            .filter_map(|i| u8::from_str_radix(&r.program_hash[i..i + 2], 16).ok())
-            .collect();
-        ProgramMatcher::Hash(bytes)
+        let hash = &r.program_hash;
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            warn!(
+                program_hash = %hash,
+                "invalid hex in handler record program_hash, using empty hash as fallback"
+            );
+            ProgramMatcher::Hash(Vec::new())
+        } else {
+            let bytes = (0..hash.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hash[i..i + 2], 16).unwrap())
+                .collect();
+            ProgramMatcher::Hash(bytes)
+        }
     };
     HandlerConfig {
         matchers: vec![matcher],
@@ -164,7 +173,8 @@ fn bundle_err(e: crate::state_bundle::BundleError) -> Status {
 }
 
 /// Parse a program hash string: `"*"` → `ProgramMatcher::Any`, otherwise
-/// validate as 64-char lowercase hex → `ProgramMatcher::Hash`.
+/// validate as 64-char hex (accepts case-insensitively, normalises to
+/// lowercase) → `ProgramMatcher::Hash`.
 fn validate_program_hash(s: &str) -> Result<ProgramMatcher, Status> {
     if s == "*" {
         return Ok(ProgramMatcher::Any);
@@ -696,26 +706,23 @@ impl GatewayAdmin for AdminService {
 
         // Restore handler routing configuration.
         // Convert HandlerConfig → HandlerRecord for storage, then update
-        // in-memory cache.
-        if !handler_cfgs.is_empty() {
-            let records: Vec<HandlerRecord> = handler_cfgs
-                .iter()
-                .map(|cfg| {
-                    use std::fmt::Write;
-                    let program_hash = cfg
-                        .matchers
-                        .first()
-                        .map(|m| match m {
-                            ProgramMatcher::Any => "*".to_string(),
-                            ProgramMatcher::Hash(bytes) => {
-                                let mut s = String::with_capacity(bytes.len() * 2);
-                                for b in bytes {
-                                    let _ = write!(s, "{b:02x}");
-                                }
-                                s
+        // in-memory cache. Flatten multi-matcher configs into one record
+        // per matcher so each row has a single program_hash.
+        let records: Vec<HandlerRecord> = handler_cfgs
+            .iter()
+            .flat_map(|cfg| {
+                use std::fmt::Write;
+                cfg.matchers.iter().map(move |m| {
+                    let program_hash = match m {
+                        ProgramMatcher::Any => "*".to_string(),
+                        ProgramMatcher::Hash(bytes) => {
+                            let mut s = String::with_capacity(bytes.len() * 2);
+                            for b in bytes {
+                                let _ = write!(s, "{b:02x}");
                             }
-                        })
-                        .unwrap_or_default();
+                            s
+                        }
+                    };
                     HandlerRecord {
                         program_hash,
                         command: cfg.command.clone(),
@@ -724,13 +731,15 @@ impl GatewayAdmin for AdminService {
                         reply_timeout_ms: cfg.reply_timeout.map(|d| d.as_millis() as u64),
                     }
                 })
-                .collect();
+            })
+            .collect();
+        if !records.is_empty() {
             self.storage
                 .replace_handlers(&records)
                 .await
                 .map_err(storage_err)?;
+            *self.handler_configs.write().await = handler_cfgs;
         }
-        *self.handler_configs.write().await = handler_cfgs;
 
         // Clear any pending commands queued for the old node set.
         self.pending_commands.write().await.clear();

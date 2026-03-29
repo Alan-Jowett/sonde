@@ -538,6 +538,7 @@ pub fn spawn_health_monitor(
         }
         if max_consecutive_failures == 0 {
             warn!("max_consecutive_failures is zero, disabling health monitor");
+            cancel.cancelled().await;
             return false;
         }
         let mut prev_tx_fail: Option<u32> = None;

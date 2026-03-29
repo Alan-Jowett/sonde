@@ -28,7 +28,7 @@ to close and reopen the COM port after detecting the failure.
 ## Why Only Health Polls Fail
 
 Both the data path (`Transport::send`) and health poll (`poll_status`)
-use the **same `SharedWriter`** (`Arc<Mutex<Box<dyn AsyncWrite>>>`).
+use the **same `SharedWriter`** (`Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>>`).
 
 However, the **data path writes always succeed** because they are
 performed as an immediate response to a received frame — the write
@@ -75,7 +75,7 @@ stale pipe.
 | Interface | MI_00 (CDC ACM data), MI_02 (JTAG/serial debug) |
 | USB Speed | Full Speed (12 Mbps) |
 | Windows Driver | `usbser.sys` (inbox CDC ACM class driver) |
-| Instance ID | `USB\VID_303A&PID_1001&MI_00\A&596D135&0&0000` |
+| Instance ID | `USB\VID_303A&PID_1001&MI_00\<instance>` |
 | OS | Windows 11 |
 
 ## Serial Port Configuration
@@ -145,6 +145,6 @@ endpoint that was torn down during the reset.
 
 | File | Location | Description |
 |------|----------|-------------|
-| `usb-sonde.etl` | `F:\sonde\bin\` | USB ETW trace (59 MB) |
-| Gateway logs | Working dir | Application-level logs with timestamps |
-| Soak test data | Working dir | 42 successful sensor readings during failure |
+| `usb-sonde.etl` | Local | USB ETW trace (~59 MB, not committed) |
+| Gateway logs | Local | Application-level logs with timestamps |
+| Soak test data | Local | 42 successful sensor readings during failure |

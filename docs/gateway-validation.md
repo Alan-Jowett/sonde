@@ -2127,10 +2127,10 @@ A configurable stub handler process (or in-process mock) that:
 1. Start gateway with no handlers configured.
 2. Call `ListHandlers` via gRPC.
 3. Assert: response contains zero handlers.
-4. Call `AddHandler` with `program_hash` = `"*"`, `command` = `"echo"`.
+4. Call `AddHandler` with `program_hash` = `"*"`, `command` = `"echo"`, `reply_timeout_ms` = `5000`.
 5. Assert: success response.
 6. Call `ListHandlers`.
-7. Assert: response contains one handler with matching fields.
+7. Assert: response contains one handler with matching fields (including `reply_timeout_ms` = `5000`).
 8. Call `AddHandler` with the same `program_hash` = `"*"`.
 9. Assert: gRPC status `ALREADY_EXISTS`.
 10. Call `RemoveHandler` with `program_hash` = `"*"`.
@@ -2218,12 +2218,12 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-1406
 
 **Procedure:**
-1. Start gateway A. Add two handlers via `AddHandler`.
+1. Start gateway A. Add two handlers via `AddHandler`, configuring each with a distinct, non-default `reply_timeout_ms` value (for example, 5000 and 30000).
 2. Call `ExportState` with a test passphrase.
 3. Start gateway B with an empty database and different handlers.
 4. Call `ImportState` on gateway B with the bundle from step 2.
 5. Call `ListHandlers` on gateway B.
-6. Assert: gateway B has exactly the two handlers from gateway A (the pre-existing handlers were replaced).
+6. Assert: gateway B has exactly the two handlers from gateway A (the pre-existing handlers were replaced), and each handler's `reply_timeout_ms` matches the value configured in step 1 (non-default timeouts round-trip through `ExportState`/`ImportState`).
 
 ---
 

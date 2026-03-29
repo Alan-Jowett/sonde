@@ -1671,11 +1671,11 @@ The `.deb` package SHOULD include a systemd unit file and `postinst` / `prerm` s
 **Source:** Issue #540
 
 **Description:**  
-The gateway MUST store handler routing configuration in the SQLite database rather than relying solely on a YAML file at runtime. Each handler record consists of a `program_hash` matcher (a specific hex-encoded SHA-256 hash or the wildcard `"*"`), a `command` (executable path), optional `args` (JSON-encoded string array), and an optional `working_dir` (working directory for the spawned process). The database is the authoritative source of handler configuration after startup.
+The gateway MUST store handler routing configuration in the SQLite database rather than relying solely on a YAML file at runtime. Each handler record consists of a `program_hash` matcher (a specific hex-encoded SHA-256 hash or the wildcard `"*"`), a `command` (executable path), optional `args` (JSON-encoded string array), an optional `working_dir` (working directory for the spawned process), and an optional `reply_timeout_ms` (per-handler reply timeout in milliseconds; `NULL` means use the gateway default). The database is the authoritative source of handler configuration after startup.
 
 **Acceptance criteria:**
 
-1. A `handlers` table exists in the SQLite database with columns for `program_hash`, `command`, `args`, and `working_dir`.
+1. A `handlers` table exists in the SQLite database with columns for `program_hash`, `command`, `args`, `working_dir`, and `reply_timeout_ms`.
 2. Each row uniquely identifies a handler by its `program_hash` value (including `"*"` for catch-all).
 3. Handler records persist across gateway restarts.
 4. The `Storage` trait exposes `add_handler`, `remove_handler`, and `list_handlers` methods.
@@ -1692,11 +1692,11 @@ The admin gRPC API MUST expose RPCs for managing handler routing configuration: 
 
 **Acceptance criteria:**
 
-1. `AddHandler` accepts `program_hash`, `command`, `args`, and `working_dir` and persists the handler to the database.
+1. `AddHandler` accepts `program_hash`, `command`, `args`, `working_dir`, and `reply_timeout_ms` and persists the handler to the database.
 2. `AddHandler` returns `ALREADY_EXISTS` if a handler with the same `program_hash` is already registered.
 3. `RemoveHandler` accepts a `program_hash` and deletes the matching handler from the database.
 4. `RemoveHandler` returns `NOT_FOUND` if no handler matches.
-5. `ListHandlers` returns all registered handlers with their full configuration.
+5. `ListHandlers` returns all registered handlers with their full configuration (including `reply_timeout_ms` when set).
 
 ---
 
@@ -1712,8 +1712,9 @@ The `sonde-admin` CLI MUST expose subcommands for handler management: `handler a
 
 1. `sonde-admin handler add <program-hash> <command> [args...]` registers a new handler. The `program_hash` is `"*"` for catch-all or a 64-character hex string.
 2. `sonde-admin handler add` supports `--working-dir <path>` to set the handler's working directory.
-3. `sonde-admin handler remove <program-hash>` removes the handler with the specified `program_hash`.
-4. `sonde-admin handler list` displays all configured handlers in a human-readable table (or JSON with `--format json`).
+3. `sonde-admin handler add` supports `--reply-timeout <ms>` to set the per-handler reply timeout in milliseconds.
+4. `sonde-admin handler remove <program-hash>` removes the handler with the specified `program_hash`.
+5. `sonde-admin handler list` displays all configured handlers in a human-readable table (or JSON with `--format json`).
 
 ---
 
@@ -1757,13 +1758,13 @@ The gateway SHOULD support a `--handler-config <path>` CLI flag that imports han
 **Source:** Issue #540
 
 **Description:**  
-The state export bundle (GW-0805, GW-1001) SHOULD include handler routing configuration. On import, handler records from the bundle replace all existing handlers in the database atomically, consistent with the node and program replacement behavior.
+The state export bundle (GW-0805, GW-1001) SHOULD include handler routing configuration. On import, handler records from the bundle replace all existing handlers in the database atomically, consistent with the node and program replacement behavior. The export format MUST include `reply_timeout_ms` when set, preserving per-handler timeouts through the export/import cycle.
 
 **Acceptance criteria:**
 
-1. `ExportState` includes all handler records in the encrypted state bundle.
+1. `ExportState` includes all handler records (including `working_dir` and `reply_timeout_ms` when set) in the encrypted state bundle.
 2. `ImportState` restores handler records from the bundle, replacing any existing handlers in a single transaction.
-3. A state bundle exported from one gateway and imported into another produces an identical handler configuration (round-trip fidelity).
+3. A state bundle exported from one gateway and imported into another produces an identical handler configuration (round-trip fidelity), including per-handler `reply_timeout_ms` values.
 4. If the imported bundle contains no handler records (e.g., exported from an older gateway version), the existing handlers in the target database are preserved.
 
 ---

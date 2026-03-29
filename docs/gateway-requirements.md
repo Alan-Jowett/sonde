@@ -1663,7 +1663,7 @@ The `.deb` package SHOULD include a systemd unit file and `postinst` / `prerm` s
 
 ---
 
-## 13  Handler configuration management
+## 14  Handler configuration management
 
 ### GW-1401  Handler configuration storage
 

@@ -1248,10 +1248,11 @@ Handler routing is currently loaded from a YAML file (`--handler-config`). This 
 
 ```sql
 CREATE TABLE IF NOT EXISTS handlers (
-    program_hash TEXT PRIMARY KEY,   -- 64-char hex SHA-256 or "*" for catch-all
-    command      TEXT NOT NULL,      -- executable path
-    args         TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
-    working_dir  TEXT               -- optional working directory
+    program_hash     TEXT PRIMARY KEY,   -- 64-char hex SHA-256 or "*" for catch-all
+    command          TEXT NOT NULL,      -- executable path
+    args             TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
+    working_dir      TEXT,              -- optional working directory
+    reply_timeout_ms INTEGER            -- optional per-handler timeout (NULL = gateway default)
 );
 ```
 

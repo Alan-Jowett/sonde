@@ -88,7 +88,9 @@ gh run download $runId --name sonde-pair-windows --dir .\pairing-tool\
 >
 > - **Windows:** Download the `sonde-installer-windows` artifact
 >   (`sonde-x86_64.msi`) and run it. The MSI installs the gateway and
->   admin CLI to `Program Files`.
+>   admin CLI to `C:\Program Files\Sonde\bin\` and adds this directory to
+>   your system `PATH`, so you can run `sonde-admin` and `sonde-gateway`
+>   directly from any command prompt.
 > - **Linux:** Download the `sonde-installer-linux` artifact
 >   (`sonde_*_amd64.deb`) and install with `sudo dpkg -i sonde_*.deb`.
 >   The deb package includes a systemd service unit.
@@ -185,7 +187,6 @@ Before proceeding, confirm the gateway and modem are operational:
 ```sh
 ./bin/sonde-admin modem status
 ./bin/sonde-admin modem scan
-./bin/sonde-admin modem channel
 ./bin/sonde-admin node list
 ./bin/sonde-admin program list
 ```
@@ -194,15 +195,13 @@ Before proceeding, confirm the gateway and modem are operational:
 ```powershell
 .\bin\sonde-admin.exe modem status
 .\bin\sonde-admin.exe modem scan
-.\bin\sonde-admin.exe modem channel
 .\bin\sonde-admin.exe node list
 .\bin\sonde-admin.exe program list
 ```
 
 **Expected results on a fresh deployment:**
-- `modem status` — modem connected, firmware version and channel displayed
+- `modem status` — modem connected, firmware version and current RF channel displayed
 - `modem scan` — channel/AP table displayed (see step 6 for interpretation)
-- `modem channel` — current RF channel (default 1); verify it matches your deployment plan
 - `node list` — empty (no nodes provisioned yet)
 - `program list` — empty (no programs ingested yet)
 

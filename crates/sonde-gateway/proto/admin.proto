@@ -33,6 +33,11 @@ service GatewayAdmin {
     // Phone PSK management.
     rpc ListPhones(Empty) returns (ListPhonesResponse);
     rpc RevokePhone(RevokePhoneRequest) returns (Empty);
+
+    // Handler management (GW-1402).
+    rpc AddHandler(AddHandlerRequest) returns (Empty);
+    rpc RemoveHandler(RemoveHandlerRequest) returns (Empty);
+    rpc ListHandlers(Empty) returns (ListHandlersResponse);
 }
 
 message Empty {}
@@ -160,3 +165,21 @@ message PhoneInfo {
 }
 message ListPhonesResponse { repeated PhoneInfo phones = 1; }
 message RevokePhoneRequest { uint32 phone_id = 1; }
+
+// Handler management messages (GW-1402).
+message AddHandlerRequest {
+    string program_hash = 1;
+    string command = 2;
+    repeated string args = 3;
+    string working_dir = 4;
+    optional uint64 reply_timeout_ms = 5;
+}
+message RemoveHandlerRequest { string program_hash = 1; }
+message HandlerInfo {
+    string program_hash = 1;
+    string command = 2;
+    repeated string args = 3;
+    string working_dir = 4;
+    optional uint64 reply_timeout_ms = 5;
+}
+message ListHandlersResponse { repeated HandlerInfo handlers = 1; }

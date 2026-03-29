@@ -321,6 +321,8 @@ pub struct HandlerConfig {
     /// Falls back to the default 30 s when `None`. Useful for tests that
     /// need a shorter timeout.
     pub reply_timeout: Option<Duration>,
+    /// Optional working directory for the handler process.
+    pub working_dir: Option<String>,
 }
 
 // --- HandlerProcess ---
@@ -359,13 +361,16 @@ impl HandlerProcess {
         }
 
         if self.child.is_none() {
-            let mut child = Command::new(&self.config.command)
-                .args(&self.config.args)
+            let mut cmd = Command::new(&self.config.command);
+            cmd.args(&self.config.args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
-                .kill_on_drop(true)
-                .spawn()?;
+                .kill_on_drop(true);
+            if let Some(ref dir) = self.config.working_dir {
+                cmd.current_dir(dir);
+            }
+            let mut child = cmd.spawn()?;
 
             self.stdin = child.stdin.take();
             self.stdout_reader = child.stdout.take().map(BufReader::new);
@@ -695,6 +700,7 @@ pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerCo
                 command: entry.command,
                 args: entry.args,
                 reply_timeout: None,
+                working_dir: None,
             })
         })
         .collect()
@@ -914,12 +920,14 @@ mod tests {
                 command: "handler_a".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Hash(vec![0xBB])],
                 command: "handler_b".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
         ]);
 
@@ -936,12 +944,14 @@ mod tests {
                 command: "handler_a".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Any],
                 command: "catch_all".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
         ]);
 
@@ -957,12 +967,14 @@ mod tests {
                 command: "catch_all".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Hash(vec![0xAA])],
                 command: "exact".to_string(),
                 args: vec![],
                 reply_timeout: None,
+                working_dir: None,
             },
         ]);
 
@@ -981,6 +993,7 @@ mod tests {
             command: "multi".to_string(),
             args: vec![],
             reply_timeout: None,
+            working_dir: None,
         }]);
 
         assert_eq!(router.find_handler(&[0xAA]), Some(0));

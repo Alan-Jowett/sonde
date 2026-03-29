@@ -32,6 +32,17 @@ impl fmt::Display for StorageError {
 
 impl std::error::Error for StorageError {}
 
+/// A handler routing record for persistent storage (GW-1401).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandlerRecord {
+    /// `"*"` for catch-all or a 64-char lowercase hex SHA-256 hash.
+    pub program_hash: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub working_dir: Option<String>,
+    pub reply_timeout_ms: Option<u64>,
+}
+
 /// Abstract storage backend for node registry and program library.
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -118,6 +129,31 @@ pub trait Storage: Send + Sync {
         }
         Ok(())
     }
+
+    // ── Handler routing (GW-1401) ──────────────────────────────
+
+    /// List all handler records, ordered by `program_hash`.
+    async fn list_handlers(&self) -> Result<Vec<HandlerRecord>, StorageError>;
+
+    /// Add a handler record. Returns `true` if inserted, `false` if a
+    /// handler with the same `program_hash` already exists (no-op).
+    async fn add_handler(&self, record: &HandlerRecord) -> Result<bool, StorageError>;
+
+    /// Remove a handler by `program_hash`. Returns `true` if a handler was
+    /// removed, `false` if none matched.
+    async fn remove_handler(&self, program_hash: &str) -> Result<bool, StorageError>;
+
+    /// Atomically replace all handler records with the given set.
+    async fn replace_handlers(&self, records: &[HandlerRecord]) -> Result<(), StorageError> {
+        let existing = self.list_handlers().await?;
+        for h in &existing {
+            self.remove_handler(&h.program_hash).await?;
+        }
+        for h in records {
+            self.add_handler(h).await?;
+        }
+        Ok(())
+    }
 }
 
 /// In-memory storage backend for testing.
@@ -128,6 +164,7 @@ pub struct InMemoryStorage {
     phone_psks: RwLock<Vec<PhonePskRecord>>,
     next_phone_id: RwLock<u32>,
     config: RwLock<HashMap<String, String>>,
+    handlers: RwLock<Vec<HandlerRecord>>,
 }
 
 impl InMemoryStorage {
@@ -139,6 +176,7 @@ impl InMemoryStorage {
             phone_psks: RwLock::new(Vec::new()),
             next_phone_id: RwLock::new(1),
             config: RwLock::new(HashMap::new()),
+            handlers: RwLock::new(Vec::new()),
         }
     }
 }
@@ -327,6 +365,46 @@ impl Storage for InMemoryStorage {
     async fn set_config(&self, key: &str, value: &str) -> Result<(), StorageError> {
         let mut config = self.config.write().await;
         config.insert(key.to_owned(), value.to_owned());
+        Ok(())
+    }
+
+    // ── Handler routing ────────────────────────────────────────
+
+    async fn list_handlers(&self) -> Result<Vec<HandlerRecord>, StorageError> {
+        let handlers = self.handlers.read().await;
+        let mut result = handlers.clone();
+        result.sort_by(|a, b| a.program_hash.cmp(&b.program_hash));
+        Ok(result)
+    }
+
+    async fn add_handler(&self, record: &HandlerRecord) -> Result<bool, StorageError> {
+        let mut handlers = self.handlers.write().await;
+        let key = record.program_hash.to_ascii_lowercase();
+        if handlers.iter().any(|h| h.program_hash == key) {
+            return Ok(false);
+        }
+        let mut stored = record.clone();
+        stored.program_hash = key;
+        handlers.push(stored);
+        Ok(true)
+    }
+
+    async fn remove_handler(&self, program_hash: &str) -> Result<bool, StorageError> {
+        let mut handlers = self.handlers.write().await;
+        let key = program_hash.to_ascii_lowercase();
+        let before = handlers.len();
+        handlers.retain(|h| h.program_hash != key);
+        Ok(handlers.len() < before)
+    }
+
+    async fn replace_handlers(&self, records: &[HandlerRecord]) -> Result<(), StorageError> {
+        let mut handlers = self.handlers.write().await;
+        handlers.clear();
+        for r in records {
+            let mut stored = r.clone();
+            stored.program_hash = stored.program_hash.to_ascii_lowercase();
+            handlers.push(stored);
+        }
         Ok(())
     }
 }

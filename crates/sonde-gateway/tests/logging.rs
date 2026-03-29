@@ -32,8 +32,8 @@ use sonde_gateway::transport::{PeerAddress, Transport};
 #[cfg(debug_assertions)]
 use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, RecvFrame};
 use sonde_protocol::{
-    encode_frame, FrameHeader, HmacProvider, NodeMessage, Sha256Provider, MSG_PEER_REQUEST,
-    MSG_WAKE, PEER_REQ_KEY_PAYLOAD,
+    encode_frame, FrameHeader, GatewayMessage, HmacProvider, NodeMessage, Sha256Provider,
+    MSG_APP_DATA, MSG_PEER_REQUEST, MSG_WAKE, PEER_REQ_KEY_PAYLOAD,
 };
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -114,6 +114,19 @@ impl TestNode {
             firmware_abi_version,
             program_hash: program_hash.to_vec(),
             battery_mv,
+        };
+        let cbor = msg.encode().unwrap();
+        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+    }
+
+    fn build_app_data(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
+        let header = FrameHeader {
+            key_hint: self.key_hint,
+            msg_type: MSG_APP_DATA,
+            nonce: seq,
+        };
+        let msg = NodeMessage::AppData {
+            blob: blob.to_vec(),
         };
         let cbor = msg.encode().unwrap();
         encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
@@ -625,6 +638,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
         command: cmd.to_string(),
         args,
         reply_timeout: None,
+        working_dir: None,
     };
     let router = Arc::new(HandlerRouter::new(vec![config]));
 

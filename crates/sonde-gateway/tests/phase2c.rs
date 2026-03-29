@@ -1234,6 +1234,7 @@ fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> Handl
         command: python_cmd().to_string(),
         args,
         reply_timeout: None,
+        working_dir: None,
     }
 }
 

@@ -1135,6 +1135,7 @@ async fn t0810_import_state_restores_identity_phones_and_handlers() {
         command: "/usr/bin/handler".into(),
         args: vec!["--verbose".into()],
         reply_timeout: Some(Duration::from_secs(5)),
+        working_dir: None,
     }];
     let admin = AdminService::new(
         storage.clone(),

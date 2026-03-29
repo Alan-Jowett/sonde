@@ -109,6 +109,7 @@ const HANDLER_KEY_MATCHERS: i64 = 1;
 const HANDLER_KEY_COMMAND: i64 = 2;
 const HANDLER_KEY_ARGS: i64 = 3;
 const HANDLER_KEY_REPLY_TIMEOUT_MS: i64 = 4;
+const HANDLER_KEY_WORKING_DIR: i64 = 5;
 
 // ── Error type ───────────────────────────────────────────────────────────────
 
@@ -598,6 +599,13 @@ fn handler_config_to_cbor(h: &HandlerConfig) -> ciborium::value::Value {
         entries.push((
             Value::Integer(HANDLER_KEY_REPLY_TIMEOUT_MS.into()),
             Value::Integer(timeout_ms_i64.into()),
+        ));
+    }
+
+    if let Some(ref dir) = h.working_dir {
+        entries.push((
+            Value::Integer(HANDLER_KEY_WORKING_DIR.into()),
+            Value::Text(dir.clone()),
         ));
     }
 
@@ -1338,6 +1346,7 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
     let mut command: Option<String> = None;
     let mut args: Vec<String> = Vec::new();
     let mut reply_timeout: Option<Duration> = None;
+    let mut working_dir: Option<String> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -1403,6 +1412,11 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
                         }
                     }
                 }
+                Some(HANDLER_KEY_WORKING_DIR) => {
+                    if let Value::Text(s) = v {
+                        working_dir = Some(s);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1416,6 +1430,7 @@ fn handler_config_from_cbor(v: ciborium::value::Value) -> Result<HandlerConfig, 
         command,
         args,
         reply_timeout,
+        working_dir,
     })
 }
 
@@ -1705,12 +1720,14 @@ mod tests {
                 command: "/usr/bin/handler".to_string(),
                 args: vec!["--verbose".to_string()],
                 reply_timeout: None,
+                working_dir: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Any],
                 command: "/usr/bin/catch-all".to_string(),
                 args: Vec::new(),
                 reply_timeout: None,
+                working_dir: None,
             },
         ];
 
@@ -1739,12 +1756,14 @@ mod tests {
                 command: "/usr/bin/with-timeout".to_string(),
                 args: Vec::new(),
                 reply_timeout: Some(Duration::from_millis(5000)),
+                working_dir: None,
             },
             HandlerConfig {
                 matchers: vec![ProgramMatcher::Any],
                 command: "/usr/bin/no-timeout".to_string(),
                 args: Vec::new(),
                 reply_timeout: None,
+                working_dir: None,
             },
         ];
 

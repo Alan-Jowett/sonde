@@ -1566,10 +1566,10 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 ### GW-1307  Error diagnostic observability
 
 **Priority:** Must  
-**Source:** issue #532
+**Source:** Issue #532
 
 **Description:**  
-When the gateway encounters an error at a user-facing or operator-visible boundary (program verification, serial port operations, HMAC validation, storage I/O), the error log or error response MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "program verification", "serial port open"), (2) the input or parameters that triggered it (e.g., program name, port name), (3) the specific error from the underlying subsystem (e.g., OS error code, verifier instruction), and (4) actionable guidance where possible (e.g., "check COM port permissions", "re-upload program").
+When the gateway encounters an error at a user-facing or operator-visible boundary (program verification, serial port operations, HMAC validation, storage I/O), the error log or error response MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "program verification", "serial port open"), (2) the input or parameters that triggered it (e.g., program name, port name), (3) the specific error from the underlying subsystem (e.g., OS error code, verifier instruction), and (4) actionable guidance where possible (e.g., "check COM port permissions", "re-upload program"). Diagnostics MUST NOT include secret key material or credentials; sensitive values (e.g., PSK bytes, decrypted payload contents) MUST be redacted or omitted, and only safe identifiers (e.g., `key_hint`, `program_hash`) MAY be logged as "input/parameters".
 
 **Acceptance criteria:**
 

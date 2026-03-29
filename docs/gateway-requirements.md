@@ -1566,6 +1566,23 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 
 ---
 
+### GW-1307  Error diagnostic observability
+
+**Priority:** Must  
+**Source:** Issue #532
+
+**Description:**  
+When the gateway encounters an error at a user-facing or operator-visible boundary (program verification, serial port operations, HMAC validation, storage I/O), the error log or error response MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "program verification", "serial port open"), (2) the input or parameters that triggered it (e.g., program name, port name), (3) the specific error from the underlying subsystem (e.g., OS error code, verifier instruction), and (4) actionable guidance where possible (e.g., "check COM port permissions", "re-upload program"). Diagnostics MUST NOT include secret key material or credentials; sensitive values (e.g., PSK bytes, decrypted payload contents) MUST be redacted or omitted, and only safe identifiers (e.g., `key_hint`, `program_hash`) MAY be logged as "input/parameters".
+
+**Acceptance criteria:**
+
+1. Every error log entry or error response at a user-facing boundary includes the failed operation name, the triggering input/parameters, and the underlying subsystem error.
+2. Where a corrective action is known, the error includes actionable guidance text.
+3. Program verification failures include verifier-specific diagnostic output (instruction label, error description) per GW-1305.
+4. Serial port errors (e.g., access denied, device not found) include the port name and the OS error code with human-readable context.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1656,4 +1673,5 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 | GW-1304 | Build-type–aware log levels | Must |
 | GW-1305 | Verification failure diagnostics | Must |
 | GW-1306 | Service-mode logging and monitoring | Must |
+| GW-1307 | Error diagnostic observability | Must |
 | GW-1400 | Bounded shutdown time | Must |

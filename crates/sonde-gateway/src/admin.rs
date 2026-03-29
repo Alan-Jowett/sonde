@@ -76,8 +76,10 @@ impl AdminService {
     async fn reload_handler_configs(&self) {
         match self.storage.list_handlers().await {
             Ok(records) => {
-                let configs: Vec<HandlerConfig> =
-                    records.into_iter().map(handler_record_to_config).collect();
+                let configs: Vec<HandlerConfig> = records
+                    .into_iter()
+                    .filter_map(handler_record_to_config)
+                    .collect();
                 *self.handler_configs.write().await = configs;
             }
             Err(e) => {
@@ -88,17 +90,21 @@ impl AdminService {
 }
 
 /// Convert a [`HandlerRecord`] into a [`HandlerConfig`].
-fn handler_record_to_config(r: HandlerRecord) -> HandlerConfig {
+///
+/// Returns `None` for records with invalid `program_hash` values so that
+/// corrupt/misconfigured rows are skipped rather than silently producing
+/// a handler that can never match.
+fn handler_record_to_config(r: HandlerRecord) -> Option<HandlerConfig> {
     let matcher = if r.program_hash == "*" {
         ProgramMatcher::Any
     } else {
         let hash = &r.program_hash;
-        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if hash.len() != 64 || !hash.is_ascii() || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             warn!(
                 program_hash = %hash,
-                "invalid hex in handler record program_hash, using empty hash as fallback"
+                "invalid hex in handler record program_hash, skipping record"
             );
-            ProgramMatcher::Hash(Vec::new())
+            return None;
         } else {
             let bytes = (0..hash.len())
                 .step_by(2)
@@ -107,7 +113,7 @@ fn handler_record_to_config(r: HandlerRecord) -> HandlerConfig {
             ProgramMatcher::Hash(bytes)
         }
     };
-    HandlerConfig {
+    Some(HandlerConfig {
         matchers: vec![matcher],
         command: r.command,
         args: r.args,
@@ -116,7 +122,7 @@ fn handler_record_to_config(r: HandlerRecord) -> HandlerConfig {
             .filter(|&ms| ms > 0)
             .map(std::time::Duration::from_millis),
         working_dir: r.working_dir,
-    }
+    })
 }
 
 fn node_to_info(n: &NodeRecord) -> NodeInfo {
@@ -179,7 +185,9 @@ fn validate_program_hash(s: &str) -> Result<ProgramMatcher, Status> {
     if s == "*" {
         return Ok(ProgramMatcher::Any);
     }
-    if s.len() != 64 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+    // Require ASCII so that byte length == char length; non-ASCII UTF-8
+    // would pass the len() check but panic on byte-index slicing below.
+    if s.len() != 64 || !s.is_ascii() || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Status::invalid_argument(
             "`program_hash` must be \"*\" or a 64-char hex string",
         ));

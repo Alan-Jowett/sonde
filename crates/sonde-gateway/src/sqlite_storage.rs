@@ -1552,7 +1552,9 @@ impl Storage for SqliteStorage {
         let command = record.command.clone();
         let args_json = serde_json::to_string(&record.args).unwrap_or_else(|_| "[]".to_string());
         let working_dir = record.working_dir.clone();
-        let reply_timeout_ms = record.reply_timeout_ms.map(|v| v as i64);
+        let reply_timeout_ms = record
+            .reply_timeout_ms
+            .map(|v| i64::try_from(v).expect("reply_timeout_ms exceeds i64::MAX"));
         self.with_conn(move |conn| {
             let result = conn.execute(
                 "INSERT OR IGNORE INTO handlers \
@@ -1598,7 +1600,9 @@ impl Storage for SqliteStorage {
             tx.execute("DELETE FROM handlers", []).map_err(map_err)?;
             for r in &records {
                 let args_json = serde_json::to_string(&r.args).unwrap_or_else(|_| "[]".to_string());
-                let reply_timeout_ms = r.reply_timeout_ms.map(|v| v as i64);
+                let reply_timeout_ms = r
+                    .reply_timeout_ms
+                    .map(|v| i64::try_from(v).expect("reply_timeout_ms exceeds i64::MAX"));
                 tx.execute(
                     "INSERT INTO handlers \
                      (program_hash, command, args_json, working_dir, reply_timeout_ms) \

@@ -773,12 +773,14 @@ impl HandlerRouter {
         let (config, process_mutex) = &self.handlers[idx];
 
         // GW-1308 AC2: handler matched with program_hash and command.
-        let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
-        info!(
-            program_hash = %ph_hex,
-            command = %config.command,
-            "handler matched"
-        );
+        if tracing::enabled!(tracing::Level::INFO) {
+            let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+            info!(
+                program_hash = %ph_hex,
+                command = %config.command,
+                "handler matched"
+            );
+        }
 
         let mut process = process_mutex.lock().await;
 

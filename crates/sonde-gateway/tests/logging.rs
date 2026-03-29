@@ -419,30 +419,33 @@ async fn t1303_modem_frame_debug_logging() {
 
 /// Find Python 3 executable name.
 fn python_cmd() -> &'static str {
-    if cfg!(windows) {
-        for cmd in &["py", "python3", "python"] {
-            if let Ok(output) = std::process::Command::new(cmd)
-                .args(if *cmd == "py" {
-                    vec!["-3", "--version"]
-                } else {
-                    vec!["--version"]
-                })
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-            {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    if stdout.starts_with("Python 3") {
-                        return Box::leak(cmd.to_string().into_boxed_str());
+    static CACHED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    CACHED.get_or_init(|| {
+        if cfg!(windows) {
+            for cmd in &["py", "python3", "python"] {
+                if let Ok(output) = std::process::Command::new(cmd)
+                    .args(if *cmd == "py" {
+                        vec!["-3", "--version"]
+                    } else {
+                        vec!["--version"]
+                    })
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                {
+                    if output.status.success() {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        if stdout.starts_with("Python 3") {
+                            return cmd;
+                        }
                     }
                 }
             }
+            "py"
+        } else {
+            "python3"
         }
-        "py"
-    } else {
-        "python3"
-    }
+    })
 }
 
 /// Arguments to pass before the script path to ensure Python 3.

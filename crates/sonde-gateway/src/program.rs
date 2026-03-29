@@ -441,7 +441,9 @@ impl ProgramLibrary {
 
         if raw_programs.is_empty() {
             return Err(ProgramError::ElfParseError(
-                "no programs found in ELF".into(),
+                "no programs found in ELF; ensure the BPF program uses \
+                 SEC(\"sonde\") section annotation"
+                    .into(),
             ));
         }
         if raw_programs.len() > 1 {
@@ -564,7 +566,8 @@ impl ProgramLibrary {
                 }
 
                 return Err(ProgramError::VerificationFailed(format!(
-                    "program `{}` failed verification{}",
+                    "program `{}` failed verification; check that the BPF program \
+                     compiles correctly for the sonde target{}",
                     raw_prog.function_name, diag
                 )));
             }

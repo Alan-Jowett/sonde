@@ -121,13 +121,13 @@ pub(crate) fn parse_hex_key(hex: &str) -> Result<Zeroizing<[u8; 32]>, KeyProvide
     let hex = hex.trim();
     if hex.len() != 64 {
         return Err(KeyProviderError::Format(format!(
-            "key must be exactly 64 hex characters, got {}",
+            "master key must be exactly 64 hex characters (32 bytes), got {} characters",
             hex.len()
         )));
     }
     if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(KeyProviderError::Format(
-            "key contains non-hex characters".into(),
+            "master key contains non-hex characters; expected only 0-9, a-f, A-F".into(),
         ));
     }
     let mut key = Zeroizing::new([0u8; 32]);
@@ -216,7 +216,12 @@ impl FileKeyProvider {
 impl KeyProvider for FileKeyProvider {
     fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
         let raw = std::fs::read_to_string(&self.path).map_err(|e| {
-            KeyProviderError::Io(format!("cannot read {}: {e}", self.path.display()))
+            KeyProviderError::Io(format!(
+                "cannot read master key file {}: {e}; create one with \
+                 `sonde-admin generate-key` or specify the correct path \
+                 with --master-key-file",
+                self.path.display()
+            ))
         })?;
         parse_hex_key(&raw)
     }
@@ -255,7 +260,8 @@ impl KeyProvider for FileKeyProvider {
                 self.load_master_key()
             }
             Err(e) => Err(KeyProviderError::Io(format!(
-                "cannot create key file {}: {e}",
+                "cannot create master key file {}: {e}; check that the parent \
+                 directory exists and has write permissions",
                 self.path.display()
             ))),
         }
@@ -292,7 +298,11 @@ impl Default for EnvKeyProvider {
 impl KeyProvider for EnvKeyProvider {
     fn load_master_key(&self) -> Result<Zeroizing<[u8; 32]>, KeyProviderError> {
         let hex = std::env::var(&self.var_name).map_err(|_| {
-            KeyProviderError::Io(format!("environment variable {} is not set", self.var_name))
+            KeyProviderError::Io(format!(
+                "environment variable {} is not set; set it to a 64-character \
+                 hex string, or use --key-provider file instead",
+                self.var_name
+            ))
         })?;
         parse_hex_key(&hex)
     }

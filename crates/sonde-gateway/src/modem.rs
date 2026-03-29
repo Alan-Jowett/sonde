@@ -45,6 +45,33 @@ fn protocol_msg_type_label(frame: &[u8]) -> &'static str {
     }
 }
 
+/// Return a human-readable label for a `ModemMessage` variant.
+fn modem_msg_label(msg: &ModemMessage) -> &'static str {
+    match msg {
+        ModemMessage::Reset => "RESET",
+        ModemMessage::ModemReady(_) => "MODEM_READY",
+        ModemMessage::SendFrame(_) => "SEND_FRAME",
+        ModemMessage::RecvFrame(_) => "RECV_FRAME",
+        ModemMessage::SetChannel(_) => "SET_CHANNEL",
+        ModemMessage::SetChannelAck(_) => "SET_CHANNEL_ACK",
+        ModemMessage::GetStatus => "GET_STATUS",
+        ModemMessage::Status(_) => "STATUS",
+        ModemMessage::Error(_) => "ERROR",
+        ModemMessage::BleEnable => "BLE_ENABLE",
+        ModemMessage::BleDisable => "BLE_DISABLE",
+        ModemMessage::BleIndicate(_) => "BLE_INDICATE",
+        ModemMessage::BleRecv(_) => "BLE_RECV",
+        ModemMessage::BleConnected(_) => "BLE_CONNECTED",
+        ModemMessage::BleDisconnected(_) => "BLE_DISCONNECTED",
+        ModemMessage::BlePairingConfirm(_) => "BLE_PAIRING_CONFIRM",
+        ModemMessage::BlePairingConfirmReply(_) => "BLE_PAIRING_CONFIRM_REPLY",
+        ModemMessage::ScanChannels => "SCAN_CHANNELS",
+        ModemMessage::ScanResult(_) => "SCAN_RESULT",
+        ModemMessage::Unknown { .. } => "UNKNOWN",
+        _ => "UNKNOWN",
+    }
+}
+
 /// BLE event received from the modem, forwarded to the gateway's BLE
 /// pairing state machine.
 #[derive(Debug, Clone)]
@@ -166,20 +193,34 @@ impl UsbEspNowTransport {
                                         ) =>
                                     {
                                         warn!(
-                                            "modem frame too large (likely boot log garbage) — resetting decoder: {e}"
+                                            operation = "modem frame decode",
+                                            error = %e,
+                                            guidance = "resetting decoder; this typically indicates \
+                                                        boot log garbage on the serial line",
+                                            "modem frame too large — resetting decoder"
                                         );
                                         decoder.reset();
                                         break; // break inner loop, read more data
                                     }
                                     Err(e) => {
-                                        warn!("modem decode error: {e}");
+                                        warn!(
+                                            operation = "modem frame decode",
+                                            error = %e,
+                                            "modem decode error; skipping frame"
+                                        );
                                         continue;
                                     }
                                 }
                             }
                         }
                         Err(e) => {
-                            error!("modem serial read error: {e}");
+                            error!(
+                                operation = "modem serial read",
+                                error = %e,
+                                guidance = "check serial cable connection and port permissions; \
+                                            the gateway will attempt to reconnect",
+                                "modem serial read error"
+                            );
                             break;
                         }
                     }
@@ -291,12 +332,18 @@ impl UsbEspNowTransport {
             Ok(Ok(status)) => Ok(status),
             Ok(Err(_)) => {
                 // Channel closed — slot already consumed by dispatch_message
-                Err(TransportError::Io("status channel closed".into()))
+                Err(TransportError::Io(
+                    "poll status: status channel closed unexpectedly".into(),
+                ))
             }
             Err(_) => {
                 // Timeout — clear the slot so future calls work
                 self.status_slot.lock().await.take();
-                Err(TransportError::Io("STATUS response timeout".into()))
+                Err(TransportError::Io(
+                    "poll status: modem did not respond within 2s; \
+                     check modem health and serial connection"
+                        .into(),
+                ))
             }
         }
     }
@@ -335,15 +382,21 @@ impl UsbEspNowTransport {
             Ok(Ok(ack)) => {
                 if ack != channel {
                     Err(TransportError::Io(format!(
-                        "SET_CHANNEL_ACK mismatch: expected channel {channel}, got {ack}"
+                        "SET_CHANNEL_ACK mismatch: expected channel {channel}, got {ack}; \
+                         modem may have a firmware issue"
                     )))
                 } else {
                     info!(channel, "modem channel changed");
                     Ok(())
                 }
             }
-            Ok(Err(_)) => Err(TransportError::Io("SET_CHANNEL_ACK channel closed".into())),
-            Err(_) => Err(TransportError::Io("SET_CHANNEL_ACK timeout".into())),
+            Ok(Err(_)) => Err(TransportError::Io(format!(
+                "change channel to {channel}: SET_CHANNEL_ACK channel closed unexpectedly"
+            ))),
+            Err(_) => Err(TransportError::Io(format!(
+                "change channel to {channel}: SET_CHANNEL_ACK timeout (2s); \
+                 check modem firmware and serial connection"
+            ))),
         }
     }
 
@@ -376,15 +429,22 @@ impl UsbEspNowTransport {
     // -- internal helpers ---------------------------------------------------
 
     async fn send_encoded(writer: &SharedWriter, msg: &ModemMessage) -> Result<(), TransportError> {
+        let msg_label = modem_msg_label(msg);
         let frame = encode_modem_frame(msg)
-            .map_err(|e| TransportError::Io(format!("encode modem frame: {e}")))?;
+            .map_err(|e| TransportError::Io(format!("encode modem frame ({msg_label}): {e}")))?;
         let mut w = writer.lock().await;
-        w.write_all(&frame)
-            .await
-            .map_err(|e| TransportError::Io(format!("write modem frame: {e}")))?;
-        w.flush()
-            .await
-            .map_err(|e| TransportError::Io(format!("flush modem frame: {e}")))?;
+        w.write_all(&frame).await.map_err(|e| {
+            TransportError::Io(format!(
+                "write modem frame ({msg_label}, {} bytes): {e}; \
+                     check serial connection",
+                frame.len()
+            ))
+        })?;
+        w.flush().await.map_err(|e| {
+            TransportError::Io(format!(
+                "flush modem serial after {msg_label}: {e}; check serial connection"
+            ))
+        })?;
         Ok(())
     }
 
@@ -412,7 +472,10 @@ impl UsbEspNowTransport {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return Err(TransportError::Io(
-                    "modem did not respond with MODEM_READY (1 initial + 2 retries)".into(),
+                    "modem startup failed: modem did not respond with MODEM_READY \
+                     after 15s (1 initial + 2 retries); check that the modem is \
+                     powered and the serial connection is correct"
+                        .into(),
                 ));
             }
 
@@ -426,10 +489,17 @@ impl UsbEspNowTransport {
                     retries += 1;
                     if retries >= 3 {
                         return Err(TransportError::Io(
-                            "modem did not respond with MODEM_READY (1 initial + 2 retries)".into(),
+                            "modem startup failed: modem did not respond with MODEM_READY \
+                             after 15s (1 initial + 2 retries); check that the modem is \
+                             powered and the serial connection is correct"
+                                .into(),
                         ));
                     }
-                    warn!(retry = retries, "modem not ready, resending RESET");
+                    warn!(
+                        operation = "modem startup",
+                        retry = retries,
+                        "modem not ready, resending RESET"
+                    );
                     Self::send_encoded(&writer, &ModemMessage::Reset).await?;
                 }
             }
@@ -450,8 +520,17 @@ impl UsbEspNowTransport {
 
         let ack = tokio::time::timeout(std::time::Duration::from_secs(2), ack_rx)
             .await
-            .map_err(|_| TransportError::Io("SET_CHANNEL_ACK timeout".into()))?
-            .map_err(|_| TransportError::Io("ack channel closed".into()))?;
+            .map_err(|_| {
+                TransportError::Io(format!(
+                    "SET_CHANNEL_ACK timeout (channel {channel}): modem did not respond \
+                     within 2s; check modem firmware and serial connection"
+                ))
+            })?
+            .map_err(|_| {
+                TransportError::Io(format!(
+                    "SET_CHANNEL_ACK channel closed (channel {channel}): internal error"
+                ))
+            })?;
 
         if ack != channel {
             return Err(TransportError::Io(format!(
@@ -738,9 +817,12 @@ async fn dispatch_message(
         }
         ModemMessage::Error(e) => {
             error!(
-                code = e.error_code,
+                operation = "modem error report",
+                error_code = e.error_code,
                 message = ?String::from_utf8_lossy(&e.message),
-                "modem error"
+                guidance = "modem reported an error; pending operations will fail. \
+                            If errors persist, check modem firmware and serial connection",
+                "modem error received from firmware"
             );
             // GW-1103: Error is logged and waiters unblocked so pending
             // operations fail immediately. The reader task continues

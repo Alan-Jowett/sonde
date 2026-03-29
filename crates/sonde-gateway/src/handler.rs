@@ -347,11 +347,19 @@ impl HandlerProcess {
     fn ensure_running(&mut self) -> io::Result<()> {
         if let Some(child) = &mut self.child {
             if let Some(status) = child.try_wait()? {
-                if !status.success() {
+                // GW-1308 AC5: handler exited with code.
+                let code = status.code().unwrap_or(-1);
+                if status.success() {
+                    info!(
+                        command = %self.config.command,
+                        code = code,
+                        "handler exited"
+                    );
+                } else {
                     error!(
                         command = %self.config.command,
-                        exit_code = ?status.code(),
-                        "handler exited with non-zero status"
+                        code = code,
+                        "handler exited"
                     );
                 }
                 self.stdin = None;
@@ -566,13 +574,17 @@ impl HandlerProcess {
         if let Some(mut child) = self.child.take() {
             match child.wait().await {
                 Ok(status) if status.success() => {
-                    debug!(command = %self.config.command, "handler exited cleanly");
+                    info!(
+                        command = %self.config.command,
+                        code = status.code().unwrap_or(0),
+                        "handler exited"
+                    );
                 }
                 Ok(status) => {
                     error!(
                         command = %self.config.command,
-                        status = %status,
-                        "handler exited with error"
+                        code = status.code().unwrap_or(-1),
+                        "handler exited"
                     );
                 }
                 Err(e) => {
@@ -758,8 +770,20 @@ impl HandlerRouter {
         request_id: u64,
     ) -> Option<Vec<u8>> {
         let idx = self.find_handler(program_hash)?;
-        let (_, process_mutex) = &self.handlers[idx];
+        let (config, process_mutex) = &self.handlers[idx];
+
+        // GW-1308 AC2: handler matched with program_hash and command.
+        let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+        info!(
+            program_hash = %ph_hex,
+            command = %config.command,
+            "handler matched"
+        );
+
         let mut process = process_mutex.lock().await;
+
+        // GW-1308 AC3: handler invoked with command.
+        info!(command = %config.command, "handler invoked");
 
         let msg = HandlerMessage::Data {
             request_id,
@@ -775,6 +799,8 @@ impl HandlerRouter {
                 if data.is_empty() {
                     None
                 } else {
+                    // GW-1308 AC4: handler replied with len.
+                    info!(len = data.len(), "handler replied");
                     Some(data)
                 }
             }

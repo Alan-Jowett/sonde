@@ -420,6 +420,21 @@ async fn t1303_modem_frame_debug_logging() {
 /// Find Python 3 executable name.
 fn python_cmd() -> &'static str {
     if cfg!(windows) {
+        for cmd in &["py", "python3", "python"] {
+            if let Ok(output) = std::process::Command::new(cmd)
+                .args(if *cmd == "py" { vec!["-3", "--version"] } else { vec!["--version"] })
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if stdout.starts_with("Python 3") {
+                        return Box::leak(cmd.to_string().into_boxed_str());
+                    }
+                }
+            }
+        }
         "py"
     } else {
         "python3"
@@ -428,7 +443,7 @@ fn python_cmd() -> &'static str {
 
 /// Arguments to pass before the script path to ensure Python 3.
 fn python_args() -> Vec<&'static str> {
-    if cfg!(windows) {
+    if cfg!(windows) && python_cmd() == "py" {
         vec!["-3"]
     } else {
         vec![]

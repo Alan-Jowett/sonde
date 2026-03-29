@@ -1749,3 +1749,7 @@ The `.deb` package SHOULD include a systemd unit file and `postinst` / `prerm` s
 | GW-1306 | Service-mode logging and monitoring | Must |
 | GW-1307 | Error diagnostic observability | Must |
 | GW-1400 | Bounded shutdown time | Must |
+| GW-1500 | Installer PATH registration | Must |
+| GW-1501 | Post-install service registration CLI | Must |
+| GW-1502 | Post-install service unregistration CLI | Must |
+| GW-1503 | Linux package systemd integration | Should |

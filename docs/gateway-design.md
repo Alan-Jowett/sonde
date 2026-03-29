@@ -40,7 +40,7 @@ The gateway is **stateless with respect to replay protection** — active sessio
 
 ## 3  Module architecture
 
-The gateway is composed of ten functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), and BLE Pairing Handler (pairing protocol logic via modem relay). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API and BLE Pairing Handler are described in §13 and §17 respectively.
+The gateway is composed of eleven functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), BLE Pairing Handler (pairing protocol logic via modem relay), and Service Manager (platform service registration and PATH setup). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API, BLE Pairing Handler, and Service Manager are described in §13, §17, and §18 respectively.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -981,7 +981,7 @@ The gateway emits the version string in its first `info!()` log line so that ope
 2. Initialize storage backend.
 3. Load node registry and program library from storage.
 4. Initialize transport (e.g., open ESP-NOW interface, or for USB modem: open serial port → `RESET` → `MODEM_READY` → `SET_CHANNEL`; see §4.2). The channel is read from the database (GW-0808); if no value is persisted, the CLI `--channel` flag seeds the database.
-5. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §18.6).
+5. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §19.6).
 6. Load handler configuration from database and build `HandlerRouter` (GW-1401).
 7. Start gRPC admin API server.
 8. Start handler processes for configured handlers.
@@ -1077,11 +1077,11 @@ After successful registration **or** duplicate detection with matching PSK, the 
 
 The admin API exposes `OpenBlePairing` (server-streaming RPC) to open the registration window and enable BLE advertising, `CloseBlePairing` to close it, `ConfirmBlePairing` for Numeric Comparison passkey confirmation, `ListPhones` to enumerate registered phones, and `RevokePhone` to revoke a phone PSK (GW-1222). See §13 for the full gRPC service definition.
 
-## 19  Installer and service management
+## 18  Installer and service management
 
 This section covers platform packaging (MSI and `.deb`), system PATH registration, and the `install` / `uninstall` CLI subcommands that register (or remove) the gateway as a platform service.
 
-### 19.1  WiX MSI — PATH registration (GW-1500)
+### 18.1  WiX MSI — PATH registration (GW-1500)
 
 The existing `sonde.wxs` already contains a WiX `Environment` element that appends the `bin` directory to the system `PATH`. The element is attached to the `AdminExe` component so that PATH is updated on install and reverted on uninstall:
 
@@ -1099,7 +1099,7 @@ Because `Part="last"` appends rather than replaces, existing PATH entries are pr
 
 The MSI does **not** register a Windows service. Service registration requires operator-specific parameters (`--port`, `--db`, `--master-key-file`) that are not known at install time. Instead, the operator uses `sonde-gateway install` (§18.2) after installation.
 
-### 19.2  `sonde-gateway install` subcommand (GW-1501)
+### 18.2  `sonde-gateway install` subcommand (GW-1501)
 
 The gateway binary exposes an `install` subcommand that registers the gateway as a platform service. The implementation is platform-specific:
 
@@ -1133,19 +1133,17 @@ sudo sonde-gateway install --port /dev/ttyACM0 --db /var/lib/sonde/gateway.db \
 
 1. Validate that the effective UID is 0 (root). Exit with error code 1 if not.
 2. Validate that `--port` is provided.
-3. Write (or update) `/etc/sonde/environment` with:
+3. Write (or update) `SERIAL_PORT` in `/etc/sonde/environment`:
    ```
    SERIAL_PORT=/dev/ttyACM0
-   SONDE_DB=/var/lib/sonde/gateway.db
-   SONDE_KEY_PROVIDER=file
-   SONDE_CHANNEL=1
    ```
+   The systemd unit file hard-codes `--db /var/lib/sonde/gateway.db` and `--key-provider file`, so only `SERIAL_PORT` needs to be set via the environment file.
 4. Verify that `/lib/systemd/system/sonde-gateway.service` exists (shipped by the `.deb` package or manually installed).
 5. Run `systemctl daemon-reload`.
 6. Run `systemctl enable sonde-gateway.service`.
 7. Print success message. The operator must run `systemctl start sonde-gateway` separately (or reboot).
 
-### 19.3  `sonde-gateway uninstall` subcommand (GW-1502)
+### 18.3  `sonde-gateway uninstall` subcommand (GW-1502)
 
 The `uninstall` subcommand reverses the service registration performed by `install`. It does **not** delete the database, master key, or configuration files.
 
@@ -1165,7 +1163,7 @@ The `uninstall` subcommand reverses the service registration performed by `insta
 3. Run `systemctl disable sonde-gateway.service` (ignore errors if not enabled).
 4. Print success message. The environment file at `/etc/sonde/environment` and the systemd unit file are preserved (the `.deb` package owns the unit file; `dpkg -r` removes it).
 
-### 19.4  Linux `.deb` package integration (GW-1503)
+### 18.4  Linux `.deb` package integration (GW-1503)
 
 The `.deb` package (built by `installer/linux/build-deb.sh`) ships:
 
@@ -1174,14 +1172,14 @@ The `.deb` package (built by `installer/linux/build-deb.sh`) ships:
 | `/usr/local/bin/sonde-gateway` | Gateway binary |
 | `/usr/local/bin/sonde-admin` | Admin CLI binary |
 | `/lib/systemd/system/sonde-gateway.service` | systemd unit file |
-| `/etc/sonde/environment` | Default environment (conffile) |
+| `/etc/sonde/environment` | Default environment (conffile; defaults `SERIAL_PORT=/dev/ttyUSB0`) |
 
 **`postinst` script:**
 
 1. Create `sonde` system group and user (if absent).
 2. Add `sonde` to the `dialout` group for serial port access.
 3. Create `/etc/sonde` (root:sonde, mode 750) and `/var/lib/sonde` (sonde:sonde, mode 750).
-4. Run `systemctl daemon-reload && systemctl enable sonde-gateway.service`.
+4. Run `systemctl daemon-reload && systemctl enable --now sonde-gateway.service` to enable and start the service.
 
 **`prerm` script:**
 
@@ -1192,7 +1190,7 @@ The `.deb` package (built by `installer/linux/build-deb.sh`) ships:
 
 The unit runs as the `sonde` user with `SupplementaryGroups=dialout`, reads `SERIAL_PORT` from `EnvironmentFile=/etc/sonde/environment`, and applies security hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/var/lib/sonde`). See `installer/linux/sonde-gateway.service` for the full unit definition.
 
-### 19.5  Configuration file locations
+### 18.5  Configuration file locations
 
 | Platform | Configuration | Database | Master key |
 |---|---|---|---|
@@ -1204,13 +1202,13 @@ The MSI creates `%ProgramData%\sonde\` at install time (via the `ConfigGroup` co
 
 ---
 
-## 18  Handler configuration management
+## 19  Handler configuration management
 
 > **Requirements:** GW-1401 (handler storage), GW-1402 (admin API), GW-1403 (CLI), GW-1404 (live reload), GW-1405 (bootstrap from file), GW-1406 (state export/import).
 
 Handler routing is currently loaded from a YAML file (`--handler-config`). This section specifies database-backed handler configuration with admin API management, live reload, and state bundle integration.
 
-### 18.1  Database schema
+### 19.1  Database schema
 
 ```sql
 CREATE TABLE IF NOT EXISTS handlers (
@@ -1225,7 +1223,7 @@ CREATE TABLE IF NOT EXISTS handlers (
 
 `args` is stored as a JSON array of strings (e.g., `["--verbose", "--port", "8080"]`). An empty array is stored as `"[]"`.
 
-### 18.2  Handler record
+### 19.2  Handler record
 
 ```rust
 pub struct HandlerRecord {
@@ -1240,7 +1238,7 @@ Conversion to `HandlerConfig` (§9.1):
 - `"*"` → `ProgramMatcher::Any`
 - 64-char hex → `ProgramMatcher::Hash(decoded_bytes)`
 
-### 18.3  Storage trait additions
+### 19.3  Storage trait additions
 
 ```rust
 #[async_trait]
@@ -1260,7 +1258,7 @@ pub trait Storage: Send + Sync {
 
 The `SqliteStorage` implementation uses `INSERT INTO handlers ... ON CONFLICT DO NOTHING` for `add_handler` (checking `changes()` to detect duplicates) and `DELETE FROM handlers WHERE program_hash = ?` for `remove_handler`.
 
-### 18.4  Admin API additions
+### 19.4  Admin API additions
 
 The gRPC service definition (§13.1) gains three new RPCs:
 
@@ -1313,12 +1311,12 @@ sonde-admin handler remove <program-hash>
 sonde-admin handler list
 ```
 
-### 18.5  Handler live reload
+### 19.5  Handler live reload
 
 The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<RwLock<HandlerRouter>>`). When `AddHandler` or `RemoveHandler` succeeds at the storage layer:
 
 1. The `AdminService` calls `list_handlers()` on the storage trait to get the current handler set.
-2. It converts each `HandlerRecord` to a `HandlerConfig` (§18.2).
+2. It converts each `HandlerRecord` to a `HandlerConfig` (§19.2).
 3. It acquires a write lock on the `HandlerRouter` and calls `reload(new_configs)`.
 4. `HandlerRouter::reload` diffs the old and new config sets:
    - **Added handlers** are inserted into the routing table (process spawned lazily on first message).
@@ -1329,7 +1327,7 @@ This approach avoids disrupting in-flight requests to unaffected handlers.
 
 > **Shared state note (D-485 extension):** The `HandlerRouter` reference shared between the admin API and the engine frame loop MUST be the same `Arc<RwLock<HandlerRouter>>` instance. The frame loop acquires a read lock for routing; the admin API acquires a write lock only during reload.
 
-### 18.6  Bootstrap from file
+### 19.6  Bootstrap from file
 
 On startup, if `--handler-config <path>` is provided (GW-1405):
 
@@ -1341,7 +1339,7 @@ On startup, if `--handler-config <path>` is provided (GW-1405):
 
 This merge-on-startup strategy means the YAML file acts as a seed — it populates the database on first run but does not overwrite subsequent admin API changes.
 
-### 18.7  State export/import
+### 19.7  State export/import
 
 The state bundle (§13.2, `ExportState` / `ImportState`) is extended to include handler records (GW-1406).
 
@@ -1360,4 +1358,4 @@ The top-level state bundle gains a new key for the handlers array.
 
 **Import:** `import_state()` restores handler records atomically within the same transaction that replaces nodes and programs. If the incoming bundle contains a handlers array, all existing handlers are deleted and replaced. If the handlers key is absent (bundle from older gateway version), existing handlers are preserved (no-op for backwards compatibility).
 
-After import, the `AdminService` triggers a handler live reload (§18.5) so the `HandlerRouter` reflects the imported configuration.
+After import, the `AdminService` triggers a handler live reload (§19.5) so the `HandlerRouter` reflects the imported configuration.

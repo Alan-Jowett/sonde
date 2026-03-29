@@ -2331,8 +2331,8 @@ A configurable stub handler process (or in-process mock) that:
 2. Assert: the `sonde` user and group exist (`getent passwd sonde` succeeds).
 3. Assert: the `sonde` user is a member of the `dialout` group.
 4. Assert: `/lib/systemd/system/sonde-gateway.service` exists.
-5. Assert: `/etc/sonde/environment` exists and contains `SERIAL_PORT=`.
-6. Edit `/etc/sonde/environment` to set the correct serial port.
+5. Assert: `/etc/sonde/environment` exists and contains `SERIAL_PORT=/dev/ttyUSB0`.
+6. Edit `/etc/sonde/environment` to set the correct serial port if it differs from `/dev/ttyUSB0`.
 7. Run `systemctl start sonde-gateway`.
 8. Assert: the service starts and the gateway log contains `"modem transport ready"`.
 9. Remove the package: `sudo dpkg -r sonde`.
@@ -2433,13 +2433,13 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1303 | T-1304 |
 | GW-1305 | T-1305a, T-1305b |
 | GW-1400 | *(verified by integration/manual testing)* |
-| GW-1500 | T-1500 |
-| GW-1501 | T-1501, T-1503 |
-| GW-1502 | T-1502, T-1503 |
-| GW-1503 | T-1504 |
 | GW-1401 | T-1400, T-1402 |
 | GW-1402 | T-1401, T-1407 |
 | GW-1403 | *(verified via T-1401 — CLI wraps gRPC)* |
 | GW-1404 | T-1403, T-1404 |
 | GW-1405 | T-1405, T-1405a |
 | GW-1406 | T-1406, T-1406a |
+| GW-1500 | T-1500 |
+| GW-1501 | T-1501, T-1503 |
+| GW-1502 | T-1502, T-1503 |
+| GW-1503 | T-1504 |

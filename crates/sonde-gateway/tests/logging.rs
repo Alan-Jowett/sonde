@@ -401,3 +401,348 @@ async fn t1303_modem_frame_debug_logging() {
     assert!(logs_contain("peer_mac=[170, 187, 204, 221, 238, 255]"));
     assert!(logs_contain("len=11"));
 }
+<<<<<<< HEAD
+=======
+
+// ── T-1308  APP_DATA handler pipeline logging ──────────────────────────
+
+/// Find Python 3 executable name.
+fn python_cmd() -> &'static str {
+    if cfg!(windows) {
+        "py"
+    } else {
+        "python3"
+    }
+}
+
+/// Arguments to pass before the script path to ensure Python 3.
+fn python_args() -> Vec<&'static str> {
+    if cfg!(windows) {
+        vec!["-3"]
+    } else {
+        vec![]
+    }
+}
+
+/// Check if Python 3 is available. Returns false if not installed or not Python 3.
+fn python_available() -> bool {
+    let mut cmd = std::process::Command::new(python_cmd());
+    for arg in python_args() {
+        cmd.arg(arg);
+    }
+    match cmd
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                return false;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stdout.starts_with("Python 3") || stderr.starts_with("Python 3")
+        }
+        Err(_) => false,
+    }
+}
+
+macro_rules! require_python {
+    () => {
+        if !python_available() {
+            panic!(
+                "Python 3 not available: required for this integration test. \
+                 Install Python 3, run tests without the `python-tests` feature \
+                 (omit `--features python-tests`), or skip this test via \
+                 `cargo test -- --skip <test-name>`."
+            );
+        }
+    };
+}
+
+/// Echo handler script for pipeline logging test.
+const ECHO_HANDLER_LOGGING_PY: &str = r#"
+import sys, struct
+
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
+def read_msg():
+    raw = read_exact(4)
+    length = struct.unpack('>I', raw)[0]
+    data = read_exact(length)
+    return data
+
+def write_msg(payload):
+    sys.stdout.buffer.write(struct.pack('>I', len(payload)))
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
+
+def decode_cbor_map(data):
+    result = {}
+    idx = 0
+    if data[idx] & 0xe0 != 0xa0 and data[idx] != 0xbf:
+        raise ValueError(f"expected map, got {data[idx]:#x}")
+    if data[idx] == 0xbf:
+        idx += 1
+        while data[idx] != 0xff:
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        idx += 1
+    else:
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+    return result
+
+def decode_item(data, idx):
+    major = (data[idx] >> 5) & 0x07
+    info = data[idx] & 0x1f
+    idx += 1
+    if major == 0:
+        val, idx = decode_uint(info, data, idx)
+        return val, idx
+    elif major == 2:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length], idx + length
+    elif major == 3:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length].decode('utf-8'), idx + length
+    elif major == 5:
+        count, idx = decode_uint(info, data, idx)
+        m = {}
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            m[k] = v
+        return m, idx
+    else:
+        raise ValueError(f"unsupported major type {major}")
+
+def decode_uint(info, data, idx):
+    if info < 24:
+        return info, idx
+    elif info == 24:
+        return data[idx], idx + 1
+    elif info == 25:
+        return struct.unpack('>H', data[idx:idx+2])[0], idx + 2
+    elif info == 26:
+        return struct.unpack('>I', data[idx:idx+4])[0], idx + 4
+    elif info == 27:
+        return struct.unpack('>Q', data[idx:idx+8])[0], idx + 8
+    else:
+        raise ValueError(f"unsupported additional info {info}")
+
+def encode_uint(major, val):
+    major_bits = major << 5
+    if val < 24:
+        return bytes([major_bits | val])
+    elif val < 256:
+        return bytes([major_bits | 24, val])
+    elif val < 65536:
+        return bytes([major_bits | 25]) + struct.pack('>H', val)
+    elif val < 2**32:
+        return bytes([major_bits | 26]) + struct.pack('>I', val)
+    else:
+        return bytes([major_bits | 27]) + struct.pack('>Q', val)
+
+def encode_cbor_map(pairs):
+    out = encode_uint(5, len(pairs))
+    for k, v in pairs:
+        out += encode_item(k)
+        out += encode_item(v)
+    return out
+
+def encode_item(val):
+    if isinstance(val, int):
+        return encode_uint(0, val)
+    elif isinstance(val, bytes):
+        return encode_uint(2, len(val)) + val
+    elif isinstance(val, str):
+        encoded = val.encode('utf-8')
+        return encode_uint(3, len(encoded)) + encoded
+    else:
+        raise ValueError(f"unsupported type {type(val)}")
+
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:
+        continue
+    break
+
+request_id = msg[2]
+payload_data = msg[5]
+
+reply = encode_cbor_map([
+    (1, 0x81),
+    (2, request_id),
+    (3, payload_data),
+])
+write_msg(reply)
+"#;
+
+/// T-1308: Validates GW-1308 — APP_DATA handler pipeline logging.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+#[traced_test]
+async fn t1308_app_data_handler_pipeline_logging() {
+    use sonde_gateway::handler::{HandlerConfig, HandlerRouter, ProgramMatcher};
+    use std::io::Write;
+
+    require_python!();
+
+    // Write echo handler script.
+    let tmp = tempfile::tempdir().unwrap();
+    let script_path = tmp.path().join("echo_log.py");
+    {
+        let mut f = std::fs::File::create(&script_path).unwrap();
+        f.write_all(ECHO_HANDLER_LOGGING_PY.as_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+
+    let cmd = python_cmd();
+    let mut args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
+    args.push("-u".to_string());
+    args.push(script_path.to_string_lossy().into_owned());
+
+    let program_hash = vec![
+        0xAEu8, 0xC3, 0x69, 0xB1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+
+    let config = HandlerConfig {
+        matchers: vec![ProgramMatcher::Hash(program_hash.clone())],
+        command: cmd.to_string(),
+        args,
+        reply_timeout: None,
+    };
+    let router = Arc::new(HandlerRouter::new(vec![config]));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = Gateway::new_with_handler(storage.clone(), Duration::from_secs(30), router);
+
+    let node = TestNode::new("node-log-1308", 0x1308, [0x37u8; 32]);
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(program_hash.clone());
+    record.current_program_hash = Some(program_hash.clone());
+    storage.upsert_node(&record).await.unwrap();
+
+    // WAKE to establish session.
+    let frame = node.build_wake(5000, 1, &program_hash, 3300);
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
+    assert!(resp.is_some(), "expected COMMAND response");
+
+    let (_hdr, msg) = decode_command(&resp.unwrap(), &node.psk);
+    let starting_seq = match msg {
+        GatewayMessage::Command { starting_seq, .. } => starting_seq,
+        other => panic!("expected Command, got {:?}", other),
+    };
+
+    // Send APP_DATA.
+    let blob = vec![0x01, 0x02, 0x03];
+    let app_frame = node.build_app_data(starting_seq, &blob);
+    let resp = gw
+        .process_frame(&app_frame, node.peer_address())
+        .await
+        .expect("expected APP_DATA_REPLY");
+
+    // Allow handler process to exit and logs to flush.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Send a second APP_DATA to trigger ensure_running() → try_wait(), which
+    // detects that the prior single-shot handler has exited and emits the
+    // "handler exited" log (GW-1308 AC5). ensure_running() may then spawn a new
+    // handler and produce a reply, but this test ignores the reply and only
+    // asserts on the emitted logs.
+    let app_frame2 = node.build_app_data(starting_seq + 1, &blob);
+    let _ = gw.process_frame(&app_frame2, node.peer_address()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // GW-1308 AC1: APP_DATA received with node_id, program_hash, len.
+    assert!(
+        logs_contain("APP_DATA received"),
+        "expected APP_DATA received log"
+    );
+    assert!(logs_contain("node_id=node-log-1308"));
+    assert!(logs_contain("aec369b1"));
+    assert!(logs_contain("len=3"));
+
+    // GW-1308 AC2: handler matched with program_hash and command (structured fields).
+    assert!(
+        logs_contain("handler matched"),
+        "expected handler matched log"
+    );
+    assert!(
+        logs_contain("program_hash="),
+        "expected handler matched log to include program_hash field"
+    );
+    assert!(
+        logs_contain("command="),
+        "expected handler matched log to include command field"
+    );
+
+    // GW-1308 AC3: handler invoked with command (structured field).
+    assert!(
+        logs_contain("handler invoked"),
+        "expected handler invoked log"
+    );
+    assert!(
+        logs_contain(&format!("command={}", cmd)),
+        "expected handler invoked log with structured command field"
+    );
+
+    // GW-1308 AC4: handler replied with len (structured field).
+    assert!(
+        logs_contain("handler replied"),
+        "expected handler replied log"
+    );
+    assert!(
+        logs_contain(&format!("len={}", blob.len())),
+        "expected handler replied log with structured len field"
+    );
+
+    // GW-1308 AC5: handler exited with code (structured field).
+    assert!(
+        logs_contain("handler exited"),
+        "expected handler exited log"
+    );
+    assert!(
+        logs_contain("code="),
+        "expected handler exited log to include code field"
+    );
+
+    // Verify the reply was correct.
+    let decoded = sonde_protocol::decode_frame(&resp).unwrap();
+    assert!(sonde_protocol::verify_frame(
+        &decoded,
+        &node.psk,
+        &RustCryptoHmac
+    ));
+    let reply_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+    match reply_msg {
+        GatewayMessage::AppDataReply { blob: reply_blob } => {
+            assert_eq!(reply_blob, blob);
+        }
+        other => panic!("expected AppDataReply, got {:?}", other),
+    }
+}
+
+fn decode_command(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
+    let decoded = sonde_protocol::decode_frame(raw).unwrap();
+    assert!(sonde_protocol::verify_frame(&decoded, psk, &RustCryptoHmac));
+    let msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+    (decoded.header, msg)
+}
+>>>>>>> a243124 (fix(test): use require_python!() macro for T-1308 test)

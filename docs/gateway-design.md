@@ -985,22 +985,23 @@ The gateway emits the version string in its first `info!()` log line so that ope
 A 5-second shutdown deadline is enforced by a watchdog thread. The
 implementation lives in `bin/gateway.rs` and works as follows:
 
-1. Before starting runtime teardown, the caller (`main` for console mode,
-   `service_entry` for Windows service mode) starts a **force-exit
-   watchdog** on a separate OS thread using `std::thread::spawn`.
-2. The main thread then executes the graceful shutdown sequence
-   (steps 1–6 above) without wrapping it in a `tokio::time::timeout`:
-   it stops accepting new frames, waits (with its own internal timeouts)
-   for in-flight sessions to complete, terminates handler processes,
-   flushes storage, closes transports, and returns.
+1. The main thread executes the graceful shutdown sequence (steps 1–6
+   above) inside `run_gateway`. This includes stopping new frames,
+   waiting (with its own internal timeouts) for in-flight sessions to
+   complete, terminating handler processes, flushing storage, closing
+   transports, and returning.
+2. After `run_gateway` returns (i.e., after "gateway stopped" is logged),
+   the caller (`main` for console mode, `service_entry` for Windows
+   service mode) starts a **force-exit watchdog** on a separate OS thread
+   using `std::thread::spawn`.
 3. The watchdog thread sleeps for 5 seconds. If the process has not
-   exited normally by then — for example because a task or `Drop` impl
-   is stuck (such as a serial port `Drop` blocked on pending I/O) —
-   the watchdog logs a `WARN`-level message and then calls
-   `std::process::exit(0)` to force-terminate the process.
-4. If shutdown completes before the 5-second deadline, the process exits
-   via the normal return path and the watchdog thread simply terminates
-   when the process exits.
+   exited normally by then — for example because a `Drop` impl is stuck
+   (such as a serial port `Drop` blocked on pending I/O) or the tokio
+   runtime teardown hangs — the watchdog logs a `WARN`-level message and
+   then calls `std::process::exit(0)` to force-terminate the process.
+4. If runtime teardown completes before the 5-second deadline, the
+   process exits via the normal return path and the watchdog thread
+   simply terminates when the process exits.
 
 This ensures the process never hangs after logging "gateway stopped",
 regardless of serial port state (Issue #551).

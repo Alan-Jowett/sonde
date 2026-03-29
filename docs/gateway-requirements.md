@@ -968,12 +968,12 @@ The gateway SHOULD handle multiple simultaneous node wake events without seriali
 **Source:** Issue #551
 
 **Description:**  
-The gateway MUST exit cleanly within a bounded time after receiving a shutdown signal (Ctrl-C in console mode, `SERVICE_CONTROL_STOP` / `SERVICE_CONTROL_SHUTDOWN` in Windows service mode). If the graceful shutdown sequence (§16 of the design document) does not complete within 5 seconds, the gateway MUST force-exit via `std::process::exit(0)`. This prevents the process from hanging indefinitely when serial I/O, transport `Drop` implementations, or background tasks are blocked on a faulted USB-CDC device.
+The gateway MUST initiate its graceful shutdown sequence promptly after receiving a shutdown signal (Ctrl-C in console mode, `SERVICE_CONTROL_STOP` / `SERVICE_CONTROL_SHUTDOWN` in Windows service mode). After the graceful shutdown sequence (§16 of the design document) has completed and the main gateway task (`run_gateway`) has returned (i.e., after the "gateway stopped" log is emitted), the gateway MUST either exit normally within 5 seconds or force-exit via `std::process::exit(0)`. This prevents the process from hanging indefinitely during final resource teardown when serial I/O, transport `Drop` implementations, or background tasks are blocked on a faulted USB-CDC device.
 
 **Acceptance criteria:**
 
-1. After a shutdown signal, the gateway process terminates within 5 seconds even if the serial port is in an error state (e.g., OS error 22).
-2. During normal operation (no serial errors), the gateway still shuts down gracefully — the 5-second timeout is only a backstop.
+1. After the graceful shutdown sequence completes and "gateway stopped" is logged, the gateway process terminates within 5 seconds even if the serial port is in an error state (e.g., OS error 22).
+2. During normal operation (no serial errors), the gateway still shuts down gracefully — the 5-second timeout is only a backstop on final teardown.
 3. The force-exit path logs a warning before calling `std::process::exit(0)`.
 4. The behavior is identical in console mode and Windows service mode.
 

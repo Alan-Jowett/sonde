@@ -2108,13 +2108,14 @@ A configurable stub handler process (or in-process mock) that:
 2. Call `add_handler` with `program_hash` = `"*"`, `command` = `"python"`, `args` = `["handler.py"]`, `working_dir` = `None`.
 3. Assert: `list_handlers` returns one record matching the inserted values.
 4. Call `add_handler` with the same `program_hash` `"*"`.
-5. Assert: returns `StorageError::AlreadyExists`.
-6. Call `add_handler` with a valid 64-char hex `program_hash`.
-7. Assert: `list_handlers` returns two records.
-8. Call `remove_handler` with the hex `program_hash`.
-9. Assert: returns `true` and `list_handlers` returns one record.
-10. Call `remove_handler` with a non-existent `program_hash`.
-11. Assert: returns `false`.
+5. Assert: returns `Ok(false)` (duplicate detected without creating a new row, consistent with the `insert_node_if_not_exists` pattern).
+6. Assert: `list_handlers` still returns one record.
+7. Call `add_handler` with a valid 64-char hex `program_hash`.
+8. Assert: returns `Ok(true)` and `list_handlers` returns two records.
+9. Call `remove_handler` with the hex `program_hash`.
+10. Assert: returns `true` and `list_handlers` returns one record.
+11. Call `remove_handler` with a non-existent `program_hash`.
+12. Assert: returns `false`.
 
 ---
 
@@ -2126,10 +2127,10 @@ A configurable stub handler process (or in-process mock) that:
 1. Start gateway with no handlers configured.
 2. Call `ListHandlers` via gRPC.
 3. Assert: response contains zero handlers.
-4. Call `AddHandler` with `program_hash` = `"*"`, `command` = `"echo"`.
+4. Call `AddHandler` with `program_hash` = `"*"`, `command` = `"echo"`, `reply_timeout_ms` = `5000`.
 5. Assert: success response.
 6. Call `ListHandlers`.
-7. Assert: response contains one handler with matching fields.
+7. Assert: response contains one handler with matching fields (including `reply_timeout_ms` = `5000`).
 8. Call `AddHandler` with the same `program_hash` = `"*"`.
 9. Assert: gRPC status `ALREADY_EXISTS`.
 10. Call `RemoveHandler` with `program_hash` = `"*"`.
@@ -2194,7 +2195,7 @@ A configurable stub handler process (or in-process mock) that:
 5. Call `RemoveHandler` for the hex-hash entry.
 6. Restart gateway with `--handler-config handlers.yaml` and the same database.
 7. Call `ListHandlers`.
-8. Assert: only the catch-all handler is present (the hex-hash entry was re-imported from YAML) and the catch-all was not duplicated.
+8. Assert: both handlers are present (the hex-hash entry was re-imported from YAML) and the catch-all was not duplicated.
 
 ---
 
@@ -2217,12 +2218,12 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-1406
 
 **Procedure:**
-1. Start gateway A. Add two handlers via `AddHandler`.
+1. Start gateway A. Add two handlers via `AddHandler`, configuring each with a distinct, non-default `reply_timeout_ms` value (for example, 5000 and 30000).
 2. Call `ExportState` with a test passphrase.
 3. Start gateway B with an empty database and different handlers.
 4. Call `ImportState` on gateway B with the bundle from step 2.
 5. Call `ListHandlers` on gateway B.
-6. Assert: gateway B has exactly the two handlers from gateway A (the pre-existing handlers were replaced).
+6. Assert: gateway B has exactly the two handlers from gateway A (the pre-existing handlers were replaced), and each handler's `reply_timeout_ms` matches the value configured in step 1 (non-default timeouts round-trip through `ExportState`/`ImportState`).
 
 ---
 
@@ -2343,101 +2344,9 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-## Appendix A  Test-to-requirement traceability
-
-| Requirement | Test(s) |
-|---|---|
-| GW-0100 | T-0100 |
-| GW-0101 | T-0101, T-0102 |
-| GW-0102 | T-0103, T-0104 |
-| GW-0103 | T-0105 |
-| GW-0104 | T-0106 |
-| GW-0200 | T-0200, T-0205 |
-| GW-0201 | T-0201, T-0205 |
-| GW-0202 | T-0202, T-0205, T-0206 |
-| GW-0203 | T-0203, T-0205 |
-| GW-0204 | T-0204, T-0205 |
-| GW-0300 | T-0300, T-0303 |
-| GW-0301 | T-0301 |
-| GW-0302 | T-0302 |
-| GW-0400 | T-0400, T-0401 |
-| GW-0401 | T-0402, T-0403, T-0404 |
-| GW-0402 | T-0405, T-0406 |
-| GW-0403 | T-0407 |
-| GW-0404 | T-0408, T-0409 |
-| GW-0405 | T-0411, T-0412 |
-| GW-0500 | T-0500 |
-| GW-0501 | T-0501, T-0502, T-0503 |
-| GW-0502 | T-0504, T-0514 |
-| GW-0503 | T-0505, T-0506, T-0515, T-0516 |
-| GW-0504 | T-0507, T-0508, T-0509 |
-| GW-0505 | T-0500 |
-| GW-0506 | T-0510, T-0511 |
-| GW-0507 | T-0512, T-0517 |
-| GW-0508 | T-0513 |
-| GW-0600 | T-0600, T-0601, T-0602 |
-| GW-0601 | T-0602, T-0603 |
-| GW-0601a | T-0610 |
-| GW-0601b | T-0603a, T-0603b, T-0603c, T-0603d, T-0603e, T-0603f, T-0603g, T-0603h, T-0603i, T-0603j, T-0603k |
-| GW-0602 | T-0604, T-0605, T-0606, T-0607, T-0607a, T-1004 |
-| GW-0603 | T-0608 |
-| GW-0700 | T-0700 |
-| GW-0701 | T-0201, T-0701 |
-| GW-0702 | T-0702, T-0705 |
-| GW-0703 | T-0703, T-0704 |
-| GW-0705 | T-0802, T-0706 |
-| GW-0800 | T-0800, T-0811 |
-| GW-0801 | T-0801, T-0802 |
-| GW-0802 | T-0803, T-0804, T-0805 |
-| GW-0803 | T-0805, T-0806, T-0807, T-0808 |
-| GW-0804 | T-0809 |
-| GW-0805 | T-0810, T-1005b |
-| GW-0806 | T-0812, T-0816, T-0817 |
-| GW-0807 | T-0813, T-0814, T-0815 |
-| GW-0808 | T-0815a, T-0815b, T-0815c, T-0815d, T-0815e |
-| GW-1000 | T-1000 |
-| GW-1001 | T-1002, T-1005, T-1005b |
-| GW-1002 | T-0609 |
-| GW-1003 | T-1003 |
-| GW-1004 | T-1001 |
-| GW-1100 | T-1100, T-1101, T-1102, T-1108 |
-| GW-1101 | T-1103, T-1104, T-1108 |
-| GW-1102 | T-1105, T-1106 |
-| GW-1103 | T-1107, T-1109 |
-| GW-1200 | T-1200 |
-| GW-1201 | T-1201 |
-| GW-1202 | T-1202 |
-| GW-1203 | T-1223 |
-| GW-1204 | T-1224 |
-| GW-1205 | T-1225 |
-| GW-1206 | T-1203, T-1204 |
-| GW-1207 | T-1205 |
-| GW-1208 | T-1206, T-1226 |
-| GW-1209 | T-1207 |
-| GW-1210 | T-1208 |
-| GW-1211 | T-1209 |
-| GW-1212 | T-1210, T-1211 |
-| GW-1213 | T-1212, T-1213 |
-| GW-1214 | T-1214 |
-| GW-1215 | T-1215 |
-| GW-1216 | T-1216 |
-| GW-1217 | T-1217 |
-| GW-1218 | T-1218 |
-| GW-1219 | T-1219 |
-| GW-1220 | T-1211, T-1213, T-1214, T-1215, T-1216, T-1217 |
-| GW-1221 | T-1220 |
-| GW-1222 | T-1221, T-1222 |
-| GW-1223 | T-1227 |
-| GW-1224 | T-1228 |
-| GW-1300 | T-1300, T-1301, T-1302 |
-| GW-1301 | *(verified by integration/manual testing)* |
-| GW-1302 | T-1303 |
-| GW-1303 | T-1304 |
-| GW-1305 | T-1305a, T-1305b |
-| GW-1400 | *(verified by integration/manual testing)* |
 | GW-1401 | T-1400, T-1402 |
 | GW-1402 | T-1401, T-1407 |
-| GW-1403 | *(verified via T-1401 — CLI wraps gRPC)* |
+| GW-1403 | *(validated via manual CLI UX validation procedure)* |
 | GW-1404 | T-1403, T-1404 |
 | GW-1405 | T-1405, T-1405a |
 | GW-1406 | T-1406, T-1406a |

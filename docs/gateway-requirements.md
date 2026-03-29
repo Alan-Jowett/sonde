@@ -1663,6 +1663,112 @@ The `.deb` package SHOULD include a systemd unit file and `postinst` / `prerm` s
 
 ---
 
+## 14  Handler configuration management
+
+### GW-1401  Handler configuration storage
+
+**Priority:** Must  
+**Source:** Issue #540
+
+**Description:**  
+The gateway MUST store handler routing configuration in the SQLite database rather than relying solely on a YAML file at runtime. Each handler record consists of a `program_hash` matcher (a specific hex-encoded SHA-256 hash or the wildcard `"*"`), a `command` (executable path), optional `args` (JSON-encoded string array), an optional `working_dir` (working directory for the spawned process), and an optional `reply_timeout_ms` (per-handler reply timeout in milliseconds; `NULL` means use the gateway default). The database is the authoritative source of handler configuration after startup.
+
+**Acceptance criteria:**
+
+1. A `handlers` table exists in the SQLite database with columns for `program_hash`, `command`, `args`, `working_dir`, and `reply_timeout_ms`.
+2. Each row uniquely identifies a handler by its `program_hash` value (including `"*"` for catch-all).
+3. Handler records persist across gateway restarts.
+4. The `Storage` trait exposes `add_handler`, `remove_handler`, and `list_handlers` methods.
+
+---
+
+### GW-1402  Admin API — handler management
+
+**Priority:** Must  
+**Source:** Issue #540
+
+**Description:**  
+The admin gRPC API MUST expose RPCs for managing handler routing configuration: `AddHandler` to register a new handler, `RemoveHandler` to delete a handler by `program_hash`, and `ListHandlers` to enumerate all configured handlers. `AddHandler` MUST reject duplicate `program_hash` values with `ALREADY_EXISTS`. `RemoveHandler` MUST return `NOT_FOUND` if no handler matches the given `program_hash`.
+
+**Acceptance criteria:**
+
+1. `AddHandler` accepts `program_hash`, `command`, `args`, `working_dir`, and `reply_timeout_ms` and persists the handler to the database.
+2. `AddHandler` returns `ALREADY_EXISTS` if a handler with the same `program_hash` is already registered.
+3. `RemoveHandler` accepts a `program_hash` and deletes the matching handler from the database.
+4. `RemoveHandler` returns `NOT_FOUND` if no handler matches.
+5. `ListHandlers` returns all registered handlers with their full configuration (including `reply_timeout_ms` when set).
+
+---
+
+### GW-1403  CLI — handler management
+
+**Priority:** Must  
+**Source:** Issue #540
+
+**Description:**  
+The `sonde-admin` CLI MUST expose subcommands for handler management: `handler add`, `handler remove`, and `handler list`. These commands wrap the corresponding admin API RPCs (GW-1402).
+
+**Acceptance criteria:**
+
+1. `sonde-admin handler add <program-hash> <command> [args...]` registers a new handler. The `program_hash` is `"*"` for catch-all or a 64-character hex string.
+2. `sonde-admin handler add` supports `--working-dir <path>` to set the handler's working directory.
+3. `sonde-admin handler add` supports `--reply-timeout <ms>` to set the per-handler reply timeout in milliseconds.
+4. `sonde-admin handler remove <program-hash>` removes the handler with the specified `program_hash`.
+5. `sonde-admin handler list` displays all configured handlers in a human-readable table (or JSON with `--format json`).
+
+---
+
+### GW-1404  Handler live reload
+
+**Priority:** Must  
+**Source:** Issue #540
+
+**Description:**  
+When a handler is added or removed via the admin API, the gateway MUST update its in-memory `HandlerRouter` immediately without requiring a restart. Adding a handler makes it available for routing on the next `APP_DATA` frame. Removing a handler terminates the associated handler process (if running) and removes it from the routing table.
+
+**Acceptance criteria:**
+
+1. After `AddHandler` succeeds, subsequent `APP_DATA` frames matching the new handler's `program_hash` are routed to the new handler.
+2. After `RemoveHandler` succeeds, subsequent `APP_DATA` frames matching the removed handler's `program_hash` are no longer routed (or fall through to a catch-all, if one exists).
+3. If the removed handler has a running process, the gateway MUST first request a graceful shutdown of the process and, if it does not exit within a configured timeout, MUST forcibly terminate it (e.g., `SIGTERM` then `SIGKILL` on POSIX, or the platform-equivalent graceful-then-forced termination on Windows) before removing the handler from the routing table.
+4. Live reload does not disrupt in-flight requests to other handlers.
+
+---
+
+### GW-1405  Handler bootstrap from file
+
+**Priority:** Should  
+**Source:** Issue #540
+
+**Description:**  
+The gateway SHOULD support a `--handler-config <path>` CLI flag that imports handler configuration from a YAML file on startup. Entries from the file are merged into the database: new `program_hash` values are inserted, existing entries are left unchanged. The database remains the authoritative source after bootstrap. This provides a convenient initial-setup path and supports infrastructure-as-code workflows where a configuration file is deployed alongside the gateway.
+
+**Acceptance criteria:**
+
+1. On startup with `--handler-config handlers.yaml`, each handler entry in the YAML file is inserted into the database if no handler with the same `program_hash` already exists.
+2. Existing handler entries in the database are not overwritten by the YAML file.
+3. If the YAML file contains invalid entries (e.g., malformed `program_hash`), the gateway logs a warning for each invalid entry and continues processing valid ones.
+4. The gateway starts successfully even if `--handler-config` is not provided and no handlers exist in the database.
+
+---
+
+### GW-1406  State export/import — handler configuration
+
+**Priority:** Should  
+**Source:** Issue #540
+
+**Description:**  
+The state export bundle (GW-0805, GW-1001) SHOULD include handler routing configuration. On import, handler records from the bundle replace all existing handlers in the database atomically, consistent with the node and program replacement behavior. The export format MUST include `reply_timeout_ms` when set, preserving per-handler timeouts through the export/import cycle.
+
+**Acceptance criteria:**
+
+1. `ExportState` includes all handler records (including `working_dir` and `reply_timeout_ms` when set) in the encrypted state bundle.
+2. `ImportState` restores handler records from the bundle, replacing any existing handlers in a single transaction.
+3. A state bundle exported from one gateway and imported into another produces an identical handler configuration (round-trip fidelity), including per-handler `reply_timeout_ms` values.
+4. If the imported bundle contains no handler records (e.g., exported from an older gateway version), the existing handlers in the target database are preserved.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1755,6 +1861,12 @@ The `.deb` package SHOULD include a systemd unit file and `postinst` / `prerm` s
 | GW-1306 | Service-mode logging and monitoring | Must |
 | GW-1307 | Error diagnostic observability | Must |
 | GW-1400 | Bounded shutdown time | Must |
+| GW-1401 | Handler configuration storage | Must |
+| GW-1402 | Admin API — handler management | Must |
+| GW-1403 | CLI — handler management | Must |
+| GW-1404 | Handler live reload | Must |
+| GW-1405 | Handler bootstrap from file | Should |
+| GW-1406 | State export/import — handler configuration | Should |
 | GW-1500 | Installer PATH registration | Must |
 | GW-1501 | Installer service registration with COM port auto-detect | Must |
 | GW-1502 | Post-install service unregistration CLI | Must |

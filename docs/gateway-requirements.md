@@ -1602,21 +1602,27 @@ The Windows MSI installer MUST add the `bin` directory (default `%ProgramFiles%\
 
 ---
 
-### GW-1501  Post-install service registration CLI
+### GW-1501  Installer service registration with COM port auto-detect
 
 **Priority:** Must  
 **Source:** Issue #524
 
 **Description:**  
-The `sonde-gateway` binary MUST support a `sonde-gateway install` subcommand that registers the gateway as a platform service (Windows SCM service or Linux systemd unit). The command accepts `--port`, `--db`, `--key-provider`, `--master-key-file`, and `--channel` parameters that are persisted into the service configuration. On Windows, the service is registered with the Service Control Manager using `SERVICE_AUTO_START`. On Linux, the command writes an environment file to `/etc/sonde/environment` and enables the systemd unit.
+The Windows MSI installer MUST include a custom dialog page that collects the modem COM port and registers the gateway as a Windows service during installation. The dialog SHOULD auto-detect the ESP32-S3 modem by scanning for USB devices matching VID `303A` / PID `1001` and pre-populating the COM port field. If no device is detected, the operator enters the port manually. The installer uses sensible defaults for all other parameters: database at `%ProgramData%\sonde\gateway.db`, master key at `%ProgramData%\sonde\master-key.hex`, key provider `file`, channel `1`. The service is registered with `SERVICE_AUTO_START` so the gateway starts on boot.
+
+The `sonde-gateway install` / `sonde-gateway uninstall` CLI subcommands remain available as a fallback for headless, scripted, or non-Windows deployments.
 
 **Acceptance criteria:**
 
-1. `sonde-gateway install --port COM5 --db C:\ProgramData\sonde\gateway.db --master-key-file C:\ProgramData\sonde\master-key.hex` registers a Windows service named `sonde-gateway` with the correct `ImagePath` (including CLI flags).
-2. `sonde-gateway install --port /dev/ttyACM0 --db /var/lib/sonde/gateway.db --key-provider file` writes all parameters (`SERIAL_PORT`, `DB_PATH`, `KEY_PROVIDER`, `MASTER_KEY_FILE`, `CHANNEL`) to `/etc/sonde/environment` and runs `systemctl enable sonde-gateway.service`. The systemd unit reads all runtime parameters from the environment file via `EnvironmentFile=`; no parameters are hard-coded in the unit.
-3. If the service is already registered, the command updates the existing registration (idempotent).
-4. The command requires elevated privileges (Administrator on Windows, root on Linux) and exits with a clear error message if run unprivileged.
-5. The `--port` parameter is required; the command exits with an error if omitted.
+1. The MSI install wizard includes a "Modem Configuration" dialog page with a COM port dropdown (or text field).
+2. If an ESP32-S3 modem (VID `303A`, PID `1001`) is connected during install, the COM port field is pre-populated with the detected port.
+3. After MSI install completes, `sc query sonde-gateway` shows the service in `STOPPED` or `RUNNING` state.
+4. The service `ImagePath` includes `--service --port <selected-port> --db %ProgramData%\sonde\gateway.db --master-key-file %ProgramData%\sonde\master-key.hex`.
+5. The `%ProgramData%\sonde\` directory is created during install with appropriate ACLs.
+6. On MSI uninstall, the service is stopped and removed. Database and key files are preserved.
+7. On MSI upgrade, the service is stopped before upgrade and restarted after, preserving the existing configuration.
+8. `sonde-gateway install --port COM5 [--db ...] [--master-key-file ...]` remains functional as a CLI fallback for re-registration or headless scenarios.
+9. `sonde-gateway uninstall` removes the service registration without deleting data files.
 
 ---
 
@@ -1750,6 +1756,6 @@ The `.deb` package SHOULD include a systemd unit file and `postinst` / `prerm` s
 | GW-1307 | Error diagnostic observability | Must |
 | GW-1400 | Bounded shutdown time | Must |
 | GW-1500 | Installer PATH registration | Must |
-| GW-1501 | Post-install service registration CLI | Must |
+| GW-1501 | Installer service registration with COM port auto-detect | Must |
 | GW-1502 | Post-install service unregistration CLI | Must |
 | GW-1503 | Linux package systemd integration | Should |

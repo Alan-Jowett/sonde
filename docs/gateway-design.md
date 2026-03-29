@@ -916,7 +916,7 @@ sonde-admin pairing stop
 sonde-admin pairing list-phones
 sonde-admin pairing revoke-phone <phone-id>
 
-sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>]
+sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>] [--reply-timeout <ms>]
 sonde-admin handler remove <program-hash>
 sonde-admin handler list
 ```
@@ -1079,11 +1079,15 @@ The admin API exposes `OpenBlePairing` (server-streaming RPC) to open the regist
 
 ## 18  Installer and service management
 
-This section covers platform packaging (MSI and `.deb`), system PATH registration, and the `install` / `uninstall` CLI subcommands that register (or remove) the gateway as a platform service.
+This section covers platform packaging (MSI and `.deb`), system PATH registration, COM port auto-detection, service registration, and the `install` / `uninstall` CLI subcommands as a fallback.
 
-### 18.1  WiX MSI — PATH registration (GW-1500)
+### 18.1  WiX MSI — PATH registration and service setup (GW-1500, GW-1501)
 
-The existing `sonde.wxs` already contains a WiX `Environment` element that appends the `bin` directory to the system `PATH`. The element is attached to the `AdminExe` component so that PATH is updated on install and reverted on uninstall:
+The MSI installer handles two tasks: PATH registration and Windows service setup.
+
+**PATH registration:**
+
+The existing `sonde.wxs` contains a WiX `Environment` element that appends the `bin` directory to the system `PATH`:
 
 ```xml
 <Environment Id="PATH"
@@ -1095,19 +1099,46 @@ The existing `sonde.wxs` already contains a WiX `Environment` element that appen
              System="yes" />
 ```
 
-Because `Part="last"` appends rather than replaces, existing PATH entries are preserved. On upgrade installs, WiX detects that the component GUID is unchanged and skips duplicate insertion. On uninstall, the Windows Installer removes the entry it added.
+Because `Part="last"` appends rather than replaces, existing PATH entries are preserved.
 
-The MSI does **not** register a Windows service. Service registration requires operator-specific parameters (`--port`, `--db`, `--master-key-file`) that are not known at install time. Instead, the operator uses `sonde-gateway install` (§18.2) after installation.
+**Service registration with COM port auto-detect:**
 
-### 18.2  `sonde-gateway install` subcommand (GW-1501)
+The MSI includes a custom dialog page ("Modem Configuration") that collects the COM port:
 
-The gateway binary exposes an `install` subcommand that registers the gateway as a platform service. The implementation is platform-specific:
+1. A WiX custom action (C# or Rust DLL) runs during dialog initialization:
+   - Enumerates USB devices via `SetupDiGetClassDevs` / `SetupDiEnumDeviceInfo`.
+   - Filters for VID `303A`, PID `1001` (ESP32-S3 TinyUSB CDC ACM).
+   - If found, reads the `PortName` registry value under the device's `Device Parameters` key.
+   - Pre-populates the `MODEM_PORT` MSI property with the detected COM port.
+2. The dialog displays a text field bound to `MODEM_PORT` (editable, in case the operator wants a different port).
+3. On install complete, a deferred custom action creates `%ProgramData%\sonde\` and sets ACLs.
+4. A WiX `ServiceInstall` element registers the service:
+   ```xml
+   <ServiceInstall Id="SondeGatewayService"
+                   Name="sonde-gateway"
+                   DisplayName="Sonde Gateway"
+                   Start="auto"
+                   Type="ownProcess"
+                   ErrorControl="normal"
+                   Arguments="--service --port [MODEM_PORT] --db [CommonAppDataFolder]sonde\gateway.db --master-key-file [CommonAppDataFolder]sonde\master-key.hex" />
+   <ServiceControl Id="SondeGatewayControl"
+                   Name="sonde-gateway"
+                   Start="install"
+                   Stop="both"
+                   Remove="uninstall" />
+   ```
+5. On uninstall, `ServiceControl Remove="uninstall"` stops and removes the service. Data files in `%ProgramData%\sonde\` are preserved (not included in `RemoveFile` elements).
+6. On upgrade, the service is stopped before file replacement and restarted after.
+
+### 18.2  `sonde-gateway install` subcommand (CLI fallback)
+
+The gateway binary exposes an `install` subcommand as a fallback for headless, scripted, or non-Windows deployments. The implementation is platform-specific:
 
 **Windows (SCM):**
 
 ```
-sonde-gateway install --port COM5 --db C:\ProgramData\sonde\gateway.db \
-    --master-key-file C:\ProgramData\sonde\master-key.hex [--channel 1]
+sonde-gateway install --port COM5 [--db C:\ProgramData\sonde\gateway.db] \
+    [--master-key-file C:\ProgramData\sonde\master-key.hex] [--channel 1]
 ```
 
 1. Validate that the process is running as Administrator (check via `OpenProcessToken` + `TokenElevation`). Exit with error code 1 and a clear message if not elevated.
@@ -1127,8 +1158,8 @@ sonde-gateway install --port COM5 --db C:\ProgramData\sonde\gateway.db \
 **Linux (systemd):**
 
 ```
-sudo sonde-gateway install --port /dev/ttyACM0 --db /var/lib/sonde/gateway.db \
-    --key-provider file [--channel 1]
+sudo sonde-gateway install --port /dev/ttyACM0 [--db /var/lib/sonde/gateway.db] \
+    [--key-provider file] [--channel 1]
 ```
 
 1. Validate that the effective UID is 0 (root). Exit with error code 1 if not.
@@ -1215,10 +1246,11 @@ Handler routing is currently loaded from a YAML file (`--handler-config`). This 
 
 ```sql
 CREATE TABLE IF NOT EXISTS handlers (
-    program_hash TEXT PRIMARY KEY,   -- 64-char hex SHA-256 or "*" for catch-all
-    command      TEXT NOT NULL,      -- executable path
-    args         TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
-    working_dir  TEXT               -- optional working directory
+    program_hash     TEXT PRIMARY KEY,   -- 64-char hex SHA-256 or "*" for catch-all
+    command          TEXT NOT NULL,      -- executable path
+    args             TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
+    working_dir      TEXT,              -- optional working directory
+    reply_timeout_ms INTEGER            -- per-handler reply timeout in ms (NULL = use default)
 );
 ```
 
@@ -1234,6 +1266,7 @@ pub struct HandlerRecord {
     pub command: String,
     pub args: Vec<String>,
     pub working_dir: Option<String>,
+    pub reply_timeout_ms: Option<u64>,  // per-handler reply timeout (None = use default)
 }
 ```
 
@@ -1280,6 +1313,7 @@ message AddHandlerRequest {
     string command = 2;
     repeated string args = 3;
     string working_dir = 4;           // empty string = not set
+    uint64 reply_timeout_ms = 5;      // 0 = use default
 }
 
 message RemoveHandlerRequest {
@@ -1291,6 +1325,7 @@ message HandlerInfo {
     string command = 2;
     repeated string args = 3;
     string working_dir = 4;
+    uint64 reply_timeout_ms = 5;      // 0 = not set (use default)
 }
 
 message ListHandlersResponse {
@@ -1309,7 +1344,7 @@ The operations table (§13.2) gains:
 The CLI tool (§13.3) gains:
 
 ```
-sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>]
+sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>] [--reply-timeout <ms>]
 sonde-admin handler remove <program-hash>
 sonde-admin handler list
 ```
@@ -1324,18 +1359,21 @@ The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<RwL
 4. `HandlerRouter::reload` diffs the old and new config sets:
    - **Added handlers** are inserted into the routing table (process spawned lazily on first message).
    - **Removed handlers** have their running process terminated (SIGTERM, then SIGKILL after 5 seconds) and are removed from the routing table.
-   - **Unchanged handlers** (same `program_hash`, `command`, `args`, `working_dir`) retain their existing `HandlerProcess` instance (no restart).
+   - **Unchanged handlers** (same `program_hash`, `command`, `args`, `working_dir`, `reply_timeout_ms`) retain their existing `HandlerProcess` instance (no restart).
 
 This approach avoids disrupting in-flight requests to unaffected handlers.
 
-> **Shared state note (D-485 extension):** The `HandlerRouter` reference shared between the admin API and the engine frame loop MUST be the same `Arc<RwLock<HandlerRouter>>` instance. The frame loop acquires a read lock for routing; the admin API acquires a write lock only during reload.
+> **Shared state note (D-485 extension):** The `HandlerRouter` reference shared between the admin API and the engine frame loop MUST be the same `Arc<RwLock<HandlerRouter>>` instance. The frame loop MUST only hold a read lock long enough to snapshot/clone the routing state it needs for a given frame, and MUST drop the lock before performing any handler I/O or other `.await` points. The admin API acquires a write lock only during reload.
 
 ### 19.6  Bootstrap from file
 
 On startup, if `--handler-config <path>` is provided (GW-1405):
 
 1. Parse the YAML file using the existing `load_handler_configs()` function (§9.1).
-2. For each parsed `HandlerConfig`, convert to a `HandlerRecord` and call `storage.add_handler()`.
+2. For each parsed `HandlerConfig`, convert to a `HandlerRecord` and call `storage.add_handler()`. The `HandlerRecord` is populated from `HandlerConfig` fields: `command`, `args`, `working_dir`, and `reply_timeout` (converted to `reply_timeout_ms`).
+
+   > **In-memory config note:** The `HandlerConfig` (and its inner `HandlerProcess`) will be extended to include `working_dir: Option<String>` so that this field is available in the in-memory routing config after conversion from `HandlerRecord`. The existing `reply_timeout: Option<Duration>` field on `HandlerConfig` is already present in the codebase.
+
 3. If `add_handler` returns `AlreadyExists`, skip silently (database takes precedence).
 4. If a YAML entry is invalid (e.g., malformed hex hash), log a warning and continue.
 5. After bootstrap, load all handlers from the database via `list_handlers()` and build the `HandlerRouter`.
@@ -1346,18 +1384,17 @@ This merge-on-startup strategy means the YAML file acts as a seed — it populat
 
 The state bundle (§13.2, `ExportState` / `ImportState`) is extended to include handler records (GW-1406).
 
-**Export:** `export_state()` serializes handler records alongside nodes, programs, and phone PSKs. Each handler is encoded as a CBOR map:
+**Export:** `export_state()` serializes handler records alongside nodes, programs, and phone PSKs. The existing state bundle already reserves root key `ROOT_KEY_HANDLERS = 6` for handlers and defines handler-level CBOR integer keys (see `state_bundle.rs`). The export layer reuses this format, encoding each `HandlerRecord` as a handler entry with a single-element `matchers` array:
 
-```
-handler_record = {
-    1: program_hash,    ; text — "*" or hex hash
-    2: command,         ; text
-    3: args,            ; array of text
-    4: working_dir      ; text or null
-}
-```
+| Key | Name | Type | Description |
+|-----|------|------|-------------|
+| 1 | `HANDLER_KEY_MATCHERS` | array of text | `"*"` or hex hash strings |
+| 2 | `HANDLER_KEY_COMMAND` | text | Executable path |
+| 3 | `HANDLER_KEY_ARGS` | array of text | Command arguments (omitted if empty) |
+| 4 | `HANDLER_KEY_REPLY_TIMEOUT_MS` | integer | Reply timeout in ms (omitted if unset) |
+| 5 | `HANDLER_KEY_WORKING_DIR` | text | Working directory (omitted if unset) |
 
-The top-level state bundle gains a new key for the handlers array.
+On import, the existing `handler_config_from_cbor` decoder is extended to read key 5 (`working_dir`). Multi-matcher entries in older bundles are expanded to one `HandlerRecord` per matcher. This preserves full backward compatibility with bundles exported before `working_dir` support.
 
 **Import:** `import_state()` restores handler records atomically within the same transaction that replaces nodes and programs. If the incoming bundle contains a handlers array, all existing handlers are deleted and replaced. If the handlers key is absent (bundle from older gateway version), existing handlers are preserved (no-op for backwards compatibility).
 

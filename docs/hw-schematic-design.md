@@ -36,7 +36,7 @@ This design addresses the following requirements from
 |-------------|-------|----------|
 | HW-0100 | Microcontroller | ESP32-C3-MINI-1, 4 MB flash, all GPIOs routed |
 | HW-0101 | USB-C connector | USB-C receptacle → native USB (GPIO18/19) |
-| HW-0102 | Voltage regulator | MCP1700-3302E/TT, 1.6 µA Iq, 3.0–6 V input |
+| HW-0102 | Voltage regulator | MCP1700-3302E/TT, 1.6 µA Iq, 2.3–6.0 V input (3.3 V regulation down to ~3.5 V battery after Schottky) |
 | HW-0103 | Battery input | JST-PH 2-pin, high-Z divider, Schottky protection |
 | HW-0200 | I2C bus (Qwiic) | 2× Qwiic connectors, 4.7 kΩ pull-ups on gated rail |
 | HW-0203 | GPIO breakout | 2.54 mm header with remaining GPIOs |
@@ -91,11 +91,19 @@ HW-0201 (SPI bus), HW-0202 (1-Wire), HW-0300/HW-0301 (on-board sensors).
 #### U1 — ESP32-C3-MINI-1 Module
 
 - **Responsibility:** MCU, WiFi/BLE radio, program execution.
-- **Interfaces:** USB (GPIO18/19), I2C (GPIO4/5), ADC (GPIO0), power gate
-  control (GPIO3), BOOT button (GPIO9), all remaining GPIOs to header.
+- **Interfaces:** USB (GPIO18/19), I2C (GPIO4 = SDA, GPIO5 = SCL), ADC (GPIO0),
+  power gate control (GPIO3), BOOT button (GPIO9), all remaining GPIOs to header.
 - **Dependencies:** 3V3 rail, GND.
 - **Constraints:** Antenna keepout zone per datasheet (HW-0502).
-  Operating voltage 3.0–3.6 V. Deep sleep ≈ 5 µA typical.
+  Operating voltage 3.0–3.6 V. Deep sleep ≈ 5 µA typical. Firmware /
+  provisioning note: current `sonde-node` firmware defaults I2C to
+  SDA = GPIO0 / SCL = GPIO1 unless an NVS pin-config map is present. Because
+  this board routes I2C to GPIO4/5, production units MUST either be
+  factory-programmed with the appropriate NVS pin map for SDA=4/SCL=5, or
+  use a future `sonde-pair` release that appends the optional pin-config
+  CBOR map during pairing. Until one of these provisioning paths is in
+  place, the Qwiic I2C connectors on this board will not function with
+  stock firmware.
 
 #### U2 — MCP1700-3302E/TT (LDO Regulator)
 

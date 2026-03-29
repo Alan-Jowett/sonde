@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT
+  Copyright (c) 2026 sonde contributors -->
 # Sonde Sensor Node Hardware Specification Invariant Audit — Investigation Report
 
 > **Audit date:** 2026-03-29

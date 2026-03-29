@@ -41,7 +41,11 @@ board:
   fab: jlcpcb         # JLCPCB manufacturing rules
 
 # --- Pin assignments ---
-# These match the firmware defaults (ND-0608 NVS config).
+# Board I2C is wired to SDA=GPIO4 / SCL=GPIO5 for Qwiic.
+# NOTE: Node firmware defaults to i2c0_sda=0 / i2c0_scl=1 when NVS is unset.
+#       ND-0608 NVS config (or equivalent provisioning) MUST set i2c0_sda=4
+#       and i2c0_scl=5 for this board, or the firmware defaults must be
+#       changed to match the pinout.
 pins:
   i2c0_sda: 4         # GPIO4
   i2c0_scl: 5         # GPIO5

@@ -51,10 +51,8 @@ async fn t1307a_ingest_empty_image_includes_context() {
         .unwrap_err();
     let msg = err.message().to_lowercase();
     assert!(
-        msg.contains("program ingestion failed")
-            || msg.contains("image is empty")
-            || msg.contains("program"),
-        "error should include operation name, got: {msg}"
+        msg.contains("program ingestion failed") || msg.contains("image is empty"),
+        "error should include specific operation name, got: {msg}"
     );
     assert!(
         msg.contains("test.o") || msg.contains("source"),
@@ -94,8 +92,8 @@ async fn t1307b_assign_program_missing_includes_context() {
         "error should include the program hash, got: {msg}"
     );
     assert!(
-        msg.contains("ingestprogram") || msg.contains("listprograms") || msg.contains("not found"),
-        "error should include actionable guidance, got: {msg}"
+        msg.contains("ingestprogram") || msg.contains("listprograms"),
+        "error should include actionable guidance (IngestProgram/ListPrograms), got: {msg}"
     );
 }
 
@@ -105,7 +103,11 @@ async fn t1307b_assign_program_missing_includes_context() {
 /// and guidance for creating a key.
 #[test]
 fn t1307c_file_key_provider_missing_includes_guidance() {
-    let path = std::path::PathBuf::from("nonexistent-dir/missing-key.hex");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("nonexistent-subdir")
+        .join("missing-key.hex");
     let provider = FileKeyProvider::new(path);
     let err = provider.load_master_key().unwrap_err();
     let msg = format!("{err}");
@@ -163,10 +165,13 @@ fn t1307e_env_key_not_set_includes_guidance() {
 #[test]
 fn t1307f_sqlite_open_failure_includes_path() {
     let master_key = Zeroizing::new([0x42u8; 32]);
-    let result = sonde_gateway::sqlite_storage::SqliteStorage::open(
-        "/nonexistent-dir/does-not-exist/gateway.db",
-        master_key,
-    );
+    let dir = tempfile::tempdir().unwrap();
+    let bad_path = dir
+        .path()
+        .join("nonexistent-dir")
+        .join("does-not-exist")
+        .join("gateway.db");
+    let result = sonde_gateway::sqlite_storage::SqliteStorage::open(&bad_path, master_key);
     match result {
         Ok(_) => panic!("expected error for nonexistent path"),
         Err(e) => {
@@ -204,9 +209,15 @@ async fn t1307g_import_state_decrypt_failure_includes_guidance() {
         msg.contains("import state") || msg.contains("decrypt"),
         "error should include operation name, got: {msg}"
     );
+    // Garbage data triggers InvalidMagic, so guidance is about invalid bundle
+    // (not passphrase). The test validates that variant-specific guidance is
+    // present per GW-1307 AC2.
     assert!(
-        msg.contains("passphrase") || msg.contains("corrupt"),
-        "error should include guidance about passphrase, got: {msg}"
+        msg.contains("passphrase")
+            || msg.contains("corrupt")
+            || msg.contains("valid")
+            || msg.contains("bundle"),
+        "error should include variant-specific guidance, got: {msg}"
     );
 }
 

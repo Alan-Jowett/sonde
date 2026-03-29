@@ -163,7 +163,12 @@ fn profile_to_proto(p: &VerificationProfile) -> i32 {
 
 /// Format a byte slice as a hex string for use in diagnostic messages.
 fn fmt_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        write!(s, "{b:02x}").expect("write to String is infallible");
+    }
+    s
 }
 
 fn storage_err_with_context(operation: &str, e: crate::storage::StorageError) -> Status {
@@ -182,19 +187,33 @@ fn storage_err(e: crate::storage::StorageError) -> Status {
     }
 }
 
-/// Map `BundleError` to gRPC status: encode/RNG failures → INTERNAL (server
-/// error), everything else (bad input) → INVALID_ARGUMENT.
+/// Map `BundleError` to gRPC status with variant-specific guidance per GW-1307 AC2.
 fn bundle_err(e: crate::state_bundle::BundleError) -> Status {
+    use crate::state_bundle::BundleError;
     match e {
-        crate::state_bundle::BundleError::Encode(_) => Status::internal(format!(
+        BundleError::Encode(_) => Status::internal(format!(
             "state bundle encoding failed: {e}; this is likely a server-side issue"
         )),
-        crate::state_bundle::BundleError::Rng => Status::internal(format!(
+        BundleError::Rng => Status::internal(format!(
             "state bundle RNG failed: {e}; check OS entropy source"
         )),
-        _ => Status::invalid_argument(format!(
-            "state bundle validation failed: {e}; verify the passphrase is correct \
-             and the bundle was not corrupted"
+        BundleError::Crypto => Status::invalid_argument(format!(
+            "state bundle decryption failed: {e}; verify the passphrase is correct and the bundle was not tampered with"
+        )),
+        BundleError::EmptyPassphrase => Status::invalid_argument(format!(
+            "state bundle rejected: {e}; provide a non-empty passphrase"
+        )),
+        BundleError::InvalidMagic => Status::invalid_argument(format!(
+            "state bundle rejected: {e}; the file does not appear to be a valid sonde state bundle"
+        )),
+        BundleError::UnsupportedVersion(_) => Status::invalid_argument(format!(
+            "state bundle rejected: {e}; upgrade or downgrade the gateway to a compatible version"
+        )),
+        BundleError::Truncated => Status::invalid_argument(format!(
+            "state bundle rejected: {e}; the bundle file may be incomplete or corrupted"
+        )),
+        BundleError::Decode(_) => Status::invalid_argument(format!(
+            "state bundle decode failed: {e}; the bundle may be corrupted or from an incompatible version"
         )),
     }
 }
@@ -535,7 +554,9 @@ impl GatewayAdmin for AdminService {
             })?;
 
         // Prevent deletion while any node is still assigned to this program.
-        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let nodes = self.storage.list_nodes().await.map_err(|e| {
+            storage_err_with_context("remove program: list nodes to check assignments", e)
+        })?;
         if nodes
             .iter()
             .any(|node| node.assigned_program_hash.as_deref() == Some(hash.as_slice()))
@@ -560,10 +581,9 @@ impl GatewayAdmin for AdminService {
             }
         }
 
-        self.storage
-            .delete_program(&hash)
-            .await
-            .map_err(storage_err)?;
+        self.storage.delete_program(&hash).await.map_err(|e| {
+            storage_err_with_context(&format!("remove program: delete `{hash_hex}`"), e)
+        })?;
         Ok(Response::new(Empty {}))
     }
 
@@ -813,15 +833,15 @@ impl GatewayAdmin for AdminService {
                 ))
             })?
             .map_err(|e| {
-                // Wrap bundle_err with import-specific guidance
+                // Wrap bundle_err with import-specific context; variant-specific
+                // guidance is provided by bundle_err itself (GW-1307 AC2).
                 let status = bundle_err(e);
                 Status::new(
                     status.code(),
                     format!(
-                        "import state: decryption/decode failed (bundle size: {bundle_size} bytes): {}; \
-                         verify the passphrase is correct and the bundle was not corrupted",
-                        status.message()
-                    ),
+                    "import state: decryption/decode failed (bundle size: {bundle_size} bytes): {}",
+                    status.message()
+                ),
                 )
             })?;
 

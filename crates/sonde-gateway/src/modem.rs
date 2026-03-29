@@ -67,8 +67,7 @@ fn modem_msg_label(msg: &ModemMessage) -> &'static str {
         ModemMessage::BlePairingConfirmReply(_) => "BLE_PAIRING_CONFIRM_REPLY",
         ModemMessage::ScanChannels => "SCAN_CHANNELS",
         ModemMessage::ScanResult(_) => "SCAN_RESULT",
-        ModemMessage::Unknown { .. } => "UNKNOWN",
-        _ => "UNKNOWN",
+        ModemMessage::Unknown { .. } | _ => "UNKNOWN",
     }
 }
 
@@ -195,8 +194,7 @@ impl UsbEspNowTransport {
                                         warn!(
                                             operation = "modem frame decode",
                                             error = %e,
-                                            guidance = "resetting decoder; this typically indicates \
-                                                        boot log garbage on the serial line",
+                                            guidance = "resetting decoder; this typically indicates boot log garbage on the serial line",
                                             "modem frame too large — resetting decoder"
                                         );
                                         decoder.reset();
@@ -217,8 +215,7 @@ impl UsbEspNowTransport {
                             error!(
                                 operation = "modem serial read",
                                 error = %e,
-                                guidance = "check serial cable connection and port permissions; \
-                                            the gateway will attempt to reconnect",
+                                guidance = "check serial cable connection and port permissions; the gateway will attempt to reconnect",
                                 "modem serial read error"
                             );
                             break;
@@ -820,8 +817,7 @@ async fn dispatch_message(
                 operation = "modem error report",
                 error_code = e.error_code,
                 message = ?String::from_utf8_lossy(&e.message),
-                guidance = "modem reported an error; pending operations will fail. \
-                            If errors persist, check modem firmware and serial connection",
+                guidance = "modem reported an error; pending operations will fail. If errors persist, check modem firmware and serial connection",
                 "modem error received from firmware"
             );
             // GW-1103: Error is logged and waiters unblocked so pending

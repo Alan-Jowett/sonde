@@ -704,11 +704,11 @@ The modem MUST apply build-type–aware log-level policies identical to the node
 
 ### MD-0506  Error diagnostic observability
 
-**Priority:** Must  
-**Source:** issue #532
+**Priority:** Must
+**Source:** Issue #532
 
-**Description:**  
-When the modem encounters an error at an operator-visible boundary (BLE GATT operations, ESP-NOW transmission, USB-CDC I/O), the error log MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "BLE GATT write", "NODE_ACK indication", "ESP-NOW send"), (2) the non-sensitive metadata for the input or parameters that triggered it (e.g., peer MAC address, characteristic UUID or handle, frame type and length), (3) the specific error from the underlying subsystem (e.g., NimBLE return code, ESP-NOW status), and (4) actionable guidance where possible (e.g., "check BLE connection state", "verify peer is in range"). Diagnostics MUST NOT log raw BLE attribute or notification payload contents, nor full ESP-NOW application payload bytes, at any log level; only metadata necessary for troubleshooting may be recorded.
+**Description:**
+When the modem encountersan error at an operator-visible boundary (BLE GATT operations, ESP-NOW transmission, USB-CDC I/O), the error log MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "BLE GATT write", "NODE_ACK indication", "ESP-NOW send"), (2) the non-sensitive metadata for the input or parameters that triggered it (e.g., peer MAC address, characteristic UUID or handle, frame type and length), (3) the specific error from the underlying subsystem (e.g., NimBLE return code, ESP-NOW status), and (4) actionable guidance where possible (e.g., "check BLE connection state", "verify peer is in range"). Diagnostics MUST NOT log raw BLE attribute or notification payload contents, nor full ESP-NOW application payload bytes, at any log level; only metadata necessary for troubleshooting may be recorded.
 
 **Acceptance criteria:**
 

@@ -10,7 +10,7 @@ use clap::Parser;
 #[cfg(windows)]
 use clap::Subcommand;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
@@ -27,6 +27,9 @@ use zeroize::Zeroizing;
 const DEFAULT_ADMIN_SOCKET: &str = "/var/run/sonde/admin.sock";
 #[cfg(windows)]
 const DEFAULT_ADMIN_SOCKET: &str = r"\\.\pipe\sonde-admin";
+
+/// Maximum time to wait for graceful shutdown before force-exiting (GW-1400).
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── Windows NT service constants ─────────────────────────────────────────────
 #[cfg(windows)]
@@ -703,13 +706,18 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
 
     // Run the gateway on a fresh tokio runtime.
     let exit_code = match tokio::runtime::Runtime::new() {
-        Ok(rt) => match rt.block_on(run_gateway(cli, shutdown_rx)) {
-            Ok(()) => 0u32,
-            Err(e) => {
-                error!("gateway exited with error: {e}");
-                1
-            }
-        },
+        Ok(rt) => {
+            let code = match rt.block_on(run_gateway(cli, shutdown_rx)) {
+                Ok(()) => 0u32,
+                Err(e) => {
+                    error!("gateway exited with error: {e}");
+                    1
+                }
+            };
+            // GW-1400: start force-exit watchdog before runtime teardown.
+            spawn_shutdown_watchdog();
+            code
+        }
         Err(e) => {
             eprintln!("sonde-gateway: failed to create tokio runtime: {e}");
             1
@@ -880,6 +888,20 @@ fn uninstall_service() -> Result<(), Box<dyn std::error::Error>> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Spawn a watchdog that force-exits the process after [`SHUTDOWN_TIMEOUT`] if
+/// graceful shutdown stalls (GW-1400).  The watchdog runs on a separate OS
+/// thread so that it survives tokio runtime teardown.
+fn spawn_shutdown_watchdog() {
+    std::thread::spawn(move || {
+        std::thread::sleep(SHUTDOWN_TIMEOUT);
+        warn!(
+            timeout_secs = SHUTDOWN_TIMEOUT.as_secs(),
+            "graceful shutdown did not complete in time — forcing exit (GW-1400)"
+        );
+        std::process::exit(0);
+    });
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -927,5 +949,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    run_gateway(&cli, shutdown_rx).await
+    let result = run_gateway(&cli, shutdown_rx).await;
+
+    // GW-1400: start the force-exit watchdog after run_gateway returns.
+    // If tokio runtime teardown (Drop impls, pending I/O) hangs, the
+    // watchdog will force-exit the process after SHUTDOWN_TIMEOUT.
+    spawn_shutdown_watchdog();
+
+    result
 }

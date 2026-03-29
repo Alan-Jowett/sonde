@@ -971,12 +971,40 @@ The gateway emits the version string in its first `info!()` log line so that ope
 
 ## 16  Shutdown sequence
 
+> **Requirement:** GW-1400.
+
 1. Stop accepting new frames.
 2. Wait for in-flight sessions to complete (with timeout).
 3. Terminate handler processes (SIGTERM, then SIGKILL after timeout).
 4. Flush any pending storage writes.
 5. Close transport.
 6. Exit.
+
+### 16.1  Shutdown timeout (GW-1400)
+
+A 5-second shutdown deadline is enforced by a watchdog thread. The
+implementation lives in `bin/gateway.rs` and works as follows:
+
+1. The main thread executes the graceful shutdown sequence (steps 1–6
+   above) inside `run_gateway`. This includes stopping new frames,
+   waiting (with its own internal timeouts) for in-flight sessions to
+   complete, terminating handler processes, flushing storage, closing
+   transports, and returning.
+2. After `run_gateway` returns (i.e., after "gateway stopped" is logged),
+   the caller (`main` for console mode, `service_entry` for Windows
+   service mode) starts a **force-exit watchdog** on a separate OS thread
+   using `std::thread::spawn`.
+3. The watchdog thread sleeps for 5 seconds. If the process has not
+   exited normally by then — for example because a `Drop` impl is stuck
+   (such as a serial port `Drop` blocked on pending I/O) or the tokio
+   runtime teardown hangs — the watchdog logs a `WARN`-level message and
+   then calls `std::process::exit(0)` to force-terminate the process.
+4. If runtime teardown completes before the 5-second deadline, the
+   process exits via the normal return path and the watchdog thread
+   simply terminates when the process exits.
+
+This ensures the process never hangs after logging "gateway stopped",
+regardless of serial port state (Issue #551).
 
 ---
 

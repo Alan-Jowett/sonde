@@ -889,9 +889,8 @@ fn uninstall_service() -> Result<(), Box<dyn std::error::Error>> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Spawn a watchdog that force-exits the process after [`SHUTDOWN_TIMEOUT`] if
-/// graceful shutdown stalls (GW-1400).  The watchdog is a detached tokio task
-/// so that it survives runtime shutdown; if the runtime itself is blocked it
-/// relies on the OS thread still being scheduled.
+/// graceful shutdown stalls (GW-1400).  The watchdog runs on a separate OS
+/// thread so that it survives tokio runtime teardown.
 fn spawn_shutdown_watchdog() {
     std::thread::spawn(move || {
         std::thread::sleep(SHUTDOWN_TIMEOUT);

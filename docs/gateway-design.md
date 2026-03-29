@@ -982,22 +982,25 @@ The gateway emits the version string in its first `info!()` log line so that ope
 
 ### 16.1  Shutdown timeout (GW-1400)
 
-The entire graceful shutdown sequence (steps 1–6 above) is wrapped in a
-5-second `tokio::time::timeout`. The implementation lives in
-`bin/gateway.rs` and works as follows:
+A 5-second shutdown deadline is enforced by a watchdog thread. The
+implementation lives in `bin/gateway.rs` and works as follows:
 
-1. When `run_gateway` returns, the caller (`main` for console mode,
+1. Before starting runtime teardown, the caller (`main` for console mode,
    `service_entry` for Windows service mode) starts a **force-exit
-   watchdog**: a detached `tokio::spawn` that sleeps for 5 seconds and
-   then calls `std::process::exit(0)`.
-2. If the async runtime shuts down normally (all tasks complete, `Drop`
-   impls finish) before the watchdog fires, the process exits cleanly
-   via the normal return path.
-3. If any task or `Drop` impl blocks beyond the deadline — for example
-   a serial port `Drop` stuck on a pending I/O operation — the watchdog
-   fires and force-terminates the process.
-4. Before calling `std::process::exit(0)`, the watchdog logs a
-   `WARN`-level message so the hang is visible in logs.
+   watchdog** on a separate OS thread using `std::thread::spawn`.
+2. The main thread then executes the graceful shutdown sequence
+   (steps 1–6 above) without wrapping it in a `tokio::time::timeout`:
+   it stops accepting new frames, waits (with its own internal timeouts)
+   for in-flight sessions to complete, terminates handler processes,
+   flushes storage, closes transports, and returns.
+3. The watchdog thread sleeps for 5 seconds. If the process has not
+   exited normally by then — for example because a task or `Drop` impl
+   is stuck (such as a serial port `Drop` blocked on pending I/O) —
+   the watchdog logs a `WARN`-level message and then calls
+   `std::process::exit(0)` to force-terminate the process.
+4. If shutdown completes before the 5-second deadline, the process exits
+   via the normal return path and the watchdog thread simply terminates
+   when the process exits.
 
 This ensures the process never hangs after logging "gateway stopped",
 regardless of serial port state (Issue #551).

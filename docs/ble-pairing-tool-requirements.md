@@ -1155,12 +1155,14 @@ The node-side parsing (ND-0608) is implemented; the pairing-tool encoding side i
 
 ---
 
-### PT-1215  Error diagnostic observability
+### PT-1215  Error diagnostic observability (extends PT-1212)
 
 **Priority:** Must  
 **Source:** issue #532
 
 **Description:**  
+This requirement extends PT-1212 "Error logging with actionable context" to **user-facing** error boundaries specifically, adding explicit requirements for triggering parameters, underlying subsystem error codes, and security redaction constraints that PT-1212 does not cover. Where PT-1212 governs DEBUG-level log events emitted on errors (timeout durations, retry counts, error categories), PT-1215 applies to errors surfaced at user-facing boundaries (UI, CLI output, operator-visible logs) and mandates additional structured detail.
+
 When the pairing tool encounters an error at a user-facing boundary (BLE connection, GATT operations, serial port access, cryptographic operations), the error log or error response MUST include sufficient context for a user to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "BLE connect", "GATT write", "serial port open"), (2) the input or parameters that triggered it (e.g., device address, port name, characteristic UUID), (3) the specific error from the underlying subsystem (e.g., OS error code, BLE stack status), and (4) actionable guidance where possible (e.g., "delete stale Bluetooth pairing in OS settings", "check COM port is not in use by another application"). For cryptographic operations, this requirement is constrained by PT-0900 (no key material in logs): raw key bytes and other secret material MUST be redacted or omitted, and only non-sensitive identifiers (e.g., `key_hint` or equivalent key references) MAY be logged as "input/parameters".
 
 **Acceptance criteria:**

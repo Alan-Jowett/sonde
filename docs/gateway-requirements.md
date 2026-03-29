@@ -1563,6 +1563,8 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 4. The file log level can be changed at runtime without restarting the service: setting `RUST_LOG` and delivering a platform-appropriate reload signal causes the gateway to re-read the environment variable and apply the new `EnvFilter` within 5 seconds.
 5. If the log file cannot be created or written (e.g., permission denied), the gateway MUST log an `ERROR`-level diagnostic to the ETW sink and continue operating without file logging rather than failing to start.
 
+---
+
 ### GW-1307  Error diagnostic observability
 
 **Priority:** Must  

@@ -536,6 +536,10 @@ pub fn spawn_health_monitor(
             warn!("health monitor interval is zero, disabling");
             return false;
         }
+        if max_consecutive_failures == 0 {
+            warn!("max_consecutive_failures is zero, disabling health monitor");
+            return false;
+        }
         let mut prev_tx_fail: Option<u32> = None;
         let mut prev_uptime: Option<u32> = None;
         let mut consecutive_failures: u32 = 0;
@@ -592,7 +596,7 @@ pub fn spawn_health_monitor(
                     );
                 }
                 Err(e) => {
-                    consecutive_failures += 1;
+                    consecutive_failures = consecutive_failures.saturating_add(1);
                     if consecutive_failures >= max_consecutive_failures {
                         error!(
                             consecutive_failures,

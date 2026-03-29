@@ -40,7 +40,7 @@ The gateway is **stateless with respect to replay protection** — active sessio
 
 ## 3  Module architecture
 
-The gateway is composed of ten functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), and BLE Pairing Handler (pairing protocol logic via modem relay). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API and BLE Pairing Handler are described in §13 and §17 respectively.
+The gateway is composed of eleven functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), BLE Pairing Handler (pairing protocol logic via modem relay), and Service Manager (platform service registration and PATH setup). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API, BLE Pairing Handler, and Service Manager are described in §13, §17, and §18 respectively.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -77,6 +77,7 @@ The gateway is composed of ten functional modules grouped in two tiers. The uppe
 | **Storage** | Persist node registry, program library, configuration | GW-0700, GW-1000, GW-1001 |
 | **Admin API** | gRPC admin interface, CLI tool | GW-0800, GW-0801, GW-0802, GW-0803, GW-0804, GW-0805, GW-0806 |
 | **BLE Pairing Handler** | BLE pairing protocol logic via modem relay | GW-1200–GW-1222 |
+| **Service Manager** | Platform service install/uninstall CLI, PATH registration | GW-1500–GW-1503 |
 
 ---
 
@@ -576,6 +577,11 @@ pub trait Storage: Send + Sync {
     // Export / import (GW-1001)
     async fn export_state(&self) -> Result<Vec<u8>>;
     async fn import_state(&self, data: &[u8]) -> Result<()>;
+
+    // Handler configuration (GW-1401)
+    async fn add_handler(&self, record: &HandlerRecord) -> Result<(), StorageError>;
+    async fn remove_handler(&self, program_hash: &str) -> Result<bool, StorageError>;
+    async fn list_handlers(&self) -> Result<Vec<HandlerRecord>, StorageError>;
 }
 ```
 
@@ -840,6 +846,11 @@ service GatewayAdmin {
     rpc ConfirmBlePairing(ConfirmBlePairingRequest) returns (Empty);
     rpc ListPhones(Empty) returns (ListPhonesResponse);
     rpc RevokePhone(RevokePhoneRequest) returns (Empty);
+
+    // Handler management (GW-1402)
+    rpc AddHandler(AddHandlerRequest) returns (Empty);
+    rpc RemoveHandler(RemoveHandlerRequest) returns (Empty);
+    rpc ListHandlers(Empty) returns (ListHandlersResponse);
 }
 ```
 
@@ -856,8 +867,8 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Queue ephemeral | `QueueEphemeral` | Queues a one-shot diagnostic program for a node's next WAKE. |
 | Set schedule | `SetSchedule` | Queues an UPDATE_SCHEDULE for a node's next WAKE. |
 | Node status | `GetNodeStatus` | Returns latest known state for a node (program hash, battery, ABI version, last seen, active session). |
-| Export state | `ExportState` | Serializes gateway state (node registry, program library, and registered identity/phone PSKs, if applicable). Does not include handler routing configuration (deferred). Encrypted with AES-256-GCM using an operator-supplied passphrase. |
-| Import state | `ImportState` | Restores node registry, program library, and registered identity/phone PSKs from a previously exported, encrypted bundle. Handler routing configuration is not restored (deferred and not part of the bundle). |
+| Export state | `ExportState` | Serializes gateway state (node registry, program library, registered identity/phone PSKs, and handler configuration). Encrypted with AES-256-GCM using an operator-supplied passphrase. |
+| Import state | `ImportState` | Restores node registry, program library, registered identity/phone PSKs, and handler configuration from a previously exported, encrypted bundle. If the bundle lacks handler records (older version), existing handlers are preserved. |
 | Modem status | `GetModemStatus` | Returns modem status: radio channel, TX/RX/fail counters, uptime. |
 | Set modem channel | `SetModemChannel` | Sets the ESP-NOW radio channel (1–14). Persists the new channel in the database (GW-0808). |
 | Scan channels | `ScanModemChannels` | Scans all WiFi channels for AP activity, returns AP counts and RSSI per channel. |
@@ -866,6 +877,9 @@ The gRPC server runs on a local socket: a **Unix domain socket** on Linux/macOS 
 | Confirm BLE pairing | `ConfirmBlePairing` | Accepts or rejects a Numeric Comparison passkey during BLE pairing. |
 | List phones | `ListPhones` | Lists all registered phones with PSK metadata (ID, key hint, label, issue time, status). |
 | Revoke phone | `RevokePhone` | Revokes a phone's PSK by phone ID. |
+| Add handler | `AddHandler` | Registers a handler for a `program_hash` (GW-1402). Validates hash format. Returns `ALREADY_EXISTS` on duplicate. Triggers live reload. |
+| Remove handler | `RemoveHandler` | Removes handler for given `program_hash` (GW-1402). Returns `NOT_FOUND` if no match. Terminates running process. Triggers live reload. |
+| List handlers | `ListHandlers` | Returns all configured handlers (GW-1402). |
 
 ### 13.3  CLI tool (`sonde-admin`)
 
@@ -901,6 +915,10 @@ sonde-admin pairing start [--duration-s <seconds>]
 sonde-admin pairing stop
 sonde-admin pairing list-phones
 sonde-admin pairing revoke-phone <phone-id>
+
+sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>] [--reply-timeout <ms>]
+sonde-admin handler remove <program-hash>
+sonde-admin handler list
 ```
 
 All commands support `--format json` for machine-readable output.
@@ -963,11 +981,13 @@ The gateway emits the version string in its first `info!()` log line so that ope
 2. Initialize storage backend.
 3. Load node registry and program library from storage.
 4. Initialize transport (e.g., open ESP-NOW interface, or for USB modem: open serial port → `RESET` → `MODEM_READY` → `SET_CHANNEL`; see §4.2). The channel is read from the database (GW-0808); if no value is persisted, the CLI `--channel` flag seeds the database.
-5. Start gRPC admin API server.
-6. Start handler processes for configured handlers.
-7. Start session reaper background task.
-8. Start node timeout detector background task.
-9. Enter main recv loop.
+5. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §19.6).
+6. Load handler configuration from database and build `HandlerRouter` (GW-1401).
+7. Start gRPC admin API server.
+8. Start handler processes for configured handlers.
+9. Start session reaper background task.
+10. Start node timeout detector background task.
+11. Enter main recv loop.
 
 ---
 
@@ -1056,3 +1076,326 @@ After successful registration **or** duplicate detection with matching PSK, the 
 ### 17.7  Admin session
 
 The admin API exposes `OpenBlePairing` (server-streaming RPC) to open the registration window and enable BLE advertising, `CloseBlePairing` to close it, `ConfirmBlePairing` for Numeric Comparison passkey confirmation, `ListPhones` to enumerate registered phones, and `RevokePhone` to revoke a phone PSK (GW-1222). See §13 for the full gRPC service definition.
+
+## 18  Installer and service management
+
+This section covers platform packaging (MSI and `.deb`), system PATH registration, COM port auto-detection, service registration, and the `install` / `uninstall` CLI subcommands as a fallback.
+
+### 18.1  WiX MSI — PATH registration and service setup (GW-1500, GW-1501)
+
+The MSI installer handles two tasks: PATH registration and Windows service setup.
+
+**PATH registration:**
+
+The existing `sonde.wxs` contains a WiX `Environment` element that appends the `bin` directory to the system `PATH`:
+
+```xml
+<Environment Id="PATH"
+             Name="PATH"
+             Value="[BinDir]"
+             Separator=";"
+             Action="set"
+             Part="last"
+             System="yes" />
+```
+
+Because `Part="last"` appends rather than replaces, existing PATH entries are preserved.
+
+**Service registration with COM port auto-detect:**
+
+The MSI includes a custom dialog page ("Modem Configuration") that collects the COM port:
+
+1. A WiX custom action (C# or Rust DLL) runs during dialog initialization:
+   - Enumerates USB devices via `SetupDiGetClassDevs` / `SetupDiEnumDeviceInfo`.
+   - Filters for VID `303A`, PID `1001` (ESP32-S3 TinyUSB CDC ACM).
+   - If found, reads the `PortName` registry value under the device's `Device Parameters` key.
+   - Pre-populates the `MODEM_PORT` MSI property with the detected COM port.
+2. The dialog displays a text field bound to `MODEM_PORT` (editable, in case the operator wants a different port).
+3. On install complete, a deferred custom action creates `%ProgramData%\sonde\` and sets ACLs.
+4. A WiX `ServiceInstall` element registers the service:
+   ```xml
+   <ServiceInstall Id="SondeGatewayService"
+                   Name="sonde-gateway"
+                   DisplayName="Sonde Gateway"
+                   Start="auto"
+                   Type="ownProcess"
+                   ErrorControl="normal"
+                   Arguments="--service --port [MODEM_PORT] --db [CommonAppDataFolder]sonde\gateway.db --master-key-file [CommonAppDataFolder]sonde\master-key.hex" />
+   <ServiceControl Id="SondeGatewayControl"
+                   Name="sonde-gateway"
+                   Start="install"
+                   Stop="both"
+                   Remove="uninstall" />
+   ```
+5. On uninstall, `ServiceControl Remove="uninstall"` stops and removes the service. Data files in `%ProgramData%\sonde\` are preserved (not included in `RemoveFile` elements).
+6. On upgrade, the service is stopped before file replacement and restarted after.
+
+### 18.2  `sonde-gateway install` subcommand (CLI fallback)
+
+The gateway binary exposes an `install` subcommand as a fallback for headless, scripted, or non-Windows deployments. The implementation is platform-specific:
+
+**Windows (SCM):**
+
+```
+sonde-gateway install --port COM5 [--db C:\ProgramData\sonde\gateway.db] \
+    [--master-key-file C:\ProgramData\sonde\master-key.hex] [--channel 1]
+```
+
+1. Validate that the process is running as Administrator (check via `OpenProcessToken` + `TokenElevation`). Exit with error code 1 and a clear message if not elevated.
+2. Validate that `--port` is provided. Exit with error code 1 if omitted.
+3. Build the `ImagePath` string: `"<exe_path>" --service --port <PORT> --db <DB> --master-key-file <KEY> [--channel <CH>]`. The `--service` flag is the normal gateway entry point used when launched by SCM.
+4. Call `OpenSCManagerW` with `SC_MANAGER_CREATE_SERVICE` access.
+5. Call `CreateServiceW` with:
+   - `lpServiceName` = `"sonde-gateway"`
+   - `lpDisplayName` = `"Sonde Gateway"`
+   - `dwStartType` = `SERVICE_AUTO_START`
+   - `lpBinaryPathName` = the `ImagePath` from step 3
+   - `lpServiceStartName` = `NULL` (LocalSystem)
+6. If the service already exists (`ERROR_SERVICE_EXISTS`), call `ChangeServiceConfigW` to update the `ImagePath` (idempotent update).
+7. Set the service description via `ChangeServiceConfig2W` with `SERVICE_CONFIG_DESCRIPTION`.
+8. Print success message and exit with code 0.
+
+**Linux (systemd):**
+
+```
+sudo sonde-gateway install --port /dev/ttyACM0 [--db /var/lib/sonde/gateway.db] \
+    [--key-provider file] [--channel 1]
+```
+
+1. Validate that the effective UID is 0 (root). Exit with error code 1 if not.
+2. Validate that `--port` is provided.
+3. Write (or update) all parameters in `/etc/sonde/environment`:
+   ```
+   SERIAL_PORT=/dev/ttyACM0
+   DB_PATH=/var/lib/sonde/gateway.db
+   KEY_PROVIDER=file
+   # MASTER_KEY_FILE and CHANNEL are written only if provided
+   ```
+   The systemd unit reads all runtime parameters from this environment file via `EnvironmentFile=`; no parameters are hard-coded in the unit.
+4. Verify that `/lib/systemd/system/sonde-gateway.service` exists (shipped by the `.deb` package or manually installed).
+5. Run `systemctl daemon-reload`.
+6. Run `systemctl enable sonde-gateway.service`.
+7. Print success message. The operator must run `systemctl start sonde-gateway` separately (or reboot).
+
+### 18.3  `sonde-gateway uninstall` subcommand (GW-1502)
+
+The `uninstall` subcommand reverses the service registration performed by `install`. It does **not** delete the database, master key, or configuration files.
+
+**Windows:**
+
+1. Validate Administrator privileges.
+2. Open the SCM and attempt to open the `sonde-gateway` service.
+3. If the service does not exist, print an informational message and exit with code 0.
+4. If the service is running, send `SERVICE_CONTROL_STOP` and wait up to 30 seconds for `SERVICE_STOPPED`.
+5. Call `DeleteService`.
+6. Print success message and exit with code 0.
+
+**Linux:**
+
+1. Validate root privileges.
+2. Run `systemctl stop sonde-gateway.service` (ignore errors if not running).
+3. Run `systemctl disable sonde-gateway.service` (ignore errors if not enabled).
+4. Print success message. The environment file at `/etc/sonde/environment` and the systemd unit file are preserved (the `.deb` package owns the unit file; `dpkg -r` removes it).
+
+### 18.4  Linux `.deb` package integration (GW-1503)
+
+The `.deb` package (built by `installer/linux/build-deb.sh`) ships:
+
+| Path | Contents |
+|---|---|
+| `/usr/local/bin/sonde-gateway` | Gateway binary |
+| `/usr/local/bin/sonde-admin` | Admin CLI binary |
+| `/lib/systemd/system/sonde-gateway.service` | systemd unit file |
+| `/etc/sonde/environment` | Default environment (conffile; defaults `SERIAL_PORT=/dev/ttyUSB0`) |
+
+**`postinst` script:**
+
+1. Create `sonde` system group and user (if absent).
+2. Add `sonde` to the `dialout` group for serial port access.
+3. Create `/etc/sonde` (root:sonde, mode 750) and `/var/lib/sonde` (sonde:sonde, mode 750).
+4. Run `systemctl daemon-reload && systemctl enable --now sonde-gateway.service` to enable and start the service.
+
+**`prerm` script:**
+
+1. Stop the service (`systemctl stop sonde-gateway.service`).
+2. On `remove` or `purge` (but not `upgrade`), disable the service.
+
+**systemd unit file** (`sonde-gateway.service`):
+
+The unit runs as the `sonde` user with `SupplementaryGroups=dialout`, reads all runtime parameters (`SERIAL_PORT`, `DB_PATH`, `KEY_PROVIDER`, `MASTER_KEY_FILE`, `CHANNEL`) from `EnvironmentFile=/etc/sonde/environment`, and applies security hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/var/lib/sonde`). See `installer/linux/sonde-gateway.service` for the full unit definition.
+
+### 18.5  Configuration file locations
+
+| Platform | Configuration | Database | Master key |
+|---|---|---|---|
+| Windows | `%ProgramData%\sonde\` | `%ProgramData%\sonde\gateway.db` | `%ProgramData%\sonde\master-key.hex` |
+| Linux (`.deb`) | `/etc/sonde/` | `/var/lib/sonde/gateway.db` | `/etc/sonde/master-key.hex` |
+| Linux (manual) | Operator-chosen | Operator-chosen | Operator-chosen |
+
+The MSI creates `%ProgramData%\sonde\` at install time (via the `ConfigGroup` component). The `.deb` `postinst` creates `/etc/sonde/` and `/var/lib/sonde/`. In both cases the directories are preserved on uninstall to avoid data loss.
+
+---
+
+## 19  Handler configuration management
+
+> **Requirements:** GW-1401 (handler storage), GW-1402 (admin API), GW-1403 (CLI), GW-1404 (live reload), GW-1405 (bootstrap from file), GW-1406 (state export/import).
+
+Handler routing is currently loaded from a YAML file (`--handler-config`). This section specifies database-backed handler configuration with admin API management, live reload, and state bundle integration.
+
+### 19.1  Database schema
+
+```sql
+CREATE TABLE IF NOT EXISTS handlers (
+    program_hash     TEXT PRIMARY KEY,   -- 64-char hex SHA-256 or "*" for catch-all
+    command          TEXT NOT NULL,      -- executable path
+    args             TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
+    working_dir      TEXT,              -- optional working directory
+    reply_timeout_ms INTEGER            -- per-handler reply timeout in ms (NULL = use default)
+);
+```
+
+`program_hash` is the primary key. The wildcard value `"*"` represents a catch-all handler (maps to `ProgramMatcher::Any`). All other values are 64-character lowercase hex strings (maps to `ProgramMatcher::Hash`).
+
+`args` is stored as a JSON array of strings (e.g., `["--verbose", "--port", "8080"]`). An empty array is stored as `"[]"`.
+
+### 19.2  Handler record
+
+```rust
+pub struct HandlerRecord {
+    pub program_hash: String,      // "*" or 64-char hex
+    pub command: String,
+    pub args: Vec<String>,
+    pub working_dir: Option<String>,
+    pub reply_timeout_ms: Option<u64>,  // per-handler reply timeout (None = use default)
+}
+```
+
+Conversion to `HandlerConfig` (§9.1):
+- `"*"` → `ProgramMatcher::Any`
+- 64-char hex → `ProgramMatcher::Hash(decoded_bytes)`
+
+### 19.3  Storage trait additions
+
+```rust
+#[async_trait]
+pub trait Storage: Send + Sync {
+    // ... existing methods ...
+
+    // Handler configuration (GW-1401)
+    async fn add_handler(&self, record: &HandlerRecord) -> Result<(), StorageError>;
+    async fn remove_handler(&self, program_hash: &str) -> Result<bool, StorageError>;
+    async fn list_handlers(&self) -> Result<Vec<HandlerRecord>, StorageError>;
+}
+```
+
+- `add_handler` — Inserts a handler record. Returns `StorageError::AlreadyExists` if a handler with the same `program_hash` is already registered.
+- `remove_handler` — Deletes the handler with the given `program_hash`. Returns `true` if a row was deleted, `false` if no matching row existed.
+- `list_handlers` — Returns all handler records ordered by `program_hash`.
+
+The `SqliteStorage` implementation uses `INSERT INTO handlers ... ON CONFLICT DO NOTHING` for `add_handler` (checking `changes()` to detect duplicates) and `DELETE FROM handlers WHERE program_hash = ?` for `remove_handler`.
+
+### 19.4  Admin API additions
+
+The gRPC service definition (§13.1) gains three new RPCs:
+
+```protobuf
+service GatewayAdmin {
+    // ... existing RPCs ...
+
+    // Handler management (GW-1402)
+    rpc AddHandler(AddHandlerRequest) returns (Empty);
+    rpc RemoveHandler(RemoveHandlerRequest) returns (Empty);
+    rpc ListHandlers(Empty) returns (ListHandlersResponse);
+}
+
+message AddHandlerRequest {
+    string program_hash = 1;          // "*" or 64-char hex
+    string command = 2;
+    repeated string args = 3;
+    string working_dir = 4;           // empty string = not set
+    uint64 reply_timeout_ms = 5;      // 0 = use default
+}
+
+message RemoveHandlerRequest {
+    string program_hash = 1;
+}
+
+message HandlerInfo {
+    string program_hash = 1;
+    string command = 2;
+    repeated string args = 3;
+    string working_dir = 4;
+    uint64 reply_timeout_ms = 5;      // 0 = not set (use default)
+}
+
+message ListHandlersResponse {
+    repeated HandlerInfo handlers = 1;
+}
+```
+
+The operations table (§13.2) gains:
+
+| Operation | gRPC method | Description |
+|---|---|---|
+| Add handler | `AddHandler` | Registers a handler for a `program_hash`. Validates the hash format (64-char hex or `"*"`). Returns `ALREADY_EXISTS` if a handler with the same hash is already registered. Triggers live reload (GW-1404). |
+| Remove handler | `RemoveHandler` | Removes the handler for the given `program_hash`. Returns `NOT_FOUND` if no match. Terminates the handler process if running. Triggers live reload (GW-1404). |
+| List handlers | `ListHandlers` | Returns all configured handlers with their full configuration. |
+
+The CLI tool (§13.3) gains:
+
+```
+sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>] [--reply-timeout <ms>]
+sonde-admin handler remove <program-hash>
+sonde-admin handler list
+```
+
+### 19.5  Handler live reload
+
+The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<RwLock<HandlerRouter>>`). When `AddHandler` or `RemoveHandler` succeeds at the storage layer:
+
+1. The `AdminService` calls `list_handlers()` on the storage trait to get the current handler set.
+2. It converts each `HandlerRecord` to a `HandlerConfig` (§19.2).
+3. It acquires a write lock on the `HandlerRouter` and calls `reload(new_configs)`.
+4. `HandlerRouter::reload` diffs the old and new config sets:
+   - **Added handlers** are inserted into the routing table (process spawned lazily on first message).
+   - **Removed handlers** have their running process terminated (SIGTERM, then SIGKILL after 5 seconds) and are removed from the routing table.
+   - **Unchanged handlers** (same `program_hash`, `command`, `args`, `working_dir`, `reply_timeout_ms`) retain their existing `HandlerProcess` instance (no restart).
+
+This approach avoids disrupting in-flight requests to unaffected handlers.
+
+> **Shared state note (D-485 extension):** The `HandlerRouter` reference shared between the admin API and the engine frame loop MUST be the same `Arc<RwLock<HandlerRouter>>` instance. The frame loop MUST only hold a read lock long enough to snapshot/clone the routing state it needs for a given frame, and MUST drop the lock before performing any handler I/O or other `.await` points. The admin API acquires a write lock only during reload.
+
+### 19.6  Bootstrap from file
+
+On startup, if `--handler-config <path>` is provided (GW-1405):
+
+1. Parse the YAML file using the existing `load_handler_configs()` function (§9.1).
+2. For each parsed `HandlerConfig`, convert to a `HandlerRecord` and call `storage.add_handler()`. The `HandlerRecord` is populated from `HandlerConfig` fields: `command`, `args`, `working_dir`, and `reply_timeout` (converted to `reply_timeout_ms`).
+
+   > **In-memory config note:** The `HandlerConfig` (and its inner `HandlerProcess`) will be extended to include `working_dir: Option<String>` so that this field is available in the in-memory routing config after conversion from `HandlerRecord`. The existing `reply_timeout: Option<Duration>` field on `HandlerConfig` is already present in the codebase.
+
+3. If `add_handler` returns `AlreadyExists`, skip silently (database takes precedence).
+4. If a YAML entry is invalid (e.g., malformed hex hash), log a warning and continue.
+5. After bootstrap, load all handlers from the database via `list_handlers()` and build the `HandlerRouter`.
+
+This merge-on-startup strategy means the YAML file acts as a seed — it populates the database on first run but does not overwrite subsequent admin API changes.
+
+### 19.7  State export/import
+
+The state bundle (§13.2, `ExportState` / `ImportState`) is extended to include handler records (GW-1406).
+
+**Export:** `export_state()` serializes handler records alongside nodes, programs, and phone PSKs. The existing state bundle already reserves root key `ROOT_KEY_HANDLERS = 6` for handlers and defines handler-level CBOR integer keys (see `state_bundle.rs`). The export layer reuses this format, encoding each `HandlerRecord` as a handler entry with a single-element `matchers` array:
+
+| Key | Name | Type | Description |
+|-----|------|------|-------------|
+| 1 | `HANDLER_KEY_MATCHERS` | array of text | `"*"` or hex hash strings |
+| 2 | `HANDLER_KEY_COMMAND` | text | Executable path |
+| 3 | `HANDLER_KEY_ARGS` | array of text | Command arguments (omitted if empty) |
+| 4 | `HANDLER_KEY_REPLY_TIMEOUT_MS` | integer | Reply timeout in ms (omitted if unset) |
+| 5 | `HANDLER_KEY_WORKING_DIR` | text | Working directory (omitted if unset) |
+
+On import, the existing `handler_config_from_cbor` decoder is extended to read key 5 (`working_dir`). Multi-matcher entries in older bundles are expanded to one `HandlerRecord` per matcher. This preserves full backward compatibility with bundles exported before `working_dir` support.
+
+**Import:** `import_state()` restores handler records atomically within the same transaction that replaces nodes and programs. If the incoming bundle contains a handlers array, all existing handlers are deleted and replaced. If the handlers key is absent (bundle from older gateway version), existing handlers are preserved (no-op for backwards compatibility).
+
+After import, the `AdminService` triggers a handler live reload (§19.5) so the `HandlerRouter` reflects the imported configuration.

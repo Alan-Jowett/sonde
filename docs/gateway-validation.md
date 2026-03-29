@@ -2099,6 +2099,250 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1400  Handler storage CRUD
+
+**Validates:** GW-1401
+
+**Procedure:**
+1. Create an in-memory `SqliteStorage` instance.
+2. Call `add_handler` with `program_hash` = `"*"`, `command` = `"python"`, `args` = `["handler.py"]`, `working_dir` = `None`.
+3. Assert: `list_handlers` returns one record matching the inserted values.
+4. Call `add_handler` with the same `program_hash` `"*"`.
+5. Assert: returns `StorageError::AlreadyExists`.
+6. Call `add_handler` with a valid 64-char hex `program_hash`.
+7. Assert: `list_handlers` returns two records.
+8. Call `remove_handler` with the hex `program_hash`.
+9. Assert: returns `true` and `list_handlers` returns one record.
+10. Call `remove_handler` with a non-existent `program_hash`.
+11. Assert: returns `false`.
+
+---
+
+### T-1401  Handler CRUD via admin API
+
+**Validates:** GW-1402
+
+**Procedure:**
+1. Start gateway with no handlers configured.
+2. Call `ListHandlers` via gRPC.
+3. Assert: response contains zero handlers.
+4. Call `AddHandler` with `program_hash` = `"*"`, `command` = `"echo"`.
+5. Assert: success response.
+6. Call `ListHandlers`.
+7. Assert: response contains one handler with matching fields.
+8. Call `AddHandler` with the same `program_hash` = `"*"`.
+9. Assert: gRPC status `ALREADY_EXISTS`.
+10. Call `RemoveHandler` with `program_hash` = `"*"`.
+11. Assert: success response and `ListHandlers` returns zero handlers.
+12. Call `RemoveHandler` with `program_hash` = `"*"` again.
+13. Assert: gRPC status `NOT_FOUND`.
+
+---
+
+### T-1402  Handler persistence across restart
+
+**Validates:** GW-1401
+
+**Procedure:**
+1. Start a gateway with a file-backed `SqliteStorage`.
+2. Call `AddHandler` with `program_hash` = `"*"`, `command` = `"python"`, `args` = `["handler.py"]`.
+3. Stop the gateway.
+4. Restart the gateway with the same database file.
+5. Call `ListHandlers`.
+6. Assert: the handler added in step 2 is present with identical configuration.
+
+---
+
+### T-1403  Live reload — handler add
+
+**Validates:** GW-1404
+
+**Procedure:**
+1. Start gateway with no handlers configured. Register a test node with a known `program_hash`.
+2. Complete a WAKE handshake and send `APP_DATA`.
+3. Assert: no `APP_DATA_REPLY` is sent (no handler matched).
+4. Call `AddHandler` with the node's `program_hash` and a test echo handler command.
+5. Complete another WAKE handshake and send `APP_DATA`.
+6. Assert: `APP_DATA_REPLY` is received (the newly added handler processed the request).
+
+---
+
+### T-1404  Live reload — handler remove
+
+**Validates:** GW-1404
+
+**Procedure:**
+1. Start gateway with a catch-all handler (`program_hash` = `"*"`). Register a test node.
+2. Complete a WAKE handshake and send `APP_DATA`.
+3. Assert: `APP_DATA_REPLY` is received (handler matched).
+4. Call `RemoveHandler` with `program_hash` = `"*"`.
+5. Complete another WAKE handshake and send `APP_DATA`.
+6. Assert: no `APP_DATA_REPLY` is sent (handler removed).
+7. Assert: the handler process from step 2 is no longer running.
+
+---
+
+### T-1405  Bootstrap from YAML file
+
+**Validates:** GW-1405
+
+**Procedure:**
+1. Create a temporary `handlers.yaml` with two entries: a catch-all (`"*"`) and a specific hex hash.
+2. Start gateway with `--handler-config handlers.yaml` and an empty database.
+3. Call `ListHandlers`.
+4. Assert: both handlers from the YAML file are present.
+5. Call `RemoveHandler` for the hex-hash entry.
+6. Restart gateway with `--handler-config handlers.yaml` and the same database.
+7. Call `ListHandlers`.
+8. Assert: only the catch-all handler is present (the hex-hash entry was re-imported from YAML) and the catch-all was not duplicated.
+
+---
+
+### T-1405a  Bootstrap with invalid YAML entry
+
+**Validates:** GW-1405
+
+**Procedure:**
+1. Create a `handlers.yaml` with one valid entry and one entry containing a malformed `program_hash` (e.g., `"not-a-hex-string"`).
+2. Start gateway with `--handler-config handlers.yaml`.
+3. Assert: the gateway starts successfully.
+4. Assert: a warning is logged for the invalid entry.
+5. Call `ListHandlers`.
+6. Assert: only the valid entry was imported.
+
+---
+
+### T-1406  State export/import with handlers
+
+**Validates:** GW-1406
+
+**Procedure:**
+1. Start gateway A. Add two handlers via `AddHandler`.
+2. Call `ExportState` with a test passphrase.
+3. Start gateway B with an empty database and different handlers.
+4. Call `ImportState` on gateway B with the bundle from step 2.
+5. Call `ListHandlers` on gateway B.
+6. Assert: gateway B has exactly the two handlers from gateway A (the pre-existing handlers were replaced).
+
+---
+
+### T-1406a  State import — backwards compatibility
+
+**Validates:** GW-1406
+
+**Procedure:**
+1. Start a gateway with two handlers configured.
+2. Import a state bundle that was exported from an older gateway version (no handler records in the bundle).
+3. Call `ListHandlers`.
+4. Assert: the two pre-existing handlers are preserved (not deleted).
+
+---
+
+### T-1407  Handler add — program_hash validation
+
+**Validates:** GW-1402
+
+**Procedure:**
+1. Call `AddHandler` with `program_hash` = `"invalid"`.
+2. Assert: gRPC status `INVALID_ARGUMENT`.
+3. Call `AddHandler` with `program_hash` = `"AABB"` (too short).
+4. Assert: gRPC status `INVALID_ARGUMENT`.
+5. Call `AddHandler` with `program_hash` = 64-char hex string.
+6. Assert: success.
+7. Call `AddHandler` with `program_hash` = `"*"`.
+8. Assert: success.
+
+---
+
+## 14  Installer and service management tests
+
+### T-1500  MSI adds PATH entry
+
+**Validates:** GW-1500
+
+**Procedure:**
+1. Install the MSI on a clean Windows VM.
+2. Open a new PowerShell window (not the same session used for installation).
+3. Run `sonde-gateway --version`.
+4. Assert: the command succeeds and prints a version string.
+5. Run `$env:PATH -split ';' | Where-Object { $_ -match 'Sonde' }`.
+6. Assert: exactly one entry matches and it points to the installed `bin` directory.
+7. Uninstall the MSI.
+8. Open a new PowerShell window.
+9. Assert: the `Sonde\bin` entry is no longer present in `$env:PATH`.
+
+---
+
+### T-1501  `sonde-gateway install` registers Windows service
+
+**Validates:** GW-1501
+
+**Procedure:**
+1. On a Windows machine with the gateway binary on PATH, open an elevated PowerShell prompt.
+2. Run `sonde-gateway install --port COM5 --db C:\ProgramData\sonde\gateway.db --master-key-file C:\ProgramData\sonde\master-key.hex`.
+3. Assert: the command exits with code 0 and prints a success message.
+4. Run `sc.exe qc sonde-gateway`.
+5. Assert: the service exists with `START_TYPE` = `AUTO_START`.
+6. Assert: the `BINARY_PATH_NAME` includes `--port COM5`, `--db`, and `--master-key-file` flags.
+7. Run `sonde-gateway install --port COM6 --db C:\ProgramData\sonde\gateway.db --master-key-file C:\ProgramData\sonde\master-key.hex`.
+8. Assert: the command exits with code 0 (idempotent update).
+9. Run `sc.exe qc sonde-gateway`.
+10. Assert: `BINARY_PATH_NAME` now includes `--port COM6`.
+
+---
+
+### T-1502  `sonde-gateway uninstall` removes Windows service
+
+**Validates:** GW-1502
+
+**Procedure:**
+1. Prerequisite: a service registered via `sonde-gateway install` (see T-1501).
+2. Start the service: `sc.exe start sonde-gateway`.
+3. Run `sonde-gateway uninstall` from an elevated prompt.
+4. Assert: the command exits with code 0.
+5. Run `sc.exe query sonde-gateway`.
+6. Assert: the service is not found (exit code indicates failure).
+7. Assert: the database file and master key file still exist on disk.
+8. Run `sonde-gateway uninstall` again.
+9. Assert: the command exits with code 0 and prints an informational "not registered" message.
+
+---
+
+### T-1503  Service starts and connects to modem on boot
+
+**Validates:** GW-1501, GW-1502
+
+**Procedure:**
+1. Register the service via `sonde-gateway install --port <MODEM_PORT> --db <DB_PATH> --master-key-file <KEY_PATH>`.
+2. Reboot the machine (or restart the service: `sc.exe start sonde-gateway` on Windows, `systemctl start sonde-gateway` on Linux).
+3. Assert: the service reaches `RUNNING` state within 30 seconds.
+4. Assert: the gateway log contains `"modem transport ready"`.
+5. Stop the service.
+6. Assert: the service stops cleanly within 10 seconds.
+
+---
+
+### T-1504  Linux `.deb` installs and enables systemd service
+
+**Validates:** GW-1503
+
+**Procedure:**
+1. Install the `.deb` package on a clean Debian/Ubuntu VM: `sudo dpkg -i sonde_<VERSION>_amd64.deb`.
+2. Assert: the `sonde` user and group exist (`getent passwd sonde` succeeds).
+3. Assert: the `sonde` user is a member of the `dialout` group.
+4. Assert: `/lib/systemd/system/sonde-gateway.service` exists.
+5. Assert: `/etc/sonde/environment` exists and contains `SERIAL_PORT=/dev/ttyUSB0`.
+6. Assert: `systemctl is-enabled sonde-gateway.service` returns `enabled` (the `postinst` script enables the unit).
+7. Edit `/etc/sonde/environment` to set the correct serial port if it differs from `/dev/ttyUSB0`.
+8. Run `systemctl start sonde-gateway`.
+9. Assert: `systemctl is-active sonde-gateway.service` returns `active`.
+10. Assert: the gateway log contains `"modem transport ready"`.
+11. Remove the package: `sudo dpkg -r sonde`.
+12. Assert: the service is stopped and disabled.
+13. Assert: `/var/lib/sonde/gateway.db` is preserved (not deleted by removal).
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Requirement | Test(s) |
@@ -2190,3 +2434,14 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1302 | T-1303 |
 | GW-1303 | T-1304 |
 | GW-1305 | T-1305a, T-1305b |
+| GW-1400 | *(verified by integration/manual testing)* |
+| GW-1401 | T-1400, T-1402 |
+| GW-1402 | T-1401, T-1407 |
+| GW-1403 | *(verified via T-1401 — CLI wraps gRPC)* |
+| GW-1404 | T-1403, T-1404 |
+| GW-1405 | T-1405, T-1405a |
+| GW-1406 | T-1406, T-1406a |
+| GW-1500 | T-1500 |
+| GW-1501 | T-1501, T-1503 |
+| GW-1502 | T-1502, T-1503 |
+| GW-1503 | T-1504 |

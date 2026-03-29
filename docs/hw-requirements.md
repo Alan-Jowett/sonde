@@ -80,8 +80,13 @@ accepts a range of input voltages and provides 3.3V to the ESP32-C3.
 
 **Acceptance criteria:**
 
-1. Input voltage range: 3.0V–6V (covers single-cell LiPo discharge down to 3.0V cutoff and USB 5V).
-2. Output: 3.3V ± 5%, minimum 500 mA continuous.
+1. Input voltage range: regulator must accept 2.3V–6V. With Schottky
+   OR-ing diode in the battery/USB power path, the effective minimum
+   battery voltage for 3.3V regulation is ≈ 3.35V (VBAT must exceed
+   3.3V + regulator dropout + diode Vf).
+2. Output: 3.3V ± 5%, minimum 250 mA continuous. Radio TX transient
+   peaks (up to 340 mA for < 10 ms) are handled by bulk output
+   capacitance per the schematic design.
 3. Quiescent current ≤ 10 µA (for battery-powered deep sleep).
 4. Reverse polarity protection on battery input.
 

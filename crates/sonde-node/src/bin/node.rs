@@ -47,8 +47,8 @@ fn main() {
     #[cfg(not(any(debug_assertions, feature = "verbose")))]
     log::set_max_level(log::LevelFilter::Warn);
 
-    info!("sonde-node booting (commit {})", env!("SONDE_GIT_COMMIT"));
-    info!("firmware ABI version: {}", sonde_node::FIRMWARE_ABI_VERSION);
+    warn!("sonde-node booting (commit {})", env!("SONDE_GIT_COMMIT"));
+    warn!("firmware ABI version: {}", sonde_node::FIRMWARE_ABI_VERSION);
 
     // Log boot reason (ND-1000).
     let reset_reason = unsafe { esp_idf_svc::sys::esp_reset_reason() };
@@ -159,6 +159,8 @@ fn main() {
 
     // Read the stored WiFi channel (falls back to channel 1 if not yet set).
     let channel = storage.read_channel().unwrap_or(1);
+
+    warn!("ESP-NOW channel={} (ND-1016)", channel);
 
     let mut transport = EspNowTransport::new(peripherals.modem, sysloop, nvs_partition, channel)
         .expect("failed to initialize ESP-NOW transport");

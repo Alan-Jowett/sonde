@@ -1263,6 +1263,36 @@ When the node encounters an error at an operator-visible boundary (WiFi scan, HM
 
 ---
 
+### ND-1015  Boot version visibility
+
+**Priority:** Must  
+**Source:** hardware testing
+
+**Description:**  
+The node MUST log the firmware commit hash and ABI version at boot using `warn!()` level so the information is visible even in quiet firmware builds that use `release_max_level_warn`. Operators need to identify which firmware is running on a node without requiring a debug build.
+
+**Acceptance criteria:**
+
+1. The boot commit-hash and ABI-version log lines use `warn!()`, not `info!()`.
+2. The commit hash and ABI version are visible in the serial output of a quiet (release) firmware build.
+
+---
+
+### ND-1016  ESP-NOW channel logging at boot
+
+**Priority:** Must  
+**Source:** hardware testing
+
+**Description:**  
+The node MUST log the WiFi / ESP-NOW channel number at boot using `warn!()` level. Channel mismatches between the node and the gateway modem are a common field debugging issue; operators need the channel number in the boot log to diagnose connectivity problems.
+
+**Acceptance criteria:**
+
+1. The node logs the ESP-NOW channel number at `warn!()` level before initializing the ESP-NOW transport.
+2. The channel number is visible in the serial output of a quiet (release) firmware build.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1341,3 +1371,5 @@ When the node encounters an error at an operator-visible boundary (WiFi scan, HM
 | ND-1012 | Build-type–aware log levels | Must |
 | ND-1013 | GPIO sleep preparation | Must |
 | ND-1014 | Error diagnostic observability | Must |
+| ND-1015 | Boot version visibility | Must |
+| ND-1016 | ESP-NOW channel logging at boot | Must |

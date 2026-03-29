@@ -12,7 +12,12 @@ gateway, node, BPF program, and handler.
 | Host machine (Linux/Windows) | Gateway service + admin CLI |
 | `espflash` CLI | Firmware flashing (`cargo install espflash`) |
 | `gh` CLI | Download CI artifacts |
-| `clang` with BPF target | Compile BPF programs |
+| `clang` with BPF target | Compile BPF programs (see install note below) |
+
+**Installing clang (required for step 8):**
+- **Ubuntu/Debian:** `sudo apt install clang`
+- **macOS:** `brew install llvm`
+- **Windows:** Download from https://releases.llvm.org/ or `winget install LLVM.LLVM`
 
 ## 1. Download firmware and tools from CI
 
@@ -73,7 +78,23 @@ gh run download $runId --name sonde-pair-windows --dir .\pairing-tool\
 
 > **Note:** The Windows pairing tool installer follows the NSIS filename
 > pattern `Sonde Pairing Tool_X.X.X_x64-setup.exe` (where `X.X.X` is the
-> version number).
+> version number — e.g., `Sonde Pairing Tool_0.2.0_x64-setup.exe` for
+> the current release). After installation the app is available in the
+> Start Menu as **Sonde Pairing Tool** or at
+> `C:\Program Files\Sonde Pairing Tool\Sonde Pairing Tool.exe`.
+
+> **Alternative: platform installers.**  The Nightly Release CI workflow
+> also produces standalone installers for the gateway and admin CLI:
+>
+> - **Windows:** Download the `sonde-installer-windows` artifact
+>   (`sonde-x86_64.msi`) and run it. The MSI installs the gateway and
+>   admin CLI to `Program Files`.
+> - **Linux:** Download the `sonde-installer-linux` artifact
+>   (`sonde_*_amd64.deb`) and install with `sudo dpkg -i sonde_*.deb`.
+>   The deb package includes a systemd service unit.
+>
+> These installers are an alternative to the raw binary downloads above —
+> use whichever method you prefer.
 
 ## 2. Flash modem firmware
 
@@ -164,6 +185,7 @@ Before proceeding, confirm the gateway and modem are operational:
 ```sh
 ./bin/sonde-admin modem status
 ./bin/sonde-admin modem scan
+./bin/sonde-admin modem channel
 ./bin/sonde-admin node list
 ./bin/sonde-admin program list
 ```
@@ -172,6 +194,7 @@ Before proceeding, confirm the gateway and modem are operational:
 ```powershell
 .\bin\sonde-admin.exe modem status
 .\bin\sonde-admin.exe modem scan
+.\bin\sonde-admin.exe modem channel
 .\bin\sonde-admin.exe node list
 .\bin\sonde-admin.exe program list
 ```
@@ -179,8 +202,12 @@ Before proceeding, confirm the gateway and modem are operational:
 **Expected results on a fresh deployment:**
 - `modem status` — modem connected, firmware version and channel displayed
 - `modem scan` — channel/AP table displayed (see step 6 for interpretation)
+- `modem channel` — current RF channel (default 1); verify it matches your deployment plan
 - `node list` — empty (no nodes provisioned yet)
 - `program list` — empty (no programs ingested yet)
+
+> **Tip:** Run these checks any time you suspect a connectivity issue —
+> they are a fast way to verify the gateway ↔ modem link is healthy.
 
 ## 6. Choose an ESP-NOW channel
 
@@ -392,7 +419,7 @@ minimal power consumption. To debug later, reflash the verbose variant.
 | `0 APs on all channels` | WiFi scan error — check modem UART for error code |
 | Handler not receiving data | Check `handlers.yaml` path, ensure handler is executable |
 | `non-ELF program images not accepted` | Release gateway rejects raw CBOR — submit ELF files |
-| Windows BLE pairing fails | Delete existing Bluetooth pairing for the modem/node from Windows Settings → Bluetooth → paired devices before retrying |
+| Windows BLE pairing fails with "Not connected" | Stale Bluetooth cache — open Windows Settings → Bluetooth & devices → Devices, find the modem/node entry, click **Remove device**, then retry pairing from scratch |
 | `espflash` "port busy" error | Close any open serial monitor (e.g., `espflash monitor`, PuTTY) before flashing |
 | Gateway only shows WARN logs | Set `RUST_LOG=sonde_gateway=info` before starting the gateway (step 4) |
 | `NODE_ACK` indication warning in pairing tool | Non-fatal — the node is provisioned successfully. Verify with `sonde-admin node list` |

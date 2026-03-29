@@ -1583,6 +1583,80 @@ When the gateway encounters an error at a user-facing or operator-visible bounda
 
 ---
 
+## 13  Installer and service management
+
+### GW-1500  Installer PATH registration
+
+**Priority:** Must  
+**Source:** Issue #524
+
+**Description:**  
+The Windows MSI installer MUST add the `bin` directory (default `%ProgramFiles%\Sonde\bin`) to the system `PATH` environment variable so that `sonde-gateway` and `sonde-admin` are available from any shell without manual PATH editing.
+
+**Acceptance criteria:**
+
+1. After a fresh MSI install, opening a new Command Prompt or PowerShell window and running `sonde-gateway --version` succeeds without specifying the full path.
+2. After MSI uninstall, the PATH entry is removed.
+3. The PATH modification uses the WiX `Environment` element with `Part="last"` to append rather than overwrite.
+4. Existing PATH entries are preserved; no duplicates are created on upgrade installs.
+
+---
+
+### GW-1501  Post-install service registration CLI
+
+**Priority:** Must  
+**Source:** Issue #524
+
+**Description:**  
+The `sonde-gateway` binary MUST support a `sonde-gateway install` subcommand that registers the gateway as a platform service (Windows SCM service or Linux systemd unit). The command accepts `--port`, `--db`, `--key-provider`, `--master-key-file`, and `--channel` parameters that are persisted into the service configuration. On Windows, the service is registered with the Service Control Manager using `SERVICE_AUTO_START`. On Linux, the command writes an environment file to `/etc/sonde/environment` and enables the systemd unit.
+
+**Acceptance criteria:**
+
+1. `sonde-gateway install --port COM5 --db C:\ProgramData\sonde\gateway.db --master-key-file C:\ProgramData\sonde\master-key.hex` registers a Windows service named `sonde-gateway` with the correct `ImagePath` (including CLI flags).
+2. `sonde-gateway install --port /dev/ttyACM0 --db /var/lib/sonde/gateway.db --key-provider file` writes `SERIAL_PORT=/dev/ttyACM0` (and other parameters) to `/etc/sonde/environment` and runs `systemctl enable sonde-gateway.service`.
+3. If the service is already registered, the command updates the existing registration (idempotent).
+4. The command requires elevated privileges (Administrator on Windows, root on Linux) and exits with a clear error message if run unprivileged.
+5. The `--port` parameter is required; the command exits with an error if omitted.
+
+---
+
+### GW-1502  Post-install service unregistration CLI
+
+**Priority:** Must  
+**Source:** Issue #524
+
+**Description:**  
+The `sonde-gateway` binary MUST support a `sonde-gateway uninstall` subcommand that stops and removes the platform service registration. On Windows, this stops the SCM service (if running) and deletes the service entry. On Linux, this stops and disables the systemd unit. The command MUST NOT delete the database, configuration files, or master key material.
+
+**Acceptance criteria:**
+
+1. After `sonde-gateway uninstall`, the Windows service is no longer listed in `sc query sonde-gateway`.
+2. After `sonde-gateway uninstall`, the systemd unit is stopped and disabled (`systemctl is-enabled sonde-gateway.service` returns `disabled`).
+3. Running `sonde-gateway uninstall` when no service is registered exits successfully with an informational message (idempotent).
+4. The database file, master key file, and configuration directory are preserved after uninstall.
+5. The command requires elevated privileges and exits with a clear error message if run unprivileged.
+
+---
+
+### GW-1503  Linux package systemd integration
+
+**Priority:** Should  
+**Source:** Issue #524
+
+**Description:**  
+The `.deb` package SHOULD include a systemd unit file and `postinst` / `prerm` scripts that create a `sonde` system user, enable the service, and configure the environment file at `/etc/sonde/environment`. The operator MUST edit `/etc/sonde/environment` to set `SERIAL_PORT` before the service will start successfully. The `prerm` script stops and disables the service on package removal (but not on upgrade).
+
+**Acceptance criteria:**
+
+1. Installing the `.deb` on a systemd-based system creates the `sonde` user and group.
+2. The `sonde` user is added to the `dialout` group for serial port access.
+3. The service unit file reads `SERIAL_PORT` from `/etc/sonde/environment` via `EnvironmentFile=`.
+4. `dpkg -L sonde` lists `/lib/systemd/system/sonde-gateway.service` and `/etc/sonde/environment`.
+5. On package removal, the service is stopped and disabled; on upgrade, the service is stopped but not disabled.
+6. `/etc/sonde/environment` is listed in `conffiles` so `dpkg` prompts before overwriting operator edits.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |

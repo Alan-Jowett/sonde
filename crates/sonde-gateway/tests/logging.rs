@@ -401,8 +401,6 @@ async fn t1303_modem_frame_debug_logging() {
     assert!(logs_contain("peer_mac=[170, 187, 204, 221, 238, 255]"));
     assert!(logs_contain("len=11"));
 }
-<<<<<<< HEAD
-=======
 
 // ── T-1308  APP_DATA handler pipeline logging ──────────────────────────
 
@@ -658,17 +656,26 @@ async fn t1308_app_data_handler_pipeline_logging() {
         .await
         .expect("expected APP_DATA_REPLY");
 
-    // Allow handler process to exit and logs to flush.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Send a second APP_DATA to trigger ensure_running() → try_wait(), which
-    // detects that the prior single-shot handler has exited and emits the
-    // "handler exited" log (GW-1308 AC5). ensure_running() may then spawn a new
-    // handler and produce a reply, but this test ignores the reply and only
-    // asserts on the emitted logs.
-    let app_frame2 = node.build_app_data(starting_seq + 1, &blob);
-    let _ = gw.process_frame(&app_frame2, node.peer_address()).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Poll for the "handler exited" log instead of fixed sleep, which is
+    // flaky on slow CI runners. Each iteration sends a second APP_DATA to
+    // trigger ensure_running() → try_wait(), which detects that the prior
+    // single-shot handler has exited and emits the "handler exited" log
+    // (GW-1308 AC5).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let app_frame2 = node.build_app_data(starting_seq + 1, &blob);
+        let _ = gw.process_frame(&app_frame2, node.peer_address()).await;
+        if logs_contain("handler exited") {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "expected 'handler exited' log within 5 seconds — \
+                 handler process may not have exited in time"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // GW-1308 AC1: APP_DATA received with node_id, program_hash, len.
     assert!(
@@ -745,4 +752,3 @@ fn decode_command(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
     let msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
     (decoded.header, msg)
 }
->>>>>>> a243124 (fix(test): use require_python!() macro for T-1308 test)

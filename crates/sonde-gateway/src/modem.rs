@@ -511,29 +511,45 @@ impl Transport for UsbEspNowTransport {
     }
 }
 
+/// Default number of consecutive health poll failures before triggering a
+/// modem reconnect (GW-1103 criterion 6).
+pub const DEFAULT_MAX_HEALTH_POLL_FAILURES: u32 = 3;
+
 /// Spawn a periodic health monitor for the modem transport.
 ///
 /// Polls `GET_STATUS` every `interval` and logs tx_fail deltas and reboots.
 /// Takes a `Weak` reference so the monitor exits automatically when the
 /// transport is dropped (enabling the "drop + rebuild" recovery pattern).
+///
+/// After `max_consecutive_failures` consecutive poll failures the monitor
+/// logs at `ERROR` level and returns `true`, signalling the caller that a
+/// modem reconnect is needed.  Returns `false` on cancellation or when the
+/// transport is dropped.
 pub fn spawn_health_monitor(
     transport: std::sync::Weak<UsbEspNowTransport>,
     interval: std::time::Duration,
     cancel: tokio_util::sync::CancellationToken,
-) -> tokio::task::JoinHandle<()> {
+    max_consecutive_failures: u32,
+) -> tokio::task::JoinHandle<bool> {
     tokio::spawn(async move {
         if interval.is_zero() {
             warn!("health monitor interval is zero, disabling");
-            return;
+            return false;
+        }
+        if max_consecutive_failures == 0 {
+            warn!("max_consecutive_failures is zero, disabling health monitor");
+            cancel.cancelled().await;
+            return false;
         }
         let mut prev_tx_fail: Option<u32> = None;
         let mut prev_uptime: Option<u32> = None;
+        let mut consecutive_failures: u32 = 0;
 
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
                     debug!("health monitor cancelled");
-                    return;
+                    return false;
                 }
                 _ = tokio::time::sleep(interval) => {}
             }
@@ -542,12 +558,13 @@ pub fn spawn_health_monitor(
                 Some(t) => t,
                 None => {
                     debug!("transport dropped, stopping health monitor");
-                    return;
+                    return false;
                 }
             };
 
             match transport.poll_status().await {
                 Ok(status) => {
+                    consecutive_failures = 0;
                     if let Some(prev) = prev_tx_fail {
                         if status.tx_fail_count > prev {
                             let delta = status.tx_fail_count - prev;
@@ -580,7 +597,21 @@ pub fn spawn_health_monitor(
                     );
                 }
                 Err(e) => {
-                    warn!(error = %e, "modem health poll failed");
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    if consecutive_failures >= max_consecutive_failures {
+                        error!(
+                            consecutive_failures,
+                            error = %e,
+                            "modem connection lost — sustained health poll failures, triggering reconnect"
+                        );
+                        return true;
+                    }
+                    warn!(
+                        consecutive_failures,
+                        max = max_consecutive_failures,
+                        error = %e,
+                        "modem health poll failed"
+                    );
                 }
             }
         }

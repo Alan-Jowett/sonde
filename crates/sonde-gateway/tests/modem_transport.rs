@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sonde_gateway::modem::UsbEspNowTransport;
+use sonde_gateway::modem::{UsbEspNowTransport, DEFAULT_MAX_HEALTH_POLL_FAILURES};
 use sonde_gateway::transport::Transport;
 
 use sonde_protocol::modem::{
@@ -594,4 +594,40 @@ async fn gw1205_ble_indicate_sent_to_modem() {
         }
         other => panic!("expected BleIndicate, got {other:?}"),
     }
+}
+
+// ── T-1104c: Health poll — sustained failures trigger reconnect ─────────
+
+/// T-1104c  Sustained health poll failures trigger reconnect signal.
+///
+/// After `max_consecutive_failures` consecutive poll failures the health
+/// monitor must return `true` (reconnect needed).
+#[tokio::test]
+async fn t1104c_health_poll_sustained_failures_trigger_reconnect() {
+    let (transport, server) = create_transport_and_server(6).await;
+    let transport = Arc::new(transport);
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let weak = Arc::downgrade(&transport);
+
+    // Drop the server so every poll_status call will fail (write succeeds
+    // to the duplex but the STATUS response never arrives → timeout).
+    drop(server);
+
+    let handle = sonde_gateway::modem::spawn_health_monitor(
+        weak,
+        Duration::from_millis(10),
+        cancel.clone(),
+        DEFAULT_MAX_HEALTH_POLL_FAILURES,
+    );
+
+    let reconnect_needed = tokio::time::timeout(Duration::from_secs(30), handle)
+        .await
+        .expect("health monitor did not exit in time")
+        .expect("health monitor task panicked");
+
+    assert!(
+        reconnect_needed,
+        "health monitor must signal reconnect after sustained failures"
+    );
 }

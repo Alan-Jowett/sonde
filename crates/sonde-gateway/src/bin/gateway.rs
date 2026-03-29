@@ -594,6 +594,7 @@ async fn run_gateway(
             Arc::downgrade(&transport),
             Duration::from_secs(30),
             health_cancel.clone(),
+            sonde_gateway::modem::DEFAULT_MAX_HEALTH_POLL_FAILURES,
         );
 
         // 9. Wait for shutdown signal, or for any subsystem to exit unexpectedly.
@@ -614,8 +615,13 @@ async fn run_gateway(
                 health_cancel.cancel();
                 break; // gRPC failure is not recoverable
             }
-            _ = health_handle => {
-                error!("health monitor exited — modem likely disconnected");
+            result = health_handle => {
+                let reconnect = result.unwrap_or(false);
+                if reconnect {
+                    error!("health monitor: sustained poll failures — triggering modem reconnect");
+                } else {
+                    error!("health monitor exited — modem likely disconnected");
+                }
             }
         }
 

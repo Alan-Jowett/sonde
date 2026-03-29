@@ -308,4 +308,40 @@ impl AdminClient {
             .await?;
         Ok(())
     }
+
+    // -- Handler management (GW-1403) --
+
+    pub async fn add_handler(
+        &mut self,
+        program_hash: &str,
+        command: &str,
+        args: Vec<String>,
+        working_dir: Option<String>,
+        reply_timeout_ms: Option<u64>,
+    ) -> Result<(), tonic::Status> {
+        self.inner
+            .add_handler(AddHandlerRequest {
+                program_hash: program_hash.to_string(),
+                command: command.to_string(),
+                args,
+                working_dir: working_dir.unwrap_or_default(),
+                reply_timeout_ms,
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_handler(&mut self, program_hash: &str) -> Result<(), tonic::Status> {
+        self.inner
+            .remove_handler(RemoveHandlerRequest {
+                program_hash: program_hash.to_string(),
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_handlers(&mut self) -> Result<Vec<HandlerInfo>, tonic::Status> {
+        let resp = self.inner.list_handlers(Empty {}).await?;
+        Ok(resp.into_inner().handlers)
+    }
 }

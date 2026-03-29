@@ -101,6 +101,11 @@ enum Commands {
         #[command(subcommand)]
         action: PairingAction,
     },
+    /// Handler management.
+    Handler {
+        #[command(subcommand)]
+        action: HandlerAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -231,6 +236,33 @@ enum PairingAction {
         /// Phone ID to revoke.
         phone_id: u32,
     },
+}
+
+#[derive(Subcommand)]
+enum HandlerAction {
+    /// Add a handler for a program hash (or "*" for catch-all).
+    Add {
+        /// Program hash (hex) or "*" for catch-all.
+        program_hash: String,
+        /// Command to run.
+        command: String,
+        /// Arguments to pass to the command.
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+        /// Working directory for the handler process.
+        #[arg(long)]
+        working_dir: Option<String>,
+        /// Reply timeout in milliseconds.
+        #[arg(long)]
+        reply_timeout_ms: Option<u64>,
+    },
+    /// Remove a handler by program hash (or "*" for catch-all).
+    Remove {
+        /// Program hash (hex) or "*" for catch-all.
+        program_hash: String,
+    },
+    /// List all configured handlers.
+    List,
 }
 
 #[tokio::main]
@@ -754,6 +786,79 @@ async fn run(client: &mut AdminClient, cli: &Cli) -> Result<(), Box<dyn std::err
                     print_json(&serde_json::json!({"phone_id": phone_id, "status": "revoked"}))?;
                 } else {
                     println!("Phone {phone_id} revoked");
+                }
+            }
+        },
+
+        Commands::Handler { action } => match action {
+            HandlerAction::Add {
+                program_hash,
+                command,
+                args,
+                working_dir,
+                reply_timeout_ms,
+            } => {
+                client
+                    .add_handler(
+                        program_hash,
+                        command,
+                        args.clone(),
+                        working_dir.clone(),
+                        *reply_timeout_ms,
+                    )
+                    .await?;
+                if json {
+                    print_json(&serde_json::json!({
+                        "added": true,
+                        "program_hash": program_hash,
+                    }))?;
+                } else {
+                    println!("Added handler for program {program_hash}");
+                }
+            }
+            HandlerAction::Remove { program_hash } => {
+                client.remove_handler(program_hash).await?;
+                if json {
+                    print_json(&serde_json::json!({"removed": program_hash}))?;
+                } else {
+                    println!("Removed handler for program {program_hash}");
+                }
+            }
+            HandlerAction::List => {
+                let handlers = client.list_handlers().await?;
+                if json {
+                    print_json(
+                        &handlers
+                            .iter()
+                            .map(|h| {
+                                serde_json::json!({
+                                    "program_hash": h.program_hash,
+                                    "command": h.command,
+                                    "args": h.args,
+                                    "working_dir": h.working_dir,
+                                    "reply_timeout_ms": h.reply_timeout_ms,
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )?;
+                } else {
+                    if handlers.is_empty() {
+                        println!("No handlers configured.");
+                    }
+                    for h in &handlers {
+                        let wd = if h.working_dir.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" (cwd={})", h.working_dir)
+                        };
+                        println!(
+                            "  {} → {} {}{}",
+                            h.program_hash,
+                            h.command,
+                            h.args.join(" "),
+                            wd
+                        );
+                    }
                 }
             }
         },

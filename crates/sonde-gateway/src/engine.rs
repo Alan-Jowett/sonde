@@ -900,6 +900,17 @@ impl Gateway {
             None => return None,
         };
 
+        // GW-1308 AC1: log APP_DATA received with node_id, program_hash, len.
+        if tracing::enabled!(tracing::Level::INFO) {
+            let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+            info!(
+                node_id = %node.node_id,
+                program_hash = %ph_hex,
+                len = blob.len(),
+                "APP_DATA received"
+            );
+        }
+
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

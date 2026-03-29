@@ -420,6 +420,14 @@ CREATE TABLE IF NOT EXISTS gateway_config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS handlers (
+    program_hash TEXT PRIMARY KEY,
+    command TEXT NOT NULL,
+    args_json TEXT NOT NULL DEFAULT '[]',
+    working_dir TEXT,
+    reply_timeout_ms INTEGER
+);
 ";
 
 /// SQLite-backed persistent storage for the gateway.
@@ -1493,6 +1501,123 @@ impl Storage for SqliteStorage {
                 params![key, value],
             )
             .map_err(map_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    // ── Handler routing (GW-1401) ──────────────────────────────
+
+    async fn list_handlers(&self) -> Result<Vec<crate::storage::HandlerRecord>, StorageError> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT program_hash, command, args_json, working_dir, reply_timeout_ms \
+                     FROM handlers ORDER BY program_hash",
+                )
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let args_json: String = row.get(2)?;
+                    let args: Vec<String> = serde_json::from_str(&args_json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+                    let working_dir: Option<String> = row.get(3)?;
+                    let reply_timeout_ms: Option<u64> = row
+                        .get::<_, Option<i64>>(4)?
+                        .and_then(|v| u64::try_from(v).ok());
+                    Ok(crate::storage::HandlerRecord {
+                        program_hash: row.get(0)?,
+                        command: row.get(1)?,
+                        args,
+                        working_dir,
+                        reply_timeout_ms,
+                    })
+                })
+                .map_err(map_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(map_err)
+        })
+        .await
+    }
+
+    async fn add_handler(
+        &self,
+        record: &crate::storage::HandlerRecord,
+    ) -> Result<bool, StorageError> {
+        let program_hash = record.program_hash.to_ascii_lowercase();
+        let command = record.command.clone();
+        let args_json = serde_json::to_string(&record.args).unwrap_or_else(|_| "[]".to_string());
+        let working_dir = record.working_dir.clone();
+        let reply_timeout_ms = record
+            .reply_timeout_ms
+            .map(|v| i64::try_from(v).expect("reply_timeout_ms exceeds i64::MAX"));
+        self.with_conn(move |conn| {
+            let result = conn.execute(
+                "INSERT OR IGNORE INTO handlers \
+                 (program_hash, command, args_json, working_dir, reply_timeout_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    program_hash,
+                    command,
+                    args_json,
+                    working_dir,
+                    reply_timeout_ms
+                ],
+            );
+            match result {
+                Ok(n) => Ok(n > 0),
+                Err(e) => Err(map_err(e)),
+            }
+        })
+        .await
+    }
+
+    async fn remove_handler(&self, program_hash: &str) -> Result<bool, StorageError> {
+        let program_hash = program_hash.to_ascii_lowercase();
+        self.with_conn(move |conn| {
+            let n = conn
+                .execute(
+                    "DELETE FROM handlers WHERE program_hash = ?1",
+                    params![program_hash],
+                )
+                .map_err(map_err)?;
+            Ok(n > 0)
+        })
+        .await
+    }
+
+    async fn replace_handlers(
+        &self,
+        records: &[crate::storage::HandlerRecord],
+    ) -> Result<(), StorageError> {
+        let records: Vec<crate::storage::HandlerRecord> = records.to_vec();
+        self.with_conn(move |conn| {
+            let tx = conn.unchecked_transaction().map_err(map_err)?;
+            tx.execute("DELETE FROM handlers", []).map_err(map_err)?;
+            for r in &records {
+                let args_json = serde_json::to_string(&r.args).unwrap_or_else(|_| "[]".to_string());
+                let reply_timeout_ms = r
+                    .reply_timeout_ms
+                    .map(|v| i64::try_from(v).expect("reply_timeout_ms exceeds i64::MAX"));
+                tx.execute(
+                    "INSERT INTO handlers \
+                     (program_hash, command, args_json, working_dir, reply_timeout_ms) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        r.program_hash.to_ascii_lowercase(),
+                        r.command,
+                        args_json,
+                        r.working_dir,
+                        reply_timeout_ms
+                    ],
+                )
+                .map_err(map_err)?;
+            }
+            tx.commit().map_err(map_err)?;
             Ok(())
         })
         .await

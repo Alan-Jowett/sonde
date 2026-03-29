@@ -108,6 +108,7 @@ impl E2eTestEnv {
             command: handler_cmd.to_string(),
             args: handler_args.iter().map(|s| s.to_string()).collect(),
             reply_timeout: None,
+            working_dir: None,
         };
         let router = Arc::new(HandlerRouter::new(vec![config]));
         let gateway = Arc::new(Gateway::new_with_handler(

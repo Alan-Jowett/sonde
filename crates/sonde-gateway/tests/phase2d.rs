@@ -486,6 +486,7 @@ async fn gw0507_node_timeout_event_with_fields() {
         command: python_cmd().to_string(),
         args,
         reply_timeout: None,
+        working_dir: None,
     };
 
     let router = Arc::new(HandlerRouter::new(vec![config]));

@@ -2108,13 +2108,14 @@ A configurable stub handler process (or in-process mock) that:
 2. Call `add_handler` with `program_hash` = `"*"`, `command` = `"python"`, `args` = `["handler.py"]`, `working_dir` = `None`.
 3. Assert: `list_handlers` returns one record matching the inserted values.
 4. Call `add_handler` with the same `program_hash` `"*"`.
-5. Assert: returns `StorageError::AlreadyExists`.
-6. Call `add_handler` with a valid 64-char hex `program_hash`.
-7. Assert: `list_handlers` returns two records.
-8. Call `remove_handler` with the hex `program_hash`.
-9. Assert: returns `true` and `list_handlers` returns one record.
-10. Call `remove_handler` with a non-existent `program_hash`.
-11. Assert: returns `false`.
+5. Assert: returns `Ok(false)` (duplicate detected without creating a new row, consistent with the `insert_node_if_not_exists` pattern).
+6. Assert: `list_handlers` still returns one record.
+7. Call `add_handler` with a valid 64-char hex `program_hash`.
+8. Assert: returns `Ok(true)` and `list_handlers` returns two records.
+9. Call `remove_handler` with the hex `program_hash`.
+10. Assert: returns `true` and `list_handlers` returns one record.
+11. Call `remove_handler` with a non-existent `program_hash`.
+12. Assert: returns `false`.
 
 ---
 
@@ -2345,7 +2346,7 @@ A configurable stub handler process (or in-process mock) that:
 
 | GW-1401 | T-1400, T-1402 |
 | GW-1402 | T-1401, T-1407 |
-| GW-1403 | *(verified via T-1401 — CLI wraps gRPC)* |
+| GW-1403 | *(validated via manual CLI UX validation procedure)* |
 | GW-1404 | T-1403, T-1404 |
 | GW-1405 | T-1405, T-1405a |
 | GW-1406 | T-1406, T-1406a |

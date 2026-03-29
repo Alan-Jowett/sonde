@@ -578,7 +578,7 @@ pub trait Storage: Send + Sync {
     async fn import_state(&self, data: &[u8]) -> Result<()>;
 
     // Handler configuration (GW-1401)
-    async fn add_handler(&self, record: &HandlerRecord) -> Result<(), StorageError>;
+    async fn add_handler(&self, record: &HandlerRecord) -> Result<bool, StorageError>;
     async fn remove_handler(&self, program_hash: &str) -> Result<bool, StorageError>;
     async fn list_handlers(&self) -> Result<Vec<HandlerRecord>, StorageError>;
 }
@@ -996,7 +996,7 @@ The gateway emits the version string in its first `info!()` log line so that ope
 
 1. Stop accepting new frames.
 2. Wait for in-flight sessions to complete (with timeout).
-3. Terminate handler processes (SIGTERM, then SIGKILL after timeout).
+3. Terminate handler processes (graceful shutdown request, then forced kill after timeout).
 4. Flush any pending storage writes.
 5. Close transport.
 6. Exit.
@@ -1255,7 +1255,7 @@ CREATE TABLE IF NOT EXISTS handlers (
 );
 ```
 
-`program_hash` is the primary key. The wildcard value `"*"` represents a catch-all handler (maps to `ProgramMatcher::Any`). All other values are 64-character lowercase hex strings (maps to `ProgramMatcher::Hash`).
+`program_hash` is the primary key. The wildcard value `"*"` represents a catch-all handler (maps to `ProgramMatcher::Any`). All other values are 64-character hex strings representing SHA-256 hashes (maps to `ProgramMatcher::Hash`). Hex input is accepted case-insensitively and normalized to lowercase on storage (consistent with the existing YAML parser, which uses `from_str_radix(..., 16)`).
 
 `args` is stored as a JSON array of strings (e.g., `["--verbose", "--port", "8080"]`). An empty array is stored as `"[]"`.
 
@@ -1282,17 +1282,17 @@ pub trait Storage: Send + Sync {
     // ... existing methods ...
 
     // Handler configuration (GW-1401)
-    async fn add_handler(&self, record: &HandlerRecord) -> Result<(), StorageError>;
+    async fn add_handler(&self, record: &HandlerRecord) -> Result<bool, StorageError>;
     async fn remove_handler(&self, program_hash: &str) -> Result<bool, StorageError>;
     async fn list_handlers(&self) -> Result<Vec<HandlerRecord>, StorageError>;
 }
 ```
 
-- `add_handler` — Inserts a handler record. Returns `StorageError::AlreadyExists` if a handler with the same `program_hash` is already registered.
+- `add_handler` — Inserts a handler record. Returns `Ok(true)` if the row was inserted, `Ok(false)` if a handler with the same `program_hash` already exists (consistent with the `insert_node_if_not_exists` pattern used elsewhere in the `Storage` trait).
 - `remove_handler` — Deletes the handler with the given `program_hash`. Returns `true` if a row was deleted, `false` if no matching row existed.
 - `list_handlers` — Returns all handler records ordered by `program_hash`.
 
-The `SqliteStorage` implementation uses `INSERT INTO handlers ... ON CONFLICT DO NOTHING` for `add_handler` (checking `changes()` to detect duplicates) and `DELETE FROM handlers WHERE program_hash = ?` for `remove_handler`.
+The `SqliteStorage` implementation uses `INSERT OR IGNORE INTO handlers ...` for `add_handler` (checking `changes() > 0` to determine whether insertion occurred, consistent with `insert_node_if_not_exists`) and `DELETE FROM handlers WHERE program_hash = ?` for `remove_handler`.
 
 ### 19.4  Admin API additions
 
@@ -1349,28 +1349,30 @@ sonde-admin handler list
 
 ### 19.5  Handler live reload
 
-The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<RwLock<HandlerRouter>>`). When `AddHandler` or `RemoveHandler` succeeds at the storage layer:
+The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<tokio::sync::RwLock<HandlerRouter>>`). Since handler routing and reload occur inside async tasks, `tokio::sync::RwLock` is required to avoid blocking the Tokio runtime. When `AddHandler` or `RemoveHandler` succeeds at the storage layer:
 
 1. The `AdminService` calls `list_handlers()` on the storage trait to get the current handler set.
 2. It converts each `HandlerRecord` to a `HandlerConfig` (§18.2).
 3. It acquires a write lock on the `HandlerRouter` and calls `reload(new_configs)`.
 4. `HandlerRouter::reload` diffs the old and new config sets:
    - **Added handlers** are inserted into the routing table (process spawned lazily on first message).
-   - **Removed handlers** have their running process terminated (SIGTERM, then SIGKILL after 5 seconds) and are removed from the routing table.
+   - **Removed handlers** have their running process gracefully terminated and, if the process does not exit within 5 seconds, forcibly killed (e.g., `SIGTERM` then `SIGKILL` on POSIX, or `TerminateProcess` on Windows). The handler is then removed from the routing table.
    - **Unchanged handlers** (same `program_hash`, `command`, `args`, `working_dir`) retain their existing `HandlerProcess` instance (no restart).
 
 This approach avoids disrupting in-flight requests to unaffected handlers.
 
-> **Shared state note (D-485 extension):** The `HandlerRouter` reference shared between the admin API and the engine frame loop MUST be the same `Arc<RwLock<HandlerRouter>>` instance. The frame loop acquires a read lock for routing; the admin API acquires a write lock only during reload.
+> **Shared state note (D-485 extension):** The `HandlerRouter` reference shared between the admin API and the engine frame loop MUST be the same `Arc<tokio::sync::RwLock<HandlerRouter>>` instance. The frame loop acquires a read lock for routing; the admin API acquires a write lock only during reload.
 
 ### 19.6  Bootstrap from file
 
 On startup, if `--handler-config <path>` is provided (GW-1405):
 
 1. Parse the YAML file using the existing `load_handler_configs()` function (§9.1).
-2. For each parsed `HandlerConfig`, convert to a `HandlerRecord` and call `storage.add_handler()`.
-3. If `add_handler` returns `AlreadyExists`, skip silently (database takes precedence).
-4. If a YAML entry is invalid (e.g., malformed hex hash), log a warning and continue.
+2. For each parsed `HandlerConfig`, expand it into one or more `HandlerRecord` values and call `storage.add_handler()` for each:
+   - If the YAML `program_hash` field is a single matcher (e.g., `"*"` or one hex hash), emit exactly one `HandlerRecord` with that `program_hash`.
+   - If the YAML `program_hash` field is a list of matchers, emit one `HandlerRecord` per matcher in the list. Each record uses the same `command`, `args`, and `working_dir` from the source `HandlerConfig`, differing only in `program_hash`.
+3. If `add_handler` returns `Ok(false)` (duplicate), skip that record silently (database takes precedence).
+4. If a YAML entry is invalid (e.g., malformed hex hash in `program_hash`), log a warning and continue processing the remaining entries.
 5. After bootstrap, load all handlers from the database via `list_handlers()` and build the `HandlerRouter`.
 
 This merge-on-startup strategy means the YAML file acts as a seed — it populates the database on first run but does not overwrite subsequent admin API changes.
@@ -1379,18 +1381,22 @@ This merge-on-startup strategy means the YAML file acts as a seed — it populat
 
 The state bundle (§13.2, `ExportState` / `ImportState`) is extended to include handler records (GW-1406).
 
-**Export:** `export_state()` serializes handler records alongside nodes, programs, and phone PSKs. Each handler is encoded as a CBOR map:
+**Export:** `export_state()` serializes handler records alongside nodes, programs, and phone PSKs. The existing state bundle already reserves root key `ROOT_KEY_HANDLERS = 6` for handlers and defines handler-level CBOR integer keys (see `state_bundle.rs`):
 
-```
-handler_record = {
-    1: program_hash,    ; text — "*" or hex hash
-    2: command,         ; text
-    3: args,            ; array of text
-    4: working_dir      ; text or null
-}
-```
+| Key | Name | Type | Description |
+|-----|------|------|-------------|
+| 1 | `HANDLER_KEY_MATCHERS` | array of text | `"*"` or hex hash strings |
+| 2 | `HANDLER_KEY_COMMAND` | text | Executable path |
+| 3 | `HANDLER_KEY_ARGS` | array of text | Command arguments (omitted if empty) |
+| 4 | `HANDLER_KEY_REPLY_TIMEOUT_MS` | integer | Reply timeout in ms (omitted if unset) |
 
-The top-level state bundle gains a new key for the handlers array.
+The existing format encodes `HandlerConfig` objects (with multiple matchers per entry). The new database-backed `HandlerRecord` model uses one record per `program_hash`, so the export layer converts `HandlerRecord` values back to the existing CBOR format: each record becomes a handler entry with a single-element `matchers` array. A new optional key is added for `working_dir`:
+
+| Key | Name | Type | Description |
+|-----|------|------|-------------|
+| 5 | `HANDLER_KEY_WORKING_DIR` | text | Working directory (omitted if unset) |
+
+On import, the existing `handler_config_from_cbor` decoder is extended to read key 5 (`working_dir`). Multi-matcher entries in older bundles are expanded to one `HandlerRecord` per matcher. This preserves full backward compatibility with bundles exported before `working_dir` support.
 
 **Import:** `import_state()` restores handler records atomically within the same transaction that replaces nodes and programs. If the incoming bundle contains a handlers array, all existing handlers are deleted and replaced. If the handlers key is absent (bundle from older gateway version), existing handlers are preserved (no-op for backwards compatibility).
 

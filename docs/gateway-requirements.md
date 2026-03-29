@@ -1729,7 +1729,7 @@ When a handler is added or removed via the admin API, the gateway MUST update it
 
 1. After `AddHandler` succeeds, subsequent `APP_DATA` frames matching the new handler's `program_hash` are routed to the new handler.
 2. After `RemoveHandler` succeeds, subsequent `APP_DATA` frames matching the removed handler's `program_hash` are no longer routed (or fall through to a catch-all, if one exists).
-3. If the removed handler has a running process, the process is terminated (SIGTERM, then SIGKILL after timeout) before the handler is removed from the routing table.
+3. If the removed handler has a running process, the gateway MUST first request a graceful shutdown of the process and, if it does not exit within a configured timeout, MUST forcibly terminate it (e.g., `SIGTERM` then `SIGKILL` on POSIX, or the platform-equivalent graceful-then-forced termination on Windows) before removing the handler from the routing table.
 4. Live reload does not disrupt in-flight requests to other handlers.
 
 ---

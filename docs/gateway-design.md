@@ -40,7 +40,7 @@ The gateway is **stateless with respect to replay protection** — active sessio
 
 ## 3  Module architecture
 
-The gateway is composed of eleven functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), BLE Pairing Handler (pairing protocol logic via modem relay), and Service Manager (platform service registration and PATH setup). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API, BLE Pairing Handler, and Service Manager are described in §13, §17, and §18 respectively.
+The gateway is composed of ten functional modules grouped in two tiers. The upper (data-path) tier contains: Transport (radio adapter, e.g., ESP-NOW over USB-CDC), Protocol Codec (frame serialization/deserialization), Session Manager (per-node lifecycle and sequence tracking), and Handler Router (forwarding application data to external handler processes). Each module in this tier connects to the next in series. The lower (infrastructure) tier contains: an ESP-NOW Adapter (concrete transport implementation), Node Registry (PSK and node metadata), Program Library (BPF program images and hash identity), Handler Process (handler stdin/stdout management), Admin API (gRPC interface and CLI tool), and BLE Pairing Handler (pairing protocol logic via modem relay). Node Registry and Program Library share a common Storage trait abstraction at the bottom. The architecture diagram below shows the eight core data-path and infrastructure modules; the Admin API and BLE Pairing Handler are described in §13 and §17 respectively.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -77,7 +77,6 @@ The gateway is composed of eleven functional modules grouped in two tiers. The u
 | **Storage** | Persist node registry, program library, configuration | GW-0700, GW-1000, GW-1001 |
 | **Admin API** | gRPC admin interface, CLI tool | GW-0800, GW-0801, GW-0802, GW-0803, GW-0804, GW-0805, GW-0806 |
 | **BLE Pairing Handler** | BLE pairing protocol logic via modem relay | GW-1200–GW-1222 |
-| **Service Manager** | Platform service install/uninstall CLI, PATH registration | GW-1500–GW-1503 |
 
 ---
 
@@ -916,7 +915,7 @@ sonde-admin pairing stop
 sonde-admin pairing list-phones
 sonde-admin pairing revoke-phone <phone-id>
 
-sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>] [--reply-timeout <ms>]
+sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>]
 sonde-admin handler remove <program-hash>
 sonde-admin handler list
 ```
@@ -981,7 +980,7 @@ The gateway emits the version string in its first `info!()` log line so that ope
 2. Initialize storage backend.
 3. Load node registry and program library from storage.
 4. Initialize transport (e.g., open ESP-NOW interface, or for USB modem: open serial port → `RESET` → `MODEM_READY` → `SET_CHANNEL`; see §4.2). The channel is read from the database (GW-0808); if no value is persisted, the CLI `--channel` flag seeds the database.
-5. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §19.6).
+5. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §18.6).
 6. Load handler configuration from database and build `HandlerRouter` (GW-1401).
 7. Start gRPC admin API server.
 8. Start handler processes for configured handlers.
@@ -1077,11 +1076,13 @@ After successful registration **or** duplicate detection with matching PSK, the 
 
 The admin API exposes `OpenBlePairing` (server-streaming RPC) to open the registration window and enable BLE advertising, `CloseBlePairing` to close it, `ConfirmBlePairing` for Numeric Comparison passkey confirmation, `ListPhones` to enumerate registered phones, and `RevokePhone` to revoke a phone PSK (GW-1222). See §13 for the full gRPC service definition.
 
+---
+
 ## 18  Installer and service management
 
 This section covers platform packaging (MSI and `.deb`), system PATH registration, COM port auto-detection, service registration, and the `install` / `uninstall` CLI subcommands as a fallback.
 
-### 18.1  WiX MSI — PATH registration and service setup (GW-1500, GW-1501)
+### 18.1  WiX MSI ΓÇö PATH registration and service setup (GW-1500, GW-1501)
 
 The MSI installer handles two tasks: PATH registration and Windows service setup.
 
@@ -1236,6 +1237,7 @@ The MSI creates `%ProgramData%\sonde\` at install time (via the `ConfigGroup` co
 
 ---
 
+
 ## 19  Handler configuration management
 
 > **Requirements:** GW-1401 (handler storage), GW-1402 (admin API), GW-1403 (CLI), GW-1404 (live reload), GW-1405 (bootstrap from file), GW-1406 (state export/import).
@@ -1246,11 +1248,10 @@ Handler routing is currently loaded from a YAML file (`--handler-config`). This 
 
 ```sql
 CREATE TABLE IF NOT EXISTS handlers (
-    program_hash     TEXT PRIMARY KEY,   -- 64-char hex SHA-256 or "*" for catch-all
-    command          TEXT NOT NULL,      -- executable path
-    args             TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
-    working_dir      TEXT,              -- optional working directory
-    reply_timeout_ms INTEGER            -- per-handler reply timeout in ms (NULL = use default)
+    program_hash TEXT PRIMARY KEY,   -- 64-char hex SHA-256 or "*" for catch-all
+    command      TEXT NOT NULL,      -- executable path
+    args         TEXT NOT NULL DEFAULT '[]',  -- JSON-encoded string array
+    working_dir  TEXT               -- optional working directory
 );
 ```
 
@@ -1266,7 +1267,6 @@ pub struct HandlerRecord {
     pub command: String,
     pub args: Vec<String>,
     pub working_dir: Option<String>,
-    pub reply_timeout_ms: Option<u64>,  // per-handler reply timeout (None = use default)
 }
 ```
 
@@ -1313,7 +1313,6 @@ message AddHandlerRequest {
     string command = 2;
     repeated string args = 3;
     string working_dir = 4;           // empty string = not set
-    uint64 reply_timeout_ms = 5;      // 0 = use default
 }
 
 message RemoveHandlerRequest {
@@ -1325,7 +1324,6 @@ message HandlerInfo {
     string command = 2;
     repeated string args = 3;
     string working_dir = 4;
-    uint64 reply_timeout_ms = 5;      // 0 = not set (use default)
 }
 
 message ListHandlersResponse {
@@ -1344,7 +1342,7 @@ The operations table (§13.2) gains:
 The CLI tool (§13.3) gains:
 
 ```
-sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>] [--reply-timeout <ms>]
+sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>]
 sonde-admin handler remove <program-hash>
 sonde-admin handler list
 ```
@@ -1354,26 +1352,23 @@ sonde-admin handler list
 The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<RwLock<HandlerRouter>>`). When `AddHandler` or `RemoveHandler` succeeds at the storage layer:
 
 1. The `AdminService` calls `list_handlers()` on the storage trait to get the current handler set.
-2. It converts each `HandlerRecord` to a `HandlerConfig` (§19.2).
+2. It converts each `HandlerRecord` to a `HandlerConfig` (§18.2).
 3. It acquires a write lock on the `HandlerRouter` and calls `reload(new_configs)`.
 4. `HandlerRouter::reload` diffs the old and new config sets:
    - **Added handlers** are inserted into the routing table (process spawned lazily on first message).
    - **Removed handlers** have their running process terminated (SIGTERM, then SIGKILL after 5 seconds) and are removed from the routing table.
-   - **Unchanged handlers** (same `program_hash`, `command`, `args`, `working_dir`, `reply_timeout_ms`) retain their existing `HandlerProcess` instance (no restart).
+   - **Unchanged handlers** (same `program_hash`, `command`, `args`, `working_dir`) retain their existing `HandlerProcess` instance (no restart).
 
 This approach avoids disrupting in-flight requests to unaffected handlers.
 
-> **Shared state note (D-485 extension):** The `HandlerRouter` reference shared between the admin API and the engine frame loop MUST be the same `Arc<RwLock<HandlerRouter>>` instance. The frame loop MUST only hold a read lock long enough to snapshot/clone the routing state it needs for a given frame, and MUST drop the lock before performing any handler I/O or other `.await` points. The admin API acquires a write lock only during reload.
+> **Shared state note (D-485 extension):** The `HandlerRouter` reference shared between the admin API and the engine frame loop MUST be the same `Arc<RwLock<HandlerRouter>>` instance. The frame loop acquires a read lock for routing; the admin API acquires a write lock only during reload.
 
 ### 19.6  Bootstrap from file
 
 On startup, if `--handler-config <path>` is provided (GW-1405):
 
 1. Parse the YAML file using the existing `load_handler_configs()` function (§9.1).
-2. For each parsed `HandlerConfig`, convert to a `HandlerRecord` and call `storage.add_handler()`. The `HandlerRecord` is populated from `HandlerConfig` fields: `command`, `args`, `working_dir`, and `reply_timeout` (converted to `reply_timeout_ms`).
-
-   > **In-memory config note:** The `HandlerConfig` (and its inner `HandlerProcess`) will be extended to include `working_dir: Option<String>` so that this field is available in the in-memory routing config after conversion from `HandlerRecord`. The existing `reply_timeout: Option<Duration>` field on `HandlerConfig` is already present in the codebase.
-
+2. For each parsed `HandlerConfig`, convert to a `HandlerRecord` and call `storage.add_handler()`.
 3. If `add_handler` returns `AlreadyExists`, skip silently (database takes precedence).
 4. If a YAML entry is invalid (e.g., malformed hex hash), log a warning and continue.
 5. After bootstrap, load all handlers from the database via `list_handlers()` and build the `HandlerRouter`.
@@ -1384,18 +1379,19 @@ This merge-on-startup strategy means the YAML file acts as a seed — it populat
 
 The state bundle (§13.2, `ExportState` / `ImportState`) is extended to include handler records (GW-1406).
 
-**Export:** `export_state()` serializes handler records alongside nodes, programs, and phone PSKs. The existing state bundle already reserves root key `ROOT_KEY_HANDLERS = 6` for handlers and defines handler-level CBOR integer keys (see `state_bundle.rs`). The export layer reuses this format, encoding each `HandlerRecord` as a handler entry with a single-element `matchers` array:
+**Export:** `export_state()` serializes handler records alongside nodes, programs, and phone PSKs. Each handler is encoded as a CBOR map:
 
-| Key | Name | Type | Description |
-|-----|------|------|-------------|
-| 1 | `HANDLER_KEY_MATCHERS` | array of text | `"*"` or hex hash strings |
-| 2 | `HANDLER_KEY_COMMAND` | text | Executable path |
-| 3 | `HANDLER_KEY_ARGS` | array of text | Command arguments (omitted if empty) |
-| 4 | `HANDLER_KEY_REPLY_TIMEOUT_MS` | integer | Reply timeout in ms (omitted if unset) |
-| 5 | `HANDLER_KEY_WORKING_DIR` | text | Working directory (omitted if unset) |
+```
+handler_record = {
+    1: program_hash,    ; text — "*" or hex hash
+    2: command,         ; text
+    3: args,            ; array of text
+    4: working_dir      ; text or null
+}
+```
 
-On import, the existing `handler_config_from_cbor` decoder is extended to read key 5 (`working_dir`). Multi-matcher entries in older bundles are expanded to one `HandlerRecord` per matcher. This preserves full backward compatibility with bundles exported before `working_dir` support.
+The top-level state bundle gains a new key for the handlers array.
 
 **Import:** `import_state()` restores handler records atomically within the same transaction that replaces nodes and programs. If the incoming bundle contains a handlers array, all existing handlers are deleted and replaced. If the handlers key is absent (bundle from older gateway version), existing handlers are preserved (no-op for backwards compatibility).
 
-After import, the `AdminService` triggers a handler live reload (§19.5) so the `HandlerRouter` reflects the imported configuration.
+After import, the `AdminService` triggers a handler live reload (§18.5) so the `HandlerRouter` reflects the imported configuration.

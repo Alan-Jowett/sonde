@@ -1180,7 +1180,10 @@ handlers:
         // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty(), "invalid entry should be skipped");
+        assert!(
+            result.unwrap().is_empty(),
+            "invalid entry should be skipped"
+        );
     }
 
     #[test]
@@ -1197,7 +1200,10 @@ handlers:
         // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty(), "wrong-length entry should be skipped");
+        assert!(
+            result.unwrap().is_empty(),
+            "wrong-length entry should be skipped"
+        );
     }
 
     #[test]
@@ -1210,7 +1216,10 @@ handlers:
         // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty(), "non-ASCII entry should be skipped");
+        assert!(
+            result.unwrap().is_empty(),
+            "non-ASCII entry should be skipped"
+        );
     }
 
     #[test]

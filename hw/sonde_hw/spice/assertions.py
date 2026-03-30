@@ -146,9 +146,9 @@ def format_results(
     lines.append(f"  [{status}] {test_id}: {test_name}")
 
     for r in assertion_results:
-        icon = "✓" if r.passed else "✗"
+        icon = "PASS" if r.passed else "FAIL"
         meas_str = _eng(r.measured) if r.measured is not None else "N/A"
-        lines.append(f"    {icon} {r.description}")
+        lines.append(f"    [{icon}] {r.description}")
         lines.append(f"      measured={meas_str}, {r.margin}")
 
     return "\n".join(lines)

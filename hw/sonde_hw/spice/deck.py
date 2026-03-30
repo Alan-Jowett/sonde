@@ -93,25 +93,21 @@ def _parse_value(val_str: str) -> str:
     Examples: ``10MΩ`` → ``10Meg``, ``4.7kΩ`` → ``4.7k``,
     ``100nF`` → ``100n``, ``1µF`` → ``1u``.
     """
-    s = val_str.replace("Ω", "").replace("F", "").replace("H", "")
-    s = s.replace("µ", "u")
-    s = s.replace("M", "Meg") if s.endswith("M") or "MΩ" in val_str else s
-    # Handle megaohm: "10MΩ" → "10M" → needs "10Meg"
-    if "MΩ" in val_str:
-        s = val_str.replace("MΩ", "Meg")
-    elif "kΩ" in val_str:
-        s = val_str.replace("kΩ", "k")
-    elif "µF" in val_str:
-        s = val_str.replace("µF", "u")
-    elif "nF" in val_str:
-        s = val_str.replace("nF", "n")
-    elif "pF" in val_str:
-        s = val_str.replace("pF", "p")
-    elif "Ω" in val_str:
-        s = val_str.replace("Ω", "")
-    else:
-        s = val_str
-    return s
+    # Apply substitutions in order of specificity (longest suffix first).
+    replacements = [
+        ("MΩ", "Meg"),
+        ("kΩ", "k"),
+        ("µF", "u"),
+        ("nF", "n"),
+        ("pF", "p"),
+        ("Ω", ""),
+        ("µH", "u"),
+        ("µ", "u"),
+    ]
+    for old, new in replacements:
+        if old in val_str:
+            return val_str.replace(old, new)
+    return val_str
 
 
 def _net_name_spice(name: str) -> str:

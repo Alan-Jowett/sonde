@@ -64,6 +64,29 @@ namespace SondeCustomActions
                 // Non-fatal — operator can enter the port manually
             }
 
+            // No modem found — warn the operator with diagnostics.
+            // MSI message box: Warning icon, OK/Cancel buttons.
+            // MB_OKCANCEL = 0x01, combined with InstallMessage.Warning via bitwise OR.
+            const int MB_OKCANCEL = 1;
+            using var record = new Record(0);
+            record[0] =
+                "No ESP32-S3 modem detected.\n\n" +
+                "The installer scanned for USB devices with VID 303A / PID 1001 " +
+                "(Espressif TinyUSB CDC ACM) but found no matching COM port.\n\n" +
+                "Possible causes:\n" +
+                "  \u2022 The modem is not plugged in\n" +
+                "  \u2022 The modem is on a different USB port\n" +
+                "  \u2022 Windows has not installed the usbser.sys driver\n\n" +
+                "The gateway service will be installed but may fail to start " +
+                "without a valid COM port. You can reconfigure later with:\n\n" +
+                "  sonde-gateway install --port COMx\n\n" +
+                "Click OK to continue installation, or Cancel to abort.";
+            var msgResult = session.Message(
+                InstallMessage.Warning | (InstallMessage)MB_OKCANCEL,
+                record);
+            if (msgResult == MessageResult.Cancel)
+                return ActionResult.UserExit;
+
             return ActionResult.Success;
         }
 

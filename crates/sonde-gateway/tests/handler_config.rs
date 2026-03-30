@@ -165,8 +165,12 @@ async fn setup_node_with_program(storage: &InMemoryStorage, node: &TestNode, pro
 macro_rules! require_python {
     () => {
         if !python_available() {
-            eprintln!("SKIPPING: Python 3 not found");
-            return;
+            if cfg!(feature = "python-tests") {
+                panic!("Python 3 not found but `python-tests` feature is enabled; failing instead of skipping tests");
+            } else {
+                eprintln!("SKIPPING: Python 3 not found");
+                return;
+            }
         }
     };
 }
@@ -252,8 +256,10 @@ fn handler_record_to_test_config(r: HandlerRecord, script: &str) -> Option<Handl
     })
 }
 
-/// Minimal Python echo handler that reads one DATA message (skipping EVENTs)
-/// and sends back a DATA_REPLY with identical payload.
+/// Minimal Python echo handler that loops, reading DATA messages (skipping
+/// EVENTs) and sending back a DATA_REPLY with identical payload. The loop
+/// keeps the process alive until stdin is closed, which is required for
+/// T-1404 to meaningfully test handler process lifetime on removal.
 const ECHO_HANDLER_PY: &str = r#"
 import sys, struct
 
@@ -370,16 +376,14 @@ while True:
     msg = decode_cbor_map(cbor_data)
     if msg[1] == 2:
         continue
-    break
-
-request_id = msg[2]
-payload_data = msg[5]
-reply = encode_cbor_map([
-    (1, 0x81),
-    (2, request_id),
-    (3, payload_data),
-])
-write_msg(reply)
+    request_id = msg[2]
+    payload_data = msg[5]
+    reply = encode_cbor_map([
+        (1, 0x81),
+        (2, request_id),
+        (3, payload_data),
+    ])
+    write_msg(reply)
 "#;
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -5,7 +5,6 @@
 // and populates the MODEM_PORT MSI property with the detected COM port.
 
 using System.Management;
-using WixToolset.Dtf.CustomAction;
 using WixToolset.Dtf.WindowsInstaller;
 
 namespace SondeCustomActions

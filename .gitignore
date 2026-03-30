@@ -22,6 +22,10 @@ sonde.db-wal
 # Logs
 logcat*.txt
 
+# .NET build artifacts
+installer/windows/CustomActions/bin/
+installer/windows/CustomActions/obj/
+
 # APK build artifacts
 apk/
 apk-nightly/

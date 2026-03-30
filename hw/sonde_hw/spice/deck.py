@@ -148,8 +148,8 @@ def generate_deck(
 
     if sources.get("VBAT", 0) > 0:
         lines.append(f"VBAT vbat_src 0 DC {sources['VBAT']}")
-        # VBAT drives through schottky D2: K=VBAT, A=VIN
-        # Model D2 inline since it's on the power path
+        # SPICE diode: D<name> <anode> <cathode> <model>
+        # Schottky OR-ing: anode=vbat_src, cathode=vbat_reg
         lines.append("D2 vbat_src vbat_reg schottky")
     else:
         # No battery — tie VBAT to ground

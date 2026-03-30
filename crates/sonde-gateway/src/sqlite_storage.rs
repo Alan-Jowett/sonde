@@ -457,14 +457,28 @@ impl SqliteStorage {
         path: impl AsRef<Path>,
         master_key: Zeroizing<[u8; 32]>,
     ) -> Result<Self, StorageError> {
-        let mut conn =
-            Connection::open(path).map_err(|e| StorageError::Internal(format!("open: {e}")))?;
+        let db_path = path.as_ref().display().to_string();
+        let mut conn = Connection::open(path).map_err(|e| {
+            StorageError::Internal(format!(
+                "database open failed (path: {db_path}): {e}; \
+                 check that the directory exists and has correct permissions"
+            ))
+        })?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
         )
-        .map_err(|e| StorageError::Internal(format!("pragma: {e}")))?;
-        conn.execute_batch(SCHEMA)
-            .map_err(|e| StorageError::Internal(format!("schema: {e}")))?;
+        .map_err(|e| {
+            StorageError::Internal(format!(
+                "database PRAGMA configuration failed (path: {db_path}): {e}; \
+                 check disk space and file system permissions"
+            ))
+        })?;
+        conn.execute_batch(SCHEMA).map_err(|e| {
+            StorageError::Internal(format!(
+                "database schema initialization failed (path: {db_path}): {e}; \
+                     the database file may be corrupt — try restoring from a backup"
+            ))
+        })?;
         // Migration: add abi_version column to programs table if it does not exist
         // (for databases created before this field was introduced).
         let has_abi = conn
@@ -474,10 +488,18 @@ impl SqliteStorage {
                     stmt.query_map([], |row| row.get::<_, String>(1))?.collect();
                 names.map(|ns| ns.iter().any(|n| n == "abi_version"))
             })
-            .map_err(|e| StorageError::Internal(format!("migration check: {e}")))?;
+            .map_err(|e| {
+                StorageError::Internal(format!(
+                    "migration check failed (table: programs, column: abi_version): {e}"
+                ))
+            })?;
         if !has_abi {
             conn.execute_batch("ALTER TABLE programs ADD COLUMN abi_version INTEGER")
-                .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration failed: ALTER TABLE programs ADD COLUMN abi_version: {e}"
+                    ))
+                })?;
         }
         // Migration: add source_filename column to programs table if it does not exist
         // (for databases created before this field was introduced).
@@ -485,10 +507,18 @@ impl SqliteStorage {
             let prog_cols: Vec<String> = conn
                 .prepare("PRAGMA table_info(programs)")
                 .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
-                .map_err(|e| StorageError::Internal(format!("migration check: {e}")))?;
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "migration check failed (table: programs, column: source_filename): {e}"
+                    ))
+                })?;
             if !prog_cols.iter().any(|n| n == "source_filename") {
                 conn.execute_batch("ALTER TABLE programs ADD COLUMN source_filename TEXT")
-                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE programs ADD COLUMN source_filename: {e}"
+                        ))
+                    })?;
             }
         }
         // Migration: add BLE pairing columns to nodes table if they don't exist.
@@ -497,19 +527,33 @@ impl SqliteStorage {
             let node_cols: Vec<String> = conn
                 .prepare("PRAGMA table_info(nodes)")
                 .and_then(|mut stmt| stmt.query_map([], |row| row.get::<_, String>(1))?.collect())
-                .map_err(|e| StorageError::Internal(format!("migration check: {e}")))?;
+                .map_err(|e| {
+                    StorageError::Internal(format!("migration check failed (table: nodes): {e}"))
+                })?;
             let has_col = |name: &str| node_cols.iter().any(|n| n == name);
             if !has_col("rf_channel") {
                 conn.execute_batch("ALTER TABLE nodes ADD COLUMN rf_channel INTEGER")
-                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE nodes ADD COLUMN rf_channel: {e}"
+                        ))
+                    })?;
             }
             if !has_col("sensors_json") {
                 conn.execute_batch("ALTER TABLE nodes ADD COLUMN sensors_json TEXT")
-                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE nodes ADD COLUMN sensors_json: {e}"
+                        ))
+                    })?;
             }
             if !has_col("registered_by_phone_id") {
                 conn.execute_batch("ALTER TABLE nodes ADD COLUMN registered_by_phone_id INTEGER")
-                    .map_err(|e| StorageError::Internal(format!("migration: {e}")))?;
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE nodes ADD COLUMN registered_by_phone_id: {e}"
+                        ))
+                    })?;
             }
         }
         // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted

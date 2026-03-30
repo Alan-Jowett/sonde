@@ -387,7 +387,15 @@ async fn run_gateway(
         {
             Ok(port) => port,
             Err(e) => {
-                error!("failed to open serial port {}: {e}", cli.port);
+                error!(
+                    operation = "serial port open",
+                    port = %cli.port,
+                    error = %e,
+                    guidance = "check that the port exists, is not in use by another \
+                                process, and that the current user has permission to \
+                                access it",
+                    "failed to open serial port"
+                );
                 info!("retrying in {}s…", backoff.as_secs());
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -409,7 +417,15 @@ async fn run_gateway(
         let transport = match UsbEspNowTransport::new(serial_port, channel_for_transport).await {
             Ok(t) => Arc::new(t),
             Err(e) => {
-                error!("modem startup failed: {e}");
+                error!(
+                    operation = "modem startup handshake",
+                    port = %cli.port,
+                    channel = channel_for_transport,
+                    error = %e,
+                    guidance = "check modem firmware and serial connection; \
+                                the gateway will retry automatically",
+                    "modem startup failed"
+                );
                 info!("retrying in {}s…", backoff.as_secs());
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);

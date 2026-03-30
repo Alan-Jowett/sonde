@@ -161,6 +161,45 @@ fn profile_to_proto(p: &VerificationProfile) -> i32 {
     }
 }
 
+/// Format a byte slice as a hex string for use in diagnostic messages.
+fn fmt_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        write!(s, "{b:02x}").expect("write to String is infallible");
+    }
+    s
+}
+
+/// SHA-256 hash length in bytes.
+const PROGRAM_HASH_LEN: usize = 32;
+
+/// Validate that a gRPC `program_hash` field is exactly 32 bytes (SHA-256).
+/// Returns the hex representation on success, or an appropriate gRPC error
+/// with guidance on failure.  This prevents unbounded allocations from
+/// arbitrarily large client-supplied byte vectors.
+fn validate_program_hash_bytes(operation: &str, hash: &[u8]) -> Result<String, Status> {
+    if hash.len() != PROGRAM_HASH_LEN {
+        return Err(Status::invalid_argument(format!(
+            "{operation} failed: program_hash must be {PROGRAM_HASH_LEN} bytes (got {})",
+            hash.len(),
+        )));
+    }
+    Ok(fmt_hex(hash))
+}
+
+fn storage_err_with_context(operation: &str, e: crate::storage::StorageError) -> Status {
+    let msg = e.to_string();
+    match e {
+        crate::storage::StorageError::NotFound(_) => {
+            Status::not_found(format!("{operation}: {msg}"))
+        }
+        _ => Status::internal(format!(
+            "{operation}: {msg}; check database file permissions and disk space"
+        )),
+    }
+}
+
 fn storage_err(e: crate::storage::StorageError) -> Status {
     match e {
         crate::storage::StorageError::NotFound(_) => Status::not_found(e.to_string()),
@@ -168,13 +207,35 @@ fn storage_err(e: crate::storage::StorageError) -> Status {
     }
 }
 
-/// Map `BundleError` to gRPC status: encode/RNG failures → INTERNAL (server
-/// error), everything else (bad input) → INVALID_ARGUMENT.
+/// Map `BundleError` to gRPC status with variant-specific guidance per GW-1307 AC2.
 fn bundle_err(e: crate::state_bundle::BundleError) -> Status {
+    use crate::state_bundle::BundleError;
+    let msg = e.to_string();
     match e {
-        crate::state_bundle::BundleError::Encode(_) => Status::internal(e.to_string()),
-        crate::state_bundle::BundleError::Rng => Status::internal(e.to_string()),
-        _ => Status::invalid_argument(e.to_string()),
+        BundleError::Encode(_) => Status::internal(format!(
+            "state bundle encoding failed: {msg}; this is likely a server-side issue"
+        )),
+        BundleError::Rng => Status::internal(format!(
+            "state bundle RNG failed: {msg}; check OS entropy source"
+        )),
+        BundleError::Crypto => Status::invalid_argument(format!(
+            "state bundle decryption failed: {msg}; verify the passphrase is correct and the bundle was not tampered with"
+        )),
+        BundleError::EmptyPassphrase => Status::invalid_argument(format!(
+            "state bundle rejected: {msg}; provide a non-empty passphrase"
+        )),
+        BundleError::InvalidMagic => Status::invalid_argument(format!(
+            "state bundle rejected: {msg}; the file does not appear to be a valid sonde state bundle"
+        )),
+        BundleError::UnsupportedVersion(_) => Status::invalid_argument(format!(
+            "state bundle rejected: {msg}; upgrade or downgrade the gateway to a compatible version"
+        )),
+        BundleError::Truncated => Status::invalid_argument(format!(
+            "state bundle rejected: {msg}; the bundle file may be incomplete or corrupted"
+        )),
+        BundleError::Decode(_) => Status::invalid_argument(format!(
+            "state bundle decode failed: {msg}; the bundle may be corrupted or from an incompatible version"
+        )),
     }
 }
 
@@ -367,36 +428,61 @@ impl GatewayAdmin for AdminService {
 
         let is_elf = req.image_data.len() >= 4 && &req.image_data[..4] == b"\x7fELF";
 
+        let source_filename = req.source_filename.clone();
+        let image_size = req.image_data.len();
+
         let mut record = if is_elf {
             self.program_library
                 .ingest_elf(&req.image_data, profile)
-                .map_err(|e| Status::invalid_argument(e.to_string()))?
+                .map_err(|e| {
+                    Status::invalid_argument(format!(
+                        "program ingestion failed (source: {}, size: {} bytes): {e}; \
+                         check that the BPF program compiles for the sonde target",
+                        source_filename.as_deref().unwrap_or("<unknown>"),
+                        image_size,
+                    ))
+                })?
         } else if cfg!(debug_assertions) {
             // In debug builds, allow ingestion of pre-encoded CBOR program images
             // without Prevail verification. This path is disabled in release builds
             // to enforce GW-0401 (all stored programs must be verified).
             self.program_library
                 .ingest_unverified(req.image_data, profile)
-                .map_err(|e| Status::invalid_argument(e.to_string()))?
+                .map_err(|e| {
+                    Status::invalid_argument(format!(
+                        "unverified program ingestion failed (source: {}, size: {} bytes): {e}",
+                        source_filename.as_deref().unwrap_or("<unknown>"),
+                        image_size,
+                    ))
+                })?
         } else {
             // In release/production builds, reject non-ELF inputs to avoid
             // storing unverified programs via the admin API.
-            return Err(Status::invalid_argument(
-                "non-ELF program images are not accepted in this build; \
-                submit an ELF binary so the gateway can verify it with Prevail",
-            ));
+            return Err(Status::invalid_argument(format!(
+                "program ingestion failed (source: {}, size: {} bytes): \
+                 non-ELF program images are not accepted in this build; \
+                 submit an ELF binary so the gateway can verify it with Prevail",
+                source_filename.as_deref().unwrap_or("<unknown>"),
+                image_size,
+            )));
         };
 
         record.abi_version = req.abi_version;
-        record.source_filename = req.source_filename;
+        record.source_filename = req.source_filename.clone();
+        let hash_hex = fmt_hex(&record.hash);
         let resp = IngestProgramResponse {
             program_hash: record.hash.clone(),
             program_size: record.size,
         };
-        self.storage
-            .store_program(&record)
-            .await
-            .map_err(storage_err)?;
+        self.storage.store_program(&record).await.map_err(|e| {
+            storage_err_with_context(
+                &format!(
+                    "store program (hash: {hash_hex}, source: {})",
+                    source_filename.as_deref().unwrap_or("<unknown>"),
+                ),
+                e,
+            )
+        })?;
         Ok(Response::new(resp))
     }
 
@@ -424,19 +510,48 @@ impl GatewayAdmin for AdminService {
         request: Request<AssignProgramRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.get_ref();
+        let program_hash_hex = validate_program_hash_bytes("assign program", &req.program_hash)?;
         let mut node = self
             .storage
             .get_node(&req.node_id)
             .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{}` not found", req.node_id)))?;
+            .map_err(|e| {
+                storage_err_with_context(
+                    &format!("assign program: look up node `{}`", req.node_id),
+                    e,
+                )
+            })?
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "assign program failed: node `{}` not found; use ListNodes to verify the node_id",
+                    req.node_id
+                ))
+            })?;
         self.storage
             .get_program(&req.program_hash)
             .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found("program not found"))?;
+            .map_err(|e| {
+                storage_err_with_context(
+                    &format!("assign program: look up program `{program_hash_hex}`"),
+                    e,
+                )
+            })?
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "assign program failed: program `{program_hash_hex}` not found; \
+                     use IngestProgram to upload it first, then ListPrograms to verify",
+                ))
+            })?;
         node.assigned_program_hash = Some(req.program_hash.clone());
-        self.storage.upsert_node(&node).await.map_err(storage_err)?;
+        self.storage.upsert_node(&node).await.map_err(|e| {
+            storage_err_with_context(
+                &format!(
+                    "assign program: update node `{}` with program `{program_hash_hex}`",
+                    req.node_id
+                ),
+                e,
+            )
+        })?;
         Ok(Response::new(Empty {}))
     }
 
@@ -445,14 +560,24 @@ impl GatewayAdmin for AdminService {
         request: Request<RemoveProgramRequest>,
     ) -> Result<Response<Empty>, Status> {
         let hash = request.into_inner().program_hash;
+        let hash_hex = validate_program_hash_bytes("remove program", &hash)?;
         self.storage
             .get_program(&hash)
             .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found("program not found"))?;
+            .map_err(|e| {
+                storage_err_with_context(&format!("remove program: look up `{hash_hex}`"), e)
+            })?
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "remove program failed: program `{hash_hex}` not found; \
+                     use ListPrograms to verify the hash"
+                ))
+            })?;
 
         // Prevent deletion while any node is still assigned to this program.
-        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
+        let nodes = self.storage.list_nodes().await.map_err(|e| {
+            storage_err_with_context("remove program: list nodes to check assignments", e)
+        })?;
         if nodes
             .iter()
             .any(|node| node.assigned_program_hash.as_deref() == Some(hash.as_slice()))
@@ -477,10 +602,9 @@ impl GatewayAdmin for AdminService {
             }
         }
 
-        self.storage
-            .delete_program(&hash)
-            .await
-            .map_err(storage_err)?;
+        self.storage.delete_program(&hash).await.map_err(|e| {
+            storage_err_with_context(&format!("remove program: delete `{hash_hex}`"), e)
+        })?;
         Ok(Response::new(Empty {}))
     }
 
@@ -535,21 +659,44 @@ impl GatewayAdmin for AdminService {
         request: Request<QueueEphemeralRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.get_ref();
+        let program_hash_hex = validate_program_hash_bytes("queue ephemeral", &req.program_hash)?;
         self.storage
             .get_node(&req.node_id)
             .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found(format!("node `{}` not found", req.node_id)))?;
+            .map_err(|e| {
+                storage_err_with_context(
+                    &format!("queue ephemeral: look up node `{}`", req.node_id),
+                    e,
+                )
+            })?
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "queue ephemeral failed: node `{}` not found; use ListNodes to verify",
+                    req.node_id,
+                ))
+            })?;
         let program = self
             .storage
             .get_program(&req.program_hash)
             .await
-            .map_err(storage_err)?
-            .ok_or_else(|| Status::not_found("program not found"))?;
+            .map_err(|e| {
+                storage_err_with_context(
+                    &format!("queue ephemeral: look up program `{program_hash_hex}`"),
+                    e,
+                )
+            })?
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "queue ephemeral failed: program `{program_hash_hex}` not found; \
+                     use IngestProgram to upload it first",
+                ))
+            })?;
         if program.verification_profile != VerificationProfile::Ephemeral {
-            return Err(Status::failed_precondition(
-                "program must have ephemeral verification profile for `QueueEphemeral`",
-            ));
+            return Err(Status::failed_precondition(format!(
+                "queue ephemeral failed: program `{program_hash_hex}` has {:?} \
+                 verification profile, expected Ephemeral",
+                program.verification_profile,
+            )));
         }
         self.pending_commands
             .write()
@@ -607,16 +754,31 @@ impl GatewayAdmin for AdminService {
         // Validate passphrase early to avoid loading sensitive material
         // for a request that will fail anyway.
         if req.passphrase.is_empty() {
-            return Err(Status::invalid_argument("passphrase must not be empty"));
+            return Err(Status::invalid_argument(
+                "export state failed: passphrase must not be empty; \
+                 provide a passphrase to encrypt the state bundle",
+            ));
         }
-        let nodes = self.storage.list_nodes().await.map_err(storage_err)?;
-        let programs = self.storage.list_programs().await.map_err(storage_err)?;
+        let nodes = self
+            .storage
+            .list_nodes()
+            .await
+            .map_err(|e| storage_err_with_context("export state: list nodes", e))?;
+        let programs = self
+            .storage
+            .list_programs()
+            .await
+            .map_err(|e| storage_err_with_context("export state: list programs", e))?;
         let identity = self
             .storage
             .load_gateway_identity()
             .await
-            .map_err(storage_err)?;
-        let phone_psks = self.storage.list_phone_psks().await.map_err(storage_err)?;
+            .map_err(|e| storage_err_with_context("export state: load gateway identity", e))?;
+        let phone_psks = self
+            .storage
+            .list_phone_psks()
+            .await
+            .map_err(|e| storage_err_with_context("export state: list phone PSKs", e))?;
         let handler_configs = self.handler_configs.read().await.clone();
         let passphrase = Zeroizing::new(req.passphrase);
         // Offload CPU-bound PBKDF2 + AES-GCM encryption to a blocking thread
@@ -678,6 +840,7 @@ impl GatewayAdmin for AdminService {
 
         let req = request.into_inner();
         let data = req.data;
+        let bundle_size = data.len();
         let passphrase = Zeroizing::new(req.passphrase);
         // Offload CPU-bound PBKDF2 + AES-GCM decryption to a blocking thread.
         let (nodes, programs, identity, phone_psks, handler_cfgs) =
@@ -685,8 +848,23 @@ impl GatewayAdmin for AdminService {
                 crate::state_bundle::decrypt_state_full(&data, &passphrase)
             })
             .await
-            .map_err(|e| Status::internal(format!("decrypt task failed: {e}")))?
-            .map_err(bundle_err)?;
+            .map_err(|e| {
+                Status::internal(format!(
+                    "import state: decrypt task failed (bundle size: {bundle_size} bytes): {e}"
+                ))
+            })?
+            .map_err(|e| {
+                // Wrap bundle_err with import-specific context; variant-specific
+                // guidance is provided by bundle_err itself (GW-1307 AC2).
+                let status = bundle_err(e);
+                Status::new(
+                    status.code(),
+                    format!(
+                    "import state: decryption/decode failed (bundle size: {bundle_size} bytes): {}",
+                    status.message()
+                ),
+                )
+            })?;
 
         // Replace all nodes and programs with the bundle contents.
         // SqliteStorage performs this in a single transaction; other backends
@@ -694,14 +872,14 @@ impl GatewayAdmin for AdminService {
         self.storage
             .replace_state(&nodes, &programs)
             .await
-            .map_err(storage_err)?;
+            .map_err(|e| storage_err_with_context("import state: replace nodes and programs", e))?;
 
         // Restore gateway identity if present in the bundle.
         if let Some(ref id) = identity {
             self.storage
                 .store_gateway_identity(id)
                 .await
-                .map_err(storage_err)?;
+                .map_err(|e| storage_err_with_context("import state: store gateway identity", e))?;
         }
 
         // Replace phone PSK registrations atomically.
@@ -710,7 +888,7 @@ impl GatewayAdmin for AdminService {
         self.storage
             .replace_phone_psks(&phone_psks)
             .await
-            .map_err(storage_err)?;
+            .map_err(|e| storage_err_with_context("import state: replace phone PSKs", e))?;
 
         // Restore handler routing configuration.
         // Convert HandlerConfig → HandlerRecord for storage, then update

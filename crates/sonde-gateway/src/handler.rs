@@ -680,6 +680,12 @@ fn parse_program_matcher(s: &str) -> Result<ProgramMatcher, HandlerConfigError> 
 
 /// Load handler configurations from a YAML file.
 ///
+/// File-level I/O errors and YAML parse errors are fatal (returned as
+/// `Err`). Individual handler entries whose `program_hash` values fail
+/// validation (e.g. non-hex characters, wrong length) are **skipped**
+/// with a warning and do not abort the load. The returned `Vec` contains
+/// only the successfully parsed entries.
+///
 /// The expected format is:
 ///
 /// ```yaml
@@ -717,7 +723,7 @@ pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerCo
                 });
             }
             Err(e) => {
-                warn!("skipping invalid handler entry: {e}");
+                warn!(path = %path.display(), command = %entry.command, "skipping invalid handler entry: {e}");
             }
         }
     }

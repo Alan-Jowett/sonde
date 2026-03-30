@@ -217,16 +217,39 @@ fn write_handler_script(dir: &std::path::Path, name: &str, content: &str) -> Str
     path.to_str().unwrap().to_string()
 }
 
-fn python_handler_config(matchers: Vec<ProgramMatcher>, script: String) -> HandlerConfig {
+/// Convert a [`HandlerRecord`] from storage into a [`HandlerConfig`] that
+/// launches the given Python script. Used by live-reload tests to derive
+/// the handler router from the shared storage rather than manually
+/// constructing configs from test data.
+fn handler_record_to_test_config(r: HandlerRecord, script: &str) -> Option<HandlerConfig> {
+    let matcher = if r.program_hash == "*" {
+        ProgramMatcher::Any
+    } else {
+        if r.program_hash.len() != 64
+            || !r.program_hash.is_ascii()
+            || !r.program_hash.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let bytes: Vec<u8> = (0..r.program_hash.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&r.program_hash[i..i + 2], 16).unwrap())
+            .collect();
+        ProgramMatcher::Hash(bytes)
+    };
+    // Use the Python wrapper command/args so the handler actually runs.
     let mut args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
-    args.push(script);
-    HandlerConfig {
-        matchers,
+    args.push(script.to_string());
+    Some(HandlerConfig {
+        matchers: vec![matcher],
         command: python_cmd().to_string(),
         args,
-        reply_timeout: None,
-        working_dir: None,
-    }
+        reply_timeout: r
+            .reply_timeout_ms
+            .filter(|&ms| ms > 0)
+            .map(Duration::from_millis),
+        working_dir: r.working_dir,
+    })
 }
 
 /// Minimal Python echo handler that reads one DATA message (skipping EVENTs)
@@ -1072,15 +1095,21 @@ async fn t1403_handler_live_reload_add() {
     let program_hash = vec![0x14u8; 32];
     let program_hash_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
 
-    // Shared storage.
-    let storage = Arc::new(InMemoryStorage::new());
+    // Shared infrastructure between admin and gateway.
+    let mem_storage = Arc::new(InMemoryStorage::new());
+    let storage: Arc<dyn Storage> = mem_storage.clone();
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let sm = Arc::new(SessionManager::new(Duration::from_secs(30)));
 
     // Register a node with a known program hash.
     let node = TestNode::new("node-1403", 0x1403, [0x43u8; 32]);
-    setup_node_with_program(&storage, &node, &program_hash).await;
+    setup_node_with_program(&mem_storage, &node, &program_hash).await;
 
-    // 1. Gateway with NO handlers → APP_DATA produces no reply.
-    let gw = Gateway::new(storage.clone(), Duration::from_secs(30));
+    // Gateway sharing state with admin — initially no handler router.
+    let mut gw = Gateway::new_with_pending(storage.clone(), pending.clone(), sm.clone());
+
+    // 1. No handler router → APP_DATA produces no reply.
     let seq = do_wake(&gw, &node, 1000, &program_hash).await;
     let resp = gw
         .process_frame(
@@ -1090,10 +1119,7 @@ async fn t1403_handler_live_reload_add() {
         .await;
     assert!(resp.is_none(), "no handler configured → no APP_DATA_REPLY");
 
-    // 2. Add handler via admin API.
-    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-    let sm = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    // 2. Add handler via admin API (shared storage).
     let admin = AdminService::new(storage.clone(), pending, sm);
 
     let mut cmd_args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
@@ -1110,7 +1136,7 @@ async fn t1403_handler_live_reload_add() {
         .await
         .unwrap();
 
-    // Verify the handler appears in the listing.
+    // Verify the handler appears in storage.
     let list = admin
         .list_handlers(Request::new(Empty {}))
         .await
@@ -1119,14 +1145,20 @@ async fn t1403_handler_live_reload_add() {
     assert_eq!(list.handlers.len(), 1);
     assert_eq!(list.handlers[0].program_hash, program_hash_hex);
 
-    // 3. Gateway with the newly-added handler → APP_DATA routes.
-    let config = python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script);
-    let router = Arc::new(HandlerRouter::new(vec![config]));
-    let gw2 = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
+    // 3. Build router from storage records and install on the *same* gateway.
+    let records = storage.list_handlers().await.unwrap();
+    let configs: Vec<HandlerConfig> = records
+        .into_iter()
+        .filter_map(|r| handler_record_to_test_config(r, &script))
+        .collect();
+    assert_eq!(configs.len(), 1, "storage should contain one handler");
+    let router = Arc::new(HandlerRouter::new(configs));
+    gw.set_handler_router(router).unwrap();
 
-    let seq2 = do_wake(&gw2, &node, 2000, &program_hash).await;
+    // 4. Same gateway now routes APP_DATA after reload.
+    let seq2 = do_wake(&gw, &node, 2000, &program_hash).await;
     let blob = vec![0x01, 0x02, 0x03];
-    let resp2 = gw2
+    let resp2 = gw
         .process_frame(&node.build_app_data(seq2, &blob), node.peer_address())
         .await
         .expect("handler added → APP_DATA_REPLY expected");
@@ -1155,15 +1187,15 @@ async fn t1404_handler_live_reload_remove() {
 
     let program_hash = vec![0x15u8; 32];
 
-    // Shared storage.
-    let storage = Arc::new(InMemoryStorage::new());
-
-    // Pre-add a catch-all handler via admin API.
+    // Shared infrastructure between admin and gateway.
+    let mem_storage = Arc::new(InMemoryStorage::new());
+    let storage: Arc<dyn Storage> = mem_storage.clone();
     let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
     let sm = Arc::new(SessionManager::new(Duration::from_secs(30)));
-    let admin = AdminService::new(storage.clone(), pending, sm);
+    let admin = AdminService::new(storage.clone(), pending.clone(), sm.clone());
 
+    // Pre-add a catch-all handler via admin API.
     let mut cmd_args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
     cmd_args.push(script.clone());
 
@@ -1180,12 +1212,18 @@ async fn t1404_handler_live_reload_remove() {
 
     // Register a node.
     let node = TestNode::new("node-1404", 0x1404, [0x44u8; 32]);
-    setup_node_with_program(&storage, &node, &program_hash).await;
+    setup_node_with_program(&mem_storage, &node, &program_hash).await;
 
-    // 1. Gateway with catch-all handler → APP_DATA routes.
-    let config = python_handler_config(vec![ProgramMatcher::Any], script);
-    let router = Arc::new(HandlerRouter::new(vec![config]));
-    let gw = Gateway::new_with_handler(storage.clone(), Duration::from_secs(30), router);
+    // 1. Build router from storage records, install on gateway.
+    let records = storage.list_handlers().await.unwrap();
+    let configs: Vec<HandlerConfig> = records
+        .into_iter()
+        .filter_map(|r| handler_record_to_test_config(r, &script))
+        .collect();
+    assert_eq!(configs.len(), 1, "storage should contain one handler");
+    let router = Arc::new(HandlerRouter::new(configs));
+    let mut gw = Gateway::new_with_pending(storage.clone(), pending, sm);
+    gw.set_handler_router(router).unwrap();
 
     let seq = do_wake(&gw, &node, 3000, &program_hash).await;
     let blob = vec![0xAA, 0xBB];
@@ -1203,7 +1241,7 @@ async fn t1404_handler_live_reload_remove() {
         other => panic!("expected AppDataReply, got {:?}", other),
     }
 
-    // Drop old gateway to tear down handler processes.
+    // Drop gateway to tear down handler processes before removal.
     drop(gw);
 
     // 2. Remove handler via admin API.
@@ -1224,8 +1262,21 @@ async fn t1404_handler_live_reload_remove() {
         "handler removed → list should be empty"
     );
 
-    // 3. Gateway with no handler → APP_DATA produces no reply.
-    let gw2 = Gateway::new(storage, Duration::from_secs(30));
+    // 3. Verify storage-driven reload yields no handlers.
+    //    HandlerRouter is immutable, so a reload rebuilds the router from
+    //    the current storage state (which is now empty).
+    let post_records = storage.list_handlers().await.unwrap();
+    assert!(
+        post_records.is_empty(),
+        "storage should be empty after remove"
+    );
+    let empty_router = Arc::new(HandlerRouter::new(Vec::new()));
+    let mut gw2 = Gateway::new_with_pending(
+        storage,
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(SessionManager::new(Duration::from_secs(30))),
+    );
+    gw2.set_handler_router(empty_router).unwrap();
     let seq2 = do_wake(&gw2, &node, 4000, &program_hash).await;
     let resp2 = gw2
         .process_frame(&node.build_app_data(seq2, &[0xCC]), node.peer_address())

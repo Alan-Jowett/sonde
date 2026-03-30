@@ -680,6 +680,12 @@ fn parse_program_matcher(s: &str) -> Result<ProgramMatcher, HandlerConfigError> 
 
 /// Load handler configurations from a YAML file.
 ///
+/// File-level I/O errors and YAML parse errors are fatal (returned as
+/// `Err`). Individual handler entries whose `program_hash` values fail
+/// validation (e.g. non-hex characters, wrong length) are **skipped**
+/// with a warning and do not abort the load. The returned `Vec` contains
+/// only the successfully parsed entries.
+///
 /// The expected format is:
 ///
 /// ```yaml
@@ -697,25 +703,31 @@ pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerCo
     let raw: RawHandlerConfigFile = serde_yaml_ng::from_str(&content)
         .map_err(|e| HandlerConfigError(format!("failed to parse {}: {e}", path.display())))?;
 
-    raw.handlers
-        .into_iter()
-        .map(|entry| {
-            let matchers = match entry.program_hash {
-                RawProgramHash::Single(s) => vec![parse_program_matcher(&s)?],
-                RawProgramHash::Multiple(hashes) => hashes
-                    .into_iter()
-                    .map(|h| parse_program_matcher(&h))
-                    .collect::<Result<Vec<_>, _>>()?,
-            };
-            Ok(HandlerConfig {
-                matchers,
-                command: entry.command,
-                args: entry.args,
-                reply_timeout: None,
-                working_dir: None,
-            })
-        })
-        .collect()
+    let mut configs = Vec::new();
+    for entry in raw.handlers {
+        let matchers_result = match entry.program_hash {
+            RawProgramHash::Single(s) => parse_program_matcher(&s).map(|m| vec![m]),
+            RawProgramHash::Multiple(hashes) => hashes
+                .into_iter()
+                .map(|h| parse_program_matcher(&h))
+                .collect::<Result<Vec<_>, _>>(),
+        };
+        match matchers_result {
+            Ok(matchers) => {
+                configs.push(HandlerConfig {
+                    matchers,
+                    command: entry.command,
+                    args: entry.args,
+                    reply_timeout: None,
+                    working_dir: None,
+                });
+            }
+            Err(e) => {
+                warn!(path = %path.display(), command = %entry.command, "skipping invalid handler entry: {e}");
+            }
+        }
+    }
+    Ok(configs)
 }
 
 // --- HandlerRouter ---
@@ -1171,9 +1183,13 @@ handlers:
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
 
+        // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().0.contains("invalid hex"));
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap().is_empty(),
+            "invalid entry should be skipped"
+        );
     }
 
     #[test]
@@ -1187,13 +1203,12 @@ handlers:
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
 
+        // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        assert!(result.is_ok());
         assert!(
-            err.0.contains("32 bytes"),
-            "expected 32-byte error, got: {}",
-            err.0
+            result.unwrap().is_empty(),
+            "wrong-length entry should be skipped"
         );
     }
 
@@ -1204,13 +1219,12 @@ handlers:
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
 
+        // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        assert!(result.is_ok());
         assert!(
-            err.0.contains("non-ASCII"),
-            "expected non-ASCII error, got: {}",
-            err.0
+            result.unwrap().is_empty(),
+            "non-ASCII entry should be skipped"
         );
     }
 

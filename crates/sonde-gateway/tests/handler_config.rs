@@ -7,21 +7,30 @@
 //! GW-1406 (state export/import), and input validation.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::RwLock;
 use tonic::Request;
+use tracing_test::traced_test;
 use zeroize::Zeroizing;
 
 use sonde_gateway::admin::pb::gateway_admin_server::GatewayAdmin;
 use sonde_gateway::admin::pb::*;
 use sonde_gateway::admin::AdminService;
-use sonde_gateway::engine::PendingCommand;
-use sonde_gateway::handler::{HandlerConfig, ProgramMatcher};
+use sonde_gateway::crypto::RustCryptoHmac;
+use sonde_gateway::engine::{Gateway, PendingCommand};
+use sonde_gateway::handler::{HandlerConfig, HandlerRouter, ProgramMatcher};
+use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::{HandlerRecord, InMemoryStorage, Storage};
+
+use sonde_protocol::{
+    decode_frame, encode_frame, verify_frame, FrameHeader, GatewayMessage, NodeMessage,
+    MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_WAKE,
+};
 
 // ─── Test helpers ──────────────────────────────────────────────────────
 
@@ -61,6 +70,321 @@ impl AdminHarness {
         Self { storage, admin }
     }
 }
+
+// ─── Protocol test helpers (T-1403/T-1404) ─────────────────────────────
+
+struct TestNode {
+    node_id: String,
+    key_hint: u16,
+    psk: [u8; 32],
+}
+
+impl TestNode {
+    fn new(node_id: &str, key_hint: u16, psk: [u8; 32]) -> Self {
+        Self {
+            node_id: node_id.to_string(),
+            key_hint,
+            psk,
+        }
+    }
+
+    fn to_record(&self) -> NodeRecord {
+        NodeRecord::new(self.node_id.clone(), self.key_hint, self.psk)
+    }
+
+    fn peer_address(&self) -> Vec<u8> {
+        self.node_id.as_bytes().to_vec()
+    }
+
+    fn build_wake(
+        &self,
+        nonce: u64,
+        firmware_abi_version: u32,
+        program_hash: &[u8],
+        battery_mv: u32,
+    ) -> Vec<u8> {
+        let header = FrameHeader {
+            key_hint: self.key_hint,
+            msg_type: MSG_WAKE,
+            nonce,
+        };
+        let msg = NodeMessage::Wake {
+            firmware_abi_version,
+            program_hash: program_hash.to_vec(),
+            battery_mv,
+        };
+        let cbor = msg.encode().unwrap();
+        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+    }
+
+    fn build_app_data(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
+        let header = FrameHeader {
+            key_hint: self.key_hint,
+            msg_type: MSG_APP_DATA,
+            nonce: seq,
+        };
+        let msg = NodeMessage::AppData {
+            blob: blob.to_vec(),
+        };
+        let cbor = msg.encode().unwrap();
+        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+    }
+}
+
+fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
+    let decoded = decode_frame(raw).unwrap();
+    assert!(verify_frame(&decoded, psk, &RustCryptoHmac));
+    let msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+    (decoded.header, msg)
+}
+
+/// Send a WAKE and return the `starting_seq` from the COMMAND response.
+async fn do_wake(gw: &Gateway, node: &TestNode, nonce: u64, program_hash: &[u8]) -> u64 {
+    let frame = node.build_wake(nonce, 1, program_hash, 3300);
+    let resp = gw
+        .process_frame(&frame, node.peer_address())
+        .await
+        .expect("expected COMMAND response");
+    let (_hdr, msg) = decode_response(&resp, &node.psk);
+    match msg {
+        GatewayMessage::Command { starting_seq, .. } => starting_seq,
+        other => panic!("expected Command, got {:?}", other),
+    }
+}
+
+/// Register a node with both assigned and current program hash set.
+async fn setup_node_with_program(storage: &InMemoryStorage, node: &TestNode, program_hash: &[u8]) {
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(program_hash.to_vec());
+    record.current_program_hash = Some(program_hash.to_vec());
+    storage.upsert_node(&record).await.unwrap();
+}
+
+// ─── Python handler helpers (T-1403/T-1404) ────────────────────────────
+
+macro_rules! require_python {
+    () => {
+        if !python_available() {
+            if cfg!(feature = "python-tests") {
+                panic!("Python 3 not found but `python-tests` feature is enabled; failing instead of skipping tests");
+            } else {
+                eprintln!("SKIPPING: Python 3 not found");
+                return;
+            }
+        }
+    };
+}
+
+fn python_cmd() -> &'static str {
+    if cfg!(windows) {
+        "py"
+    } else {
+        "python3"
+    }
+}
+
+fn python_args() -> Vec<&'static str> {
+    if cfg!(windows) {
+        vec!["-3"]
+    } else {
+        vec![]
+    }
+}
+
+fn python_available() -> bool {
+    let mut cmd = std::process::Command::new(python_cmd());
+    for arg in python_args() {
+        cmd.arg(arg);
+    }
+    match cmd
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                return false;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stdout.starts_with("Python 3") || stderr.starts_with("Python 3")
+        }
+        Err(_) => false,
+    }
+}
+
+fn write_handler_script(dir: &std::path::Path, name: &str, content: &str) -> String {
+    let path = dir.join(name);
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(content.as_bytes()).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+/// Convert a [`HandlerRecord`] from storage into a [`HandlerConfig`] that
+/// launches the given Python script. Used by live-reload tests to derive
+/// the handler router from the shared storage rather than manually
+/// constructing configs from test data.
+fn handler_record_to_test_config(r: HandlerRecord, script: &str) -> Option<HandlerConfig> {
+    let matcher = if r.program_hash == "*" {
+        ProgramMatcher::Any
+    } else {
+        if r.program_hash.len() != 64
+            || !r.program_hash.is_ascii()
+            || !r.program_hash.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let bytes: Vec<u8> = (0..r.program_hash.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&r.program_hash[i..i + 2], 16).unwrap())
+            .collect();
+        ProgramMatcher::Hash(bytes)
+    };
+    // Use the Python wrapper command/args so the handler actually runs.
+    let mut args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
+    args.push(script.to_string());
+    Some(HandlerConfig {
+        matchers: vec![matcher],
+        command: python_cmd().to_string(),
+        args,
+        reply_timeout: r
+            .reply_timeout_ms
+            .filter(|&ms| ms > 0)
+            .map(Duration::from_millis),
+        working_dir: r.working_dir,
+    })
+}
+
+/// Minimal Python echo handler that loops, reading DATA messages (skipping
+/// EVENTs) and sending back a DATA_REPLY with identical payload. The loop
+/// keeps the process alive until stdin is closed, which is required for
+/// T-1404 to meaningfully test handler process lifetime on removal.
+const ECHO_HANDLER_PY: &str = r#"
+import sys, struct
+
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
+def read_msg():
+    raw = read_exact(4)
+    length = struct.unpack('>I', raw)[0]
+    return read_exact(length)
+
+def write_msg(payload):
+    sys.stdout.buffer.write(struct.pack('>I', len(payload)))
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
+
+def decode_cbor_map(data):
+    result = {}
+    idx = 0
+    if data[idx] & 0xe0 != 0xa0 and data[idx] != 0xbf:
+        raise ValueError(f"expected map, got {data[idx]:#x}")
+    if data[idx] == 0xbf:
+        idx += 1
+        while data[idx] != 0xff:
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        idx += 1
+    else:
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+    return result
+
+def decode_item(data, idx):
+    major = (data[idx] >> 5) & 0x07
+    info = data[idx] & 0x1f
+    idx += 1
+    if major == 0:
+        val, idx = decode_uint(info, data, idx)
+        return val, idx
+    elif major == 2:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length], idx + length
+    elif major == 3:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length].decode('utf-8'), idx + length
+    elif major == 5:
+        count, idx = decode_uint(info, data, idx)
+        m = {}
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            m[k] = v
+        return m, idx
+    else:
+        raise ValueError(f"unsupported major type {major}")
+
+def decode_uint(info, data, idx):
+    if info < 24:
+        return info, idx
+    elif info == 24:
+        return data[idx], idx + 1
+    elif info == 25:
+        return struct.unpack('>H', data[idx:idx+2])[0], idx + 2
+    elif info == 26:
+        return struct.unpack('>I', data[idx:idx+4])[0], idx + 4
+    elif info == 27:
+        return struct.unpack('>Q', data[idx:idx+8])[0], idx + 8
+    else:
+        raise ValueError(f"unsupported additional info {info}")
+
+def encode_uint(major, val):
+    major_bits = major << 5
+    if val < 24:
+        return bytes([major_bits | val])
+    elif val < 256:
+        return bytes([major_bits | 24, val])
+    elif val < 65536:
+        return bytes([major_bits | 25]) + struct.pack('>H', val)
+    elif val < 2**32:
+        return bytes([major_bits | 26]) + struct.pack('>I', val)
+    else:
+        return bytes([major_bits | 27]) + struct.pack('>Q', val)
+
+def encode_cbor_map(pairs):
+    out = encode_uint(5, len(pairs))
+    for k, v in pairs:
+        out += encode_item(k)
+        out += encode_item(v)
+    return out
+
+def encode_item(val):
+    if isinstance(val, int):
+        return encode_uint(0, val)
+    elif isinstance(val, bytes):
+        return encode_uint(2, len(val)) + val
+    elif isinstance(val, str):
+        encoded = val.encode('utf-8')
+        return encode_uint(3, len(encoded)) + encoded
+    else:
+        raise ValueError(f"unsupported type {type(val)}")
+
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:
+        continue
+    request_id = msg[2]
+    payload_data = msg[5]
+    reply = encode_cbor_map([
+        (1, 0x81),
+        (2, request_id),
+        (3, payload_data),
+    ])
+    write_msg(reply)
+"#;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  T-1400: Handler storage CRUD
@@ -758,4 +1082,282 @@ async fn test_handler_list_ordered_by_program_hash() {
     assert_eq!(handlers[0].program_hash, "*");
     assert_eq!(handlers[1].program_hash, HASH_A);
     assert_eq!(handlers[2].program_hash, HASH_B);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-1403: Handler live-reload — add
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t1403_handler_live_reload_add() {
+    require_python!();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x14u8; 32];
+    let program_hash_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+
+    // Shared infrastructure between admin and gateway.
+    let mem_storage = Arc::new(InMemoryStorage::new());
+    let storage: Arc<dyn Storage> = mem_storage.clone();
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let sm = Arc::new(SessionManager::new(Duration::from_secs(30)));
+
+    // Register a node with a known program hash.
+    let node = TestNode::new("node-1403", 0x1403, [0x43u8; 32]);
+    setup_node_with_program(&mem_storage, &node, &program_hash).await;
+
+    // Gateway sharing state with admin — initially no handler router.
+    let mut gw = Gateway::new_with_pending(storage.clone(), pending.clone(), sm.clone());
+
+    // 1. No handler router → APP_DATA produces no reply.
+    let seq = do_wake(&gw, &node, 1000, &program_hash).await;
+    let resp = gw
+        .process_frame(
+            &node.build_app_data(seq, &[0x01, 0x02, 0x03]),
+            node.peer_address(),
+        )
+        .await;
+    assert!(resp.is_none(), "no handler configured → no APP_DATA_REPLY");
+
+    // 2. Add handler via admin API (shared storage).
+    let admin = AdminService::new(storage.clone(), pending, sm);
+
+    let mut cmd_args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
+    cmd_args.push(script.clone());
+
+    admin
+        .add_handler(Request::new(AddHandlerRequest {
+            program_hash: program_hash_hex.clone(),
+            command: python_cmd().to_string(),
+            args: cmd_args,
+            working_dir: String::new(),
+            reply_timeout_ms: None,
+        }))
+        .await
+        .unwrap();
+
+    // Verify the handler appears in storage.
+    let list = admin
+        .list_handlers(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(list.handlers.len(), 1);
+    assert_eq!(list.handlers[0].program_hash, program_hash_hex);
+
+    // 3. Build router from storage records and install on the *same* gateway.
+    let records = storage.list_handlers().await.unwrap();
+    let configs: Vec<HandlerConfig> = records
+        .into_iter()
+        .filter_map(|r| handler_record_to_test_config(r, &script))
+        .collect();
+    assert_eq!(configs.len(), 1, "storage should contain one handler");
+    let router = Arc::new(HandlerRouter::new(configs));
+    gw.set_handler_router(router).unwrap();
+
+    // 4. Same gateway now routes APP_DATA after reload.
+    let seq2 = do_wake(&gw, &node, 2000, &program_hash).await;
+    let blob = vec![0x01, 0x02, 0x03];
+    let resp2 = gw
+        .process_frame(&node.build_app_data(seq2, &blob), node.peer_address())
+        .await
+        .expect("handler added → APP_DATA_REPLY expected");
+
+    let (hdr, msg) = decode_response(&resp2, &node.psk);
+    assert_eq!(hdr.msg_type, MSG_APP_DATA_REPLY);
+    match msg {
+        GatewayMessage::AppDataReply { blob: reply } => {
+            assert_eq!(reply, blob, "handler must echo the data back");
+        }
+        other => panic!("expected AppDataReply, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-1404: Handler live-reload — remove
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t1404_handler_live_reload_remove() {
+    require_python!();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x15u8; 32];
+
+    // Shared infrastructure between admin and gateway.
+    let mem_storage = Arc::new(InMemoryStorage::new());
+    let storage: Arc<dyn Storage> = mem_storage.clone();
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let sm = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let admin = AdminService::new(storage.clone(), pending.clone(), sm.clone());
+
+    // Pre-add a catch-all handler via admin API.
+    let mut cmd_args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
+    cmd_args.push(script.clone());
+
+    admin
+        .add_handler(Request::new(AddHandlerRequest {
+            program_hash: "*".to_string(),
+            command: python_cmd().to_string(),
+            args: cmd_args,
+            working_dir: String::new(),
+            reply_timeout_ms: None,
+        }))
+        .await
+        .unwrap();
+
+    // Register a node.
+    let node = TestNode::new("node-1404", 0x1404, [0x44u8; 32]);
+    setup_node_with_program(&mem_storage, &node, &program_hash).await;
+
+    // 1. Build router from storage records, install on gateway.
+    let records = storage.list_handlers().await.unwrap();
+    let configs: Vec<HandlerConfig> = records
+        .into_iter()
+        .filter_map(|r| handler_record_to_test_config(r, &script))
+        .collect();
+    assert_eq!(configs.len(), 1, "storage should contain one handler");
+    let router = Arc::new(HandlerRouter::new(configs));
+    let mut gw = Gateway::new_with_pending(storage.clone(), pending, sm);
+    gw.set_handler_router(router).unwrap();
+
+    let seq = do_wake(&gw, &node, 3000, &program_hash).await;
+    let blob = vec![0xAA, 0xBB];
+    let resp = gw
+        .process_frame(&node.build_app_data(seq, &blob), node.peer_address())
+        .await
+        .expect("catch-all handler → APP_DATA_REPLY expected");
+
+    let (hdr, msg) = decode_response(&resp, &node.psk);
+    assert_eq!(hdr.msg_type, MSG_APP_DATA_REPLY);
+    match msg {
+        GatewayMessage::AppDataReply { blob: reply } => {
+            assert_eq!(reply, blob, "handler must echo the data back");
+        }
+        other => panic!("expected AppDataReply, got {:?}", other),
+    }
+
+    // Drop gateway to tear down handler processes before removal.
+    drop(gw);
+
+    // 2. Remove handler via admin API.
+    admin
+        .remove_handler(Request::new(RemoveHandlerRequest {
+            program_hash: "*".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    let list = admin
+        .list_handlers(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        list.handlers.is_empty(),
+        "handler removed → list should be empty"
+    );
+
+    // 3. Verify storage-driven reload yields no handlers.
+    //    HandlerRouter is immutable, so a reload rebuilds the router from
+    //    the current storage state (which is now empty).
+    let post_records = storage.list_handlers().await.unwrap();
+    assert!(
+        post_records.is_empty(),
+        "storage should be empty after remove"
+    );
+    let empty_router = Arc::new(HandlerRouter::new(Vec::new()));
+    let mut gw2 = Gateway::new_with_pending(
+        storage,
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(SessionManager::new(Duration::from_secs(30))),
+    );
+    gw2.set_handler_router(empty_router).unwrap();
+    let seq2 = do_wake(&gw2, &node, 4000, &program_hash).await;
+    let resp2 = gw2
+        .process_frame(&node.build_app_data(seq2, &[0xCC]), node.peer_address())
+        .await;
+    assert!(resp2.is_none(), "handler removed → no APP_DATA_REPLY");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-1405a: Bootstrap with invalid YAML entry
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+#[traced_test]
+async fn t1405a_bootstrap_invalid_yaml_entry() {
+    use sonde_gateway::handler::load_handler_configs;
+
+    // Create a YAML file with one valid entry and one invalid entry.
+    let dir = tempfile::tempdir().unwrap();
+    let yaml_path = dir.path().join("handlers.yaml");
+    let yaml = format!(
+        r#"
+handlers:
+  - program_hash: "{HASH_A}"
+    command: "/usr/bin/valid_handler"
+  - program_hash: "not-a-hex-string"
+    command: "/usr/bin/invalid_handler"
+"#
+    );
+    std::fs::write(&yaml_path, yaml).unwrap();
+
+    // load_handler_configs succeeds, skipping the invalid entry.
+    let configs = load_handler_configs(&yaml_path).unwrap();
+    assert_eq!(configs.len(), 1, "only valid entry should be imported");
+    assert_eq!(configs[0].command, "/usr/bin/valid_handler");
+
+    // Warning must be logged for the invalid entry.
+    assert!(logs_contain("skipping invalid handler entry"));
+    assert!(logs_contain("not-a-hex-string"));
+
+    // Import valid configs into storage (simulating gateway bootstrap).
+    let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::in_memory(test_key()).unwrap());
+    for cfg in &configs {
+        for matcher in &cfg.matchers {
+            let program_hash = match matcher {
+                ProgramMatcher::Any => "*".to_string(),
+                ProgramMatcher::Hash(bytes) => {
+                    use std::fmt::Write as _;
+                    let mut s = String::with_capacity(bytes.len() * 2);
+                    for b in bytes {
+                        let _ = write!(s, "{b:02x}");
+                    }
+                    s
+                }
+            };
+            let record = HandlerRecord {
+                program_hash,
+                command: cfg.command.clone(),
+                args: cfg.args.clone(),
+                working_dir: None,
+                reply_timeout_ms: None,
+            };
+            storage.add_handler(&record).await.unwrap();
+        }
+    }
+
+    // ListHandlers via admin API shows only the valid entry.
+    let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let sm = Arc::new(SessionManager::new(Duration::from_secs(30)));
+    let admin = AdminService::new(storage, pending, sm);
+
+    let list = admin
+        .list_handlers(Request::new(Empty {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(list.handlers.len(), 1);
+    assert_eq!(list.handlers[0].program_hash, HASH_A);
+    assert_eq!(list.handlers[0].command, "/usr/bin/valid_handler");
 }

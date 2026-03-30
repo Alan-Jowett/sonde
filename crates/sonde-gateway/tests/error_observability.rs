@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! GW-1307 error diagnostic observability tests.
+//! GW-1307 error diagnostic observability tests and GW-1306 AC5
+//! (graceful log file failure).
 //!
 //! Validates that error messages at user-facing boundaries include
 //! operation name, input/parameters, subsystem error, and actionable
@@ -306,32 +307,27 @@ async fn t1307i_queue_ephemeral_wrong_profile_includes_details() {
     );
 }
 
-/// GW-1306 AC5: verify that a gateway can start when the log file path is
-/// invalid (e.g., directory doesn't exist). The gateway should fall back to
-/// ETW-only logging rather than crashing.
-///
-/// This test validates the graceful-failure logic by attempting to open a
-/// file at an impossible path and confirming that the open fails while the
-/// program continues.
+/// GW-1306 AC5: verify that a log file open at a nonexistent directory
+/// fails gracefully. The gateway's `init_service_logging` uses a `match`
+/// on the open result and continues with ETW-only logging in the Err branch.
 #[test]
 fn t1306_ac5_graceful_log_file_failure() {
-    // Simulate the AC5 code path: try to open a log file at a path that
-    // cannot exist. The gateway code uses `match` on the result and
-    // continues without file logging in the Err branch.
-    let impossible_path = if cfg!(windows) {
-        r"Z:\nonexistent\deeply\nested\sonde.log"
-    } else {
-        "/proc/0/nonexistent/sonde.log"
-    };
+    let tmp = tempfile::tempdir().unwrap();
+    // Create a path with a nonexistent parent directory inside the tempdir.
+    let impossible_path = tmp
+        .path()
+        .join("nonexistent")
+        .join("nested")
+        .join("sonde.log");
 
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(impossible_path);
+        .open(&impossible_path);
 
     assert!(
         result.is_err(),
-        "expected file open to fail for impossible path"
+        "expected file open to fail for nonexistent parent directory"
     );
 
     // The gateway code would continue here with ETW-only logging.

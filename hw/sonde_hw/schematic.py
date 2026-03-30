@@ -15,6 +15,10 @@ from kiutils.symbol import Symbol
 
 from sonde_hw import __version__
 from sonde_hw.config import BoardConfig
+from sonde_hw.spice.netlist import (
+    build_netlist,
+    export_netlist_json,
+)
 from sonde_hw.templates import (
     RefAllocator,
     TemplateResult,
@@ -138,6 +142,17 @@ def generate_schematic(config: BoardConfig, output_dir: Path) -> Path:
     sexpr = sch.to_sexpr()
     with open(str(sch_path), "w", encoding="utf-8") as f:
         f.write(sexpr)
+
+    # Export netlist JSON (HW-SIM-001)
+    netlist = build_netlist(
+        config_name=config.name,
+        lib_symbols=[seen_syms[k] for k in sorted(seen_syms)],
+        instances=all_instances,
+        labels=all_labels,
+    )
+    netlist_path = output_dir / "netlist.json"
+    export_netlist_json(netlist, netlist_path)
+
     return sch_path
 
 

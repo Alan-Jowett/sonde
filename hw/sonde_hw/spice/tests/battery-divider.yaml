@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+
+id: battery-divider
+name: Battery voltage divider accuracy
+description: >
+  Verify the VBAT_SENSE voltage matches the expected divider ratio
+  R12/(R11+R12) within 1 %.  The divider uses matched 10 MΩ resistors,
+  so the ideal midpoint is VBAT / 2.
+
+sources:
+  VBAT: 3.7
+  VUSB: 0
+
+state: deep_sleep
+
+analysis:
+  type: op
+
+assertions:
+  - net: VBAT_SENSE
+    measure: voltage
+    operator: "approx"
+    threshold: 1.85
+    tolerance_pct: 1
+    unit: V
+    description: "VBAT_SENSE must equal VBAT × R12/(R11+R12) ± 1 %"

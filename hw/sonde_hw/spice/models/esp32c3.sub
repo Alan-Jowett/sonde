@@ -1,0 +1,21 @@
+* SPDX-License-Identifier: MIT
+* Copyright (c) 2026 sonde contributors
+*
+* ESP32-C3-MINI-1 behavioral current-sink model
+* Datasheet: Espressif ESP32-C3
+* Key parameters (typical):
+*   Deep sleep : 5 µA
+*   Active     : 80 mA
+*   Radio TX   : 150 mA
+*
+* Usage:
+*   .param STATE=0   (0 = deep_sleep, 1 = active, 2 = radio_tx)
+*   XU1 vdd gnd esp32c3
+*
+* Pins: vdd=1  gnd=2
+
+.subckt esp32c3 vdd gnd
+* Parameter-selectable current draw
+* STATE=0 → 5 µA, STATE=1 → 80 mA, STATE=2 → 150 mA
+Bicc vdd gnd I = (1-min(STATE,1))*5u + (STATE>=1 && STATE<2)*80m + (STATE>=2)*150m
+.ends esp32c3

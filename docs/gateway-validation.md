@@ -2106,7 +2106,7 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Start the gateway in service mode with database path `test.db`.
 2. Trigger a log event (e.g., register a node).
-3. Assert: `test.db.log` exists and contains the logged event.
+3. Assert: `test.log` exists and contains the logged event.
 
 ### T-1306b  ETW provider registered
 

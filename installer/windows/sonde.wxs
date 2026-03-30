@@ -46,14 +46,14 @@
 
     <!-- ── MSI properties ────────────────────────────────────────────── -->
     <!-- COM port for the ESP-NOW modem. Auto-detected by custom action
-         or entered manually by the operator in the modem config dialog. -->
-    <Property Id="MODEM_PORT" Value="" />
+         or entered manually by the operator. Marked Secure so the value
+         flows from the UI sequence to the execute sequence. -->
+    <Property Id="MODEM_PORT" Value="" Secure="yes" />
 
     <!-- ── Feature tree ──────────────────────────────────────────────── -->
     <Feature Id="ProductFeature" Title="Sonde" Level="1">
       <ComponentGroupRef Id="BinariesGroup" />
       <ComponentGroupRef Id="ConfigGroup" />
-      <ComponentGroupRef Id="ServiceGroup" />
     </Feature>
 
     <!-- ── Directory tree ───────────────────────────────────────────── -->
@@ -74,6 +74,28 @@
               Source="$(var.GatewayBin)"
               Name="sonde-gateway.exe"
               KeyPath="yes" />
+        <!-- GW-1501: Register gateway as an auto-start Windows service.
+             ServiceInstall is in the same component as the executable so
+             the service binary path is correct and the component has a
+             valid KeyPath. The service is NOT auto-started during install
+             because the operator may need to generate a master key first
+             (sonde-admin generate-key). Use "sc start sonde-gateway" or
+             reboot after setup. -->
+        <ServiceInstall Id="SondeGatewayService"
+                        Name="sonde-gateway"
+                        DisplayName="Sonde Gateway"
+                        Description="Manages sensor nodes over ESP-NOW radio."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Arguments="--service --port [MODEM_PORT] --db [CommonAppDataFolder]sonde\gateway.db --master-key-file [CommonAppDataFolder]sonde\master-key.hex" />
+        <!-- Stop service on uninstall and upgrade; do NOT start during
+             install (operator must generate master key first). -->
+        <ServiceControl Id="SondeGatewayControl"
+                        Name="sonde-gateway"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
       </Component>
       <Component Id="AdminExe" Guid="B2C3D4E5-F6A7-8901-BCDE-F12345678901">
         <File Id="AdminExeFile"
@@ -98,36 +120,11 @@
       </Component>
     </ComponentGroup>
 
-    <!-- ── GW-1501: Service registration ─────────────────────────────
-         The service is registered with the COM port selected in the
-         modem configuration dialog (MODEM_PORT property). The service
-         starts automatically on boot.
-         On uninstall, the service is stopped and removed (GW-1501 AC6).
-         On upgrade, the service is stopped before file replacement and
-         restarted after (GW-1501 AC7). -->
-    <ComponentGroup Id="ServiceGroup" Directory="BinDir">
-      <Component Id="GatewayService" Guid="D4E5F6A7-B8C9-0123-4567-890ABCDEF012">
-        <ServiceInstall Id="SondeGatewayService"
-                        Name="sonde-gateway"
-                        DisplayName="Sonde Gateway"
-                        Description="Manages sensor nodes over ESP-NOW radio."
-                        Start="auto"
-                        Type="ownProcess"
-                        ErrorControl="normal"
-                        Arguments="--service --port [MODEM_PORT] --db [CommonAppDataFolder]sonde\gateway.db --master-key-file [CommonAppDataFolder]sonde\master-key.hex" />
-        <ServiceControl Id="SondeGatewayStart"
-                        Name="sonde-gateway"
-                        Start="install"
-                        Stop="both"
-                        Remove="uninstall"
-                        Wait="yes" />
-      </Component>
-    </ComponentGroup>
-
     <!-- ── Custom action: auto-detect ESP32-S3 modem COM port ────────
          GW-1501 AC2: Scans USB devices for VID 303A / PID 1001 and
-         pre-populates the MODEM_PORT property. Runs during UI sequence
-         before the modem configuration dialog is shown. -->
+         pre-populates the MODEM_PORT property. Runs early in the UI
+         sequence (before CostFinalize) so the value is available if a
+         custom dialog is added later. -->
     <Binary Id="SondeCustomActionsDll" SourceFile="$(var.CustomActionDll)" />
     <CustomAction Id="DetectModemPort"
                   BinaryRef="SondeCustomActionsDll"
@@ -136,7 +133,7 @@
                   Return="check" />
 
     <InstallUISequence>
-      <Custom Action="DetectModemPort" Before="ExecuteAction" />
+      <Custom Action="DetectModemPort" Before="CostFinalize" />
     </InstallUISequence>
 
     <!-- ── UI ───────────────────────────────────────────────────────── -->

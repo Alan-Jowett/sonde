@@ -60,7 +60,7 @@ namespace SondeCustomActions
             }
             catch (System.Exception ex)
             {
-                session.Log($"DetectModemPort: error during detection: {ex.Message}");
+                session.Log($"DetectModemPort: error during detection: {ex}");
                 // Non-fatal — operator can enter the port manually
             }
 

@@ -143,7 +143,7 @@
 
     <InstallExecuteSequence>
       <!-- Auto-detect for silent/unattended installs (UI sequence is skipped). -->
-      <Custom Action="DetectModemPort" After="AppSearch">NOT MODEM_PORT</Custom>
+      <Custom Action="DetectModemPort" After="AppSearch" Condition="NOT MODEM_PORT" />
     </InstallExecuteSequence>
 
     <!-- ── UI ───────────────────────────────────────────────────────── -->

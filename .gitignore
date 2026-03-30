@@ -31,3 +31,8 @@ apk/
 apk-nightly/
 installer/logs/
 master-key.hex
+
+# Hardware tool outputs and Python artifacts
+hw/output/
+hw/.venv/
+__pycache__/

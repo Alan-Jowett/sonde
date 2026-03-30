@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "kiaDC/+IKdI=",
+  "success": true,
+  "projectFilePath": "F:\\sonde\\installer\\windows\\CustomActions\\SondeCustomActions.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\alanjo\\.nuget\\packages\\system.codedom\\8.0.0\\system.codedom.8.0.0.nupkg.sha512",
+    "C:\\Users\\alanjo\\.nuget\\packages\\system.management\\8.0.0\\system.management.8.0.0.nupkg.sha512",
+    "C:\\Users\\alanjo\\.nuget\\packages\\wixtoolset.dtf.windowsinstaller\\4.0.6\\wixtoolset.dtf.windowsinstaller.4.0.6.nupkg.sha512"
+  ],
+  "logs": []
+}

@@ -14,8 +14,9 @@ namespace SondeCustomActions
         /// <summary>
         /// Scans USB serial devices for the ESP32-S3 modem (VID 303A, PID 1001)
         /// and sets the MODEM_PORT property to the first matching COM port.
-        /// If no device is found, MODEM_PORT is left empty and the operator
-        /// must enter the port manually in the dialog.
+        /// If no device is found, MODEM_PORT is left empty and the
+        /// LaunchCondition in sonde.wxs blocks the install. The operator can
+        /// override with: msiexec /i sonde.msi MODEM_PORT=COMx
         /// </summary>
         [CustomAction]
         public static ActionResult DetectModemPort(Session session)
@@ -63,29 +64,9 @@ namespace SondeCustomActions
                 // Non-fatal — operator can enter the port manually
             }
 
-            // No modem found — warn the operator with diagnostics.
-            // MSI message box: Warning icon, OK/Cancel buttons.
-            // MB_OKCANCEL = 0x01, combined with InstallMessage.Warning via bitwise OR.
-            const int MB_OKCANCEL = 1;
-            using var record = new Record(0);
-            record[0] =
-                "No ESP32-S3 modem detected.\n\n" +
-                "The installer scanned for USB devices with VID 303A / PID 1001 " +
-                "(Espressif TinyUSB CDC ACM) but found no matching COM port.\n\n" +
-                "Possible causes:\n" +
-                "  \u2022 The modem is not plugged in\n" +
-                "  \u2022 The modem is on a different USB port\n" +
-                "  \u2022 Windows has not installed the usbser.sys driver\n\n" +
-                "The gateway service will be installed but may fail to start " +
-                "without a valid COM port. You can reconfigure later with:\n\n" +
-                "  sonde-gateway install --port COMx\n\n" +
-                "Click OK to continue installation, or Cancel to abort.";
-            var msgResult = session.Message(
-                InstallMessage.Warning | (InstallMessage)MB_OKCANCEL,
-                record);
-            if (msgResult == MessageResult.Cancel)
-                return ActionResult.UserExit;
-
+            // No modem found — return success so the LaunchCondition in
+            // sonde.wxs can block the install with a descriptive message.
+            // The operator can override with: msiexec /i sonde.msi MODEM_PORT=COMx
             return ActionResult.Success;
         }
 

@@ -1,0 +1,63 @@
+{
+  "format": 1,
+  "restore": {
+    "F:\\sonde\\installer\\windows\\CustomActions\\SondeCustomActions.csproj": {}
+  },
+  "projects": {
+    "F:\\sonde\\installer\\windows\\CustomActions\\SondeCustomActions.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "F:\\sonde\\installer\\windows\\CustomActions\\SondeCustomActions.csproj",
+        "projectName": "SondeCustomActions",
+        "projectPath": "F:\\sonde\\installer\\windows\\CustomActions\\SondeCustomActions.csproj",
+        "packagesPath": "C:\\Users\\alanjo\\.nuget\\packages\\",
+        "outputPath": "F:\\sonde\\installer\\windows\\CustomActions\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\alanjo\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net472"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net472": {
+            "targetAlias": "net472",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "9.0.300"
+      },
+      "frameworks": {
+        "net472": {
+          "targetAlias": "net472",
+          "dependencies": {
+            "System.Management": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "WixToolset.Dtf.WindowsInstaller": {
+              "target": "Package",
+              "version": "[4.0.6, )"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.312\\RuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

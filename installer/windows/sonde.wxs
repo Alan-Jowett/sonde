@@ -16,7 +16,7 @@
          -d Version=VERSION ^
          -d GatewayBin=target\release\sonde-gateway.exe ^
          -d AdminBin=target\release\sonde-admin.exe ^
-         -d CustomActionDll=installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.dll ^
+         -d CustomActionCaDll=installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.CA.dll ^
          -ext WixToolset.UI.wixext ^
          -ext WixToolset.Util.wixext ^
          -out sonde-x86_64.msi
@@ -77,10 +77,8 @@
         <!-- GW-1501: Register gateway as an auto-start Windows service.
              ServiceInstall is in the same component as the executable so
              the service binary path is correct and the component has a
-             valid KeyPath. The service is NOT auto-started during install
-             because the operator may need to generate a master key first
-             (sonde-admin generate-key). Use "sc start sonde-gateway" or
-             reboot after setup. -->
+             valid KeyPath. The --generate-master-key flag ensures the key
+             file is created on first start if it does not already exist. -->
         <ServiceInstall Id="SondeGatewayService"
                         Name="sonde-gateway"
                         DisplayName="Sonde Gateway"
@@ -88,11 +86,13 @@
                         Start="auto"
                         Type="ownProcess"
                         ErrorControl="normal"
-                        Arguments="--service --port [MODEM_PORT] --db [CommonAppDataFolder]sonde\gateway.db --master-key-file [CommonAppDataFolder]sonde\master-key.hex" />
-        <!-- Stop service on uninstall and upgrade; do NOT start during
-             install (operator must generate master key first). -->
+                        Arguments="--service --port [MODEM_PORT] --db [CommonAppDataFolder]sonde\gateway.db --master-key-file [CommonAppDataFolder]sonde\master-key.hex --generate-master-key" />
+        <!-- Stop service before upgrade/uninstall; restart after install
+             (including major-upgrade reinstall). MODEM_PORT is guaranteed
+             non-empty by the LaunchCondition below. -->
         <ServiceControl Id="SondeGatewayControl"
                         Name="sonde-gateway"
+                        Start="install"
                         Stop="both"
                         Remove="uninstall"
                         Wait="yes" />
@@ -122,18 +122,23 @@
 
     <!-- ── Custom action: auto-detect ESP32-S3 modem COM port ────────
          GW-1501 AC2: Scans USB devices for VID 303A / PID 1001 and
-         pre-populates the MODEM_PORT property. Runs early in the UI
-         sequence (before CostFinalize) so the value is available if a
-         custom dialog is added later. -->
-    <Binary Id="SondeCustomActionsDll" SourceFile="$(var.CustomActionDll)" />
+         pre-populates the MODEM_PORT property. Scheduled After AppSearch
+         so it runs before LaunchConditions evaluates the property. -->
+    <Binary Id="SondeCustomActionsCaDll" SourceFile="$(var.CustomActionCaDll)" />
     <CustomAction Id="DetectModemPort"
-                  BinaryRef="SondeCustomActionsDll"
+                  BinaryRef="SondeCustomActionsCaDll"
                   DllEntry="DetectModemPort"
                   Execute="immediate"
                   Return="check" />
 
+    <!-- GW-1501: Require a valid MODEM_PORT. Auto-detected by the custom
+         action above, or supplied on the command line for silent installs:
+           msiexec /i sonde.msi MODEM_PORT=COM5 /quiet -->
+    <Launch Condition="MODEM_PORT"
+            Message="No ESP32-S3 modem COM port detected. Connect the modem and retry, or specify the port manually: msiexec /i sonde.msi MODEM_PORT=COMx" />
+
     <InstallUISequence>
-      <Custom Action="DetectModemPort" Before="CostFinalize" />
+      <Custom Action="DetectModemPort" After="AppSearch" />
     </InstallUISequence>
 
     <!-- ── UI ───────────────────────────────────────────────────────── -->

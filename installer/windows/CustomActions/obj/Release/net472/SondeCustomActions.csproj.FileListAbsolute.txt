@@ -1,0 +1,13 @@
+F:\sonde\installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.dll
+F:\sonde\installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.pdb
+F:\sonde\installer\windows\CustomActions\bin\Release\net472\System.CodeDom.dll
+F:\sonde\installer\windows\CustomActions\bin\Release\net472\WixToolset.Dtf.WindowsInstaller.dll
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCustomActions.csproj.AssemblyReference.cache
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCustomActions.GeneratedMSBuildEditorConfig.editorconfig
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCustomActions.AssemblyInfoInputs.cache
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCustomActions.AssemblyInfo.cs
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCustomActions.csproj.CoreCompileInputs.cache
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCustomActions.sourcelink.json
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCus.1A4CD258.Up2Date
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCustomActions.dll
+F:\sonde\installer\windows\CustomActions\obj\Release\net472\SondeCustomActions.pdb

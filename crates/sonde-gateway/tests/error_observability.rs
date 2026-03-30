@@ -78,7 +78,11 @@ async fn t1307b_assign_program_missing_includes_context() {
         .await
         .unwrap();
 
-    let bogus_hash = vec![0xDE, 0xAD];
+    let bogus_hash = vec![0xDE, 0xAD, 0xBE, 0xEF,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00];
     let err = admin
         .assign_program(Request::new(AssignProgramRequest {
             node_id: "node-1307b".to_string(),
@@ -88,7 +92,7 @@ async fn t1307b_assign_program_missing_includes_context() {
         .unwrap_err();
     let msg = err.message().to_lowercase();
     assert!(
-        msg.contains("dead"),
+        msg.contains("deadbeef"),
         "error should include the program hash, got: {msg}"
     );
     assert!(

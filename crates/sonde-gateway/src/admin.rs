@@ -171,11 +171,31 @@ fn fmt_hex(bytes: &[u8]) -> String {
     s
 }
 
+/// SHA-256 hash length in bytes.
+const PROGRAM_HASH_LEN: usize = 32;
+
+/// Validate that a gRPC `program_hash` field is exactly 32 bytes (SHA-256).
+/// Returns the hex representation on success, or an appropriate gRPC error
+/// with guidance on failure.  This prevents unbounded allocations from
+/// arbitrarily large client-supplied byte vectors.
+fn validate_program_hash_bytes(operation: &str, hash: &[u8]) -> Result<String, Status> {
+    if hash.len() != PROGRAM_HASH_LEN {
+        return Err(Status::invalid_argument(format!(
+            "{operation} failed: program_hash must be {PROGRAM_HASH_LEN} bytes (got {})",
+            hash.len(),
+        )));
+    }
+    Ok(fmt_hex(hash))
+}
+
 fn storage_err_with_context(operation: &str, e: crate::storage::StorageError) -> Status {
+    let msg = e.to_string();
     match e {
-        crate::storage::StorageError::NotFound(_) => Status::not_found(format!("{operation}: {e}")),
+        crate::storage::StorageError::NotFound(_) => {
+            Status::not_found(format!("{operation}: {msg}"))
+        }
         _ => Status::internal(format!(
-            "{operation}: {e}; check database file permissions and disk space"
+            "{operation}: {msg}; check database file permissions and disk space"
         )),
     }
 }
@@ -190,30 +210,31 @@ fn storage_err(e: crate::storage::StorageError) -> Status {
 /// Map `BundleError` to gRPC status with variant-specific guidance per GW-1307 AC2.
 fn bundle_err(e: crate::state_bundle::BundleError) -> Status {
     use crate::state_bundle::BundleError;
+    let msg = e.to_string();
     match e {
         BundleError::Encode(_) => Status::internal(format!(
-            "state bundle encoding failed: {e}; this is likely a server-side issue"
+            "state bundle encoding failed: {msg}; this is likely a server-side issue"
         )),
         BundleError::Rng => Status::internal(format!(
-            "state bundle RNG failed: {e}; check OS entropy source"
+            "state bundle RNG failed: {msg}; check OS entropy source"
         )),
         BundleError::Crypto => Status::invalid_argument(format!(
-            "state bundle decryption failed: {e}; verify the passphrase is correct and the bundle was not tampered with"
+            "state bundle decryption failed: {msg}; verify the passphrase is correct and the bundle was not tampered with"
         )),
         BundleError::EmptyPassphrase => Status::invalid_argument(format!(
-            "state bundle rejected: {e}; provide a non-empty passphrase"
+            "state bundle rejected: {msg}; provide a non-empty passphrase"
         )),
         BundleError::InvalidMagic => Status::invalid_argument(format!(
-            "state bundle rejected: {e}; the file does not appear to be a valid sonde state bundle"
+            "state bundle rejected: {msg}; the file does not appear to be a valid sonde state bundle"
         )),
         BundleError::UnsupportedVersion(_) => Status::invalid_argument(format!(
-            "state bundle rejected: {e}; upgrade or downgrade the gateway to a compatible version"
+            "state bundle rejected: {msg}; upgrade or downgrade the gateway to a compatible version"
         )),
         BundleError::Truncated => Status::invalid_argument(format!(
-            "state bundle rejected: {e}; the bundle file may be incomplete or corrupted"
+            "state bundle rejected: {msg}; the bundle file may be incomplete or corrupted"
         )),
         BundleError::Decode(_) => Status::invalid_argument(format!(
-            "state bundle decode failed: {e}; the bundle may be corrupted or from an incompatible version"
+            "state bundle decode failed: {msg}; the bundle may be corrupted or from an incompatible version"
         )),
     }
 }
@@ -489,7 +510,7 @@ impl GatewayAdmin for AdminService {
         request: Request<AssignProgramRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.get_ref();
-        let program_hash_hex = fmt_hex(&req.program_hash);
+        let program_hash_hex = validate_program_hash_bytes("assign program", &req.program_hash)?;
         let mut node = self
             .storage
             .get_node(&req.node_id)
@@ -539,7 +560,7 @@ impl GatewayAdmin for AdminService {
         request: Request<RemoveProgramRequest>,
     ) -> Result<Response<Empty>, Status> {
         let hash = request.into_inner().program_hash;
-        let hash_hex = fmt_hex(&hash);
+        let hash_hex = validate_program_hash_bytes("remove program", &hash)?;
         self.storage
             .get_program(&hash)
             .await
@@ -638,7 +659,7 @@ impl GatewayAdmin for AdminService {
         request: Request<QueueEphemeralRequest>,
     ) -> Result<Response<Empty>, Status> {
         let req = request.get_ref();
-        let program_hash_hex = fmt_hex(&req.program_hash);
+        let program_hash_hex = validate_program_hash_bytes("queue ephemeral", &req.program_hash)?;
         self.storage
             .get_node(&req.node_id)
             .await

@@ -77,7 +77,7 @@
         <!-- GW-1501: Register gateway as an auto-start Windows service.
              ServiceInstall is in the same component as the executable so
              the service binary path is correct and the component has a
-             valid KeyPath. The --generate-master-key flag ensures the key
+             valid KeyPath. The generate-master-key flag ensures the key
              file is created on first start if it does not already exist. -->
         <ServiceInstall Id="SondeGatewayService"
                         Name="sonde-gateway"

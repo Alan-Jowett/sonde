@@ -21,14 +21,14 @@ fabrication — turning `prompts/hardware/02-validate-simulation.md` from
 a manual review step into an automated CI check.
 
 ```
-sonde-hw build configs/minimal-qwiic.yaml
+sonde-hw build hw/configs/minimal-qwiic.yaml
    │
    ├── .kicad_sch          (schematic file)
    ├── bom.csv             (bill of materials)
    └── internal net graph  (Python data structure)
           │
           ▼
-   sonde-hw simulate configs/minimal-qwiic.yaml
+   sonde-hw simulate hw/configs/minimal-qwiic.yaml
           │
           ├── Component → SPICE model mapping
           ├── SPICE deck generation (.cir files)
@@ -81,7 +81,7 @@ components to simulation models.
    | Component | Model file | Model type |
    |-----------|-----------|------------|
    | MCP1700 LDO | `mcp1700.sub` | Behavioral subcircuit (Vin, Vout, GND; Iq, dropout, current limit) |
-   | Si2301 P-FET | `si2301.mod` | Level 1 MOSFET (Vth=-1.2V, Rds_on=115mΩ) |
+   | Si2301 P-FET | `si2301.mod` | Level 1 MOSFET tuned for Vth≈-1.2V and ≈115mΩ Rds_on (via VTO/KP/RD/RS) |
    | Schottky diode | `schottky.mod` | Standard diode (Vf=0.3V, Is=1µA) |
    | ESP32-C3 | `esp32c3.sub` | Current source per operating state (5µA sleep, 80mA active, 150mA TX) |
    | USBLC6-2SC6 | `usblc6.sub` | Leakage model (0.15µA per line) |
@@ -303,7 +303,7 @@ analysis:
   type: op       # DC operating point
 
 assertions:
-  - net: VBAT
+  - source: VBAT
     measure: current
     operator: "<="
     threshold: 20e-6
@@ -331,12 +331,13 @@ design validation, not silicon-accurate simulation.
   * Quiescent current
   Iq vin gnd 1.6u
   * Output regulation (behavioral voltage source)
-  Breg vout gnd V = {
+  Breg vout_int gnd V = {
 +   if(V(vin,gnd) > 3.3 + 0.178, 3.3,
 +   if(V(vin,gnd) > 0.5, V(vin,gnd) - 0.178, 0))
 + }
   * Output impedance
   Rout vout_int vout 0.5
+  * Note: Breg drives vout_int; Rout provides series impedance to vout pin
 .ends mcp1700
 ```
 
@@ -374,14 +375,14 @@ Rds(on).
 
 ## 5  MVP scope
 
-The first implementation covers:
+The first implementation is expected to cover:
 
-1. ✅ Netlist JSON export from `sonde-hw build`
-2. ✅ SPICE model files for MCP1700, Si2301, Schottky, ESP32-C3
-3. ✅ SPICE deck generation for 3 tests: `dc-operating-point`,
+1. Netlist JSON export from `sonde-hw build`
+2. SPICE model files for MCP1700, Si2301, Schottky, ESP32-C3
+3. SPICE deck generation for 3 tests: `dc-operating-point`,
    `sleep-current`, `battery-divider`
-4. ✅ ngspice batch runner with assertion evaluation
-5. ✅ `sonde-hw simulate` CLI command
+4. ngspice batch runner with assertion evaluation
+5. `sonde-hw simulate` CLI command
 6. ⬜ Transient tests (`power-on-transient`, `power-gate-on`) — deferred
 7. ⬜ CI integration — deferred
 8. ⬜ kicad-cli netlist cross-check — deferred

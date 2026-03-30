@@ -711,7 +711,7 @@ The node registry and program library are accessed through the storage trait beh
 
 ## 11A  Operational logging
 
-> **Requirements:** GW-1300 (lifecycle events), GW-1301 (modem transport state), GW-1302 (frame-level debug traces), GW-1306 (service-mode logging).
+> **Requirements:** GW-1300 (lifecycle events), GW-1301 (modem transport state), GW-1302 (frame-level debug traces), GW-1306 (service-mode logging), GW-1307 (error diagnostic observability), GW-1308 (handler pipeline logging).
 
 The gateway uses the `tracing` crate for structured, levelled logging. All log entries use key=value fields for machine-parseability. Log levels follow a consistent policy:
 
@@ -781,6 +781,43 @@ When the gateway runs as a Windows service, three logging sinks are active:
 2. **ETW sink** — registers provider name `sonde-gateway`. The sink is unfiltered; all events up to the compile-time maximum level are forwarded to any active ETW tracing session. Operators use standard ETW tooling (`logman`, `tracelog`, WPR) to capture and filter events.
 
 3. **Runtime log-level reload** — operators can change the file sink filter without restarting the service. The gateway watches for a platform-appropriate reload signal (e.g., `SERVICE_CONTROL_PARAMCHANGE` on Windows) and re-reads `RUST_LOG` from the environment, applying the new `EnvFilter` within 5 seconds. This uses the `tracing-subscriber` `reload` layer.
+
+### 11A.5  Error diagnostic observability (GW-1307)
+
+When the gateway encounters an error at a user-facing or operator-visible boundary, the error log entry or gRPC error response includes four pieces of diagnostic context:
+
+1. **Operation name** — the high-level action that failed (e.g., `"IngestProgram"`, `"serial port open"`, `"import_state"`).
+2. **Triggering input / parameters** — non-sensitive metadata such as `program_hash`, file path, environment variable name, or port name. Secret key material and credentials are never included.
+3. **Underlying error** — the specific error from the subsystem (OS error code, verifier instruction, SQLite status, CBOR parse error).
+4. **Actionable guidance** — where a corrective action is known, a short human-readable hint (e.g., `"check COM port permissions"`, `"re-upload program"`, `"verify passphrase"`).
+
+**Boundary coverage:**
+
+| Boundary | Implementation | Diagnostic fields |
+|---|---|---|
+| Program verification | `admin.rs` — `IngestProgram` | program name, verifier instruction label + error description (GW-1305) |
+| Program assignment | `admin.rs` — `AssignProgram` | `program_hash`, `"program not found"` guidance |
+| Key provider (file) | `FileKeyProvider::load` | file path, OS error, `"create key file"` guidance |
+| Key provider (env) | `EnvKeyProvider::load` | variable name, `"set environment variable"` guidance |
+| Storage open | `SqliteStorage::open` | database path, SQLite error, `"check directory permissions"` guidance |
+| State export/import | `export_state` / `import_state` | operation name, variant-specific guidance (empty passphrase, decryption failure, corrupt bundle) |
+| Ephemeral dispatch | `QueueEphemeral` | `program_hash`, verification profile |
+
+Errors that cross the gRPC boundary use `tonic::Status` with the diagnostic message in the status detail string. Errors that are internal (e.g., HMAC verification failures on the radio protocol) are logged but never sent to the node — the silent-discard policy (§12) still applies to the radio interface.
+
+### 11A.6  Handler pipeline logging (GW-1308)
+
+The gateway logs the complete APP_DATA handler pipeline at INFO level so operators can trace data flow from node to handler process and back. Each log entry uses structured `tracing` fields.
+
+| Event | Level | Module | Structured fields | AC |
+|---|---|---|---|---|
+| APP_DATA received | INFO | `engine.rs` | `node_id`, `program_hash`, `len` | AC1 |
+| Handler matched | INFO | `handler.rs` | `program_hash`, `command` | AC2 |
+| Handler invoked | INFO | `handler.rs` | `command` | AC3 |
+| Handler replied | INFO | `handler.rs` | `len` | AC4 |
+| Handler exited | INFO / ERROR | `handler.rs` | `code` (exit code) | AC5 |
+
+The handler-exited event is emitted when `ensure_running()` detects via `try_wait()` that a previously running handler process has terminated. Clean exits (code 0) are logged at INFO; non-zero exits at ERROR.
 
 ---
 

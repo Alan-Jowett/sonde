@@ -755,6 +755,36 @@ The following events are logged per the ND-10xx requirements:
 | RNG failure | WARN | `wake_cycle.rs` | — | ND-1009 |
 | WAKE retries exhausted | WARN | `wake_cycle.rs` | — | ND-1009 |
 | HMAC mismatch | WARN | `wake_cycle.rs` | — | ND-1009 |
+| GET_CHUNK sent | DEBUG | `wake_cycle.rs` | `chunk_index`, `attempt` | ND-1011 |
+| CHUNK received | DEBUG | `wake_cycle.rs` | `chunk_index`, data `len` | ND-1011 |
+| Commit hash + ABI version | WARN | `bin/node.rs` | `commit`, `abi_version` | ND-1015 |
+| ESP-NOW channel | WARN | `bin/node.rs` | `channel` | ND-1016 |
+
+### 17.2a  Chunk transfer logging (ND-1011)
+
+During chunked program transfers, the node emits DEBUG-level logs for each `GET_CHUNK` request sent and each `CHUNK` response received. These logs include the `chunk_index` and the attempt number (for requests) or data length (for responses). Because they are DEBUG-level, they are compiled out in quiet release builds and only visible in debug or verbose firmware variants (per ND-1012 §17.1a).
+
+### 17.2b  Error diagnostic observability (ND-1014)
+
+When the node encounters an error at an operator-visible boundary, the error log includes: (1) the failed operation name, (2) non-sensitive input/parameters, (3) the underlying subsystem error, and (4) actionable guidance where possible. Sensitive values (PSK bytes, WiFi passwords) are never logged; only safe identifiers (`key_hint`, `program_hash`, NVS key names) are included.
+
+**Covered boundaries:**
+
+| Boundary | Diagnostic fields |
+|---|---|
+| WiFi scan | ESP-IDF error code, scan configuration (channels, dwell, active/passive) |
+| HMAC verification | `key_hint`, operation name |
+| Program hash verification | `program_hash`, expected vs actual |
+| NVS storage I/O | NVS key/namespace, ESP-IDF status code |
+| Deep-sleep entry | sleep duration, reason |
+
+### 17.2c  Boot version visibility (ND-1015)
+
+The node logs the firmware commit hash and ABI version at `warn!()` level during boot. This ensures the version information is visible even in quiet firmware builds that use `release_max_level_warn` (ND-1012), enabling operators to identify which firmware is running on a node from serial output alone.
+
+### 17.2d  ESP-NOW channel logging at boot (ND-1016)
+
+The node logs the WiFi / ESP-NOW channel number at `warn!()` level before initializing the ESP-NOW transport. Channel mismatches between the node and the gateway modem are a common field debugging issue; the channel number in the boot log enables operators to diagnose connectivity problems from serial output without requiring a debug build.
 
 ### 17.3  Design constraints
 

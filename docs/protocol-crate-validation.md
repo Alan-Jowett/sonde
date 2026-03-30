@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 66 test cases total.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 59 test cases total.
 
 ### Traceability note
 
@@ -781,3 +781,151 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 3. Decode the raw CBOR and inspect the map definition entry.
 4. Assert: key 5 (`initial_data`) is **not present** in the CBOR map entry.
 5. Assert: `decoded.map_initial_data[0]` is empty after round-trip.
+
+---
+
+## 8  Modem serial codec tests
+
+### T-P080  ModemMessage round-trip — RESET
+
+**Validates:** protocol-crate-design.md §10 (Modem serial codec)
+
+**Procedure:**
+1. Encode `ModemMessage::Reset` via `encode_modem_frame`.
+2. Decode the result with `decode_modem_frame`.
+3. Assert: decoded message equals `ModemMessage::Reset`.
+
+### T-P081  ModemMessage round-trip — SEND_FRAME
+
+**Validates:** protocol-crate-design.md §10
+
+**Procedure:**
+1. Encode `ModemMessage::SendFrame(SendFrame { peer_mac, frame_data })` with a known MAC and payload.
+2. Decode with `decode_modem_frame`.
+3. Assert: peer MAC and frame data match.
+
+### T-P082  ModemMessage round-trip — all message types
+
+**Validates:** protocol-crate-design.md §10
+
+**Procedure:**
+1. For each `ModemMessage` variant (`Reset`, `SendFrame`, `SetChannel`, `GetStatus`, `ScanChannels`, `ModemReady`, `RecvFrame`, `SetChannelAck`, `Status`, `ScanResult`, `Error`, `BleIndicate`, `BleEnable`, `BleDisable`, `BlePairingConfirmReply`, `BleRecv`, `BleConnected`, `BleDisconnected`, `BlePairingConfirm`, `Unknown { .. }`), encode and decode.
+2. Assert: round-trip preserves all fields.
+
+### T-P083  Frame envelope structure — LEN + TYPE + BODY
+
+**Validates:** protocol-crate-design.md §10 (Frame format — length-prefixed)
+
+**Procedure:**
+1. Encode a `ModemReady` message.
+2. Inspect the raw bytes: first 2 bytes are big-endian length, next byte is message type, remainder is body.
+3. Assert: length field equals `body.len() + 1` (type byte + body).
+
+### T-P084  Decode empty frame rejected
+
+**Validates:** protocol-crate-design.md §10 (Error handling)
+
+**Procedure:**
+1. Construct a frame whose on-wire length prefix is zero (e.g., a 2-byte buffer containing `LEN = 0x0000` and no type/body bytes).
+2. Call `decode_modem_frame` with this buffer.
+3. Assert: returns a protocol error indicating an empty frame (i.e., the `LEN=0` case, not the empty-input/`Incomplete` case).
+
+### T-P085  Decode oversized frame rejected
+
+**Validates:** protocol-crate-design.md §10 (Error handling — `SERIAL_MAX_LEN`)
+
+**Procedure:**
+1. Call `decode_modem_frame` with a frame exceeding `SERIAL_MAX_LEN` (512).
+2. Assert: returns an error.
+
+### T-P086  FrameDecoder streaming — byte-by-byte assembly
+
+**Validates:** protocol-crate-design.md §10 (Streaming decoder)
+
+**Procedure:**
+1. Create a `FrameDecoder`.
+2. Push a valid frame one byte at a time via `push(&[byte])`.
+3. Call `decode()` after each push.
+4. Assert: `decode()` returns `None` until the full frame is available, then returns the complete message.
+
+### T-P087  FrameDecoder streaming — multiple consecutive frames
+
+**Validates:** protocol-crate-design.md §10 (Streaming decoder)
+
+**Procedure:**
+1. Encode two different messages and concatenate the raw frames.
+2. Push the concatenated bytes into a `FrameDecoder` in one call.
+3. Assert: two successive `decode()` calls return the two messages in order.
+
+### T-P088  RecvFrame preserves negative RSSI
+
+**Validates:** protocol-crate-design.md §10 (RSSI sign preservation)
+
+**Procedure:**
+1. Encode `ModemMessage::RecvFrame` with RSSI = −90.
+2. Decode and assert: RSSI is −90 (not 166 or any unsigned reinterpretation).
+
+### T-P089  Status max counter values
+
+**Validates:** protocol-crate-design.md §10 (Boundary values)
+
+**Procedure:**
+1. Encode a `Status` message with all counters set to `u32::MAX`.
+2. Decode and assert: all counters round-trip to `u32::MAX`.
+
+### T-P090  Unknown message type decoded as Unknown
+
+**Validates:** protocol-crate-design.md §10 (Unknown type handling)
+
+**Procedure:**
+1. Construct a frame with message type `0x7F` (undefined).
+2. Decode with `decode_modem_frame`.
+3. Assert: result matches `ModemMessage::Unknown { msg_type: 0x7F, body }` (or equivalent), and `body` equals the original payload bytes.
+
+---
+
+## 9  BLE envelope codec tests
+
+### T-P100  BLE envelope round-trip
+
+**Validates:** protocol-crate-design.md §11 (BLE envelope codec)
+
+**Procedure:**
+1. Encode a BLE envelope with `msg_type = 0x01` and a 10-byte body.
+2. Parse the encoded bytes with `parse_ble_envelope`.
+3. Assert: returned `msg_type` is `0x01` and body matches the original 10 bytes.
+
+### T-P101  BLE envelope with empty body
+
+**Validates:** protocol-crate-design.md §11
+
+**Procedure:**
+1. Encode a BLE envelope with `msg_type = 0x02` and an empty body.
+2. Parse with `parse_ble_envelope`.
+3. Assert: returned body is empty.
+
+### T-P102  BLE envelope too short rejected
+
+**Validates:** protocol-crate-design.md §11 (Error handling)
+
+**Procedure:**
+1. Call `parse_ble_envelope` with a 2-byte buffer (less than the 3-byte header).
+2. Assert: returns `None`.
+
+### T-P103  BLE envelope truncated body rejected
+
+**Validates:** protocol-crate-design.md §11 (Error handling)
+
+**Procedure:**
+1. Construct a BLE envelope header with `LEN = 10` but provide only 5 body bytes.
+2. Call `parse_ble_envelope`.
+3. Assert: returns `None`.
+
+### T-P104  BLE envelope trailing bytes rejected
+
+**Validates:** protocol-crate-design.md §11 (Strict parsing)
+
+**Procedure:**
+1. Encode a valid BLE envelope, then append 2 extra bytes.
+2. Call `parse_ble_envelope`.
+3. Assert: returns `None` (rejects trailing data).

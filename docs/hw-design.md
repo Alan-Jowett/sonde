@@ -92,15 +92,16 @@ Python is chosen over Rust because:
 
 ### 2.2  CLI interface
 
+The tool entry point is `sonde_hw/cli.py`, invoked as `python -m sonde_hw <command>` or `sonde-hw <command>`.
+
 ```
-sonde-hw validate <config.yaml>                     # Schema check only
-sonde-hw validate <config.yaml> --allow <check-id>  # Schema + rules, allowing specific checks
-sonde-hw build <config.yaml>                        # Full pipeline
-sonde-hw build <config.yaml> --skip-drc             # Generate without DRC (for iteration)
-sonde-hw export <config.yaml>                       # Gerber + BOM + CPL only (assumes .kicad_pcb exists)
-sonde-hw budget <config.yaml>                       # Power budget calculator
-sonde-hw check-firmware <contract.yaml> --nvs-config <firmware-pins.yaml>  # Check firmware against hardware contract
-# Commands that perform checks accept repeated --allow <check-id> flags to waive specific findings.
+sonde-hw validate <config.yaml>                     # Validate config (schema + semantic checks)
+sonde-hw build <config.yaml>                        # Full pipeline (generate + ERC + BOM)
+sonde-hw build <config.yaml> --skip-erc             # Generate without ERC (for iteration)
+sonde-hw export <config.yaml>                       # BOM only (assumes schematic exists)
+sonde-hw simulate <config.yaml>                     # Run all SPICE simulations for config
+sonde-hw simulate <config.yaml> --list              # List available SPICE tests
+sonde-hw simulate <config.yaml> --test <test-id>    # Run a single SPICE test
 ```
 
 ### 2.3  Directory structure
@@ -108,38 +109,43 @@ sonde-hw check-firmware <contract.yaml> --nvs-config <firmware-pins.yaml>  # Che
 ```
 hw/
 ├── configs/                    # Board configurations
-│   ├── minimal.yaml
-│   ├── soil-monitor.yaml
-│   └── environmental.yaml
-├── templates/                  # Schematic building blocks
-│   ├── base.kicad_sch          # MCU + USB + regulator (always included)
-│   ├── qwiic.kicad_sch         # Single Qwiic connector block
-│   ├── spi-header.kicad_sch    # SPI pin header block
-│   ├── one-wire.kicad_sch      # 1-Wire header block
-│   ├── battery.kicad_sch       # JST-PH + voltage divider
-│   ├── power-gate.kicad_sch    # MOSFET sensor power switch
-│   └── sensors/
-│       ├── tmp102.kicad_sch
-│       ├── sht40.kicad_sch
-│       ├── bme280.kicad_sch
-│       ├── veml7700.kicad_sch
-│       └── ds18b20.kicad_sch
-├── footprints/                 # Custom footprints (if not in KiCad stdlib)
-├── rules/                      # Fab-specific DRC rules
-│   ├── jlcpcb.kicad_dru
-│   ├── pcbway.kicad_dru
-│   └── oshpark.kicad_dru
+│   └── minimal-qwiic.yaml
+├── sonde_hw/                   # Python tool package
+│   ├── __init__.py
+│   ├── __main__.py             # Entry point for `python -m sonde_hw`
+│   ├── cli.py                  # CLI parser and command dispatch
+│   ├── config.py               # Configuration loader
+│   ├── schematic.py            # Schematic generation
+│   ├── bom.py                  # BOM generation
+│   ├── erc.py                  # ERC runner
+│   ├── templates/              # Schematic building-block generators
+│   │   ├── base.py
+│   │   ├── battery.py
+│   │   ├── gpio_header.py
+│   │   ├── power_gate.py
+│   │   └── qwiic.py
+│   └── spice/                  # SPICE simulation pipeline (§7A)
+│       ├── deck.py             # SPICE deck generator (.cir files)
+│       ├── runner.py           # ngspice batch-mode runner
+│       ├── netlist.py          # Netlist loader (JSON format)
+│       ├── assertions.py       # Measurement assertion framework
+│       ├── models/             # Component SPICE models
+│       │   ├── esp32c3.sub
+│       │   ├── mcp1700.sub
+│       │   ├── schottky.mod
+│       │   ├── si2301.mod
+│       │   └── usblc6.sub
+│       └── tests/              # SPICE test definitions (YAML)
+│           ├── battery-divider.yaml
+│           ├── dc-operating-point.yaml
+│           └── sleep-current.yaml
 ├── output/                     # Generated outputs (per config)
 │   └── <config-name>/
 │       ├── board.kicad_sch
-│       ├── board.kicad_pcb
-│       ├── gerber/
 │       ├── bom.csv
-│       ├── cpl.csv
-│       └── contract.yaml       # Generated hardware contract for this config
-├── contract-schema.json        # JSON Schema for contract validation (HW-1100)
-├── schema.json                 # YAML config schema
-└── sonde-hw.py                 # Generation tool
+│       └── netlist.json
+├── requirements.txt            # Python dependencies
+└── schema.json                 # YAML config schema
 ```
 
 ---
@@ -363,6 +369,53 @@ GPIO, and peripheral modes match the board's electrical contract.
 
 ---
 
+## 7A  SPICE simulation pipeline (HW-1003)
+
+The SPICE simulation pipeline validates power rail behavior and sleep-mode current draw using ngspice in batch mode. It is invoked via the `sonde-hw simulate` CLI command.
+
+### 7A.1  Architecture
+
+```
+config.yaml  →  netlist.json  →  deck.py  →  .cir deck  →  ngspice (batch)
+                                                              │
+                                                     measurements
+                                                              │
+                                                  assertions.py  →  pass/fail
+```
+
+The pipeline consists of four modules in `sonde_hw/spice/`:
+
+| Module | Purpose |
+|---|---|
+| `netlist.py` | Loads the JSON netlist generated during schematic creation |
+| `deck.py` | Builds ngspice-compatible `.cir` deck files from the netlist and test definitions |
+| `runner.py` | Invokes ngspice in batch mode, captures stdout, and parses measurement results |
+| `assertions.py` | Applies measurement assertions defined in each test's YAML to determine pass/fail |
+
+### 7A.2  SPICE component models
+
+Pre-built subcircuit and model files reside in `sonde_hw/spice/models/`:
+
+| File | Component |
+|---|---|
+| `esp32c3.sub` | ESP32-C3 current draw model (active + deep-sleep states) |
+| `mcp1700.sub` | MCP1700 3.3V LDO regulator |
+| `si2301.mod` | Si2301 P-channel MOSFET (power gating) |
+| `schottky.mod` | Schottky diode (reverse polarity protection) |
+| `usblc6.sub` | USBLC6-2 USB ESD protection |
+
+### 7A.3  Test definitions
+
+Tests are defined as YAML files in `sonde_hw/spice/tests/`. Each file specifies:
+- The simulation type (DC operating point, transient, etc.)
+- Component parameters to override
+- Measurement points
+- Pass/fail assertions (e.g., voltage within range, current below threshold)
+
+Current tests: `battery-divider.yaml`, `dc-operating-point.yaml`, `sleep-current.yaml`.
+
+---
+
 ## 8  Cross-references
 
 | Requirement | Design section |
@@ -380,7 +433,7 @@ GPIO, and peripheral modes match the board's electrical contract.
 | HW-1000 | §5.2 Post-generation checks |
 | HW-1001 | §5.2 Post-generation checks |
 | HW-1002 | §5.2 Post-generation checks |
-| HW-1003 | §5.3 Output verification |
+| HW-1003 | §5.3 Output verification, §7A SPICE simulation pipeline |
 | HW-1100 | §7.1 Contract generation |
 | HW-1101 | §7.1 Contract generation |
 | HW-1102 | §7.1 Contract generation |

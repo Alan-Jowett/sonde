@@ -697,25 +697,31 @@ pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerCo
     let raw: RawHandlerConfigFile = serde_yaml_ng::from_str(&content)
         .map_err(|e| HandlerConfigError(format!("failed to parse {}: {e}", path.display())))?;
 
-    raw.handlers
-        .into_iter()
-        .map(|entry| {
-            let matchers = match entry.program_hash {
-                RawProgramHash::Single(s) => vec![parse_program_matcher(&s)?],
-                RawProgramHash::Multiple(hashes) => hashes
-                    .into_iter()
-                    .map(|h| parse_program_matcher(&h))
-                    .collect::<Result<Vec<_>, _>>()?,
-            };
-            Ok(HandlerConfig {
-                matchers,
-                command: entry.command,
-                args: entry.args,
-                reply_timeout: None,
-                working_dir: None,
-            })
-        })
-        .collect()
+    let mut configs = Vec::new();
+    for entry in raw.handlers {
+        let matchers_result = match entry.program_hash {
+            RawProgramHash::Single(s) => parse_program_matcher(&s).map(|m| vec![m]),
+            RawProgramHash::Multiple(hashes) => hashes
+                .into_iter()
+                .map(|h| parse_program_matcher(&h))
+                .collect::<Result<Vec<_>, _>>(),
+        };
+        match matchers_result {
+            Ok(matchers) => {
+                configs.push(HandlerConfig {
+                    matchers,
+                    command: entry.command,
+                    args: entry.args,
+                    reply_timeout: None,
+                    working_dir: None,
+                });
+            }
+            Err(e) => {
+                warn!("skipping invalid handler entry: {e}");
+            }
+        }
+    }
+    Ok(configs)
 }
 
 // --- HandlerRouter ---

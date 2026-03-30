@@ -375,6 +375,18 @@ The modem emits structured `log` macro calls at key operational boundaries to pr
 
 **BLE pairing (MD-0504):** Server-initiated LESC security, authentication success, and authentication failure are logged at INFO/WARN level as appropriate.
 
+### 14.3a  Error diagnostic observability (MD-0506)
+
+When the modem encounters an error at an operator-visible boundary, the error log includes: (1) the failed operation name, (2) non-sensitive metadata, (3) the specific error from the underlying subsystem, and (4) actionable guidance where possible. Diagnostics never log raw BLE attribute or notification payload contents.
+
+**Covered boundaries:**
+
+| Boundary | Diagnostic fields |
+|---|---|
+| BLE indication failure | NimBLE return code, connection state, characteristic handle |
+| ESP-NOW send failure | target peer MAC address, ESP-NOW status code (not raw payload bytes) |
+| USB-CDC I/O error | operation name, ESP-IDF error code |
+
 ### 14.4  Configuration
 
 The following `sdkconfig.defaults` entries control console routing:

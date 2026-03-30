@@ -2099,6 +2099,139 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1306a  File sink writes to `<db-path>.log`
+
+**Validates:** GW-1306
+
+**Procedure:**
+1. Start the gateway in service mode with database path `test.db`.
+2. Trigger a log event (e.g., register a node).
+3. Assert: `test.db.log` exists and contains the logged event.
+
+### T-1306b  ETW provider registered
+
+**Validates:** GW-1306
+
+**Procedure:**
+1. Start the gateway in service mode on Windows.
+2. Query ETW providers for `sonde-gateway`.
+3. Assert: the provider is registered and active.
+
+### T-1306c  Runtime log-level reload
+
+**Validates:** GW-1306
+
+**Procedure:**
+1. Start the gateway in service mode with default log level (`sonde_gateway=warn`).
+2. Set `RUST_LOG=sonde_gateway=debug` and send the reload signal.
+3. Within 5 seconds, trigger a debug-level event.
+4. Assert: the debug event appears in the log file.
+
+### T-1306d  File sink failure — graceful degradation
+
+**Validates:** GW-1306
+
+**Procedure:**
+1. Configure the gateway with a database path in a non-writable directory.
+2. Start the gateway.
+3. Assert: the gateway starts successfully (does not crash).
+4. Assert: an ERROR-level diagnostic is emitted to the ETW sink indicating the log file could not be opened.
+
+### T-1307a  IngestProgram empty image includes operation and guidance
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Call `IngestProgram` with an empty byte slice.
+2. Assert: the gRPC error message contains the operation name (e.g., `"IngestProgram"` or `"ingest"`).
+3. Assert: the error message contains actionable guidance.
+
+### T-1307b  AssignProgram missing program includes hash and guidance
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Call `AssignProgram` with a `program_hash` that does not exist in storage.
+2. Assert: the error message includes the program hash.
+3. Assert: the error message includes guidance (e.g., `"ingest"` or `"upload"`).
+
+### T-1307c  Key provider missing file includes path and guidance
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Create a `FileKeyProvider` pointing to a nonexistent path.
+2. Attempt to load the key.
+3. Assert: the error message includes the file path.
+4. Assert: the error message includes guidance for creating the key file.
+
+### T-1307d  Key provider wrong length includes expected vs actual
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Call `parse_hex_key` with a hex string shorter than 64 characters.
+2. Assert: the error includes expected and actual character counts.
+
+### T-1307e  EnvKeyProvider not set includes variable name and guidance
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Create an `EnvKeyProvider` referencing a nonexistent environment variable.
+2. Attempt to load the key.
+3. Assert: the error includes the variable name and guidance.
+
+### T-1307f  SqliteStorage open failure includes path and guidance
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Call `SqliteStorage::open` with an invalid directory path.
+2. Assert: the error message includes the path and guidance about directory permissions.
+
+### T-1307g  Import state decryption failure includes guidance
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Call `import_state` with garbage data.
+2. Assert: the error includes variant-specific guidance (e.g., about passphrase or corruption).
+
+### T-1307h  Export state empty passphrase includes guidance
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Call `export_state` with an empty passphrase.
+2. Assert: the error includes operation context and guidance.
+
+### T-1307i  QueueEphemeral with wrong profile includes hash and profile
+
+**Validates:** GW-1307
+
+**Procedure:**
+1. Ingest a program with the resident profile.
+2. Call `QueueEphemeral` with that program's hash.
+3. Assert: the error includes the program hash and profile.
+
+### T-1308  APP_DATA handler pipeline logging
+
+**Validates:** GW-1308
+
+**Procedure:**
+1. Register a handler process (e.g., a Python echo script) with `program_hash = "*"`.
+2. Simulate a node sending APP_DATA with a known payload.
+3. Wait for the handler to reply and exit.
+4. Capture tracing output.
+5. Assert: an INFO log with `"APP_DATA received"` includes `node_id`, `program_hash`, and `len` fields (AC1).
+6. Assert: an INFO log with `"handler matched"` includes `program_hash` and `command` fields (AC2).
+7. Assert: an INFO log with `"handler invoked"` includes the `command` field (AC3).
+8. Assert: an INFO log with `"handler replied"` includes the `len` field (AC4).
+9. Assert: a log with `"handler exited"` includes the `code` field (AC5).
+
+---
+
 ### T-1400  Handler storage CRUD
 
 **Validates:** GW-1401
@@ -2344,6 +2477,9 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+| GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
+| GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
+| GW-1308 | T-1308 |
 | GW-1401 | T-1400, T-1402 |
 | GW-1402 | T-1401, T-1407 |
 | GW-1403 | *(validated via manual CLI UX validation procedure)* |

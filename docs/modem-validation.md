@@ -961,6 +961,74 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 2. Write 20 bytes via GATT.
 3. Assert: INFO log indicating GATT write with payload length 20.
 
+### T-0705  BLE pairing event — LESC security initiated
+
+**Validates:** MD-0504
+
+**Procedure:**
+1. Connect a BLE client and trigger server-initiated LESC pairing.
+2. Capture UART diagnostic output.
+3. Assert: an INFO log is emitted indicating LESC pairing initiated, including the connection handle.
+
+### T-0706  BLE pairing event — authentication success
+
+**Validates:** MD-0504
+
+**Procedure:**
+1. Complete a successful BLE LESC pairing.
+2. Capture UART diagnostic output.
+3. Assert: an INFO log is emitted indicating authentication success.
+
+### T-0707  BLE pairing event — authentication failure
+
+**Validates:** MD-0504
+
+**Procedure:**
+1. Trigger a BLE pairing authentication failure (e.g., reject Numeric Comparison).
+2. Capture UART diagnostic output.
+3. Assert: a WARN log is emitted indicating authentication failure with the failure reason.
+
+### T-0708  Build-type quiet strips INFO call-sites
+
+**Validates:** MD-0505
+
+**Procedure:**
+1. Build the modem firmware with the default `quiet` feature.
+2. Boot the modem and forward a few ESP-NOW frames.
+3. Capture UART diagnostic output.
+4. Assert: no INFO-level log lines appear (MD-0500–MD-0504 logs are compiled out).
+5. Assert: WARN-level logs (e.g., send failures) still appear.
+
+### T-0709  Build-type verbose retains INFO and DEBUG
+
+**Validates:** MD-0505
+
+**Procedure:**
+1. Build the modem firmware with `--features esp,verbose --no-default-features`.
+2. Boot the modem and forward frames.
+3. Capture UART diagnostic output.
+4. Assert: INFO-level operational logs (ESP-NOW frame received/sent) are present.
+5. Assert: DEBUG-level logs (USB-CDC messages) are visible.
+
+### T-0710  Error diagnostic — BLE indication failure
+
+**Validates:** MD-0506
+
+**Procedure:**
+1. Connect a BLE client and trigger an indication failure (e.g., disconnect mid-indication).
+2. Capture UART diagnostic output.
+3. Assert: the error log includes the operation name, NimBLE return code, and connection state.
+
+### T-0711  Error diagnostic — ESP-NOW send failure
+
+**Validates:** MD-0506
+
+**Procedure:**
+1. Trigger an ESP-NOW send failure (e.g., send to an unreachable peer MAC).
+2. Capture UART diagnostic output.
+3. Assert: the error log includes the target peer MAC address and ESP-NOW status code.
+4. Assert: raw payload bytes are not logged.
+
 ---
 
 ## Appendix A  Test index
@@ -1035,3 +1103,10 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 | T-0702 | USB-CDC messages logged at DEBUG | MD-0503 |
 | T-0703 | BLE lifecycle events logged | MD-0501 |
 | T-0704 | BLE GATT write logging | MD-0502 |
+| T-0705 | BLE pairing event — LESC security initiated | MD-0504 |
+| T-0706 | BLE pairing event — authentication success | MD-0504 |
+| T-0707 | BLE pairing event — authentication failure | MD-0504 |
+| T-0708 | Build-type quiet strips INFO call-sites | MD-0505 |
+| T-0709 | Build-type verbose retains INFO and DEBUG | MD-0505 |
+| T-0710 | Error diagnostic — BLE indication failure | MD-0506 |
+| T-0711 | Error diagnostic — ESP-NOW send failure | MD-0506 |

@@ -1579,7 +1579,25 @@ When the gateway encounters an error at a user-facing or operator-visible bounda
 1. Every error log entry or error response at a user-facing boundary includes the failed operation name, the triggering input/parameters, and the underlying subsystem error.
 2. Where a corrective action is known, the error includes actionable guidance text.
 3. Program verification failures include verifier-specific diagnostic output (instruction label, error description) per GW-1305.
-4. Serial port errors (e.g., access denied, device not found) include the port name and the OS error code with human-readable context.
+4. Key and storage I/O errors include the resource path (file path, environment variable name, or database path) and the OS or subsystem error code with human-readable context.
+
+---
+
+### GW-1308  Handler pipeline logging
+
+**Priority:** Must  
+**Source:** Issue #532
+
+**Description:**  
+When the gateway receives an `APP_DATA` message and dispatches it through the handler pipeline, each stage of the pipeline MUST be logged at INFO level with structured fields sufficient for an operator to trace data flow without access to source code. The pipeline stages are: (1) `APP_DATA` reception (with `node_id`, `program_hash`, and payload length), (2) handler match (with `program_hash` and handler `command`), (3) handler invocation (with handler `command`), (4) handler reply (with reply payload length), and (5) handler process exit (with exit code). Non-zero handler exit codes MUST be logged at WARN level to flag unexpected terminations.
+
+**Acceptance criteria:**
+
+1. An INFO log is emitted when an `APP_DATA` message is received, including `node_id`, `program_hash`, and payload `len`.
+2. An INFO log is emitted when a handler is matched to the `APP_DATA`, including the matching `program_hash` pattern and the handler `command`.
+3. An INFO log is emitted when the matched handler process is invoked, including the handler `command`.
+4. An INFO log is emitted when the handler replies with data, including the reply payload `len`.
+5. A log is emitted when a handler process exits, including the exit `code`. Clean exits (code 0) are logged at INFO; non-zero exits at WARN.
 
 ---
 
@@ -1860,6 +1878,7 @@ The state export bundle (GW-0805, GW-1001) SHOULD include handler routing config
 | GW-1305 | Verification failure diagnostics | Must |
 | GW-1306 | Service-mode logging and monitoring | Must |
 | GW-1307 | Error diagnostic observability | Must |
+| GW-1308 | Handler pipeline logging | Must |
 | GW-1400 | Bounded shutdown time | Must |
 | GW-1401 | Handler configuration storage | Must |
 | GW-1402 | Admin API — handler management | Must |

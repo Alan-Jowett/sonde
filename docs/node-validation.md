@@ -1255,6 +1255,82 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N1017  GET_CHUNK request logged at DEBUG
+
+**Validates:** ND-1011
+
+**Procedure:**
+1. Build a verbose firmware variant.
+2. Trigger a program transfer so the node sends `GET_CHUNK` requests.
+3. Capture serial output.
+4. Assert: a DEBUG log is emitted for each `GET_CHUNK` request, including `chunk_index` and `attempt`.
+
+### T-N1018  CHUNK response logged at DEBUG
+
+**Validates:** ND-1011
+
+**Procedure:**
+1. Build a verbose firmware variant.
+2. Complete a chunked program transfer.
+3. Capture serial output.
+4. Assert: a DEBUG log is emitted for each `CHUNK` response received, including `chunk_index` and data length.
+
+### T-N1019  Build-type quiet strips INFO call-sites
+
+**Validates:** ND-1012
+
+**Procedure:**
+1. Build the node firmware with the default `quiet` feature (no `verbose`).
+2. Boot the node and complete a wake cycle.
+3. Capture serial output.
+4. Assert: no INFO-level log lines appear (only WARN and ERROR).
+5. Assert: the wake cycle completes successfully despite the absence of INFO logging.
+
+### T-N1020  Build-type verbose retains INFO and DEBUG
+
+**Validates:** ND-1012
+
+**Procedure:**
+1. Build the node firmware with `--features esp,verbose --no-default-features`.
+2. Boot the node and complete a wake cycle.
+3. Capture serial output.
+4. Assert: INFO-level operational logs (boot reason, wake cycle, WAKE sent) are present.
+5. Assert: DEBUG-level logs are visible when triggered (e.g., BPF helper I/O).
+
+### T-N1021  Error diagnostic includes operation and subsystem error
+
+**Validates:** ND-1014
+
+**Procedure:**
+1. Trigger an operator-visible error (e.g., NVS read failure by corrupting NVS partition, or HMAC verification failure with wrong PSK).
+2. Capture serial output.
+3. Assert: the error log includes the failed operation name (e.g., `"HMAC verification"`, `"NVS read"`).
+4. Assert: the error log includes the underlying subsystem error (e.g., ESP-IDF error code).
+5. Assert: no secret key material (PSK bytes, passwords) appears in the log.
+
+### T-N1022  Boot commit hash and ABI version at WARN level
+
+**Validates:** ND-1015
+
+**Procedure:**
+1. Build a quiet firmware variant (default release profile).
+2. Boot the node.
+3. Capture serial output.
+4. Assert: a WARN-level log line contains the firmware commit hash.
+5. Assert: a WARN-level log line contains the ABI version.
+
+### T-N1023  ESP-NOW channel logged at WARN level during boot
+
+**Validates:** ND-1016
+
+**Procedure:**
+1. Build a quiet firmware variant (default release profile).
+2. Boot the node with a provisioned channel (e.g., channel 6).
+3. Capture serial output.
+4. Assert: a WARN-level log line contains the ESP-NOW channel number before transport initialization.
+
+---
+
 ### T-N918  NVS layout includes BLE pairing fields
 
 **Validates:** ND-0916
@@ -1680,7 +1756,23 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0917 | T-N906 |
 | ND-0918 | *(verified by sdkconfig.defaults setting)* |
 | ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f |
+| ND-1000 | T-N1000, T-N1001 |
+| ND-1001 | T-N1002 |
+| ND-1002 | T-N1003 |
+| ND-1003 | T-N1004 |
+| ND-1004 | T-N1005 |
+| ND-1005 | T-N1006 |
+| ND-1006 | T-N1007, T-N1014 |
+| ND-1007 | T-N1008 |
+| ND-1008 | T-N1012, T-N1013 |
+| ND-1009 | T-N1009, T-N1010, T-N1011 |
+| ND-1010 | T-N1015 |
+| ND-1011 | T-N1017, T-N1018 |
+| ND-1012 | T-N1019, T-N1020 |
 | ND-1013 | T-N1016 |
+| ND-1014 | T-N1021 |
+| ND-1015 | T-N1022 |
+| ND-1016 | T-N1023 |
 
 ---
 

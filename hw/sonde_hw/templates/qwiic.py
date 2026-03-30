@@ -77,8 +77,8 @@ def template_qwiic(
     if instance_index == 0:
         result.lib_symbols.append(make_passive_symbol("Device", "R"))
 
-    # Connector
-    j_ref = ref_alloc.next("J")
+    # Connector — fixed designator per design doc (J1 for first, J2 for second)
+    j_ref = f"J{instance_index + 1}"
     j_ov = overrides.get(j_ref, {})
     jx, jy = ox, oy
     j = make_component(
@@ -108,7 +108,7 @@ def template_qwiic(
     # I2C pull-ups (only on first instance)
     if instance_index == 0:
         # R7 — SDA pull-up (4.7 kΩ)
-        r7_ref = ref_alloc.next("R")
+        r7_ref = "R7"
         r7_x, r7_y = ox + 15.24, oy - 10.16  # 6*G, -4*G
         r7 = make_component(
             "Device", "R", r7_ref, "4.7kΩ",
@@ -121,7 +121,7 @@ def template_qwiic(
         _l("I2C0_SDA", r7_x, r7_y + 1.27, 0)     # pin 2
 
         # R8 — SCL pull-up (4.7 kΩ)
-        r8_ref = ref_alloc.next("R")
+        r8_ref = "R8"
         r8_x, r8_y = ox + 25.4, oy - 10.16  # 10*G, -4*G
         r8 = make_component(
             "Device", "R", r8_ref, "4.7kΩ",

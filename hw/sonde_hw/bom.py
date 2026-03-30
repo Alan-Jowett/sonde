@@ -40,7 +40,7 @@ BOM_DATABASE: dict[str, dict[str, str]] = {
              "lcsc": "C318884", "mpn": "—", "cost": "0.02"},
     "SW2": {"value": "RESET", "footprint": "Button_Switch_SMD:SW_SPST_TL3342",
              "lcsc": "C318884", "mpn": "—", "cost": "0.02"},
-    "SJ1": {"value": "SJ_Bypass", "footprint": "Jumper:SolderJumper-2_P1.3mm_Open_Pad1.0x1.5mm",
+    "JP1": {"value": "SJ_Bypass", "footprint": "Jumper:SolderJumper-2_P1.3mm_Open_Pad1.0x1.5mm",
              "lcsc": "—", "mpn": "—", "cost": "0.00"},
     "R1": {"value": "22Ω", "footprint": "Resistor_SMD:R_0402_1005Metric",
             "lcsc": "C25092", "mpn": "—", "cost": "0.01"},

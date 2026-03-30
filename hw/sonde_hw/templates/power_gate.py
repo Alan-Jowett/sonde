@@ -106,7 +106,7 @@ def template_power_gate(
     ])
 
     # Q1 — Si2301 P-FET
-    q1_ref = ref_alloc.next("Q")
+    q1_ref = "Q1"
     q1_ov = overrides.get(q1_ref, {})
     q1_x, q1_y = ox, oy
     q1 = make_component(
@@ -120,7 +120,7 @@ def template_power_gate(
     result.instances.append(q1)
 
     # R9 — Gate pull-up (10 kΩ to 3V3)
-    r9_ref = ref_alloc.next("R")
+    r9_ref = "R9"
     r9_x, r9_y = ox - 10.16, oy - 5.08  # -4*G, -2*G
     r9 = make_component(
         "Device", "R", r9_ref, "10kΩ",
@@ -131,7 +131,7 @@ def template_power_gate(
     result.instances.append(r9)
 
     # R10 — Gate drive resistor (10 kΩ from GPIO3)
-    r10_ref = ref_alloc.next("R")
+    r10_ref = "R10"
     r10_x, r10_y = ox - 15.24, oy  # -6*G
     r10 = make_component(
         "Device", "R", r10_ref, "10kΩ",
@@ -141,16 +141,16 @@ def template_power_gate(
     )
     result.instances.append(r10)
 
-    # SJ1 — Solder jumper bypass
-    sj1_ref = ref_alloc.next("SJ")
-    sj1_x, sj1_y = ox + 10.16, oy  # 4*G
-    sj1 = make_component(
-        "Jumper", "SolderJumper_2_Open", sj1_ref, "SJ_Bypass",
+    # JP1 — Solder jumper bypass
+    jp1_ref = "JP1"
+    jp1_x, jp1_y = ox + 10.16, oy  # 4*G
+    jp1 = make_component(
+        "Jumper", "SolderJumper_2_Open", jp1_ref, "SJ_Bypass",
         "Jumper:SolderJumper-2_P1.3mm_Open_Pad1.0x1.5mm",
-        sj1_x, sj1_y, 0, uuid_gen, f"{block}/{sj1_ref}",
+        jp1_x, jp1_y, 0, uuid_gen, f"{block}/{jp1_ref}",
         ["1", "2"],
     )
-    result.instances.append(sj1)
+    result.instances.append(jp1)
 
     # Labels at exact pin endpoint coordinates (Y-down: schematic_y = comp_y - pin_dy)
     ln = 0
@@ -174,9 +174,9 @@ def template_power_gate(
     _l("GATE_Q1", r10_x, r10_y - 1.27, 0)           # pin 1
     _l("SENSOR_PWR_EN", r10_x, r10_y + 1.27, 0)     # pin 2
 
-    # SJ1 solder jumper bypass (pin_dy=0, no Y-flip needed)
-    _l("3V3", sj1_x - 2.54, sj1_y, 0)              # pin 1 A
-    _l("SENSOR_3V3", sj1_x + 2.54, sj1_y, 0)       # pin 2 B
+    # JP1 solder jumper bypass (pin_dy=0, no Y-flip needed)
+    _l("3V3", jp1_x - 2.54, jp1_y, 0)              # pin 1 A
+    _l("SENSOR_3V3", jp1_x + 2.54, jp1_y, 0)       # pin 2 B
 
     result.interface_nets = {
         "3V3": (q1_x, q1_y - 5.08),

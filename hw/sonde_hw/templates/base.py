@@ -342,7 +342,7 @@ def template_base(
     # U1 — ESP32-C3-MINI-1
     # ---------------------------------------------------------------
     u1_x, u1_y = ox + 101.6, oy + 60.96  # 40*G, 24*G
-    u1_ref = ref_alloc.next("U")  # U1
+    u1_ref = "U1"
     u1_ov = overrides.get(u1_ref, {})
     u1 = make_component(
         "sonde", "ESP32-C3-MINI-1", u1_ref, "ESP32-C3-MINI-1-N4",
@@ -358,7 +358,7 @@ def template_base(
     # U2 — MCP1700-3302E/TT LDO
     # ---------------------------------------------------------------
     u2_x, u2_y = ox + 45.72, oy + 30.48  # 18*G, 12*G
-    u2_ref = ref_alloc.next("U")  # U2
+    u2_ref = "U2"
     u2_ov = overrides.get(u2_ref, {})
     u2 = make_component(
         "Regulator_Linear", "MCP1700-3302E_TT", u2_ref, "MCP1700-3302E/TT",
@@ -374,7 +374,7 @@ def template_base(
     # U3 — USBLC6-2SC6 ESD
     # ---------------------------------------------------------------
     u3_x, u3_y = ox + 45.72, oy + 66.04  # 18*G, 26*G
-    u3_ref = ref_alloc.next("U")  # U3
+    u3_ref = "U3"
     u3_ov = overrides.get(u3_ref, {})
     u3 = make_component(
         "Power_Protection", "USBLC6-2SC6", u3_ref, "USBLC6-2SC6",
@@ -391,7 +391,6 @@ def template_base(
     # ---------------------------------------------------------------
     j4_x, j4_y = ox + 10.16, oy + 66.04  # 4*G, 26*G
     j4_ref = "J4"
-    ref_alloc.set_counter("J", 5)  # Reserve J1-J4
     j4_ov = overrides.get(j4_ref, {})
     j4 = make_component(
         "Connector_USB", "USB_C_Receptacle_USB2.0", j4_ref, "USB-C",
@@ -406,7 +405,7 @@ def template_base(
     # ---------------------------------------------------------------
     # D1, D2 — Schottky diodes (power OR-ing)
     # ---------------------------------------------------------------
-    d1_ref = ref_alloc.next("D")  # D1
+    d1_ref = "D1"
     d1_x, d1_y = ox + 30.48, oy + 20.32  # 12*G, 8*G
     d1 = make_component(
         "Device", "D_Schottky", d1_ref, "SS14",
@@ -416,7 +415,7 @@ def template_base(
     )
     result.instances.append(d1)
 
-    d2_ref = ref_alloc.next("D")  # D2
+    d2_ref = "D2"
     d2_x, d2_y = ox + 30.48, oy + 10.16  # 12*G, 4*G
     d2 = make_component(
         "Device", "D_Schottky", d2_ref, "SS14",
@@ -429,7 +428,7 @@ def template_base(
     # ---------------------------------------------------------------
     # R1, R2 — USB series resistors (22 Ω)
     # ---------------------------------------------------------------
-    r1_ref = ref_alloc.next("R")
+    r1_ref = "R1"
     r1_x, r1_y = ox + 66.04, oy + 63.5  # 26*G, 25*G
     r1 = make_component(
         "Device", "R", r1_ref, "22Ω",
@@ -439,7 +438,7 @@ def template_base(
     )
     result.instances.append(r1)
 
-    r2_ref = ref_alloc.next("R")
+    r2_ref = "R2"
     r2_x, r2_y = ox + 66.04, oy + 68.58  # 26*G, 27*G
     r2 = make_component(
         "Device", "R", r2_ref, "22Ω",
@@ -452,7 +451,7 @@ def template_base(
     # ---------------------------------------------------------------
     # R3, R4 — Strapping pull-ups (10 kΩ, GPIO2 & GPIO8)
     # ---------------------------------------------------------------
-    r3_ref = ref_alloc.next("R")
+    r3_ref = "R3"
     r3_x, r3_y = ox + 86.36, oy + 45.72  # 34*G, 18*G
     r3 = make_component(
         "Device", "R", r3_ref, "10kΩ",
@@ -462,7 +461,7 @@ def template_base(
     )
     result.instances.append(r3)
 
-    r4_ref = ref_alloc.next("R")
+    r4_ref = "R4"
     r4_x, r4_y = ox + 121.92, oy + 45.72  # 48*G, 18*G
     r4 = make_component(
         "Device", "R", r4_ref, "10kΩ",
@@ -475,7 +474,7 @@ def template_base(
     # ---------------------------------------------------------------
     # R5 — GPIO9 strap pull-up (10 kΩ)
     # ---------------------------------------------------------------
-    r5_ref = ref_alloc.next("R")
+    r5_ref = "R5"
     r5_x, r5_y = ox + 134.62, oy + 45.72  # 53*G, 18*G
     r5 = make_component(
         "Device", "R", r5_ref, "10kΩ",
@@ -488,7 +487,7 @@ def template_base(
     # ---------------------------------------------------------------
     # R6 — EN pull-up (10 kΩ)
     # ---------------------------------------------------------------
-    r6_ref = ref_alloc.next("R")
+    r6_ref = "R6"
     r6_x, r6_y = ox + 76.2, oy + 45.72  # 30*G, 18*G
     r6 = make_component(
         "Device", "R", r6_ref, "10kΩ",
@@ -501,14 +500,7 @@ def template_base(
     # ---------------------------------------------------------------
     # R13, R14 — USB CC resistors (5.1 kΩ)
     # ---------------------------------------------------------------
-    # R-counter was at 7 after R6; we need R13, R14 later but the
-    # spec says global counter.  Other templates consume R7-R12,
-    # so we handle the numbering through ref_alloc order.  For now
-    # these get the next available R numbers (R7, R8 in alloc order
-    # but we'll rename below for BOM clarity).
-    # NOTE: ref_alloc gives sequential numbers; the final designators
-    # match the order components are created across all templates.
-    r13_ref = ref_alloc.next("R")  # will be R7 in sequence
+    r13_ref = "R13"
     r13_x, r13_y = ox + 15.24, oy + 81.28  # 6*G, 32*G
     r13 = make_component(
         "Device", "R", r13_ref, "5.1kΩ",
@@ -518,7 +510,7 @@ def template_base(
     )
     result.instances.append(r13)
 
-    r14_ref = ref_alloc.next("R")
+    r14_ref = "R14"
     r14_x, r14_y = ox + 25.4, oy + 81.28  # 10*G, 32*G
     r14 = make_component(
         "Device", "R", r14_ref, "5.1kΩ",
@@ -531,7 +523,7 @@ def template_base(
     # ---------------------------------------------------------------
     # SW1 — BOOT button
     # ---------------------------------------------------------------
-    sw1_ref = ref_alloc.next("SW")
+    sw1_ref = "SW1"
     sw1_x, sw1_y = ox + 139.7, oy + 76.2  # 55*G, 30*G
     sw1 = make_component(
         "Switch", "SW_Push", sw1_ref, "BOOT",
@@ -544,7 +536,7 @@ def template_base(
     # ---------------------------------------------------------------
     # SW2 — RESET button
     # ---------------------------------------------------------------
-    sw2_ref = ref_alloc.next("SW")
+    sw2_ref = "SW2"
     sw2_x, sw2_y = ox + 76.2, oy + 81.28  # 30*G, 32*G
     sw2 = make_component(
         "Switch", "SW_Push", sw2_ref, "RESET",
@@ -557,7 +549,7 @@ def template_base(
     # ---------------------------------------------------------------
     # C1 — EN debounce (100 nF)
     # ---------------------------------------------------------------
-    c1_ref = ref_alloc.next("C")
+    c1_ref = "C1"
     c1_x, c1_y = ox + 81.28, oy + 81.28  # 32*G, 32*G
     c1 = make_component(
         "Device", "C", c1_ref, "100nF",
@@ -570,7 +562,7 @@ def template_base(
     # ---------------------------------------------------------------
     # C3 — LDO input cap (1 µF)
     # ---------------------------------------------------------------
-    c3_ref = ref_alloc.next("C")
+    c3_ref = "C3"
     c3_x, c3_y = ox + 38.1, oy + 22.86  # 15*G, 9*G
     c3 = make_component(
         "Device", "C", c3_ref, "1µF",
@@ -583,7 +575,7 @@ def template_base(
     # ---------------------------------------------------------------
     # C4 — LDO output cap (1 µF)
     # ---------------------------------------------------------------
-    c4_ref = ref_alloc.next("C")
+    c4_ref = "C4"
     c4_x, c4_y = ox + 55.88, oy + 22.86  # 22*G, 9*G
     c4 = make_component(
         "Device", "C", c4_ref, "1µF",
@@ -596,7 +588,7 @@ def template_base(
     # ---------------------------------------------------------------
     # C5 — LDO output bulk cap (10 µF)
     # ---------------------------------------------------------------
-    c5_ref = ref_alloc.next("C")
+    c5_ref = "C5"
     c5_x, c5_y = ox + 60.96, oy + 22.86  # 24*G, 9*G
     c5 = make_component(
         "Device", "C", c5_ref, "10µF",
@@ -609,7 +601,7 @@ def template_base(
     # ---------------------------------------------------------------
     # C6 — ESP32 VDD bypass (100 nF)
     # ---------------------------------------------------------------
-    c6_ref = ref_alloc.next("C")
+    c6_ref = "C6"
     c6_x, c6_y = ox + 91.44, oy + 43.18  # 36*G, 17*G
     c6 = make_component(
         "Device", "C", c6_ref, "100nF",

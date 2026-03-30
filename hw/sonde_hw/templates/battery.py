@@ -86,7 +86,7 @@ def template_battery(
     result.instances.append(j3)
 
     # R11 — Top divider resistor (10 MΩ)
-    r11_ref = ref_alloc.next("R")
+    r11_ref = "R11"
     r11_x, r11_y = ox + 15.24, oy  # 6*G
     r11 = make_component(
         "Device", "R", r11_ref, "10MΩ",
@@ -97,7 +97,7 @@ def template_battery(
     result.instances.append(r11)
 
     # R12 — Bottom divider resistor (10 MΩ)
-    r12_ref = ref_alloc.next("R")
+    r12_ref = "R12"
     r12_x, r12_y = ox + 15.24, oy + 7.62  # 6*G, 3*G
     r12 = make_component(
         "Device", "R", r12_ref, "10MΩ",
@@ -108,7 +108,7 @@ def template_battery(
     result.instances.append(r12)
 
     # C2 — ADC filter cap (100 pF)
-    c2_ref = ref_alloc.next("C")
+    c2_ref = "C2"
     c2_x, c2_y = ox + 22.86, oy + 5.08  # 9*G, 2*G
     c2 = make_component(
         "Device", "C", c2_ref, "100pF",

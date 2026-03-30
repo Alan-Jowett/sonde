@@ -101,7 +101,7 @@ jobs:
             -d Version="0.1.0.$runNum" `
             -d GatewayBin=target\release\sonde-gateway.exe `
             -d AdminBin=target\release\sonde-admin.exe `
-            -d CustomActionDll=installer\windows\CustomActions\bin\Release\net8.0\SondeCustomActions.dll `
+            -d CustomActionDll=installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.dll `
             -ext WixToolset.UI.wixext `
             -ext WixToolset.Util.wixext `
             -out sonde-x86_64.msi

@@ -90,7 +90,7 @@ namespace SondeCustomActions
             return ActionResult.Success;
         }
 
-        private static string? ExtractComPort(string deviceName)
+        private static string ExtractComPort(string deviceName)
         {
             // Name format: "USB Serial Device (COM5)" or similar
             var match = System.Text.RegularExpressions.Regex.Match(
@@ -98,7 +98,7 @@ namespace SondeCustomActions
             return match.Success ? $"COM{match.Groups[1].Value}" : null;
         }
 
-        private static string? DetectViaRegistry()
+        private static string DetectViaRegistry()
         {
             try
             {

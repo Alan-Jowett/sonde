@@ -78,7 +78,7 @@ def run_simulation(
     if verbose:
         print(output)
 
-    if result.returncode != 0 and "error" in output.lower():
+    if result.returncode != 0:
         raise RuntimeError(
             f"ngspice failed (exit {result.returncode}):\n{output}"
         )

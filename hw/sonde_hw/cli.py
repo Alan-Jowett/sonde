@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     p_build = sub.add_parser("build", help="Generate schematic + BOM")
     p_build.add_argument("config", type=Path, help="Path to YAML config file")
     p_build.add_argument("--output", type=Path, default=None,
-                         help="Output directory (default: hw/output/<name>)")
+                         help="Output directory (default: output/<name>)")
     p_build.add_argument("--skip-erc", action="store_true",
                          help="Skip ERC check after generation")
 
@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     p_sim.add_argument("--list", action="store_true",
                        help="List available tests and exit")
     p_sim.add_argument("--output", type=Path, default=None,
-                       help="Output directory (default: hw/output/<name>)")
+                       help="Output directory (default: output/<name>)")
     p_sim.add_argument("--verbose", action="store_true",
                        help="Show full ngspice output")
     p_sim.add_argument("--timeout", type=int, default=30,
@@ -158,7 +158,11 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
 
     # Determine which tests to run
     if args.test:
-        tests = [load_test(args.test)]
+        try:
+            tests = [load_test(args.test)]
+        except FileNotFoundError:
+            print(f"ERROR: unknown test ID {args.test!r}", file=sys.stderr)
+            return 1
     else:
         tests = list_tests()
 

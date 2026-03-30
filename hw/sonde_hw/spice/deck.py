@@ -83,7 +83,7 @@ def _model_includes(netlist: dict) -> list[str]:
     }
     for m in sorted(models_needed):
         if m in model_files:
-            includes.append(f".include {model_files[m]}")
+            includes.append(f'.include "{model_files[m]}"')
     return includes
 
 
@@ -149,28 +149,23 @@ def generate_deck(
 
     # Source definitions
     sources = test.get("sources", {})
-    source_nets: dict[str, str] = {}  # source_name → net it drives
 
     if sources.get("VBAT", 0) > 0:
         lines.append(f"VBAT vbat_src 0 DC {sources['VBAT']}")
         # VBAT drives through schottky D2: K=VBAT, A=VIN
         # Model D2 inline since it's on the power path
         lines.append("D2 vbat_src vbat_reg schottky")
-        source_nets["VBAT"] = "vbat_src"
     else:
         # No battery — tie VBAT to ground
         lines.append("VBAT vbat_src 0 DC 0")
         lines.append("D2 vbat_src vbat_reg schottky")
-        source_nets["VBAT"] = "vbat_src"
 
     if sources.get("VUSB", 0) > 0:
         lines.append(f"VUSB vusb 0 DC {sources['VUSB']}")
         lines.append("D1 vusb vbat_reg schottky")
-        source_nets["VUSB"] = "vusb"
     else:
         lines.append("VUSB vusb 0 DC 0")
         lines.append("D1 vusb vbat_reg schottky")
-        source_nets["VUSB"] = "vusb"
 
     lines.append("")
 

@@ -149,6 +149,6 @@ def format_results(
         icon = "✓" if r.passed else "✗"
         meas_str = _eng(r.measured) if r.measured is not None else "N/A"
         lines.append(f"    {icon} {r.description}")
-        lines.append(f"      {r.margin}")
+        lines.append(f"      measured={meas_str}, {r.margin}")
 
     return "\n".join(lines)

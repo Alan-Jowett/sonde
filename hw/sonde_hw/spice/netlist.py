@@ -126,8 +126,9 @@ _POS_TOL = 0.01  # floating-point tolerance for position matching
 
 
 def _pos_key(x: float, y: float) -> tuple[int, int]:
-    """Quantise a position to 0.01-mm grid for dict lookup."""
-    return (round(x * 100), round(y * 100))
+    """Quantise a position to a ``_POS_TOL``-mm grid for dict lookup."""
+    scale = 1.0 / _POS_TOL
+    return (round(x * scale), round(y * scale))
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +149,15 @@ def build_netlist(
     for sym in lib_symbols:
         key = sym.entryName
         sym_pins[key] = _pin_positions_from_symbol(sym)
+
+    # 1b. Precompute entryName → {pin_number: pin_name}
+    pin_names: dict[str, dict[str, str]] = {}
+    for sym in lib_symbols:
+        names: dict[str, str] = {}
+        for unit in sym.units:
+            for pin in getattr(unit, "pins", []):
+                names[pin.number] = pin.name
+        pin_names[sym.entryName] = names
 
     # 2. Build component list and spatial pin index
     pin_index: dict[tuple[int, int], list[tuple[str, str]]] = {}  # pos → [(ref, pin_num)]
@@ -174,15 +184,7 @@ def build_netlist(
         comp_rot = int(inst.position.angle) if inst.position.angle else 0
 
         for pin_num, (pdx, pdy) in lib_pins.items():
-            pin_name = pin_num  # default
-            # Try to find actual pin name from lib symbol
-            for unit in lib_symbols:
-                if unit.entryName == entry:
-                    for u in unit.units:
-                        for pin in getattr(u, "pins", []):
-                            if pin.number == pin_num:
-                                pin_name = pin.name
-                                break
+            pin_name = pin_names.get(entry, {}).get(pin_num, pin_num)
             pi = PinInfo(number=pin_num, name=pin_name)
             comp.pins[pin_num] = pi
 
@@ -193,6 +195,9 @@ def build_netlist(
 
         netlist.components.append(comp)
 
+    # Build ref → ComponentInfo lookup for O(1) access
+    comp_by_ref: dict[str, ComponentInfo] = {c.ref: c for c in netlist.components}
+
     # 3. Map labels to pins via position
     for label in labels:
         net_name = label.text
@@ -200,9 +205,9 @@ def build_netlist(
         matched = pin_index.get(lk, [])
         for ref, pin_num in matched:
             # Set net on the pin
-            for comp in netlist.components:
-                if comp.ref == ref and pin_num in comp.pins:
-                    comp.pins[pin_num].net = net_name
+            comp = comp_by_ref.get(ref)
+            if comp and pin_num in comp.pins:
+                comp.pins[pin_num].net = net_name
 
             # Add to net
             if net_name not in netlist.nets:
@@ -223,7 +228,7 @@ def netlist_to_dict(netlist: Netlist) -> dict[str, Any]:
     components = []
     for comp in sorted(netlist.components, key=lambda c: _ref_sort_key(c.ref)):
         pins_dict: dict[str, dict[str, str]] = {}
-        for pn, pi in sorted(comp.pins.items(), key=lambda x: x[0]):
+        for pn, pi in sorted(comp.pins.items(), key=lambda x: _pin_sort_key(x[0])):
             pins_dict[pn] = {"name": pi.name, "net": pi.net}
         components.append({
             "ref": comp.ref,
@@ -256,6 +261,14 @@ def export_netlist_json(netlist: Netlist, output_path: Path) -> Path:
         encoding="utf-8",
     )
     return output_path
+
+
+def _pin_sort_key(pin: str) -> tuple[bool, int, str]:
+    """Sort pin keys numerically when possible, falling back to string."""
+    try:
+        return (False, int(pin), pin)
+    except ValueError:
+        return (True, 0, pin)
 
 
 def _ref_sort_key(ref: str) -> tuple[str, int]:

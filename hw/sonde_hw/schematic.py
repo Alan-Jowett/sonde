@@ -16,7 +16,6 @@ from kiutils.symbol import Symbol
 from sonde_hw import __version__
 from sonde_hw.config import BoardConfig
 from sonde_hw.spice.netlist import (
-    Netlist,
     build_netlist,
     export_netlist_json,
 )

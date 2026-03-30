@@ -23,6 +23,14 @@ namespace SondeCustomActions
         {
             session.Log("DetectModemPort: scanning for ESP32-S3 modem (VID 303A, PID 1001)");
 
+            // Don't overwrite an operator-supplied value (e.g., msiexec MODEM_PORT=COM5).
+            var existing = session["MODEM_PORT"];
+            if (!string.IsNullOrEmpty(existing))
+            {
+                session.Log($"DetectModemPort: MODEM_PORT already set to {existing}, skipping auto-detect");
+                return ActionResult.Success;
+            }
+
             try
             {
                 // Query Win32_PnPEntity for USB serial devices matching the

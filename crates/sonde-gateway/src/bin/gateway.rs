@@ -44,6 +44,14 @@ const SERVICE_DESCRIPTION: &str = "Manages sensor nodes over ESP-NOW radio.";
 #[cfg(windows)]
 static SERVICE_CLI: std::sync::OnceLock<Cli> = std::sync::OnceLock::new();
 
+/// Reload handle for the file-sink log filter, set by `init_service_logging`
+/// and consumed by the service control handler on `ParamChange`.
+#[cfg(windows)]
+type ReloadHandle =
+    tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>;
+#[cfg(windows)]
+static LOG_RELOAD_HANDLE: std::sync::OnceLock<ReloadHandle> = std::sync::OnceLock::new();
+
 // ── Windows NT service entry point ───────────────────────────────────────────
 // Must be defined at module scope (outside any function) per the macro contract.
 #[cfg(windows)]
@@ -699,6 +707,23 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
                 }
                 ServiceControlHandlerResult::NoError
             }
+            // GW-1306 AC4: runtime log-level reload without restart.
+            ServiceControl::ParamChange => {
+                if let Some(handle) = LOG_RELOAD_HANDLE.get() {
+                    #[cfg(debug_assertions)]
+                    const DEFAULT_FILTER: &str = "sonde_gateway=info";
+                    #[cfg(not(debug_assertions))]
+                    const DEFAULT_FILTER: &str = "sonde_gateway=warn";
+
+                    let new_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| DEFAULT_FILTER.into());
+                    match handle.reload(new_filter) {
+                        Ok(()) => tracing::info!("log filter reloaded from RUST_LOG"),
+                        Err(e) => tracing::error!(error = %e, "failed to reload log filter"),
+                    }
+                }
+                ServiceControlHandlerResult::NoError
+            }
             _ => ServiceControlHandlerResult::NotImplemented,
         }
     };
@@ -715,7 +740,7 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
     let running_status = ServiceStatus {
         service_type: SERVICE_TYPE,
         current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP,
+        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::PARAM_CHANGE,
         exit_code: ServiceExitCode::Win32(0),
         checkpoint: 0,
         wait_hint: Duration::default(),
@@ -778,32 +803,52 @@ fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         p
     });
 
-    let file = std::fs::OpenOptions::new()
+    // GW-1306 AC4/AC5: reloadable log filter + graceful file failure.
+    #[cfg(debug_assertions)]
+    const DEFAULT_FILTER: &str = "sonde_gateway=info";
+    #[cfg(not(debug_assertions))]
+    const DEFAULT_FILTER: &str = "sonde_gateway=warn";
+
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
-        .map_err(|e| format!("cannot open log file {}: {e}", log_path.display()))?;
+    {
+        Ok(file) => {
+            let initial_filter =
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| DEFAULT_FILTER.into());
+            let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(initial_filter);
+            let _ = LOG_RELOAD_HANDLE.set(reload_handle);
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::sync::Mutex::new(file))
-        .with_ansi(false)
-        .with_filter({
-            #[cfg(debug_assertions)]
-            const DEFAULT_FILTER: &str = "sonde_gateway=info";
-            #[cfg(not(debug_assertions))]
-            const DEFAULT_FILTER: &str = "sonde_gateway=warn";
+            let fmt_layer = tracing_subscriber::fmt::layer()
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false)
+                .with_filter(filter);
 
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| DEFAULT_FILTER.into())
-        });
+            let etw_layer = tracing_etw::LayerBuilder::new("sonde-gateway")
+                .build()
+                .map_err(|e| format!("failed to initialise ETW provider: {e}"))?;
 
-    let etw_layer = tracing_etw::LayerBuilder::new("sonde-gateway")
-        .build()
-        .map_err(|e| format!("failed to initialise ETW provider: {e}"))?;
+            tracing_subscriber::registry()
+                .with(fmt_layer)
+                .with(etw_layer)
+                .init();
+        }
+        Err(e) => {
+            let etw_layer = tracing_etw::LayerBuilder::new("sonde-gateway")
+                .build()
+                .map_err(|e| format!("failed to initialise ETW provider: {e}"))?;
 
-    tracing_subscriber::registry()
-        .with(fmt_layer)
-        .with(etw_layer)
-        .init();
+            tracing_subscriber::registry().with(etw_layer).init();
+
+            tracing::error!(
+                operation = "open log file",
+                path = %log_path.display(),
+                error = %e,
+                guidance = "check directory permissions; the gateway will continue without file logging",
+            );
+        }
+    }
 
     Ok(())
 }

@@ -1177,9 +1177,10 @@ handlers:
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
 
+        // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().0.contains("invalid hex"));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty(), "invalid entry should be skipped");
     }
 
     #[test]
@@ -1193,14 +1194,10 @@ handlers:
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
 
+        // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.0.contains("32 bytes"),
-            "expected 32-byte error, got: {}",
-            err.0
-        );
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty(), "wrong-length entry should be skipped");
     }
 
     #[test]
@@ -1210,14 +1207,10 @@ handlers:
         let path = dir.path().join("handlers.yaml");
         std::fs::write(&path, yaml).unwrap();
 
+        // Lenient loader skips invalid entries (GW-1405)
         let result = load_handler_configs(&path);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.0.contains("non-ASCII"),
-            "expected non-ASCII error, got: {}",
-            err.0
-        );
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty(), "non-ASCII entry should be skipped");
     }
 
     #[test]

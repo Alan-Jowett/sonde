@@ -48,7 +48,7 @@
     <!-- COM port for the ESP-NOW modem. Auto-detected by custom action
          or entered manually by the operator. Marked Secure so the value
          flows from the UI sequence to the execute sequence. -->
-    <Property Id="MODEM_PORT" Value="" Secure="yes" />
+    <Property Id="MODEM_PORT" Secure="yes" />
 
     <!-- ── Feature tree ──────────────────────────────────────────────── -->
     <Feature Id="ProductFeature" Title="Sonde" Level="1">

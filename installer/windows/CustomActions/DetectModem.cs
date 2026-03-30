@@ -37,8 +37,9 @@ namespace SondeCustomActions
                 // ESP32-S3 TinyUSB CDC ACM VID/PID.
                 using var searcher = new ManagementObjectSearcher(
                     "SELECT * FROM Win32_PnPEntity WHERE DeviceID LIKE '%VID_303A&PID_1001%'");
+                using var results = searcher.Get();
 
-                foreach (var device in searcher.Get())
+                foreach (var device in results)
                 {
                     var deviceId = device["DeviceID"]?.ToString() ?? "";
                     var name = device["Name"]?.ToString() ?? "";

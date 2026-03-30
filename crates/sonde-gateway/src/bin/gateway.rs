@@ -44,6 +44,12 @@ const SERVICE_DESCRIPTION: &str = "Manages sensor nodes over ESP-NOW radio.";
 #[cfg(windows)]
 static SERVICE_CLI: std::sync::OnceLock<Cli> = std::sync::OnceLock::new();
 
+/// Default tracing filter for service mode (shared between init and reload).
+#[cfg(all(windows, debug_assertions))]
+const SERVICE_DEFAULT_FILTER: &str = "sonde_gateway=info";
+#[cfg(all(windows, not(debug_assertions)))]
+const SERVICE_DEFAULT_FILTER: &str = "sonde_gateway=warn";
+
 /// Reload handle for the file-sink log filter, set by `init_service_logging`
 /// and consumed by the service control handler on `ParamChange`.
 #[cfg(windows)]
@@ -710,13 +716,8 @@ fn service_entry(_arguments: Vec<std::ffi::OsString>) {
             // GW-1306 AC4: runtime log-level reload without restart.
             ServiceControl::ParamChange => {
                 if let Some(handle) = LOG_RELOAD_HANDLE.get() {
-                    #[cfg(debug_assertions)]
-                    const DEFAULT_FILTER: &str = "sonde_gateway=info";
-                    #[cfg(not(debug_assertions))]
-                    const DEFAULT_FILTER: &str = "sonde_gateway=warn";
-
                     let new_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| DEFAULT_FILTER.into());
+                        .unwrap_or_else(|_| SERVICE_DEFAULT_FILTER.into());
                     match handle.reload(new_filter) {
                         Ok(()) => tracing::info!("log filter reloaded from RUST_LOG"),
                         Err(e) => tracing::error!(error = %e, "failed to reload log filter"),
@@ -804,11 +805,6 @@ fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // GW-1306 AC4/AC5: reloadable log filter + graceful file failure.
-    #[cfg(debug_assertions)]
-    const DEFAULT_FILTER: &str = "sonde_gateway=info";
-    #[cfg(not(debug_assertions))]
-    const DEFAULT_FILTER: &str = "sonde_gateway=warn";
-
     match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -816,7 +812,7 @@ fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     {
         Ok(file) => {
             let initial_filter =
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| DEFAULT_FILTER.into());
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| SERVICE_DEFAULT_FILTER.into());
             let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(initial_filter);
             let _ = LOG_RELOAD_HANDLE.set(reload_handle);
 
@@ -835,6 +831,9 @@ fn init_service_logging(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .init();
         }
         Err(e) => {
+            // ETW layer is created separately in each branch because the
+            // subscriber type composition differs (with vs without the fmt
+            // layer). Rust's type system requires distinct `.init()` calls.
             let etw_layer = tracing_etw::LayerBuilder::new("sonde-gateway")
                 .build()
                 .map_err(|e| format!("failed to initialise ETW provider: {e}"))?;

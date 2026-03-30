@@ -16,8 +16,8 @@
 Iq vin gnd 1.6u
 * Regulated output via behavioral voltage source
 * If headroom > dropout: output 3.3 V
-* If headroom < dropout but input > 0.5 V: output = Vin - Vdrop
-* Otherwise: output 0 V
+* If headroom < dropout: output = Vin - Vdrop (tracks input)
+* If Vin < Vdrop: output 0 V
 Breg vout_int gnd V = min(3.3, max(0, V(vin,gnd) - 0.178))
 * Output impedance
 Rout vout_int vout 0.5

@@ -303,7 +303,10 @@ def generate_deck(
             # ngspice: @vsource[i] or i(vsource)
             # The source name in our deck is "VBAT", "VUSB", etc.
             src_name = source.lower()
-            lines.append(f'echo "MEAS meas_{i} =" $&i({src_name})')
+            # SPICE convention: current SUPPLIED BY a source is negative.
+            # Use let + abs() so assertions on magnitude work correctly.
+            lines.append(f'let abs_meas_{i} = abs(i({src_name}))')
+            lines.append(f'echo "MEAS meas_{i} =" $&abs_meas_{i}')
 
     lines.append("quit")
     lines.append(".endc")

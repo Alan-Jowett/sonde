@@ -11,16 +11,19 @@
     wix extension add WixToolset.Util.wixext/4.0.6
 
   Build command (from repository root, after a release build):
+    dotnet build installer\windows\CustomActions\SondeCustomActions.csproj -c Release
     wix build installer\windows\sonde.wxs ^
          -d Version=VERSION ^
          -d GatewayBin=target\release\sonde-gateway.exe ^
          -d AdminBin=target\release\sonde-admin.exe ^
+         -d CustomActionDll=installer\windows\CustomActions\bin\Release\net8.0\SondeCustomActions.dll ^
          -ext WixToolset.UI.wixext ^
          -ext WixToolset.Util.wixext ^
          -out sonde-x86_64.msi
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <Package
     Name="Sonde"
@@ -41,10 +44,16 @@
 
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- ── MSI properties ────────────────────────────────────────────── -->
+    <!-- COM port for the ESP-NOW modem. Auto-detected by custom action
+         or entered manually by the operator in the modem config dialog. -->
+    <Property Id="MODEM_PORT" Value="" />
+
     <!-- ── Feature tree ──────────────────────────────────────────────── -->
     <Feature Id="ProductFeature" Title="Sonde" Level="1">
       <ComponentGroupRef Id="BinariesGroup" />
       <ComponentGroupRef Id="ConfigGroup" />
+      <ComponentGroupRef Id="ServiceGroup" />
     </Feature>
 
     <!-- ── Directory tree ───────────────────────────────────────────── -->
@@ -71,7 +80,7 @@
               Source="$(var.AdminBin)"
               Name="sonde-admin.exe"
               KeyPath="yes" />
-        <!-- Add sonde-admin to the system PATH -->
+        <!-- GW-1500: Add bin directory to system PATH -->
         <Environment Id="PATH"
                      Name="PATH"
                      Value="[BinDir]"
@@ -83,11 +92,52 @@
     </ComponentGroup>
 
     <ComponentGroup Id="ConfigGroup" Directory="DATADIR">
-      <!-- Create the ProgramData\sonde\ config directory -->
+      <!-- GW-1501 AC5: Create %ProgramData%\sonde\ config directory -->
       <Component Id="DataDirComp" Guid="C3D4E5F6-A7B8-9012-CDEF-123456789012">
         <CreateFolder />
       </Component>
     </ComponentGroup>
+
+    <!-- ── GW-1501: Service registration ─────────────────────────────
+         The service is registered with the COM port selected in the
+         modem configuration dialog (MODEM_PORT property). The service
+         starts automatically on boot.
+         On uninstall, the service is stopped and removed (GW-1501 AC6).
+         On upgrade, the service is stopped before file replacement and
+         restarted after (GW-1501 AC7). -->
+    <ComponentGroup Id="ServiceGroup" Directory="BinDir">
+      <Component Id="GatewayService" Guid="D4E5F6A7-B8C9-0123-4567-890ABCDEF012">
+        <ServiceInstall Id="SondeGatewayService"
+                        Name="sonde-gateway"
+                        DisplayName="Sonde Gateway"
+                        Description="Manages sensor nodes over ESP-NOW radio."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Arguments="--service --port [MODEM_PORT] --db [CommonAppDataFolder]sonde\gateway.db --master-key-file [CommonAppDataFolder]sonde\master-key.hex" />
+        <ServiceControl Id="SondeGatewayStart"
+                        Name="sonde-gateway"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- ── Custom action: auto-detect ESP32-S3 modem COM port ────────
+         GW-1501 AC2: Scans USB devices for VID 303A / PID 1001 and
+         pre-populates the MODEM_PORT property. Runs during UI sequence
+         before the modem configuration dialog is shown. -->
+    <Binary Id="SondeCustomActionsDll" SourceFile="$(var.CustomActionDll)" />
+    <CustomAction Id="DetectModemPort"
+                  BinaryRef="SondeCustomActionsDll"
+                  DllEntry="DetectModemPort"
+                  Execute="immediate"
+                  Return="check" />
+
+    <InstallUISequence>
+      <Custom Action="DetectModemPort" Before="ExecuteAction" />
+    </InstallUISequence>
 
     <!-- ── UI ───────────────────────────────────────────────────────── -->
     <ui:WixUI Id="WixUI_InstallDir" />

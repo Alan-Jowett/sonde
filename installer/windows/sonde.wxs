@@ -141,6 +141,11 @@
       <Custom Action="DetectModemPort" After="AppSearch" />
     </InstallUISequence>
 
+    <InstallExecuteSequence>
+      <!-- Auto-detect for silent/unattended installs (UI sequence is skipped). -->
+      <Custom Action="DetectModemPort" After="AppSearch">NOT MODEM_PORT</Custom>
+    </InstallExecuteSequence>
+
     <!-- ── UI ───────────────────────────────────────────────────────── -->
     <ui:WixUI Id="WixUI_InstallDir" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />

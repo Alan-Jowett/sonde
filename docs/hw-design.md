@@ -95,7 +95,7 @@ Python is chosen over Rust because:
 The tool entry point is `sonde_hw/cli.py`, invoked as `python -m sonde_hw <command>` or `sonde-hw <command>`.
 
 ```
-sonde-hw validate <config.yaml>                     # Schema check only
+sonde-hw validate <config.yaml>                     # Validate config (schema + semantic checks)
 sonde-hw build <config.yaml>                        # Full pipeline (generate + ERC + BOM)
 sonde-hw build <config.yaml> --skip-erc             # Generate without ERC (for iteration)
 sonde-hw export <config.yaml>                       # BOM only (assumes schematic exists)

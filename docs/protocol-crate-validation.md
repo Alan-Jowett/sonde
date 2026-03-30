@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 92 test cases total.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 59 test cases total.
 
 ### Traceability note
 
@@ -800,16 +800,16 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol-crate-design.md §10
 
 **Procedure:**
-1. Encode `ModemMessage::SendFrame { peer_mac, data }` with a known MAC and payload.
+1. Encode `ModemMessage::SendFrame(SendFrame { peer_mac, frame_data })` with a known MAC and payload.
 2. Decode with `decode_modem_frame`.
-3. Assert: peer MAC and data match.
+3. Assert: peer MAC and frame data match.
 
 ### T-P082  ModemMessage round-trip — all message types
 
 **Validates:** protocol-crate-design.md §10
 
 **Procedure:**
-1. For each `ModemMessage` variant (`Reset`, `SendFrame`, `SetChannel`, `GetStatus`, `ScanChannels`, `ModemReady`, `RecvFrame`, `SetChannelAck`, `Status`, `ScanResult`, `Error`), encode and decode.
+1. For each `ModemMessage` variant (`Reset`, `SendFrame`, `SetChannel`, `GetStatus`, `ScanChannels`, `ModemReady`, `RecvFrame`, `SetChannelAck`, `Status`, `ScanResult`, `Error`, `BleIndicate`, `BleEnable`, `BleDisable`, `BlePairingConfirmReply`, `BleRecv`, `BleConnected`, `BleDisconnected`, `BlePairingConfirm`, `Unknown { .. }`), encode and decode.
 2. Assert: round-trip preserves all fields.
 
 ### T-P083  Frame envelope structure — LEN + TYPE + BODY
@@ -826,8 +826,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol-crate-design.md §10 (Error handling)
 
 **Procedure:**
-1. Call `decode_modem_frame` with a zero-length frame.
-2. Assert: returns an error.
+1. Construct a frame whose on-wire length prefix is zero (e.g., a 2-byte buffer containing `LEN = 0x0000` and no type/body bytes).
+2. Call `decode_modem_frame` with this buffer.
+3. Assert: returns a protocol error indicating an empty frame (i.e., the `LEN=0` case, not the empty-input/`Incomplete` case).
 
 ### T-P085  Decode oversized frame rejected
 
@@ -879,7 +880,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Procedure:**
 1. Construct a frame with message type `0x7F` (undefined).
 2. Decode with `decode_modem_frame`.
-3. Assert: result is `ModemMessage::Unknown(0x7F)` or equivalent.
+3. Assert: result matches `ModemMessage::Unknown { msg_type: 0x7F, body }` (or equivalent), and `body` equals the original payload bytes.
 
 ---
 

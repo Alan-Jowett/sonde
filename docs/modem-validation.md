@@ -1017,7 +1017,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Procedure:**
 1. Connect a BLE client and trigger an indication failure (e.g., disconnect mid-indication).
 2. Capture UART diagnostic output.
-3. Assert: the error log includes the operation name, NimBLE return code, and connection state.
+3. Assert: the error log includes the operation name and NimBLE error (debug string).
 
 ### T-0711  Error diagnostic — ESP-NOW send failure
 
@@ -1026,7 +1026,7 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 **Procedure:**
 1. Trigger an ESP-NOW send failure (e.g., send to an unreachable peer MAC).
 2. Capture UART diagnostic output.
-3. Assert: the error log includes the target peer MAC address and ESP-NOW status code.
+3. Assert: the error log includes the target peer MAC address, payload length, and success flag.
 4. Assert: raw payload bytes are not logged.
 
 ---

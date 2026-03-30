@@ -1589,15 +1589,15 @@ When the gateway encounters an error at a user-facing or operator-visible bounda
 **Source:** Issue #532
 
 **Description:**  
-When the gateway receives an `APP_DATA` message and dispatches it through the handler pipeline, each stage of the pipeline MUST be logged at INFO level with structured fields sufficient for an operator to trace data flow without access to source code. The pipeline stages are: (1) `APP_DATA` reception (with `node_id`, `program_hash`, and payload length), (2) handler match (with `program_hash` and handler `command`), (3) handler invocation (with handler `command`), (4) handler reply (with reply payload length), and (5) handler process exit (with exit code). Non-zero handler exit codes MUST be logged at WARN level to flag unexpected terminations.
+When the gateway receives an `APP_DATA` message and dispatches it through the handler pipeline, each stage of the pipeline MUST be logged at INFO level with structured fields sufficient for an operator to trace data flow without access to source code. The pipeline stages are: (1) `APP_DATA` reception (with `node_id`, `program_hash`, and payload length), (2) handler match (with `program_hash` and handler `command`), (3) handler invocation (with handler `command`), (4) handler reply (with reply payload length), and (5) handler process exit (with exit code). Non-zero handler exit codes MUST be logged at ERROR level to flag unexpected terminations.
 
 **Acceptance criteria:**
 
 1. An INFO log is emitted when an `APP_DATA` message is received, including `node_id`, `program_hash`, and payload `len`.
-2. An INFO log is emitted when a handler is matched to the `APP_DATA`, including the matching `program_hash` pattern and the handler `command`.
+2. An INFO log is emitted when a handler is matched to the `APP_DATA`, including the `program_hash` (hex) and the handler `command`.
 3. An INFO log is emitted when the matched handler process is invoked, including the handler `command`.
 4. An INFO log is emitted when the handler replies with data, including the reply payload `len`.
-5. A log is emitted when a handler process exits, including the exit `code`. Clean exits (code 0) are logged at INFO; non-zero exits at WARN.
+5. A log is emitted when a handler process exits, including the exit `code`. Clean exits (code 0) are logged at INFO; non-zero exits at ERROR.
 
 ---
 

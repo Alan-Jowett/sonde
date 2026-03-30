@@ -815,9 +815,9 @@ The gateway logs the complete APP_DATA handler pipeline at INFO level so operato
 | Handler matched | INFO | `handler.rs` | `program_hash`, `command` | AC2 |
 | Handler invoked | INFO | `handler.rs` | `command` | AC3 |
 | Handler replied | INFO | `handler.rs` | `len` | AC4 |
-| Handler exited | INFO / WARN | `handler.rs` | `code` (exit code) | AC5 |
+| Handler exited | INFO / ERROR | `handler.rs` | `code` (exit code) | AC5 |
 
-The handler-exited event is emitted when `ensure_running()` detects via `try_wait()` that a previously running handler process has terminated. Clean exits (code 0) are logged at INFO; non-zero exits at WARN.
+The handler-exited event is emitted when `ensure_running()` detects via `try_wait()` that a previously running handler process has terminated. Clean exits (code 0) are logged at INFO; non-zero exits at ERROR.
 
 ---
 

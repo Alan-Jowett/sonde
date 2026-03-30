@@ -383,9 +383,9 @@ When the modem encounters an error at an operator-visible boundary, the error lo
 
 | Boundary | Diagnostic fields |
 |---|---|
-| BLE indication failure | NimBLE return code, connection state, characteristic handle |
-| ESP-NOW send failure | target peer MAC address, ESP-NOW status code (not raw payload bytes) |
-| USB-CDC I/O error | operation name, ESP-IDF error code |
+| BLE indication failure | NimBLE error (debug string) |
+| ESP-NOW send failure | target peer MAC address, payload length, success flag |
+| USB-CDC I/O error | operation name, ESP-IDF error |
 
 ### 14.4  Configuration
 

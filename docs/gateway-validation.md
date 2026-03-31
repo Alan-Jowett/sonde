@@ -2433,6 +2433,229 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 15  App bundle deployment
+
+### T-1600  Deploy valid bundle
+
+**Traces to:** GW-1600
+
+**Preconditions:** Gateway running with no programs, handlers, or nodes matching the bundle. At least one node in the bundle must be registered in the gateway.
+
+**Steps:**
+1. Create a valid `.sondeapp` bundle with one program (`temp-reader`, resident), one handler (python3, `handler/ingest.py`), and two nodes (`sensor-1`, `sensor-2`).
+2. Register nodes `sensor-1` and `sensor-2` in the gateway.
+3. Run `sonde-admin deploy <bundle-path>`.
+
+**Expected:**
+1. Exit code 0.
+2. `sonde-admin program list` shows the ingested program.
+3. `sonde-admin handler list` shows the configured handler.
+4. `sonde-admin node get sensor-1` shows `assigned_program_hash` matching the program.
+5. `sonde-admin node get sensor-2` shows `assigned_program_hash` matching the program.
+6. Output includes deploy summary with counts.
+
+---
+
+### T-1601  Idempotent re-deploy
+
+**Traces to:** GW-1601
+
+**Preconditions:** T-1600 completed successfully (bundle already deployed).
+
+**Steps:**
+1. Run `sonde-admin deploy <bundle-path>` again with the same bundle.
+
+**Expected:**
+1. Exit code 0.
+2. Output shows all steps as "skipped (already ingested/configured/assigned)".
+3. Gateway state is unchanged from after T-1600.
+
+---
+
+### T-1601a  Deploy with handler config mismatch
+
+**Traces to:** GW-1601 (AC-5)
+
+**Preconditions:** Bundle deployed. Then handler for the same program hash is manually changed via `sonde-admin handler remove` + `handler add` with different args.
+
+**Steps:**
+1. Deploy the bundle initially.
+2. Manually remove and re-add the handler with different args.
+3. Run `sonde-admin deploy <bundle-path>` again.
+
+**Expected:**
+1. Exit code 0.
+2. Warning printed about handler config mismatch.
+3. The manually configured handler is NOT overwritten.
+
+---
+
+### T-1602  Deploy with unregistered node
+
+**Traces to:** GW-1600
+
+**Preconditions:** Gateway running. Bundle references node `unknown-node` which is NOT registered.
+
+**Steps:**
+1. Create a bundle targeting node `unknown-node`.
+2. Run `sonde-admin deploy <bundle-path>`.
+
+**Expected:**
+1. Program ingestion and handler configuration succeed.
+2. Node assignment for `unknown-node` warns "node not registered" and continues.
+3. Exit code 0 (warning, not failure).
+
+---
+
+### T-1603  Undeploy removes handlers
+
+**Traces to:** GW-1602
+
+**Preconditions:** Bundle from T-1600 is deployed.
+
+**Steps:**
+1. Run `sonde-admin undeploy <bundle-path>`.
+
+**Expected:**
+1. Exit code 0.
+2. `sonde-admin handler list` no longer shows the bundle's handler.
+3. Nodes are still assigned (warning printed about each).
+4. Programs are still in the library (not removed without `--remove-programs`).
+
+---
+
+### T-1603a  Undeploy preserves non-bundle resources
+
+**Traces to:** GW-1602 (AC-6)
+
+**Preconditions:** Bundle deployed. A separate handler (not in the bundle) is registered via `sonde-admin handler add`.
+
+**Steps:**
+1. Deploy the bundle.
+2. Register a non-bundle handler: `sonde-admin handler add <other-hash> other-command`.
+3. Run `sonde-admin undeploy <bundle-path>`.
+
+**Expected:**
+1. The bundle's handler is removed.
+2. The non-bundle handler is still present in `sonde-admin handler list`.
+3. Any non-bundle programs and nodes are unaffected.
+
+---
+
+### T-1604  Undeploy with --remove-programs
+
+**Traces to:** GW-1602
+
+**Preconditions:** Bundle deployed, nodes have been unassigned manually.
+
+**Steps:**
+1. Unassign nodes from the bundle's program.
+2. Run `sonde-admin undeploy <bundle-path> --remove-programs`.
+
+**Expected:**
+1. Exit code 0.
+2. Handlers removed.
+3. Programs removed from library.
+4. `sonde-admin program list` no longer shows the bundle's program.
+
+---
+
+### T-1605  Undeploy refuses to remove assigned programs
+
+**Traces to:** GW-1602
+
+**Preconditions:** Bundle deployed, nodes still assigned.
+
+**Steps:**
+1. Run `sonde-admin undeploy <bundle-path> --remove-programs`.
+
+**Expected:**
+1. Handlers removed.
+2. Programs NOT removed (still assigned to nodes).
+3. Warning printed: "program `<hash>` is still assigned to node(s): sensor-1, sensor-2".
+
+---
+
+### T-1605a  Undeploy with --force removes assigned programs
+
+**Traces to:** GW-1602 (AC-5)
+
+**Preconditions:** Bundle deployed, nodes still assigned to bundle programs.
+
+**Steps:**
+1. Run `sonde-admin undeploy <bundle-path> --remove-programs --force`.
+
+**Expected:**
+1. Handlers removed.
+2. Nodes are unassigned from bundle programs first.
+3. Programs are removed from the library.
+4. `sonde-admin program list` no longer shows the bundle's program.
+5. `sonde-admin node get sensor-1` shows no assigned program.
+
+---
+
+### T-1606  Validate command — offline
+
+**Traces to:** GW-1603
+
+**Steps:**
+1. Stop the gateway.
+2. Run `sonde-admin validate <bundle-path>` with a valid bundle.
+
+**Expected:**
+1. Exit code 0 (no gateway connection required).
+2. Output indicates bundle is valid.
+
+---
+
+### T-1606a  Validate command — invalid bundle
+
+**Traces to:** GW-1603 (AC-2)
+
+**Steps:**
+1. Create a `.sondeapp` bundle with a missing ELF file (program path doesn't exist).
+2. Run `sonde-admin validate <bundle-path>`.
+
+**Expected:**
+1. Exit code non-zero.
+2. Stderr includes "program file not found" validation error.
+
+---
+
+### T-1607  Deploy dry-run
+
+**Traces to:** GW-1604
+
+**Preconditions:** Gateway running, bundle not yet deployed.
+
+**Steps:**
+1. Run `sonde-admin deploy --dry-run <bundle-path>`.
+
+**Expected:**
+1. Exit code 0.
+2. Output lists actions that WOULD be taken (ingest, add handler, assign).
+3. `sonde-admin program list` shows NO new programs (nothing was actually ingested).
+4. `sonde-admin handler list` shows NO new handlers.
+
+---
+
+### T-1608  Deploy with gateway unreachable
+
+**Traces to:** GW-1600 (AC-4)
+
+**Preconditions:** Gateway is NOT running.
+
+**Steps:**
+1. Create a valid `.sondeapp` bundle.
+2. Run `sonde-admin deploy <bundle-path>`.
+
+**Expected:**
+1. Exit code non-zero.
+2. Error message indicates connection failure (e.g., "failed to connect to gateway").
+3. The error identifies the failing step (program ingestion, since that is the first gRPC call).
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -2446,3 +2669,8 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1501 | T-1501, T-1503 |
 | GW-1502 | T-1502, T-1503 |
 | GW-1503 | T-1504 |
+| GW-1600 | T-1600, T-1602, T-1608 |
+| GW-1601 | T-1601, T-1601a |
+| GW-1602 | T-1603, T-1603a, T-1604, T-1605, T-1605a |
+| GW-1603 | T-1606, T-1606a |
+| GW-1604 | T-1607 |

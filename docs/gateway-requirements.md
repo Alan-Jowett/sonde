@@ -775,6 +775,7 @@ The admin API MUST support: ingesting a BPF ELF file (triggering verification, C
 2. `ListPrograms` returns all stored programs.
 3. `AssignProgram` sets a node's assigned program hash.
 4. `RemoveProgram` deletes a program from the library.
+5. `IngestProgram` is idempotent with respect to identical ELF content: re-ingesting a program with the same content hash returns the same program hash and does not require clients to handle a distinct "already exists" status code.
 
 ---
 
@@ -1736,6 +1737,94 @@ The state export bundle (GW-0805, GW-1001) SHOULD include handler routing config
 
 ---
 
+## 15  App bundle deployment
+
+### GW-1600  CLI — bundle deploy
+
+**Priority:** Must
+**Source:** [issue #491](https://github.com/Alan-Jowett/sonde/issues/491), [bundle-format.md](bundle-format.md) §7
+
+**Description:**
+The `sonde-admin` CLI MUST provide a `deploy` subcommand that accepts a `.sondeapp` bundle file and orchestrates deployment to the connected gateway.
+
+**Acceptance criteria:**
+
+1. `sonde-admin deploy <bundle-path>` validates the bundle, ingests programs, configures handlers, and assigns programs to nodes.
+2. The deployment sequence follows the order defined in [bundle-format.md](bundle-format.md) §7.1: validate → ingest programs → configure handlers → assign to nodes.
+3. On success, the command prints a summary of actions taken (programs ingested, handlers configured, nodes assigned) and exits with code 0.
+4. On failure, the command prints the failing step, the error, and which prior steps completed, and exits with a non-zero code.
+
+---
+
+### GW-1601  Idempotent deploy
+
+**Priority:** Must
+**Source:** [bundle-format.md](bundle-format.md) §7.2
+
+**Description:**
+Deploying the same bundle twice MUST produce the same end state. The second deploy MUST skip operations that are already complete.
+
+**Acceptance criteria:**
+
+1. A program that already exists in the gateway library (same content hash) is not re-ingested; the command reports "skipped (already ingested)".
+2. A handler that already exists with identical configuration is not re-added; the command reports "skipped (already configured)".
+3. A node already assigned to the correct program is not re-assigned; the command reports "skipped (already assigned)".
+4. The second deploy completes faster than the first (no redundant I/O).
+5. If a handler exists for the same program hash but with different configuration (different command, args, or timeout), the deploy prints a warning ("handler conflict: existing handler for `<hash>` has different config; skipping — use `sonde-admin handler remove` then re-deploy to update") and exits with code 0.
+
+---
+
+### GW-1602  CLI — bundle undeploy
+
+**Priority:** Must
+**Source:** [issue #491](https://github.com/Alan-Jowett/sonde/issues/491), [bundle-format.md](bundle-format.md) §8
+
+**Description:**
+The `sonde-admin` CLI MUST provide an `undeploy` subcommand that reverses the effects of a previous `deploy`.
+
+**Acceptance criteria:**
+
+1. `sonde-admin undeploy <bundle-path>` removes handlers configured by the bundle.
+2. Nodes still assigned to bundle programs are listed with a warning but NOT automatically unassigned (safety constraint per [bundle-format.md](bundle-format.md) §8.2).
+3. With `--remove-programs`, programs from the bundle are removed from the library if they are not assigned to any node.
+4. Programs still assigned to nodes are NOT removed; the command warns about each one.
+5. With `--force`, programs are removed even if assigned (unassigns first).
+6. Handlers, programs, or nodes not defined in the bundle are never affected.
+
+---
+
+### GW-1603  CLI — bundle validate
+
+**Priority:** Must
+**Source:** [issue #491](https://github.com/Alan-Jowett/sonde/issues/491)
+
+**Description:**
+The `sonde-admin` CLI MUST provide a `validate` subcommand that checks a `.sondeapp` file without deploying it.
+
+**Acceptance criteria:**
+
+1. `sonde-admin validate <bundle-path>` runs all validation rules from [bundle-format.md](bundle-format.md) §6 and exits with code 0 on a valid bundle.
+2. On an invalid bundle, exits with non-zero code and prints all validation errors to stderr.
+3. Does not contact the gateway (offline validation only).
+
+---
+
+### GW-1604  Deploy dry-run mode
+
+**Priority:** Should
+**Source:** [bundle-format.md](bundle-format.md) §7.4
+
+**Description:**
+The `sonde-admin deploy` command SHOULD support a `--dry-run` flag that shows what deployment actions would be taken without executing them.
+
+**Acceptance criteria:**
+
+1. `sonde-admin deploy --dry-run <bundle-path>` validates the bundle and prints the list of actions (ingest, handler add, assign) that would be performed.
+2. No gRPC calls are made to the gateway in dry-run mode (except optionally querying current state for idempotency checking).
+3. Exit code is 0 if the bundle is valid, non-zero if invalid.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1839,3 +1928,8 @@ The state export bundle (GW-0805, GW-1001) SHOULD include handler routing config
 | GW-1501 | Installer service registration with COM port auto-detect | Must |
 | GW-1502 | Post-install service unregistration CLI | Must |
 | GW-1503 | Linux package systemd integration | Should |
+| GW-1600 | CLI — bundle deploy | Must |
+| GW-1601 | Idempotent deploy | Must |
+| GW-1602 | CLI — bundle undeploy | Must |
+| GW-1603 | CLI — bundle validate | Must |
+| GW-1604 | Deploy dry-run mode | Should |

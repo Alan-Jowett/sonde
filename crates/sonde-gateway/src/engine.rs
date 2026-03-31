@@ -583,14 +583,18 @@ impl Gateway {
         Some(frame)
     }
 
-    /// Handle a WAKE message: create session, determine command, respond.
-    async fn handle_wake(
+    /// Shared WAKE business logic: decode, session management, command
+    /// selection, telemetry update, and response CBOR encoding.
+    ///
+    /// Returns `(response_header, response_cbor)` so the caller can apply
+    /// the appropriate frame codec (HMAC or AEAD).
+    async fn handle_wake_core(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         payload: &[u8],
         peer: PeerAddress,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(FrameHeader, Vec<u8>)> {
         // 1. Decode NodeMessage::Wake from payload
         let (firmware_abi_version, program_hash, battery_mv) =
             match NodeMessage::decode(MSG_WAKE, payload) {
@@ -786,12 +790,26 @@ impl Gateway {
         };
         let response_cbor = response_msg.encode().ok()?;
 
-        // 6. Encode response frame (echoing wake nonce, using node's PSK)
+        // 6. Build response header (echoing wake nonce)
         let response_header = FrameHeader {
             key_hint: node.key_hint,
             msg_type: MSG_COMMAND,
             nonce: header.nonce,
         };
+
+        Some((response_header, response_cbor))
+    }
+
+    /// Handle a WAKE message: create session, determine command, respond.
+    async fn handle_wake(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        payload: &[u8],
+        peer: PeerAddress,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) =
+            self.handle_wake_core(node, header, payload, peer).await?;
         let frame = encode_frame(
             &response_header,
             &response_cbor,
@@ -799,7 +817,6 @@ impl Gateway {
             &self.crypto_hmac,
         )
         .ok()?;
-
         Some(frame)
     }
 
@@ -812,175 +829,8 @@ impl Gateway {
         payload: &[u8],
         peer: PeerAddress,
     ) -> Option<Vec<u8>> {
-        let (firmware_abi_version, program_hash, battery_mv) =
-            match NodeMessage::decode(MSG_WAKE, payload) {
-                Ok(NodeMessage::Wake {
-                    firmware_abi_version,
-                    program_hash,
-                    battery_mv,
-                }) => (firmware_abi_version, program_hash, battery_mv),
-                Ok(_) => return None,
-                Err(e) => {
-                    warn!(
-                        node_id = %node.node_id,
-                        error = %e,
-                        "discarding WAKE with malformed CBOR payload (AEAD)"
-                    );
-                    return None;
-                }
-            };
-
-        let timestamp_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        let existing_session = self.session_manager.get_session(&node.node_id).await;
-        let reuse_chunked = existing_session.as_ref().is_some_and(|s| {
-            matches!(s.state, SessionState::ChunkedTransfer { .. }) && s.wake_nonce == header.nonce
-        });
-
-        let starting_seq: u64 = if reuse_chunked {
-            let seq = existing_session.as_ref().unwrap().next_expected_seq;
-            info!(node_id = %node.node_id, seq, "WAKE retry (AEAD) — reusing existing ChunkedTransfer session");
-            seq
-        } else {
-            let seq: u64 = {
-                let mut buf = [0u8; 8];
-                if let Err(err) = getrandom::fill(&mut buf) {
-                    warn!(error = ?err, "CSPRNG failure while generating starting_seq; aborting WAKE handling (AEAD)");
-                    return None;
-                }
-                u64::from_ne_bytes(buf)
-            };
-            let _session = self
-                .session_manager
-                .create_session(node.node_id.clone(), peer, header.nonce, seq)
-                .await;
-            info!(node_id = %node.node_id, seq, "session created (AEAD)");
-            seq
-        };
-
-        info!(
-            node_id = %node.node_id,
-            seq = starting_seq,
-            battery_mv,
-            "WAKE received (AEAD)"
-        );
-
-        let command_payload = if reuse_chunked {
-            let session = existing_session.unwrap();
-            match &session.state {
-                SessionState::ChunkedTransfer {
-                    program_hash: ph,
-                    program_size,
-                    chunk_size,
-                    chunk_count,
-                    is_ephemeral,
-                } => {
-                    if *is_ephemeral {
-                        CommandPayload::RunEphemeral {
-                            program_hash: ph.clone(),
-                            program_size: *program_size,
-                            chunk_size: *chunk_size,
-                            chunk_count: *chunk_count,
-                        }
-                    } else {
-                        CommandPayload::UpdateProgram {
-                            program_hash: ph.clone(),
-                            program_size: *program_size,
-                            chunk_size: *chunk_size,
-                            chunk_count: *chunk_count,
-                        }
-                    }
-                }
-                _ => unreachable!(),
-            }
-        } else {
-            match self
-                .select_command(node, &program_hash, firmware_abi_version)
-                .await
-            {
-                Some(cmd) => cmd,
-                None => return None,
-            }
-        };
-
-        match &command_payload {
-            CommandPayload::UpdateProgram {
-                program_hash: ph,
-                program_size,
-                chunk_size,
-                chunk_count,
-            } => {
-                let _ = self
-                    .session_manager
-                    .set_state(
-                        &node.node_id,
-                        SessionState::ChunkedTransfer {
-                            program_hash: ph.clone(),
-                            program_size: *program_size,
-                            chunk_size: *chunk_size,
-                            chunk_count: *chunk_count,
-                            is_ephemeral: false,
-                        },
-                    )
-                    .await;
-            }
-            CommandPayload::RunEphemeral {
-                program_hash: ph,
-                program_size,
-                chunk_size,
-                chunk_count,
-            } => {
-                let _ = self
-                    .session_manager
-                    .set_state(
-                        &node.node_id,
-                        SessionState::ChunkedTransfer {
-                            program_hash: ph.clone(),
-                            program_size: *program_size,
-                            chunk_size: *chunk_size,
-                            chunk_count: *chunk_count,
-                            is_ephemeral: true,
-                        },
-                    )
-                    .await;
-            }
-            _ => {}
-        }
-
-        let mut updated_node = node.clone();
-        updated_node.update_telemetry(battery_mv, firmware_abi_version);
-        let _ = self.storage.upsert_node(&updated_node).await;
-
-        if let Some(router) = &self.handler_router {
-            let mut details = BTreeMap::new();
-            details.insert(
-                "battery_mv".to_string(),
-                ciborium::Value::Integer(battery_mv.into()),
-            );
-            details.insert(
-                "firmware_abi_version".to_string(),
-                ciborium::Value::Integer(firmware_abi_version.into()),
-            );
-            router
-                .route_event(&node.node_id, "node_online", details, timestamp_ms / 1000)
-                .await;
-        }
-
-        let response_msg = GatewayMessage::Command {
-            starting_seq,
-            timestamp_ms,
-            payload: command_payload,
-        };
-        let response_cbor = response_msg.encode().ok()?;
-
-        let response_header = FrameHeader {
-            key_hint: node.key_hint,
-            msg_type: MSG_COMMAND,
-            nonce: header.nonce,
-        };
+        let (response_header, response_cbor) =
+            self.handle_wake_core(node, header, payload, peer).await?;
         self.encode_response_aead(&response_header, &response_cbor, &node.psk)
     }
 
@@ -995,11 +845,12 @@ impl Gateway {
         let msg = match NodeMessage::decode(header.msg_type, payload) {
             Ok(m) => m,
             Err(e) => {
+                // GW-0101 AC3: log malformed inbound CBOR.
                 warn!(
                     node_id = %node.node_id,
                     msg_type = header.msg_type,
                     error = %e,
-                    "discarding post-WAKE message with malformed CBOR payload (AEAD)"
+                    "discarding post-WAKE message with malformed CBOR payload"
                 );
                 return None;
             }
@@ -1031,33 +882,9 @@ impl Gateway {
         header: &FrameHeader,
         chunk_index: u32,
     ) -> Option<Vec<u8>> {
-        let session = self.session_manager.get_session(&node.node_id).await?;
-        let (program_hash, chunk_size) = match &session.state {
-            SessionState::ChunkedTransfer {
-                program_hash,
-                chunk_size,
-                ..
-            } => (program_hash.clone(), *chunk_size),
-            _ => return None,
-        };
-
-        let program = self.storage.get_program(&program_hash).await.ok()??;
-        let chunk_data = self
-            .program_library
-            .get_chunk(&program.image, chunk_index, chunk_size)?
-            .to_vec();
-
-        let response_msg = GatewayMessage::Chunk {
-            chunk_index,
-            chunk_data,
-        };
-        let response_cbor = response_msg.encode().ok()?;
-
-        let response_header = FrameHeader {
-            key_hint: node.key_hint,
-            msg_type: MSG_CHUNK,
-            nonce: header.nonce,
-        };
+        let (response_header, response_cbor) = self
+            .handle_get_chunk_core(node, header, chunk_index)
+            .await?;
         self.encode_response_aead(&response_header, &response_cbor, &node.psk)
     }
 
@@ -1069,30 +896,8 @@ impl Gateway {
         header: &FrameHeader,
         blob: Vec<u8>,
     ) -> Option<Vec<u8>> {
-        let router = self.handler_router.as_ref()?;
-
-        let program_hash = match &node.current_program_hash {
-            Some(hash) => hash.clone(),
-            None => return None,
-        };
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let reply_data = router
-            .route_app_data(&node.node_id, &program_hash, &blob, timestamp, header.nonce)
-            .await?;
-
-        let response_msg = GatewayMessage::AppDataReply { blob: reply_data };
-        let response_cbor = response_msg.encode().ok()?;
-
-        let response_header = FrameHeader {
-            key_hint: node.key_hint,
-            msg_type: MSG_APP_DATA_REPLY,
-            nonce: header.nonce,
-        };
+        let (response_header, response_cbor) =
+            self.handle_app_data_core(node, header, blob).await?;
         self.encode_response_aead(&response_header, &response_cbor, &node.psk)
     }
 
@@ -1144,13 +949,15 @@ impl Gateway {
         }
     }
 
-    /// Serve a chunk from the program library.
-    async fn handle_get_chunk(
+    /// Shared GET_CHUNK business logic: look up session/program, serve chunk.
+    ///
+    /// Returns `(response_header, response_cbor)` for the caller to encode.
+    async fn handle_get_chunk_core(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         chunk_index: u32,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(FrameHeader, Vec<u8>)> {
         // Look up program transfer state from session
         let session = self.session_manager.get_session(&node.node_id).await?;
         let (program_hash, chunk_size) = match &session.state {
@@ -1183,6 +990,20 @@ impl Gateway {
             msg_type: MSG_CHUNK,
             nonce: header.nonce,
         };
+
+        Some((response_header, response_cbor))
+    }
+
+    /// Serve a chunk from the program library.
+    async fn handle_get_chunk(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        chunk_index: u32,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) = self
+            .handle_get_chunk_core(node, header, chunk_index)
+            .await?;
         let frame = encode_frame(
             &response_header,
             &response_cbor,
@@ -1190,7 +1011,6 @@ impl Gateway {
             &self.crypto_hmac,
         )
         .ok()?;
-
         Some(frame)
     }
 
@@ -1243,15 +1063,15 @@ impl Gateway {
             .await;
     }
 
-    /// Route APP_DATA to the handler router (Phase 2C). Looks up the node's
-    /// `current_program_hash` from storage, calls the handler, and wraps any
-    /// non-empty reply in a `GatewayMessage::AppDataReply` frame.
-    async fn handle_app_data(
+    /// Shared APP_DATA business logic: route to handler, build reply.
+    ///
+    /// Returns `(response_header, response_cbor)` for the caller to encode.
+    async fn handle_app_data_core(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         blob: Vec<u8>,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(FrameHeader, Vec<u8>)> {
         let router = self.handler_router.as_ref()?;
 
         // Use the node's `current_program_hash` (set via PROGRAM_ACK) for routing.
@@ -1290,6 +1110,21 @@ impl Gateway {
             msg_type: MSG_APP_DATA_REPLY,
             nonce: header.nonce,
         };
+
+        Some((response_header, response_cbor))
+    }
+
+    /// Route APP_DATA to the handler router (Phase 2C). Looks up the node's
+    /// `current_program_hash` from storage, calls the handler, and wraps any
+    /// non-empty reply in a `GatewayMessage::AppDataReply` frame.
+    async fn handle_app_data(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        blob: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) =
+            self.handle_app_data_core(node, header, blob).await?;
         let frame = encode_frame(
             &response_header,
             &response_cbor,
@@ -1297,7 +1132,6 @@ impl Gateway {
             &self.crypto_hmac,
         )
         .ok()?;
-
         Some(frame)
     }
 

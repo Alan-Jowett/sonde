@@ -59,8 +59,7 @@ mod inner {
 mod tests {
     use super::GatewayAead;
     use sonde_protocol::{
-        decode_frame_aead, encode_frame_aead, open_frame, AeadProvider, FrameHeader,
-        Sha256Provider, MSG_WAKE,
+        decode_frame_aead, encode_frame_aead, open_frame, AeadProvider, FrameHeader, MSG_WAKE,
     };
 
     use crate::crypto::RustCryptoSha256;

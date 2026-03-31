@@ -6230,11 +6230,21 @@ mod tests {
 
         /// Encode a COMMAND response using AES-GCM for test fixtures.
         fn make_command_aead(psk: &[u8; 32], nonce: u64, payload: &CommandPayload) -> Vec<u8> {
+            make_command_aead_with_seq(psk, nonce, 1, 1000, payload)
+        }
+
+        fn make_command_aead_with_seq(
+            psk: &[u8; 32],
+            nonce: u64,
+            starting_seq: u64,
+            timestamp_ms: u64,
+            payload: &CommandPayload,
+        ) -> Vec<u8> {
             let aead = NodeAead;
             let sha = TestSha256;
             let msg = GatewayMessage::Command {
-                starting_seq: 1,
-                timestamp_ms: 1000,
+                starting_seq,
+                timestamp_ms,
                 payload: payload.clone(),
             };
             let payload_cbor = msg.encode().unwrap();
@@ -6413,6 +6423,315 @@ mod tests {
             let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
             assert_eq!(decoded.header.msg_type, MSG_PROGRAM_ACK);
             assert_eq!(decoded.header.nonce, 5);
+        }
+
+        // --- AEAD chunked transfer tests ---
+
+        /// Build a CHUNK response frame using AEAD encryption.
+        fn build_chunk_response_aead(
+            psk: &[u8; 32],
+            echo_seq: u64,
+            chunk_index: u32,
+            chunk_data: &[u8],
+        ) -> Vec<u8> {
+            let aead = NodeAead;
+            let sha = TestSha256;
+            let msg = GatewayMessage::Chunk {
+                chunk_index,
+                chunk_data: chunk_data.to_vec(),
+            };
+            let payload_cbor = msg.encode().unwrap();
+            let header = FrameHeader {
+                key_hint: sonde_protocol::key_hint_from_psk(psk, &sha),
+                msg_type: MSG_CHUNK,
+                nonce: echo_seq,
+            };
+            encode_frame_aead(&header, &payload_cbor, psk, &aead, &sha).unwrap()
+        }
+
+        #[test]
+        fn chunked_transfer_aead_success() {
+            let psk = [0x22u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+
+            let image = sonde_protocol::ProgramImage {
+                bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                maps: vec![],
+                map_initial_data: vec![],
+            };
+            let image_cbor = image.encode_deterministic().unwrap();
+
+            let chunk_size = 10u32;
+            let chunk_count =
+                sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
+
+            let starting_seq = 5000u64;
+            let mut current_seq = starting_seq;
+
+            for i in 0..chunk_count {
+                let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
+                    .unwrap()
+                    .to_vec();
+                let seq = starting_seq + i as u64;
+                let chunk_frame = build_chunk_response_aead(&psk, seq, i, &chunk_data);
+                transport.queue_response(Some(chunk_frame));
+            }
+
+            let result = chunked_transfer_aead(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                image_cbor.len() as u32,
+                chunk_size,
+                chunk_count,
+                MAX_RESIDENT_IMAGE_SIZE,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok(), "AEAD chunked transfer should succeed");
+            assert_eq!(result.unwrap(), image_cbor);
+        }
+
+        #[test]
+        fn chunked_transfer_aead_retry_exhausted() {
+            let psk = [0x33u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+            let mut current_seq = 100u64;
+
+            // No chunk responses — all 4 attempts (1 + 3 retries) timeout
+            for _ in 0..4 {
+                transport.queue_response(None);
+            }
+
+            let result = chunked_transfer_aead(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                20,
+                10,
+                2,
+                MAX_RESIDENT_IMAGE_SIZE,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_err(), "should fail after retry exhaustion");
+        }
+
+        #[test]
+        fn chunked_transfer_aead_wrong_chunk_index() {
+            let psk = [0x44u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+            let mut current_seq = 200u64;
+
+            // Respond with wrong chunk index (5 instead of 0), then timeouts
+            let bad_chunk = build_chunk_response_aead(&psk, current_seq, 5, &[0u8; 10]);
+            transport.queue_response(Some(bad_chunk));
+            transport.queue_response(None);
+            transport.queue_response(None);
+            transport.queue_response(None);
+
+            let result = chunked_transfer_aead(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                10,
+                10,
+                1,
+                MAX_RESIDENT_IMAGE_SIZE,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(
+                result.is_err(),
+                "wrong chunk index should cause transfer failure"
+            );
+        }
+
+        // --- AEAD end-to-end run_wake_cycle_aead tests ---
+
+        #[test]
+        fn run_wake_cycle_aead_nop() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let command_frame = make_command_aead(&psk, 1, &CommandPayload::Nop);
+            let mut transport = MockTransport::new();
+            transport.queue_response(Some(command_frame));
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let clock = MockClock;
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+            let outcome = run_wake_cycle_aead(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &MockBattery,
+                &mut interp,
+                &mut map_storage,
+                &TestHmac,
+                &sha,
+                &aead,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            // WAKE frame should have been sent
+            assert!(!transport.outbound.is_empty());
+        }
+
+        #[test]
+        fn run_wake_cycle_aead_update_program() {
+            let psk = [0x22u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let image = sonde_protocol::ProgramImage {
+                bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                maps: vec![],
+                map_initial_data: vec![],
+            };
+            let image_cbor = image.encode_deterministic().unwrap();
+            let image_hash = sha.hash(&image_cbor);
+
+            let chunk_size = 10u32;
+            let chunk_count =
+                sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
+
+            let starting_seq = 5000u64;
+
+            let command_frame = make_command_aead_with_seq(
+                &psk,
+                1, // echoes WAKE nonce (MockRng returns 1)
+                starting_seq,
+                1710000000000,
+                &CommandPayload::UpdateProgram {
+                    program_hash: image_hash.to_vec(),
+                    program_size: image_cbor.len() as u32,
+                    chunk_size,
+                    chunk_count,
+                },
+            );
+            let mut transport = MockTransport::new();
+            transport.queue_response(Some(command_frame));
+
+            for i in 0..chunk_count {
+                let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
+                    .unwrap()
+                    .to_vec();
+                let seq = starting_seq + i as u64;
+                let chunk_frame = build_chunk_response_aead(&psk, seq, i, &chunk_data);
+                transport.queue_response(Some(chunk_frame));
+            }
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let clock = MockClock;
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+            let outcome = run_wake_cycle_aead(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &MockBattery,
+                &mut interp,
+                &mut map_storage,
+                &TestHmac,
+                &sha,
+                &aead,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            // WAKE + chunk GET_CHUNKs + PROGRAM_ACK
+            assert_eq!(transport.outbound.len(), 1 + chunk_count as usize + 1);
+            // Program installed on inactive partition
+            assert!(storage.read_program(1).is_some());
+            assert_eq!(storage.active_partition, 1);
+            assert!(interp.loaded);
+        }
+
+        #[test]
+        fn run_wake_cycle_aead_wrong_msg_type_discarded() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            // Encode a CHUNK frame where a COMMAND is expected — must be discarded.
+            let wrong_msg = GatewayMessage::Chunk {
+                chunk_index: 0,
+                chunk_data: vec![0u8; 10],
+            };
+            let wrong_cbor = wrong_msg.encode().unwrap();
+            let header = FrameHeader {
+                key_hint,
+                msg_type: MSG_CHUNK, // wrong type for COMMAND phase
+                nonce: 1,
+            };
+            let wrong_frame = encode_frame_aead(&header, &wrong_cbor, &psk, &aead, &sha).unwrap();
+
+            let mut transport = MockTransport::new();
+            // All responses are wrong → retries exhausted → sleep
+            transport.queue_response(Some(wrong_frame.clone()));
+            transport.queue_response(Some(wrong_frame.clone()));
+            transport.queue_response(Some(wrong_frame.clone()));
+            transport.queue_response(Some(wrong_frame));
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let clock = MockClock;
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+            let outcome = run_wake_cycle_aead(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &MockBattery,
+                &mut interp,
+                &mut map_storage,
+                &TestHmac,
+                &sha,
+                &aead,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            assert!(!interp.loaded, "BPF must not run on invalid COMMAND");
         }
     }
 }

@@ -1026,10 +1026,222 @@ mod tests {
             let aead = NodeAead;
             let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
             let identity = NodeIdentity { key_hint, psk };
-            let oversized = vec![0xBBu8; PEER_PAYLOAD_MAX_LEN + 1];
+            // Use AEAD-specific limit (218), not HMAC limit (202).
+            let oversized = vec![0xBBu8; PEER_PAYLOAD_MAX_LEN_AEAD + 1];
 
             let result = build_peer_request_frame_aead(&identity, &oversized, 1, &aead, &sha);
             assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_peer_request_frame_aead_accepts_exact_limit() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let exact = vec![0xCCu8; PEER_PAYLOAD_MAX_LEN_AEAD];
+
+            let result = build_peer_request_frame_aead(&identity, &exact, 1, &aead, &sha);
+            assert!(result.is_ok(), "exact AEAD limit must succeed");
+        }
+
+        // --- AEAD peer registration exchange tests ---
+
+        /// Build a valid PEER_ACK frame using AEAD encryption.
+        fn build_peer_ack_aead(
+            identity: &NodeIdentity,
+            nonce: u64,
+            encrypted_payload: &[u8],
+            hmac: &dyn HmacProvider,
+            aead: &NodeAead,
+            sha: &TestSha256,
+        ) -> Vec<u8> {
+            let mut proof_input = Vec::with_capacity(PROOF_DOMAIN.len() + encrypted_payload.len());
+            proof_input.extend_from_slice(PROOF_DOMAIN);
+            proof_input.extend_from_slice(encrypted_payload);
+            let proof = hmac.compute(&identity.psk, &proof_input);
+
+            let cbor_map = ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Integer(PEER_ACK_KEY_STATUS.into()),
+                    ciborium::Value::Integer(0.into()),
+                ),
+                (
+                    ciborium::Value::Integer(PEER_ACK_KEY_PROOF.into()),
+                    ciborium::Value::Bytes(proof.to_vec()),
+                ),
+            ]);
+            let mut cbor_buf = Vec::new();
+            ciborium::into_writer(&cbor_map, &mut cbor_buf).unwrap();
+
+            let header = FrameHeader {
+                key_hint: identity.key_hint,
+                msg_type: MSG_PEER_ACK,
+                nonce,
+            };
+
+            sonde_protocol::encode_frame_aead(&header, &cbor_buf, &identity.psk, aead, sha).unwrap()
+        }
+
+        fn test_identity_aead() -> NodeIdentity {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            NodeIdentity {
+                key_hint: sonde_protocol::key_hint_from_psk(&psk, &sha),
+                psk,
+            }
+        }
+
+        #[test]
+        fn verify_peer_ack_aead_valid() {
+            let hmac = TestHmac;
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            let nonce: u64 = 0xAABBCCDDEEFF0011;
+
+            let ack_frame = build_peer_ack_aead(&identity, nonce, &payload, &hmac, &aead, &sha);
+            let result =
+                verify_peer_ack_aead(&ack_frame, &identity, nonce, &payload, &aead, &sha, &hmac);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn verify_peer_ack_aead_wrong_nonce() {
+            let hmac = TestHmac;
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            let request_nonce: u64 = 0xAABBCCDDEEFF0011;
+            let wrong_nonce: u64 = 0x1111111111111111;
+
+            let ack_frame =
+                build_peer_ack_aead(&identity, wrong_nonce, &payload, &hmac, &aead, &sha);
+            let result = verify_peer_ack_aead(
+                &ack_frame,
+                &identity,
+                request_nonce,
+                &payload,
+                &aead,
+                &sha,
+                &hmac,
+            );
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn verify_peer_ack_aead_wrong_proof() {
+            let hmac = TestHmac;
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            let nonce: u64 = 0xAABBCCDDEEFF0011;
+
+            // Build ACK with wrong payload → wrong proof
+            let wrong_payload = vec![0xFF, 0xFF, 0xFF, 0xFF];
+            let ack_frame =
+                build_peer_ack_aead(&identity, nonce, &wrong_payload, &hmac, &aead, &sha);
+            let result =
+                verify_peer_ack_aead(&ack_frame, &identity, nonce, &payload, &aead, &sha, &hmac);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn verify_peer_ack_aead_wrong_key() {
+            let hmac = TestHmac;
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            let nonce: u64 = 0x42;
+
+            let ack_frame = build_peer_ack_aead(&identity, nonce, &payload, &hmac, &aead, &sha);
+
+            // Verify with a different PSK — decryption must fail
+            let wrong_identity = NodeIdentity {
+                key_hint: identity.key_hint,
+                psk: [0x99u8; 32],
+            };
+            let result = verify_peer_ack_aead(
+                &ack_frame,
+                &wrong_identity,
+                nonce,
+                &payload,
+                &aead,
+                &sha,
+                &hmac,
+            );
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn peer_request_exchange_aead_sets_reg_complete() {
+            let hmac = TestHmac;
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            let nonce: u64 = 0x1122334455667788;
+            let mut rng = MockRng::new(nonce);
+            let clock = MockClock::new(500);
+
+            let ack = build_peer_ack_aead(&identity, nonce, &payload, &hmac, &aead, &sha);
+            let mut transport = MockTransport::with_responses(vec![Some(ack)]);
+            let mut storage =
+                MockStorage::with_identity(identity.key_hint, identity.psk, payload.clone());
+
+            assert!(!storage.reg_complete);
+
+            let result = peer_request_exchange_aead(
+                &mut transport,
+                &mut storage,
+                &identity,
+                &payload,
+                &mut rng,
+                &clock,
+                &aead,
+                &sha,
+                &hmac,
+            )
+            .unwrap();
+
+            assert!(result, "AEAD exchange should succeed");
+            assert!(storage.reg_complete, "reg_complete must be set");
+            assert!(storage.peer_payload.is_some());
+        }
+
+        #[test]
+        fn peer_request_exchange_aead_timeout() {
+            let hmac = TestHmac;
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let payload = vec![0xDE, 0xAD];
+            let mut rng = MockRng::new(0x42);
+            let clock = MockClock::new(5000);
+            let mut transport = MockTransport::new();
+            let mut storage =
+                MockStorage::with_identity(identity.key_hint, identity.psk, payload.clone());
+
+            let result = peer_request_exchange_aead(
+                &mut transport,
+                &mut storage,
+                &identity,
+                &payload,
+                &mut rng,
+                &clock,
+                &aead,
+                &sha,
+                &hmac,
+            )
+            .unwrap();
+
+            assert!(!result, "should timeout");
+            assert!(!storage.reg_complete, "reg_complete must NOT be set");
         }
     }
 }

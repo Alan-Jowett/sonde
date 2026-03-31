@@ -1724,7 +1724,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1212  Phone AEAD with multiple candidates
 
-**Validates:** GW-1213
+**Validates:** GW-1211
 
 **Procedure:**
 1. Register two phones whose PSKs produce the same `phone_key_hint`.
@@ -1736,7 +1736,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1213  Phone AEAD with revoked PSK
 
-**Validates:** GW-1213
+**Validates:** GW-1211
 
 **Procedure:**
 1. Register a phone and then revoke its PSK.
@@ -1748,10 +1748,10 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1214  PEER_REQUEST frame AEAD verification
 
-**Validates:** GW-1214
+**Validates:** GW-0600
 
 **Procedure:**
-1. Construct a valid `PEER_REQUEST` with correct AES-256-GCM frame encryption (keyed with `node_psk`).
+1. Construct a valid `PEER_REQUEST` with correct AES-256-GCM frame encryption (keyed with `phone_psk`).
 2. Submit the frame.
 3. Assert: AEAD decryption passes and processing continues.
 4. Corrupt the GCM authentication tag.
@@ -1848,7 +1848,9 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1220  PEER_REQUEST/PEER_ACK use random nonces
 
-**Validates:** GW-1221
+**Validates:** GW-1220, GW-1221
+
+> **Note:** This test also validates GW-1220 (silent-discard error model) by asserting that the gateway never sends an error response for any malformed or invalid `PEER_REQUEST` — only valid requests produce a `PEER_ACK`. Individual pipeline-stage discards are exercised by T-1210 through T-1219.
 
 **Procedure:**
 1. Submit a `PEER_REQUEST` with a random nonce (not a sequential number).
@@ -1958,7 +1960,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Call `RevokePhone` with the phone's ID.
 3. Assert: success response.
 4. Submit a `PEER_REQUEST` with `encrypted_payload` encrypted using the revoked phone PSK.
-5. Assert: gateway silently discards the request (AEAD decryption fails — revoked PSK not tried, per GW-1213).
+5. Assert: gateway silently discards the request (AEAD decryption fails — revoked PSK not tried, per GW-1211).
 
 ---
 

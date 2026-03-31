@@ -13,7 +13,7 @@
 //!
 //! GCM nonce construction:
 //! ```text
-//! SHA-256(psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]   → 12 bytes
+//! (first 3 bytes of SHA-256(psk)) ‖ msg_type[1] ‖ frame_nonce[8]   → 12 bytes
 //! ```
 
 use alloc::vec::Vec;
@@ -26,19 +26,22 @@ use crate::header::FrameHeader;
 use crate::traits::{AeadProvider, Sha256Provider};
 
 /// A decoded AEAD frame (pre-decryption).
+///
+/// Borrows the ciphertext+tag region directly from the raw frame to
+/// avoid an extra heap allocation on every received frame.
 #[derive(Debug, Clone)]
-pub struct DecodedFrameAead {
+pub struct DecodedFrameAead<'a> {
     pub header: FrameHeader,
-    pub ciphertext_and_tag: Vec<u8>,
+    pub ciphertext_and_tag: &'a [u8],
 }
 
 /// Construct the 12-byte GCM nonce from PSK, msg_type, and frame nonce.
 ///
 /// ```text
-/// gcm_nonce = SHA-256(psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]
+/// gcm_nonce = (first 3 bytes of SHA-256(psk)) ‖ msg_type[1] ‖ frame_nonce[8]
 /// ```
 pub fn build_gcm_nonce(
-    psk: &[u8],
+    psk: &[u8; 32],
     msg_type: u8,
     frame_nonce: &[u8; 8],
     sha256: &impl Sha256Provider,
@@ -58,7 +61,7 @@ pub fn build_gcm_nonce(
 pub fn encode_frame_aead(
     header: &FrameHeader,
     payload_cbor: &[u8],
-    psk: &[u8],
+    psk: &[u8; 32],
     aead: &impl AeadProvider,
     sha: &impl Sha256Provider,
 ) -> Result<Vec<u8>, EncodeError> {
@@ -83,8 +86,10 @@ pub fn encode_frame_aead(
 /// Decode a raw AEAD frame into its components without decryption.
 ///
 /// Splits: `header(11B) | ciphertext+tag(rest)`.
+/// The returned [`DecodedFrameAead`] borrows the ciphertext+tag region
+/// directly from `raw` (zero-copy).
 /// The caller must use [`open_frame`] to decrypt and authenticate.
-pub fn decode_frame_aead(raw: &[u8]) -> Result<DecodedFrameAead, DecodeError> {
+pub fn decode_frame_aead(raw: &[u8]) -> Result<DecodedFrameAead<'_>, DecodeError> {
     if raw.len() < MIN_FRAME_SIZE_AEAD {
         return Err(DecodeError::TooShort);
     }
@@ -97,7 +102,7 @@ pub fn decode_frame_aead(raw: &[u8]) -> Result<DecodedFrameAead, DecodeError> {
         .map_err(|_| DecodeError::TooShort)?;
     let header = FrameHeader::from_bytes(&header_bytes);
 
-    let ciphertext_and_tag = raw[HEADER_SIZE..].to_vec();
+    let ciphertext_and_tag = &raw[HEADER_SIZE..];
 
     Ok(DecodedFrameAead {
         header,
@@ -110,8 +115,8 @@ pub fn decode_frame_aead(raw: &[u8]) -> Result<DecodedFrameAead, DecodeError> {
 /// Returns the plaintext CBOR payload on success, or
 /// `DecodeError::AuthenticationFailed` if the GCM tag check fails.
 pub fn open_frame(
-    frame: &DecodedFrameAead,
-    psk: &[u8],
+    frame: &DecodedFrameAead<'_>,
+    psk: &[u8; 32],
     aead: &impl AeadProvider,
     sha: &impl Sha256Provider,
 ) -> Result<Vec<u8>, DecodeError> {
@@ -126,8 +131,8 @@ pub fn open_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::constants::*;
+    use alloc::vec;
 
     // Minimal stub providers for unit tests within the crate.
     // The integration tests in tests/validation.rs use real crypto.
@@ -148,7 +153,7 @@ mod tests {
     impl AeadProvider for StubAead {
         fn seal(
             &self,
-            _key: &[u8],
+            _key: &[u8; 32],
             nonce: &[u8; 12],
             _aad: &[u8],
             plaintext: &[u8],
@@ -164,7 +169,7 @@ mod tests {
 
         fn open(
             &self,
-            _key: &[u8],
+            _key: &[u8; 32],
             nonce: &[u8; 12],
             _aad: &[u8],
             ciphertext_and_tag: &[u8],
@@ -207,8 +212,7 @@ mod tests {
         let payload = vec![0xA1, 0x01, 0x02];
         let psk = [0x42u8; 32];
 
-        let raw =
-            encode_frame_aead(&hdr, &payload, &psk, &StubAead, &StubSha256).unwrap();
+        let raw = encode_frame_aead(&hdr, &payload, &psk, &StubAead, &StubSha256).unwrap();
         let decoded = decode_frame_aead(&raw).unwrap();
         assert_eq!(decoded.header.key_hint, 1);
         assert_eq!(decoded.header.msg_type, MSG_WAKE);
@@ -226,8 +230,7 @@ mod tests {
             nonce: 1,
         };
         let psk = [0x42u8; 32];
-        let mut raw =
-            encode_frame_aead(&hdr, &[0xA0], &psk, &StubAead, &StubSha256).unwrap();
+        let mut raw = encode_frame_aead(&hdr, &[0xA0], &psk, &StubAead, &StubSha256).unwrap();
         // Flip a bit in the tag (last byte).
         let last = raw.len() - 1;
         raw[last] ^= 0x01;
@@ -252,8 +255,7 @@ mod tests {
         };
         let psk = [0x42u8; 32];
         let payload = vec![0u8; MAX_PAYLOAD_SIZE_AEAD]; // 223
-        let raw =
-            encode_frame_aead(&hdr, &payload, &psk, &StubAead, &StubSha256).unwrap();
+        let raw = encode_frame_aead(&hdr, &payload, &psk, &StubAead, &StubSha256).unwrap();
         assert_eq!(raw.len(), MAX_FRAME_SIZE);
     }
 
@@ -266,8 +268,7 @@ mod tests {
         };
         let psk = [0x42u8; 32];
         let big = vec![0u8; MAX_PAYLOAD_SIZE_AEAD + 1];
-        let err =
-            encode_frame_aead(&hdr, &big, &psk, &StubAead, &StubSha256).unwrap_err();
+        let err = encode_frame_aead(&hdr, &big, &psk, &StubAead, &StubSha256).unwrap_err();
         assert!(matches!(err, EncodeError::FrameTooLarge));
     }
 
@@ -279,8 +280,7 @@ mod tests {
             nonce: 0,
         };
         let psk = [0x42u8; 32];
-        let raw =
-            encode_frame_aead(&hdr, &[], &psk, &StubAead, &StubSha256).unwrap();
+        let raw = encode_frame_aead(&hdr, &[], &psk, &StubAead, &StubSha256).unwrap();
         assert_eq!(raw.len(), HEADER_SIZE + AEAD_TAG_SIZE);
         assert_eq!(raw.len(), MIN_FRAME_SIZE_AEAD);
 

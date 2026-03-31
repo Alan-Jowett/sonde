@@ -2502,13 +2502,7 @@ mod aead_tests {
     struct SoftwareAead;
 
     impl AeadProvider for SoftwareAead {
-        fn seal(
-            &self,
-            key: &[u8],
-            nonce: &[u8; 12],
-            aad: &[u8],
-            plaintext: &[u8],
-        ) -> Vec<u8> {
+        fn seal(&self, key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
             let cipher = Aes256Gcm::new_from_slice(key).expect("valid 32-byte key");
             let gcm_nonce = Nonce::from_slice(nonce);
             cipher
@@ -2524,7 +2518,7 @@ mod aead_tests {
 
         fn open(
             &self,
-            key: &[u8],
+            key: &[u8; 32],
             nonce: &[u8; 12],
             aad: &[u8],
             ciphertext_and_tag: &[u8],
@@ -2563,16 +2557,13 @@ mod aead_tests {
         let payload = vec![0xA1, 0x01, 0x02];
         let psk = [0x42u8; 32];
 
-        let raw =
-            encode_frame_aead(&hdr, &payload, &psk, &SoftwareAead, &SoftwareSha256)
-                .unwrap();
+        let raw = encode_frame_aead(&hdr, &payload, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
         let decoded = decode_frame_aead(&raw).unwrap();
         assert_eq!(decoded.header.key_hint, 1);
         assert_eq!(decoded.header.msg_type, MSG_WAKE);
         assert_eq!(decoded.header.nonce, 42);
 
-        let plaintext =
-            open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let plaintext = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
         assert_eq!(plaintext, payload);
     }
 
@@ -2585,12 +2576,9 @@ mod aead_tests {
         };
         let psk_a = [0x42u8; 32];
         let psk_b = [0x24u8; 32];
-        let raw =
-            encode_frame_aead(&hdr, &[0xA0], &psk_a, &SoftwareAead, &SoftwareSha256)
-                .unwrap();
+        let raw = encode_frame_aead(&hdr, &[0xA0], &psk_a, &SoftwareAead, &SoftwareSha256).unwrap();
         let decoded = decode_frame_aead(&raw).unwrap();
-        let result =
-            open_frame(&decoded, &psk_b, &SoftwareAead, &SoftwareSha256);
+        let result = open_frame(&decoded, &psk_b, &SoftwareAead, &SoftwareSha256);
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
@@ -2602,20 +2590,18 @@ mod aead_tests {
             nonce: 1,
         };
         let psk = [0x42u8; 32];
-        let mut raw =
-            encode_frame_aead(
-                &hdr,
-                &[0xA1, 0x01, 0x02],
-                &psk,
-                &SoftwareAead,
-                &SoftwareSha256,
-            )
-            .unwrap();
+        let mut raw = encode_frame_aead(
+            &hdr,
+            &[0xA1, 0x01, 0x02],
+            &psk,
+            &SoftwareAead,
+            &SoftwareSha256,
+        )
+        .unwrap();
         // Flip one bit in the ciphertext portion (byte right after header).
         raw[HEADER_SIZE] ^= 0x01;
         let decoded = decode_frame_aead(&raw).unwrap();
-        let result =
-            open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
+        let result = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
@@ -2628,13 +2614,11 @@ mod aead_tests {
         };
         let psk = [0x42u8; 32];
         let mut raw =
-            encode_frame_aead(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256)
-                .unwrap();
+            encode_frame_aead(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256).unwrap();
         // Flip one bit in the header (msg_type byte) — header is AAD.
         raw[2] ^= 0x01;
         let decoded = decode_frame_aead(&raw).unwrap();
-        let result =
-            open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
+        let result = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
@@ -2647,14 +2631,12 @@ mod aead_tests {
         };
         let psk = [0x42u8; 32];
         let mut raw =
-            encode_frame_aead(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256)
-                .unwrap();
+            encode_frame_aead(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256).unwrap();
         // Flip one bit in the GCM tag (last byte).
         let last = raw.len() - 1;
         raw[last] ^= 0x01;
         let decoded = decode_frame_aead(&raw).unwrap();
-        let result =
-            open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
+        let result = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 

@@ -16,8 +16,7 @@ Communication between nodes and the gateway is:
 
 - **Node-initiated** — the gateway never transmits unsolicited messages.
 - **Request-response** — every node message expects at most one gateway reply (except during chunked transfer, which is a multi-round-trip sub-protocol).
-- **Authenticated** — every frame carries an HMAC-SHA256 tag.
-- **Not encrypted** — integrity only, not confidentiality.
+- **Authenticated and encrypted** — every frame uses AES-256-GCM authenticated encryption.
 - **CBOR-encoded** — all structured payloads use CBOR (RFC 8949).
 
 ---
@@ -38,16 +37,34 @@ Communication between nodes and the gateway is:
 
 Every frame on the wire has the following layout:
 
-A frame consists of three consecutive regions: first the fixed binary Header containing the `key_hint` (2 bytes), `msg_type` (1 byte), and `nonce` (8 bytes) fields; then the variable-length CBOR-encoded Payload; and finally a 32-byte HMAC-SHA256 authentication tag. The HMAC covers the concatenation of the Header and Payload — it does not cover itself.
+A frame consists of three consecutive regions: first the fixed 11-byte binary Header containing the `key_hint` (2 bytes), `msg_type` (1 byte), and `nonce` (8 bytes) fields; then the variable-length AES-256-GCM ciphertext (the encrypted CBOR-encoded Payload); and finally a 16-byte GCM authentication tag. The header is passed as Additional Authenticated Data (AAD) — it is authenticated but not encrypted.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Header               │  Payload               │  HMAC      │
-│  (key_hint, msg_type, │  (CBOR-encoded         │  (32 bytes)│
-│   nonce)              │   message body)        │            │
-└─────────────────────────────────────────────────────────────┘
-│◄──────── HMAC input (header + payload) ────────►│
+┌──────────────────────────────────────────────────────────────────┐
+│  Header (AAD)          │  Ciphertext              │  GCM tag     │
+│  (key_hint, msg_type,  │  (AES-256-GCM encrypted  │  (16 bytes)  │
+│   nonce)               │   CBOR payload)          │              │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+**GCM nonce construction (12 bytes):**
+
+```
+gcm_nonce = SHA-256(psk)[0..4] ‖ frame_nonce[8]
+```
+
+Where `psk` is the pre-shared key used for this frame and `frame_nonce` is the 8-byte value from the header's `nonce` field. The 4-byte PSK-derived prefix ensures nonce uniqueness across different PSKs even if frame nonces collide.
+
+**Per-message PSK assignment:**
+
+| `msg_type` | PSK | `key_hint` source |
+|------------|-----|-------------------|
+| 0x01 WAKE | `node_psk` | `SHA-256(node_psk)[30..32]` |
+| 0x81 COMMAND | `node_psk` | Same as WAKE response |
+| 0x03 APP_DATA | `node_psk` | Same |
+| 0x83 APP_DATA_REPLY | `node_psk` | Same |
+| 0x05 PEER_REQUEST | `phone_psk` | `SHA-256(phone_psk)[30..32]` |
+| 0x84 PEER_ACK | `node_psk` | `SHA-256(node_psk)[30..32]` |
 
 ### 3.1  Header fields
 
@@ -59,9 +76,9 @@ A frame consists of three consecutive regions: first the fixed binary Header con
 
 #### 3.1.1  `key_hint` semantics
 
-The `key_hint` is **not** the node's identity — the HMAC key is. A node is authenticated when its message passes HMAC-SHA256 verification with the correct pre-shared key. The `key_hint` serves only as an optimization hint that lets the gateway quickly narrow down which key(s) to try.
+The `key_hint` is **not** the node's identity — the pre-shared key is. A node is authenticated when its message successfully decrypts via AES-256-GCM with the correct pre-shared key. The `key_hint` serves only as an optimization hint that lets the gateway quickly narrow down which key(s) to try.
 
-**Collision handling:** If multiple nodes share the same `key_hint` (unlikely with 16-bit assignment across a small network), the gateway tries all candidate keys for that `key_hint` and accepts the first HMAC match. This means `key_hint` values do not need to be globally unique — they only need to minimize collisions within a single gateway's network to keep lookup fast.
+**Collision handling:** If multiple nodes share the same `key_hint` (unlikely with 16-bit assignment across a small network), the gateway tries all candidate keys for that `key_hint` and accepts the first successful AES-256-GCM decryption. This means `key_hint` values do not need to be globally unique — they only need to minimize collisions within a single gateway's network to keep lookup fast.
 
 **Why 16-bit:** A 16-bit space (65,536 values) makes collisions effectively zero for any practical deployment while costing only 2 bytes per frame.
 
@@ -73,13 +90,13 @@ The `key_hint` is **not** the node's identity — the HMAC key is. A node is aut
 | 2 | `msg_type` | 1 byte |
 | 3 | `nonce` | 8 bytes, big-endian |
 
-This allows the gateway to extract `key_hint` for key lookup and compute the HMAC before any CBOR decoding. CBOR is used only for the payload, which is decoded after authentication succeeds — avoiding wasted work on forged or corrupted frames.
+This allows the gateway to extract `key_hint` for key lookup and attempt AES-256-GCM decryption before any CBOR decoding. CBOR is used only for the payload, which is decoded after authenticated decryption succeeds — avoiding wasted work on forged or corrupted frames.
 
-### 3.2  HMAC trailer
+### 3.2  GCM authentication tag
 
 | Field | Type | Size | Description |
 |---|---|---|---|
-| `hmac` | Bytes | 32 bytes | HMAC-SHA256 over the concatenation of header + payload, keyed with the node's pre-shared key. |
+| `tag` | Bytes | 16 bytes | AES-256-GCM authentication tag. Authenticates header (AAD) and encrypts + authenticates the CBOR payload. |
 
 ### 3.3  Frame size budget
 
@@ -89,8 +106,8 @@ For the reference ESP-NOW transport:
 |---|---|
 | Maximum frame size | 250 |
 | Header (key_hint + msg_type + nonce) | 11 |
-| HMAC trailer | 32 |
-| **Available for payload** | **207** |
+| GCM authentication tag | 16 |
+| **Available for payload** | **223** |
 
 ---
 
@@ -225,7 +242,7 @@ Sent at the start of each wake cycle (retransmitted up to 3 times if no COMMAND 
 | `program_hash` | bstr | Yes | Hash of the currently installed resident program. Zero-length if no program installed. |
 | `battery_mv` | uint | Yes | Battery voltage in millivolts. |
 
-`key_hint` and `nonce` are in the fixed header and are not duplicated in the payload. Both are already authenticated by the HMAC.
+`key_hint` and `nonce` are in the fixed header and are not duplicated in the payload. Both are already authenticated by the AEAD construction (the header is AAD).
 
 ### 5.2  COMMAND (Gateway → Node)
 
@@ -268,14 +285,14 @@ The following fields are encoded as a CBOR map inside the `payload` field (key 5
 **Chunk size derivation:** The `chunk_size` is specified per-transfer in this payload, but its value is derived from the physical transport layer's frame budget:
 
 ```
-chunk_size = frame_size − header(11) − hmac(32) − cbor_overhead
+chunk_size = frame_size − header(11) − gcm_tag(16) − cbor_overhead
 ```
 
 The node does not need to know the transport — it simply uses the `chunk_size` provided by the gateway.
 
 | Transport | Frame size | Approx. chunk_size |
 |---|---|---|
-| ESP-NOW | 250 bytes | ~190 bytes (207 payload minus CBOR map overhead for `chunk_index` + `chunk_data`) |
+| ESP-NOW | 250 bytes | ~206 bytes (223 payload minus CBOR map overhead for `chunk_index` + `chunk_data`) |
 
 #### 5.2.2  UPDATE_SCHEDULE payload
 
@@ -344,13 +361,13 @@ If a `send_recv()` call on the node times out waiting for `APP_DATA_REPLY`, the 
 
 ### 6.1  Normal wake cycle (no update needed)
 
-In the normal flow, the node sends a `WAKE` message and the gateway — after verifying the HMAC and confirming the node's program is already current — replies with `COMMAND {NOP}`. The node then executes its resident BPF program, which may send zero or more `APP_DATA` messages to the gateway (and receive `APP_DATA_REPLY` responses for request-response calls). Finally the node sleeps.
+In the normal flow, the node sends a `WAKE` message and the gateway — after authenticating via AES-256-GCM decryption and confirming the node's program is already current — replies with `COMMAND {NOP}`. The node then executes its resident BPF program, which may send zero or more `APP_DATA` messages to the gateway (and receive `APP_DATA_REPLY` responses for request-response calls). Finally the node sleeps.
 
 ```
     Node                          Gateway
      │                               │
      │──── WAKE ────────────────────►│
-     │                               │  (lookup node, verify HMAC,
+     │                               │  (lookup node, decrypt with AEAD,
      │                               │   check program_hash — matches)
      │◄──── COMMAND {NOP} ───────────│
      │                               │
@@ -476,31 +493,32 @@ The number of exchanges per wake cycle is determined by the BPF program. The pro
 
 > For the complete security model — including trust assumptions, key provisioning, identity binding, failure modes, and gateway failover — see [security.md](security.md).
 
-### 7.1  HMAC computation
+### 7.1  Authenticated encryption
 
 For every frame (both directions):
 
 ```
-hmac = HMAC-SHA256(key = node_key, message = header || payload)
+gcm_nonce  = SHA-256(psk)[0..4] ‖ frame_nonce[8]    // 12 bytes
+ciphertext, tag = AES-256-GCM-Seal(key = psk, nonce = gcm_nonce, aad = header, plaintext = payload)
 ```
 
-The frame transmitted on the wire is: `header || payload || hmac`.
+The frame transmitted on the wire is: `header ‖ ciphertext ‖ tag[16]`.
 
 ### 7.2  Verification procedure (gateway, inbound)
 
 1. Extract `key_hint` from the fixed header.
-2. Look up candidate `node_key`(s) by `key_hint`. If no candidates → silently discard.
-3. For each candidate `node_key`, compute HMAC over header + payload; if any HMAC matches, accept and bind the frame to that node. If none match → silently discard.
+2. Look up candidate PSK(s) by `key_hint`. For PEER_REQUEST (`msg_type` 0x05) look up phone PSKs; for all other message types look up node PSKs. If no candidates → silently discard.
+3. For each candidate PSK, construct the GCM nonce and attempt AES-256-GCM-Open; if any decryption succeeds, accept and bind the frame to that key. If none succeed → silently discard.
 4. For `WAKE` messages: accept; create an active session for this node (replacing any previous session). For post-WAKE messages: verify the node has an active session and the sequence number in the `nonce` header field matches the expected next value. If no active session or wrong sequence → silently discard.
 5. Advance the session's expected sequence number.
-6. Decode CBOR payload. If malformed → log, discard.
+6. Decode CBOR payload from the decrypted plaintext. If malformed → log, discard.
 7. Process message.
 
 ### 7.3  Verification procedure (node, inbound)
 
-1. Compute HMAC over header + payload using the node's own key. If mismatch → discard.
+1. Construct the GCM nonce from the node's own PSK and the frame header nonce. Attempt AES-256-GCM-Open. If decryption fails → discard.
 2. Verify the echoed value in the response header matches the nonce (for WAKE) or sequence number (for post-WAKE) the node sent. If mismatch → discard.
-3. Decode CBOR payload and process.
+3. Decode CBOR payload from the decrypted plaintext and process.
 
 ### 7.4  Replay protection
 
@@ -529,7 +547,7 @@ The protocol has no explicit error message type. Errors are handled by silence a
 | Condition | Gateway behavior | Node behavior |
 |---|---|---|
 | No matching key for `key_hint` | Silently discard. Log internally. | N/A |
-| HMAC verification failure | Silently discard. Log internally. | Discard frame. |
+| AES-GCM decryption failure | Silently discard. Log internally. | Discard frame. |
 | Replay (wrong sequence number or no active session) | Silently discard. Log internally. | N/A |
 | Malformed CBOR | Silently discard. Log internally. | Discard frame. |
 | No response received | N/A | Retry with backoff (see §9). |

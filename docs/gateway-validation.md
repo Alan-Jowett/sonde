@@ -49,7 +49,7 @@ TestNode {
 }
 ```
 
-The helper handles header construction, CBOR encoding, sequence numbering, and HMAC computation.
+The helper handles header construction, CBOR encoding, sequence numbering, and AES-256-GCM encryption.
 
 ### 2.4  Test handler
 
@@ -92,7 +92,7 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0101
 
 **Procedure:**
-1. Construct a frame with valid header and HMAC but garbage bytes as the CBOR payload.
+1. Construct a frame with valid header and GCM tag but garbage bytes as the CBOR payload.
 2. Send to gateway.
 3. Assert: no response sent, no crash, event logged.
 
@@ -114,7 +114,7 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0102
 
 **Procedure:**
-1. Send a WAKE missing `battery_mv` (valid HMAC, valid header).
+1. Send a WAKE missing `battery_mv` (valid AEAD, valid header).
 2. Assert: gateway discards the frame (no COMMAND response).
 
 ---
@@ -681,7 +681,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ## 8  Authentication and security tests
 
-### T-0600  Valid HMAC accepted
+### T-0600  Valid AEAD accepted
 
 **Validates:** GW-0600
 
@@ -691,12 +691,12 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-0601  Invalid HMAC rejected
+### T-0601  Invalid GCM tag rejected
 
 **Validates:** GW-0600
 
 **Procedure:**
-1. Construct a WAKE with a valid header but corrupt the HMAC (flip one bit).
+1. Construct a WAKE with a valid header but corrupt the GCM authentication tag (flip one bit).
 2. Send to gateway.
 3. Assert: silently discarded, no response sent.
 
@@ -709,7 +709,7 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Construct a WAKE using PSK_A but with a `key_hint` that maps to PSK_B.
 2. Send to gateway.
-3. Assert: HMAC verification fails, silently discarded.
+3. Assert: AES-256-GCM decryption fails, silently discarded.
 
 ---
 
@@ -926,8 +926,8 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Capture any outbound frame.
 2. Assert: first 11 bytes are header (key_hint 2B + msg_type 1B + nonce 8B).
-3. Assert: last 32 bytes are HMAC.
-4. Assert: total frame = 11 + payload_len + 32.
+3. Assert: last 16 bytes are GCM authentication tag.
+4. Assert: total frame = 11 + ciphertext_len + 16.
 
 ---
 
@@ -1416,19 +1416,18 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1005b  Import restores identity, phone PSKs, and handler configs
+### T-1005b  Import restores phone PSKs and handler configs
 
 **Validates:** GW-0805, GW-1001
 
 **Procedure:**
-1. Start a gateway, register nodes, ingest programs, store a gateway identity, register phone PSKs, and configure handler routing entries.
+1. Start a gateway, register nodes, ingest programs, register phone PSKs, and configure handler routing entries.
 2. Call `ExportState` with an export passphrase.
 3. Start a fresh gateway with no pre-existing state.
 4. Call `ImportState` with the exported bytes and passphrase.
-5. Assert: gateway identity is restored — `gateway_id` and `public_key` match the original.
-6. Assert: all phone PSKs are restored with correct `phone_key_hint`, PSK value, label, `issued_at`, and status.
-7. Assert: handler configs are restored with correct command, args, and `reply_timeout`.
-8. Assert: nodes and programs are also restored (full-state round-trip).
+5. Assert: all phone PSKs are restored with correct `phone_key_hint`, PSK value, label, `issued_at`, and status.
+6. Assert: handler configs are restored with correct command, args, and `reply_timeout`.
+7. Assert: nodes and programs are also restored (full-state round-trip).
 
 ---
 
@@ -1612,62 +1611,31 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1200  Ed25519 keypair generation on first startup
 
-**Validates:** GW-1200
-
-**Procedure:**
-1. Start the gateway with an empty key store.
-2. Assert: an Ed25519 keypair is generated and persisted.
-3. Restart the gateway.
-4. Assert: the same public key is loaded (no new keypair generated).
-5. Assert: the stored seed is encrypted at rest.
+> **RETIRED (issue #495).** The gateway no longer generates an Ed25519 identity keypair. Phone registration uses a direct PSK exchange; no asymmetric cryptography is required.
 
 ---
 
 ### T-1201  Gateway ID generation and persistence
 
-**Validates:** GW-1201
-
-**Procedure:**
-1. Start the gateway with an empty key store.
-2. Assert: a 16-byte `gateway_id` is generated and persisted.
-3. Restart the gateway.
-4. Assert: the same `gateway_id` is loaded.
+> **RETIRED (issue #495).** The gateway no longer generates or persists a `gateway_id`. Identity is established through phone PSKs issued during BLE pairing.
 
 ---
 
 ### T-1202  Ed25519 to X25519 conversion and low-order rejection
 
-**Validates:** GW-1202
-
-**Procedure:**
-1. Generate an Ed25519 keypair.
-2. Convert to X25519 using the gateway's conversion function.
-3. Assert: the resulting X25519 key matches the expected output for a known test vector.
-4. Supply an Ed25519 public key that maps to a low-order X25519 point (e.g., a key whose birational-map output is all-zero or a known small-order Curve25519 point).
-5. Assert: the conversion is rejected with an error.
+> **RETIRED (issue #495).** X25519 / ECDH key agreement is no longer used. The phone generates the PSK directly and transmits it over the authenticated BLE channel.
 
 ---
 
 ### T-1203  REQUEST_GW_INFO happy path
 
-**Validates:** GW-1206
-
-**Procedure:**
-1. Send `REQUEST_GW_INFO` with a random 32-byte `challenge`.
-2. Assert: response contains `gw_public_key`, `gateway_id`, and `signature`.
-3. Verify the signature over (`challenge` ‖ `gateway_id`) using `gw_public_key`.
-4. Assert: signature verification succeeds.
+> **RETIRED (issue #495).** The `REQUEST_GW_INFO` / `GW_INFO_RESPONSE` exchange has been removed. The simplified BLE pairing flow uses `REGISTER_PHONE` / `PHONE_REGISTERED` only.
 
 ---
 
 ### T-1204  GW_INFO_RESPONSE signature fails with wrong challenge
 
-**Validates:** GW-1206
-
-**Procedure:**
-1. Send `REQUEST_GW_INFO` with challenge A; record the returned signature.
-2. Verify the signature against a different challenge B ‖ `gateway_id`.
-3. Assert: signature verification fails.
+> **RETIRED (issue #495).** `GW_INFO_RESPONSE` and Ed25519 signatures have been removed from the BLE pairing flow.
 
 ---
 
@@ -1700,12 +1668,9 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Open the registration window.
-2. Generate an ephemeral X25519 keypair on the test client.
-3. Send `REGISTER_PHONE` with the ephemeral public key.
-4. Assert: response is an AES-256-GCM encrypted payload.
-5. Derive the AES key via ECDH + HKDF-SHA256 (salt=`gateway_id`, info=`"sonde-phone-reg-v1"`).
-6. Decrypt the response (AAD=`gateway_id`).
-7. Assert: decrypted payload contains a 256-bit phone PSK and `phone_key_hint` matching `SHA-256(psk)[30..32]`.
+2. Send `REGISTER_PHONE` containing a phone-generated 256-bit PSK.
+3. Assert: response is `PHONE_REGISTERED` with `phone_key_hint` matching `SHA-256(psk)[30..32]`.
+4. Assert: the phone PSK is stored with active status.
 
 ---
 
@@ -1718,7 +1683,7 @@ A configurable stub handler process (or in-process mock) that:
 2. Assert: the PSK is stored with a label, issuance timestamp, and active status.
 3. Revoke the phone PSK via operator action.
 4. Assert: the PSK status is revoked.
-5. Submit a `PEER_REQUEST` signed with the revoked PSK.
+5. Submit a `PEER_REQUEST` authenticated with the revoked PSK.
 6. Assert: the request is silently discarded.
 
 ---
@@ -1740,7 +1705,7 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-1212
 
 **Procedure:**
-1. Construct a `PEER_REQUEST` with a correctly encrypted `encrypted_payload` (ECDH + HKDF-SHA256 + AES-256-GCM).
+1. Construct a `PEER_REQUEST` with a correctly encrypted `encrypted_payload` (AES-256-GCM using phone PSK, nonce from frame header).
 2. Submit the frame.
 3. Assert: the gateway successfully decrypts the payload and proceeds to verification steps.
 
@@ -1757,39 +1722,39 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
-### T-1212  Phone HMAC with multiple candidates
+### T-1212  Phone AEAD with multiple candidates
 
 **Validates:** GW-1213
 
 **Procedure:**
 1. Register two phones whose PSKs produce the same `phone_key_hint`.
-2. Construct a `PEER_REQUEST` with a phone HMAC computed using the second phone's PSK.
+2. Construct a `PEER_REQUEST` with `encrypted_payload` encrypted using the second phone's PSK.
 3. Submit the frame.
-4. Assert: the gateway tries both candidate PSKs and accepts the valid one.
+4. Assert: the gateway tries both candidate PSKs for AES-256-GCM decryption and accepts the valid one.
 
 ---
 
-### T-1213  Phone HMAC with revoked PSK
+### T-1213  Phone AEAD with revoked PSK
 
 **Validates:** GW-1213
 
 **Procedure:**
 1. Register a phone and then revoke its PSK.
-2. Construct a `PEER_REQUEST` with a phone HMAC computed using the revoked PSK.
+2. Construct a `PEER_REQUEST` with `encrypted_payload` encrypted using the revoked PSK.
 3. Submit the frame.
-4. Assert: the gateway silently discards the frame (revoked PSK not tried).
+4. Assert: the gateway silently discards the frame (revoked PSK not tried for decryption).
 
 ---
 
-### T-1214  PEER_REQUEST frame HMAC verification
+### T-1214  PEER_REQUEST frame AEAD verification
 
 **Validates:** GW-1214
 
 **Procedure:**
-1. Construct a valid `PEER_REQUEST` with correct frame HMAC (keyed with `node_psk`).
+1. Construct a valid `PEER_REQUEST` with correct AES-256-GCM frame encryption (keyed with `node_psk`).
 2. Submit the frame.
-3. Assert: HMAC verification passes and processing continues.
-4. Corrupt the frame HMAC.
+3. Assert: AEAD decryption passes and processing continues.
+4. Corrupt the GCM authentication tag.
 5. Resubmit.
 6. Assert: the gateway silently discards the frame.
 
@@ -1852,7 +1817,7 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Successfully process a `PEER_REQUEST` — node is registered, PEER_ACK sent.
 2. Submit a second `PEER_REQUEST` with the same `node_id` and `node_psk` but a different nonce.
-3. Assert: a `PEER_ACK(0x00)` is returned with valid `registration_proof`.
+3. Assert: a `PEER_ACK(0x00)` is returned.
 4. Assert: the `nonce` in the PEER_ACK header matches the second request's nonce.
 5. Assert: the node registry still contains exactly one record for the node (no duplicate).
 
@@ -1875,10 +1840,9 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Submit a valid `PEER_REQUEST` with nonce N.
 2. Receive the `PEER_ACK` response.
-3. Assert: the `PEER_ACK` CBOR is `{1: 0, 2: registration_proof}`.
-4. Verify `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1"` ‖ `encrypted_payload`).
-5. Assert: the frame HMAC is valid under `node_psk`.
-6. Assert: the `nonce` in the `PEER_ACK` header equals N.
+3. Assert: the `PEER_ACK` CBOR is `{1: 0}` (status code only, no `registration_proof`).
+4. Assert: the frame is AES-256-GCM encrypted under `node_psk` with the nonce from the frame header.
+5. Assert: the `nonce` in the `PEER_ACK` header equals N.
 
 ---
 
@@ -1923,17 +1887,7 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-1223  Ed25519 seed replication
 
-**Validates:** GW-1203
-
-**Procedure:**
-1. Start gateway A; record its Ed25519 public key and `gateway_id`.
-2. Export the seed and `gateway_id` from gateway A.
-3. Start gateway B with an empty key store.
-4. Import the seed and `gateway_id` into gateway B.
-5. Assert: gateway B's Ed25519 public key matches gateway A's.
-6. Assert: gateway B's `gateway_id` matches gateway A's.
-7. Send `REQUEST_GW_INFO` to both gateways with the same challenge.
-8. Assert: both produce identical signatures.
+> **RETIRED (issue #495).** Ed25519 identity and `gateway_id` have been removed. State replication is covered by T-1002 (export/import round-trip) and T-1005b.
 
 ---
 
@@ -1947,9 +1901,9 @@ A configurable stub handler process (or in-process mock) that:
 3. Discover services and assert: the Gateway Pairing Service UUID matches the value specified for GW-1204 in `ble-pairing-protocol.md`.
 4. Within the Gateway Pairing Service, discover characteristics and assert: the request/command and indication/response characteristic UUIDs match the values specified for GW-1204.
 5. Open a BLE pairing session via the admin API.
-6. Mock modem: inject a `BLE_RECV` message containing a `REQUEST_GW_INFO` command on the request characteristic.
-7. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem on the indication characteristic containing a valid `GW_INFO_RESPONSE`.
-8. Decode the indication payload and verify it contains `gw_public_key`, `gateway_id`, and `signature`.
+6. Mock modem: inject a `BLE_RECV` message containing a `REGISTER_PHONE` command on the request characteristic.
+7. Assert: gateway processes the command and sends a `BLE_INDICATE` message to the modem on the indication characteristic containing a valid `PHONE_REGISTERED` response.
+8. Decode the indication payload and verify it contains `phone_key_hint`.
 
 ---
 
@@ -2003,8 +1957,8 @@ A configurable stub handler process (or in-process mock) that:
 1. Register a phone via the BLE pairing flow.
 2. Call `RevokePhone` with the phone's ID.
 3. Assert: success response.
-4. Submit a `PEER_REQUEST` with a phone HMAC computed using the revoked phone PSK.
-5. Assert: gateway silently discards the request (HMAC verification fails per GW-1213).
+4. Submit a `PEER_REQUEST` with `encrypted_payload` encrypted using the revoked phone PSK.
+5. Assert: gateway silently discards the request (AEAD decryption fails — revoked PSK not tried, per GW-1213).
 
 ---
 
@@ -2043,7 +1997,7 @@ A configurable stub handler process (or in-process mock) that:
 
 **Procedure:**
 1. Configure a gateway with `#[traced_test]`.
-2. Set up phone trust and gateway identity for BLE pairing.
+2. Set up phone trust for BLE pairing.
 3. Submit a valid `PEER_REQUEST` frame.
 4. Assert: an `INFO`-level log entry is emitted with `node_id`, `key_hint`, and `result` = `"registered"`.
 5. Assert: an `INFO`-level log entry is emitted for PEER_ACK frame encoded with `node_id`.

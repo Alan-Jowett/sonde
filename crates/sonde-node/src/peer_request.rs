@@ -18,9 +18,9 @@
 //!
 //! **PEER_ACK (0x84, gateway → node):**
 //! ```text
-//! ┌─────────────────────────────────────┬─────────────────────────┬────────┐
-//! │ key_hint(2) ‖ msg_type(1) ‖ nonce(8)│ CBOR {1: status, 2: proof}│ HMAC │
-//! └─────────────────────────────────────┴─────────────────────────┴────────┘
+//! ┌─────────────────────────────────────┬────────────────────┬──────────┐
+//! │ key_hint(2) ‖ msg_type(1) ‖ nonce(8)│ CBOR {1: status}   │ HMAC/GCM │
+//! └─────────────────────────────────────┴────────────────────┴──────────┘
 //! ```
 
 use alloc::vec::Vec;
@@ -40,6 +40,17 @@ extern crate alloc;
 const PROOF_DOMAIN: &[u8] = b"sonde-peer-ack-v1";
 
 use crate::ble_pairing::PEER_PAYLOAD_MAX_LEN;
+
+/// AEAD-specific max `encrypted_payload` length for PEER_REQUEST frames.
+///
+/// NOTE: While AEAD reduces per-frame MAC overhead (16-byte tag vs 32-byte
+/// HMAC) and could theoretically support a larger CBOR payload, the
+/// end-to-end limit is currently constrained by BLE provisioning and
+/// storage, which enforce `PEER_PAYLOAD_MAX_LEN`.  To avoid mismatches
+/// where a payload can be encoded but not provisioned/persisted, AEAD
+/// builds use the same limit here.
+#[cfg(feature = "aes-gcm-codec")]
+const PEER_PAYLOAD_MAX_LEN_AEAD: usize = PEER_PAYLOAD_MAX_LEN;
 
 /// PEER_ACK listen timeout in milliseconds (ND-0911: ≥10 seconds).
 const PEER_ACK_TIMEOUT_MS: u32 = 10_000;
@@ -242,6 +253,171 @@ pub fn peer_request_exchange<T: Transport, S: PlatformStorage>(
             }
             None => {
                 // recv timeout — loop and check wall-clock timeout
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AES-256-GCM peer request processing (feature-gated)
+// ---------------------------------------------------------------------------
+
+/// AES-GCM variant of [`build_peer_request_frame`].
+///
+/// Encodes `{ 1: encrypted_payload }` as CBOR, wraps in a protocol frame
+/// with `msg_type = 0x05`, the provided 8-byte nonce, and AES-256-GCM
+/// authenticated encryption.
+///
+/// Per `ble-pairing-protocol.md` §6.6/§7.1, the outer-frame encryption
+/// key and header `key_hint` should be `phone_psk`/`phone_key_hint`
+/// (identifying the phone, not the node).  Callers currently pass node
+/// credentials because phone-credential storage is not yet implemented;
+/// see issue #495 follow-up for BLE provisioning plumbing.
+#[cfg(feature = "aes-gcm-codec")]
+pub fn build_peer_request_frame_aead<
+    A: sonde_protocol::AeadProvider,
+    S: sonde_protocol::Sha256Provider,
+>(
+    identity: &NodeIdentity,
+    encrypted_payload: &[u8],
+    nonce: u64,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    if encrypted_payload.len() > PEER_PAYLOAD_MAX_LEN_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "encrypted_payload exceeds ESP-NOW frame budget",
+        ));
+    }
+
+    let cbor_map = ciborium::Value::Map(alloc::vec![(
+        ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(encrypted_payload.to_vec()),
+    )]);
+    let mut cbor_buf = Vec::new();
+    ciborium::into_writer(&cbor_map, &mut cbor_buf)
+        .map_err(|_| NodeError::MalformedPayload("PEER_REQUEST CBOR encode failed"))?;
+
+    // TODO(#495 follow-up): use phone_key_hint / phone_psk once BLE
+    // provisioning stores them (ble-pairing-protocol.md §6.6/§7.1).
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce,
+    };
+
+    sonde_protocol::encode_frame_aead(&header, &cbor_buf, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("PEER_REQUEST frame encode failed"))
+}
+
+/// AES-GCM variant of [`verify_peer_ack`].
+///
+/// Decrypts and authenticates the PEER_ACK frame using AES-256-GCM,
+/// then verifies `msg_type`, nonce echo, and status.  Per
+/// `ble-pairing-protocol.md` §7.2, the `registration_proof` field is
+/// retired under AES-256-GCM: successful AEAD open with `node_psk`
+/// constitutes proof that the gateway holds the node's PSK.
+#[cfg(feature = "aes-gcm-codec")]
+pub fn verify_peer_ack_aead<A: sonde_protocol::AeadProvider, S: sonde_protocol::Sha256Provider>(
+    raw: &[u8],
+    identity: &NodeIdentity,
+    expected_nonce: u64,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<()> {
+    let decoded = sonde_protocol::decode_frame_aead(raw)
+        .map_err(|_| NodeError::MalformedPayload("PEER_ACK decode failed"))?;
+
+    let header = decoded.header.clone();
+    // Successful AEAD open proves the gateway holds node_psk (§7.2).
+    let payload = sonde_protocol::open_frame(&decoded, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::AuthFailure)?;
+
+    if header.msg_type != MSG_PEER_ACK {
+        return Err(NodeError::UnexpectedMsgType(header.msg_type));
+    }
+
+    if header.nonce != expected_nonce {
+        return Err(NodeError::ResponseBindingMismatch);
+    }
+
+    let cbor: ciborium::Value = ciborium::from_reader(&payload[..])
+        .map_err(|_| NodeError::MalformedPayload("PEER_ACK CBOR decode failed"))?;
+
+    let map = cbor
+        .as_map()
+        .ok_or(NodeError::MalformedPayload("PEER_ACK payload is not a map"))?;
+
+    let mut status: Option<u64> = None;
+
+    for (k, v) in map {
+        let key = k
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .ok_or(NodeError::MalformedPayload("PEER_ACK non-integer key"))?;
+        if key == PEER_ACK_KEY_STATUS {
+            status = v.as_integer().and_then(|i| u64::try_from(i).ok());
+        }
+    }
+
+    let status = status.ok_or(NodeError::MalformedPayload("PEER_ACK missing status field"))?;
+
+    if status != PEER_ACK_STATUS_OK {
+        return Err(NodeError::MalformedPayload(
+            "PEER_ACK status is not registered",
+        ));
+    }
+
+    Ok(())
+}
+
+/// AES-GCM variant of [`peer_request_exchange`].
+///
+/// Per `ble-pairing-protocol.md` §7.1, PEER_REQUEST should use
+/// `phone_psk`/`phone_key_hint`.  Callers currently pass node
+/// credentials because phone-credential storage is not yet implemented;
+/// see issue #495 follow-up for BLE provisioning plumbing.
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn peer_request_exchange_aead<
+    T: Transport,
+    S: PlatformStorage,
+    A: sonde_protocol::AeadProvider,
+    H: sonde_protocol::Sha256Provider,
+>(
+    transport: &mut T,
+    storage: &mut S,
+    identity: &NodeIdentity,
+    encrypted_payload: &[u8],
+    rng: &mut dyn crate::traits::Rng,
+    clock: &dyn crate::traits::Clock,
+    aead: &A,
+    sha: &H,
+) -> NodeResult<bool> {
+    let nonce = rng.random_u64();
+
+    let frame = build_peer_request_frame_aead(identity, encrypted_payload, nonce, aead, sha)?;
+    transport.send(&frame)?;
+    log::info!(
+        "PEER_REQUEST sent key_hint=0x{:04X} (ND-1004)",
+        identity.key_hint,
+    );
+
+    let start_ms = clock.elapsed_ms();
+    loop {
+        let elapsed = clock.elapsed_ms().saturating_sub(start_ms);
+        if elapsed >= PEER_ACK_TIMEOUT_MS as u64 {
+            return Ok(false);
+        }
+
+        let remaining = (PEER_ACK_TIMEOUT_MS as u64 - elapsed) as u32;
+        let recv_timeout = remaining.min(500);
+
+        if let Some(raw) = transport.recv(recv_timeout)? {
+            if verify_peer_ack_aead(&raw, identity, nonce, aead, sha).is_ok() {
+                storage.write_reg_complete(true)?;
+                log::info!("PEER_ACK received — registration complete (ND-1005)");
+                return Ok(true);
             }
         }
     }
@@ -787,5 +963,220 @@ mod tests {
         );
         // Only the PEER_REQUEST was sent; no error response.
         assert_eq!(transport.sent.len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // AES-256-GCM peer request tests (feature-gated)
+    // ------------------------------------------------------------------
+
+    #[cfg(feature = "aes-gcm-codec")]
+    mod aead_tests {
+        use super::*;
+        use crate::node_aead::NodeAead;
+        use sonde_protocol::{decode_frame_aead, open_frame, Sha256Provider};
+
+        struct TestSha256;
+        impl Sha256Provider for TestSha256 {
+            fn hash(&self, data: &[u8]) -> [u8; 32] {
+                use sha2::Digest;
+                sha2::Sha256::digest(data).into()
+            }
+        }
+
+        #[test]
+        fn build_peer_request_frame_aead_round_trip() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let encrypted_payload = vec![0xAAu8; 100];
+
+            let frame =
+                build_peer_request_frame_aead(&identity, &encrypted_payload, 12345, &aead, &sha)
+                    .expect("AEAD PEER_REQUEST frame build should succeed");
+
+            // Verify we can decode and decrypt the frame
+            let decoded = decode_frame_aead(&frame).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_PEER_REQUEST);
+            assert_eq!(decoded.header.nonce, 12345);
+            assert_eq!(decoded.header.key_hint, key_hint);
+
+            let payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
+            assert!(!payload.is_empty());
+        }
+
+        #[test]
+        fn build_peer_request_frame_aead_rejects_oversized() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            // AEAD limit is aligned with HMAC limit (PEER_PAYLOAD_MAX_LEN).
+            let oversized = vec![0xBBu8; PEER_PAYLOAD_MAX_LEN_AEAD + 1];
+
+            let result = build_peer_request_frame_aead(&identity, &oversized, 1, &aead, &sha);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn build_peer_request_frame_aead_accepts_exact_limit() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let exact = vec![0xCCu8; PEER_PAYLOAD_MAX_LEN_AEAD];
+
+            let result = build_peer_request_frame_aead(&identity, &exact, 1, &aead, &sha);
+            assert!(result.is_ok(), "exact AEAD limit must succeed");
+        }
+
+        // --- AEAD peer registration exchange tests ---
+
+        /// Build a valid PEER_ACK frame using AEAD encryption.
+        ///
+        /// Per `ble-pairing-protocol.md` §7.2, PEER_ACK payload is
+        /// `{ 1: status }` — the `registration_proof` field is retired
+        /// under AES-256-GCM.
+        fn build_peer_ack_aead(
+            identity: &NodeIdentity,
+            nonce: u64,
+            aead: &NodeAead,
+            sha: &TestSha256,
+        ) -> Vec<u8> {
+            let cbor_map = ciborium::Value::Map(vec![(
+                ciborium::Value::Integer(PEER_ACK_KEY_STATUS.into()),
+                ciborium::Value::Integer(0.into()),
+            )]);
+            let mut cbor_buf = Vec::new();
+            ciborium::into_writer(&cbor_map, &mut cbor_buf).unwrap();
+
+            let header = FrameHeader {
+                key_hint: identity.key_hint,
+                msg_type: MSG_PEER_ACK,
+                nonce,
+            };
+
+            sonde_protocol::encode_frame_aead(&header, &cbor_buf, &identity.psk, aead, sha).unwrap()
+        }
+
+        fn test_identity_aead() -> NodeIdentity {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            NodeIdentity {
+                key_hint: sonde_protocol::key_hint_from_psk(&psk, &sha),
+                psk,
+            }
+        }
+
+        #[test]
+        fn verify_peer_ack_aead_valid() {
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let nonce: u64 = 0xAABBCCDDEEFF0011;
+
+            let ack_frame = build_peer_ack_aead(&identity, nonce, &aead, &sha);
+            let result = verify_peer_ack_aead(&ack_frame, &identity, nonce, &aead, &sha);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn verify_peer_ack_aead_wrong_nonce() {
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let request_nonce: u64 = 0xAABBCCDDEEFF0011;
+            let wrong_nonce: u64 = 0x1111111111111111;
+
+            let ack_frame = build_peer_ack_aead(&identity, wrong_nonce, &aead, &sha);
+            let result = verify_peer_ack_aead(&ack_frame, &identity, request_nonce, &aead, &sha);
+            assert!(result.is_err());
+        }
+
+        /// Registration proof is retired under AEAD (§7.2) — successful
+        /// AEAD decryption with `node_psk` is sufficient.  This test
+        /// verifies that decryption with a wrong key is rejected.
+        #[test]
+        fn verify_peer_ack_aead_wrong_key() {
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let nonce: u64 = 0x42;
+
+            let ack_frame = build_peer_ack_aead(&identity, nonce, &aead, &sha);
+
+            // Verify with a different PSK — decryption must fail
+            let wrong_identity = NodeIdentity {
+                key_hint: identity.key_hint,
+                psk: [0x99u8; 32],
+            };
+            let result = verify_peer_ack_aead(&ack_frame, &wrong_identity, nonce, &aead, &sha);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn peer_request_exchange_aead_sets_reg_complete() {
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            let nonce: u64 = 0x1122334455667788;
+            let mut rng = MockRng::new(nonce);
+            let clock = MockClock::new(500);
+
+            let ack = build_peer_ack_aead(&identity, nonce, &aead, &sha);
+            let mut transport = MockTransport::with_responses(vec![Some(ack)]);
+            let mut storage =
+                MockStorage::with_identity(identity.key_hint, identity.psk, payload.clone());
+
+            assert!(!storage.reg_complete);
+
+            let result = peer_request_exchange_aead(
+                &mut transport,
+                &mut storage,
+                &identity,
+                &payload,
+                &mut rng,
+                &clock,
+                &aead,
+                &sha,
+            )
+            .unwrap();
+
+            assert!(result, "AEAD exchange should succeed");
+            assert!(storage.reg_complete, "reg_complete must be set");
+            assert!(storage.peer_payload.is_some());
+        }
+
+        #[test]
+        fn peer_request_exchange_aead_timeout() {
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let identity = test_identity_aead();
+            let payload = vec![0xDE, 0xAD];
+            let mut rng = MockRng::new(0x42);
+            let clock = MockClock::new(5000);
+            let mut transport = MockTransport::new();
+            let mut storage =
+                MockStorage::with_identity(identity.key_hint, identity.psk, payload.clone());
+
+            let result = peer_request_exchange_aead(
+                &mut transport,
+                &mut storage,
+                &identity,
+                &payload,
+                &mut rng,
+                &clock,
+                &aead,
+                &sha,
+            )
+            .unwrap();
+
+            assert!(!result, "should timeout");
+            assert!(!storage.reg_complete, "reg_complete must NOT be set");
+        }
     }
 }

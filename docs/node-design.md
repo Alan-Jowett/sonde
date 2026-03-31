@@ -146,11 +146,14 @@ The state machine has five main states plus two alternate boot paths. Starting f
 
 The chunked transfer loop iterates over each chunk index from 0 to `chunk_count − 1`. For each chunk: compute the sequence number (`starting_seq + chunk_index`), send `GET_CHUNK` with that sequence number, await the `CHUNK` response (50 ms timeout, up to 3 retries per chunk); if all retries fail, abort and sleep. After collecting all chunks, reassemble the program image, verify its SHA-256 hash against the expected value (if mismatched, discard and sleep), decode the CBOR program image (bytecode and map definitions), resolve `LDDW src=1` instructions to runtime map pointers, install the program (flash for resident programs, RAM for ephemeral), and send `PROGRAM_ACK`.
 
+When awaiting the `CHUNK` response, the transport may return stale frames from earlier protocol phases (e.g. duplicate `COMMAND` responses from `WAKE` retries).  If a received frame has wrong `msg_type`, the node MUST discard it and immediately re-read the transport without consuming a retry attempt (see protocol.md §8.1, ND-0701 AC4).
+
 ```
 for chunk_index in 0..chunk_count:
     seq = starting_seq + chunk_index       (GET_CHUNK #0 uses starting_seq)
     send GET_CHUNK { chunk_index } with seq
     await CHUNK response (50 ms timeout, 3 retries per chunk)
+        if recv returns wrong msg_type → discard, re-read (not a retry)
     if all retries fail → abort, sleep
     verify echoed seq, HMAC
     store chunk data

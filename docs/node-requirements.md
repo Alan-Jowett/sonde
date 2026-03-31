@@ -645,11 +645,14 @@ If the node sends `WAKE` and receives no `COMMAND` response within the transport
 **Description:**  
 If the node sends `GET_CHUNK` and receives no `CHUNK` response, the node MUST retry up to 3 times per chunk with 100 ms delay. After max retries, the node MUST abort the transfer and sleep. On the next wake, the transfer restarts from chunk 0.
 
+If the node receives a frame with an unexpected `msg_type` while awaiting a `CHUNK` response (e.g. a stale `COMMAND` from a `WAKE` retry — see protocol.md §8.1), the node MUST discard the frame and immediately re-read the transport **without consuming a retry attempt**. Only timeouts, AES-256-GCM authentication/decryption failures (AEAD open failure), and frames that successfully authenticate/decrypt with the expected `msg_type` but fail subsequent validation (e.g. wrong `chunk_index`, wrong sequence) count as retry attempts.
+
 **Acceptance criteria:**
 
 1. Each chunk is retried up to 3 times.
 2. After 3 failures on any chunk, the transfer is aborted.
 3. The next wake cycle restarts the transfer from scratch.
+4. A stale frame with wrong `msg_type` does not consume a retry attempt; the node re-reads the transport for the expected `CHUNK` response.
 
 ---
 

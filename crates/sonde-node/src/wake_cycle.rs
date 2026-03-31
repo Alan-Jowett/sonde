@@ -859,6 +859,46 @@ fn get_chunk_with_retry<T: Transport>(
                         );
                         return Ok(data);
                     }
+                    Err(NodeError::UnexpectedMsgType(_)) => {
+                        // Stale frame (e.g. duplicate COMMAND from WAKE
+                        // retries).  Don't count this as a failed attempt
+                        // — keep reading in case the real CHUNK response
+                        // is already queued behind it.  Cap at
+                        // WAKE_MAX_RETRIES to bound wake duration.
+                        for _ in 0..WAKE_MAX_RETRIES {
+                            match transport.recv(RESPONSE_TIMEOUT_MS) {
+                                Ok(Some(raw2)) => {
+                                    match verify_and_decode_chunk(
+                                        &raw2,
+                                        identity,
+                                        attempt_seq,
+                                        chunk_index,
+                                        hmac,
+                                    ) {
+                                        Ok(data) => return Ok(data),
+                                        Err(NodeError::UnexpectedMsgType(_)) => {
+                                            // Another stale frame; keep draining.
+                                            continue;
+                                        }
+                                        Err(_) => {
+                                            // Treat other errors as a failed attempt.
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    // Timeout while draining stale frames; stop draining
+                                    // and fall back to the outer retry loop.
+                                    break;
+                                }
+                                Err(e) => {
+                                    // Propagate transport errors.
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     Err(_) => continue,
                 }
             }
@@ -5138,6 +5178,109 @@ mod tests {
         assert!(
             !interp.loaded,
             "program must not load — wrong msg_type was discarded"
+        );
+    }
+
+    #[test]
+    fn test_stale_command_before_chunk_recovery() {
+        // Regression test (T-N803): when WAKE retries cause multiple
+        // duplicate COMMAND responses, the chunk transfer must drain all
+        // stale frames without consuming retry attempts and still succeed.
+        let psk = [0xD1; 32];
+        let key_hint = 1u16;
+        let starting_seq = 200u64;
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+            map_initial_data: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+        let image_hash = TestSha256.hash(&image_cbor);
+
+        let chunk_size = image_cbor.len() as u32;
+        let chunk_count = 1u32;
+
+        let mut transport = MockTransport::new();
+
+        // COMMAND response (consumed by WAKE handler)
+        let cmd = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: image_hash.to_vec(),
+                program_size: image_cbor.len() as u32,
+                chunk_size,
+                chunk_count,
+            },
+        );
+        transport.queue_response(Some(cmd));
+
+        // Queue 3 stale COMMANDs (enough to consume the entire
+        // chunk-transfer retry budget with duplicate COMMAND responses
+        // still in the receive buffer). Without the drain-loop fix,
+        // every retry attempt would be consumed by a stale frame and
+        // the transfer would fail.
+        for _ in 0..3 {
+            let stale_cmd = build_command_response(
+                &psk,
+                key_hint,
+                1,
+                starting_seq,
+                1710000000000,
+                CommandPayload::Nop,
+            );
+            transport.queue_response(Some(stale_cmd));
+        }
+
+        // Real CHUNK response queued behind the stale COMMANDs
+        let chunk_data = &image_cbor[..];
+        let chunk_frame = build_chunk_response(&psk, key_hint, starting_seq, 0, chunk_data);
+        transport.queue_response(Some(chunk_frame));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // Program should have been installed despite 3 stale COMMANDs
+        assert!(
+            interp.loaded,
+            "BPF program must load — stale COMMANDs should be drained and real CHUNK found"
+        );
+        // Verify only 1 GET_CHUNK was sent (no retry consumed by stale frames).
+        // outbound = [WAKE, GET_CHUNK, PROGRAM_ACK]
+        let get_chunk_count = transport
+            .outbound
+            .iter()
+            .filter(|f| {
+                decode_frame(f)
+                    .map(|d| d.header.msg_type == MSG_GET_CHUNK)
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            get_chunk_count, 1,
+            "only 1 GET_CHUNK should be sent — stale frames must not consume retry attempts"
         );
     }
 

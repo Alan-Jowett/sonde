@@ -551,8 +551,19 @@ The protocol has no explicit error message type. Errors are handled by silence a
 | Replay (wrong sequence number or no active session) | Silently discard. Log internally. | N/A |
 | Malformed CBOR | Silently discard. Log internally. | Discard frame. |
 | No response received | N/A | Retry with backoff (see §9). |
-| Unexpected `msg_type` | Silently discard. Log internally. | Discard frame. |
+| Unexpected `msg_type` | Silently discard. Log internally. | Discard frame (see §8.1). |
 | `chunk_index` out of range | Silently discard. Log internally. | Retry or abort transfer. |
+
+### 8.1  Stale frame handling during chunk transfer
+
+When the node retries `WAKE`, the gateway responds to each retry with a
+`COMMAND` frame.  The node accepts the first valid `COMMAND` and
+transitions to the chunk transfer phase, but duplicate `COMMAND`
+responses may remain in the ESP-NOW receive buffer.  If a `GET_CHUNK`
+read returns one of these stale frames, the node MUST discard it
+**without consuming a retry attempt** and immediately re-read the
+transport for the expected `CHUNK` response.  This prevents stale frames
+from exhausting the retry budget (§9.2) and failing the transfer.
 
 ---
 

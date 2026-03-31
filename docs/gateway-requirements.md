@@ -113,7 +113,7 @@ The gateway MUST respond to every valid, authenticated `WAKE` message with exact
 **Source:** README § Reference implementation
 
 **Description:**  
-When using ESP-NOW transport, all gateway-originated frames MUST fit within 250 bytes total, yielding 207 bytes of payload after overhead (11-byte fixed header + 32-byte HMAC = 43 bytes).
+When using ESP-NOW transport, all gateway-originated frames MUST fit within 250 bytes total, yielding 223 bytes of payload after overhead (11-byte fixed header + 16-byte GCM tag = 27 bytes).
 
 **Acceptance criteria:**
 
@@ -382,7 +382,7 @@ The gateway MUST receive `APP_DATA { blob }` messages from nodes. The blob conte
 
 1. The gateway accepts `APP_DATA` messages from authenticated nodes.
 2. The blob is forwarded to the gateway application without modification.
-3. The gateway associates each blob with the originating node (identified by the pre-shared key that verified the HMAC) and a reception timestamp.
+3. The gateway associates each blob with the originating node (identified by the pre-shared key that successfully decrypted the frame) and a reception timestamp.
 
 ---
 
@@ -517,19 +517,19 @@ The gateway SHOULD accept `LOG` messages from handlers and route them through th
 
 ## 8  Authentication and security
 
-### GW-0600  HMAC-SHA256 message authentication
+### GW-0600  AES-256-GCM message authentication
 
 **Priority:** Must  
 **Source:** README § Authentication
 
 **Description:**  
-The gateway MUST authenticate all inbound messages using HMAC-SHA256 and MUST append a valid HMAC-SHA256 tag to all outbound messages. The HMAC covers both header and payload.
+The gateway MUST authenticate and encrypt every inbound and outbound ESP-NOW frame using AES-256-GCM. GCM nonce = `SHA-256(psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]` (12 bytes). The 11-byte header is used as Additional Authenticated Data (AAD). The PSK is determined by message type: `node_psk` for WAKE, COMMAND, APP_DATA, APP_DATA_REPLY; `phone_psk` for PEER_REQUEST.
 
 **Acceptance criteria:**
 
-1. Inbound messages with invalid HMAC are silently discarded.
-2. Every outbound message includes a 32-byte HMAC-SHA256 tag computed over header + payload using the target node's key.
-3. The gateway never processes an unauthenticated message beyond HMAC validation.
+1. Inbound frames that fail AES-GCM decryption are silently discarded.
+2. Every outbound frame is AES-256-GCM encrypted with the appropriate PSK and includes a 16-byte GCM authentication tag.
+3. The gateway never processes an unauthenticated frame beyond AES-GCM decryption.
 
 ---
 
@@ -539,7 +539,7 @@ The gateway MUST authenticate all inbound messages using HMAC-SHA256 and MUST ap
 **Source:** README § Key provisioning
 
 **Description:**  
-The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-shared keys. Each node has a unique key. Keys are provisioned via BLE-mediated pairing (see [security.md](security.md) §2.4). The `key_hint` is a lookup optimization; the HMAC key is the true node identity (see [protocol.md](protocol.md) §3.1.1).
+The gateway MUST maintain a mapping of `key_hint` to one or more 256-bit pre-shared keys. Each node has a unique key. Keys are provisioned via BLE-mediated pairing (see [security.md](security.md) §2.4). The `key_hint` is a lookup optimization; the PSK is the true node identity (see [protocol.md](protocol.md) §3.1.1).
 
 **Acceptance criteria:**
 
@@ -635,11 +635,11 @@ The gateway MUST implement per-session replay protection using sequence numbers.
 **Source:** README § Overhead
 
 **Description:**  
-Authentication adds 43 bytes per frame: an 11-byte fixed binary header (`key_hint` 2B + `msg_type` 1B + `nonce` 8B) and a 32-byte HMAC-SHA256 trailer. The gateway MUST account for this overhead when constructing frames.
+Authentication adds 27 bytes per frame: an 11-byte fixed binary header (`key_hint` 2B + `msg_type` 1B + `nonce` 8B) and a 16-byte AES-256-GCM authentication tag. The gateway MUST account for this overhead when constructing frames. Payload budget = 223 bytes per 250-byte ESP-NOW frame.
 
 **Acceptance criteria:**
 
-1. The gateway reserves 43 bytes of every outbound frame for the header and HMAC.
+1. The gateway reserves 27 bytes of every outbound frame for the header and GCM tag.
 2. Payload sizing logic correctly subtracts authentication overhead from the maximum frame size.
 
 ---
@@ -816,14 +816,14 @@ The admin API SHOULD provide real-time node status including: current program ha
 **Source:** GW-1001
 
 **Description:**  
-The admin API SHOULD support exporting and importing the gateway's portable state (node registry, cryptographic keys, program library, schedules, and handler routing configuration) for failover and backup. Because this includes cryptographic material, export/import mechanisms MUST comply with GW-0601a (operator authorization and protection of exported state).
+The admin API SHOULD support exporting and importing the gateway's portable state (node registry, PSKs, phone PSKs, program library, schedules, and handler routing configuration) for failover and backup. Because this includes cryptographic material, export/import mechanisms MUST comply with GW-0601a (operator authorization and protection of exported state).
 
 **Acceptance criteria:**
 
 1. `ExportState` returns the complete gateway state as a portable binary.
 2. `ImportState` restores state from a previously exported binary.
 3. Export and import operations require authenticated and authorized administrative access, and exported state is protected (e.g., via encryption) in accordance with GW-0601a.
-4. After import, all state components are restored: nodes, programs, gateway identity (if present in the export), phone PSKs, and handler configs.
+4. After import, all state components are restored: nodes, programs, phone PSKs, and handler configs.
 
 ---
 
@@ -891,7 +891,7 @@ The gateway MUST persist the current ESP-NOW radio channel in the database so th
 **Source:** README § Gateway failover
 
 **Description:**  
-The gateway MUST be replaceable by another instance provisioned with the same key database. The gateway's identity is defined solely by its knowledge of node keys and program assignments — not by any hardware or network identity.
+The gateway MUST be replaceable by another instance provisioned with the same node key database. The gateway has no keypair or cryptographic identity — it is defined solely by its knowledge of node PSKs and program assignments. This simplifies failover: only the node key database needs to be shared between instances.
 
 **Acceptance criteria:**
 
@@ -921,11 +921,11 @@ All gateway instances in a failover group MUST serve identical program bytes for
 **Source:** README § Gateway failover
 
 **Description:**  
-The gateway SHOULD support exporting and importing its full state (node registry, keys, program assignments, schedules, gateway identity, phone PSKs, and handler configs) to enable failover and backup. `ImportState` MUST restore ALL state components present in the export: nodes, programs, gateway identity (conditionally, when present), phone PSKs, and handler routing configurations.
+The gateway SHOULD support exporting and importing its full state (node registry, PSKs, program assignments, schedules, phone PSKs, and handler configs) to enable failover and backup. `ImportState` MUST restore ALL state components present in the export: nodes, programs, phone PSKs, and handler routing configurations.
 
 **Acceptance criteria:**
 
-1. The gateway can export its state to a portable format that includes nodes, programs, gateway identity, phone PSKs, and handler configs.
+1. The gateway can export its state to a portable format that includes nodes, programs, PSKs, phone PSKs, and handler configs.
 2. A fresh gateway instance can import the state and resume operation with all exported components restored.
 3. The export format does not leak keys in plaintext unless explicitly requested.
 
@@ -937,7 +937,7 @@ The gateway SHOULD support exporting and importing its full state (node registry
 **Source:** README § Authentication
 
 **Description:**  
-The gateway MUST silently discard messages when no candidate key for the `key_hint` verifies the HMAC. No error response is sent (to avoid information leakage).
+The gateway MUST silently discard messages when no candidate key for the `key_hint` successfully decrypts the frame. No error response is sent (to avoid information leakage).
 
 **Acceptance criteria:**
 
@@ -1117,65 +1117,35 @@ When the serial port itself becomes unavailable (e.g. USB-CDC disconnect due to 
 
 ## 12  BLE pairing
 
-### GW-1200  Ed25519 keypair generation
+### GW-1200  Ed25519 keypair generation — RETIRED
 
-**Priority:** Must  
-**Source:** ble-pairing-protocol.md §2.1, security.md §2.7.3
+> **RETIRED (issue #495).** The gateway no longer holds an Ed25519 keypair. AES-256-GCM with pre-shared keys replaces all asymmetric cryptography.
 
-**Description:**  
-The gateway MUST generate an Ed25519 keypair on first startup and store the seed encrypted at rest, protected by the master key (per GW-0601a).
-
-**Acceptance criteria:**
-
-1. On first startup with no existing keypair, the gateway generates a new Ed25519 keypair.
-2. The seed is encrypted before writing to persistent storage.
-3. On subsequent startups, the gateway loads and decrypts the existing keypair.
+This requirement has been superseded by the AES-256-GCM migration.
 
 ---
 
-### GW-1201  Gateway identity generation
+### GW-1201  Gateway identity generation — RETIRED
 
-**Priority:** Must  
-**Source:** ble-pairing-protocol.md §2.1
+> **RETIRED (issue #495).** The gateway no longer generates or persists a `gateway_id`. Gateway identity is defined solely by knowledge of node PSKs.
 
-**Description:**  
-The gateway MUST generate a random 16-byte `gateway_id` on first startup and persist it alongside the Ed25519 keypair.
-
-**Acceptance criteria:**
-
-1. On first startup, a 16-byte `gateway_id` is generated from OS CSPRNG.
-2. The `gateway_id` is persisted and stable across restarts.
-3. No two gateways produce the same `gateway_id` (verified probabilistically by generating multiple).
+This requirement has been superseded by the AES-256-GCM migration.
 
 ---
 
-### GW-1202  Ed25519 to X25519 conversion
+### GW-1202  Ed25519 to X25519 conversion — RETIRED
 
-**Priority:** Must  
-**Source:** ble-pairing-protocol.md §5.5
+> **RETIRED (issue #495).** No ECDH key agreement is used. AES-256-GCM with pre-shared keys replaces all asymmetric cryptography.
 
-**Description:**  
-The gateway MUST convert its Ed25519 key to X25519 for ECDH key agreement using the standard birational map and MUST reject low-order points.
-
-**Acceptance criteria:**
-
-1. The converted X25519 key produces correct ECDH shared secrets with a known test vector.
-2. Low-order points (including the identity point) are detected and rejected.
+This requirement has been superseded by the AES-256-GCM migration.
 
 ---
 
-### GW-1203  Ed25519 seed replication
+### GW-1203  Ed25519 seed replication — RETIRED
 
-**Priority:** Must  
-**Source:** security.md §2.7.3
+> **RETIRED (issue #495).** No Ed25519 seed or `gateway_id` to replicate. Failover requires only the node key database (see GW-1000).
 
-**Description:**  
-The gateway MUST support replicating the Ed25519 seed and `gateway_id` to failover gateways so that all members of a failover group share the same identity.
-
-**Acceptance criteria:**
-
-1. The Ed25519 seed and `gateway_id` can be exported from one gateway and imported into another.
-2. After import, the receiving gateway uses the same public key and `gateway_id`.
+This requirement has been superseded by the AES-256-GCM migration.
 
 ---
 
@@ -1185,13 +1155,14 @@ The gateway MUST support replicating the Ed25519 seed and `gateway_id` to failov
 **Source:** ble-pairing-protocol.md §3.1, §3.2
 
 **Description:**  
-The gateway system MUST expose a BLE GATT Gateway Pairing Service (UUID `0000FE60-…`) with a Gateway Command characteristic (UUID `0000FE61-…`) supporting Write and Indicate operations. In modem-relay mode (ble-pairing-protocol.md §12), the modem hosts the GATT service and the gateway exchanges messages via `BLE_RECV` / `BLE_INDICATE` serial messages (modem-protocol.md §4.9–4.10).
+The gateway system MUST expose a BLE GATT Gateway Pairing Service (UUID `0000FE60-…`) with a Gateway Command characteristic (UUID `0000FE61-…`) supporting Write and Indicate operations. The service handles `REGISTER_PHONE` and `PHONE_REGISTERED` commands only. In modem-relay mode (ble-pairing-protocol.md §12), the modem hosts the GATT service and the gateway exchanges messages via `BLE_RECV` / `BLE_INDICATE` serial messages (modem-protocol.md §4.9–4.10).
 
 **Acceptance criteria:**
 
 1. The service is discoverable via BLE advertisement or scan.
 2. The Gateway Command characteristic accepts Write requests and produces Indications.
 3. Service and characteristic UUIDs match the specification.
+4. The service handles `REGISTER_PHONE` and responds with `PHONE_REGISTERED`.
 
 ---
 
@@ -1211,19 +1182,11 @@ The gateway system MUST ensure ATT MTU ≥ 247 is negotiated and that indication
 
 ---
 
-### GW-1206  REQUEST_GW_INFO handling
+### GW-1206  REQUEST_GW_INFO handling — RETIRED
 
-**Priority:** Must  
-**Source:** ble-pairing-protocol.md §5.2, §5.3
+> **RETIRED (issue #495).** No challenge–response or gateway identity exchange. The simplified pairing pipeline uses `REGISTER_PHONE` / `PHONE_REGISTERED` only.
 
-**Description:**  
-On receiving a `REQUEST_GW_INFO` command, the gateway MUST sign (`challenge` ‖ `gateway_id`) with its Ed25519 private key and return a `GW_INFO_RESPONSE` containing `gw_public_key`, `gateway_id`, and `signature`.
-
-**Acceptance criteria:**
-
-1. The response contains the gateway's Ed25519 public key, `gateway_id`, and a valid signature.
-2. The signature verifies against (`challenge` ‖ `gateway_id`) using the gateway's public key.
-3. A different challenge produces a different signature.
+This requirement has been superseded by the AES-256-GCM migration.
 
 ---
 
@@ -1267,15 +1230,14 @@ The gateway MUST open the registration window via a physical button hold (≥2 s
 **Source:** ble-pairing-protocol.md §5.5
 
 **Description:**  
-On `REGISTER_PHONE`, the gateway MUST generate a 256-bit phone PSK from OS CSPRNG, derive `phone_key_hint` = `SHA-256(psk)[30..32]`, perform ECDH with the phone's ephemeral public key, derive an AES key via HKDF-SHA256 (salt=`gateway_id`, info=`"sonde-phone-reg-v1"`), and encrypt the response with AES-256-GCM (AAD=`gateway_id`).
+On `REGISTER_PHONE`, the gateway MUST receive a phone-generated 256-bit PSK from the phone, derive `phone_key_hint` = `SHA-256(psk)[30..32]`, and store the PSK with its label and issuance timestamp. The gateway responds with a simple `PHONE_REGISTERED(status, rf_channel, phone_key_hint)` indication. No ECDH, HKDF, or AES-GCM encryption of the BLE response is required.
 
 **Acceptance criteria:**
 
-1. The phone PSK is 256 bits generated from OS CSPRNG.
+1. The phone PSK is received from the phone (phone-generated, 256 bits).
 2. `phone_key_hint` equals the last two bytes of `SHA-256(psk)`.
-3. The ECDH shared secret is derived using the phone's ephemeral public key and the gateway's X25519 key.
-4. The AES key is derived via HKDF-SHA256 with the specified salt and info.
-5. The response payload is encrypted with AES-256-GCM using `gateway_id` as AAD.
+3. The PSK is stored with its label and issuance timestamp.
+4. The response is a simple `PHONE_REGISTERED` indication containing status, `rf_channel`, and `phone_key_hint`.
 
 ---
 
@@ -1285,28 +1247,29 @@ On `REGISTER_PHONE`, the gateway MUST generate a 256-bit phone PSK from OS CSPRN
 **Source:** security.md §2.7.1
 
 **Description:**  
-The gateway MUST store each phone PSK with a label, issuance timestamp, and active/revoked status. The gateway MUST support revocation of phone PSKs via operator action.
+The gateway MUST store each phone PSK (received from the phone during registration) with a label, issuance timestamp, and active/revoked status. The gateway MUST support revocation of phone PSKs via operator action.
 
 **Acceptance criteria:**
 
 1. Each stored phone PSK has a label, issuance timestamp, and status (active or revoked).
 2. An operator can revoke a phone PSK.
-3. Revoked PSKs are not used for PEER_REQUEST phone HMAC verification.
+3. Revoked PSKs are not used for PEER_REQUEST AES-GCM decryption.
 
 ---
 
-### GW-1211  PEER_REQUEST key-hint bypass
+### GW-1211  PEER_REQUEST phone PSK lookup
 
 **Priority:** Must  
 **Source:** ble-pairing-protocol.md §7.3, step 2
 
 **Description:**  
-For `msg_type` `0x05` (`PEER_REQUEST`), the gateway MUST bypass the normal key-hint fast-path lookup and proceed directly to CBOR parsing and decryption.
+For `msg_type` `0x05` (`PEER_REQUEST`), the frame header `key_hint` identifies the phone PSK (not a node PSK). The gateway MUST look up non-revoked phone PSK candidates matching the `key_hint` and use them for AES-GCM decryption of the outer frame.
 
 **Acceptance criteria:**
 
-1. A `PEER_REQUEST` frame is not rejected due to an unrecognized `key_hint`.
-2. The gateway proceeds to parse the CBOR payload without key-hint lookup.
+1. A `PEER_REQUEST` frame's `key_hint` is matched against phone PSKs, not node PSKs.
+2. The gateway proceeds to AES-GCM decryption using the matching phone PSK candidates.
+3. If no non-revoked phone PSK matches the `key_hint`, the frame is silently discarded.
 
 ---
 
@@ -1316,43 +1279,29 @@ For `msg_type` `0x05` (`PEER_REQUEST`), the gateway MUST bypass the normal key-h
 **Source:** ble-pairing-protocol.md §7.3, steps 3-4
 
 **Description:**  
-The gateway MUST decrypt the `PEER_REQUEST` `encrypted_payload` using ECDH + HKDF-SHA256 (salt=`gateway_id`, info=`"sonde-node-pair-v1"`) + AES-256-GCM (AAD=`gateway_id`). The gateway MUST silently discard frames that fail GCM tag verification.
+The gateway MUST decrypt the `PEER_REQUEST` in two layers. Outer frame: AES-256-GCM-Open with `phone_psk` (identified by `key_hint`), using the standard frame AAD (11-byte header). Inner payload: AES-256-GCM-Open with `phone_psk` (AAD=`"sonde-pairing-v2"`). The decrypted inner payload contains the PairingRequest CBOR. The gateway MUST silently discard frames that fail either GCM decryption.
 
 **Acceptance criteria:**
 
-1. A correctly encrypted `PEER_REQUEST` is decrypted successfully.
-2. A `PEER_REQUEST` with a corrupted GCM tag is silently discarded (no response sent).
+1. A correctly encrypted `PEER_REQUEST` is decrypted successfully through both layers.
+2. A `PEER_REQUEST` with a corrupted outer GCM tag is silently discarded (no response sent).
+3. A `PEER_REQUEST` with a valid outer layer but corrupted inner GCM tag is silently discarded.
 
 ---
 
-### GW-1213  Phone HMAC verification
+### GW-1213  Phone HMAC verification — RETIRED
 
-**Priority:** Must  
-**Source:** ble-pairing-protocol.md §7.3, step 6
+> **RETIRED (issue #495).** AEAD decryption (AES-256-GCM) provides authentication. A separate phone HMAC verification step is no longer needed.
 
-**Description:**  
-The gateway MUST verify the phone HMAC by looking up all non-revoked phone PSKs matching `phone_key_hint`. The gateway MUST accept if any candidate PSK produces a valid HMAC and silently discard if none match.
-
-**Acceptance criteria:**
-
-1. When multiple non-revoked PSKs share a `phone_key_hint`, each is tried until one matches.
-2. A valid HMAC from any candidate PSK is accepted.
-3. If no candidate matches, the frame is silently discarded.
+This requirement has been superseded by the AES-256-GCM migration.
 
 ---
 
-### GW-1214  PEER_REQUEST frame HMAC verification
+### GW-1214  PEER_REQUEST frame HMAC verification — RETIRED
 
-**Priority:** Must  
-**Source:** ble-pairing-protocol.md §7.3, step 8
+> **RETIRED (issue #495).** Frame-level HMAC-SHA256 is replaced by AES-256-GCM authenticated encryption. For PEER_REQUEST, the outer frame uses `phone_psk` for AES-GCM (see GW-1212).
 
-**Description:**  
-After decryption, the gateway MUST verify the `PEER_REQUEST` frame HMAC using the extracted `node_psk` and silently discard on mismatch.
-
-**Acceptance criteria:**
-
-1. A frame with a valid HMAC computed from `node_psk` passes verification.
-2. A frame with an invalid HMAC is silently discarded.
+This requirement has been superseded by the AES-256-GCM migration.
 
 ---
 
@@ -1393,12 +1342,12 @@ The gateway MUST check whether the `node_id` in the `PairingRequest` is already 
 **Source:** ble-pairing-protocol.md §7.3, step 11
 
 **Description:**  
-The gateway MUST verify that the frame header `key_hint` matches the `node_key_hint` from the `PairingRequest` CBOR and silently discard on mismatch.
+The frame header `key_hint` identifies the phone PSK used for the outer AES-GCM layer. The node's `key_hint` (`node_key_hint`) is carried inside the PairingRequest CBOR. The gateway MUST verify that the CBOR `node_key_hint` is internally consistent (i.e., matches `SHA-256(node_psk)[30..32]`) and silently discard on mismatch. The frame header `key_hint` (phone) and the CBOR `node_key_hint` (node) are expected to differ.
 
 **Acceptance criteria:**
 
-1. A frame whose header `key_hint` matches the CBOR `node_key_hint` passes the check.
-2. A mismatch between header `key_hint` and CBOR `node_key_hint` causes silent discard.
+1. A PairingRequest whose CBOR `node_key_hint` matches the derived value from the embedded `node_psk` passes the check.
+2. A mismatch between the CBOR `node_key_hint` and the derived value causes silent discard.
 
 ---
 
@@ -1408,14 +1357,14 @@ The gateway MUST verify that the frame header `key_hint` matches the `node_key_h
 **Source:** ble-pairing-protocol.md §7.3, step 12
 
 **Description:**  
-The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (a stable phone identifier, not `phone_key_hint`). If a `PEER_REQUEST` arrives for a `node_id` that is already registered with a matching `node_psk`, the gateway MUST still send a `PEER_ACK(0x00)` with valid `registration_proof` so the node can complete enrollment. This ensures enrollment completes even if a prior `PEER_ACK` was lost due to a transient radio failure.
+The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (a stable phone identifier, not `phone_key_hint`). If a `PEER_REQUEST` arrives for a `node_id` that is already registered with a matching `node_psk`, the gateway MUST still send a `PEER_ACK(0x00)` so the node can complete enrollment. This ensures enrollment completes even if a prior `PEER_ACK` was lost due to a transient radio failure.
 
 **Acceptance criteria:**
 
 1. After successful PEER_REQUEST processing, the node appears in the registry.
 2. The registration record contains all specified fields.
 3. `registered_by` is the phone's stable identifier, not `phone_key_hint`.
-4. A duplicate `PEER_REQUEST` for an already-registered node with matching PSK receives a `PEER_ACK(0x00)` with valid `registration_proof`.
+4. A duplicate `PEER_REQUEST` for an already-registered node with matching PSK receives a `PEER_ACK(0x00)`.
 5. A duplicate `PEER_REQUEST` with a **different** PSK is silently discarded (potential replay or conflict).
 
 ---
@@ -1426,14 +1375,14 @@ The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, 
 **Source:** ble-pairing-protocol.md §7.2, §7.3 step 13
 
 **Description:**  
-The gateway MUST compute `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1"` ‖ `encrypted_payload`), build a `PEER_ACK` CBOR message `{1: 0, 2: registration_proof}`, HMAC the frame with `node_psk`, and echo the `nonce` from the `PEER_REQUEST`.
+The gateway MUST build a `PEER_ACK` CBOR message `{1: 0}` (status only), encrypt the frame with `node_psk` via AES-256-GCM, and echo the `nonce` from the `PEER_REQUEST`. Encryption with `node_psk` proves the gateway holds the key (no separate `registration_proof` HMAC).
 
 **Acceptance criteria:**
 
-1. The `PEER_ACK` contains CBOR `{1: 0, 2: registration_proof}`.
-2. `registration_proof` is HMAC-SHA256 of (`"sonde-peer-ack-v1"` ‖ `encrypted_payload`) keyed with `node_psk`.
-3. The frame HMAC is computed with `node_psk`.
-4. The `nonce` in the `PEER_ACK` header matches the `PEER_REQUEST` nonce.
+1. The `PEER_ACK` contains CBOR `{1: 0}` (status field only).
+2. The frame is AES-256-GCM encrypted with `node_psk`.
+3. The `nonce` in the `PEER_ACK` header matches the `PEER_REQUEST` nonce.
+4. Successful decryption by the node proves the gateway holds `node_psk`.
 
 ---
 
@@ -1443,11 +1392,11 @@ The gateway MUST compute `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-
 **Source:** ble-pairing-protocol.md §7.3
 
 **Description:**  
-The gateway MUST apply the silent-discard error model to all `PEER_REQUEST` verification failures. No `PEER_ACK` is sent on any error.
+The gateway MUST apply the silent-discard error model to all `PEER_REQUEST` verification failures. No `PEER_ACK` is sent on any error. The pipeline steps are: `key_hint` → phone PSK lookup → AES-GCM-Open outer frame (phone_psk) → parse CBOR → AES-GCM-Open inner payload (phone_psk, AAD=`"sonde-pairing-v2"`) → parse PairingRequest → timestamp validation → node_id check → key hint consistency → register node → PEER_ACK.
 
 **Acceptance criteria:**
 
-1. Any verification failure during PEER_REQUEST processing results in no response.
+1. Any verification or decryption failure during PEER_REQUEST processing results in no response.
 2. No error frame or partial PEER_ACK is transmitted.
 
 ---
@@ -1507,7 +1456,7 @@ The admin API MUST expose a `ListPhones` RPC (and corresponding `sonde-admin pai
 **Source:** GW-1210
 
 **Description:**  
-The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pairing revoke-phone` CLI command) that revokes a phone's PSK by phone ID. A revoked phone MUST NOT be able to submit `PEER_REQUEST` messages that pass HMAC verification (per GW-1213).
+The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pairing revoke-phone` CLI command) that revokes a phone's PSK by phone ID. A revoked phone MUST NOT be able to submit `PEER_REQUEST` messages that pass AEAD decryption (revoked PSKs are excluded from the candidate set per GW-1212).
 
 **Acceptance criteria:**
 
@@ -1572,7 +1521,7 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 **Source:** Issue #532
 
 **Description:**  
-When the gateway encounters an error at a user-facing or operator-visible boundary (program verification, serial port operations, HMAC validation, storage I/O), the error log or error response MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "program verification", "serial port open"), (2) the input or parameters that triggered it (e.g., program name, port name), (3) the specific error from the underlying subsystem (e.g., OS error code, verifier instruction), and (4) actionable guidance where possible (e.g., "check COM port permissions", "re-upload program"). Diagnostics MUST NOT include secret key material or credentials; sensitive values (e.g., PSK bytes, decrypted payload contents) MUST be redacted or omitted, and only safe identifiers (e.g., `key_hint`, `program_hash`) MAY be logged as "input/parameters".
+When the gateway encounters an error at a user-facing or operator-visible boundary (program verification, serial port operations, AEAD validation, storage I/O), the error log or error response MUST include sufficient context for an operator to diagnose the root cause without access to source code. At minimum, each error MUST include: (1) the operation that failed (e.g., "program verification", "serial port open"), (2) the input or parameters that triggered it (e.g., program name, port name), (3) the specific error from the underlying subsystem (e.g., OS error code, verifier instruction), and (4) actionable guidance where possible (e.g., "check COM port permissions", "re-upload program"). Diagnostics MUST NOT include secret key material or credentials; sensitive values (e.g., PSK bytes, decrypted payload contents) MUST be redacted or omitted, and only safe identifiers (e.g., `key_hint`, `program_hash`) MAY be logged as "input/parameters".
 
 **Acceptance criteria:**
 
@@ -1819,7 +1768,7 @@ The state export bundle (GW-0805, GW-1001) SHOULD include handler routing config
 | GW-0506 | Handler DATA_REPLY processing | Must |
 | GW-0507 | Handler EVENT messages | Should |
 | GW-0508 | Handler LOG messages | Should |
-| GW-0600 | HMAC-SHA256 message authentication | Must |
+| GW-0600 | AES-256-GCM message authentication | Must |
 | GW-0601 | Per-node key management | Must |
 | GW-0601a | Key store encryption at rest | Should |
 | GW-0601b | OS-native master key protection via `KeyProvider` | Should |
@@ -1848,21 +1797,21 @@ The state export bundle (GW-0805, GW-1001) SHOULD include handler routing config
 | GW-1101 | Modem startup sequence | Must |
 | GW-1102 | Modem health monitoring | Should |
 | GW-1103 | Modem error handling | Must |
-| GW-1200 | Ed25519 keypair generation | Must |
-| GW-1201 | Gateway identity generation | Must |
-| GW-1202 | Ed25519 to X25519 conversion | Must |
-| GW-1203 | Ed25519 seed replication | Must |
+| GW-1200 | Ed25519 keypair generation — RETIRED | Must |
+| GW-1201 | Gateway identity generation — RETIRED | Must |
+| GW-1202 | Ed25519 to X25519 conversion — RETIRED | Must |
+| GW-1203 | Ed25519 seed replication — RETIRED | Must |
 | GW-1204 | BLE GATT server | Must |
 | GW-1205 | ATT MTU negotiation and fragmentation | Must |
-| GW-1206 | REQUEST_GW_INFO handling | Must |
+| GW-1206 | REQUEST_GW_INFO handling — RETIRED | Must |
 | GW-1207 | Registration window enforcement | Must |
 | GW-1208 | Registration window activation | Must |
 | GW-1209 | REGISTER_PHONE processing | Must |
 | GW-1210 | Phone PSK storage and revocation | Must |
-| GW-1211 | PEER_REQUEST key-hint bypass | Must |
+| GW-1211 | PEER_REQUEST phone PSK lookup | Must |
 | GW-1212 | PEER_REQUEST decryption | Must |
-| GW-1213 | Phone HMAC verification | Must |
-| GW-1214 | PEER_REQUEST frame HMAC verification | Must |
+| GW-1213 | Phone HMAC verification — RETIRED | Must |
+| GW-1214 | PEER_REQUEST frame HMAC verification — RETIRED | Must |
 | GW-1215 | PairingRequest timestamp validation | Must |
 | GW-1216 | Node ID uniqueness check | Must |
 | GW-1217 | Key hint consistency check | Must |

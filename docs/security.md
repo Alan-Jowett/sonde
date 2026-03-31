@@ -32,7 +32,7 @@
 
 ### 1.3  Out-of-scope threats
 
-- **Confidentiality** — data is authenticated but not encrypted. An attacker can observe message contents on the air. Confidentiality requirements must be addressed at the application layer.
+- **Application-layer confidentiality** — the radio protocol provides payload encryption (AES-256-GCM), but the gateway decrypts and forwards plaintext to handler processes. End-to-end encryption between the BPF program and the handler is out of scope.
 - **Gateway compromise** — if the gateway is compromised, all node keys and program assignments are exposed.
 - **Radio jamming / denial-of-service** — physical-layer interference is not addressed by this protocol.
 
@@ -42,7 +42,7 @@
 
 ### 2.1  Per-node symmetric keys
 
-Each node is provisioned with a unique 256-bit pre-shared key (PSK) at manufacturing or deployment time. The key is used for HMAC-SHA256 authentication of all frames exchanged between the node and the gateway.
+Each node is provisioned with a unique 256-bit pre-shared key (PSK) at manufacturing or deployment time. The key is used for AES-256-GCM authenticated encryption of all frames exchanged between the node and the gateway.
 
 - Keys are **symmetric** — the same key is used by both the node and the gateway.
 - Keys are **unique per node** — no two nodes share a key.
@@ -52,7 +52,7 @@ Each node is provisioned with a unique 256-bit pre-shared key (PSK) at manufactu
 
 On the reference hardware (ESP32-C3/S3) the node's PSK is stored in a **dedicated flash partition**. This means:
 
-- The key is **software-accessible** — firmware can read the raw key bytes to compute HMACs.
+- The key is **software-accessible** — firmware can read the raw key bytes to perform AES-256-GCM operations.
 - A **factory reset** erases the key partition, returning the node to an unpaired state (see §2.6).
 - Flash storage does not provide the same hardware isolation as eFuse-based approaches; a compromised firmware image can read the key. Mitigations include secure boot and flash encryption where available.
 
@@ -139,12 +139,12 @@ For headless servers without an interactive session, run
 A mobile phone app acts as a delegated pairing agent:
 
 1. The phone generates a unique 256-bit PSK for the node.
-2. The phone builds a pairing request containing the node PSK, HMAC-authenticates it with its phone PSK (§2.7), and encrypts it with the gateway's public key.
+2. The phone builds a pairing request containing the node PSK and AEAD-encrypts it with its phone PSK (§2.7).
 3. The phone provisions the node over BLE: sends the node PSK, RF channel, and the encrypted pairing request.
 4. The node stores the PSK and relays the encrypted pairing request to the gateway over ESP-NOW.
-5. The gateway decrypts the request, verifies the phone's HMAC, extracts the node PSK, verifies the ESP-NOW frame HMAC, and registers the node.
+5. The gateway decrypts the pairing request with the phone PSK, extracts the node PSK, decrypts the ESP-NOW frame, and registers the node.
 
-The node PSK is transmitted in plaintext over the BLE link (protected by BLE LESC transport encryption).  `NODE_PROVISION` sends both the `node_psk` and the `encrypted_payload` over BLE, so a BLE MITM attacker who defeats Just Works pairing captures all the material needed to craft a valid `PEER_REQUEST`.  The primary mitigation is using a MITM-resistant BLE pairing method (Passkey Entry or Numeric Comparison), which prevents interception entirely.  Secondary mitigations include the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations) and the PairingRequest timestamp tolerance (±86400 s).  Note: the 120 s registration window applies to Phase 1 phone registration (`REGISTER_PHONE`), not to Phase 2 node registration.  Just Works is acceptable only for low-threat environments where physical proximity provides adequate assurance.
+The node PSK is transmitted in plaintext over the BLE link (protected by BLE LESC transport encryption).  `NODE_PROVISION` sends the `node_psk`, `phone_psk`, `phone_key_hint`, and the `encrypted_payload` over BLE, so a BLE MITM attacker who defeats Just Works pairing captures all the material needed to craft a valid `PEER_REQUEST` (the outer frame requires `phone_psk` for AES-256-GCM encryption, and the `encrypted_payload` is pre-built by the phone).  The primary mitigation is using a MITM-resistant BLE pairing method (Passkey Entry or Numeric Comparison), which prevents interception entirely.  Secondary mitigations include the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations with a different PSK) and the PairingRequest timestamp tolerance (±86400 s).  Note: the 120 s registration window applies to Phase 1 phone registration (`REGISTER_PHONE`), not to Phase 2 node registration.  Just Works is acceptable only for low-threat environments where physical proximity provides adequate assurance.
 
 See [ble-pairing-protocol.md](ble-pairing-protocol.md) for the full BLE wire protocol.
 
@@ -190,9 +190,9 @@ The BLE pairing protocol ([ble-pairing-protocol.md](ble-pairing-protocol.md)) in
 
 #### 2.7.1  Phone PSK lifecycle
 
-1. **Issuance.** The gateway generates a unique 256-bit phone PSK and transmits it to the phone over BLE during phone-to-gateway pairing.  The phone PSK payload is encrypted at the application layer using ECDH key agreement (gateway Ed25519 keypair converted to X25519 + phone ephemeral X25519), HKDF-SHA256 key derivation, and AES-256-GCM (see [ble-pairing-protocol.md §5.5](ble-pairing-protocol.md#55--phone_registered-0x82)).  This is independent of the BLE link-layer encryption (LESC).
+1. **Issuance.** The phone generates a unique 256-bit phone PSK using its OS CSPRNG and sends it to the gateway in the `REGISTER_PHONE` BLE message during phone-to-gateway pairing.  The PSK is transmitted over a BLE LESC (Numeric Comparison) link, which provides transport-layer confidentiality and mutual authentication (see [ble-pairing-protocol.md §5.4](ble-pairing-protocol.md#54--register_phone-0x02)).
 2. **Storage.** The gateway stores the phone PSK alongside a human-readable label, issuance timestamp, and active/revoked status.  The phone stores the phone PSK in the app's secure storage.
-3. **Usage.** The phone uses its PSK to HMAC-authenticate every pairing request it creates.  The gateway verifies the HMAC before accepting the registration.
+3. **Usage.** The phone uses its PSK for AES-256-GCM encryption of pairing request payloads and for frame-level AEAD on PEER_REQUEST frames.  The gateway authenticates pairing requests by successfully decrypting them.
 4. **Revocation.** The gateway operator can revoke a phone PSK at any time.  Revoked PSKs are retained in the database (for audit) but all future pairing requests signed with them are rejected.
 
 #### 2.7.2  Trust properties
@@ -203,20 +203,11 @@ The BLE pairing protocol ([ble-pairing-protocol.md](ble-pairing-protocol.md)) in
 | **Isolation** | Each phone has a unique PSK.  One phone cannot forge requests as another phone. |
 | **Auditability** | The gateway records which phone PSK was used to register each node (stored as a `registered_by` association in the node database — schema to be defined in a future gateway design PR). |
 | **Revocability** | Revoking a phone PSK immediately disables that phone's pairing authority. |
-| **No gateway key exposure** | The phone PSK is a symmetric pairing credential — it does not grant access to the gateway's private key, the node key database, or any other gateway state. |
+| **No gateway key exposure** | The phone PSK is a symmetric pairing credential — it does not grant access to the node key database or any other gateway state. |
 
-#### 2.7.3  Gateway Ed25519 keypair
+#### 2.7.3  Gateway Ed25519 keypair — RETIRED
 
-The gateway holds an Ed25519 keypair used for two purposes:
-
-1. **Challenge-response signing** — during phone-to-gateway pairing (Phase 1), the gateway signs the phone's challenge nonce to prove identity (see [ble-pairing-protocol.md §5.3](ble-pairing-protocol.md#53--gw_info_response-0x81)).
-2. **Key agreement** — the Ed25519 key is converted to X25519 for ECDH-based encryption of pairing request payloads, so that only the gateway can decrypt them.
-
-Properties:
-
-- The private key (stored as a 32-byte Ed25519 seed) is encrypted at rest (protected by the master key from GW-0601a).
-- The public key is not secret — it provides identity verification and payload confidentiality in transit.  Authentication of pairing requests is provided by the phone's HMAC.
-- **Failover / backup:** The gateway keypair and `gateway_id` MUST be replicated to any failover or replacement gateway.  Phones pin the gateway public key on first contact (TOFU, §5.3), so a new keypair would require all phones to re-register.  Similarly, in-flight encrypted pairing payloads (§5.5) use `gateway_id` as HKDF salt and GCM AAD — a different `gateway_id` would fail decryption.  Operators MUST back up the Ed25519 seed and `gateway_id` alongside the node key database when configuring high-availability deployments.
+> **RETIRED (issue #495).** The gateway no longer holds an Ed25519 keypair. Gateway identity, challenge–response signing (REQUEST_GW_INFO / GW_INFO_RESPONSE), and ECDH key agreement are eliminated. Phone registration uses phone-generated PSKs sent over BLE LESC. Pairing request payloads are encrypted with `phone_psk` (AES-256-GCM) instead of ECDH. Authority derives from possession of the node key database — there is no persistent cryptographic identity.
 
 ---
 
@@ -226,38 +217,45 @@ Properties:
 
 Every frame exchanged between a node and the gateway has the following layout:
 
-A frame is three contiguous regions: the fixed 11-byte binary Header (`key_hint` 2 bytes, `msg_type` 1 byte, `nonce` 8 bytes); a variable-length CBOR-encoded Payload; and a trailing 32-byte HMAC-SHA256 authentication tag. The HMAC is computed over the Header and Payload only — it does not cover the tag itself.
+A frame is three contiguous regions: the fixed 11-byte binary Header (`key_hint` 2 bytes, `msg_type` 1 byte, `nonce` 8 bytes); the variable-length AES-256-GCM ciphertext (encrypted CBOR-encoded Payload); and a trailing 16-byte GCM authentication tag. The header is passed as Additional Authenticated Data (AAD) — it is authenticated but not encrypted.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Header               │  Payload               │  HMAC      │
-│  (key_hint, msg_type, │  (CBOR-encoded         │  (32 bytes)│
-│   nonce)              │   message body)        │            │
-└─────────────────────────────────────────────────────────────┘
-│◄──────── HMAC input (header + payload) ────────►│
+┌──────────────────────────────────────────────────────────────────┐
+│  Header (AAD)          │  Ciphertext              │  GCM tag     │
+│  (key_hint, msg_type,  │  (AES-256-GCM encrypted  │  (16 bytes)  │
+│   nonce)               │   CBOR payload)          │              │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-The authentication tag covers the full header and payload:
+**GCM nonce construction (12 bytes):**
 
 ```
-hmac = HMAC-SHA256(key = node_psk, message = header || payload)
+gcm_nonce = SHA-256(psk)[0..3] ‖ msg_type ‖ frame_nonce
 ```
 
-The frame on the wire is: `header || payload || hmac`.
+Including the `msg_type` byte in the nonce ensures that request/response pairs sharing the same `frame_nonce` (e.g., WAKE 0x01 / COMMAND 0x81) produce distinct GCM nonces, preventing nonce reuse across directions. The 3-byte PSK-derived prefix makes cross-key nonce collisions extremely unlikely, but does not provide absolute cross-key uniqueness.
+
+The AEAD construction covers the full header (AAD) and encrypts + authenticates the payload:
+
+```
+ciphertext, tag = AES-256-GCM-Seal(key = psk, nonce = gcm_nonce, aad = header, plaintext = payload)
+```
+
+The frame on the wire is: `header ‖ ciphertext ‖ tag[16]`.
 
 See [protocol.md §3](protocol.md#3--frame-format) for the detailed wire specification.
 
 ### 3.2  What is authenticated
 
-- **Direction** — the `msg_type` high-bit distinguishes node→gateway from gateway→node frames, and this field is covered by the HMAC.
-- **Nonce** — the nonce is part of the fixed binary header and is covered by the HMAC, preventing an attacker from substituting a different nonce to defeat replay protection.
-- **Payload** — all CBOR payload bytes are covered by the HMAC; payload modification is detectable.
+- **Direction** — the `msg_type` high-bit distinguishes node→gateway from gateway→node frames, and this field is covered by the AEAD (as part of the AAD).
+- **Nonce** — the nonce is part of the fixed binary header and is covered by the AEAD, preventing an attacker from substituting a different nonce to defeat replay protection.
+- **Payload** — all CBOR payload bytes are encrypted and authenticated by AES-256-GCM; payload modification or observation is prevented.
 
 ### 3.3  Gateway verification (inbound from node)
 
 1. Extract `key_hint` from the fixed header.
 2. Look up candidate `node_psk`(s) by `key_hint`. If no candidates → silently discard.
-3. For each candidate `node_psk`, compute HMAC over header + payload; if any HMAC matches, accept and bind the frame to that node. If none match → silently discard.
+3. For each candidate `node_psk`, attempt AES-256-GCM-Open over header + ciphertext; if decryption succeeds, accept and bind the frame to that node. If none succeed → silently discard.
 4. For `WAKE` messages: accept; create an active session for this node (replacing any previous session). For post-WAKE messages: verify the node has an active session and the sequence number matches the expected next value. If no active session or wrong sequence → silently discard.
 5. Advance the session's expected sequence number.
 6. Decode CBOR payload. If malformed → log, discard.
@@ -267,15 +265,15 @@ See [protocol.md §7.2](protocol.md#72--verification-procedure-gateway-inbound) 
 
 ### 3.4  Node verification (inbound from gateway)
 
-1. Compute HMAC over header + payload using the node's own key. If mismatch → discard.
+1. Attempt AES-256-GCM-Open over header + ciphertext using the node's own key. If decryption fails → discard.
 2. Verify that the echoed value in the response header (nonce for WAKE, sequence number for post-WAKE messages) matches the value sent in the corresponding request header. If mismatch → discard.
 3. Decode CBOR payload and process.
 
 See [protocol.md §7.3](protocol.md#73--verification-procedure-node-inbound) for the normative procedure.
 
-### 3.5  No encryption
+### 3.5  Encryption and confidentiality
 
-Authentication provides **integrity** (tamper detection) but **not confidentiality** (secrecy). Traffic on the air can be observed by an attacker. Applications that require confidentiality must encrypt data within the CBOR payload before calling `send()` or `send_recv()`.
+AES-256-GCM provides both **integrity** (tamper detection) and **confidentiality** (payload secrecy). Traffic on the air cannot be observed or modified by an attacker without the PSK. The header (key_hint, msg_type, nonce) is visible but authenticated; the CBOR payload is encrypted.
 
 ---
 
@@ -286,14 +284,14 @@ Authentication provides **integrity** (tamper detection) but **not confidentiali
 Replay protection uses **session-scoped sequence numbers** tied to the WAKE nonce:
 
 - **WAKE messages** include a random 64-bit nonce generated by the node. The nonce identifies the session.
-- **The gateway responds** with a randomly chosen starting sequence number in its COMMAND response (authenticated by HMAC).
+- **The gateway responds** with a randomly chosen starting sequence number in its COMMAND response (authenticated by AEAD).
 - **All subsequent messages in the wake cycle** use incrementing sequence numbers starting from that value. The gateway rejects any message whose sequence number does not match the expected next value for the active session.
 
 No persistent replay-protection state is required on either the node or the gateway. The gateway tracks only active sessions in memory.
 
 ### 4.2  WAKE nonce (session identifier)
 
-Each `WAKE` message includes a 64-bit **nonce** generated by the hardware RNG. The nonce is included in the fixed binary header and is covered by the HMAC. It serves as the **session identifier** — the gateway uses it to associate subsequent messages with this wake cycle.
+Each `WAKE` message includes a 64-bit **nonce** generated by the hardware RNG. The nonce is included in the fixed binary header and is covered by the AEAD. It serves as the **session identifier** — the gateway uses it to associate subsequent messages with this wake cycle.
 
 | Property | Value |
 |---|---|
@@ -332,7 +330,7 @@ The gateway echoes the node's nonce (for WAKE) or sequence number (for subsequen
 
 | Scenario | Gateway behavior |
 |---|---|
-| WAKE with valid HMAC | Accept; create active session with new random starting sequence |
+| WAKE with valid GCM tag | Accept; create active session with new random starting sequence |
 | Post-WAKE message matching an active session with expected seq | Accept; advance expected seq |
 | Post-WAKE message with wrong seq or no matching active session | Silently discard. Log internally. |
 
@@ -345,17 +343,17 @@ The gateway echoes the node's nonce (for WAKE) or sequence number (for subsequen
 
 An attacker who captures an entire wake session (WAKE + all post-WAKE messages) cannot replay it:
 
-1. **Replayed WAKE** — the gateway creates a new active session with a *different* random starting sequence number. The attacker can observe this value in the (unencrypted) COMMAND response, but cannot generate valid follow-up messages without the PSK to compute correct HMACs.
+1. **Replayed WAKE** — the gateway creates a new active session with a *different* random starting sequence number. The attacker can observe the header of the COMMAND response, but cannot decrypt it or generate valid follow-up messages without the PSK.
 2. **Replayed post-WAKE messages** — these carry the *original* session's sequence numbers, which do not match the new session's expected sequence. The gateway rejects them.
 3. **Replayed post-WAKE without replaying WAKE** — there is no active session with the original nonce. The gateway rejects them.
 
-The sequence number is not a secret — it is an anti-replay counter. The HMAC proves authenticity; the sequence number ensures each authenticated message is accepted exactly once within its session.
+The sequence number is not a secret — it is an anti-replay counter. The AEAD proves authenticity; the sequence number ensures each authenticated message is accepted exactly once within its session.
 
 ### 4.8  WAKE replay risk analysis
 
 WAKE messages themselves can be replayed. This is low risk because:
 
-- **The attacker cannot forge follow-up messages.** The gateway's COMMAND reply assigns a new starting sequence, but the attacker cannot use it without the PSK to compute valid HMACs.
+- **The attacker cannot forge follow-up messages.** The gateway's COMMAND reply assigns a new starting sequence, but the attacker cannot use it without the PSK to produce valid AES-256-GCM ciphertexts.
 - **No state corruption.** The gateway creates a new active session that will time out with no further messages. The real node's next wake creates its own independent session.
 - **Operational noise only.** The gateway may log a false wake event or attempt a program update to a node that is not listening. Both are harmless and self-correcting (the gateway times out the session).
 
@@ -374,10 +372,10 @@ Neither the node nor the gateway stores replay-protection state across deep slee
 
 ### 5.1  Key is identity
 
-A node's identity is its pre-shared key, not its `key_hint` or any network address. A message is accepted as originating from a specific node if and only if it passes HMAC verification with that node's PSK.
+A node's identity is its pre-shared key, not its `key_hint` or any network address. A message is accepted as originating from a specific node if and only if AEAD decryption succeeds with that node's PSK.
 
 - `key_hint` is a **lookup optimization** to avoid trying every key in the database. It is not an authenticator.
-- Two nodes with colliding `key_hint` values are disambiguated by HMAC verification: the gateway tries all candidate keys for the hint and accepts the first match.
+- Two nodes with colliding `key_hint` values are disambiguated by AEAD decryption: the gateway tries all candidate keys for the hint and accepts the first successful decryption.
 
 ### 5.2  Node ID binding
 
@@ -402,7 +400,7 @@ The protocol handles all authentication and integrity failures by **silent disca
 | Condition | Gateway behavior | Node behavior |
 |---|---|---|
 | No key matches `key_hint` | Silently discard. Log internally. | N/A |
-| Invalid HMAC | Silently discard. Log internally. | Discard frame. |
+| Invalid GCM tag | Silently discard. Log internally. | Discard frame. |
 | Stale/replayed sequence number | Silently discard. Log internally. | N/A |
 | Nonce mismatch in response | N/A | Discard frame. Retry with backoff. |
 | Malformed CBOR (post-auth) | Silently discard. Log internally. | Discard frame. |
@@ -418,7 +416,7 @@ See [protocol.md §8](protocol.md#8--error-handling) for the full error-handling
 
 ### 7.1  Gateway identity
 
-The gateway has no persistent cryptographic identity. Its authority over nodes derives entirely from possession of the node key database. Any gateway instance loaded with the same key database and program assignments can serve nodes transparently.
+The gateway has no persistent cryptographic identity and no keypair. Its authority over nodes derives entirely from possession of the node key database. Any gateway instance loaded with the same key database and program assignments can serve nodes transparently.
 
 ### 7.2  Key material sharing
 
@@ -448,14 +446,14 @@ All gateway instances in a failover group MUST serve identical programs for any 
 
 | Property | Mechanism | Limitation |
 |---|---|---|
-| Message integrity | HMAC-SHA256 per frame | Not encrypted; content visible to observers |
-| Node authentication | Per-node PSK + HMAC | Key compromise requires factory reset + re-pair |
+| Message integrity | AES-256-GCM per frame (auth + encryption) | Header visible to observers; payload encrypted |
+| Node authentication | Per-node PSK + AEAD | Key compromise requires factory reset + re-pair |
 | Replay protection | Session-scoped sequence numbers (nonce + random starting seq) | WAKE messages are replayable (low risk — see §4.8); no persistent state required |
 | Program integrity | Content hash (`PROGRAM_ACK`) | Gateway key store must be protected |
 | Key storage | Dedicated flash partition | Software-accessible; mitigate with secure boot / flash encryption |
 | Key provisioning | BLE pairing via phone | Requires authorized phone |
-| Delegated pairing | Phone PSK + HMAC authenticates pairing requests | Phone PSK compromise allows rogue registration until revoked |
-| Pairing payload confidentiality | ECDH + AES-256-GCM (gateway public key) | Gateway private key compromise exposes all pairing payloads |
+| Delegated pairing | Phone PSK + AEAD-based authorization of pairing requests | Phone PSK compromise allows rogue registration until revoked |
+| Pairing payload confidentiality | `phone_psk`-based AES-256-GCM | Phone PSK compromise exposes pairing payloads |
 | Identity binding | PSK = node identity | Factory reset + re-pair to revoke / replace identity |
 
 ---
@@ -468,7 +466,7 @@ The security model makes deliberate tradeoffs between security and usability. Th
 
 | | eFuse (hardware fuse) | Flash partition |
 |---|---|---|
-| **Key accessibility** | Hardware-inaccessible after provisioning; only the HMAC peripheral can use the key | Software-accessible; firmware can read the raw key bytes |
+| **Key accessibility** | Hardware-inaccessible after provisioning; only the AES peripheral can use the key | Software-accessible; firmware can read the raw key bytes |
 | **Resistance to firmware compromise** | Compromised firmware cannot extract the key | Compromised firmware can read the key |
 | **Factory reset** | Not possible — key is permanently fused | Supported — key partition can be erased |
 | **Key rotation** | Not possible — node must be physically replaced on compromise | Supported — factory reset + re-pair provisions a new key |
@@ -491,9 +489,9 @@ The security model makes deliberate tradeoffs between security and usability. Th
 | | BLE-mediated pairing (via phone) | Over-the-air (ESP-NOW) pairing |
 |---|---|---|
 | **Channel security** | BLE LESC encrypted transport; MITM possible with Just Works | Broadcast radio; vulnerable to eavesdropping and MITM |
-| **MITM resistance** | BLE MITM can intercept node PSK, but cannot forge the gateway-encrypted pairing payload | Requires a key-agreement protocol with out-of-band verification |
+| **MITM resistance** | BLE MITM can intercept node PSK, but cannot forge the `phone_psk`-encrypted pairing payload | Requires a key-agreement protocol with out-of-band verification |
 | **Convenience** | Phone app over BLE — no cable required | Fully wireless — no physical contact |
-| **Complexity** | Moderate: phone PSK trust delegation, ECDH encryption, HMAC authentication | Complex: secure key-agreement over untrusted radio |
+| **Complexity** | Moderate: phone PSK trust delegation, AES-256-GCM encryption | Complex: secure key-agreement over untrusted radio |
 | **Field usability** | Good — phone app, no special hardware | Good — but security concerns outweigh convenience |
 
 **Chosen: BLE.**

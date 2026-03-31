@@ -31,22 +31,17 @@ This document defines test cases that validate the BLE pairing tool against the 
 | PT-1100 | Required cryptographic primitives | Structural coverage (see table below) |
 | PT-1200 | Mocked BLE transport for CI | Test harness infrastructure (§2); all CI tests use `MockBleTransport` |
 | PT-1201 | Phase 1 happy path | T-PT-208 |
-| PT-1202 | Phase 1 error paths | T-PT-203, T-PT-204, T-PT-206, T-PT-209, T-PT-210, T-PT-211, T-PT-212 |
+| PT-1202 | Phase 1 error paths | T-PT-209, T-PT-210, T-PT-211 |
 | PT-1203 | Phase 2 happy path | T-PT-311 |
 | PT-1204 | Phase 2 error paths | T-PT-300, T-PT-310, T-PT-312, T-PT-313, T-PT-314 |
 | PT-1205 | Input validation | T-PT-303, T-PT-304, T-PT-305, T-PT-306 |
 | PT-1206 | Manual testing on physical hardware | Manual test procedures in §10 (T-PT-800–T-PT-807) |
 
-**Cryptographic primitive coverage (PT-1100):** PT-1100 requires all eight cryptographic primitives to be implemented.  Rather than a single aggregate test, coverage is provided structurally by the test suite's dependency on each primitive:
+**Cryptographic primitive coverage (PT-1100):** PT-1100 requires the cryptographic primitives to be implemented.  Rather than a single aggregate test, coverage is provided structurally by the test suite's dependency on each primitive:
 
 | Primitive | Test(s) exercising it |
 |---|---|
-| Ed25519 signature verification | T-PT-202, T-PT-203 |
-| X25519 ECDH | T-PT-208, T-PT-308 |
-| Ed25519 → X25519 conversion | T-PT-309 |
-| HKDF-SHA256 | T-PT-900, T-PT-901 |
-| AES-256-GCM | T-PT-212, T-PT-902 |
-| HMAC-SHA256 | T-PT-307 |
+| AES-256-GCM | T-PT-307, T-PT-308, T-PT-902 |
 | SHA-256 | T-PT-303 |
 | CSPRNG | T-PT-302, T-PT-702 |
 
@@ -62,7 +57,7 @@ An in-process `BleTransport` implementation that:
 
 - Simulates BLE scan results (service UUIDs, advertising names, RSSI).
 - Simulates GATT connections with configurable MTU negotiation.
-- Queues indication responses (e.g., `GW_INFO_RESPONSE`, `PHONE_REGISTERED`, `NODE_ACK`).
+- Queues indication responses (e.g., `PHONE_REGISTERED`, `NODE_ACK`).
 - Captures outbound GATT writes (for assertion).
 - Supports error injection: connection failure, timeout, malformed indication, mid-operation disconnect.
 
@@ -70,7 +65,7 @@ An in-process `BleTransport` implementation that:
 
 An in-memory `PairingStore` implementation that:
 
-- Stores and retrieves pairing artifacts (`gw_public_key`, `gateway_id`, `phone_psk`, `phone_key_hint`, `rf_channel`, `phone_label`).
+- Stores and retrieves pairing artifacts (`phone_psk`, `phone_key_hint`, `rf_channel`, `phone_label`).
 - Supports clear/reset operations.
 - Can be pre-loaded with test data or left empty.
 - Can be configured to simulate corruption (return errors on read).
@@ -81,12 +76,8 @@ All tests use clearly non-zero keys to avoid normalizing insecure patterns:
 
 ```
 TEST_PSK:        [0x42u8; 32]
-TEST_GATEWAY_ID: [0xAAu8; 16]
-TEST_CHALLENGE:  [0xBBu8; 32]
 TEST_NODE_PSK:   [0x55u8; 32]
 ```
-
-Ed25519 and X25519 keypairs are generated from fixed seeds for reproducibility.
 
 ### 2.4  Test gateway helper
 
@@ -94,13 +85,7 @@ A helper that constructs valid BLE indication payloads:
 
 ```
 TestGateway {
-    signing_key: Ed25519SigningKey,
-    gateway_id: [u8; 16],
-    eph_keypair: X25519EphemeralKeyPair,
-
-    fn gw_info_response(challenge: &[u8; 32]) -> Vec<u8>
-    fn phone_registered(eph_public: &[u8; 32], phone_psk: &[u8; 32],
-                        phone_key_hint: u16, rf_channel: u8) -> Vec<u8>
+    fn register_ack(status: u8, phone_key_hint: u16, rf_channel: u8) -> Vec<u8>
     fn error_response(code: u8) -> Vec<u8>
 }
 ```
@@ -295,7 +280,7 @@ TestNode {
 1. Start a mock BLE scan.
 2. Assert: status shows "Scanning".
 3. Select a gateway device and initiate pairing.
-4. Assert: status transitions through "Connecting" → "Authenticating" → "Registering" → "Complete" (or "Error" on failure).
+4. Assert: status transitions through "Connecting" → "Registering" → "Complete" (or "Error" on failure).
 5. Assert: phase transitions are immediate and unambiguous.
 
 ---
@@ -308,7 +293,7 @@ TestNode {
 1. Enable verbose diagnostic mode (toggle or flag).
 2. Run a complete Phase 1 pairing flow with mock transport.
 3. Assert: verbose output includes raw BLE event names, message types, and timing.
-4. Assert: verbose output does NOT include key material (PSKs, private keys, shared secrets).
+4. Assert: verbose output does NOT include key material (PSKs, private keys, AES keys).
 5. Disable verbose mode and repeat.
 6. Assert: no diagnostic output appears in default mode.
 
@@ -369,87 +354,51 @@ TestNode {
 
 ### T-PT-202  Gateway authentication happy path (signature verification)
 
-**Validates:** PT-0301
-
-**Procedure:**
-1. Configure mock transport with a `TestGateway` that returns a valid `GW_INFO_RESPONSE` (correct Ed25519 signature over `challenge ‖ gateway_id`).
-2. Initiate Phase 1.
-3. Assert: tool writes `REQUEST_GW_INFO` containing a 32-byte challenge.
-4. Assert: signature verification succeeds.
-5. Assert: tool proceeds to phone registration.
+> **RETIRED (issue #495).** Gateway authentication via Ed25519 signature verification removed; the simplified pairing flow relies on LESC Numeric Comparison for gateway identity assurance.
 
 ---
 
 ### T-PT-203  Gateway authentication failure (bad signature)
 
-**Validates:** PT-0301
-
-**Procedure:**
-1. Configure mock transport with a `GW_INFO_RESPONSE` containing an invalid signature (corrupted last byte).
-2. Initiate Phase 1.
-3. Assert: tool disconnects.
-4. Assert: error message contains "gateway authentication failed".
+> **RETIRED (issue #495).** Ed25519 signature verification removed from the pairing protocol. LESC Numeric Comparison provides authentication.
 
 ---
 
 ### T-PT-204  GW_INFO_RESPONSE timeout (45 s)
 
-**Validates:** PT-0301
-
-**Procedure:**
-1. Configure mock transport to never send `GW_INFO_RESPONSE`.
-2. Initiate Phase 1.
-3. Assert: after 45 s, the tool disconnects.
-4. Assert: error message indicates timeout on gateway authentication.
+> **RETIRED (issue #495).** `REQUEST_GW_INFO` / `GW_INFO_RESPONSE` messages removed from the pairing protocol.
 
 ---
 
 ### T-PT-205  TOFU — first connection persists public key
 
-**Validates:** PT-0302
-
-**Procedure:**
-1. Start with an empty pairing store.
-2. Complete a successful Phase 1 (phone registration) flow through to `PHONE_REGISTERED`.
-3. Assert: `gw_public_key` and `gateway_id` are persisted in the pairing store.
+> **RETIRED (issue #495).** TOFU pinning of gateway public key removed; LESC Numeric Comparison replaces gateway identity verification.
 
 ---
 
 ### T-PT-206  TOFU — mismatched public key rejected
 
-**Validates:** PT-0302
-
-**Procedure:**
-1. Pre-load pairing store with a `gw_public_key` from a previous successful pairing.
-2. Configure mock transport with a gateway presenting a **different** public key.
-3. Initiate Phase 1.
-4. Assert: tool rejects the connection before proceeding to registration.
-5. Assert: error message indicates public key mismatch.
+> **RETIRED (issue #495).** TOFU pinning of gateway public key removed from the pairing protocol.
 
 ---
 
 ### T-PT-207  TOFU — operator can clear pinned identity
 
-**Validates:** PT-0302
-
-**Procedure:**
-1. Pre-load pairing store with a `gw_public_key`.
-2. Invoke the clear/reset operation on the pairing store.
-3. Assert: `gw_public_key` and `gateway_id` are removed.
-4. Assert: a subsequent Phase 1 with a new gateway succeeds (TOFU accepts the new key).
+> **RETIRED (issue #495).** TOFU identity pinning removed; no gateway public key is stored.
 
 ---
 
-### T-PT-208  Phone registration happy path (ECDH + decrypt)
+### T-PT-208  Phone registration happy path
 
 **Validates:** PT-0303
 
 **Procedure:**
-1. Configure mock transport with a `TestGateway` that returns a valid `PHONE_REGISTERED` (encrypted with the tool's ephemeral public key).
-2. Complete gateway authentication, then proceed to registration.
-3. Assert: tool writes `REGISTER_PHONE` with an ephemeral X25519 public key and operator label.
-4. Assert: tool successfully decrypts `PHONE_REGISTERED`.
-5. Assert: `phone_psk`, `phone_key_hint`, `rf_channel`, `gw_public_key`, and `gateway_id` are persisted.
+1. Configure mock transport with a `TestGateway` that returns a valid `PHONE_REGISTERED (0x82)` message with status `0x00`, `phone_key_hint`, and `rf_channel`.
+2. Initiate Phase 1. After connection, proceed to registration.
+3. Assert: tool generates a 32-byte `phone_psk` via the injectable RNG provider.
+4. Assert: tool writes `REGISTER_PHONE` containing the phone-generated `phone_psk` and operator label.
+5. Assert: tool receives `PHONE_REGISTERED` with status `0x00`.
+6. Assert: `phone_psk`, `phone_key_hint`, and `rf_channel` are persisted.
 
 ---
 
@@ -473,7 +422,7 @@ TestNode {
 
 **Procedure:**
 1. Configure mock transport to respond with `ERROR(0x02)` after `REGISTER_PHONE`.
-2. Initiate Phase 1 through authentication.
+2. Initiate Phase 1.
 3. Assert: tool disconnects.
 4. Assert: error message contains "registration window not open".
 
@@ -485,7 +434,7 @@ TestNode {
 
 **Procedure:**
 1. Configure mock transport to respond with `ERROR(0x03)` after `REGISTER_PHONE`.
-2. Initiate Phase 1 through authentication.
+2. Initiate Phase 1.
 3. Assert: tool disconnects.
 4. Assert: error message contains "already paired".
 
@@ -497,7 +446,7 @@ TestNode {
 
 **Procedure:**
 1. Configure mock transport to never send `PHONE_REGISTERED`.
-2. Initiate Phase 1 through authentication and write `REGISTER_PHONE`.
+2. Initiate Phase 1 and write `REGISTER_PHONE`.
 3. Assert: after 30 s, the tool disconnects.
 4. Assert: error message indicates timeout on phone registration.
 
@@ -505,24 +454,18 @@ TestNode {
 
 ### T-PT-212  Decryption failure (bad GCM tag)
 
-**Validates:** PT-0303
-
-**Procedure:**
-1. Configure mock transport to return a `PHONE_REGISTERED` payload with a corrupted GCM tag (flip last byte of ciphertext).
-2. Initiate Phase 1 through authentication and write `REGISTER_PHONE`.
-3. Assert: tool disconnects.
-4. Assert: error message contains "ephemeral key mismatch" or "decryption failed".
+> **RETIRED (issue #495).** The simplified registration flow returns a plaintext status ACK; there is no encrypted `PHONE_REGISTERED` response to decrypt.
 
 ---
 
-### T-PT-213  Ephemeral key zeroing after use
+### T-PT-213  Key material zeroing after use
 
 **Validates:** PT-0304
 
 **Procedure:**
 1. Complete a successful Phase 1 flow.
-2. Assert: the ephemeral X25519 private key, ECDH shared secret, and derived AES key are wrapped in `Zeroizing`.
-3. Assert: after Phase 1 completes, these values are dropped (verified structurally by type signatures using `Zeroizing<[u8; N]>`).
+2. Assert: `phone_psk` is wrapped in `Zeroizing` during the registration flow.
+3. Assert: after Phase 1 completes and the PSK is persisted, the in-memory copy is dropped (verified structurally by type signatures using `Zeroizing<[u8; N]>`).
 
 ---
 
@@ -617,41 +560,37 @@ TestNode {
 
 ---
 
-### T-PT-307  Phone HMAC authentication
+### T-PT-307  Phone PSK authentication (AES-256-GCM)
 
-**Validates:** PT-0404
+**Validates:** PT-1102
 
 **Procedure:**
 1. Construct a PairingRequest CBOR with known fields and `phone_psk = [0x42u8; 32]`.
-2. Compute expected HMAC = `HMAC-SHA256([0x42u8; 32], cbor_bytes)`.
-3. Assert: the authenticated request is `phone_key_hint[2] ‖ cbor_bytes ‖ hmac[32]`.
-4. Assert: `phone_key_hint` matches `u16::from_be_bytes(SHA-256([0x42u8; 32])[30..32])`.
+2. Encrypt with AES-256-GCM using `phone_psk` as the key and a 12-byte random nonce.
+3. Assert: the encrypted payload format is `nonce[12] ‖ ciphertext_with_tag`.
+4. Assert: the 16-byte GCM authentication tag is appended to the ciphertext.
+5. Decrypt with the same `phone_psk` and nonce.
+6. Assert: decrypted plaintext matches the original CBOR bytes.
 
 ---
 
-### T-PT-308  Gateway public key encryption (ECDH + HKDF + AES-GCM)
+### T-PT-308  Payload encryption (AES-256-GCM with phone_psk)
 
-**Validates:** PT-0405
+**Validates:** PT-0407, PT-1102
 
 **Procedure:**
-1. Use a known Ed25519 public key (from `TestGateway`) and `gateway_id = [0xAAu8; 16]`.
-2. Encrypt the authenticated request using the Phase 2 encryption flow.
-3. Assert: output format is `eph_public[32] ‖ nonce[12] ‖ ciphertext`.
-4. Assert: HKDF uses salt = `gateway_id`, info = `"sonde-node-pair-v1"`, output = 32 bytes.
-5. Assert: AES-256-GCM AAD = `gateway_id`.
-6. Decrypt using the `TestGateway`'s private key and verify round-trip.
+1. Use `phone_psk = [0x42u8; 32]` and a known PairingRequest CBOR payload.
+2. Encrypt the payload using AES-256-GCM with `phone_psk` as the key.
+3. Assert: output format is `nonce[12] ‖ ciphertext_with_tag`.
+4. Assert: nonce is 12 bytes generated via the injectable RNG provider.
+5. Assert: the 16-byte GCM tag provides both confidentiality and authenticity.
+6. Decrypt using the same `phone_psk` and verify round-trip.
 
 ---
 
 ### T-PT-309  Ed25519 → X25519 low-order point rejection
 
-**Validates:** PT-0405, PT-0902
-
-**Procedure:**
-1. Construct an Ed25519 public key that maps to a low-order X25519 point.
-2. Attempt the Ed25519 → X25519 conversion.
-3. Assert: conversion returns an error.
-4. Assert: error message contains "invalid gateway public key".
+> **RETIRED (issue #495).** Ed25519 → X25519 key conversion removed; the simplified pairing flow uses `phone_psk` directly as the AES-256-GCM key.
 
 ---
 
@@ -675,7 +614,7 @@ TestNode {
 1. Pre-load pairing store with valid Phase 1 artifacts.
 2. Configure mock transport to return `NODE_ACK(0x00)` after `NODE_PROVISION` write.
 3. Initiate Phase 2 with `node_id = "sensor-01"`.
-4. Assert: tool writes `NODE_PROVISION` as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload`.
+4. Assert: tool writes `NODE_PROVISION` as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ phone_key_hint[2] ‖ phone_psk[32] ‖ payload_len[2, BE u16] ‖ encrypted_payload`.
 5. Assert: success output includes `node_id`, `node_key_hint`, and `rf_channel`.
 
 ---
@@ -721,7 +660,7 @@ TestNode {
 **Procedure:**
 1. Complete a successful Phase 2 flow.
 2. Assert: `node_psk` is wrapped in `Zeroizing` and dropped after the `NODE_PROVISION` write succeeds.
-3. Assert: all ephemeral keys, shared secrets, and derived AES keys from Phase 2 encryption are also zeroed (verified structurally by type signatures).
+3. Assert: all AES-256-GCM keys and nonces from Phase 2 encryption are also zeroed (verified structurally by type signatures).
 
 ---
 
@@ -746,7 +685,7 @@ TestNode {
 **Validates:** PT-0501
 
 **Procedure:**
-1. Trigger each of the following errors: BLE adapter disabled, MTU too low, signature verification failure, `ERROR(0x02)`, `ERROR(0x03)`, `NODE_ACK(0x01)`, timeout.
+1. Trigger each of the following errors: BLE adapter disabled, MTU too low, `ERROR(0x02)`, `ERROR(0x03)`, `NODE_ACK(0x01)`, timeout.
 2. Assert: every error message includes at least one actionable sentence (e.g., "enable Bluetooth", "ask operator to open registration window").
 3. Assert: no error message consists solely of a code or internal identifier.
 
@@ -758,8 +697,8 @@ TestNode {
 
 **Procedure:**
 1. Start with an empty pairing store.
-2. Initiate Phase 1 and inject a failure after gateway authentication but before registration completes (e.g., timeout on `PHONE_REGISTERED`).
-3. Assert: pairing store is unchanged (no `phone_psk`, no `gw_public_key` persisted).
+2. Initiate Phase 1 and inject a failure before registration completes (e.g., timeout on `PHONE_REGISTERED`).
+3. Assert: pairing store is unchanged (no `phone_psk` persisted).
 4. Pre-load pairing store with Phase 1 artifacts. Initiate Phase 2 and inject a failure (e.g., `NODE_ACK(0x02)`).
 5. Assert: pairing store is unchanged (no node-related data added).
 
@@ -796,9 +735,9 @@ TestNode {
 **Validates:** PT-0601
 
 **Procedure:**
-1. Pre-load pairing store with a `gw_public_key`.
+1. Pre-load pairing store with a `phone_psk`.
 2. Initiate Phase 1.
-3. Assert: tool warns that a gateway identity is already stored.
+3. Assert: tool warns that a gateway pairing is already stored.
 4. Simulate operator choosing to proceed.
 5. Assert: Phase 1 continues normally.
 
@@ -811,7 +750,7 @@ TestNode {
 **Validates:** PT-0800
 
 **Procedure:**
-1. Write test artifacts to the mock pairing store: `gw_public_key`, `gateway_id`, `phone_psk`, `phone_key_hint`, `rf_channel`, `phone_label`.
+1. Write test artifacts to the mock pairing store: `phone_psk`, `phone_key_hint`, `rf_channel`, `phone_label`.
 2. Read all fields back.
 3. Assert: every field matches the written value exactly.
 
@@ -901,7 +840,7 @@ TestNode {
 
 **Procedure:**
 1. Complete a full Phase 1 + Phase 2 flow with tracing output captured at default level.
-2. Search captured log output for any occurrence of `phone_psk`, `node_psk`, ephemeral private key bytes, shared secret bytes, or AES key bytes.
+2. Search captured log output for any occurrence of `phone_psk`, `node_psk`, or AES key bytes.
 3. Assert: no key material appears in the captured output.
 
 ---
@@ -925,7 +864,7 @@ TestNode {
 **Procedure:**
 1. The pairing core MUST accept an injectable RNG provider trait.
 2. In CI, inject a mock RNG provider and run the full Phase 1 + Phase 2 flows.
-3. Assert: all random values (challenges, ephemeral keys, node PSKs, nonces) are sourced from the mock provider.
+3. Assert: all random values (node PSKs, nonces) are sourced from the mock provider.
 4. Assert: no direct calls to `rand::rng()` exist in the pairing crate (enforced via a `#![deny(clippy::disallowed_methods)]` or equivalent CI lint rule).
 
 ---
@@ -948,7 +887,7 @@ TestNode {
 **Validates:** PT-1000
 
 **Procedure:**
-1. Initiate Phase 1 and inject a BLE disconnect after `REQUEST_GW_INFO` is written but before `GW_INFO_RESPONSE` arrives.
+1. Initiate Phase 1 and inject a BLE disconnect after `REGISTER_PHONE` is written but before `PHONE_REGISTERED` arrives.
 2. Assert: tool returns to idle/scanning state without crash.
 3. Assert: operator can start a new scan and retry without restarting the application.
 
@@ -959,7 +898,7 @@ TestNode {
 **Validates:** PT-1001
 
 **Procedure:**
-1. Run 10 consecutive Phase 1 attempts that fail at different stages (connection failure, timeout, signature failure, decryption failure).
+1. Run 10 consecutive Phase 1 attempts that fail at different stages (connection failure, timeout, registration error).
 2. Assert: after each failure, mock transport reports no open connections and no active GATT subscriptions.
 
 ---
@@ -970,11 +909,10 @@ TestNode {
 
 **Procedure:**
 1. Inspect the timeout constants used by the pairing state machine.
-2. Assert: `GW_INFO_RESPONSE` timeout = 45 s.
-3. Assert: `PHONE_REGISTERED` timeout = 30 s.
-4. Assert: `NODE_ACK` timeout = 5 s.
-5. Assert: BLE scan default timeout = 30 s.
-6. Assert: BLE connection establishment timeout = 10 s.
+2. Assert: `PHONE_REGISTERED` timeout = 30 s.
+3. Assert: `NODE_ACK` timeout = 5 s.
+4. Assert: BLE scan default timeout = 30 s.
+5. Assert: BLE connection establishment timeout = 10 s.
 
 ---
 
@@ -1011,7 +949,7 @@ TestNode {
 **Procedure:**
 1. Configure the mock BLE transport to silently fall back to Just Works (no passkey displayed).
 2. Attempt Phase 1 gateway pairing.
-3. Assert: transport rejects the connection before proceeding to `REQUEST_GW_INFO`.
+3. Assert: transport rejects the connection before proceeding to `REGISTER_PHONE`.
 4. Assert: error message indicates the pairing mode is insecure.
 
 ---
@@ -1047,40 +985,26 @@ TestNode {
 
 ### T-PT-900  HKDF parameters correct for Phase 1
 
-**Validates:** PT-1101
-
-**Procedure:**
-1. Using known inputs (`gateway_id = [0xAAu8; 16]`, a fixed ECDH shared secret), derive the AES key for Phase 1 decryption.
-2. Assert: HKDF salt = `gateway_id`.
-3. Assert: HKDF info = `"sonde-phone-reg-v1"`.
-4. Assert: output length = 32 bytes.
-5. Assert: derived key matches a precomputed expected value.
+> **RETIRED (issue #495).** HKDF key derivation removed; the simplified pairing flow uses `phone_psk` directly as the AES-256-GCM key.
 
 ---
 
 ### T-PT-901  HKDF parameters correct for Phase 2
 
-**Validates:** PT-1101
-
-**Procedure:**
-1. Using known inputs (`gateway_id = [0xAAu8; 16]`, a fixed ECDH shared secret), derive the AES key for Phase 2 encryption.
-2. Assert: HKDF salt = `gateway_id`.
-3. Assert: HKDF info = `"sonde-node-pair-v1"`.
-4. Assert: output length = 32 bytes.
-5. Assert: derived key matches a precomputed expected value.
+> **RETIRED (issue #495).** HKDF key derivation removed; Phase 2 encryption uses `phone_psk` directly as the AES-256-GCM key.
 
 ---
 
-### T-PT-902  AES-GCM AAD = gateway_id
+### T-PT-902  AES-256-GCM with phone_psk round-trip
 
 **Validates:** PT-1102
 
 **Procedure:**
-1. Encrypt a test payload using the Phase 2 encryption flow with `gateway_id = [0xAAu8; 16]`.
-2. Decrypt using the same key and `AAD = [0xAAu8; 16]`.
+1. Encrypt a test payload using AES-256-GCM with `phone_psk = [0x42u8; 32]` and a 12-byte nonce.
+2. Decrypt using the same `phone_psk` and nonce.
 3. Assert: decryption succeeds and plaintext matches.
-4. Attempt decryption with `AAD = [0xBBu8; 16]`.
-5. Assert: decryption fails (GCM tag mismatch).
+4. Attempt decryption with a different key `[0x43u8; 32]`.
+5. Assert: decryption fails (GCM authentication tag mismatch).
 
 ---
 
@@ -1147,7 +1071,7 @@ TestNode {
 2. Assert: captured logs contain `trace` events for each `BLE write` with `msg` type name and `len`.
 3. Assert: captured logs contain `trace` events for each `BLE indication received` with `msg_type` and `len` fields.
 4. Assert: transport-level `debug` events for `GATT write complete` include `characteristic` and `len`.
-5. Assert: no log event contains raw PSK, private key, or shared secret bytes.
+5. Assert: no log event contains raw PSK or private key bytes.
 
 ---
 
@@ -1180,9 +1104,9 @@ TestNode {
 **Validates:** PT-1212
 
 **Procedure:**
-1. Configure a mock transport to cause a `GW_INFO_RESPONSE` timeout (45 s).
+1. Configure a mock transport to cause a `PHONE_REGISTERED` timeout (30 s).
 2. Run Phase 1, capture the error, and capture tracing output (e.g., with `#[traced_test]`).
-3. Assert: the error is `PairingError::IndicationTimeout` and the captured logs include an event for the `GW_INFO_RESPONSE` timeout with fields for the operation name and timeout duration (45 s).
+3. Assert: the error is `PairingError::IndicationTimeout` and the captured logs include an event for the `PHONE_REGISTERED` timeout with fields for the operation name and timeout duration (30 s).
 4. Configure a mock transport to return an `ERROR` response with status `0x02`.
 5. Run Phase 1 and capture the error.
 6. Assert: the error includes the status code in its display output.
@@ -1239,19 +1163,19 @@ TestNode {
 | T-PT-114 | PT-0108 | JNI classloader caching on background threads |
 | T-PT-200 | PT-0300 | MTU negotiation ≥ 247 |
 | T-PT-201 | PT-0300 | MTU < 247 → disconnect + error |
-| T-PT-202 | PT-0301 | Gateway authentication happy path |
-| T-PT-203 | PT-0301 | Gateway authentication failure (bad signature) |
-| T-PT-204 | PT-0301 | GW_INFO_RESPONSE timeout (45 s) |
-| T-PT-205 | PT-0302 | TOFU — first connection persists public key |
-| T-PT-206 | PT-0302 | TOFU — mismatched public key rejected |
-| T-PT-207 | PT-0302 | TOFU — operator can clear pinned identity |
+| T-PT-202 | ~~PT-0301~~ | ~~Gateway authentication happy path~~ — RETIRED |
+| T-PT-203 | ~~PT-0301~~ | ~~Gateway authentication failure (bad signature)~~ — RETIRED |
+| T-PT-204 | ~~PT-0301~~ | ~~GW_INFO_RESPONSE timeout (45 s)~~ — RETIRED |
+| T-PT-205 | ~~PT-0302~~ | ~~TOFU — first connection persists public key~~ — RETIRED |
+| T-PT-206 | ~~PT-0302~~ | ~~TOFU — mismatched public key rejected~~ — RETIRED |
+| T-PT-207 | ~~PT-0302~~ | ~~TOFU — operator can clear pinned identity~~ — RETIRED |
 | T-PT-208 | PT-0303 | Phone registration happy path |
 | T-PT-208a | PT-0303 | Phone label validation |
 | T-PT-209 | PT-0303 | ERROR(0x02) — registration window closed |
 | T-PT-210 | PT-0303 | ERROR(0x03) — already paired |
 | T-PT-211 | PT-0303 | PHONE_REGISTERED timeout (30 s) |
-| T-PT-212 | PT-0303 | Decryption failure (bad GCM tag) |
-| T-PT-213 | PT-0304 | Ephemeral key zeroing after use |
+| T-PT-212 | ~~PT-0303~~ | ~~Decryption failure (bad GCM tag)~~ — RETIRED |
+| T-PT-213 | PT-0304 | Key material zeroing after use |
 | T-PT-300 | PT-0400 | Phase 1 prerequisite check |
 | T-PT-301 | PT-0401 | Node MTU negotiation |
 | T-PT-302 | PT-0402 | Node PSK generation (32 bytes, CSPRNG) |
@@ -1259,10 +1183,10 @@ TestNode {
 | T-PT-304 | PT-0403 | PairingRequest CBOR deterministic encoding |
 | T-PT-305 | PT-0403 | node_id validation |
 | T-PT-306 | PT-0403 | rf_channel validation |
-| T-PT-307 | PT-0404 | Phone HMAC authentication |
-| T-PT-308 | PT-0405 | Gateway public key encryption |
-| T-PT-309 | PT-0405, PT-0902 | Ed25519 → X25519 low-order point rejection |
-| T-PT-310 | PT-0406 | Payload size > 202 bytes rejected |
+| T-PT-307 | PT-1102 | Phone PSK authentication (AES-256-GCM) |
+| T-PT-308 | PT-0407, PT-1102 | Payload encryption (AES-256-GCM with phone_psk) |
+| T-PT-309 | ~~PT-0405, PT-0902~~ | ~~Ed25519 → X25519 low-order point rejection~~ — RETIRED |
+| T-PT-310 | PT-0406 | Payload size > 218 bytes rejected |
 | T-PT-311 | PT-0407 | NODE_PROVISION happy path → NODE_ACK(0x00) |
 | T-PT-312 | PT-0407 | NODE_ACK(0x01) — already paired |
 | T-PT-313 | PT-0407 | NODE_ACK(0x02) — storage error |
@@ -1293,9 +1217,9 @@ TestNode {
 | T-PT-805 | PT-0904 | Just Works fallback rejected |
 | T-PT-806 | PT-0107 | Android lifecycle pause/resume during pairing |
 | T-PT-807 | PT-0108 | JNI classloader caching on background thread |
-| T-PT-900 | PT-1101 | HKDF parameters correct for Phase 1 |
-| T-PT-901 | PT-1101 | HKDF parameters correct for Phase 2 |
-| T-PT-902 | PT-1102 | AES-GCM AAD = gateway_id |
+| T-PT-900 | ~~PT-1101~~ | ~~HKDF parameters correct for Phase 1~~ — RETIRED |
+| T-PT-901 | ~~PT-1101~~ | ~~HKDF parameters correct for Phase 2~~ — RETIRED |
+| T-PT-902 | PT-1102 | AES-256-GCM with phone_psk round-trip |
 | T-PT-903 | PT-1103 | CBOR deterministic encoding (known test vector) |
 | T-PT-1004 | PT-1004 | Core crate builds and works without platform features |
 | T-PT-1207 | PT-1207 | BLE scan events logged |

@@ -11,17 +11,17 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `HmacProvider` and `Sha256Provider`. There are 59 test cases total.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `AeadProvider` and `Sha256Provider`. There are 61 test cases total.
 
 ### Traceability note
 
 The protocol specification (`protocol.md`) uses prose-based assertions without formal requirement IDs (e.g., `[PR-NNNN]`). Test cases in this document reference `protocol.md` section numbers for traceability (e.g., `**Validates:** protocol.md §3.1`). A future pass should add formal requirement identifiers to `protocol.md` to enable precise requirement-to-test mapping.
 
-### Test HMAC/SHA providers
+### Test AEAD/SHA providers
 
 ```rust
-struct SoftwareHmac;
-impl HmacProvider for SoftwareHmac { /* RustCrypto hmac+sha2 */ }
+struct SoftwareAead;
+impl AeadProvider for SoftwareAead { /* RustCrypto aes-gcm */ }
 
 struct SoftwareSha256;
 impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
@@ -83,71 +83,76 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P010  Encode and decode round-trip
 
-**Validates:** protocol.md §3 (Frame format — header ∥ payload ∥ HMAC layout)
+**Validates:** protocol.md §3 (Frame format — header ∥ ciphertext ∥ GCM tag layout)
 
 **Procedure:**
 1. Create a header and CBOR payload.
 2. Encode with `encode_frame()`.
-3. Decode with `decode_frame()`.
-4. Assert: header matches, payload matches, HMAC matches.
+3. Call `decode_frame()` — assert it succeeds and header fields match.
+4. Call `open_frame()` with the same PSK — assert the decrypted payload matches the original.
 
 ---
 
-### T-P011  HMAC verification — valid
+### T-P011  AES-256-GCM encryption applied correctly on encode
 
-**Validates:** protocol.md §7.1 (HMAC computation)
+**Validates:** protocol.md §7.1 (AES-256-GCM authenticated encryption)
 
 **Procedure:**
-1. Encode a frame with PSK_A.
-2. Decode and verify with PSK_A.
-3. Assert: `verify_frame()` returns true.
+1. Encode a frame with PSK_A using `encode_frame()`.
+2. Call `decode_frame()` on the raw bytes — assert it succeeds and returns a `DecodedFrame`.
+3. Call `open_frame()` with PSK_A — assert it succeeds.
+4. Assert: the decrypted plaintext matches the original CBOR payload.
 
 ---
 
-### T-P012  HMAC verification — wrong key
+### T-P012  AES-256-GCM rejects wrong key
 
-**Validates:** protocol.md §7.1 (HMAC computation — key mismatch)
+**Validates:** protocol.md §7.1 (AES-256-GCM authenticated encryption — key mismatch)
 
 **Procedure:**
-1. Encode a frame with PSK_A.
-2. Decode and verify with PSK_B.
-3. Assert: `verify_frame()` returns false.
+1. Encode a frame with PSK_A using `encode_frame()`.
+2. Call `decode_frame()` on the raw bytes — assert it succeeds.
+3. Call `open_frame()` with PSK_B.
+4. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed` (GCM tag mismatch).
 
 ---
 
-### T-P013  HMAC verification — tampered payload
+### T-P013  Payload tampered → GCM tag mismatch → rejected
 
-**Validates:** protocol.md §3.2 (HMAC covers header + payload), §7.1
+**Validates:** protocol.md §3.2 (GCM AAD = header, ciphertext covers payload), §7.1
 
 **Procedure:**
 1. Encode a frame.
-2. Flip one bit in the payload portion of the raw bytes.
-3. Decode and verify with the correct PSK.
-4. Assert: `verify_frame()` returns false.
+2. Flip one bit in the ciphertext portion of the raw bytes.
+3. Call `decode_frame(raw)` — assert it succeeds.
+4. Call `open_frame()` with the correct PSK.
+5. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed`.
 
 ---
 
-### T-P014  HMAC verification — tampered header
+### T-P014  Header tampered → GCM tag mismatch → rejected
 
-**Validates:** protocol.md §3.2 (HMAC covers header + payload), §7.1
+**Validates:** protocol.md §3.2 (GCM AAD = header), §7.1
 
 **Procedure:**
 1. Encode a frame.
 2. Flip one bit in the header portion (e.g., msg_type).
-3. Decode and verify.
-4. Assert: `verify_frame()` returns false.
+3. Call `decode_frame()` — assert it succeeds.
+4. Call `open_frame()` with the correct PSK.
+5. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed`.
 
 ---
 
-### T-P015  HMAC verification — tampered HMAC
+### T-P015  GCM tag tampered → rejected
 
-**Validates:** protocol.md §7.1 (HMAC computation — tag integrity)
+**Validates:** protocol.md §7.1 (AES-256-GCM — tag integrity)
 
 **Procedure:**
 1. Encode a frame.
-2. Flip one bit in the HMAC trailer.
-3. Decode and verify.
-4. Assert: `verify_frame()` returns false.
+2. Flip one bit in the 16-byte GCM tag at the end of the frame.
+3. Call `decode_frame()` — assert it succeeds.
+4. Call `open_frame()` with the correct PSK.
+5. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed`.
 
 ---
 
@@ -156,7 +161,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol.md §3.3 (Frame size budget — minimum frame size)
 
 **Procedure:**
-1. Call `decode_frame()` with 42 bytes (less than MIN_FRAME_SIZE).
+1. Call `decode_frame()` with 26 bytes (less than MIN_FRAME_SIZE).
 2. Assert: `DecodeError::TooShort`.
 
 ---
@@ -167,7 +172,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 **Procedure:**
 1. Encode a frame with empty payload.
-2. Assert: total length = 43 (11 header + 0 payload + 32 HMAC).
+2. Assert: total length = 27 (11 header + 0 ciphertext + 16 GCM tag).
 3. Decode succeeds.
 
 ---
@@ -184,10 +189,10 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P019  Frame exactly max size
 
-**Validates:** protocol.md §3.3 (Frame size budget — 250-byte maximum, 207-byte payload)
+**Validates:** protocol.md §3.3 (Frame size budget — 250-byte maximum, 223-byte payload)
 
 **Procedure:**
-1. Encode a frame with payload exactly 207 bytes.
+1. Encode a frame with payload exactly 223 bytes.
 2. Assert: total length = 250.
 3. Decode succeeds.
 
@@ -210,9 +215,10 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 **Procedure:**
 1. Construct an invalid CBOR payload (e.g., raw bytes `[0xFF, 0xFF]`).
-2. Build a frame for a WAKE message (`msg_type = MSG_WAKE`) with a valid header and a valid HMAC computed over the header + these invalid CBOR bytes, so that `decode_frame()` succeeds and yields `MSG_WAKE` and the payload unchanged.
-3. Call `NodeMessage::decode(MSG_WAKE, &payload)`.
-4. Assert: returns `DecodeError::CborError`.
+2. Build a frame for a WAKE message (`msg_type = MSG_WAKE`) with a valid header and AES-256-GCM encryption applied over the header + these invalid CBOR bytes, such that `decode_frame()` parses the frame successfully.
+3. Call `open_frame()` on the parsed frame to obtain the decrypted (but still invalid) plaintext bytes.
+4. Pass the plaintext bytes to `NodeMessage::decode(MSG_WAKE, &payload)`.
+5. Assert: returns `DecodeError::CborError`.
 
 ---
 
@@ -224,6 +230,37 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 1. Build CBOR where a field expected to be uint is instead a text string (e.g., set `KEY_BATTERY_MV` to `"hello"` in a Wake message).
 2. Decode with `NodeMessage::decode()`.
 3. Assert: returns `DecodeError::InvalidFieldType(KEY_BATTERY_MV)`.
+
+---
+
+### T-P019d  GCM nonce construction
+
+**Validates:** protocol.md §7.1 (AES-256-GCM nonce derivation — `gcm_nonce = SHA-256(PSK)[0..3] ‖ msg_type ‖ frame_nonce`)
+
+**Procedure:**
+1. Choose a known PSK (e.g., `[0x42u8; 32]`) and compute `SHA-256(PSK)`.
+2. Choose a known 8-byte frame nonce (e.g., `0xDEADBEEFCAFEBABE`) and a `msg_type` (e.g., `MSG_WAKE = 0x01`).
+3. Construct the expected 12-byte GCM nonce: `SHA-256(PSK)[0..3] ‖ msg_type ‖ frame_nonce.to_be_bytes()`.
+4. Encode a frame using `encode_frame()` with that PSK and frame nonce.
+5. Manually derive the AES-256-GCM key from the PSK and decrypt the ciphertext with the expected 12-byte nonce and the header as AAD.
+6. Assert: decryption succeeds, confirming the nonce was constructed correctly.
+
+---
+
+### T-P019e  Per-message PSK assignment — PEER_REQUEST vs node messages
+
+**Validates:** protocol.md §7.1 (Per-message PSK selection — `phone_psk` for PEER_REQUEST, `node_psk` for all other messages)
+
+**Procedure:**
+1. Choose two distinct PSKs: `phone_psk = [0xAAu8; 32]` and `node_psk = [0xBBu8; 32]`.
+2. Encode a PEER_REQUEST frame using `phone_psk`.
+3. Call `decode_frame(raw)` on the encoded frame. Assert: `decode_frame(raw)` succeeds and returns a decoded frame independent of the PSK.
+4. Call `open_frame(decoded, phone_psk, …)` on the decoded PEER_REQUEST frame. Assert: `open_frame` succeeds.
+5. Call `open_frame(decoded, node_psk, …)` on the same decoded PEER_REQUEST frame. Assert: `open_frame` returns `DecodeError::AuthenticationFailed`.
+6. Encode a WAKE frame using `node_psk`.
+7. Call `decode_frame(raw)` on the WAKE frame. Assert: succeeds.
+8. Call `open_frame(decoded, node_psk, …)`. Assert: `open_frame` succeeds.
+9. Call `open_frame(decoded, phone_psk, …)`. Assert: `open_frame` returns `DecodeError::AuthenticationFailed`.
 
 ---
 
@@ -660,9 +697,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ## 7  Full integration tests
 
-### T-P060  Complete frame encode → verify → decode message
+### T-P060  Complete frame encode → decrypt → decode message
 
-**Validates:** protocol.md §3 (Frame format), §7.1 (HMAC computation), §5.1 (WAKE)
+**Validates:** protocol.md §3 (Frame format), §7.1 (AES-256-GCM authenticated encryption), §5.1 (WAKE)
 
 **Procedure:**
 1. Create a `NodeMessage::Wake`.
@@ -670,19 +707,19 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 3. Build `FrameHeader` with appropriate msg_type.
 4. Call `encode_frame()` with PSK.
 5. Call `decode_frame()` on the result.
-6. Call `verify_frame()` with PSK → assert true.
-7. Call `NodeMessage::decode()` on the payload → assert fields match.
+6. Call `open_frame()` with PSK. Assert: decryption and authentication succeed.
+7. Call `NodeMessage::decode()` on the decrypted payload → assert fields match.
 
 ---
 
 ### T-P061  Gateway Command full round-trip
 
-**Validates:** protocol.md §5.2 (COMMAND), §5.2.1 (UPDATE_PROGRAM payload), §7.1 (HMAC)
+**Validates:** protocol.md §5.2 (COMMAND), §5.2.1 (UPDATE_PROGRAM payload), §7.1 (AES-256-GCM)
 
 **Procedure:**
 1. Create a `GatewayMessage::Command` with `UpdateProgram` payload.
 2. Encode CBOR, build frame, encode frame.
-3. Decode frame, verify HMAC, decode message.
+3. Decode frame, verify GCM authentication, decode message.
 4. Assert: all fields match including `starting_seq`, `timestamp_ms`, `program_hash`, `chunk_size`, `chunk_count`.
 
 ---
@@ -745,16 +782,16 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
-### T-P066  HMAC constant-time comparison behavior
+### T-P066  AES-256-GCM authentication tag verification behavior
 
-**Validates:** protocol.md §7.1 (HMAC computation — constant-time comparison)
+**Validates:** protocol.md §7.1 (AES-256-GCM — authentication tag verification)
 
 **Procedure:**
-1. Construct a message and compute its HMAC tag using `SoftwareHmac`.
-2. Call `SoftwareHmac::verify()` with the correct tag and assert that verification **succeeds**.
-3. Call `SoftwareHmac::verify()` with an incorrect tag (e.g., flip one bit in the tag) and assert that verification **fails**.
+1. Construct a message and encrypt it using `SoftwareAead`, producing a 16-byte GCM authentication tag.
+2. Call `SoftwareAead::decrypt()` with the correct ciphertext and tag and assert that decryption **succeeds**.
+3. Call `SoftwareAead::decrypt()` with an incorrect tag (e.g., flip one bit in the tag) and assert that decryption **fails**.
 
-**Implementation requirement (non-test):** `SoftwareHmac::verify()` must internally use a constant-time comparison primitive (e.g., delegate to `hmac::Mac::verify_slice()` or `subtle::ConstantTimeEq`) and must not compare HMAC digests using `==`, `PartialEq`, or `[u8]::eq()`. This requirement is enforced via code review, not automated tests.
+**Implementation requirement (non-test):** `SoftwareAead::decrypt()` must use the AES-GCM implementation's built-in tag verification (e.g., `aes_gcm::Aes256Gcm`), which inherently provides constant-time tag comparison. It must not compare GCM tags using `==`, `PartialEq`, or `[u8]::eq()`. This requirement is enforced via code review, not automated tests.
 
 ---
 

@@ -32,7 +32,7 @@ The gateway is **stateless with respect to replay protection** — active sessio
 | Async runtime | tokio | Industry-standard async runtime; per-node task spawning |
 | BPF verification | [prevail-rust](https://github.com/elazarg/prevail-rust) | Native Rust, feature-parity with C++ Prevail, no FFI |
 | CBOR | Via `sonde-protocol` (`ciborium`) | Well-maintained, serde-compatible |
-| HMAC | `hmac` + `sha2` crates (RustCrypto, implements `sonde-protocol::HmacProvider` trait) | Pure Rust, audited, no OpenSSL dependency |
+| AEAD | `aes-gcm` crate (RustCrypto) | Pure Rust, audited, no OpenSSL dependency |
 | Transport | Abstract trait (ESP-NOW as first adapter) | Decouples protocol logic from radio hardware |
 | Storage | Abstract trait | Decouples persistence from storage engine |
 
@@ -181,53 +181,39 @@ Awaits the next `RECV_FRAME` from the async channel. Returns `(frame_data, peer_
 
 ## 5  Protocol codec
 
-The protocol codec is provided by the shared `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full crate specification). The gateway uses the same frame format, CBOR message types, and constants as the node. The gateway provides a software `HmacProvider` implementation using the `hmac` + `sha2` RustCrypto crates.
+The protocol codec is provided by the shared `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full crate specification). The gateway uses the same frame format, CBOR message types, and constants as the node. The gateway provides a software AES-256-GCM implementation using the `aes-gcm` RustCrypto crate.
 
 ### 5.1  Frame layout
 
-All types, constants, and functions in this section are provided by the `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full API). The gateway-specific code only provides the `HmacProvider` implementation.
+All types, constants, and functions in this section are provided by the `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full API). The gateway-specific code only provides the AES-256-GCM implementation.
 
-The frame is a flat byte array with fields at fixed offsets. The first 11 bytes form the binary header: `key_hint` occupies bytes 0–1 (big-endian u16), `msg_type` is byte 2, and `nonce` occupies bytes 3–10 (big-endian u64). Following the header is the variable-length CBOR-encoded payload. The final 32 bytes of the frame are the HMAC-SHA256 authentication tag, computed over all preceding bytes (header + payload).
+The frame is a flat byte array with fields at fixed offsets. The first 11 bytes form the binary header: `key_hint` occupies bytes 0–1 (big-endian u16), `msg_type` is byte 2, and `nonce` occupies bytes 3–10 (big-endian u64). Following the header is the AES-256-GCM ciphertext (encrypted CBOR payload). The final 16 bytes of the frame are the AES-256-GCM authentication tag. The 11-byte header is used as Additional Authenticated Data (AAD). The GCM nonce is constructed as `SHA-256(psk)[0..3] ‖ msg_type ‖ frame_nonce` (12 bytes total).
 
 ```
 Offset 0:  key_hint    (2 bytes, big-endian)
 Offset 2:  msg_type    (1 byte)
 Offset 3:  nonce       (8 bytes, big-endian)
-Offset 11: payload     (variable, CBOR-encoded)
-Offset -32: hmac       (32 bytes, HMAC-SHA256 over bytes 0..len-32)
+Offset 11: ciphertext  (variable, AES-256-GCM encrypted CBOR payload)
+Offset -16: tag        (16 bytes, AES-256-GCM authentication tag)
 ```
 
 ### 5.2  Inbound decoding
 
-Uses `sonde_protocol::decode_frame()` → returns `DecodedFrame { header, payload, hmac }`. CBOR payload is **not** decoded until after HMAC verification.
+Uses `sonde_protocol::decode_frame()` → returns `DecodedFrame { header, ciphertext, tag }`. The CBOR payload is **not** available until after AES-256-GCM decryption succeeds.
 
-### 5.3  HMAC verification
+### 5.3  AES-256-GCM decryption
 
-The gateway implements `sonde_protocol::HmacProvider` using the `hmac` + `sha2` RustCrypto crates:
+The gateway performs AEAD decryption for each inbound frame:
 
-```rust
-struct RustCryptoHmac;
-
-impl sonde_protocol::HmacProvider for RustCryptoHmac {
-    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-        mac.update(data);
-        mac.finalize().into_bytes().into()
-    }
-
-    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-        mac.update(data);
-        mac.verify_slice(expected).is_ok() // constant-time comparison
-    }
-}
-```
-
-The session manager calls `sonde_protocol::verify_frame()` with candidate keys from the node registry.
+1. Parse the 11-byte header to extract `key_hint`, `msg_type`, and `frame_nonce`.
+2. Look up candidate PSKs by `key_hint` from the node registry (or phone PSK registry for `PEER_REQUEST`).
+3. For each candidate PSK, reconstruct the GCM nonce as `SHA-256(psk)[0..3] ‖ msg_type ‖ frame_nonce` (12 bytes) and attempt AES-256-GCM-Open with the 11-byte header as AAD.
+4. If decryption succeeds (GCM tag verifies), the node is identified by the matching key and the plaintext CBOR payload is returned.
+5. If no candidate key produces a valid decryption, the frame is silently discarded.
 
 ### 5.4  Outbound encoding
 
-Uses `sonde_protocol::encode_frame()` with the gateway's `RustCryptoHmac` provider.
+Uses `sonde_protocol::encode_frame()` with AES-256-GCM encryption. The 11-byte header is used as AAD.
 
 ### 5.5  CBOR message types
 
@@ -272,7 +258,7 @@ Sessions are reaped after a configurable timeout (default: 30 seconds). A backgr
 
 ### 6.3  Inbound frame processing
 
-Every inbound frame goes through a sequential pipeline. First the binary header is parsed (extracting `key_hint`, `msg_type`, and `nonce`). The `key_hint` is used to look up candidate node keys from the registry; if none are found the frame is silently discarded. The gateway tries each candidate key for HMAC verification; if none match, the frame is discarded. Once the node is identified by its matching key, the frame is dispatched based on `msg_type`. A `WAKE` frame causes a new session to be created (or an existing one replaced), a `COMMAND` response to be encoded and sent back, and a `node_online` event to be emitted. Post-WAKE frames (`GET_CHUNK`, `PROGRAM_ACK`, `APP_DATA`) require an active session and a matching sequence number; they are then routed to the program library, node registry, or handler process as appropriate. Any error at any step results in a silent discard — no error response is ever sent to the node.
+Every inbound frame goes through a sequential pipeline. First the binary header is parsed (extracting `key_hint`, `msg_type`, and `nonce`). The `key_hint` is used to look up candidate node keys from the registry; if none are found the frame is silently discarded. The gateway tries AES-256-GCM-Open with each candidate key; if none succeed, the frame is discarded. Once the node is identified by its matching key, the frame is dispatched based on `msg_type`. A `WAKE` frame causes a new session to be created (or an existing one replaced), a `COMMAND` response to be encoded and sent back, and a `node_online` event to be emitted. Post-WAKE frames (`GET_CHUNK`, `PROGRAM_ACK`, `APP_DATA`) require an active session and a matching sequence number; they are then routed to the program library, node registry, or handler process as appropriate. Any error at any step results in a silent discard — no error response is ever sent to the node.
 
 ```
 recv frame
@@ -282,8 +268,8 @@ recv frame
   ├── lookup candidate keys by key_hint
   │     └── no keys → discard (GW-1002)
   │
-  ├── try HMAC with each candidate key
-  │     └── none match → discard (GW-0600)
+  ├── try AES-256-GCM-Open with each candidate key
+  │     └── none succeed → discard (GW-0600)
   │
   ├── identify node (bound to matching key)
   │
@@ -613,8 +599,8 @@ The `espnow_channel` key stores the current radio channel. The `--channel` CLI f
 
 ## 10a  Master key provider
 
-The 32-byte master key (used by `SqliteStorage` to encrypt PSKs, phone PSKs,
-and the Ed25519 seed at rest) is loaded at startup via a `KeyProvider`
+The 32-byte master key (used by `SqliteStorage` to encrypt PSKs and phone PSKs
+at rest) is loaded at startup via a `KeyProvider`
 implementation selected by the `--key-provider` CLI flag (GW-0601b).
 
 ### 10a.1  Trait
@@ -1072,23 +1058,23 @@ regardless of serial port state (Issue #551).
 
 The gateway implements the pairing protocol logic defined in [ble-pairing-protocol.md](ble-pairing-protocol.md). The physical BLE layer (GATT service, advertising, ATT MTU negotiation, indication fragmentation) is hosted by the USB modem (GW-1204, GW-1205); the gateway processes pairing messages relayed over the modem serial protocol: inbound messages arrive as `BLE_RECV` and responses are sent as `BLE_INDICATE` (see §4.2 `UsbEspNowTransport`). `PEER_REQUEST` / `PEER_ACK` frames travel over ESP-NOW, not BLE, and follow the standard transport path.
 
-### 17.1  Gateway identity
+### 17.1  Gateway identity — RETIRED
 
-On first startup, the gateway generates an Ed25519 keypair from OS CSPRNG and persists the 32-byte seed encrypted at rest using the master key (GW-1200, GW-0601a). A random 16-byte `gateway_id` is generated alongside the keypair and persisted with it (GW-1201). Both values are stable across restarts. The Ed25519 key is converted to X25519 via the standard birational map for ECDH key agreement; low-order points are rejected (GW-1202). The seed and `gateway_id` can be exported and imported via the admin API (`ExportState` / `ImportState`) so that all members of a failover group share the same identity (GW-1203).
+> **RETIRED (issue #495).** The gateway no longer generates or persists a `gateway_id` (GW-1201, GW-1203 — both RETIRED). Gateway authority derives solely from possession of the node PSK database and phone PSK store. Failover requires replicating these databases (see GW-1000 `ExportState` / `ImportState`). No asymmetric keys are needed.
 
 ### 17.2  BLE message relay
 
 The modem hosts the Gateway Pairing Service GATT service (UUID `0000FE60-…`) and controls BLE advertising. The gateway controls advertising lifetime by sending `BLE_ENABLE` / `BLE_DISABLE` to the modem when the registration window opens or closes (GW-1208). When a phone writes to the Gateway Command characteristic, the modem forwards the raw bytes to the gateway as a `BLE_RECV` serial message. The gateway processes the command and sends any response back via `BLE_INDICATE`; the modem handles fragmentation to fit within the negotiated ATT MTU (GW-1205). Numeric Comparison passkeys are relayed from the modem via `BLE_PAIRING_CONFIRM` and surfaced to the operator through the admin API streaming RPC (GW-1222).
 
-### 17.3  `REQUEST_GW_INFO` handling
+### 17.3  `REQUEST_GW_INFO` handling — RETIRED
 
-On receiving a `REQUEST_GW_INFO` command (BLE command `0x01`) via `BLE_RECV`, the gateway signs (`challenge` ‖ `gateway_id`) with its Ed25519 private key and returns a `GW_INFO_RESPONSE` containing `gw_public_key`, `gateway_id`, and `signature` via `BLE_INDICATE` (GW-1206). This allows the phone to verify gateway identity before proceeding with registration.
+> **RETIRED (issue #495).** `REQUEST_GW_INFO` (BLE command `0x01`) and `GW_INFO_RESPONSE` are eliminated along with GW-1206. The simplified pairing pipeline uses `REGISTER_PHONE` / `PHONE_REGISTERED` only. No challenge–response or gateway identity exchange is needed — BLE LESC Numeric Comparison provides mutual authentication.
 
 ### 17.4  Registration window and `REGISTER_PHONE`
 
 The registration window is opened by a physical button hold (≥ 2 s) or by the admin API `OpenBlePairing` RPC. Opening sends `BLE_ENABLE` to the modem; closing (explicit or auto-close after a configurable duration, default 120 s) sends `BLE_DISABLE` (GW-1207, GW-1208). `REGISTER_PHONE` commands received while the window is closed are rejected with `ERROR(0x02)` (GW-1207).
 
-When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: generates a 256-bit phone PSK from OS CSPRNG; derives `phone_key_hint` = `u16::from_be_bytes(SHA-256(psk)[30..32])` (big-endian u16 from the last two bytes of the hash); performs ECDH with the phone's ephemeral X25519 public key; derives an AES key via HKDF-SHA256 (salt = `gateway_id`, info = `"sonde-phone-reg-v1"`); encrypts the response (containing the phone PSK, `phone_key_hint`, and RF channel) with AES-256-GCM (AAD = `gateway_id`); and returns the encrypted `PHONE_REGISTERED` response via `BLE_INDICATE` (GW-1209). The phone PSK is stored with a label, issuance timestamp, and active status. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from HMAC verification (GW-1210).
+When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: receives a phone-generated 256-bit PSK from the phone; derives `phone_key_hint` = `u16::from_be_bytes(SHA-256(psk)[30..32])` (big-endian u16 from the last two bytes of the hash); stores the PSK with its label, issuance timestamp, and active status; and responds with a plaintext `PHONE_REGISTERED` indication containing `status`, `rf_channel`, and `phone_key_hint` via `BLE_INDICATE` (GW-1209). No ECDH, HKDF, or AES-GCM encryption of the BLE response is needed — the BLE LESC link provides confidentiality. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from AES-GCM decryption (GW-1210).
 
 ### 17.5  `PEER_REQUEST` processing
 
@@ -1096,18 +1082,16 @@ When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x0
 
 **Pipeline:**
 
-1. **Key-hint bypass** — For msg_type `0x05`, the gateway bypasses the normal `key_hint` → PSK fast-path lookup and proceeds directly to CBOR parsing (GW-1211).
-2. **Decryption** — The `encrypted_payload` is decrypted using ECDH (phone's ephemeral public key + gateway X25519 key) + HKDF-SHA256 (salt = `gateway_id`, info = `"sonde-node-pair-v1"`) + AES-256-GCM (AAD = `gateway_id`). GCM tag failure → discard (GW-1212).
-3. **Phone HMAC verification** — The gateway looks up all non-revoked phone PSKs matching `phone_key_hint` and tries each until one produces a valid HMAC. No match → discard (GW-1213).
-4. **Frame HMAC verification** — The frame HMAC is verified using the extracted `node_psk`. Mismatch → discard (GW-1214).
-5. **Timestamp validation** — The `PairingRequest` timestamp must be within ± 86 400 s of current time. Out of range → discard (GW-1215).
-6. **Node ID duplicate handling** — If the `node_id` is already registered **and** the `node_psk` matches the existing record, the gateway skips registration but still proceeds to PEER_ACK generation (GW-1218 AC4). If the `node_id` is registered with a **different** PSK, the frame is silently discarded (potential replay or conflict).
-7. **Key-hint consistency** — The frame header `key_hint` must match the CBOR `node_key_hint`. Mismatch → discard (GW-1217).
-8. **Node registration** — The node is registered with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (GW-1218). The node registry (§7) stores the new record through the storage trait.
+1. **Outer frame decryption** — The `key_hint` identifies a phone PSK. The gateway looks up all non-revoked phone PSK candidates matching the `key_hint` and tries AES-256-GCM-Open with each (GCM nonce = `SHA-256(phone_psk)[0..3] ‖ msg_type ‖ frame_nonce`, AAD = 11-byte header). No match → discard (GW-1211).
+2. **Inner payload decryption** — The `encrypted_payload` field from the outer CBOR is decrypted with AES-256-GCM using the same `phone_psk` (AAD = `"sonde-pairing-v2"`). GCM tag failure → discard (GW-1212).
+3. **Timestamp validation** — The `PairingRequest` timestamp must be within ± 86 400 s of current time. Out of range → discard (GW-1215).
+4. **Node ID duplicate handling** — If the `node_id` is already registered **and** the `node_psk` matches the existing record, the gateway skips registration but still proceeds to PEER_ACK generation (GW-1218 AC4). If the `node_id` is registered with a **different** PSK, the frame is silently discarded (potential replay or conflict).
+5. **Key-hint consistency** — The gateway computes `expected_node_key_hint = u16::from_be_bytes(SHA-256(node_psk)[30..32])` and verifies it matches the CBOR `node_key_hint`. The frame header `key_hint` identifies the *phone* PSK (used for the outer AES-GCM layer) and is expected to differ from `node_key_hint`. Mismatch between the CBOR `node_key_hint` and the derived value → discard (GW-1217).
+6. **Node registration** — The node is registered with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (GW-1218). The node registry (§7) stores the new record through the storage trait.
 
 ### 17.6  `PEER_ACK` generation
 
-After successful registration **or** duplicate detection with matching PSK, the gateway computes `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1"` ‖ `encrypted_payload`), builds a `PEER_ACK` CBOR message `{1: 0, 2: registration_proof}`, HMACs the frame with `node_psk`, and echoes the `nonce` from the `PEER_REQUEST` header (GW-1219).
+After successful registration **or** duplicate detection with matching PSK, the gateway builds a `PEER_ACK` CBOR message `{1: 0}` (status = success), encrypts the frame with AES-256-GCM using `node_psk` (GCM nonce = `SHA-256(node_psk)[0..3] ‖ msg_type ‖ frame_nonce`, AAD = 11-byte header), and echoes the `nonce` from the `PEER_REQUEST` header (GW-1219).
 
 ### 17.7  Admin session
 

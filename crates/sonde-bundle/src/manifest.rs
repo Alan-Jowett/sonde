@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     #[serde(default)]
-    pub schema_version: u32,
+    pub schema_version: Option<u32>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]

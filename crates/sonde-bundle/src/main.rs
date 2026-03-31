@@ -153,7 +153,12 @@ fn cmd_inspect(bundle: &std::path::Path, format: OutputFormat) -> Result<(), Bun
             if let Some(ref desc) = info.manifest.description {
                 println!("Description: {desc}");
             }
-            println!("Schema version: {}", info.manifest.schema_version);
+            println!(
+                "Schema version: {}",
+                info.manifest
+                    .schema_version
+                    .map_or("(missing)".to_string(), |v| v.to_string())
+            );
             println!("Archive size: {} bytes", info.archive_size);
             println!();
 

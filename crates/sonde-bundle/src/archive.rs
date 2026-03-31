@@ -118,6 +118,16 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
     }
 
     // All entries validated. Move contents from staging to target_dir.
+    // Verify target_dir is empty to avoid partial updates from conflicting paths.
+    let existing: Vec<_> = std::fs::read_dir(target_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path() != staging_dir.path())
+        .collect();
+    if !existing.is_empty() {
+        return Err(BundleError::InvalidArchive(
+            "target directory is not empty; cannot extract safely".to_string(),
+        ));
+    }
     for item in std::fs::read_dir(staging_dir.path())? {
         let item = item?;
         let dest = target_dir.join(item.file_name());
@@ -290,7 +300,27 @@ pub fn inspect_bundle(bundle_path: &Path) -> Result<BundleInfo, BundleError> {
 
         check_path_safety(&entry_path)?;
 
-        let path = entry_path.to_string_lossy().to_string();
+        // Mirror extract_bundle entry-type filtering
+        let entry_type = entry.header().entry_type();
+        match entry_type {
+            tar::EntryType::Regular | tar::EntryType::Directory => {}
+            tar::EntryType::GNULongName | tar::EntryType::GNULongLink => continue,
+            tar::EntryType::Symlink | tar::EntryType::Link => {
+                return Err(BundleError::SymlinkNotAllowed(
+                    entry_path.to_string_lossy().to_string(),
+                ));
+            }
+            _ => {
+                return Err(BundleError::InvalidArchive(format!(
+                    "unsupported entry type for path: {}",
+                    entry_path.to_string_lossy()
+                )));
+            }
+        }
+
+        // Normalize path: strip leading "./" for consistent matching
+        let raw_path = entry_path.to_string_lossy().to_string();
+        let path = raw_path.strip_prefix("./").unwrap_or(&raw_path).to_string();
 
         let size = entry.size();
         files.push(BundleFile {

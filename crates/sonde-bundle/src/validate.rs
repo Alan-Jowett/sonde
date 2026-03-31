@@ -123,19 +123,26 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
     let mut result = ValidationResult::new();
 
     // §6.2 Manifest validation — missing required fields first, then value checks
-    if manifest.schema_version == 0 {
-        result.errors.push(ValidationError {
-            rule: "schema_version",
-            message: "missing required field: `schema_version`".to_string(),
-        });
-    } else if manifest.schema_version > 1 {
-        result.errors.push(ValidationError {
-            rule: "schema_version",
-            message: format!(
-                "unsupported schema version: {} (maximum supported: 1)",
-                manifest.schema_version
-            ),
-        });
+    match manifest.schema_version {
+        None => {
+            result.errors.push(ValidationError {
+                rule: "schema_version",
+                message: "missing required field: `schema_version`".to_string(),
+            });
+        }
+        Some(0) => {
+            result.errors.push(ValidationError {
+                rule: "schema_version",
+                message: "schema_version must be >= 1".to_string(),
+            });
+        }
+        Some(v) if v > 1 => {
+            result.errors.push(ValidationError {
+                rule: "schema_version",
+                message: format!("unsupported schema version: {} (maximum supported: 1)", v),
+            });
+        }
+        _ => {}
     }
 
     if manifest.name.is_empty() {
@@ -414,7 +421,7 @@ mod tests {
 
     fn minimal_manifest() -> Manifest {
         Manifest {
-            schema_version: 1,
+            schema_version: Some(1),
             name: "test-app".to_string(),
             version: "0.1.0".to_string(),
             description: None,
@@ -455,7 +462,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         setup_test_dir(dir.path());
         let mut m = minimal_manifest();
-        m.schema_version = 2;
+        m.schema_version = Some(2);
         let r = validate_manifest(&m, dir.path());
         assert!(!r.is_valid());
         assert!(r
@@ -469,7 +476,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         setup_test_dir(dir.path());
         let mut m = minimal_manifest();
-        m.schema_version = 0;
+        m.schema_version = Some(0);
+        let r = validate_manifest(&m, dir.path());
+        assert!(!r.is_valid());
+        assert!(r.errors.iter().any(|e| e.message.contains(">= 1")));
+    }
+
+    #[test]
+    fn test_schema_version_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        let mut m = minimal_manifest();
+        m.schema_version = None;
         let r = validate_manifest(&m, dir.path());
         assert!(!r.is_valid());
         assert!(r

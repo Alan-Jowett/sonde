@@ -1439,3 +1439,197 @@ On import, the existing `handler_config_from_cbor` decoder is extended to read k
 **Import:** `import_state()` restores handler records atomically within the same transaction that replaces nodes and programs. If the incoming bundle contains a handlers array, all existing handlers are deleted and replaced. If the handlers key is absent (bundle from older gateway version), existing handlers are preserved (no-op for backwards compatibility).
 
 After import, the `AdminService` triggers a handler live reload (§18.5) so the `HandlerRouter` reflects the imported configuration.
+
+---
+
+## 20  App bundle deployment orchestration
+
+This section defines how `sonde-admin` orchestrates bundle deployment by
+composing existing gRPC operations.  The gateway itself is unaware of bundles —
+all orchestration is client-side in the admin CLI.
+
+### 20.1  Dependency
+
+The `sonde-admin` binary depends on the `sonde-bundle` crate for manifest
+parsing and validation.  It does NOT depend on `sonde-bundle`'s archive
+creation functionality — only the parsing and validation modules.
+
+### 20.2  Deploy command (GW-1600)
+
+`sonde-admin deploy <bundle-path>` executes the following steps:
+
+1. **Parse and validate** — call `sonde_bundle::validate_bundle()` on the
+   `.sondeapp` file.  Abort on any validation error.
+2. **Extract** — extract the bundle to a temporary directory.
+3. **Deploy handler files** — if the bundle contains handler files:
+   a. Create a permanent handler directory at
+      `<gateway-data-dir>/handlers/<app-name>-<version>/`.
+      If the directory already exists (from a previous deploy), remove its
+      contents first (overwrite-on-conflict).
+   b. Copy all files from the extracted `handler/` directory to the
+      permanent handler directory.
+   c. Rewrite handler `working_dir` and file arguments to reference the
+      permanent path.
+4. **Ingest programs** — for each program in the manifest:
+   a. Read the ELF binary from the extracted directory.
+   b. Call the `IngestProgram` gRPC with the ELF and profile.
+   c. If the gateway returns `ALREADY_EXISTS` (same content hash), log
+      "skipped (already ingested)" and continue.
+   d. Record the mapping: `program_name → program_hash` from the response.
+5. **Configure handlers** — for each handler in the manifest:
+   a. Resolve `handler.program` name to the program hash from step 4.
+   b. Call the `AddHandler` gRPC with the resolved hash, command, args
+      (rewritten to permanent paths in step 3c), working directory
+      (permanent path), and reply timeout.
+   c. If the gateway returns `ALREADY_EXISTS`, query the existing handler
+      via `ListHandlers` and compare configuration.  If identical, log
+      "skipped (already configured)".  If different, warn per §20.3 and
+      continue.
+6. **Assign programs to nodes** — for each node in the manifest:
+   a. Resolve `node.program` name to the program hash from step 4.
+   b. Call the `AssignProgram` gRPC with `node.name` and the resolved hash.
+   c. If the node is already assigned the same hash (check via
+      `GetNode` first), log "skipped (already assigned)" and continue.
+7. **Clean up** — remove the temporary extraction directory (handler files
+   have already been copied to the permanent location in step 3).
+8. **Report** — print a summary table:
+   ```
+   Deploy complete: temperature-monitor v0.1.0
+     Programs:  1 ingested, 0 skipped
+     Handlers:  1 configured, 0 skipped
+     Nodes:     2 assigned, 0 skipped
+   ```
+
+### 20.3  Idempotency (GW-1601)
+
+Each step checks for existing state before acting:
+
+- **IngestProgram:** The gateway computes the content hash from the ELF and
+  returns `ALREADY_EXISTS` if a program with that hash is already stored.
+  This is the existing behaviour — no gateway changes required.
+- **AddHandler:** The gateway returns `ALREADY_EXISTS` if a handler for
+  the same program hash is already configured.  The deploy command then
+  queries existing handler configuration via `ListHandlers` and compares
+  fields.  If identical, skip.  If the existing handler has DIFFERENT
+  configuration (different command/args), the deploy command warns the user
+  and does NOT overwrite (preserving the user's manual changes).
+- **AssignProgram:** The deploy command calls `GetNode` to check the node's
+  current `assigned_program_hash`.  If it matches, skip.  If the node
+  does not exist (not registered), warn and continue with the next node.
+
+### 20.4  Undeploy command (GW-1602)
+
+`sonde-admin undeploy <bundle-path> [--remove-programs] [--force]` executes:
+
+1. **Parse manifest** — extract and parse the manifest (validation not
+   strictly required, but schema version is checked).
+2. **Compute program hashes** — for each program in the manifest:
+   a. Read the ELF binary.
+   b. Run the same ELF → CBOR → SHA-256 pipeline that `IngestProgram`
+      uses to compute the content hash, without storing.
+   c. Record the mapping: `program_name → program_hash`.
+3. **Remove handlers** — for each handler in the manifest:
+   a. If `handler.program` is `"*"` (catch-all), pass `"*"` directly to
+      `RemoveHandler` without hash resolution.
+   b. Otherwise, resolve the program name to hash.
+   c. Call `RemoveHandler` with the hash (or `"*"`).
+   d. If the handler does not exist, log "skipped (not found)".
+4. **Remove handler files** — if the bundle defined handlers, remove the
+   permanent handler directory at
+   `<gateway-data-dir>/handlers/<app-name>-<version>/` if it exists.
+5. **Warn about node assignments** — for each node in the manifest:
+   a. Call `GetNode` to check current assignment.
+   b. If the node is assigned to a bundle program, warn:
+      "Node `<name>` is still assigned to program `<hash>`. Use
+      `sonde-admin program assign` to reassign."
+6. **Remove programs** (if `--remove-programs`):
+   a. For each program, call `ListNodes` on the gateway to get ALL
+      registered nodes, filter to those whose `assigned_program_hash`
+      matches the program hash.
+   b. If any nodes are assigned and `--force` is not set, skip with warning.
+   c. If `--force`, call `AssignProgram` with empty hash for each assigned
+      node first to unassign, then `RemoveProgram`.
+   d. If no nodes are assigned, call `RemoveProgram`.
+7. **Report** — print a summary.
+
+### 20.5  Validate command (GW-1603)
+
+`sonde-admin validate <bundle-path>` delegates to
+`sonde_bundle::validate_bundle()` and prints results.  This command does NOT
+contact the gateway — it is fully offline.
+
+### 20.6  Dry-run mode (GW-1604)
+
+`sonde-admin deploy --dry-run <bundle-path>` runs the deploy algorithm but
+replaces all gRPC calls with no-ops.  It still queries the gateway for current
+state (via `GetNode`, `ListPrograms`, `ListHandlers`) to determine which
+steps would be skipped vs. executed, and prints the plan:
+
+```
+Dry-run: temperature-monitor v0.1.0
+  Would ingest:  bpf/temp_reader.elf (resident)
+  Would add handler: python3 handler/ingest.py → temp-reader
+  Would assign: greenhouse-1 → temp-reader
+  Would assign: greenhouse-2 → temp-reader
+```
+
+### 20.7  Program hash computation
+
+To support undeploy and dry-run (which need program hashes without ingesting),
+the admin CLI must be able to compute the program hash locally.  This requires
+the same ELF → CBOR → SHA-256 pipeline used by the gateway:
+
+1. Parse ELF with `prevail-rust` to extract bytecode + maps + initial data.
+2. Encode as `ProgramImage` (CBOR, deterministic encoding).
+3. SHA-256 the CBOR bytes.
+
+The `sonde-protocol` crate already provides `ProgramImage::encode_deterministic()`.
+The ELF parsing is in `sonde-gateway`.  For the admin CLI, there are two options:
+
+**Option A (recommended):** Factor the ELF → `ProgramImage` conversion out of
+`sonde-gateway` into a shared library (e.g., a new module in `sonde-protocol`
+or a thin `sonde-program` crate).
+
+**Option B:** The admin CLI depends on `sonde-gateway` as a library for this
+function only.
+
+For V1, **Option B** is acceptable — the admin CLI already depends on
+`sonde-gateway`'s proto definitions.  Option A can be a follow-up refactor.
+
+### 20.8  CLI subcommand structure
+
+The existing `Commands` enum in `sonde-admin` is extended with:
+
+```rust
+#[derive(Subcommand)]
+enum Commands {
+    // ... existing commands ...
+
+    /// Deploy a Sonde App Bundle
+    Deploy {
+        /// Path to .sondeapp bundle
+        bundle: PathBuf,
+        /// Show what would be done without doing it
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Undeploy a previously deployed bundle
+    Undeploy {
+        /// Path to .sondeapp bundle
+        bundle: PathBuf,
+        /// Remove programs from the library
+        #[arg(long)]
+        remove_programs: bool,
+        /// Force removal even if programs are assigned
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Validate a Sonde App Bundle (offline)
+    Validate {
+        /// Path to .sondeapp bundle
+        bundle: PathBuf,
+    },
+}
+```

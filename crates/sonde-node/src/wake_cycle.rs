@@ -19,6 +19,8 @@ use crate::hal::{BatteryReader, Hal};
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
 use crate::peer_request::peer_request_exchange;
+#[cfg(feature = "aes-gcm-codec")]
+use crate::peer_request::peer_request_exchange_aead;
 use crate::program_store::{LoadedProgram, ProgramStore};
 use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
@@ -1195,7 +1197,6 @@ pub fn wake_command_exchange_aead<T: Transport, A: AeadProvider, S: Sha256Provid
 
 /// AES-GCM variant of [`verify_and_decode_command`].
 #[cfg(feature = "aes-gcm-codec")]
-#[allow(dead_code)]
 fn verify_and_decode_command_aead<A: AeadProvider, S: Sha256Provider>(
     raw: &[u8],
     identity: &NodeIdentity,
@@ -1367,7 +1368,6 @@ pub fn send_recv_app_data_aead<
 
 /// AES-GCM variant of [`send_program_ack`].
 #[cfg(feature = "aes-gcm-codec")]
-#[allow(dead_code)]
 fn send_program_ack_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
     transport: &mut T,
     identity: &NodeIdentity,
@@ -1401,7 +1401,6 @@ fn send_program_ack_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
 
 /// AES-GCM variant of [`verify_and_decode_chunk`].
 #[cfg(feature = "aes-gcm-codec")]
-#[allow(dead_code)]
 fn verify_and_decode_chunk_aead<A: AeadProvider, S: Sha256Provider>(
     raw: &[u8],
     identity: &NodeIdentity,
@@ -1443,7 +1442,6 @@ fn verify_and_decode_chunk_aead<A: AeadProvider, S: Sha256Provider>(
 /// AES-GCM variant of [`get_chunk_with_retry`].
 #[cfg(feature = "aes-gcm-codec")]
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 fn get_chunk_with_retry_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
     transport: &mut T,
     identity: &NodeIdentity,
@@ -1573,6 +1571,396 @@ pub fn chunked_transfer_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
     }
 
     Ok(image_data)
+}
+
+/// AES-GCM variant of [`run_wake_cycle`].
+///
+/// Functionally identical to `run_wake_cycle` but encodes/decodes all
+/// radio frames using AES-256-GCM (AEAD) instead of HMAC-SHA256.  The
+/// HMAC provider is still required for BPF helper dispatch and for the
+/// PEER_ACK registration proof (ble-pairing-protocol.md §7.2).
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn run_wake_cycle_aead<T, S, I, A, H>(
+    transport: &mut T,
+    storage: &mut S,
+    hal: &mut (dyn Hal + 'static),
+    rng: &mut dyn Rng,
+    clock: &(dyn Clock + 'static),
+    battery: &dyn BatteryReader,
+    interpreter: &mut I,
+    map_storage: &mut MapStorage,
+    hmac: &(dyn HmacProvider + 'static),
+    sha: &H,
+    aead: &A,
+) -> WakeCycleOutcome
+where
+    T: Transport + 'static,
+    S: PlatformStorage,
+    I: BpfInterpreter,
+    A: AeadProvider,
+    H: Sha256Provider,
+{
+    // 1. Load identity
+    let identity = match storage.read_key() {
+        Some((key_hint, psk)) => NodeIdentity { key_hint, psk },
+        None => return WakeCycleOutcome::Unpaired,
+    };
+
+    // 1b. RNG health check (ND-0304 AC3).
+    if !rng.health_check() {
+        log::warn!("RNG health check failed — aborting wake cycle (ND-1009)");
+        let (base_interval_s, _) = storage.read_schedule();
+        let effective_sleep_s =
+            SleepManager::new(base_interval_s, WakeReason::Scheduled).effective_sleep_s();
+        log::info!(
+            "entering deep sleep duration_seconds={} reason=scheduled (ND-1007)",
+            effective_sleep_s,
+        );
+        return WakeCycleOutcome::Sleep {
+            seconds: effective_sleep_s,
+        };
+    }
+
+    // 2. Determine wake reason
+    let wake_reason = determine_wake_reason(storage);
+
+    log::info!(
+        "wake cycle started key_hint=0x{:04X} wake_reason={:?} (ND-1001)",
+        identity.key_hint,
+        wake_reason,
+    );
+
+    // 3. Load schedule
+    let (base_interval_s, _active_partition) = storage.read_schedule();
+    let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
+
+    // 3a. PEER_REQUEST/PEER_ACK exchange via AEAD (ND-0909–ND-0913).
+    if !storage.read_reg_complete() {
+        if let Some(encrypted_payload) = storage.read_peer_payload() {
+            match peer_request_exchange_aead(
+                transport,
+                storage,
+                &identity,
+                &encrypted_payload,
+                rng,
+                clock,
+                aead,
+                sha,
+                hmac,
+            ) {
+                Ok(true) => {
+                    // Registration complete — fall through to normal WAKE cycle.
+                }
+                Ok(false) => {
+                    // Timeout — sleep and retry next wake cycle (ND-0910/ND-0911).
+                    return log_and_sleep(&sleep_mgr);
+                }
+                Err(e) => {
+                    if matches!(e, NodeError::MalformedPayload(_)) {
+                        log::warn!("PEER_REQUEST permanent error: {} — erasing peer_payload", e);
+                        let _ = storage.erase_peer_payload();
+                    }
+                    return log_and_sleep(&sleep_mgr);
+                }
+            }
+        }
+    }
+
+    // 4. Load active resident program hash and raw bytes from NVS.
+    let (program_hash, mut resident_image_bytes) = {
+        let program_store = ProgramStore::new(storage);
+        program_store.load_active_raw(sha)
+    };
+
+    // 5. Generate WAKE nonce
+    let wake_nonce = rng.random_u64();
+    let battery_mv = battery.battery_mv();
+
+    // 6. Send WAKE, await COMMAND (with retries) via AEAD
+    let command_result = wake_command_exchange_aead(
+        transport,
+        &identity,
+        wake_nonce,
+        &program_hash,
+        battery_mv,
+        clock,
+        aead,
+        sha,
+    );
+
+    let (starting_seq, timestamp_ms, command_payload) = match command_result {
+        Ok(cmd) => {
+            // WAKE/COMMAND succeeded — erase peer_payload if still present (ND-0914).
+            if storage.has_peer_payload() {
+                if let Err(e) = storage.erase_peer_payload() {
+                    log::warn!("failed to erase peer_payload after WAKE success: {}", e);
+                }
+            }
+            cmd
+        }
+        Err(e) => {
+            // WAKE retries exhausted or transport error.
+            log::warn!("WAKE/COMMAND failed: {} — sleeping (ND-1009)", e);
+            // Self-healing (ND-0915).
+            if storage.read_reg_complete() && storage.has_peer_payload() {
+                if let Err(e) = storage.write_reg_complete(false) {
+                    log::warn!("failed to clear reg_complete after WAKE failure: {}", e);
+                }
+            }
+            return log_and_sleep(&sleep_mgr);
+        }
+    };
+
+    // Log the received COMMAND (ND-1003).
+    match &command_payload {
+        CommandPayload::Nop => log::info!("COMMAND received command_type=Nop"),
+        CommandPayload::Reboot => log::info!("COMMAND received command_type=Reboot"),
+        CommandPayload::UpdateSchedule { interval_s } => {
+            log::info!(
+                "COMMAND received command_type=UpdateSchedule interval_s={}",
+                interval_s
+            );
+        }
+        CommandPayload::UpdateProgram { program_hash, .. } => {
+            log::info!(
+                "COMMAND received command_type=UpdateProgram program_hash={}",
+                hash_hex_prefix(program_hash)
+            );
+        }
+        CommandPayload::RunEphemeral { program_hash, .. } => {
+            log::info!(
+                "COMMAND received command_type=RunEphemeral program_hash={}",
+                hash_hex_prefix(program_hash)
+            );
+        }
+    }
+
+    // 7. Record gateway timestamp for BPF context
+    let command_received_at = clock.elapsed_ms();
+
+    // 8. Dispatch command
+    let mut current_seq = starting_seq;
+    let mut loaded_program: Option<LoadedProgram> = None;
+
+    let is_ephemeral = matches!(&command_payload, CommandPayload::RunEphemeral { .. });
+
+    match command_payload {
+        CommandPayload::Nop => {
+            // Proceed to BPF execution
+        }
+        CommandPayload::Reboot => {
+            return WakeCycleOutcome::Reboot;
+        }
+        CommandPayload::UpdateSchedule { interval_s } => {
+            if storage.write_schedule_interval(interval_s).is_ok() {
+                sleep_mgr.set_base_interval(interval_s);
+            }
+        }
+        CommandPayload::UpdateProgram {
+            program_hash: expected_hash,
+            program_size,
+            chunk_size,
+            chunk_count,
+            ..
+        }
+        | CommandPayload::RunEphemeral {
+            program_hash: expected_hash,
+            program_size,
+            chunk_size,
+            chunk_count,
+            ..
+        } => {
+            resident_image_bytes = None;
+
+            let max_image_size = if is_ephemeral {
+                MAX_EPHEMERAL_IMAGE_SIZE
+            } else {
+                MAX_RESIDENT_IMAGE_SIZE
+            };
+
+            // Chunked transfer via AEAD
+            let transfer_result = chunked_transfer_aead(
+                transport,
+                &identity,
+                &mut current_seq,
+                program_size,
+                chunk_size,
+                chunk_count,
+                max_image_size,
+                clock,
+                aead,
+                sha,
+            );
+
+            match transfer_result {
+                Ok(image_bytes) => {
+                    let install_result = {
+                        let mut program_store = ProgramStore::new(storage);
+                        if is_ephemeral {
+                            program_store.load_ephemeral(&image_bytes, &expected_hash, sha)
+                        } else {
+                            program_store.install_resident(
+                                &image_bytes,
+                                &expected_hash,
+                                sha,
+                                map_storage.budget_bytes(),
+                            )
+                        }
+                    };
+
+                    match install_result {
+                        Ok(program) => {
+                            // PROGRAM_ACK via AEAD
+                            if send_program_ack_aead(
+                                transport,
+                                &identity,
+                                &mut current_seq,
+                                &program.hash,
+                                aead,
+                                sha,
+                            )
+                            .is_err()
+                            {
+                                return log_and_sleep(&sleep_mgr);
+                            }
+
+                            if !is_ephemeral {
+                                sleep_mgr.set_wake_reason(WakeReason::ProgramUpdate);
+                            }
+                            loaded_program = Some(program);
+                        }
+                        Err(e) => {
+                            log::warn!("program install failed: {}", e);
+                            return log_and_sleep(&sleep_mgr);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("chunk transfer failed: {}", e);
+                    return log_and_sleep(&sleep_mgr);
+                }
+            }
+        }
+    }
+
+    // 9. BPF execution
+    let resident_installed_this_cycle = loaded_program.as_ref().is_some_and(|p| !p.is_ephemeral);
+
+    if loaded_program.is_none() {
+        if let Some(raw) = resident_image_bytes {
+            loaded_program = ProgramStore::<S>::decode_image(&raw, program_hash);
+        }
+    }
+
+    if let Some(program) = loaded_program {
+        let program_class = if program.is_ephemeral {
+            ProgramClass::Ephemeral
+        } else {
+            ProgramClass::Resident
+        };
+
+        if program.is_ephemeral {
+            if !program.map_defs.is_empty() {
+                return log_and_sleep(&sleep_mgr);
+            }
+        } else if resident_installed_this_cycle || !map_storage.layout_matches(&program.map_defs) {
+            if map_storage.allocate(&program.map_defs).is_err() {
+                return log_and_sleep(&sleep_mgr);
+            }
+            map_storage.apply_initial_data(&program.map_initial_data);
+        }
+
+        let map_ptrs = map_storage.map_pointers().to_vec();
+
+        let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
+        let battery_mv_clamped = if battery_mv > u16::MAX as u32 {
+            u16::MAX
+        } else {
+            battery_mv as u16
+        };
+        let ctx = SondeContext {
+            timestamp: timestamp_ms.saturating_add(elapsed_since_command),
+            battery_mv: battery_mv_clamped,
+            firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
+                .expect("FIRMWARE_ABI_VERSION must fit in u16"),
+            wake_reason: sleep_mgr.wake_reason() as u8,
+            _padding: [0; 3],
+        };
+
+        let mut trace_log = Vec::new();
+        // BPF dispatch still uses HMAC for helper functions.
+        // SAFETY: all referenced objects are alive on this stack frame
+        // and will not be moved until `_guard` is dropped below.
+        unsafe {
+            crate::bpf_dispatch::install(
+                hal as *mut dyn crate::hal::Hal,
+                transport as *mut T as *mut dyn crate::traits::Transport,
+                map_storage as *mut MapStorage,
+                &mut sleep_mgr as *mut SleepManager,
+                clock as *const dyn crate::traits::Clock,
+                hmac as *const dyn HmacProvider,
+                &identity as *const NodeIdentity,
+                &mut current_seq as *mut u64,
+                program_class,
+                &mut trace_log as *mut Vec<String>,
+                timestamp_ms,
+                command_received_at,
+                battery_mv,
+            );
+        }
+        let _guard = crate::bpf_dispatch::DispatchGuard;
+
+        let exec_result = match crate::bpf_dispatch::register_all(interpreter) {
+            Ok(()) => {
+                let load_defs_owned;
+                let (load_ptrs, load_defs): (&[u64], &[sonde_protocol::MapDef]) =
+                    if program.map_defs.is_empty() && map_storage.map_count() > 0 {
+                        load_defs_owned = (0..map_storage.map_count())
+                            .filter_map(|i| map_storage.get(i).map(|m| m.def))
+                            .collect::<Vec<_>>();
+                        (&map_ptrs, &load_defs_owned)
+                    } else {
+                        (&map_ptrs, &program.map_defs)
+                    };
+                match interpreter.load(&program.bytecode, load_ptrs, load_defs) {
+                    Ok(()) => {
+                        log::info!(
+                            "BPF execute program_hash={}",
+                            hash_hex_prefix(&program.hash)
+                        );
+                        let ctx_ptr = &ctx as *const SondeContext as u64;
+                        interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
+                    }
+                    Err(err) => {
+                        log::error!("BPF program load failed: {}", err);
+                        Err(err)
+                    }
+                }
+            }
+            Err(err) => {
+                log::error!("BPF helper registration failed: {}", err);
+                Err(err)
+            }
+        };
+
+        match &exec_result {
+            Ok(rc) => log::info!("BPF execution completed rc={}", rc),
+            Err(err) => log::info!("BPF execution failed: {}", err),
+        }
+        let _ = exec_result;
+
+        flush_trace_log(&trace_log);
+    }
+
+    // 10. Determine sleep duration
+    if sleep_mgr.will_wake_early() {
+        if storage.set_early_wake_flag().is_err() {
+            let _ = storage.set_early_wake_flag();
+        }
+    }
+
+    log_and_sleep(&sleep_mgr)
 }
 
 #[cfg(test)]

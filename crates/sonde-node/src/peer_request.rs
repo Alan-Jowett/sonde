@@ -41,6 +41,14 @@ const PROOF_DOMAIN: &[u8] = b"sonde-peer-ack-v1";
 
 use crate::ble_pairing::PEER_PAYLOAD_MAX_LEN;
 
+/// AEAD-specific max encrypted_payload length for PEER_REQUEST frames.
+///
+/// AEAD uses a 16-byte tag (vs 32-byte HMAC), so the CBOR budget grows
+/// from 207 to 223 bytes.  Subtracting ~5 bytes of CBOR map framing
+/// gives 218 bytes for encrypted_payload.
+#[cfg(feature = "aes-gcm-codec")]
+const PEER_PAYLOAD_MAX_LEN_AEAD: usize = sonde_protocol::MAX_PAYLOAD_SIZE_AEAD - 5; // 218
+
 /// PEER_ACK listen timeout in milliseconds (ND-0911: ≥10 seconds).
 const PEER_ACK_TIMEOUT_MS: u32 = 10_000;
 
@@ -267,9 +275,9 @@ pub fn build_peer_request_frame_aead<
     aead: &A,
     sha: &S,
 ) -> NodeResult<Vec<u8>> {
-    if encrypted_payload.len() > PEER_PAYLOAD_MAX_LEN {
+    if encrypted_payload.len() > PEER_PAYLOAD_MAX_LEN_AEAD {
         return Err(NodeError::MalformedPayload(
-            "encrypted_payload exceeds ESP-NOW frame budget (max 202 bytes)",
+            "encrypted_payload exceeds AEAD ESP-NOW frame budget (max 218 bytes)",
         ));
     }
 

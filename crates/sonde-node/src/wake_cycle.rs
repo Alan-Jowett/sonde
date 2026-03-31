@@ -859,6 +859,25 @@ fn get_chunk_with_retry<T: Transport>(
                         );
                         return Ok(data);
                     }
+                    Err(NodeError::UnexpectedMsgType(_)) => {
+                        // Stale frame (e.g. duplicate COMMAND from WAKE
+                        // retries).  Don't count this as a failed attempt
+                        // — re-read immediately in case the real CHUNK
+                        // response is already queued behind it.
+                        match transport.recv(RESPONSE_TIMEOUT_MS)? {
+                            Some(raw2) => match verify_and_decode_chunk(
+                                &raw2,
+                                identity,
+                                attempt_seq,
+                                chunk_index,
+                                hmac,
+                            ) {
+                                Ok(data) => return Ok(data),
+                                Err(_) => continue,
+                            },
+                            None => continue,
+                        }
+                    }
                     Err(_) => continue,
                 }
             }
@@ -5138,6 +5157,89 @@ mod tests {
         assert!(
             !interp.loaded,
             "program must not load — wrong msg_type was discarded"
+        );
+    }
+
+    #[test]
+    fn test_stale_command_before_chunk_recovery() {
+        // Regression test: when WAKE retries cause duplicate COMMAND
+        // responses, the first GET_CHUNK recv() gets a stale COMMAND
+        // instead of CHUNK.  The retry logic should re-read and find
+        // the real CHUNK response queued behind it.
+        let psk = [0xD1; 32];
+        let key_hint = 1u16;
+        let starting_seq = 200u64;
+
+        let image = sonde_protocol::ProgramImage {
+            bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            maps: vec![],
+            map_initial_data: vec![],
+        };
+        let image_cbor = image.encode_deterministic().unwrap();
+        let image_hash = TestSha256.hash(&image_cbor);
+
+        let chunk_size = image_cbor.len() as u32;
+        let chunk_count = 1u32;
+
+        let mut transport = MockTransport::new();
+
+        // COMMAND response (consumed by WAKE handler)
+        let cmd = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::UpdateProgram {
+                program_hash: image_hash.to_vec(),
+                program_size: image_cbor.len() as u32,
+                chunk_size,
+                chunk_count,
+            },
+        );
+        transport.queue_response(Some(cmd));
+
+        // Stale COMMAND from a WAKE retry — arrives when CHUNK expected
+        let stale_cmd = build_command_response(
+            &psk,
+            key_hint,
+            1,
+            starting_seq,
+            1710000000000,
+            CommandPayload::Nop,
+        );
+        transport.queue_response(Some(stale_cmd));
+
+        // Real CHUNK response queued behind the stale COMMAND
+        let chunk_data = &image_cbor[..];
+        let chunk_frame = build_chunk_response(&psk, key_hint, starting_seq, 0, chunk_data);
+        transport.queue_response(Some(chunk_frame));
+
+        let mut storage = MockStorage::new().with_key(key_hint, psk);
+        let mut hal = MockHal;
+        let mut rng = MockRng(0);
+        let clock = MockClock;
+        let mut interp = MockBpfInterpreter::new();
+        let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+        let outcome = run_wake_cycle(
+            &mut transport,
+            &mut storage,
+            &mut hal,
+            &mut rng,
+            &clock,
+            &MockBattery,
+            &mut interp,
+            &mut map_storage,
+            &TestHmac,
+            &TestSha256,
+        );
+
+        assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+        // Program should have been installed despite the stale COMMAND
+        assert!(
+            interp.loaded,
+            "BPF program must load — stale COMMAND should be skipped and real CHUNK found"
         );
     }
 

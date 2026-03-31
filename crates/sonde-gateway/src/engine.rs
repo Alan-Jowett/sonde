@@ -798,7 +798,15 @@ impl Gateway {
                 chunk_size,
                 ..
             } => (program_hash.clone(), *chunk_size),
-            _ => return None,
+            _ => {
+                warn!(
+                    node_id = %node.node_id,
+                    chunk_index,
+                    state = ?session.state,
+                    "GET_CHUNK discarded — session not in ChunkedTransfer state"
+                );
+                return None;
+            }
         };
 
         // Get the program from storage

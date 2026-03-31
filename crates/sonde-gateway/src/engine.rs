@@ -17,6 +17,9 @@ use sonde_protocol::{
 
 use std::collections::BTreeMap;
 
+#[cfg(feature = "aes-gcm-codec")]
+use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame};
+
 use crate::crypto::{RustCryptoHmac, RustCryptoSha256};
 use crate::gateway_identity::GatewayIdentity;
 use crate::handler::HandlerRouter;
@@ -197,7 +200,72 @@ impl Gateway {
         }
     }
 
-    /// Lazy-load the gateway identity from storage (cached after first load).
+    /// Process a raw frame using AES-256-GCM authenticated encryption.
+    ///
+    /// This is the AEAD counterpart of [`process_frame`]. It decodes the
+    /// frame header, looks up candidate PSKs by `key_hint`, then tries
+    /// each candidate with [`open_frame`] (AES-256-GCM decrypt + auth).
+    ///
+    /// PEER_REQUEST is not supported over the AEAD path — those frames
+    /// must still use the HMAC codec.
+    #[cfg(feature = "aes-gcm-codec")]
+    pub async fn process_frame_aead(&self, raw: &[u8], peer: PeerAddress) -> Option<Vec<u8>> {
+        use crate::aead::GatewayAead;
+
+        let decoded = decode_frame_aead(raw).ok()?;
+
+        // PEER_REQUEST is not supported on the AEAD path.
+        if decoded.header.msg_type == MSG_PEER_REQUEST {
+            return None;
+        }
+
+        let key_hint = decoded.header.key_hint;
+        let candidates = self.storage.get_nodes_by_key_hint(key_hint).await.ok()?;
+        if candidates.is_empty() {
+            warn!(
+                key_hint,
+                "discarding AEAD frame from unknown node (no key_hint match)"
+            );
+            return None;
+        }
+
+        let aead = GatewayAead;
+        let mut matched_node: Option<NodeRecord> = None;
+        let mut plaintext_payload: Option<Vec<u8>> = None;
+        for candidate in &candidates {
+            if let Ok(pt) = open_frame(&decoded, &candidate.psk, &aead, &self.crypto_sha) {
+                matched_node = Some(candidate.clone());
+                plaintext_payload = Some(pt);
+                break;
+            }
+        }
+        let node = matched_node?;
+        let payload = plaintext_payload?;
+
+        match decoded.header.msg_type {
+            MSG_WAKE => {
+                self.handle_wake_aead(&node, &decoded.header, &payload, peer)
+                    .await
+            }
+            MSG_GET_CHUNK | MSG_PROGRAM_ACK | MSG_APP_DATA => {
+                self.handle_post_wake_aead(&node, &decoded.header, &payload)
+                    .await
+            }
+            _ => None,
+        }
+    }
+
+    /// Encode a response frame using AES-256-GCM.
+    #[cfg(feature = "aes-gcm-codec")]
+    fn encode_response_aead(
+        &self,
+        header: &FrameHeader,
+        cbor: &[u8],
+        psk: &[u8; 32],
+    ) -> Option<Vec<u8>> {
+        use crate::aead::GatewayAead;
+        encode_frame_aead(header, cbor, psk, &GatewayAead, &self.crypto_sha).ok()
+    }
     async fn get_identity(&self) -> Option<Arc<GatewayIdentity>> {
         // Fast path: return cached identity.
         {
@@ -733,6 +801,299 @@ impl Gateway {
         .ok()?;
 
         Some(frame)
+    }
+
+    /// AEAD variant of [`handle_wake`] — same business logic, AES-256-GCM encoding.
+    #[cfg(feature = "aes-gcm-codec")]
+    async fn handle_wake_aead(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        payload: &[u8],
+        peer: PeerAddress,
+    ) -> Option<Vec<u8>> {
+        let (firmware_abi_version, program_hash, battery_mv) =
+            match NodeMessage::decode(MSG_WAKE, payload) {
+                Ok(NodeMessage::Wake {
+                    firmware_abi_version,
+                    program_hash,
+                    battery_mv,
+                }) => (firmware_abi_version, program_hash, battery_mv),
+                Ok(_) => return None,
+                Err(e) => {
+                    warn!(
+                        node_id = %node.node_id,
+                        error = %e,
+                        "discarding WAKE with malformed CBOR payload (AEAD)"
+                    );
+                    return None;
+                }
+            };
+
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let existing_session = self.session_manager.get_session(&node.node_id).await;
+        let reuse_chunked = existing_session.as_ref().is_some_and(|s| {
+            matches!(s.state, SessionState::ChunkedTransfer { .. }) && s.wake_nonce == header.nonce
+        });
+
+        let starting_seq: u64 = if reuse_chunked {
+            let seq = existing_session.as_ref().unwrap().next_expected_seq;
+            info!(node_id = %node.node_id, seq, "WAKE retry (AEAD) — reusing existing ChunkedTransfer session");
+            seq
+        } else {
+            let seq: u64 = {
+                let mut buf = [0u8; 8];
+                if let Err(err) = getrandom::fill(&mut buf) {
+                    warn!(error = ?err, "CSPRNG failure while generating starting_seq; aborting WAKE handling (AEAD)");
+                    return None;
+                }
+                u64::from_ne_bytes(buf)
+            };
+            let _session = self
+                .session_manager
+                .create_session(node.node_id.clone(), peer, header.nonce, seq)
+                .await;
+            info!(node_id = %node.node_id, seq, "session created (AEAD)");
+            seq
+        };
+
+        info!(
+            node_id = %node.node_id,
+            seq = starting_seq,
+            battery_mv,
+            "WAKE received (AEAD)"
+        );
+
+        let command_payload = if reuse_chunked {
+            let session = existing_session.unwrap();
+            match &session.state {
+                SessionState::ChunkedTransfer {
+                    program_hash: ph,
+                    program_size,
+                    chunk_size,
+                    chunk_count,
+                    is_ephemeral,
+                } => {
+                    if *is_ephemeral {
+                        CommandPayload::RunEphemeral {
+                            program_hash: ph.clone(),
+                            program_size: *program_size,
+                            chunk_size: *chunk_size,
+                            chunk_count: *chunk_count,
+                        }
+                    } else {
+                        CommandPayload::UpdateProgram {
+                            program_hash: ph.clone(),
+                            program_size: *program_size,
+                            chunk_size: *chunk_size,
+                            chunk_count: *chunk_count,
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        } else {
+            match self
+                .select_command(node, &program_hash, firmware_abi_version)
+                .await
+            {
+                Some(cmd) => cmd,
+                None => return None,
+            }
+        };
+
+        match &command_payload {
+            CommandPayload::UpdateProgram {
+                program_hash: ph,
+                program_size,
+                chunk_size,
+                chunk_count,
+            } => {
+                let _ = self
+                    .session_manager
+                    .set_state(
+                        &node.node_id,
+                        SessionState::ChunkedTransfer {
+                            program_hash: ph.clone(),
+                            program_size: *program_size,
+                            chunk_size: *chunk_size,
+                            chunk_count: *chunk_count,
+                            is_ephemeral: false,
+                        },
+                    )
+                    .await;
+            }
+            CommandPayload::RunEphemeral {
+                program_hash: ph,
+                program_size,
+                chunk_size,
+                chunk_count,
+            } => {
+                let _ = self
+                    .session_manager
+                    .set_state(
+                        &node.node_id,
+                        SessionState::ChunkedTransfer {
+                            program_hash: ph.clone(),
+                            program_size: *program_size,
+                            chunk_size: *chunk_size,
+                            chunk_count: *chunk_count,
+                            is_ephemeral: true,
+                        },
+                    )
+                    .await;
+            }
+            _ => {}
+        }
+
+        let mut updated_node = node.clone();
+        updated_node.update_telemetry(battery_mv, firmware_abi_version);
+        let _ = self.storage.upsert_node(&updated_node).await;
+
+        if let Some(router) = &self.handler_router {
+            let mut details = BTreeMap::new();
+            details.insert(
+                "battery_mv".to_string(),
+                ciborium::Value::Integer(battery_mv.into()),
+            );
+            details.insert(
+                "firmware_abi_version".to_string(),
+                ciborium::Value::Integer(firmware_abi_version.into()),
+            );
+            router
+                .route_event(&node.node_id, "node_online", details, timestamp_ms / 1000)
+                .await;
+        }
+
+        let response_msg = GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload: command_payload,
+        };
+        let response_cbor = response_msg.encode().ok()?;
+
+        let response_header = FrameHeader {
+            key_hint: node.key_hint,
+            msg_type: MSG_COMMAND,
+            nonce: header.nonce,
+        };
+        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
+    }
+
+    /// AEAD variant of [`handle_post_wake`] — same dispatch, AES-256-GCM encoding.
+    #[cfg(feature = "aes-gcm-codec")]
+    async fn handle_post_wake_aead(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        payload: &[u8],
+    ) -> Option<Vec<u8>> {
+        let msg = match NodeMessage::decode(header.msg_type, payload) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(
+                    node_id = %node.node_id,
+                    msg_type = header.msg_type,
+                    error = %e,
+                    "discarding post-WAKE message with malformed CBOR payload (AEAD)"
+                );
+                return None;
+            }
+        };
+
+        self.session_manager
+            .verify_and_advance_seq(&node.node_id, header.nonce)
+            .await
+            .ok()?;
+
+        match msg {
+            NodeMessage::GetChunk { chunk_index } => {
+                self.handle_get_chunk_aead(node, header, chunk_index).await
+            }
+            NodeMessage::ProgramAck { program_hash } => {
+                self.handle_program_ack(node, program_hash).await;
+                None
+            }
+            NodeMessage::AppData { blob } => self.handle_app_data_aead(node, header, blob).await,
+            _ => None,
+        }
+    }
+
+    /// AEAD variant of [`handle_get_chunk`] — AES-256-GCM response encoding.
+    #[cfg(feature = "aes-gcm-codec")]
+    async fn handle_get_chunk_aead(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        chunk_index: u32,
+    ) -> Option<Vec<u8>> {
+        let session = self.session_manager.get_session(&node.node_id).await?;
+        let (program_hash, chunk_size) = match &session.state {
+            SessionState::ChunkedTransfer {
+                program_hash,
+                chunk_size,
+                ..
+            } => (program_hash.clone(), *chunk_size),
+            _ => return None,
+        };
+
+        let program = self.storage.get_program(&program_hash).await.ok()??;
+        let chunk_data = self
+            .program_library
+            .get_chunk(&program.image, chunk_index, chunk_size)?
+            .to_vec();
+
+        let response_msg = GatewayMessage::Chunk {
+            chunk_index,
+            chunk_data,
+        };
+        let response_cbor = response_msg.encode().ok()?;
+
+        let response_header = FrameHeader {
+            key_hint: node.key_hint,
+            msg_type: MSG_CHUNK,
+            nonce: header.nonce,
+        };
+        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
+    }
+
+    /// AEAD variant of [`handle_app_data`] — AES-256-GCM response encoding.
+    #[cfg(feature = "aes-gcm-codec")]
+    async fn handle_app_data_aead(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        blob: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        let router = self.handler_router.as_ref()?;
+
+        let program_hash = match &node.current_program_hash {
+            Some(hash) => hash.clone(),
+            None => return None,
+        };
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let reply_data = router
+            .route_app_data(&node.node_id, &program_hash, &blob, timestamp, header.nonce)
+            .await?;
+
+        let response_msg = GatewayMessage::AppDataReply { blob: reply_data };
+        let response_cbor = response_msg.encode().ok()?;
+
+        let response_header = FrameHeader {
+            key_hint: node.key_hint,
+            msg_type: MSG_APP_DATA_REPLY,
+            nonce: header.nonce,
+        };
+        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
     }
 
     /// Handle post-WAKE messages (GET_CHUNK, PROGRAM_ACK, APP_DATA).

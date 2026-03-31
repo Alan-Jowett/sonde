@@ -16,4 +16,10 @@
   <ItemGroup>
     <Reference Include="System.Management" />
   </ItemGroup>
+
+  <!-- CustomAction.config is packed into the .CA.dll by the WiX DTF
+       PackCustomAction target so the SfxCA stub can locate the CLR. -->
+  <ItemGroup>
+    <Content Include="CustomAction.config" />
+  </ItemGroup>
 </Project>

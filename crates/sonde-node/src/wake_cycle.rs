@@ -887,7 +887,8 @@ fn get_chunk_with_retry<T: Transport>(
                                     }
                                 }
                                 Ok(None) => {
-                                    // No more frames available; stop draining.
+                                    // Timeout while draining stale frames; stop draining
+                                    // and fall back to the outer retry loop.
                                     break;
                                 }
                                 Err(e) => {

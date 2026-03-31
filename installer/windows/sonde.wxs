@@ -134,18 +134,23 @@
     <!-- GW-1501: Require a valid MODEM_PORT. Auto-detected by the custom
          action above, or supplied on the command line for silent installs:
            msiexec /i sonde.msi MODEM_PORT=COM5 /quiet -->
-    <!-- Installed is set during modify/repair/uninstall — skip the check
-         so the product can be removed even when the modem is unplugged. -->
-    <Launch Condition="MODEM_PORT OR Installed"
+    <!-- GW-1501: Require a valid MODEM_PORT for install and maintenance
+         (repair/modify re-evaluate ServiceInstall args). Only skip the
+         check during full uninstall (REMOVE="ALL") where the service is
+         being deleted, not reconfigured. -->
+    <Launch Condition="MODEM_PORT OR REMOVE=&quot;ALL&quot;"
             Message="No ESP32-S3 modem COM port detected. Connect the modem and retry, or specify the port manually: msiexec /i sonde.msi MODEM_PORT=COMx" />
 
     <InstallUISequence>
-      <Custom Action="DetectModemPort" After="AppSearch" Condition="NOT Installed" />
+      <!-- Run detection for fresh install and repair/modify (service args
+           need MODEM_PORT). Skip only during full uninstall. -->
+      <Custom Action="DetectModemPort" After="AppSearch" Condition="NOT REMOVE=&quot;ALL&quot;" />
     </InstallUISequence>
 
     <InstallExecuteSequence>
-      <!-- Auto-detect for silent/unattended installs (UI sequence is skipped). -->
-      <Custom Action="DetectModemPort" After="AppSearch" Condition="NOT MODEM_PORT AND NOT Installed" />
+      <!-- Auto-detect for silent/unattended installs and repairs (UI
+           sequence is skipped). Skip during full uninstall. -->
+      <Custom Action="DetectModemPort" After="AppSearch" Condition="NOT MODEM_PORT AND NOT REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
 
     <!-- ── UI ───────────────────────────────────────────────────────── -->

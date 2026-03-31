@@ -57,7 +57,7 @@ An in-process `BleTransport` implementation that:
 
 - Simulates BLE scan results (service UUIDs, advertising names, RSSI).
 - Simulates GATT connections with configurable MTU negotiation.
-- Queues indication responses (e.g., `REGISTER_ACK`, `NODE_ACK`).
+- Queues indication responses (e.g., `PHONE_REGISTERED`, `NODE_ACK`).
 - Captures outbound GATT writes (for assertion).
 - Supports error injection: connection failure, timeout, malformed indication, mid-operation disconnect.
 
@@ -393,11 +393,11 @@ TestNode {
 **Validates:** PT-0303
 
 **Procedure:**
-1. Configure mock transport with a `TestGateway` that returns a valid `REGISTER_ACK(0x00)` with `phone_key_hint` and `rf_channel`.
+1. Configure mock transport with a `TestGateway` that returns a valid `PHONE_REGISTERED (0x82)` message with status `0x00`, `phone_key_hint`, and `rf_channel`.
 2. Initiate Phase 1. After connection, proceed to registration.
 3. Assert: tool generates a 32-byte `phone_psk` via the injectable RNG provider.
 4. Assert: tool writes `REGISTER_PHONE` containing the phone-generated `phone_psk` and operator label.
-5. Assert: tool receives `REGISTER_ACK` with status `0x00`.
+5. Assert: tool receives `PHONE_REGISTERED` with status `0x00`.
 6. Assert: `phone_psk`, `phone_key_hint`, and `rf_channel` are persisted.
 
 ---
@@ -440,12 +440,12 @@ TestNode {
 
 ---
 
-### T-PT-211  REGISTER_ACK timeout (30 s)
+### T-PT-211  PHONE_REGISTERED timeout (30 s)
 
 **Validates:** PT-0303
 
 **Procedure:**
-1. Configure mock transport to never send `REGISTER_ACK`.
+1. Configure mock transport to never send `PHONE_REGISTERED`.
 2. Initiate Phase 1 and write `REGISTER_PHONE`.
 3. Assert: after 30 s, the tool disconnects.
 4. Assert: error message indicates timeout on phone registration.
@@ -562,7 +562,7 @@ TestNode {
 
 ### T-PT-307  Phone PSK authentication (AES-256-GCM)
 
-**Validates:** PT-0404
+**Validates:** PT-1102
 
 **Procedure:**
 1. Construct a PairingRequest CBOR with known fields and `phone_psk = [0x42u8; 32]`.
@@ -576,7 +576,7 @@ TestNode {
 
 ### T-PT-308  Payload encryption (AES-256-GCM with phone_psk)
 
-**Validates:** PT-0405
+**Validates:** PT-0407, PT-1102
 
 **Procedure:**
 1. Use `phone_psk = [0x42u8; 32]` and a known PairingRequest CBOR payload.
@@ -697,7 +697,7 @@ TestNode {
 
 **Procedure:**
 1. Start with an empty pairing store.
-2. Initiate Phase 1 and inject a failure before registration completes (e.g., timeout on `REGISTER_ACK`).
+2. Initiate Phase 1 and inject a failure before registration completes (e.g., timeout on `PHONE_REGISTERED`).
 3. Assert: pairing store is unchanged (no `phone_psk` persisted).
 4. Pre-load pairing store with Phase 1 artifacts. Initiate Phase 2 and inject a failure (e.g., `NODE_ACK(0x02)`).
 5. Assert: pairing store is unchanged (no node-related data added).
@@ -887,7 +887,7 @@ TestNode {
 **Validates:** PT-1000
 
 **Procedure:**
-1. Initiate Phase 1 and inject a BLE disconnect after `REGISTER_PHONE` is written but before `REGISTER_ACK` arrives.
+1. Initiate Phase 1 and inject a BLE disconnect after `REGISTER_PHONE` is written but before `PHONE_REGISTERED` arrives.
 2. Assert: tool returns to idle/scanning state without crash.
 3. Assert: operator can start a new scan and retry without restarting the application.
 
@@ -909,7 +909,7 @@ TestNode {
 
 **Procedure:**
 1. Inspect the timeout constants used by the pairing state machine.
-2. Assert: `REGISTER_ACK` timeout = 30 s.
+2. Assert: `PHONE_REGISTERED` timeout = 30 s.
 3. Assert: `NODE_ACK` timeout = 5 s.
 4. Assert: BLE scan default timeout = 30 s.
 5. Assert: BLE connection establishment timeout = 10 s.
@@ -1104,9 +1104,9 @@ TestNode {
 **Validates:** PT-1212
 
 **Procedure:**
-1. Configure a mock transport to cause a `REGISTER_ACK` timeout (30 s).
+1. Configure a mock transport to cause a `PHONE_REGISTERED` timeout (30 s).
 2. Run Phase 1, capture the error, and capture tracing output (e.g., with `#[traced_test]`).
-3. Assert: the error is `PairingError::IndicationTimeout` and the captured logs include an event for the `REGISTER_ACK` timeout with fields for the operation name and timeout duration (30 s).
+3. Assert: the error is `PairingError::IndicationTimeout` and the captured logs include an event for the `PHONE_REGISTERED` timeout with fields for the operation name and timeout duration (30 s).
 4. Configure a mock transport to return an `ERROR` response with status `0x02`.
 5. Run Phase 1 and capture the error.
 6. Assert: the error includes the status code in its display output.
@@ -1173,7 +1173,7 @@ TestNode {
 | T-PT-208a | PT-0303 | Phone label validation |
 | T-PT-209 | PT-0303 | ERROR(0x02) — registration window closed |
 | T-PT-210 | PT-0303 | ERROR(0x03) — already paired |
-| T-PT-211 | PT-0303 | REGISTER_ACK timeout (30 s) |
+| T-PT-211 | PT-0303 | PHONE_REGISTERED timeout (30 s) |
 | T-PT-212 | ~~PT-0303~~ | ~~Decryption failure (bad GCM tag)~~ — RETIRED |
 | T-PT-213 | PT-0304 | Key material zeroing after use |
 | T-PT-300 | PT-0400 | Phase 1 prerequisite check |
@@ -1183,8 +1183,8 @@ TestNode {
 | T-PT-304 | PT-0403 | PairingRequest CBOR deterministic encoding |
 | T-PT-305 | PT-0403 | node_id validation |
 | T-PT-306 | PT-0403 | rf_channel validation |
-| T-PT-307 | PT-0404 | Phone PSK authentication (AES-256-GCM) |
-| T-PT-308 | PT-0405 | Payload encryption (AES-256-GCM with phone_psk) |
+| T-PT-307 | PT-1102 | Phone PSK authentication (AES-256-GCM) |
+| T-PT-308 | PT-0407, PT-1102 | Payload encryption (AES-256-GCM with phone_psk) |
 | T-PT-309 | ~~PT-0405, PT-0902~~ | ~~Ed25519 → X25519 low-order point rejection~~ — RETIRED |
 | T-PT-310 | PT-0406 | Payload size > 202 bytes rejected |
 | T-PT-311 | PT-0407 | NODE_PROVISION happy path → NODE_ACK(0x00) |

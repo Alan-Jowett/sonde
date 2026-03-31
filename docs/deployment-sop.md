@@ -14,16 +14,16 @@ gateway, node, BPF program, and handler.
 | `gh` CLI | Download CI artifacts |
 | `clang` with BPF target | Compile BPF programs (see install note below) |
 
-**Installing clang (required for step 8):**
+**Installing clang (required for step 9):**
 - **Ubuntu/Debian:** `sudo apt install clang`
 - **macOS:** `brew install llvm`
 - **Windows:** Download from https://releases.llvm.org/ or `winget install LLVM.LLVM`
 
-## 1. Download firmware and tools from CI
+## 1. Download firmware and installers from CI
 
 Use the latest CI artifacts from your branch (or `main`).
 
-**Linux / macOS:**
+**Linux:**
 ```sh
 BRANCH=main
 
@@ -40,17 +40,15 @@ gh run download "$(gh run list --branch "$BRANCH" \
   -w 'ESP32-S3 Modem Firmware CI' --json databaseId -q '.[0].databaseId')" \
   --name modem-firmware --dir ./firmware-modem/
 
-# Gateway + admin binaries
+# Gateway + admin installer (.deb)
 gh run download "$(gh run list --branch "$BRANCH" \
-  -w CI --json databaseId -q '.[0].databaseId')" \
-  --name gateway-linux-x86_64 --dir ./bin/
-chmod +x ./bin/sonde-gateway ./bin/sonde-admin
+  -w 'Nightly Release CI' --json databaseId -q '.[0].databaseId')" \
+  --name sonde-installer-linux --dir ./installer/
 
 # Pairing tool (.deb package)
 gh run download "$(gh run list --branch "$BRANCH" -w 'Tauri Desktop Build' \
   --json databaseId -q '.[0].databaseId')" \
   --name sonde-pair-linux --dir ./pairing-tool/
-sudo dpkg -i ./pairing-tool/*.deb
 ```
 
 **Windows (PowerShell):**
@@ -66,37 +64,14 @@ gh run download $runId --name node-firmware-verbose --dir .\firmware-verbose\
 $runId = (gh run list --branch $BRANCH -w "ESP32-S3 Modem Firmware CI" --json databaseId -q ".[0].databaseId")
 gh run download $runId --name modem-firmware --dir .\firmware-modem\
 
-# Gateway + admin binaries
-$runId = (gh run list --branch $BRANCH -w CI --json databaseId -q ".[0].databaseId")
-gh run download $runId --name gateway-windows-x86_64 --dir .\bin\
+# Gateway + admin installer (.msi)
+$runId = (gh run list --branch $BRANCH -w "Nightly Release CI" --json databaseId -q ".[0].databaseId")
+gh run download $runId --name sonde-installer-windows --dir .\installer\
 
 # Pairing tool (NSIS installer)
 $runId = (gh run list --branch $BRANCH -w "Tauri Desktop Build" --json databaseId -q ".[0].databaseId")
 gh run download $runId --name sonde-pair-windows --dir .\pairing-tool\
-# Run the installer from .\pairing-tool\
 ```
-
-> **Note:** The Windows pairing tool installer follows the NSIS filename
-> pattern `Sonde Pairing Tool_X.X.X_x64-setup.exe` (where `X.X.X` is the
-> version number — e.g., `Sonde Pairing Tool_0.2.0_x64-setup.exe` for
-> the current release). After installation the app is available in the
-> Start Menu as **Sonde Pairing Tool** or at
-> `C:\Program Files\Sonde Pairing Tool\Sonde Pairing Tool.exe`.
-
-> **Alternative: platform installers.**  The Nightly Release CI workflow
-> also produces standalone installers for the gateway and admin CLI:
->
-> - **Windows:** Download the `sonde-installer-windows` artifact
->   (`sonde-x86_64.msi`) and run it. The MSI installs the gateway and
->   admin CLI to `C:\Program Files\Sonde\bin\` and adds this directory to
->   your system `PATH`, so you can run `sonde-admin` and `sonde-gateway`
->   directly from any command prompt.
-> - **Linux:** Download the `sonde-installer-linux` artifact
->   (`sonde_*_amd64.deb`) and install with `sudo dpkg -i sonde_*.deb`.
->   The deb package includes a systemd service unit.
->
-> These installers are an alternative to the raw binary downloads above —
-> use whichever method you prefer.
 
 ## 2. Flash modem firmware
 
@@ -135,86 +110,157 @@ espflash write-bin -p PORT 0x0 ./firmware-verbose/flash_image.bin
 
 The node will boot into BLE pairing mode (no PSK in NVS yet).
 
-## 4. Start the gateway
+## 4. Install the gateway
 
-Release builds default to WARN-level logging. Set `RUST_LOG` to see
-lifecycle events during initial testing:
+The gateway and admin CLI are distributed as platform installers that
+register the gateway as a system service (daemon).
 
-**Linux / macOS:**
+### Linux
+
 ```sh
-RUST_LOG=sonde_gateway=info ./bin/sonde-gateway \
-  --port /dev/ttyACM0 \
-  --db sonde.db \
-  --master-key-file master-key.hex \
-  --generate-master-key
+sudo dpkg -i ./installer/sonde_*_amd64.deb
 ```
 
-**Windows (PowerShell):**
+The `.deb` package:
+- Installs `sonde-gateway` and `sonde-admin` to `/usr/local/bin/`
+- Creates a `sonde` system user in the `dialout` group (for serial access)
+- Installs a systemd service unit (`sonde-gateway.service`)
+- Creates `/etc/sonde/` (config) and `/var/lib/sonde/` (database, keys)
+- Enables and starts the service (it will fail until configured — see step 5)
+
+### Windows
+
+Connect the ESP32-S3 modem board via USB before running the installer so
+the modem COM port is auto-detected.
+
 ```powershell
-$env:RUST_LOG = "sonde_gateway=info"
-.\bin\sonde-gateway.exe `
-  --port COM5 `
-  --db sonde.db `
-  --master-key-file master-key.hex `
-  --generate-master-key
+msiexec /i .\installer\sonde-x86_64.msi
 ```
 
-> **Note:** `--generate-master-key` is only needed on first run. Once
-> `master-key.hex` exists, omit it.
+The MSI:
+- Installs `sonde-gateway.exe` and `sonde-admin.exe` to `C:\Program Files\Sonde\bin\`
+- Adds the `bin` directory to the system `PATH`
+- Auto-detects the ESP32-S3 modem COM port (VID `303A` / PID `1001`)
+- Creates `%ProgramData%\sonde\` for the database and master key
+- Registers `sonde-gateway` as an auto-start Windows service
+- Generates the master key automatically on first start (`--generate-master-key`)
 
-| Flag | Purpose |
+For silent/unattended installs, pass the modem port explicitly:
+```powershell
+msiexec /i sonde-x86_64.msi MODEM_PORT=COM5 /quiet
+```
+
+> **Note:** The installer requires the modem to be connected. If no
+> modem is detected and no `MODEM_PORT` is supplied, the installer will
+> abort. Connect the modem and retry, or supply the port manually.
+
+## 5. Configure the gateway
+
+### Linux
+
+Edit `/etc/sonde/environment` to set the modem serial port:
+
+```sh
+sudo nano /etc/sonde/environment
+```
+```sh
+# Serial port for the ESP-NOW modem (required).
+SERIAL_PORT=/dev/ttyACM0
+```
+
+Generate a master key and add it to the service configuration:
+
+```sh
+sudo openssl rand -hex 32 > /etc/sonde/master-key.hex
+sudo chmod 640 /etc/sonde/master-key.hex
+sudo chown root:sonde /etc/sonde/master-key.hex
+```
+
+Create a systemd override to add the master key file:
+
+```sh
+sudo systemctl edit sonde-gateway
+```
+
+Add the following (note: the blank `ExecStart=` line is required to
+clear the default before setting the new value):
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/sonde-gateway \
+    --db /var/lib/sonde/gateway.db \
+    --port ${SERIAL_PORT} \
+    --key-provider file \
+    --master-key-file /etc/sonde/master-key.hex
+```
+
+Restart the service:
+
+```sh
+sudo systemctl restart sonde-gateway
+sudo systemctl status sonde-gateway
+```
+
+The gateway logs to the systemd journal. Check startup with:
+
+```sh
+journalctl -u sonde-gateway -n 30 --no-pager
+```
+
+You should see `master key loaded` and `modem transport ready`.
+
+### Windows
+
+The MSI configures the service automatically during installation.
+The gateway stores its database and master key under
+`%ProgramData%\sonde\`:
+
+| File | Purpose |
 |------|---------|
-| `--port` | Serial port of the modem's USB-CDC connector |
-| `--db` | SQLite database (created if absent) |
-| `--master-key-file` | 64-hex-char key file (back this up securely!) |
-| `--generate-master-key` | Auto-generate key if file missing |
-| `--channel` | ESP-NOW radio channel 1–14 (default 1) — must match the channel chosen during node provisioning (step 7) |
-| `--handler-config` | YAML handler routing — add after creating `handlers.yaml` in step 10 |
+| `gateway.db` | SQLite database (nodes, programs, sessions) |
+| `master-key.hex` | 64-hex-char master key (**back this up securely!**) |
 
-The gateway logs `modem transport ready` when the modem handshake completes.
+The service starts automatically after installation and on each boot.
+Verify it is running:
+
+```powershell
+sc query sonde-gateway
+```
 
 Admin socket (configurable via `--admin-socket`):
-- Windows: `\\.\pipe\sonde-admin`
-- Linux: `/var/run/sonde/admin.sock` (may require root)
-- For local/dev runs on macOS or unprivileged Linux, use e.g. `--admin-socket ./admin.sock`
-  and point `sonde-admin` at that path with the same flag.
+- **Windows:** `\\.\pipe\sonde-admin` (named pipe)
+- **Linux:** `/var/run/sonde/admin.sock` (UDS, created by systemd `RuntimeDirectory`)
 
-## 5. Verify gateway and modem (smoke test)
+## 6. Verify gateway and modem (smoke test)
 
-Before proceeding, confirm the gateway and modem are operational:
+Before proceeding, confirm the gateway and modem are operational.
+With the installers, `sonde-admin` is on your `PATH`:
 
-**Linux:**
 ```sh
-./bin/sonde-admin modem status
-./bin/sonde-admin modem scan
-./bin/sonde-admin node list
-./bin/sonde-admin program list
-```
-
-**Windows:**
-```powershell
-.\bin\sonde-admin.exe modem status
-.\bin\sonde-admin.exe modem scan
-.\bin\sonde-admin.exe node list
-.\bin\sonde-admin.exe program list
+sonde-admin modem status
+sonde-admin modem scan
+sonde-admin node list
+sonde-admin program list
 ```
 
 **Expected results on a fresh deployment:**
 - `modem status` — modem connected, firmware version and current RF channel displayed
-- `modem scan` — channel/AP table displayed (see step 6 for interpretation)
+- `modem scan` — channel/AP table displayed (see step 7 for interpretation)
 - `node list` — empty (no nodes provisioned yet)
 - `program list` — empty (no programs ingested yet)
 
 > **Tip:** Run these checks any time you suspect a connectivity issue —
 > they are a fast way to verify the gateway ↔ modem link is healthy.
 
-## 6. Choose an ESP-NOW channel
+## 7. Choose an ESP-NOW channel
 
 ESP-NOW shares the 2.4 GHz band with WiFi. Pick a channel with the
 fewest nearby access points to minimize interference:
 
-**Linux:** `./bin/sonde-admin modem scan`  
-**Windows:** `.\bin\sonde-admin.exe modem scan`
+```sh
+sonde-admin modem scan
+```
 
 Example output:
 ```
@@ -234,45 +280,45 @@ Channel    APs        Best RSSI
 Set the gateway to your chosen channel (must match the channel used
 during node provisioning in the next step):
 
-**Linux:** `./bin/sonde-admin modem set-channel 3`  
-**Windows:** `.\bin\sonde-admin.exe modem set-channel 3`
+```sh
+sonde-admin modem set-channel 3
+```
 
-## 7. Pair a node (BLE provisioning)
+## 8. Pair a node (BLE provisioning)
 
 > **ℹ️ Channel handling:** During Phase 1 registration, the gateway
 > passes its current RF channel to the pairing tool via
 > `PHONE_REGISTERED`. The pairing tool pre-fills this channel when
 > provisioning nodes, so it will match the modem channel automatically —
-> provided you select the channel (step 6) **before** pairing.
+> provided you select the channel (step 7) **before** pairing.
 > Changing the modem channel **after** nodes are provisioned will strand
 > them on the old channel
 > ([issue #518](https://github.com/alan-jowett/sonde/issues/518)).
 
-The pairing tool was downloaded in step 1. On Linux, the `.deb`
-package was already installed. On Windows, run the NSIS installer from
-`.\pairing-tool\`:
+The pairing tool was downloaded in step 1. Install it now if you haven't
+already:
 
-```powershell
-Start-Process ".\pairing-tool\Sonde Pairing Tool_X.X.X_x64-setup.exe"
-```
+- **Linux:** `sudo dpkg -i ./pairing-tool/*.deb`
+- **Windows:** Run the NSIS installer from `.\pairing-tool\`:
+  ```powershell
+  Start-Process ".\pairing-tool\Sonde Pairing Tool_X.X.X_x64-setup.exe"
+  ```
+  (Replace `X.X.X` with the version number shown in the downloaded filename.)
 
-(Replace `X.X.X` with the version number shown in the downloaded filename.)
+> **Note:** The Windows pairing tool installer follows the NSIS filename
+> pattern `Sonde Pairing Tool_X.X.X_x64-setup.exe`. After installation
+> the app is available in the Start Menu as **Sonde Pairing Tool** or at
+> `C:\Program Files\Sonde Pairing Tool\Sonde Pairing Tool.exe`.
 
 ### Phase 1: Register provisioning device with gateway
 
 Before you can provision nodes, the pairing tool (laptop/phone) must
 register itself with the gateway. This is a one-time step per device.
 
-1. **Start the gateway** (step 4) — it must be running with the modem connected.
+1. **Ensure the gateway service is running** (step 5) with the modem connected.
 2. **Open a registration window** from the admin CLI:
-
-   **Linux:**
    ```sh
-   ./bin/sonde-admin pairing start --duration-s 120
-   ```
-   **Windows:**
-   ```powershell
-   .\bin\sonde-admin.exe pairing start --duration-s 120
+   sonde-admin pairing start --duration-s 120
    ```
 3. **Launch the pairing tool** on a machine with Bluetooth.
 4. The tool connects to the modem's BLE GATT service, performs ECDH key
@@ -288,17 +334,18 @@ individual nodes. Repeat this phase for each new node.
 2. The tool scans for sonde nodes advertising the pairing service.
 3. Select the node, confirm the passkey, and enter a label + RF channel.
    The channel should be pre-filled from the gateway (see note above) —
-   **verify it matches the modem channel (step 6) before confirming.**
+   **verify it matches the modem channel (step 7) before confirming.**
 4. The tool generates a node PSK and provisions the node with PSK,
    key_hint, RF channel, and the encrypted registration payload.
 5. The node reboots, sends `PEER_REQUEST`, and the gateway registers it.
 
 Verify registration:
 
-**Linux:** `./bin/sonde-admin node list`  
-**Windows:** `.\bin\sonde-admin.exe node list`
+```sh
+sonde-admin node list
+```
 
-## 8. Compile a BPF program
+## 9. Compile a BPF program
 
 ```sh
 cd test-programs
@@ -314,20 +361,12 @@ The output is a BPF ELF object file. The gateway converts ELF → CBOR
 program image internally (extracting bytecode, map definitions, and
 .rodata/.data initial values).
 
-## 9. Deploy the BPF program
+## 10. Deploy the BPF program
 
-**Linux:**
 ```sh
-./bin/sonde-admin program ingest test-programs/tmp102_sensor.o --profile resident
-./bin/sonde-admin program assign sensor-01 PROGRAM_HASH
-./bin/sonde-admin schedule set sensor-01 60
-```
-
-**Windows (PowerShell):**
-```powershell
-.\bin\sonde-admin.exe program ingest test-programs\tmp102_sensor.o --profile resident
-.\bin\sonde-admin.exe program assign sensor-01 PROGRAM_HASH
-.\bin\sonde-admin.exe schedule set sensor-01 60
+sonde-admin program ingest test-programs/tmp102_sensor.o --profile resident
+sonde-admin program assign sensor-01 PROGRAM_HASH
+sonde-admin schedule set sensor-01 60
 ```
 
 Note the program hash from the `ingest` output and use it in the `assign` command.
@@ -336,51 +375,65 @@ Profiles:
 - `resident` — stored in node flash, runs every wake cycle
 - `ephemeral` — one-shot diagnostic, discarded after execution
 
-## 10. Configure a handler
+## 11. Configure a handler
 
-Create `handlers.yaml`:
+Handlers are external processes that receive `APP_DATA` from nodes via
+length-prefixed CBOR on stdin and can reply via stdout. See
+`test-programs/tmp102_handler.py` for a working example.
 
-```yaml
-handlers:
-  - program_hash: "*"
-    command: "python3"
-    args: ["test-programs/tmp102_handler.py"]
+Use the admin CLI to add a handler while the gateway is running — no
+restart required:
+
+```sh
+sonde-admin handler add "*" python3 test-programs/tmp102_handler.py
 ```
 
+The first argument is the program hash to match (or `"*"` for a
+catch-all that handles all programs). Additional arguments are passed
+to the handler command.
+
 On Windows, use `python` instead of `python3` if that's how Python is
-installed.
+installed:
+```powershell
+sonde-admin handler add "*" python test-programs\tmp102_handler.py
+```
 
-Handlers receive `APP_DATA` from nodes via length-prefixed CBOR on stdin
-and can reply via stdout. See `test-programs/tmp102_handler.py` for a
-working example.
+**Optional flags:**
+- `--working-dir DIR` — set the handler's working directory
+- `--reply-timeout-ms MS` — override the default 30-second reply timeout
 
-Restart the gateway with `--handler-config handlers.yaml`:
+**Managing handlers:**
+
+```sh
+# List all configured handlers
+sonde-admin handler list
+
+# Remove a handler by program hash (or "*" for catch-all)
+sonde-admin handler remove "*"
+```
+
+Handler configurations are persisted in the gateway database and survive
+service restarts.
+
+## 12. Verify end-to-end
+
+```sh
+sonde-admin status sensor-01
+```
+
+Watch gateway logs for the WAKE/COMMAND cycle:
 
 **Linux:**
 ```sh
-RUST_LOG=sonde_gateway=info ./bin/sonde-gateway \
-  --port /dev/ttyACM0 \
-  --db sonde.db \
-  --master-key-file master-key.hex \
-  --handler-config handlers.yaml
+journalctl -u sonde-gateway -f
 ```
 
-**Windows:**
+**Windows** (log file — default path is alongside the database):
 ```powershell
-$env:RUST_LOG = "sonde_gateway=info"
-.\bin\sonde-gateway.exe `
-  --port COM5 `
-  --db sonde.db `
-  --master-key-file master-key.hex `
-  --handler-config handlers.yaml
+Get-Content "$env:ProgramData\sonde\gateway.log" -Tail 30 -Wait
 ```
 
-## 11. Verify end-to-end
-
-**Linux:** `./bin/sonde-admin status sensor-01`  
-**Windows:** `.\bin\sonde-admin.exe status sensor-01`
-
-Watch gateway logs for the WAKE/COMMAND cycle:
+Expected log output:
 ```
 session created node_id=sensor-01 seq=...
 WAKE received node_id=sensor-01 seq=... battery_mv=...
@@ -398,7 +451,7 @@ BPF execution completed rc=0
 entering deep sleep duration_seconds=60 reason=scheduled (ND-1007)
 ```
 
-## 12. Switch to production firmware
+## 13. Switch to production firmware
 
 Once verified, flash the quiet (production) firmware:
 
@@ -409,17 +462,88 @@ espflash write-bin -p PORT 0x0 ./firmware/flash_image.bin
 The quiet variant strips INFO/DEBUG/TRACE logs at compile time for
 minimal power consumption. To debug later, reflash the verbose variant.
 
+## Monitoring
+
+### Linux
+
+The gateway logs to the systemd journal. Useful commands:
+
+```sh
+# Follow logs in real time
+journalctl -u sonde-gateway -f
+
+# Recent logs
+journalctl -u sonde-gateway -n 100 --no-pager
+
+# Logs since last boot
+journalctl -u sonde-gateway -b
+
+# Filter by priority (errors and above)
+journalctl -u sonde-gateway -p err
+```
+
+**Log verbosity** is controlled by the `RUST_LOG` environment variable.
+To change the level, edit the environment file and restart:
+
+```sh
+echo 'RUST_LOG=sonde_gateway=info' | sudo tee -a /etc/sonde/environment
+sudo systemctl restart sonde-gateway
+```
+
+### Windows
+
+The gateway service writes to two log sinks:
+
+1. **Log file** — `%ProgramData%\sonde\gateway.log` (or the path set
+   via `--log-file`). This is the primary log for day-to-day monitoring.
+
+   ```powershell
+   # View recent log entries
+   Get-Content "$env:ProgramData\sonde\gateway.log" -Tail 50
+
+   # Follow in real time
+   Get-Content "$env:ProgramData\sonde\gateway.log" -Tail 30 -Wait
+   ```
+
+2. **ETW (Event Tracing for Windows)** — provider name `sonde-gateway`.
+   Use standard ETW tooling (`logman`, `tracelog`, `perfview`, WPA) for
+   production diagnostics without touching the log file.
+
+   ```powershell
+   # Create a trace session
+   logman create trace sonde -p "sonde-gateway" -o sonde-trace.etl
+
+   # Start / stop
+   logman start sonde
+   logman stop sonde
+   ```
+
+**Runtime log-level reload (no restart required):**
+
+```powershell
+# Set the desired log level in the service's environment
+[Environment]::SetEnvironmentVariable("RUST_LOG", "sonde_gateway=debug", "Machine")
+
+# Signal the service to reload the filter
+sc control sonde-gateway paramchange
+```
+
+Release builds default to `sonde_gateway=warn`. Set
+`RUST_LOG=sonde_gateway=info` for lifecycle events during initial
+testing or `sonde_gateway=debug` for detailed diagnostics.
+
 ## Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
-| Node stuck in BLE pairing mode | No PSK in NVS — pair via BLE (step 7) |
+| Node stuck in BLE pairing mode | No PSK in NVS — pair via BLE (step 8) |
 | WAKE timeout (no COMMAND) | Gateway not running, wrong channel, modem not connected |
 | `0 APs on all channels` | WiFi scan error — check modem UART for error code |
-| Handler not receiving data | Check `handlers.yaml` path, ensure handler is executable |
+| Handler not receiving data | Check `sonde-admin handler list` output; verify handler command is executable and on `PATH` |
 | `non-ELF program images not accepted` | Release gateway rejects raw CBOR — submit ELF files |
 | Windows BLE pairing fails with "Not connected" | Stale Bluetooth cache — open Windows Settings → Bluetooth & devices → Devices, find the modem/node entry, click **Remove device**, then retry pairing from scratch |
 | `espflash` "port busy" error | Close any open serial monitor (e.g., `espflash monitor`, PuTTY) before flashing |
-| Gateway only shows WARN logs | Set `RUST_LOG=sonde_gateway=info` before starting the gateway (step 4) |
+| Gateway service won't start (Linux) | Check `journalctl -u sonde-gateway -n 30` — common causes: wrong serial port in `/etc/sonde/environment`, missing master key file |
+| Gateway service won't start (Windows) | Check `%ProgramData%\sonde\gateway.log` and Event Viewer → Application log — common cause: modem COM port changed (re-run MSI or update service args) |
 | `NODE_ACK` indication warning in pairing tool | Non-fatal — the node is provisioned successfully. Verify with `sonde-admin node list` |
-| Node not responding after pairing | Verify the node's RF channel matches the modem/gateway channel (step 6). If you changed the modem channel after pairing, re-pair the node on the new channel |
+| Node not responding after pairing | Verify the node's RF channel matches the modem/gateway channel (step 7). If you changed the modem channel after pairing, re-pair the node on the new channel |

@@ -1473,9 +1473,13 @@ creation functionality — only the parsing and validation modules.
 4. **Ingest programs** — for each program in the manifest:
    a. Read the ELF binary from the extracted directory.
    b. Call the `IngestProgram` gRPC with the ELF and profile.
-   c. If the gateway returns `ALREADY_EXISTS` (same content hash), log
-      "skipped (already ingested)" and continue.
-   d. Record the mapping: `program_name → program_hash` from the response.
+   c. Record the mapping: `program_name → program_hash` from the response.
+   d. For idempotent re-deploys, `sonde-admin` MUST treat repeated ingest
+      of identical ELF content as success.  The current gateway
+      implementation performs an upsert (`INSERT ... ON CONFLICT DO
+      UPDATE`) and always returns `Ok` for this call.  If a future gateway
+      version returns `ALREADY_EXISTS` for identical content, `sonde-admin`
+      MAY log "skipped (already ingested)" for that case.
 5. **Configure handlers** — for each handler in the manifest:
    a. Resolve `handler.program` name to the program hash from step 4.
    b. Call the `AddHandler` gRPC with the resolved hash, command, args
@@ -1504,9 +1508,12 @@ creation functionality — only the parsing and validation modules.
 
 Each step checks for existing state before acting:
 
-- **IngestProgram:** The gateway computes the content hash from the ELF and
-  returns `ALREADY_EXISTS` if a program with that hash is already stored.
-  This is the existing behaviour — no gateway changes required.
+- **IngestProgram:** The gateway performs an upsert: it computes the content
+  hash from the ELF, and `store_program` uses `INSERT ... ON CONFLICT DO
+  UPDATE` — re-ingesting identical content always returns `Ok` with the
+  same program hash.  No `ALREADY_EXISTS` status is returned.  `sonde-admin`
+  treats any successful ingest as idempotent (log "ingested" regardless of
+  whether the content was new or already stored).
 - **AddHandler:** The gateway returns `ALREADY_EXISTS` if a handler for
   the same program hash is already configured.  The deploy command then
   queries existing handler configuration via `ListHandlers` and compares

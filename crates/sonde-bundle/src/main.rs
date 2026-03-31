@@ -105,10 +105,10 @@ fn cmd_inspect(bundle: &std::path::Path, format: &str) -> Result<(), BundleError
 
     if format == "json" {
         let json = serde_json::json!({
-            "name": info.manifest.name,
-            "version": info.manifest.version,
+            "name": &info.manifest.name,
+            "version": &info.manifest.version,
             "schema_version": info.manifest.schema_version,
-            "description": info.manifest.description,
+            "description": &info.manifest.description,
             "archive_size": info.archive_size,
             "programs": info.manifest.programs.iter().map(|p| {
                 serde_json::json!({

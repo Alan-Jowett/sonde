@@ -18,7 +18,7 @@ no platform-specific dependencies.
 **Crate type:** Library (`lib`) + binary (`sonde-bundle`)
 
 **Dependencies:**
-- `serde` / `serde_yaml` — YAML manifest parsing
+- `serde` / `serde_yaml_ng` — YAML manifest parsing
 - `flate2` — gzip compression/decompression
 - `tar` — tar archive creation/extraction
 - `clap` — CLI argument parsing (binary only)
@@ -34,17 +34,13 @@ network/gRPC libraries.  It is a standalone tool for bundle manipulation.
 ```
 sonde-bundle/
 ├── src/
+│   ├── main.rs         # CLI entry point (SB-0500–SB-0502)
 │   ├── lib.rs          # Public API re-exports
 │   ├── manifest.rs     # Manifest types and YAML parsing (SB-0100)
-│   ├── archive.rs      # Archive creation and extraction (SB-0101, SB-0300)
+│   ├── archive.rs      # Archive creation, extraction, and inspection (SB-0101, SB-0300, SB-0400)
 │   ├── validate.rs     # Validation logic (SB-0200–SB-0204)
-│   ├── inspect.rs      # Bundle inspection (SB-0400)
-│   ├── error.rs        # Error types
-│   └── bin/
-│       └── main.rs     # CLI entry point (SB-0500–SB-0502)
+│   └── error.rs        # Error types
 ├── Cargo.toml
-└── tests/
-    └── integration.rs  # Integration tests
 ```
 
 ### 2.1  Module responsibilities
@@ -52,11 +48,10 @@ sonde-bundle/
 | Module | Responsibility | Requirements |
 |--------|---------------|--------------|
 | `manifest` | Parse, serialize, and represent `app.yaml` content | SB-0100, SB-0102 |
-| `archive` | Create and extract `.sondeapp` (`.tgz`) archives with security enforcement | SB-0101, SB-0300, SB-0301 |
+| `archive` | Create, extract, and inspect `.sondeapp` (`.tgz`) archives with security enforcement | SB-0101, SB-0300, SB-0301, SB-0400 |
 | `validate` | Run all validation rules against a parsed bundle | SB-0200–SB-0204 |
-| `inspect` | Read bundle metadata without full extraction | SB-0400 |
 | `error` | Unified error type for all operations | All |
-| `bin/main` | CLI entry point with `create`, `validate`, `inspect` subcommands | SB-0500–SB-0502 |
+| `main` | CLI entry point with `create`, `validate`, `inspect` subcommands | SB-0500–SB-0502 |
 
 ---
 

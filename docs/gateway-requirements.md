@@ -775,7 +775,7 @@ The admin API MUST support: ingesting a BPF ELF file (triggering verification, C
 2. `ListPrograms` returns all stored programs.
 3. `AssignProgram` sets a node's assigned program hash.
 4. `RemoveProgram` deletes a program from the library.
-5. `IngestProgram` returns an idempotent success (e.g., `ALREADY_EXISTS`) if a program with the same content hash is already stored, returning the existing hash without re-storing.
+5. `IngestProgram` is idempotent with respect to identical ELF content: re-ingesting a program with the same content hash returns the same program hash and does not require clients to handle a distinct "already exists" status code.
 
 ---
 

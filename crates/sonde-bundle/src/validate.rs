@@ -5,6 +5,7 @@
 
 use crate::manifest::Manifest;
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Component, Path};
 
 /// Result of validating a bundle.
@@ -91,13 +92,27 @@ fn is_valid_program_name(name: &str) -> bool {
     true
 }
 
-/// Check if a path is safe (relative, no parent-dir components).
+/// Check if a path is safe (relative, no parent-dir or prefix components).
 fn has_path_traversal(path: &str) -> bool {
     let p = Path::new(path);
-    if p.is_absolute() || path.starts_with('/') || path.starts_with('\\') {
+    if p.is_absolute() {
         return true;
     }
-    p.components().any(|c| matches!(c, Component::ParentDir))
+    for component in p.components() {
+        match component {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return true,
+            _ => {}
+        }
+    }
+    if path.starts_with('/') || path.starts_with('\\') {
+        return true;
+    }
+    // Reject Windows drive letters (e.g., "C:\foo") on any platform
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        return true;
+    }
+    false
 }
 
 /// Validate a manifest against a source directory.
@@ -152,7 +167,7 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
     }
 
     if let Some(ref desc) = manifest.description {
-        if desc.len() > 256 {
+        if desc.chars().count() > 256 {
             result.errors.push(ValidationError {
                 rule: "description",
                 message: "description must not exceed 256 characters".to_string(),
@@ -195,14 +210,28 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
                     message: format!("program file not found: `{}`", prog.path),
                 });
             } else {
-                // Check ELF magic
-                match std::fs::read(&file_path) {
-                    Ok(data) => {
-                        if data.len() < 4 || &data[..4] != b"\x7fELF" {
-                            result.errors.push(ValidationError {
-                                rule: "program.elf",
-                                message: format!("invalid ELF file: `{}`", prog.path),
-                            });
+                // Check ELF magic (read only the first 4 bytes)
+                match std::fs::File::open(&file_path) {
+                    Ok(mut f) => {
+                        let mut magic = [0u8; 4];
+                        match f.read_exact(&mut magic) {
+                            Ok(()) => {
+                                if &magic != b"\x7fELF" {
+                                    result.errors.push(ValidationError {
+                                        rule: "program.elf",
+                                        message: format!("invalid ELF file: `{}`", prog.path),
+                                    });
+                                }
+                            }
+                            Err(_) => {
+                                result.errors.push(ValidationError {
+                                    rule: "program.elf",
+                                    message: format!(
+                                        "invalid ELF file (too small): `{}`",
+                                        prog.path
+                                    ),
+                                });
+                            }
                         }
                     }
                     Err(e) => {

@@ -32,17 +32,28 @@ pub struct BundleInfo {
 const MAX_EXTRACT_SIZE: u64 = 100 * 1024 * 1024;
 
 /// Check an archive entry path for safety.
-fn check_path_safety(path_str: &str) -> Result<(), BundleError> {
-    let path = std::path::Path::new(path_str);
-    // Reject absolute paths
-    if path.is_absolute() || path_str.starts_with('/') || path_str.starts_with('\\') {
-        return Err(BundleError::PathTraversal(path_str.to_string()));
+fn check_path_safety(path: &Path) -> Result<(), BundleError> {
+    if path.is_absolute() {
+        return Err(BundleError::PathTraversal(path.display().to_string()));
     }
-    // Reject paths with ".." components
     for component in path.components() {
-        if component == std::path::Component::ParentDir {
-            return Err(BundleError::PathTraversal(path_str.to_string()));
+        match component {
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(BundleError::PathTraversal(path.display().to_string()));
+            }
+            _ => {}
         }
+    }
+    // Reject paths starting with / or \ that may not parse as absolute on all platforms
+    let raw = path.as_os_str().as_encoded_bytes();
+    if !raw.is_empty() && (raw[0] == b'/' || raw[0] == b'\\') {
+        return Err(BundleError::PathTraversal(path.display().to_string()));
+    }
+    // Reject Windows drive letters (e.g., "C:\foo") on non-Windows platforms
+    if raw.len() >= 2 && raw[1] == b':' && raw[0].is_ascii_alphabetic() {
+        return Err(BundleError::PathTraversal(path.display().to_string()));
     }
     Ok(())
 }
@@ -73,11 +84,13 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
 
         let path = entry
             .path()
-            .map_err(|e| BundleError::InvalidArchive(format!("invalid path in archive: {e}")))?
-            .to_path_buf();
-        let path_str = path.to_string_lossy().to_string();
+            .map_err(|e| BundleError::InvalidArchive(format!("invalid path in archive: {e}")))?;
 
-        check_path_safety(&path_str)?;
+        // Safety checks on the original Path (not lossy string) to prevent
+        // non-UTF8 bypass of string-based validation.
+        check_path_safety(&path)?;
+
+        let path_str = path.to_string_lossy().to_string();
 
         // Reject symlinks and hardlinks
         let entry_type = entry.header().entry_type();
@@ -122,13 +135,18 @@ pub fn create_bundle(source_dir: &Path, output_path: &Path) -> Result<BundleInfo
     for handler in &manifest.handlers {
         // Include handler working_dir contents if specified
         if let Some(ref wd) = handler.working_dir {
-            let wd_path = source_dir.join(wd);
-            if wd_path.is_dir() {
-                collect_dir_files(source_dir, &wd_path, &mut files_to_include)?;
+            if check_path_safety(Path::new(wd)).is_ok() {
+                let wd_path = source_dir.join(wd);
+                if wd_path.is_dir() && wd_path.starts_with(source_dir) {
+                    collect_dir_files(source_dir, &wd_path, &mut files_to_include)?;
+                }
             }
         }
         // Include args that are existing files within the source directory
         for arg in &handler.args {
+            if check_path_safety(Path::new(arg)).is_err() {
+                continue;
+            }
             let arg_path = source_dir.join(arg);
             if arg_path.exists() && arg_path.starts_with(source_dir) {
                 files_to_include.insert(arg.clone());
@@ -141,9 +159,13 @@ pub fn create_bundle(source_dir: &Path, output_path: &Path) -> Result<BundleInfo
     let gz = GzEncoder::new(output_file, Compression::default());
     let mut builder = tar::Builder::new(gz);
 
+    // Sort files for deterministic archive ordering
+    let mut sorted_files: Vec<&String> = files_to_include.iter().collect();
+    sorted_files.sort();
+
     let mut bundle_files = Vec::new();
 
-    for rel_path in &files_to_include {
+    for rel_path in sorted_files {
         let full_path = source_dir.join(rel_path);
         if full_path.is_file() {
             let size = full_path.metadata()?.len();

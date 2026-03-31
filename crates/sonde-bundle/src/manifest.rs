@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 
 /// Parsed `app.yaml` manifest.
 ///
-/// All fields use `#[serde(default)]` so that missing required fields produce
-/// validation errors (via `validate_manifest`) instead of opaque YAML parse
-/// failures.  This lets callers collect ALL validation errors in one pass.
+/// Most manifest fields use `#[serde(default)]` so that missing required
+/// fields produce validation errors (via `validate_manifest`) instead of
+/// opaque YAML parse failures.  Some nested types (e.g. sensor descriptors)
+/// intentionally rely on serde's required-field behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     #[serde(default)]

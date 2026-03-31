@@ -1603,9 +1603,9 @@ contact the gateway — it is fully offline.
 ### 20.6  Dry-run mode (GW-1604)
 
 `sonde-admin deploy --dry-run <bundle-path>` runs the deploy algorithm but
-replaces all gRPC calls with no-ops.  It still queries the gateway for current
-state (via `GetNode`, `ListPrograms`, `ListHandlers`) to determine which
-steps would be skipped vs. executed, and prints the plan:
+replaces all **mutating** gRPC calls with no-ops.  It still contacts the gateway
+for **read-only** state (via `GetNode`, `ListPrograms`, `ListHandlers`) to
+determine which steps would be skipped vs. executed, and prints the plan:
 
 ```
 Dry-run: temperature-monitor v0.1.0

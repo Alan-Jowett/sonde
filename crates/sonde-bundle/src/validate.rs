@@ -339,6 +339,30 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
                 }
             }
         }
+
+        // Validate handler command path safety
+        if !handler.command.is_empty() && has_path_traversal(&handler.command) {
+            result.errors.push(ValidationError {
+                rule: "handler.command",
+                message: format!(
+                    "handler command must be relative with no path traversal: `{}`",
+                    handler.command
+                ),
+            });
+        }
+
+        // Validate handler args path safety
+        for (i, arg) in handler.args.iter().enumerate() {
+            if has_path_traversal(arg) {
+                result.errors.push(ValidationError {
+                    rule: "handler.args",
+                    message: format!(
+                        "handler arg [{}] must be relative with no path traversal: `{}`",
+                        i, arg
+                    ),
+                });
+            }
+        }
     }
 
     // §6.5 Node validation

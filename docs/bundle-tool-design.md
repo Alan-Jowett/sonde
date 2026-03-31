@@ -19,10 +19,12 @@ no platform-specific dependencies.
 
 **Dependencies:**
 - `serde` / `serde_yaml_ng` — YAML manifest parsing
+- `serde_json` — JSON output for `inspect --format json`
 - `flate2` — gzip compression/decompression
 - `tar` — tar archive creation/extraction
 - `clap` — CLI argument parsing (binary only)
 - `semver` — semver parsing and validation
+- `tempfile` — staging directories for atomic extraction and archive creation
 
 The crate does NOT depend on `sonde-protocol`, `sonde-gateway`, or any
 network/gRPC libraries.  It is a standalone tool for bundle manipulation.
@@ -61,14 +63,22 @@ sonde-bundle/
 
 ```rust
 /// Parsed app.yaml manifest (SB-0100).
+///
+/// Most fields use `#[serde(default)]` so that missing required fields
+/// produce validation errors instead of opaque YAML parse failures.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
-    pub schema_version: u32,
+    #[serde(default)]
+    pub schema_version: Option<u32>,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub version: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
     pub programs: Vec<ProgramEntry>,
+    #[serde(default)]
     pub nodes: Vec<NodeTarget>,
     #[serde(default)]
     pub handlers: Vec<HandlerEntry>,
@@ -77,34 +87,49 @@ pub struct Manifest {
 /// A BPF program included in the bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgramEntry {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub path: String,
+    #[serde(default)]
     pub profile: VerificationProfile,
 }
 
 /// Verification profile for a BPF program.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+///
+/// Includes an `Unknown(String)` variant so that serde can successfully
+/// deserialize unrecognized profile names.  This allows validation to report
+/// all errors in one pass and preserves forward compatibility with future
+/// profiles.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationProfile {
     Resident,
     Ephemeral,
+    /// Any profile string not recognized by this version of the tool.
+    Unknown(String),
 }
 
 /// A handler process definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandlerEntry {
+    #[serde(default)]
     pub program: String,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
     pub working_dir: Option<String>,
+    #[serde(default)]
     pub reply_timeout_ms: Option<u32>,
 }
 
 /// A node target with optional hardware profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTarget {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub program: String,
     #[serde(default)]
     pub hardware: Option<HardwareProfile>,
@@ -115,6 +140,7 @@ pub struct NodeTarget {
 pub struct HardwareProfile {
     #[serde(default)]
     pub sensors: Vec<SensorDescriptor>,
+    #[serde(default)]
     pub rf_channel: Option<u8>,
 }
 
@@ -124,17 +150,21 @@ pub struct SensorDescriptor {
     #[serde(rename = "type")]
     pub sensor_type: SensorType,
     pub id: u16,
+    #[serde(default)]
     pub label: Option<String>,
 }
 
 /// Sensor bus type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+///
+/// Includes an `Unknown(String)` variant (like `VerificationProfile`)
+/// so parsing always succeeds and validation reports the error.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SensorType {
     I2c,
     Adc,
     Gpio,
     Spi,
+    Unknown(String),
 }
 ```
 

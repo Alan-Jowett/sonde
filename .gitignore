@@ -37,3 +37,4 @@ hw/output/
 hw/.venv/
 __pycache__/
 hw/board-erc.rpt
+sonde.sln

@@ -76,7 +76,12 @@ pub fn encode_frame_aead(
 
     let ciphertext_and_tag = aead.seal(psk, &gcm_nonce, &header_bytes, payload_cbor);
 
-    let mut frame = Vec::with_capacity(HEADER_SIZE + ciphertext_and_tag.len());
+    let frame_len = HEADER_SIZE + ciphertext_and_tag.len();
+    if frame_len > MAX_FRAME_SIZE {
+        return Err(EncodeError::FrameTooLarge);
+    }
+
+    let mut frame = Vec::with_capacity(frame_len);
     frame.extend_from_slice(&header_bytes);
     frame.extend_from_slice(&ciphertext_and_tag);
 
@@ -124,7 +129,7 @@ pub fn open_frame(
     let frame_nonce_bytes = frame.header.nonce.to_be_bytes();
     let gcm_nonce = build_gcm_nonce(psk, frame.header.msg_type, &frame_nonce_bytes, sha);
 
-    aead.open(psk, &gcm_nonce, &header_bytes, &frame.ciphertext_and_tag)
+    aead.open(psk, &gcm_nonce, &header_bytes, frame.ciphertext_and_tag)
         .ok_or(DecodeError::AuthenticationFailed)
 }
 
@@ -179,6 +184,9 @@ mod tests {
             }
             let ct_len = ciphertext_and_tag.len() - AEAD_TAG_SIZE;
             let tag = &ciphertext_and_tag[ct_len..];
+            // Test-only stub: constant-time comparison is required for
+            // production AeadProvider implementations, but this stub uses
+            // a simple equality check since it is not security-sensitive.
             if tag != [0xAA; AEAD_TAG_SIZE] {
                 return None;
             }

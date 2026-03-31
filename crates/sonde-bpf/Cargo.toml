@@ -1,6 +1,6 @@
 [package]
 name = "sonde-bpf"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A simple, zero-allocation BPF interpreter based on RFC 9669"
 license = "MIT"

@@ -1087,7 +1087,7 @@ The gateway and admin binaries MUST embed the git commit hash (short, 7 characte
 
 **Acceptance criteria:**
 
-1. `sonde-gateway --version` prints the version string in the format `<semver> (<short-hash>)`, e.g., `0.2.0 (a1b2c3d)`.
+1. `sonde-gateway --version` prints the version string in the format `<semver> (<short-hash>)`, e.g., `0.3.0 (a1b2c3d)`.
 2. `sonde-admin --version` prints the same format.
 3. The gateway startup log includes the version string with the embedded commit hash.
 4. When git metadata is unavailable (e.g., building from a tarball), the hash falls back to `unknown`.

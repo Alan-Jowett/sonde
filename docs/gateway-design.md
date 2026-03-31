@@ -1003,7 +1003,7 @@ The clap `#[command]` attribute uses `concat!()` to build a compile-time version
 #[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("SONDE_GIT_COMMIT"), ")"))]
 ```
 
-This produces output like `sonde-gateway 0.2.0 (a1b2c3d)`.
+This produces output like `sonde-gateway 0.3.0 (a1b2c3d)`.
 
 ### 14A.3  Startup log
 

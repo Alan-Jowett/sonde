@@ -364,7 +364,7 @@ No ECDH, no HKDF, no AES-GCM encryption of the response — BLE LESC provides ch
 - **Key:** `phone_psk`.
 - **Nonce:** 96-bit value from OS CSPRNG.
 - **Plaintext:** PairingRequest CBOR bytes (deterministic encoding per RFC 8949 §4.2).
-- **AAD:** `"sonde-pairing-v2"` (17 bytes, UTF-8).
+- **AAD:** `"sonde-pairing-v2"` (16 bytes, UTF-8).
 
 The `encrypted_payload` MUST be assembled as:
 ```

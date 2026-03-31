@@ -409,7 +409,7 @@ The encrypted payload MUST NOT exceed 202 bytes (the ESP-NOW frame budget). The 
 **Source:** ble-pairing-protocol.md §6.6, §6.7
 
 **Description:**  
-The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s). The `encrypted_payload` format is `nonce[12] ‖ ciphertext ‖ tag[16]` (AES-256-GCM with `phone_psk` as key and AAD = `"sonde-pairing-v2"`).
+The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ phone_key_hint[2] ‖ phone_psk[32] ‖ payload_len[2, BE u16] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s). The `encrypted_payload` format is `nonce[12] ‖ ciphertext ‖ tag[16]` (AES-256-GCM with `phone_psk` as key and AAD = `"sonde-pairing-v2"`).
 
 **Acceptance criteria:**
 

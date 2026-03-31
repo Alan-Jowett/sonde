@@ -240,6 +240,80 @@ impl NodeProxy {
         }
     }
 
+    /// Run one AEAD wake cycle, relaying frames through the gateway's
+    /// `process_frame_aead` path (AES-256-GCM).
+    #[cfg(feature = "aes-gcm-codec")]
+    pub fn run_wake_cycle_aead(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
+        let mut interpreter = MockBpfInterpreter::new();
+        self.run_wake_cycle_aead_inner(env, &mut interpreter, false)
+    }
+
+    /// Like [`run_wake_cycle_aead`] but accepts a caller-supplied BPF
+    /// interpreter for tests that require real BPF program execution.
+    #[cfg(feature = "aes-gcm-codec")]
+    pub fn run_wake_cycle_aead_with(
+        &mut self,
+        env: &E2eTestEnv,
+        interpreter: &mut impl BpfInterpreter,
+    ) -> WakeCycleStats {
+        self.run_wake_cycle_aead_inner(env, interpreter, false)
+    }
+
+    /// Run one AEAD wake cycle with outgoing frame tampering.
+    ///
+    /// A bit is flipped in the ciphertext region of every non-APP_DATA
+    /// frame before forwarding to the gateway, causing GCM authentication
+    /// failure and silent discard.
+    #[cfg(feature = "aes-gcm-codec")]
+    pub fn run_wake_cycle_aead_tampered(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
+        let mut interpreter = MockBpfInterpreter::new();
+        self.run_wake_cycle_aead_inner(env, &mut interpreter, true)
+    }
+
+    #[cfg(feature = "aes-gcm-codec")]
+    fn run_wake_cycle_aead_inner(
+        &mut self,
+        env: &E2eTestEnv,
+        interpreter: &mut impl BpfInterpreter,
+        tamper: bool,
+    ) -> WakeCycleStats {
+        use sonde_node::node_aead::NodeAead;
+        use sonde_node::wake_cycle::run_wake_cycle_aead;
+
+        let mut hal = MockHal;
+        let clock = MockClock::new();
+        let battery = MockBattery;
+        let hmac = TestHmac;
+        let sha = TestSha256;
+        let aead = NodeAead;
+
+        let mut transport = if tamper {
+            BridgeTransportAead::new_tampered(env.gateway.clone(), self.mac.clone())
+        } else {
+            BridgeTransportAead::new(env.gateway.clone(), self.mac.clone())
+        };
+
+        let outcome = run_wake_cycle_aead(
+            &mut transport,
+            &mut self.storage,
+            &mut hal,
+            &mut self.rng,
+            &clock,
+            &battery,
+            interpreter,
+            &mut self.map_storage,
+            &hmac,
+            &sha,
+            &aead,
+        );
+        WakeCycleStats {
+            outcome,
+            response_count: transport.response_count(),
+            wake_nonces: transport.wake_nonces().to_vec(),
+            sent_frames: transport.sent_frames().to_vec(),
+        }
+    }
+
     /// Run one wake cycle through the real modem bridge.
     ///
     /// Frames flow: node → ChannelTransport → mpsc → ChannelRadio →
@@ -380,6 +454,114 @@ impl NodeTransport for BridgeTransport {
     /// the frame through the gateway and captures any response. This is
     /// correct for the request-response pattern used by the wake cycle
     /// (send WAKE → recv COMMAND, send GET_CHUNK → recv CHUNK).
+    fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+        Ok(self.pending_response.take())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BridgeTransportAead — AEAD variant for AES-256-GCM E2E tests
+// ---------------------------------------------------------------------------
+
+/// In-memory frame relay that routes frames through the gateway's AEAD path.
+///
+/// WAKE, GET_CHUNK, and PROGRAM_ACK frames are processed via
+/// `process_frame_aead` (AES-256-GCM). APP_DATA frames are routed through
+/// `process_frame` (HMAC) because the BPF dispatch helpers still use the
+/// HMAC codec.
+#[cfg(feature = "aes-gcm-codec")]
+struct BridgeTransportAead {
+    gateway: Arc<Gateway>,
+    peer: Vec<u8>,
+    pending_response: Option<Vec<u8>>,
+    response_count: usize,
+    wake_nonces: Vec<u64>,
+    sent_frames: Vec<(u8, u64)>,
+    rt: tokio::runtime::Handle,
+    tamper_outgoing: bool,
+}
+
+#[cfg(feature = "aes-gcm-codec")]
+impl BridgeTransportAead {
+    fn new(gateway: Arc<Gateway>, peer: Vec<u8>) -> Self {
+        Self {
+            gateway,
+            peer,
+            pending_response: None,
+            response_count: 0,
+            wake_nonces: Vec::new(),
+            sent_frames: Vec::new(),
+            rt: tokio::runtime::Handle::try_current()
+                .expect("BridgeTransportAead must be created inside a Tokio runtime"),
+            tamper_outgoing: false,
+        }
+    }
+
+    fn new_tampered(gateway: Arc<Gateway>, peer: Vec<u8>) -> Self {
+        let mut t = Self::new(gateway, peer);
+        t.tamper_outgoing = true;
+        t
+    }
+
+    fn response_count(&self) -> usize {
+        self.response_count
+    }
+
+    fn wake_nonces(&self) -> &[u64] {
+        &self.wake_nonces
+    }
+
+    fn sent_frames(&self) -> &[(u8, u64)] {
+        &self.sent_frames
+    }
+}
+
+#[cfg(feature = "aes-gcm-codec")]
+impl NodeTransport for BridgeTransportAead {
+    fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
+        if frame.len() >= sonde_protocol::HEADER_SIZE {
+            let msg_type = frame[sonde_protocol::OFFSET_MSG_TYPE];
+            let nonce_end = sonde_protocol::OFFSET_NONCE + 8;
+            let nonce = u64::from_be_bytes(
+                frame[sonde_protocol::OFFSET_NONCE..nonce_end]
+                    .try_into()
+                    .unwrap(),
+            );
+            self.sent_frames.push((msg_type, nonce));
+            if msg_type == sonde_protocol::MSG_WAKE {
+                self.wake_nonces.push(nonce);
+            }
+        }
+
+        let gateway = self.gateway.clone();
+        let peer = self.peer.clone();
+        let msg_type = if frame.len() >= 3 { frame[2] } else { 0 };
+
+        // BPF dispatch encodes APP_DATA with HMAC, so route those through
+        // the HMAC path; all other message types use the AEAD path.
+        let response = if msg_type == sonde_protocol::MSG_APP_DATA {
+            let frame_vec = frame.to_vec();
+            tokio::task::block_in_place(|| {
+                self.rt.block_on(gateway.process_frame(&frame_vec, peer))
+            })
+        } else {
+            let mut frame_vec = frame.to_vec();
+            if self.tamper_outgoing && frame_vec.len() > 12 {
+                frame_vec[12] ^= 0x01;
+            }
+            tokio::task::block_in_place(|| {
+                self.rt
+                    .block_on(gateway.process_frame_aead(&frame_vec, peer))
+            })
+        };
+
+        if response.is_some() {
+            self.response_count += 1;
+        }
+        self.pending_response = response;
+        Ok(())
+    }
+
     fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
         Ok(self.pending_response.take())
     }

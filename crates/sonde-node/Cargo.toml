@@ -23,7 +23,7 @@ verbose = ["log/release_max_level_debug"]
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
 ciborium = { version = "0.2", default-features = false }
-hmac = "0.12"
+hmac = "0.13"
 log = { version = "0.4", features = ["max_level_trace"] }
 sha2 = "0.10"
 

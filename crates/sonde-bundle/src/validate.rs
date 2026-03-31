@@ -3,7 +3,7 @@
 
 //! Validation logic for Sonde App Bundles.
 
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, SensorType, VerificationProfile};
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Component, Path};
@@ -198,8 +198,24 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
             });
         }
 
+        // Validate verification profile
+        if let VerificationProfile::Unknown(ref s) = prog.profile {
+            result.errors.push(ValidationError {
+                rule: "program.profile",
+                message: format!(
+                    "unknown verification profile `{}`, expected `resident` or `ephemeral`",
+                    s
+                ),
+            });
+        }
+
         // Check path safety
-        if has_path_traversal(&prog.path) {
+        if prog.path.is_empty() {
+            result.errors.push(ValidationError {
+                rule: "program.path",
+                message: format!("program `{}` path must not be empty", prog.name),
+            });
+        } else if has_path_traversal(&prog.path) {
             result.errors.push(ValidationError {
                 rule: "program.path",
                 message: format!("program path must be relative with no ..: `{}`", prog.path),
@@ -356,6 +372,15 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
                 }
             }
             for sensor in &hw.sensors {
+                if let SensorType::Unknown(ref s) = sensor.sensor_type {
+                    result.errors.push(ValidationError {
+                        rule: "node.hardware.sensors.type",
+                        message: format!(
+                            "unknown sensor type `{}`, expected one of: i2c, adc, gpio, spi",
+                            s
+                        ),
+                    });
+                }
                 if let Some(ref label) = sensor.label {
                     if label.len() > 64 {
                         result.errors.push(ValidationError {

@@ -1459,7 +1459,8 @@ creation functionality — only the parsing and validation modules.
 `sonde-admin deploy <bundle-path>` executes the following steps:
 
 1. **Parse and validate** — call `sonde_bundle::archive::validate_bundle()` on the
-   `.sondeapp` file.  Abort on any validation error.
+   `.sondeapp` file, then abort if `!result.is_valid()` (i.e., if the returned
+   `ValidationResult` contains any errors).
 2. **Extract** — extract the bundle to a temporary directory.
 3. **Deploy handler files** — if the bundle contains handler files:
    a. Determine the permanent handler directory:

@@ -124,10 +124,17 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
         std::fs::rename(item.path(), &dest)?;
     }
 
-    // Parse manifest
+    // Parse manifest (enforce size limit consistent with inspect_bundle)
     let manifest_path = target_dir.join("app.yaml");
     if !manifest_path.exists() {
         return Err(BundleError::MissingManifest);
+    }
+    let manifest_size = std::fs::metadata(&manifest_path)?.len();
+    if manifest_size > MAX_MANIFEST_SIZE {
+        return Err(BundleError::InvalidArchive(format!(
+            "app.yaml exceeds maximum manifest size ({} bytes)",
+            MAX_MANIFEST_SIZE
+        )));
     }
     let yaml = std::fs::read_to_string(&manifest_path)?;
     Manifest::from_yaml(&yaml)

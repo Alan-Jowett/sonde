@@ -862,10 +862,10 @@ fn get_chunk_with_retry<T: Transport>(
                     Err(NodeError::UnexpectedMsgType(_)) => {
                         // Stale frame (e.g. duplicate COMMAND from WAKE
                         // retries).  Don't count this as a failed attempt
-                        // — re-read immediately in case the real CHUNK
-                        // response is already queued behind it.
-                        match transport.recv(RESPONSE_TIMEOUT_MS)? {
-                            Some(raw2) => match verify_and_decode_chunk(
+                        // — keep reading in case the real CHUNK response
+                        // is already queued behind it.
+                        while let Ok(Some(raw2)) = transport.recv(RESPONSE_TIMEOUT_MS) {
+                            match verify_and_decode_chunk(
                                 &raw2,
                                 identity,
                                 attempt_seq,
@@ -873,10 +873,17 @@ fn get_chunk_with_retry<T: Transport>(
                                 hmac,
                             ) {
                                 Ok(data) => return Ok(data),
-                                Err(_) => continue,
-                            },
-                            None => continue,
+                                Err(NodeError::UnexpectedMsgType(_)) => {
+                                    // Another stale frame; keep draining.
+                                    continue;
+                                }
+                                Err(_) => {
+                                    // Treat other errors as a failed attempt.
+                                    break;
+                                }
+                            }
                         }
+                        continue;
                     }
                     Err(_) => continue,
                 }
@@ -5162,10 +5169,9 @@ mod tests {
 
     #[test]
     fn test_stale_command_before_chunk_recovery() {
-        // Regression test: when WAKE retries cause duplicate COMMAND
-        // responses, the first GET_CHUNK recv() gets a stale COMMAND
-        // instead of CHUNK.  The retry logic should re-read and find
-        // the real CHUNK response queued behind it.
+        // Regression test (T-N803): when WAKE retries cause multiple
+        // duplicate COMMAND responses, the chunk transfer must drain all
+        // stale frames without consuming retry attempts and still succeed.
         let psk = [0xD1; 32];
         let key_hint = 1u16;
         let starting_seq = 200u64;
@@ -5199,18 +5205,24 @@ mod tests {
         );
         transport.queue_response(Some(cmd));
 
-        // Stale COMMAND from a WAKE retry — arrives when CHUNK expected
-        let stale_cmd = build_command_response(
-            &psk,
-            key_hint,
-            1,
-            starting_seq,
-            1710000000000,
-            CommandPayload::Nop,
-        );
-        transport.queue_response(Some(stale_cmd));
+        // Queue 3 stale COMMANDs (simulates 3 WAKE retries all producing
+        // duplicate COMMAND responses still in the receive buffer).
+        // This exceeds the retry budget (WAKE_MAX_RETRIES = 3), so without
+        // the drain-loop fix, every retry attempt would be consumed by a
+        // stale frame and the transfer would fail.
+        for _ in 0..3 {
+            let stale_cmd = build_command_response(
+                &psk,
+                key_hint,
+                1,
+                starting_seq,
+                1710000000000,
+                CommandPayload::Nop,
+            );
+            transport.queue_response(Some(stale_cmd));
+        }
 
-        // Real CHUNK response queued behind the stale COMMAND
+        // Real CHUNK response queued behind the stale COMMANDs
         let chunk_data = &image_cbor[..];
         let chunk_frame = build_chunk_response(&psk, key_hint, starting_seq, 0, chunk_data);
         transport.queue_response(Some(chunk_frame));
@@ -5236,10 +5248,25 @@ mod tests {
         );
 
         assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
-        // Program should have been installed despite the stale COMMAND
+        // Program should have been installed despite 3 stale COMMANDs
         assert!(
             interp.loaded,
-            "BPF program must load — stale COMMAND should be skipped and real CHUNK found"
+            "BPF program must load — stale COMMANDs should be drained and real CHUNK found"
+        );
+        // Verify only 1 GET_CHUNK was sent (no retry consumed by stale frames).
+        // outbound = [WAKE, GET_CHUNK, PROGRAM_ACK]
+        let get_chunk_count = transport
+            .outbound
+            .iter()
+            .filter(|f| {
+                decode_frame(f)
+                    .map(|d| d.header.msg_type == MSG_GET_CHUNK)
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            get_chunk_count, 1,
+            "only 1 GET_CHUNK should be sent — stale frames must not consume retry attempts"
         );
     }
 

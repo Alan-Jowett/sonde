@@ -27,6 +27,8 @@ pub mod esp_transport;
 pub mod hal;
 pub mod key_store;
 pub mod map_storage;
+#[cfg(feature = "aes-gcm-codec")]
+pub mod node_aead;
 pub mod peer_request;
 pub mod program_store;
 pub mod sleep;

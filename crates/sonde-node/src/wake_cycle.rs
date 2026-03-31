@@ -1104,6 +1104,477 @@ pub fn send_recv_app_data<T: Transport + ?Sized, C: Clock + ?Sized, H: HmacProvi
     }
 }
 
+// ---------------------------------------------------------------------------
+// AES-256-GCM frame processing (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "aes-gcm-codec")]
+use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame, AeadProvider};
+
+/// Decode and authenticate a raw frame using AES-256-GCM.
+///
+/// Returns `(header, plaintext_payload)` on success.
+#[cfg(feature = "aes-gcm-codec")]
+fn decode_verify_frame_aead<A: AeadProvider, S: Sha256Provider>(
+    raw: &[u8],
+    psk: &[u8; 32],
+    aead: &A,
+    sha: &S,
+) -> NodeResult<(FrameHeader, Vec<u8>)> {
+    let decoded =
+        decode_frame_aead(raw).map_err(|_| NodeError::MalformedPayload("frame decode failed"))?;
+    let header = decoded.header.clone();
+    let payload = open_frame(&decoded, psk, aead, sha).map_err(|_| NodeError::AuthFailure)?;
+    Ok((header, payload))
+}
+
+/// AES-GCM variant of [`wake_command_exchange`].
+///
+/// Encodes the WAKE frame with AES-256-GCM and decodes the COMMAND
+/// response using AEAD authentication instead of HMAC-SHA256.
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn wake_command_exchange_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    wake_nonce: u64,
+    program_hash: &[u8],
+    battery_mv: u32,
+    clock: &dyn Clock,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<(u64, u64, CommandPayload)> {
+    let wake_msg = NodeMessage::Wake {
+        firmware_abi_version: FIRMWARE_ABI_VERSION,
+        program_hash: program_hash.to_vec(),
+        battery_mv,
+    };
+    let payload_cbor = wake_msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("WAKE message encode failed"))?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_WAKE,
+        nonce: wake_nonce,
+    };
+
+    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+    for attempt in 0..=WAKE_MAX_RETRIES {
+        if attempt > 0 {
+            clock.delay_ms(RETRY_DELAY_MS);
+        }
+
+        transport.send(&frame)?;
+        log::info!(
+            "WAKE sent key_hint=0x{:04X} nonce=0x{:016X} attempt={} (ND-1002)",
+            identity.key_hint,
+            wake_nonce,
+            attempt,
+        );
+
+        match transport.recv(RESPONSE_TIMEOUT_MS)? {
+            Some(raw_response) => {
+                match verify_and_decode_command_aead(&raw_response, identity, wake_nonce, aead, sha)
+                {
+                    Ok(result) => return Ok(result),
+                    Err(e) => {
+                        log::warn!("COMMAND verification failed: {} (ND-1009)", e);
+                        continue;
+                    }
+                }
+            }
+            None => continue,
+        }
+    }
+
+    Err(NodeError::WakeRetriesExhausted)
+}
+
+/// AES-GCM variant of [`verify_and_decode_command`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(dead_code)]
+fn verify_and_decode_command_aead<A: AeadProvider, S: Sha256Provider>(
+    raw: &[u8],
+    identity: &NodeIdentity,
+    expected_nonce: u64,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<(u64, u64, CommandPayload)> {
+    let (header, payload) = decode_verify_frame_aead(raw, &identity.psk, aead, sha)?;
+
+    if header.msg_type != MSG_COMMAND {
+        return Err(NodeError::UnexpectedMsgType(header.msg_type));
+    }
+
+    if header.nonce != expected_nonce {
+        return Err(NodeError::ResponseBindingMismatch);
+    }
+
+    let gateway_msg = match GatewayMessage::decode(header.msg_type, &payload) {
+        Ok(msg) => msg,
+        Err(DecodeError::InvalidCommandType(_)) => {
+            return decode_command_as_nop(&payload);
+        }
+        Err(_) => return Err(NodeError::MalformedPayload("COMMAND payload decode failed")),
+    };
+
+    match gateway_msg {
+        GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload,
+        } => Ok((starting_seq, timestamp_ms, payload)),
+        _ => Err(NodeError::UnexpectedMsgType(header.msg_type)),
+    }
+}
+
+/// AES-GCM variant of [`send_app_data`].
+#[cfg(feature = "aes-gcm-codec")]
+pub fn send_app_data_aead<T: Transport + ?Sized, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    blob: &[u8],
+    aead: &A,
+    sha: &S,
+) -> NodeResult<()> {
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA blob exceeds frame payload budget",
+        ));
+    }
+
+    let seq = *current_seq;
+
+    let msg = NodeMessage::AppData {
+        blob: blob.to_vec(),
+    };
+    let payload_cbor = msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed"))?;
+
+    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA payload exceeds frame payload budget",
+        ));
+    }
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_APP_DATA,
+        nonce: seq,
+    };
+
+    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+    transport.send(&frame)?;
+    *current_seq += 1;
+    Ok(())
+}
+
+/// AES-GCM variant of [`send_recv_app_data`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn send_recv_app_data_aead<
+    T: Transport + ?Sized,
+    C: Clock + ?Sized,
+    A: AeadProvider,
+    S: Sha256Provider,
+>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    blob: &[u8],
+    timeout_ms: u32,
+    clock: &C,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA blob exceeds frame payload budget",
+        ));
+    }
+
+    let seq = *current_seq;
+
+    let msg = NodeMessage::AppData {
+        blob: blob.to_vec(),
+    };
+    let payload_cbor = msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed"))?;
+
+    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA payload exceeds frame payload budget",
+        ));
+    }
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_APP_DATA,
+        nonce: seq,
+    };
+
+    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+    transport.send(&frame)?;
+    *current_seq += 1;
+
+    let deadline = clock.elapsed_ms().saturating_add(timeout_ms as u64);
+    loop {
+        let now = clock.elapsed_ms();
+        if now >= deadline {
+            return Err(NodeError::Timeout);
+        }
+        let remaining = (deadline - now) as u32;
+        match transport.recv(remaining)? {
+            Some(raw_response) => {
+                let (hdr, payload) =
+                    match decode_verify_frame_aead(&raw_response, &identity.psk, aead, sha) {
+                        Ok(result) => result,
+                        Err(_) => continue,
+                    };
+
+                if hdr.msg_type != MSG_APP_DATA_REPLY {
+                    continue;
+                }
+
+                if hdr.nonce != seq {
+                    continue;
+                }
+
+                let gateway_msg = match GatewayMessage::decode(hdr.msg_type, &payload) {
+                    Ok(msg) => msg,
+                    Err(_) => continue,
+                };
+
+                match gateway_msg {
+                    GatewayMessage::AppDataReply { blob } => return Ok(blob),
+                    _ => continue,
+                }
+            }
+            None => return Err(NodeError::Timeout),
+        }
+    }
+}
+
+/// AES-GCM variant of [`send_program_ack`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(dead_code)]
+fn send_program_ack_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    program_hash: &[u8],
+    aead: &A,
+    sha: &S,
+) -> NodeResult<()> {
+    let seq = *current_seq;
+
+    let ack_msg = NodeMessage::ProgramAck {
+        program_hash: program_hash.to_vec(),
+    };
+    let payload_cbor = ack_msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("PROGRAM_ACK message encode failed"))?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_PROGRAM_ACK,
+        nonce: seq,
+    };
+
+    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+    transport.send(&frame)?;
+    *current_seq += 1;
+    Ok(())
+}
+
+/// AES-GCM variant of [`verify_and_decode_chunk`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(dead_code)]
+fn verify_and_decode_chunk_aead<A: AeadProvider, S: Sha256Provider>(
+    raw: &[u8],
+    identity: &NodeIdentity,
+    expected_seq: u64,
+    expected_index: u32,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    let (header, payload) = decode_verify_frame_aead(raw, &identity.psk, aead, sha)?;
+
+    if header.msg_type != MSG_CHUNK {
+        return Err(NodeError::UnexpectedMsgType(header.msg_type));
+    }
+
+    if header.nonce != expected_seq {
+        return Err(NodeError::ResponseBindingMismatch);
+    }
+
+    let gateway_msg = GatewayMessage::decode(header.msg_type, &payload)
+        .map_err(|_| NodeError::MalformedPayload("CHUNK payload decode failed"))?;
+
+    match gateway_msg {
+        GatewayMessage::Chunk {
+            chunk_index,
+            chunk_data,
+        } => {
+            if chunk_index != expected_index {
+                return Err(NodeError::ChunkIndexMismatch {
+                    expected: expected_index,
+                    received: chunk_index,
+                });
+            }
+            Ok(chunk_data)
+        }
+        _ => Err(NodeError::UnexpectedMsgType(header.msg_type)),
+    }
+}
+
+/// AES-GCM variant of [`get_chunk_with_retry`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+fn get_chunk_with_retry_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    chunk_index: u32,
+    clock: &dyn Clock,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    let get_msg = NodeMessage::GetChunk { chunk_index };
+    let payload_cbor = get_msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("GET_CHUNK message encode failed"))?;
+
+    for attempt in 0..=WAKE_MAX_RETRIES {
+        if attempt > 0 {
+            clock.delay_ms(RETRY_DELAY_MS);
+        }
+
+        let attempt_seq = *current_seq;
+
+        let header = FrameHeader {
+            key_hint: identity.key_hint,
+            msg_type: MSG_GET_CHUNK,
+            nonce: attempt_seq,
+        };
+
+        let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+            .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+        transport.send(&frame)?;
+        log::debug!(
+            "GET_CHUNK sent chunk_index={} attempt={} (ND-1011)",
+            chunk_index,
+            attempt
+        );
+        *current_seq += 1;
+
+        match transport.recv(RESPONSE_TIMEOUT_MS)? {
+            Some(raw_response) => {
+                match verify_and_decode_chunk_aead(
+                    &raw_response,
+                    identity,
+                    attempt_seq,
+                    chunk_index,
+                    aead,
+                    sha,
+                ) {
+                    Ok(data) => {
+                        log::debug!(
+                            "CHUNK received chunk_index={} len={} (ND-1011)",
+                            chunk_index,
+                            data.len()
+                        );
+                        return Ok(data);
+                    }
+                    Err(_) => continue,
+                }
+            }
+            None => continue,
+        }
+    }
+
+    Err(NodeError::ChunkTransferFailed { chunk_index })
+}
+
+/// AES-GCM variant of [`chunked_transfer`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_transfer_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    program_size: u32,
+    chunk_size: u32,
+    chunk_count: u32,
+    max_image_size: usize,
+    clock: &dyn Clock,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    let program_size_usize = program_size as usize;
+    let chunk_size_usize = chunk_size as usize;
+
+    if program_size_usize > max_image_size {
+        return Err(NodeError::MalformedPayload(
+            "program_size exceeds maximum image size",
+        ));
+    }
+
+    if chunk_size == 0 {
+        return Err(NodeError::MalformedPayload("chunk_size is zero"));
+    }
+
+    let expected_chunk_count = sonde_protocol::chunk_count(program_size_usize, chunk_size_usize);
+    if expected_chunk_count != Some(chunk_count) {
+        return Err(NodeError::MalformedPayload(
+            "chunk_count does not match program_size / chunk_size",
+        ));
+    }
+
+    let mut image_data: Vec<u8> = Vec::with_capacity(program_size_usize);
+
+    for ci in 0..chunk_count {
+        let chunk_data =
+            get_chunk_with_retry_aead(transport, identity, current_seq, ci, clock, aead, sha)?;
+
+        if chunk_data.len() > chunk_size_usize {
+            return Err(NodeError::MalformedPayload(
+                "received chunk larger than declared chunk_size",
+            ));
+        }
+
+        if image_data.len() + chunk_data.len() > program_size_usize {
+            return Err(NodeError::MalformedPayload(
+                "received data exceeds declared program_size",
+            ));
+        }
+
+        image_data.extend_from_slice(&chunk_data);
+    }
+
+    if image_data.len() != program_size_usize {
+        return Err(NodeError::MalformedPayload(
+            "assembled program size does not match declared program_size",
+        ));
+    }
+
+    Ok(image_data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5357,5 +5828,203 @@ mod tests {
             "expected INFO log for 'world', got: {:?}",
             records
         );
+    }
+
+    // ------------------------------------------------------------------
+    // AES-256-GCM frame processing tests (feature-gated)
+    // ------------------------------------------------------------------
+
+    #[cfg(feature = "aes-gcm-codec")]
+    mod aead_tests {
+        use super::*;
+        use crate::node_aead::NodeAead;
+        use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame};
+
+        /// Encode a COMMAND response using AES-GCM for test fixtures.
+        fn make_command_aead(psk: &[u8; 32], nonce: u64, payload: &CommandPayload) -> Vec<u8> {
+            let aead = NodeAead;
+            let sha = TestSha256;
+            let msg = GatewayMessage::Command {
+                starting_seq: 1,
+                timestamp_ms: 1000,
+                payload: payload.clone(),
+            };
+            let payload_cbor = msg.encode().unwrap();
+            let header = FrameHeader {
+                key_hint: sonde_protocol::key_hint_from_psk(psk, &sha),
+                msg_type: MSG_COMMAND,
+                nonce,
+            };
+            encode_frame_aead(&header, &payload_cbor, psk, &aead, &sha).unwrap()
+        }
+
+        #[test]
+        fn wake_command_exchange_aead_round_trip() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+
+            let command_frame = make_command_aead(&psk, 42, &CommandPayload::Nop);
+            transport.queue_response(Some(command_frame));
+
+            let result = wake_command_exchange_aead(
+                &mut transport,
+                &identity,
+                42,
+                &[0u8; 32],
+                3300,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok(), "AEAD wake/command exchange should succeed");
+            let (starting_seq, timestamp_ms, cmd) = result.unwrap();
+            assert_eq!(starting_seq, 1);
+            assert_eq!(timestamp_ms, 1000);
+            assert_eq!(cmd, CommandPayload::Nop);
+
+            // Verify outbound WAKE frame is AEAD-encoded
+            assert_eq!(transport.outbound.len(), 1);
+            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_WAKE);
+            let wake_payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
+            assert!(!wake_payload.is_empty());
+        }
+
+        #[test]
+        fn send_app_data_aead_round_trip() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let mut transport = MockTransport::new();
+            let mut seq = 0u64;
+
+            let blob = b"hello";
+            let result = send_app_data_aead(&mut transport, &identity, &mut seq, blob, &aead, &sha);
+
+            assert!(result.is_ok());
+            assert_eq!(seq, 1);
+            assert_eq!(transport.outbound.len(), 1);
+
+            // Verify the outbound frame decrypts correctly
+            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_APP_DATA);
+            let payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
+            assert!(!payload.is_empty());
+        }
+
+        #[test]
+        fn send_recv_app_data_aead_round_trip() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+            let mut seq = 0u64;
+
+            // Build an APP_DATA_REPLY response
+            let reply_msg = GatewayMessage::AppDataReply {
+                blob: b"reply".to_vec(),
+            };
+            let reply_cbor = reply_msg.encode().unwrap();
+            let reply_header = FrameHeader {
+                key_hint,
+                msg_type: MSG_APP_DATA_REPLY,
+                nonce: 0, // echoes the seq we'll send
+            };
+            let reply_frame =
+                encode_frame_aead(&reply_header, &reply_cbor, &psk, &aead, &sha).unwrap();
+            transport.queue_response(Some(reply_frame));
+
+            let result = send_recv_app_data_aead(
+                &mut transport,
+                &identity,
+                &mut seq,
+                b"request",
+                5000,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), b"reply");
+            assert_eq!(seq, 1);
+        }
+
+        #[test]
+        fn wrong_key_aead_fails() {
+            let psk = [0x42u8; 32];
+            let wrong_psk = [0x99u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity {
+                key_hint,
+                psk: wrong_psk,
+            };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+
+            // Encode with correct PSK, but identity uses wrong PSK
+            let command_frame = make_command_aead(&psk, 42, &CommandPayload::Nop);
+            transport.queue_response(Some(command_frame.clone()));
+            transport.queue_response(Some(command_frame.clone()));
+            transport.queue_response(Some(command_frame.clone()));
+            transport.queue_response(Some(command_frame));
+
+            let result = wake_command_exchange_aead(
+                &mut transport,
+                &identity,
+                42,
+                &[0u8; 32],
+                3300,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(
+                result.is_err(),
+                "wrong key must cause authentication failure"
+            );
+        }
+
+        #[test]
+        fn send_program_ack_aead_succeeds() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let mut transport = MockTransport::new();
+            let mut seq = 5u64;
+
+            let result = send_program_ack_aead(
+                &mut transport,
+                &identity,
+                &mut seq,
+                &[0xABu8; 32],
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok());
+            assert_eq!(seq, 6);
+            assert_eq!(transport.outbound.len(), 1);
+
+            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_PROGRAM_ACK);
+            assert_eq!(decoded.header.nonce, 5);
+        }
     }
 }

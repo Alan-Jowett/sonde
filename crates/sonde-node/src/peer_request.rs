@@ -248,6 +248,187 @@ pub fn peer_request_exchange<T: Transport, S: PlatformStorage>(
 }
 
 // ---------------------------------------------------------------------------
+// AES-256-GCM peer request processing (feature-gated)
+// ---------------------------------------------------------------------------
+
+/// AES-GCM variant of [`build_peer_request_frame`].
+///
+/// Encodes `{ 1: encrypted_payload }` as CBOR, wraps in a protocol frame
+/// with `msg_type = 0x05`, the provided 8-byte nonce, and AES-256-GCM
+/// authenticated encryption.
+#[cfg(feature = "aes-gcm-codec")]
+pub fn build_peer_request_frame_aead<
+    A: sonde_protocol::AeadProvider,
+    S: sonde_protocol::Sha256Provider,
+>(
+    identity: &NodeIdentity,
+    encrypted_payload: &[u8],
+    nonce: u64,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    if encrypted_payload.len() > PEER_PAYLOAD_MAX_LEN {
+        return Err(NodeError::MalformedPayload(
+            "encrypted_payload exceeds ESP-NOW frame budget (max 202 bytes)",
+        ));
+    }
+
+    let cbor_map = ciborium::Value::Map(alloc::vec![(
+        ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(encrypted_payload.to_vec()),
+    )]);
+    let mut cbor_buf = Vec::new();
+    ciborium::into_writer(&cbor_map, &mut cbor_buf)
+        .map_err(|_| NodeError::MalformedPayload("PEER_REQUEST CBOR encode failed"))?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce,
+    };
+
+    sonde_protocol::encode_frame_aead(&header, &cbor_buf, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("PEER_REQUEST frame encode failed"))
+}
+
+/// AES-GCM variant of [`verify_peer_ack`].
+///
+/// Decrypts and authenticates the PEER_ACK frame using AES-256-GCM,
+/// then verifies msg_type, nonce echo, status, and registration proof.
+#[cfg(feature = "aes-gcm-codec")]
+pub fn verify_peer_ack_aead<A: sonde_protocol::AeadProvider, S: sonde_protocol::Sha256Provider>(
+    raw: &[u8],
+    identity: &NodeIdentity,
+    expected_nonce: u64,
+    encrypted_payload: &[u8],
+    aead: &A,
+    sha: &S,
+    hmac: &dyn HmacProvider,
+) -> NodeResult<()> {
+    let decoded = sonde_protocol::decode_frame_aead(raw)
+        .map_err(|_| NodeError::MalformedPayload("PEER_ACK decode failed"))?;
+
+    let header = decoded.header.clone();
+    let payload = sonde_protocol::open_frame(&decoded, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::AuthFailure)?;
+
+    if header.msg_type != MSG_PEER_ACK {
+        return Err(NodeError::UnexpectedMsgType(header.msg_type));
+    }
+
+    if header.nonce != expected_nonce {
+        return Err(NodeError::ResponseBindingMismatch);
+    }
+
+    let cbor: ciborium::Value = ciborium::from_reader(&payload[..])
+        .map_err(|_| NodeError::MalformedPayload("PEER_ACK CBOR decode failed"))?;
+
+    let map = cbor
+        .as_map()
+        .ok_or(NodeError::MalformedPayload("PEER_ACK payload is not a map"))?;
+
+    let mut status: Option<u64> = None;
+    let mut proof: Option<&[u8]> = None;
+
+    for (k, v) in map {
+        let key = k
+            .as_integer()
+            .and_then(|i| u64::try_from(i).ok())
+            .ok_or(NodeError::MalformedPayload("PEER_ACK non-integer key"))?;
+        match key {
+            PEER_ACK_KEY_STATUS => {
+                status = v.as_integer().and_then(|i| u64::try_from(i).ok());
+            }
+            PEER_ACK_KEY_PROOF => {
+                proof = v.as_bytes().map(|v| &**v);
+            }
+            _ => {}
+        }
+    }
+
+    let status = status.ok_or(NodeError::MalformedPayload("PEER_ACK missing status field"))?;
+    let proof = proof.ok_or(NodeError::MalformedPayload("PEER_ACK missing proof field"))?;
+
+    if status != PEER_ACK_STATUS_OK {
+        return Err(NodeError::MalformedPayload(
+            "PEER_ACK status is not registered",
+        ));
+    }
+
+    if proof.len() != 32 {
+        return Err(NodeError::MalformedPayload(
+            "PEER_ACK proof is not 32 bytes",
+        ));
+    }
+    let proof_array: &[u8; 32] = proof
+        .try_into()
+        .map_err(|_| NodeError::MalformedPayload("PEER_ACK proof is not 32 bytes"))?;
+
+    let mut proof_input = Vec::with_capacity(PROOF_DOMAIN.len() + encrypted_payload.len());
+    proof_input.extend_from_slice(PROOF_DOMAIN);
+    proof_input.extend_from_slice(encrypted_payload);
+
+    // Registration proof is still HMAC-based (protocol-level binding).
+    if !hmac.verify(&identity.psk, &proof_input, proof_array) {
+        return Err(NodeError::MalformedPayload(
+            "PEER_ACK registration_proof mismatch",
+        ));
+    }
+
+    Ok(())
+}
+
+/// AES-GCM variant of [`peer_request_exchange`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn peer_request_exchange_aead<
+    T: Transport,
+    S: PlatformStorage,
+    A: sonde_protocol::AeadProvider,
+    H: sonde_protocol::Sha256Provider,
+>(
+    transport: &mut T,
+    storage: &mut S,
+    identity: &NodeIdentity,
+    encrypted_payload: &[u8],
+    rng: &mut dyn crate::traits::Rng,
+    clock: &dyn crate::traits::Clock,
+    aead: &A,
+    sha: &H,
+    hmac: &dyn HmacProvider,
+) -> NodeResult<bool> {
+    let nonce = rng.random_u64();
+
+    let frame = build_peer_request_frame_aead(identity, encrypted_payload, nonce, aead, sha)?;
+    transport.send(&frame)?;
+    log::info!(
+        "PEER_REQUEST sent key_hint=0x{:04X} (ND-1004)",
+        identity.key_hint,
+    );
+
+    let start_ms = clock.elapsed_ms();
+    loop {
+        let elapsed = clock.elapsed_ms().saturating_sub(start_ms);
+        if elapsed >= PEER_ACK_TIMEOUT_MS as u64 {
+            return Ok(false);
+        }
+
+        let remaining = (PEER_ACK_TIMEOUT_MS as u64 - elapsed) as u32;
+        let recv_timeout = remaining.min(500);
+
+        if let Some(raw) = transport.recv(recv_timeout)? {
+            if verify_peer_ack_aead(&raw, identity, nonce, encrypted_payload, aead, sha, hmac)
+                .is_ok()
+            {
+                storage.write_reg_complete(true)?;
+                log::info!("PEER_ACK received — registration complete (ND-1005)");
+                return Ok(true);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -787,5 +968,60 @@ mod tests {
         );
         // Only the PEER_REQUEST was sent; no error response.
         assert_eq!(transport.sent.len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // AES-256-GCM peer request tests (feature-gated)
+    // ------------------------------------------------------------------
+
+    #[cfg(feature = "aes-gcm-codec")]
+    mod aead_tests {
+        use super::*;
+        use crate::node_aead::NodeAead;
+        use sonde_protocol::{decode_frame_aead, open_frame, Sha256Provider};
+
+        struct TestSha256;
+        impl Sha256Provider for TestSha256 {
+            fn hash(&self, data: &[u8]) -> [u8; 32] {
+                use sha2::Digest;
+                sha2::Sha256::digest(data).into()
+            }
+        }
+
+        #[test]
+        fn build_peer_request_frame_aead_round_trip() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let encrypted_payload = vec![0xAAu8; 100];
+
+            let frame =
+                build_peer_request_frame_aead(&identity, &encrypted_payload, 12345, &aead, &sha)
+                    .expect("AEAD PEER_REQUEST frame build should succeed");
+
+            // Verify we can decode and decrypt the frame
+            let decoded = decode_frame_aead(&frame).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_PEER_REQUEST);
+            assert_eq!(decoded.header.nonce, 12345);
+            assert_eq!(decoded.header.key_hint, key_hint);
+
+            let payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
+            assert!(!payload.is_empty());
+        }
+
+        #[test]
+        fn build_peer_request_frame_aead_rejects_oversized() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let oversized = vec![0xBBu8; PEER_PAYLOAD_MAX_LEN + 1];
+
+            let result = build_peer_request_frame_aead(&identity, &oversized, 1, &aead, &sha);
+            assert!(result.is_err());
+        }
     }
 }

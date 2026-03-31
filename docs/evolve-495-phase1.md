@@ -89,7 +89,7 @@ Phone ──BLE LESC (Numeric Comparison)──► Gateway
 | Payload confidentiality | None (cleartext CBOR) | Yes (CBOR encrypted) |
 | Phase 1 phone registration | Challenge–response + ECDH + HKDF + AES-GCM | Phone generates PSK, sends over BLE LESC |
 | `REGISTER_PHONE` content | Ephemeral X25519 pubkey + label | `phone_psk` + label |
-| `PHONE_REGISTERED` content | ECDH-encrypted PSK + channel + status | `status` + `rf_channel` + `phone_key_hint` (4 bytes) |
+| `PHONE_REGISTERED` content | ECDH-encrypted PSK + channel + status | `status` (1B) + `rf_channel` (1B) + `phone_key_hint` (2B, BE u16) |
 | PEER_REQUEST frame key | `node_psk` (HMAC) | `phone_psk` (AES-GCM) |
 | PEER_REQUEST inner payload | ECDH-encrypted, HMAC-authenticated | AES-256-GCM(`phone_psk`, AAD=`"sonde-pairing-v2"`) |
 | PEER_ACK authentication | HMAC + `registration_proof` | AES-GCM with `node_psk` (encryption = proof of registration) |
@@ -142,7 +142,7 @@ This document uses narrative requirements (MUST/SHALL), not formal REQ-IDs.
 | §5.2 REQUEST_GW_INFO | Challenge–response request | **RETIRE** | No gateway authentication challenge. BLE LESC suffices. |
 | §5.3 GW_INFO_RESPONSE | Ed25519 signature + public key | **RETIRE** | No gateway public key or identity. |
 | §5.4 REGISTER_PHONE | Ephemeral X25519 pubkey + label | **MODIFY (major)** | Phone sends `phone_psk` + label. No ephemeral keypair. |
-| §5.5 PHONE_REGISTERED | ECDH-encrypted PSK delivery | **MODIFY (major)** | Now carries `status` + `rf_channel` + `phone_key_hint` (4 bytes). No encryption needed — BLE LESC protects the channel. |
+| §5.5 PHONE_REGISTERED | ECDH-encrypted PSK delivery | **MODIFY (major)** | Now carries `status` + `rf_channel` + `phone_key_hint` (2 bytes, BE u16). No encryption needed — BLE LESC protects the channel. |
 | §5.7 Phone persistence | Persist `gw_public_key`, `gateway_id`, `phone_psk` | MODIFY | Remove `gw_public_key`, `gateway_id`. Persist `phone_psk`, `phone_key_hint`, `rf_channel`. |
 | §6.4 Node pairing encryption | ECDH + HKDF + AES-GCM + HMAC | **MODIFY (major)** | Replace with AES-256-GCM(`phone_psk`, PairingRequest, AAD=`"sonde-pairing-v2"`). No ECDH, no HKDF, no phone HMAC. |
 | §7.1 PEER_REQUEST format | Header + CBOR + 32B HMAC (node PSK) | **MODIFY (major)** | Header + AES-GCM ciphertext + 16B tag. Frame encrypted with `phone_psk`. `key_hint` identifies phone. |

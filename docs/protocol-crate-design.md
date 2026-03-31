@@ -125,19 +125,22 @@ All fields are big-endian. Parsing is at fixed offsets — no branching or varia
 
 ## 5  Frame codec
 
-### 5.1  HMAC trait
+### 5.1  AEAD trait
 
 ```rust
-pub trait HmacProvider {
-    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32];
-    
-    /// Verify HMAC tag. Implementations MUST use constant-time comparison
-    /// to prevent timing side-channel attacks.
-    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool;
+pub trait AeadProvider {
+    /// Encrypt `plaintext` with AES-256-GCM.
+    /// Returns `ciphertext || 16-byte tag`.
+    /// `nonce` is 12 bytes; `aad` is the additional authenticated data.
+    fn seal(&self, key: &[u8], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8>;
+
+    /// Decrypt `ciphertext_and_tag` with AES-256-GCM.
+    /// Returns the plaintext on success, or `None` if the tag check fails.
+    fn open(&self, key: &[u8], nonce: &[u8; 12], aad: &[u8], ciphertext_and_tag: &[u8]) -> Option<Vec<u8>>;
 }
 ```
 
-Implementations MUST use constant-time comparison to prevent timing side-channel attacks.
+Implementations MUST use constant-time tag comparison internally to prevent timing side-channel attacks.
 
 ### 5.2  Encoding
 
@@ -146,14 +149,15 @@ pub fn encode_frame(
     header: &FrameHeader,
     payload_cbor: &[u8],
     psk: &[u8],
-    hmac: &impl HmacProvider,
+    aead: &impl AeadProvider,
+    sha: &impl Sha256Provider,
 ) -> Result<Vec<u8>, EncodeError>
 ```
 
 1. Serialize header to 11 bytes.
-2. Concatenate header + payload.
-3. Compute HMAC over header + payload.
-4. Return `header || payload || hmac` (total ≤ `MAX_FRAME_SIZE`).
+2. Construct the 12-byte GCM nonce: `SHA-256(psk)[0..4] ‖ header.nonce` (8 bytes).
+3. Encrypt the payload with AES-256-GCM: `aead.seal(psk, &gcm_nonce, &header_bytes, payload_cbor)` — the 11-byte header is the AAD.
+4. Return `header || ciphertext || tag` (total ≤ `MAX_FRAME_SIZE`).
 
 Returns `EncodeError::FrameTooLarge` if the result exceeds `MAX_FRAME_SIZE`.
 
@@ -176,17 +180,22 @@ pub fn decode_frame(raw: &[u8]) -> Result<DecodedFrame, DecodeError>
 4. Parse header.
 5. Return `DecodedFrame`. Ciphertext is **not** decrypted — caller does that after AES-GCM verification.
 
-### 5.4  AES-GCM verification helper
+### 5.4  Authenticated decryption
 
 ```rust
-pub fn verify_frame(
+pub fn open_frame(
     frame: &DecodedFrame,
     psk: &[u8],
     aead: &impl AeadProvider,
-) -> bool
+    sha: &impl Sha256Provider,
+) -> Result<Vec<u8>, DecodeError>
 ```
 
-Constructs the GCM nonce, then decrypts + verifies the ciphertext and tag using the header as AAD.
+1. Construct the 12-byte GCM nonce: `SHA-256(psk)[0..4] ‖ frame.header.nonce`.
+2. Serialize the header to 11 bytes (AAD).
+3. Call `aead.open(psk, &gcm_nonce, &header_bytes, &[ciphertext ‖ tag])`.
+4. On success, return the decrypted plaintext CBOR bytes.
+5. On failure (tag mismatch), return `DecodeError::AuthenticationFailed`.
 
 ### 5.5  `key_hint` derivation
 
@@ -378,6 +387,7 @@ pub enum EncodeError {
 pub enum DecodeError {
     TooShort,
     TooLong,
+    AuthenticationFailed,  // AES-256-GCM tag verification failed
     InvalidMsgType(u8),
     MissingField(u64),     // CBOR key that was expected
     InvalidFieldType(u64), // CBOR key with wrong type

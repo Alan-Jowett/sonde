@@ -88,8 +88,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Procedure:**
 1. Create a header and CBOR payload.
 2. Encode with `encode_frame()`.
-3. Decode with `decode_frame()`.
-4. Assert: header matches, decrypted payload matches.
+3. Call `decode_frame()` — assert it succeeds and header fields match.
+4. Call `open_frame()` with the same PSK — assert the decrypted payload matches the original.
 
 ---
 
@@ -98,20 +98,22 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol.md §7.1 (AES-256-GCM authenticated encryption)
 
 **Procedure:**
-1. Encode a frame with PSK_A.
-2. Decode and decrypt with PSK_A.
-3. Assert: `decode_frame()` succeeds and returns the original plaintext payload.
+1. Encode a frame with PSK_A using `encode_frame()`.
+2. Call `decode_frame()` on the raw bytes — assert it succeeds and returns a `DecodedFrame`.
+3. Call `open_frame()` with PSK_A — assert it succeeds.
+4. Assert: the decrypted plaintext matches the original CBOR payload.
 
 ---
 
-### T-P012  AES-256-GCM decrypted correctly on decode
+### T-P012  AES-256-GCM rejects wrong key
 
 **Validates:** protocol.md §7.1 (AES-256-GCM authenticated encryption — key mismatch)
 
 **Procedure:**
-1. Encode a frame with PSK_A.
-2. Attempt to decode with PSK_B.
-3. Assert: `decode_frame()` returns `DecodeError::AuthenticationFailed` (GCM tag mismatch).
+1. Encode a frame with PSK_A using `encode_frame()`.
+2. Call `decode_frame()` on the raw bytes — assert it succeeds.
+3. Call `open_frame()` with PSK_B.
+4. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed` (GCM tag mismatch).
 
 ---
 
@@ -122,8 +124,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Procedure:**
 1. Encode a frame.
 2. Flip one bit in the ciphertext portion of the raw bytes.
-3. Decode with the correct PSK.
-4. Assert: `decode_frame()` returns `DecodeError::AuthenticationFailed`.
+3. Call `decode_frame()` with the correct PSK — assert it succeeds.
+4. Call `open_frame()` with the correct PSK.
+5. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed`.
 
 ---
 
@@ -134,8 +137,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Procedure:**
 1. Encode a frame.
 2. Flip one bit in the header portion (e.g., msg_type).
-3. Decode with the correct PSK.
-4. Assert: `decode_frame()` returns `DecodeError::AuthenticationFailed`.
+3. Call `decode_frame()` — assert it succeeds.
+4. Call `open_frame()` with the correct PSK.
+5. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed`.
 
 ---
 
@@ -146,8 +150,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Procedure:**
 1. Encode a frame.
 2. Flip one bit in the 16-byte GCM tag at the end of the frame.
-3. Decode with the correct PSK.
-4. Assert: `decode_frame()` returns `DecodeError::AuthenticationFailed`.
+3. Call `decode_frame()` — assert it succeeds.
+4. Call `open_frame()` with the correct PSK.
+5. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed`.
 
 ---
 

@@ -233,6 +233,8 @@ A frame is three contiguous regions: the fixed 11-byte binary Header (`key_hint`
 gcm_nonce = SHA-256(psk)[0..4] ‖ frame_nonce
 ```
 
+The 4-byte PSK-derived prefix expands the 8-byte frame nonce to the 12 bytes required by AES-GCM. It is derived deterministically from the key via SHA-256, so nonces only need to be unique within a single key's usage — the prefix does not provide cross-key uniqueness.
+
 The AEAD construction covers the full header (AAD) and encrypts + authenticates the payload:
 
 ```

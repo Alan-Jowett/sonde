@@ -13,4 +13,4 @@ ciborium = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 hmac = "0.12"
-sha2 = "0.10"
+sha2 = "0.11"

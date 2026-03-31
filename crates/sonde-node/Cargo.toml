@@ -25,7 +25,7 @@ sonde-protocol = { path = "../sonde-protocol" }
 ciborium = { version = "0.2", default-features = false }
 hmac = "0.12"
 log = { version = "0.4", features = ["max_level_trace"] }
-sha2 = "0.10"
+sha2 = "0.11"
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.
 esp-idf-hal = { version = "0.46", optional = true }

@@ -863,23 +863,36 @@ fn get_chunk_with_retry<T: Transport>(
                         // Stale frame (e.g. duplicate COMMAND from WAKE
                         // retries).  Don't count this as a failed attempt
                         // — keep reading in case the real CHUNK response
-                        // is already queued behind it.
-                        while let Ok(Some(raw2)) = transport.recv(RESPONSE_TIMEOUT_MS) {
-                            match verify_and_decode_chunk(
-                                &raw2,
-                                identity,
-                                attempt_seq,
-                                chunk_index,
-                                hmac,
-                            ) {
-                                Ok(data) => return Ok(data),
-                                Err(NodeError::UnexpectedMsgType(_)) => {
-                                    // Another stale frame; keep draining.
-                                    continue;
+                        // is already queued behind it.  Cap at
+                        // WAKE_MAX_RETRIES to bound wake duration.
+                        for _ in 0..WAKE_MAX_RETRIES {
+                            match transport.recv(RESPONSE_TIMEOUT_MS) {
+                                Ok(Some(raw2)) => {
+                                    match verify_and_decode_chunk(
+                                        &raw2,
+                                        identity,
+                                        attempt_seq,
+                                        chunk_index,
+                                        hmac,
+                                    ) {
+                                        Ok(data) => return Ok(data),
+                                        Err(NodeError::UnexpectedMsgType(_)) => {
+                                            // Another stale frame; keep draining.
+                                            continue;
+                                        }
+                                        Err(_) => {
+                                            // Treat other errors as a failed attempt.
+                                            break;
+                                        }
+                                    }
                                 }
-                                Err(_) => {
-                                    // Treat other errors as a failed attempt.
+                                Ok(None) => {
+                                    // No more frames available; stop draining.
                                     break;
+                                }
+                                Err(e) => {
+                                    // Propagate transport errors.
+                                    return Err(e);
                                 }
                             }
                         }
@@ -5205,11 +5218,11 @@ mod tests {
         );
         transport.queue_response(Some(cmd));
 
-        // Queue 3 stale COMMANDs (simulates 3 WAKE retries all producing
-        // duplicate COMMAND responses still in the receive buffer).
-        // This exceeds the retry budget (WAKE_MAX_RETRIES = 3), so without
-        // the drain-loop fix, every retry attempt would be consumed by a
-        // stale frame and the transfer would fail.
+        // Queue 3 stale COMMANDs (enough to consume the entire
+        // chunk-transfer retry budget with duplicate COMMAND responses
+        // still in the receive buffer). Without the drain-loop fix,
+        // every retry attempt would be consumed by a stale frame and
+        // the transfer would fail.
         for _ in 0..3 {
             let stale_cmd = build_command_response(
                 &psk,

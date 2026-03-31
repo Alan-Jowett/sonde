@@ -7,10 +7,12 @@ description = "Shared protocol crate for the Sonde platform"
 [features]
 default = []
 std = []
+aes-gcm-codec = []
 
 [dependencies]
 ciborium = { version = "0.2", default-features = false }
 
 [dev-dependencies]
+aes-gcm = "0.10"
 hmac = "0.12"
 sha2 = "0.10"

@@ -19,6 +19,8 @@ use crate::hal::{BatteryReader, Hal};
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
 use crate::peer_request::peer_request_exchange;
+#[cfg(feature = "aes-gcm-codec")]
+use crate::peer_request::peer_request_exchange_aead;
 use crate::program_store::{LoadedProgram, ProgramStore};
 use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
@@ -1142,6 +1144,865 @@ pub fn send_recv_app_data<T: Transport + ?Sized, C: Clock + ?Sized, H: HmacProvi
             None => return Err(NodeError::Timeout),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// AES-256-GCM frame processing (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "aes-gcm-codec")]
+use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame, AeadProvider};
+
+/// Decode and authenticate a raw frame using AES-256-GCM.
+///
+/// Returns `(header, plaintext_payload)` on success.
+#[cfg(feature = "aes-gcm-codec")]
+fn decode_verify_frame_aead<A: AeadProvider, S: Sha256Provider>(
+    raw: &[u8],
+    psk: &[u8; 32],
+    aead: &A,
+    sha: &S,
+) -> NodeResult<(FrameHeader, Vec<u8>)> {
+    let decoded =
+        decode_frame_aead(raw).map_err(|_| NodeError::MalformedPayload("frame decode failed"))?;
+    let header = decoded.header.clone();
+    let payload = open_frame(&decoded, psk, aead, sha).map_err(|_| NodeError::AuthFailure)?;
+    Ok((header, payload))
+}
+
+/// AES-GCM variant of [`wake_command_exchange`].
+///
+/// Encodes the WAKE frame with AES-256-GCM and decodes the COMMAND
+/// response using AEAD authentication instead of HMAC-SHA256.
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn wake_command_exchange_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    wake_nonce: u64,
+    program_hash: &[u8],
+    battery_mv: u32,
+    clock: &dyn Clock,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<(u64, u64, CommandPayload)> {
+    let wake_msg = NodeMessage::Wake {
+        firmware_abi_version: FIRMWARE_ABI_VERSION,
+        program_hash: program_hash.to_vec(),
+        battery_mv,
+    };
+    let payload_cbor = wake_msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("WAKE message encode failed"))?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_WAKE,
+        nonce: wake_nonce,
+    };
+
+    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+    for attempt in 0..=WAKE_MAX_RETRIES {
+        if attempt > 0 {
+            clock.delay_ms(RETRY_DELAY_MS);
+        }
+
+        transport.send(&frame)?;
+        log::info!(
+            "WAKE sent key_hint=0x{:04X} nonce=0x{:016X} attempt={} (ND-1002)",
+            identity.key_hint,
+            wake_nonce,
+            attempt,
+        );
+
+        match transport.recv(RESPONSE_TIMEOUT_MS)? {
+            Some(raw_response) => {
+                match verify_and_decode_command_aead(&raw_response, identity, wake_nonce, aead, sha)
+                {
+                    Ok(result) => return Ok(result),
+                    Err(e) => {
+                        log::warn!("COMMAND verification failed: {} (ND-1009)", e);
+                        continue;
+                    }
+                }
+            }
+            None => continue,
+        }
+    }
+
+    Err(NodeError::WakeRetriesExhausted)
+}
+
+/// AES-GCM variant of [`verify_and_decode_command`].
+#[cfg(feature = "aes-gcm-codec")]
+fn verify_and_decode_command_aead<A: AeadProvider, S: Sha256Provider>(
+    raw: &[u8],
+    identity: &NodeIdentity,
+    expected_nonce: u64,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<(u64, u64, CommandPayload)> {
+    let (header, payload) = decode_verify_frame_aead(raw, &identity.psk, aead, sha)?;
+
+    if header.msg_type != MSG_COMMAND {
+        return Err(NodeError::UnexpectedMsgType(header.msg_type));
+    }
+
+    if header.nonce != expected_nonce {
+        return Err(NodeError::ResponseBindingMismatch);
+    }
+
+    let gateway_msg = match GatewayMessage::decode(header.msg_type, &payload) {
+        Ok(msg) => msg,
+        Err(DecodeError::InvalidCommandType(_)) => {
+            return decode_command_as_nop(&payload);
+        }
+        Err(_) => return Err(NodeError::MalformedPayload("COMMAND payload decode failed")),
+    };
+
+    match gateway_msg {
+        GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload,
+        } => Ok((starting_seq, timestamp_ms, payload)),
+        _ => Err(NodeError::UnexpectedMsgType(header.msg_type)),
+    }
+}
+
+/// AES-GCM variant of [`send_app_data`].
+#[cfg(feature = "aes-gcm-codec")]
+pub fn send_app_data_aead<T: Transport + ?Sized, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    blob: &[u8],
+    aead: &A,
+    sha: &S,
+) -> NodeResult<()> {
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA blob exceeds frame payload budget",
+        ));
+    }
+
+    let seq = *current_seq;
+
+    let msg = NodeMessage::AppData {
+        blob: blob.to_vec(),
+    };
+    let payload_cbor = msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed"))?;
+
+    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA payload exceeds frame payload budget",
+        ));
+    }
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_APP_DATA,
+        nonce: seq,
+    };
+
+    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+    transport.send(&frame)?;
+    *current_seq += 1;
+    Ok(())
+}
+
+/// AES-GCM variant of [`send_recv_app_data`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn send_recv_app_data_aead<
+    T: Transport + ?Sized,
+    C: Clock + ?Sized,
+    A: AeadProvider,
+    S: Sha256Provider,
+>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    blob: &[u8],
+    timeout_ms: u32,
+    clock: &C,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA blob exceeds frame payload budget",
+        ));
+    }
+
+    let seq = *current_seq;
+
+    let msg = NodeMessage::AppData {
+        blob: blob.to_vec(),
+    };
+    let payload_cbor = msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed"))?;
+
+    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        return Err(NodeError::MalformedPayload(
+            "APP_DATA payload exceeds frame payload budget",
+        ));
+    }
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_APP_DATA,
+        nonce: seq,
+    };
+
+    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+    transport.send(&frame)?;
+    *current_seq += 1;
+
+    let deadline = clock.elapsed_ms().saturating_add(timeout_ms as u64);
+    loop {
+        let now = clock.elapsed_ms();
+        if now >= deadline {
+            return Err(NodeError::Timeout);
+        }
+        let remaining = (deadline - now) as u32;
+        match transport.recv(remaining)? {
+            Some(raw_response) => {
+                let (hdr, payload) =
+                    match decode_verify_frame_aead(&raw_response, &identity.psk, aead, sha) {
+                        Ok(result) => result,
+                        Err(_) => continue,
+                    };
+
+                if hdr.msg_type != MSG_APP_DATA_REPLY {
+                    continue;
+                }
+
+                if hdr.nonce != seq {
+                    continue;
+                }
+
+                let gateway_msg = match GatewayMessage::decode(hdr.msg_type, &payload) {
+                    Ok(msg) => msg,
+                    Err(_) => continue,
+                };
+
+                match gateway_msg {
+                    GatewayMessage::AppDataReply { blob } => return Ok(blob),
+                    _ => continue,
+                }
+            }
+            None => return Err(NodeError::Timeout),
+        }
+    }
+}
+
+/// AES-GCM variant of [`send_program_ack`].
+#[cfg(feature = "aes-gcm-codec")]
+fn send_program_ack_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    program_hash: &[u8],
+    aead: &A,
+    sha: &S,
+) -> NodeResult<()> {
+    let seq = *current_seq;
+
+    let ack_msg = NodeMessage::ProgramAck {
+        program_hash: program_hash.to_vec(),
+    };
+    let payload_cbor = ack_msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("PROGRAM_ACK message encode failed"))?;
+
+    let header = FrameHeader {
+        key_hint: identity.key_hint,
+        msg_type: MSG_PROGRAM_ACK,
+        nonce: seq,
+    };
+
+    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+    transport.send(&frame)?;
+    *current_seq += 1;
+    Ok(())
+}
+
+/// AES-GCM variant of [`verify_and_decode_chunk`].
+#[cfg(feature = "aes-gcm-codec")]
+fn verify_and_decode_chunk_aead<A: AeadProvider, S: Sha256Provider>(
+    raw: &[u8],
+    identity: &NodeIdentity,
+    expected_seq: u64,
+    expected_index: u32,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    let (header, payload) = decode_verify_frame_aead(raw, &identity.psk, aead, sha)?;
+
+    if header.msg_type != MSG_CHUNK {
+        return Err(NodeError::UnexpectedMsgType(header.msg_type));
+    }
+
+    if header.nonce != expected_seq {
+        return Err(NodeError::ResponseBindingMismatch);
+    }
+
+    let gateway_msg = GatewayMessage::decode(header.msg_type, &payload)
+        .map_err(|_| NodeError::MalformedPayload("CHUNK payload decode failed"))?;
+
+    match gateway_msg {
+        GatewayMessage::Chunk {
+            chunk_index,
+            chunk_data,
+        } => {
+            if chunk_index != expected_index {
+                return Err(NodeError::ChunkIndexMismatch {
+                    expected: expected_index,
+                    received: chunk_index,
+                });
+            }
+            Ok(chunk_data)
+        }
+        _ => Err(NodeError::UnexpectedMsgType(header.msg_type)),
+    }
+}
+
+/// AES-GCM variant of [`get_chunk_with_retry`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+fn get_chunk_with_retry_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    chunk_index: u32,
+    clock: &dyn Clock,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    let get_msg = NodeMessage::GetChunk { chunk_index };
+    let payload_cbor = get_msg
+        .encode()
+        .map_err(|_| NodeError::MalformedPayload("GET_CHUNK message encode failed"))?;
+
+    for attempt in 0..=WAKE_MAX_RETRIES {
+        if attempt > 0 {
+            clock.delay_ms(RETRY_DELAY_MS);
+        }
+
+        let attempt_seq = *current_seq;
+
+        let header = FrameHeader {
+            key_hint: identity.key_hint,
+            msg_type: MSG_GET_CHUNK,
+            nonce: attempt_seq,
+        };
+
+        let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+            .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
+
+        transport.send(&frame)?;
+        log::debug!(
+            "GET_CHUNK sent chunk_index={} attempt={} (ND-1011)",
+            chunk_index,
+            attempt
+        );
+        *current_seq += 1;
+
+        match transport.recv(RESPONSE_TIMEOUT_MS)? {
+            Some(raw_response) => {
+                match verify_and_decode_chunk_aead(
+                    &raw_response,
+                    identity,
+                    attempt_seq,
+                    chunk_index,
+                    aead,
+                    sha,
+                ) {
+                    Ok(data) => {
+                        log::debug!(
+                            "CHUNK received chunk_index={} len={} (ND-1011)",
+                            chunk_index,
+                            data.len()
+                        );
+                        return Ok(data);
+                    }
+                    Err(_) => continue,
+                }
+            }
+            None => continue,
+        }
+    }
+
+    Err(NodeError::ChunkTransferFailed { chunk_index })
+}
+
+/// AES-GCM variant of [`chunked_transfer`].
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_transfer_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+    transport: &mut T,
+    identity: &NodeIdentity,
+    current_seq: &mut u64,
+    program_size: u32,
+    chunk_size: u32,
+    chunk_count: u32,
+    max_image_size: usize,
+    clock: &dyn Clock,
+    aead: &A,
+    sha: &S,
+) -> NodeResult<Vec<u8>> {
+    let program_size_usize = program_size as usize;
+    let chunk_size_usize = chunk_size as usize;
+
+    if program_size_usize > max_image_size {
+        return Err(NodeError::MalformedPayload(
+            "program_size exceeds maximum image size",
+        ));
+    }
+
+    if chunk_size == 0 {
+        return Err(NodeError::MalformedPayload("chunk_size is zero"));
+    }
+
+    let expected_chunk_count = sonde_protocol::chunk_count(program_size_usize, chunk_size_usize);
+    if expected_chunk_count != Some(chunk_count) {
+        return Err(NodeError::MalformedPayload(
+            "chunk_count does not match program_size / chunk_size",
+        ));
+    }
+
+    let mut image_data: Vec<u8> = Vec::with_capacity(program_size_usize);
+
+    for ci in 0..chunk_count {
+        let chunk_data =
+            get_chunk_with_retry_aead(transport, identity, current_seq, ci, clock, aead, sha)?;
+
+        if chunk_data.len() > chunk_size_usize {
+            return Err(NodeError::MalformedPayload(
+                "received chunk larger than declared chunk_size",
+            ));
+        }
+
+        if image_data.len() + chunk_data.len() > program_size_usize {
+            return Err(NodeError::MalformedPayload(
+                "received data exceeds declared program_size",
+            ));
+        }
+
+        image_data.extend_from_slice(&chunk_data);
+    }
+
+    if image_data.len() != program_size_usize {
+        return Err(NodeError::MalformedPayload(
+            "assembled program size does not match declared program_size",
+        ));
+    }
+
+    Ok(image_data)
+}
+
+/// AES-GCM variant of [`run_wake_cycle`].
+///
+/// Functionally identical to `run_wake_cycle` but encodes/decodes all
+/// radio frames using AES-256-GCM (AEAD) instead of HMAC-SHA256.  The
+/// HMAC provider is still required for BPF helper dispatch; AEAD
+/// authentication replaces the explicit PEER_ACK registration proof
+/// field per `ble-pairing-protocol.md` §7.2.
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub fn run_wake_cycle_aead<T, S, I, A, H>(
+    transport: &mut T,
+    storage: &mut S,
+    hal: &mut (dyn Hal + 'static),
+    rng: &mut dyn Rng,
+    clock: &(dyn Clock + 'static),
+    battery: &dyn BatteryReader,
+    interpreter: &mut I,
+    map_storage: &mut MapStorage,
+    hmac: &(dyn HmacProvider + 'static),
+    sha: &H,
+    aead: &A,
+) -> WakeCycleOutcome
+where
+    T: Transport + 'static,
+    S: PlatformStorage,
+    I: BpfInterpreter,
+    A: AeadProvider,
+    H: Sha256Provider,
+{
+    // 1. Load identity
+    let identity = match storage.read_key() {
+        Some((key_hint, psk)) => NodeIdentity { key_hint, psk },
+        None => return WakeCycleOutcome::Unpaired,
+    };
+
+    // 1b. RNG health check (ND-0304 AC3).
+    if !rng.health_check() {
+        log::warn!("RNG health check failed — aborting wake cycle (ND-1009)");
+        let (base_interval_s, _) = storage.read_schedule();
+        let effective_sleep_s =
+            SleepManager::new(base_interval_s, WakeReason::Scheduled).effective_sleep_s();
+        log::info!(
+            "entering deep sleep duration_seconds={} reason=scheduled (ND-1007)",
+            effective_sleep_s,
+        );
+        return WakeCycleOutcome::Sleep {
+            seconds: effective_sleep_s,
+        };
+    }
+
+    // 2. Determine wake reason
+    let wake_reason = determine_wake_reason(storage);
+
+    log::info!(
+        "wake cycle started key_hint=0x{:04X} wake_reason={:?} (ND-1001)",
+        identity.key_hint,
+        wake_reason,
+    );
+
+    // 3. Load schedule
+    let (base_interval_s, _active_partition) = storage.read_schedule();
+    let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
+
+    // 3a. PEER_REQUEST/PEER_ACK exchange via AEAD (ND-0909–ND-0913).
+    // TODO(#495 follow-up): pass phone_psk/phone_key_hint once BLE
+    // provisioning stores them (ble-pairing-protocol.md §6.6/§7.1).
+    if !storage.read_reg_complete() {
+        if let Some(encrypted_payload) = storage.read_peer_payload() {
+            match peer_request_exchange_aead(
+                transport,
+                storage,
+                &identity,
+                &encrypted_payload,
+                rng,
+                clock,
+                aead,
+                sha,
+            ) {
+                Ok(true) => {
+                    // Registration complete — fall through to normal WAKE cycle.
+                }
+                Ok(false) => {
+                    // Timeout — sleep and retry next wake cycle (ND-0910/ND-0911).
+                    return log_and_sleep(&sleep_mgr);
+                }
+                Err(e) => {
+                    if matches!(e, NodeError::MalformedPayload(_)) {
+                        log::warn!("PEER_REQUEST permanent error: {} — erasing peer_payload", e);
+                        let _ = storage.erase_peer_payload();
+                    }
+                    return log_and_sleep(&sleep_mgr);
+                }
+            }
+        }
+    }
+
+    // 4. Load active resident program hash and raw bytes from NVS.
+    let (program_hash, mut resident_image_bytes) = {
+        let program_store = ProgramStore::new(storage);
+        program_store.load_active_raw(sha)
+    };
+
+    // 5. Generate WAKE nonce
+    let wake_nonce = rng.random_u64();
+    let battery_mv = battery.battery_mv();
+
+    // 6. Send WAKE, await COMMAND (with retries) via AEAD
+    let command_result = wake_command_exchange_aead(
+        transport,
+        &identity,
+        wake_nonce,
+        &program_hash,
+        battery_mv,
+        clock,
+        aead,
+        sha,
+    );
+
+    let (starting_seq, timestamp_ms, command_payload) = match command_result {
+        Ok(cmd) => {
+            // WAKE/COMMAND succeeded — erase peer_payload if still present (ND-0914).
+            if storage.has_peer_payload() {
+                if let Err(e) = storage.erase_peer_payload() {
+                    log::warn!("failed to erase peer_payload after WAKE success: {}", e);
+                }
+            }
+            cmd
+        }
+        Err(e) => {
+            // WAKE retries exhausted or transport error.
+            log::warn!("WAKE/COMMAND failed: {} — sleeping (ND-1009)", e);
+            // Self-healing (ND-0915).
+            if storage.read_reg_complete() && storage.has_peer_payload() {
+                if let Err(e) = storage.write_reg_complete(false) {
+                    log::warn!("failed to clear reg_complete after WAKE failure: {}", e);
+                }
+            }
+            return log_and_sleep(&sleep_mgr);
+        }
+    };
+
+    // Log the received COMMAND (ND-1003).
+    match &command_payload {
+        CommandPayload::Nop => log::info!("COMMAND received command_type=Nop"),
+        CommandPayload::Reboot => log::info!("COMMAND received command_type=Reboot"),
+        CommandPayload::UpdateSchedule { interval_s } => {
+            log::info!(
+                "COMMAND received command_type=UpdateSchedule interval_s={}",
+                interval_s
+            );
+        }
+        CommandPayload::UpdateProgram { program_hash, .. } => {
+            log::info!(
+                "COMMAND received command_type=UpdateProgram program_hash={}",
+                hash_hex_prefix(program_hash)
+            );
+        }
+        CommandPayload::RunEphemeral { program_hash, .. } => {
+            log::info!(
+                "COMMAND received command_type=RunEphemeral program_hash={}",
+                hash_hex_prefix(program_hash)
+            );
+        }
+    }
+
+    // 7. Record gateway timestamp for BPF context
+    let command_received_at = clock.elapsed_ms();
+
+    // 8. Dispatch command
+    let mut current_seq = starting_seq;
+    let mut loaded_program: Option<LoadedProgram> = None;
+
+    let is_ephemeral = matches!(&command_payload, CommandPayload::RunEphemeral { .. });
+
+    match command_payload {
+        CommandPayload::Nop => {
+            // Proceed to BPF execution
+        }
+        CommandPayload::Reboot => {
+            return WakeCycleOutcome::Reboot;
+        }
+        CommandPayload::UpdateSchedule { interval_s } => {
+            if storage.write_schedule_interval(interval_s).is_ok() {
+                sleep_mgr.set_base_interval(interval_s);
+            }
+        }
+        CommandPayload::UpdateProgram {
+            program_hash: expected_hash,
+            program_size,
+            chunk_size,
+            chunk_count,
+            ..
+        }
+        | CommandPayload::RunEphemeral {
+            program_hash: expected_hash,
+            program_size,
+            chunk_size,
+            chunk_count,
+            ..
+        } => {
+            resident_image_bytes = None;
+
+            let max_image_size = if is_ephemeral {
+                MAX_EPHEMERAL_IMAGE_SIZE
+            } else {
+                MAX_RESIDENT_IMAGE_SIZE
+            };
+
+            // Chunked transfer via AEAD
+            let transfer_result = chunked_transfer_aead(
+                transport,
+                &identity,
+                &mut current_seq,
+                program_size,
+                chunk_size,
+                chunk_count,
+                max_image_size,
+                clock,
+                aead,
+                sha,
+            );
+
+            match transfer_result {
+                Ok(image_bytes) => {
+                    let install_result = {
+                        let mut program_store = ProgramStore::new(storage);
+                        if is_ephemeral {
+                            program_store.load_ephemeral(&image_bytes, &expected_hash, sha)
+                        } else {
+                            program_store.install_resident(
+                                &image_bytes,
+                                &expected_hash,
+                                sha,
+                                map_storage.budget_bytes(),
+                            )
+                        }
+                    };
+
+                    match install_result {
+                        Ok(program) => {
+                            // PROGRAM_ACK via AEAD
+                            if send_program_ack_aead(
+                                transport,
+                                &identity,
+                                &mut current_seq,
+                                &program.hash,
+                                aead,
+                                sha,
+                            )
+                            .is_err()
+                            {
+                                return log_and_sleep(&sleep_mgr);
+                            }
+
+                            if !is_ephemeral {
+                                sleep_mgr.set_wake_reason(WakeReason::ProgramUpdate);
+                            }
+                            loaded_program = Some(program);
+                        }
+                        Err(e) => {
+                            log::warn!("program install failed: {}", e);
+                            return log_and_sleep(&sleep_mgr);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("chunk transfer failed: {}", e);
+                    return log_and_sleep(&sleep_mgr);
+                }
+            }
+        }
+    }
+
+    // 9. BPF execution
+    let resident_installed_this_cycle = loaded_program.as_ref().is_some_and(|p| !p.is_ephemeral);
+
+    if loaded_program.is_none() {
+        if let Some(raw) = resident_image_bytes {
+            loaded_program = ProgramStore::<S>::decode_image(&raw, program_hash);
+        }
+    }
+
+    if let Some(program) = loaded_program {
+        let program_class = if program.is_ephemeral {
+            ProgramClass::Ephemeral
+        } else {
+            ProgramClass::Resident
+        };
+
+        if program.is_ephemeral {
+            if !program.map_defs.is_empty() {
+                return log_and_sleep(&sleep_mgr);
+            }
+        } else if resident_installed_this_cycle || !map_storage.layout_matches(&program.map_defs) {
+            if map_storage.allocate(&program.map_defs).is_err() {
+                return log_and_sleep(&sleep_mgr);
+            }
+            map_storage.apply_initial_data(&program.map_initial_data);
+        }
+
+        let map_ptrs = map_storage.map_pointers().to_vec();
+
+        let elapsed_since_command = clock.elapsed_ms().saturating_sub(command_received_at);
+        let battery_mv_clamped = if battery_mv > u16::MAX as u32 {
+            u16::MAX
+        } else {
+            battery_mv as u16
+        };
+        let ctx = SondeContext {
+            timestamp: timestamp_ms.saturating_add(elapsed_since_command),
+            battery_mv: battery_mv_clamped,
+            firmware_abi_version: u16::try_from(FIRMWARE_ABI_VERSION)
+                .expect("FIRMWARE_ABI_VERSION must fit in u16"),
+            wake_reason: sleep_mgr.wake_reason() as u8,
+            _padding: [0; 3],
+        };
+
+        let mut trace_log = Vec::new();
+        // BPF dispatch still uses HMAC for helper functions.
+        // SAFETY: all referenced objects are alive on this stack frame
+        // and will not be moved until `_guard` is dropped below.
+        unsafe {
+            crate::bpf_dispatch::install(
+                hal as *mut dyn crate::hal::Hal,
+                transport as *mut T as *mut dyn crate::traits::Transport,
+                map_storage as *mut MapStorage,
+                &mut sleep_mgr as *mut SleepManager,
+                clock as *const dyn crate::traits::Clock,
+                hmac as *const dyn HmacProvider,
+                &identity as *const NodeIdentity,
+                &mut current_seq as *mut u64,
+                program_class,
+                &mut trace_log as *mut Vec<String>,
+                timestamp_ms,
+                command_received_at,
+                battery_mv,
+            );
+        }
+        let _guard = crate::bpf_dispatch::DispatchGuard;
+
+        let exec_result = match crate::bpf_dispatch::register_all(interpreter) {
+            Ok(()) => {
+                let load_defs_owned;
+                let (load_ptrs, load_defs): (&[u64], &[sonde_protocol::MapDef]) =
+                    if program.map_defs.is_empty() && map_storage.map_count() > 0 {
+                        load_defs_owned = (0..map_storage.map_count())
+                            .filter_map(|i| map_storage.get(i).map(|m| m.def))
+                            .collect::<Vec<_>>();
+                        (&map_ptrs, &load_defs_owned)
+                    } else {
+                        (&map_ptrs, &program.map_defs)
+                    };
+                match interpreter.load(&program.bytecode, load_ptrs, load_defs) {
+                    Ok(()) => {
+                        log::info!(
+                            "BPF execute program_hash={}",
+                            hash_hex_prefix(&program.hash)
+                        );
+                        let ctx_ptr = &ctx as *const SondeContext as u64;
+                        interpreter.execute(ctx_ptr, DEFAULT_INSTRUCTION_BUDGET)
+                    }
+                    Err(err) => {
+                        log::error!("BPF program load failed: {}", err);
+                        Err(err)
+                    }
+                }
+            }
+            Err(err) => {
+                log::error!("BPF helper registration failed: {}", err);
+                Err(err)
+            }
+        };
+
+        match &exec_result {
+            Ok(rc) => log::info!("BPF execution completed rc={}", rc),
+            Err(err) => log::info!("BPF execution failed: {}", err),
+        }
+        let _ = exec_result;
+
+        flush_trace_log(&trace_log);
+    }
+
+    // 10. Determine sleep duration
+    if sleep_mgr.will_wake_early() {
+        if storage.set_early_wake_flag().is_err() {
+            let _ = storage.set_early_wake_flag();
+        }
+    }
+
+    log_and_sleep(&sleep_mgr)
 }
 
 #[cfg(test)]
@@ -5500,5 +6361,522 @@ mod tests {
             "expected INFO log for 'world', got: {:?}",
             records
         );
+    }
+
+    // ------------------------------------------------------------------
+    // AES-256-GCM frame processing tests (feature-gated)
+    // ------------------------------------------------------------------
+
+    #[cfg(feature = "aes-gcm-codec")]
+    mod aead_tests {
+        use super::*;
+        use crate::node_aead::NodeAead;
+        use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame};
+
+        /// Encode a COMMAND response using AES-GCM for test fixtures.
+        fn make_command_aead(psk: &[u8; 32], nonce: u64, payload: &CommandPayload) -> Vec<u8> {
+            make_command_aead_with_seq(psk, nonce, 1, 1000, payload)
+        }
+
+        fn make_command_aead_with_seq(
+            psk: &[u8; 32],
+            nonce: u64,
+            starting_seq: u64,
+            timestamp_ms: u64,
+            payload: &CommandPayload,
+        ) -> Vec<u8> {
+            let aead = NodeAead;
+            let sha = TestSha256;
+            let msg = GatewayMessage::Command {
+                starting_seq,
+                timestamp_ms,
+                payload: payload.clone(),
+            };
+            let payload_cbor = msg.encode().unwrap();
+            let header = FrameHeader {
+                key_hint: sonde_protocol::key_hint_from_psk(psk, &sha),
+                msg_type: MSG_COMMAND,
+                nonce,
+            };
+            encode_frame_aead(&header, &payload_cbor, psk, &aead, &sha).unwrap()
+        }
+
+        #[test]
+        fn wake_command_exchange_aead_round_trip() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+
+            let command_frame = make_command_aead(&psk, 42, &CommandPayload::Nop);
+            transport.queue_response(Some(command_frame));
+
+            let result = wake_command_exchange_aead(
+                &mut transport,
+                &identity,
+                42,
+                &[0u8; 32],
+                3300,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok(), "AEAD wake/command exchange should succeed");
+            let (starting_seq, timestamp_ms, cmd) = result.unwrap();
+            assert_eq!(starting_seq, 1);
+            assert_eq!(timestamp_ms, 1000);
+            assert_eq!(cmd, CommandPayload::Nop);
+
+            // Verify outbound WAKE frame is AEAD-encoded
+            assert_eq!(transport.outbound.len(), 1);
+            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_WAKE);
+            let wake_payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
+            assert!(!wake_payload.is_empty());
+        }
+
+        #[test]
+        fn send_app_data_aead_round_trip() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let mut transport = MockTransport::new();
+            let mut seq = 0u64;
+
+            let blob = b"hello";
+            let result = send_app_data_aead(&mut transport, &identity, &mut seq, blob, &aead, &sha);
+
+            assert!(result.is_ok());
+            assert_eq!(seq, 1);
+            assert_eq!(transport.outbound.len(), 1);
+
+            // Verify the outbound frame decrypts correctly
+            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_APP_DATA);
+            let payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
+            assert!(!payload.is_empty());
+        }
+
+        #[test]
+        fn send_recv_app_data_aead_round_trip() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+            let mut seq = 0u64;
+
+            // Build an APP_DATA_REPLY response
+            let reply_msg = GatewayMessage::AppDataReply {
+                blob: b"reply".to_vec(),
+            };
+            let reply_cbor = reply_msg.encode().unwrap();
+            let reply_header = FrameHeader {
+                key_hint,
+                msg_type: MSG_APP_DATA_REPLY,
+                nonce: 0, // echoes the seq we'll send
+            };
+            let reply_frame =
+                encode_frame_aead(&reply_header, &reply_cbor, &psk, &aead, &sha).unwrap();
+            transport.queue_response(Some(reply_frame));
+
+            let result = send_recv_app_data_aead(
+                &mut transport,
+                &identity,
+                &mut seq,
+                b"request",
+                5000,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), b"reply");
+            assert_eq!(seq, 1);
+        }
+
+        #[test]
+        fn wrong_key_aead_fails() {
+            let psk = [0x42u8; 32];
+            let wrong_psk = [0x99u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity {
+                key_hint,
+                psk: wrong_psk,
+            };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+
+            // Encode with correct PSK, but identity uses wrong PSK
+            let command_frame = make_command_aead(&psk, 42, &CommandPayload::Nop);
+            transport.queue_response(Some(command_frame.clone()));
+            transport.queue_response(Some(command_frame.clone()));
+            transport.queue_response(Some(command_frame.clone()));
+            transport.queue_response(Some(command_frame));
+
+            let result = wake_command_exchange_aead(
+                &mut transport,
+                &identity,
+                42,
+                &[0u8; 32],
+                3300,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(
+                result.is_err(),
+                "wrong key must cause authentication failure"
+            );
+        }
+
+        #[test]
+        fn send_program_ack_aead_succeeds() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let mut transport = MockTransport::new();
+            let mut seq = 5u64;
+
+            let result = send_program_ack_aead(
+                &mut transport,
+                &identity,
+                &mut seq,
+                &[0xABu8; 32],
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok());
+            assert_eq!(seq, 6);
+            assert_eq!(transport.outbound.len(), 1);
+
+            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_PROGRAM_ACK);
+            assert_eq!(decoded.header.nonce, 5);
+        }
+
+        // --- AEAD chunked transfer tests ---
+
+        /// Build a CHUNK response frame using AEAD encryption.
+        fn build_chunk_response_aead(
+            psk: &[u8; 32],
+            echo_seq: u64,
+            chunk_index: u32,
+            chunk_data: &[u8],
+        ) -> Vec<u8> {
+            let aead = NodeAead;
+            let sha = TestSha256;
+            let msg = GatewayMessage::Chunk {
+                chunk_index,
+                chunk_data: chunk_data.to_vec(),
+            };
+            let payload_cbor = msg.encode().unwrap();
+            let header = FrameHeader {
+                key_hint: sonde_protocol::key_hint_from_psk(psk, &sha),
+                msg_type: MSG_CHUNK,
+                nonce: echo_seq,
+            };
+            encode_frame_aead(&header, &payload_cbor, psk, &aead, &sha).unwrap()
+        }
+
+        #[test]
+        fn chunked_transfer_aead_success() {
+            let psk = [0x22u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+
+            let image = sonde_protocol::ProgramImage {
+                bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                maps: vec![],
+                map_initial_data: vec![],
+            };
+            let image_cbor = image.encode_deterministic().unwrap();
+
+            let chunk_size = 10u32;
+            let chunk_count =
+                sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
+
+            let starting_seq = 5000u64;
+            let mut current_seq = starting_seq;
+
+            for i in 0..chunk_count {
+                let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
+                    .unwrap()
+                    .to_vec();
+                let seq = starting_seq + i as u64;
+                let chunk_frame = build_chunk_response_aead(&psk, seq, i, &chunk_data);
+                transport.queue_response(Some(chunk_frame));
+            }
+
+            let result = chunked_transfer_aead(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                image_cbor.len() as u32,
+                chunk_size,
+                chunk_count,
+                MAX_RESIDENT_IMAGE_SIZE,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok(), "AEAD chunked transfer should succeed");
+            assert_eq!(result.unwrap(), image_cbor);
+        }
+
+        #[test]
+        fn chunked_transfer_aead_retry_exhausted() {
+            let psk = [0x33u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+            let mut current_seq = 100u64;
+
+            // No chunk responses — all 4 attempts (1 + 3 retries) timeout
+            for _ in 0..4 {
+                transport.queue_response(None);
+            }
+
+            let result = chunked_transfer_aead(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                20,
+                10,
+                2,
+                MAX_RESIDENT_IMAGE_SIZE,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_err(), "should fail after retry exhaustion");
+        }
+
+        #[test]
+        fn chunked_transfer_aead_wrong_chunk_index() {
+            let psk = [0x44u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+            let mut current_seq = 200u64;
+
+            // Respond with wrong chunk index (5 instead of 0), then timeouts
+            let bad_chunk = build_chunk_response_aead(&psk, current_seq, 5, &[0u8; 10]);
+            transport.queue_response(Some(bad_chunk));
+            transport.queue_response(None);
+            transport.queue_response(None);
+            transport.queue_response(None);
+
+            let result = chunked_transfer_aead(
+                &mut transport,
+                &identity,
+                &mut current_seq,
+                10,
+                10,
+                1,
+                MAX_RESIDENT_IMAGE_SIZE,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(
+                result.is_err(),
+                "wrong chunk index should cause transfer failure"
+            );
+        }
+
+        // --- AEAD end-to-end run_wake_cycle_aead tests ---
+
+        #[test]
+        fn run_wake_cycle_aead_nop() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let command_frame = make_command_aead(&psk, 1, &CommandPayload::Nop);
+            let mut transport = MockTransport::new();
+            transport.queue_response(Some(command_frame));
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let clock = MockClock;
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+            let outcome = run_wake_cycle_aead(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &MockBattery,
+                &mut interp,
+                &mut map_storage,
+                &TestHmac,
+                &sha,
+                &aead,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            // WAKE frame should have been sent
+            assert!(!transport.outbound.is_empty());
+        }
+
+        #[test]
+        fn run_wake_cycle_aead_update_program() {
+            let psk = [0x22u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let image = sonde_protocol::ProgramImage {
+                bytecode: vec![0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                maps: vec![],
+                map_initial_data: vec![],
+            };
+            let image_cbor = image.encode_deterministic().unwrap();
+            let image_hash = sha.hash(&image_cbor);
+
+            let chunk_size = 10u32;
+            let chunk_count =
+                sonde_protocol::chunk_count(image_cbor.len(), chunk_size as usize).unwrap();
+
+            let starting_seq = 5000u64;
+
+            let command_frame = make_command_aead_with_seq(
+                &psk,
+                1, // echoes WAKE nonce (MockRng returns 1)
+                starting_seq,
+                1710000000000,
+                &CommandPayload::UpdateProgram {
+                    program_hash: image_hash.to_vec(),
+                    program_size: image_cbor.len() as u32,
+                    chunk_size,
+                    chunk_count,
+                },
+            );
+            let mut transport = MockTransport::new();
+            transport.queue_response(Some(command_frame));
+
+            for i in 0..chunk_count {
+                let chunk_data = sonde_protocol::get_chunk(&image_cbor, i, chunk_size)
+                    .unwrap()
+                    .to_vec();
+                let seq = starting_seq + i as u64;
+                let chunk_frame = build_chunk_response_aead(&psk, seq, i, &chunk_data);
+                transport.queue_response(Some(chunk_frame));
+            }
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let clock = MockClock;
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+            let outcome = run_wake_cycle_aead(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &MockBattery,
+                &mut interp,
+                &mut map_storage,
+                &TestHmac,
+                &sha,
+                &aead,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            // WAKE + chunk GET_CHUNKs + PROGRAM_ACK
+            assert_eq!(transport.outbound.len(), 1 + chunk_count as usize + 1);
+            // Program installed on inactive partition
+            assert!(storage.read_program(1).is_some());
+            assert_eq!(storage.active_partition, 1);
+            assert!(interp.loaded);
+        }
+
+        #[test]
+        fn run_wake_cycle_aead_wrong_msg_type_discarded() {
+            let psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            // Encode a CHUNK frame where a COMMAND is expected — must be discarded.
+            let wrong_msg = GatewayMessage::Chunk {
+                chunk_index: 0,
+                chunk_data: vec![0u8; 10],
+            };
+            let wrong_cbor = wrong_msg.encode().unwrap();
+            let header = FrameHeader {
+                key_hint,
+                msg_type: MSG_CHUNK, // wrong type for COMMAND phase
+                nonce: 1,
+            };
+            let wrong_frame = encode_frame_aead(&header, &wrong_cbor, &psk, &aead, &sha).unwrap();
+
+            let mut transport = MockTransport::new();
+            // All responses are wrong → retries exhausted → sleep
+            transport.queue_response(Some(wrong_frame.clone()));
+            transport.queue_response(Some(wrong_frame.clone()));
+            transport.queue_response(Some(wrong_frame.clone()));
+            transport.queue_response(Some(wrong_frame));
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let clock = MockClock;
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+
+            let outcome = run_wake_cycle_aead(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &MockBattery,
+                &mut interp,
+                &mut map_storage,
+                &TestHmac,
+                &sha,
+                &aead,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+            assert!(!interp.loaded, "BPF must not run on invalid COMMAND");
+        }
     }
 }

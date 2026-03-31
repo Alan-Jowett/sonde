@@ -10,6 +10,10 @@ default = ["quiet"]
 # Without this feature, only platform-independent modules compile,
 # enabling host-side testing of the wake cycle engine and protocol logic.
 esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:esp32-nimble", "dep:embuild"]
+# AES-256-GCM frame codec (Phase 5). Adds AEAD encode/decode paths
+# alongside the existing HMAC-SHA256 codec. The `aes-gcm` crate is
+# pure-Rust and no_std-compatible, so it works on ESP32.
+aes-gcm-codec = ["sonde-protocol/aes-gcm-codec", "dep:aes-gcm"]
 # Default log level policy: strip info!/debug!/trace! at compile time in
 # release builds for minimal overhead and lowest power. Mutually exclusive
 # with `verbose`.
@@ -26,6 +30,7 @@ ciborium = { version = "0.2", default-features = false }
 hmac = "0.12"
 log = { version = "0.4", features = ["max_level_trace"] }
 sha2 = "0.10"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"], optional = true }
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.
 esp-idf-hal = { version = "0.46", optional = true }

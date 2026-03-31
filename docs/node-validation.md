@@ -812,6 +812,20 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N803  Stale COMMAND during chunk transfer
+
+**Validates:** ND-0701 AC4, ND-0801
+
+**Procedure:**
+1. Queue a valid COMMAND (UpdateProgram) as the WAKE response.
+2. Queue a stale COMMAND (Nop) — simulates a duplicate from a WAKE retry still in the receive buffer.
+3. Queue the real CHUNK response immediately after the stale COMMAND.
+4. Run the wake cycle.
+5. Assert: the node successfully installs and executes the BPF program.
+6. Assert: the stale COMMAND did not consume a retry attempt (transfer succeeds on first GET_CHUNK attempt).
+
+---
+
 ## 11  BLE pairing and registration tests
 
 ### T-N900  Boot priority order
@@ -1731,10 +1745,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0605 | T-N614, T-N615, T-N934 |
 | ND-0606 | T-N616, T-N619, T-N620, T-N935 |
 | ND-0700 | T-N201, T-N700 |
-| ND-0701 | T-N701, T-N936 |
+| ND-0701 | T-N701, T-N803, T-N936 |
 | ND-0702 | T-N702, T-N937 |
 | ND-0800 | T-N800 |
-| ND-0801 | T-N801, T-N938 |
+| ND-0801 | T-N801, T-N803, T-N938 |
 | ND-0802 | T-N802 |
 | ND-0900 | T-N900 |
 | ND-0901 | T-N901 |
@@ -1847,6 +1861,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N800 | `test_malformed_cbor_discarded` | wake_cycle.rs |
 | T-N801 | `test_unexpected_msg_type_discarded` | wake_cycle.rs |
 | T-N802 | `test_chunked_transfer_wrong_chunk_index` | wake_cycle.rs |
+| T-N803 | `test_stale_command_before_chunk_recovery` | wake_cycle.rs |
 | T-N900 | *(hardware — validated on target: boot priority and BLE stack init)* | — |
 | T-N901 | *(hardware — validated on target: pairing button detection)* | — |
 | T-N902 | *(hardware — validated on target: BLE GATT service registration)* | — |

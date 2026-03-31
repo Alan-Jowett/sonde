@@ -266,7 +266,6 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
 
     // §6.4 Handler validation
     let mut catch_all_count = 0;
-    let mut handler_programs = HashSet::new();
     for handler in &manifest.handlers {
         if handler.program == "*" {
             catch_all_count += 1;
@@ -276,19 +275,11 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
                     message: "duplicate catch-all handler".to_string(),
                 });
             }
-        } else {
-            if !program_names.contains(&handler.program) {
-                result.errors.push(ValidationError {
-                    rule: "handler.program",
-                    message: format!("handler references unknown program: `{}`", handler.program),
-                });
-            }
-            if !handler_programs.insert(&handler.program) {
-                result.errors.push(ValidationError {
-                    rule: "handler.program",
-                    message: format!("duplicate handler for program: `{}`", handler.program),
-                });
-            }
+        } else if !program_names.contains(&handler.program) {
+            result.errors.push(ValidationError {
+                rule: "handler.program",
+                message: format!("handler references unknown program: `{}`", handler.program),
+            });
         }
 
         if handler.command.is_empty() {
@@ -845,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_handler_same_program() {
+    fn test_multiple_handlers_same_program_allowed() {
         let dir = tempfile::tempdir().unwrap();
         setup_test_dir(dir.path());
         let mut m = minimal_manifest();
@@ -859,11 +850,11 @@ mod tests {
             });
         }
         let r = validate_manifest(&m, dir.path());
-        assert!(!r.is_valid());
-        assert!(r
-            .errors
-            .iter()
-            .any(|e| e.message.contains("duplicate handler")));
+        assert!(
+            r.is_valid(),
+            "multiple handlers for the same program should be allowed: {:?}",
+            r.errors
+        );
     }
 
     #[test]

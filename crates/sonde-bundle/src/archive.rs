@@ -172,6 +172,14 @@ pub fn create_bundle(source_dir: &Path, output_path: &Path) -> Result<BundleInfo
                 }
             }
         }
+        // Include handler command if it is a safe relative path to a file
+        // inside the source directory (e.g., "handler/script.py")
+        if check_path_safety(Path::new(&handler.command)).is_ok() {
+            let cmd_path = source_dir.join(&handler.command);
+            if cmd_path.is_file() && cmd_path.starts_with(source_dir) {
+                files_to_include.insert(handler.command.clone());
+            }
+        }
         // Include args that are existing files within the source directory
         for arg in &handler.args {
             if check_path_safety(Path::new(arg)).is_err() {
@@ -187,7 +195,8 @@ pub fn create_bundle(source_dir: &Path, output_path: &Path) -> Result<BundleInfo
     // Create archive in a temporary file for atomic writes
     let output_dir = output_path.parent().unwrap_or(Path::new("."));
     let tmp_file = tempfile::NamedTempFile::new_in(output_dir)?;
-    let gz = GzEncoder::new(&tmp_file, Compression::default());
+    let file = tmp_file.as_file().try_clone()?;
+    let gz = GzEncoder::new(file, Compression::default());
     let mut builder = tar::Builder::new(gz);
 
     // Sort files for deterministic archive ordering

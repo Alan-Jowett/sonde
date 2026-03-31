@@ -116,27 +116,27 @@ fn cmd_inspect(bundle: &std::path::Path, format: OutputFormat) -> Result<(), Bun
                 "archive_size": info.archive_size,
                 "programs": info.manifest.programs.iter().map(|p| {
                     serde_json::json!({
-                        "name": p.name,
-                        "path": p.path,
+                        "name": &p.name,
+                        "path": &p.path,
                         "profile": p.profile.to_string(),
                     })
                 }).collect::<Vec<_>>(),
                 "handlers": info.manifest.handlers.iter().map(|h| {
                     serde_json::json!({
-                        "program": h.program,
-                        "command": h.command,
-                        "args": h.args,
+                        "program": &h.program,
+                        "command": &h.command,
+                        "args": &h.args,
                     })
                 }).collect::<Vec<_>>(),
                 "nodes": info.manifest.nodes.iter().map(|n| {
                     serde_json::json!({
-                        "name": n.name,
-                        "program": n.program,
+                        "name": &n.name,
+                        "program": &n.program,
                     })
                 }).collect::<Vec<_>>(),
                 "files": info.files.iter().map(|f| {
                     serde_json::json!({
-                        "path": f.path,
+                        "path": &f.path,
                         "size": f.size,
                     })
                 }).collect::<Vec<_>>(),

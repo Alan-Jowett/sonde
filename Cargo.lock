@@ -5351,6 +5351,7 @@ dependencies = [
 name = "sonde-protocol"
 version = "0.3.0"
 dependencies = [
+ "aes-gcm",
  "ciborium",
  "hmac",
  "sha2",

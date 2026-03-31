@@ -2487,3 +2487,199 @@ fn test_p072() {
     let result = img.encode_deterministic();
     assert!(result.is_err(), "length mismatch must be rejected");
 }
+
+// ---------------------------------------------------------------------------
+// AES-256-GCM codec tests (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "aes-gcm-codec")]
+mod aead_tests {
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    use sha2::{Digest, Sha256};
+    use sonde_protocol::*;
+
+    struct SoftwareAead;
+
+    impl AeadProvider for SoftwareAead {
+        fn seal(
+            &self,
+            key: &[u8],
+            nonce: &[u8; 12],
+            aad: &[u8],
+            plaintext: &[u8],
+        ) -> Vec<u8> {
+            let cipher = Aes256Gcm::new_from_slice(key).expect("valid 32-byte key");
+            let gcm_nonce = Nonce::from_slice(nonce);
+            cipher
+                .encrypt(
+                    gcm_nonce,
+                    Payload {
+                        msg: plaintext,
+                        aad,
+                    },
+                )
+                .expect("encryption should not fail")
+        }
+
+        fn open(
+            &self,
+            key: &[u8],
+            nonce: &[u8; 12],
+            aad: &[u8],
+            ciphertext_and_tag: &[u8],
+        ) -> Option<Vec<u8>> {
+            let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+            let gcm_nonce = Nonce::from_slice(nonce);
+            cipher
+                .decrypt(
+                    gcm_nonce,
+                    Payload {
+                        msg: ciphertext_and_tag,
+                        aad,
+                    },
+                )
+                .ok()
+        }
+    }
+
+    struct SoftwareSha256;
+
+    impl Sha256Provider for SoftwareSha256 {
+        fn hash(&self, data: &[u8]) -> [u8; 32] {
+            let mut hasher = Sha256::new();
+            hasher.update(data);
+            hasher.finalize().into()
+        }
+    }
+
+    #[test]
+    fn aead_round_trip() {
+        let hdr = FrameHeader {
+            key_hint: 1,
+            msg_type: MSG_WAKE,
+            nonce: 42,
+        };
+        let payload = vec![0xA1, 0x01, 0x02];
+        let psk = [0x42u8; 32];
+
+        let raw =
+            encode_frame_aead(&hdr, &payload, &psk, &SoftwareAead, &SoftwareSha256)
+                .unwrap();
+        let decoded = decode_frame_aead(&raw).unwrap();
+        assert_eq!(decoded.header.key_hint, 1);
+        assert_eq!(decoded.header.msg_type, MSG_WAKE);
+        assert_eq!(decoded.header.nonce, 42);
+
+        let plaintext =
+            open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        assert_eq!(plaintext, payload);
+    }
+
+    #[test]
+    fn aead_wrong_key() {
+        let hdr = FrameHeader {
+            key_hint: 1,
+            msg_type: MSG_WAKE,
+            nonce: 1,
+        };
+        let psk_a = [0x42u8; 32];
+        let psk_b = [0x24u8; 32];
+        let raw =
+            encode_frame_aead(&hdr, &[0xA0], &psk_a, &SoftwareAead, &SoftwareSha256)
+                .unwrap();
+        let decoded = decode_frame_aead(&raw).unwrap();
+        let result =
+            open_frame(&decoded, &psk_b, &SoftwareAead, &SoftwareSha256);
+        assert_eq!(result, Err(DecodeError::AuthenticationFailed));
+    }
+
+    #[test]
+    fn aead_tampered_ciphertext() {
+        let hdr = FrameHeader {
+            key_hint: 1,
+            msg_type: MSG_WAKE,
+            nonce: 1,
+        };
+        let psk = [0x42u8; 32];
+        let mut raw =
+            encode_frame_aead(
+                &hdr,
+                &[0xA1, 0x01, 0x02],
+                &psk,
+                &SoftwareAead,
+                &SoftwareSha256,
+            )
+            .unwrap();
+        // Flip one bit in the ciphertext portion (byte right after header).
+        raw[HEADER_SIZE] ^= 0x01;
+        let decoded = decode_frame_aead(&raw).unwrap();
+        let result =
+            open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
+        assert_eq!(result, Err(DecodeError::AuthenticationFailed));
+    }
+
+    #[test]
+    fn aead_tampered_header() {
+        let hdr = FrameHeader {
+            key_hint: 1,
+            msg_type: MSG_WAKE,
+            nonce: 1,
+        };
+        let psk = [0x42u8; 32];
+        let mut raw =
+            encode_frame_aead(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256)
+                .unwrap();
+        // Flip one bit in the header (msg_type byte) — header is AAD.
+        raw[2] ^= 0x01;
+        let decoded = decode_frame_aead(&raw).unwrap();
+        let result =
+            open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
+        assert_eq!(result, Err(DecodeError::AuthenticationFailed));
+    }
+
+    #[test]
+    fn aead_tampered_tag() {
+        let hdr = FrameHeader {
+            key_hint: 1,
+            msg_type: MSG_WAKE,
+            nonce: 1,
+        };
+        let psk = [0x42u8; 32];
+        let mut raw =
+            encode_frame_aead(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256)
+                .unwrap();
+        // Flip one bit in the GCM tag (last byte).
+        let last = raw.len() - 1;
+        raw[last] ^= 0x01;
+        let decoded = decode_frame_aead(&raw).unwrap();
+        let result =
+            open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
+        assert_eq!(result, Err(DecodeError::AuthenticationFailed));
+    }
+
+    #[test]
+    fn aead_nonce_construction() {
+        let psk = [0x42u8; 32];
+        let frame_nonce: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        let nonce = build_gcm_nonce(&psk, MSG_WAKE, &frame_nonce, &SoftwareSha256);
+        assert_eq!(nonce.len(), 12);
+
+        // First 3 bytes = SHA-256(psk)[0..3]
+        let hash = SoftwareSha256.hash(&psk);
+        assert_eq!(&nonce[0..3], &hash[0..3]);
+
+        // Byte 3 = msg_type
+        assert_eq!(nonce[3], MSG_WAKE);
+
+        // Bytes 4..12 = frame_nonce
+        assert_eq!(&nonce[4..12], &frame_nonce);
+    }
+
+    #[test]
+    fn aead_payload_capacity() {
+        assert_eq!(MAX_PAYLOAD_SIZE_AEAD, 223);
+        assert_eq!(AEAD_TAG_SIZE, 16);
+        assert_eq!(MIN_FRAME_SIZE_AEAD, HEADER_SIZE + AEAD_TAG_SIZE);
+    }
+}

@@ -16,6 +16,9 @@ pub mod modem;
 pub mod program_image;
 pub mod traits;
 
+#[cfg(feature = "aes-gcm-codec")]
+pub mod aead_codec;
+
 pub use ble_envelope::{encode_ble_envelope, parse_ble_envelope};
 pub use chunk::{chunk_count, get_chunk};
 pub use codec::{decode_frame, encode_frame, verify_frame, DecodedFrame};
@@ -25,6 +28,13 @@ pub use header::FrameHeader;
 pub use messages::{CommandPayload, GatewayMessage, NodeMessage};
 pub use program_image::{program_hash, MapDef, ProgramImage};
 pub use traits::{HmacProvider, Sha256Provider};
+
+#[cfg(feature = "aes-gcm-codec")]
+pub use aead_codec::{
+    build_gcm_nonce, decode_frame_aead, encode_frame_aead, open_frame, DecodedFrameAead,
+};
+#[cfg(feature = "aes-gcm-codec")]
+pub use traits::AeadProvider;
 
 /// Derive the 2-byte key hint from a PSK.
 ///

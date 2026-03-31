@@ -23,6 +23,8 @@ impl fmt::Display for EncodeError {
 pub enum DecodeError {
     TooShort,
     TooLong,
+    #[cfg(feature = "aes-gcm-codec")]
+    AuthenticationFailed,
     InvalidMsgType(u8),
     InvalidCommandType(u8),
     MissingField(u64),
@@ -35,6 +37,10 @@ impl fmt::Display for DecodeError {
         match self {
             DecodeError::TooShort => write!(f, "frame too short"),
             DecodeError::TooLong => write!(f, "frame too long"),
+            #[cfg(feature = "aes-gcm-codec")]
+            DecodeError::AuthenticationFailed => {
+                write!(f, "AES-256-GCM authentication failed")
+            }
             DecodeError::InvalidMsgType(t) => write!(f, "invalid msg_type: 0x{:02x}", t),
             DecodeError::InvalidCommandType(t) => {
                 write!(f, "unsupported command_type: 0x{:02x}", t)

@@ -6,7 +6,7 @@ license = "MIT"
 
 [features]
 default = []
-aes-gcm-codec = ["sonde-protocol/aes-gcm-codec"]
+aes-gcm-codec = []
 btleplug = ["dep:btleplug", "dep:uuid", "dep:tokio", "dep:futures"]
 file-store = ["dep:serde", "dep:serde_json"]
 dpapi = ["dep:windows-sys", "file-store"]
@@ -27,7 +27,6 @@ zeroize = { version = "1", features = ["derive"] }
 ciborium = "0.2"
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
 thiserror = "2"
-sonde-protocol = { path = "../sonde-protocol", default-features = false, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 

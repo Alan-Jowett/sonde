@@ -29,10 +29,22 @@ fn msg_type_name(t: u8) -> &'static str {
 
 /// Callback for reporting Phase 1 sub-phase progress (PT-0701).
 ///
-/// Phase 1 transitions through these sub-phases in order:
+/// ## ECDH flow (`pair_with_gateway`)
+///
+/// Transitions through these sub-phases in order:
 /// - `"Connecting"` — BLE connection and MTU negotiation
 /// - `"Authenticating"` — gateway signature verification and TOFU check
 /// - `"Registering"` — phone registration and key exchange
+///
+/// ## AEAD flow (`pair_with_gateway_aead`)
+///
+/// Transitions through these sub-phases in order:
+/// - `"Connecting"` — BLE connection and MTU negotiation
+/// - `"Registering"` — phone PSK generation and gateway registration
+///
+/// The AEAD flow omits `"Authenticating"` because there is no Ed25519
+/// signature verification or TOFU identity check; BLE LESC provides the
+/// transport-layer authentication instead.
 pub trait PairingProgress: Send + Sync {
     /// Called when the pairing state machine enters a new sub-phase.
     fn on_phase(&self, phase: &str);
@@ -352,7 +364,6 @@ async fn do_pair_with_gateway(
 #[cfg(feature = "aes-gcm-codec")]
 pub async fn pair_with_gateway_aead(
     transport: &mut dyn BleTransport,
-    _store: &mut dyn PairingStore,
     rng: &dyn RngProvider,
     device_address: &[u8; 6],
     phone_label: &str,
@@ -2087,7 +2098,6 @@ mod aead_phase1_tests {
     use super::*;
     use crate::envelope::build_envelope;
     use crate::rng::MockRng;
-    use crate::store::MemoryPairingStore;
     use crate::transport::MockBleTransport;
     use crate::validation::compute_key_hint;
 
@@ -2123,18 +2133,11 @@ mod aead_phase1_tests {
                 &predicted_psk,
             )));
 
-            let mut store = MemoryPairingStore::new();
             let device_addr = [0xAA; 6];
 
-            let result = pair_with_gateway_aead(
-                &mut transport,
-                &mut store,
-                &rng,
-                &device_addr,
-                "test-phone",
-                None,
-            )
-            .await;
+            let result =
+                pair_with_gateway_aead(&mut transport, &rng, &device_addr, "test-phone", None)
+                    .await;
             let artifacts = result.unwrap();
 
             assert_eq!(*artifacts.phone_psk, predicted_psk);
@@ -2156,11 +2159,7 @@ mod aead_phase1_tests {
             let mut transport = MockBleTransport::new(247);
             transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x02]).unwrap()));
 
-            let mut store = MemoryPairingStore::new();
-
-            let result =
-                pair_with_gateway_aead(&mut transport, &mut store, &rng, &[0xAA; 6], "", None)
-                    .await;
+            let result = pair_with_gateway_aead(&mut transport, &rng, &[0xAA; 6], "", None).await;
             assert!(matches!(
                 result,
                 Err(PairingError::RegistrationWindowClosed)
@@ -2184,9 +2183,7 @@ mod aead_phase1_tests {
             let mut transport = MockBleTransport::new(247);
             transport.queue_response(Ok(build_phone_registered_aead(0x00, 6, &predicted_psk)));
 
-            let mut store = MemoryPairingStore::new();
-
-            pair_with_gateway_aead(&mut transport, &mut store, &rng, &[0xAA; 6], label, None)
+            pair_with_gateway_aead(&mut transport, &rng, &[0xAA; 6], label, None)
                 .await
                 .unwrap();
 

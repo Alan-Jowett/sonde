@@ -172,14 +172,15 @@ pub fn encrypt_pairing_request_aead(
 /// Decrypt a pairing request using AES-256-GCM with the phone PSK.
 ///
 /// Expects `nonce(12) ‖ ciphertext ‖ tag(16)`. Returns the plaintext
-/// CBOR on success, or `None` if authentication fails.
+/// CBOR in a [`Zeroizing`] wrapper on success, or `None` if
+/// authentication fails.
 ///
 /// The AAD is fixed to `"sonde-pairing-v2"` for domain separation.
 #[cfg(feature = "aes-gcm-codec")]
 pub fn decrypt_pairing_request_aead(
     phone_psk: &[u8; 32],
     encrypted_payload: &[u8],
-) -> Option<Vec<u8>> {
+) -> Option<Zeroizing<Vec<u8>>> {
     // Minimum length: 12-byte nonce + 16-byte tag + 1 byte ciphertext
     if encrypted_payload.len() < GCM_NONCE_LEN + GCM_TAG_LEN + 1 {
         return None;
@@ -190,7 +191,7 @@ pub fn decrypt_pairing_request_aead(
 
     let plaintext =
         aes256gcm_decrypt(phone_psk, nonce, ciphertext_and_tag, PAIRING_REQUEST_AAD).ok()?;
-    Some(plaintext.to_vec())
+    Some(plaintext)
 }
 
 #[cfg(test)]
@@ -472,7 +473,10 @@ mod aead_tests {
 
         let encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
         let decrypted = decrypt_pairing_request_aead(&psk, &encrypted);
-        assert_eq!(decrypted.as_deref(), Some(plaintext.as_slice()));
+        assert_eq!(
+            decrypted.as_ref().map(|z| z.as_slice()),
+            Some(plaintext.as_slice())
+        );
     }
 
     /// Wrong PSK must fail decryption (authentication failure).

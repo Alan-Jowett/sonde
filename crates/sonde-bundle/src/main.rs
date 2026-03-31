@@ -164,10 +164,14 @@ fn cmd_inspect(bundle: &std::path::Path, format: OutputFormat) -> Result<(), Bun
 
             println!("Programs:");
             for p in &info.manifest.programs {
+                let norm_prog = p.path.strip_prefix("./").unwrap_or(&p.path);
                 let size = info
                     .files
                     .iter()
-                    .find(|f| f.path == p.path)
+                    .find(|f| {
+                        let norm_file = f.path.strip_prefix("./").unwrap_or(&f.path);
+                        norm_file == norm_prog
+                    })
                     .map(|f| f.size)
                     .unwrap_or(0);
                 println!("  {} ({}, {} bytes)", p.name, p.profile, size);

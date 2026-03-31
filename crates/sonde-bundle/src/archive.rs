@@ -104,7 +104,10 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
                     .map_err(BundleError::Io)?;
             }
             // Internal tar metadata — consumed by the reader, skip unpacking
-            tar::EntryType::GNULongName | tar::EntryType::GNULongLink => {}
+            tar::EntryType::GNULongName
+            | tar::EntryType::GNULongLink
+            | tar::EntryType::XHeader
+            | tar::EntryType::XGlobalHeader => {}
             tar::EntryType::Symlink | tar::EntryType::Link => {
                 return Err(BundleError::SymlinkNotAllowed(path_str));
             }
@@ -304,7 +307,10 @@ pub fn inspect_bundle(bundle_path: &Path) -> Result<BundleInfo, BundleError> {
         let entry_type = entry.header().entry_type();
         match entry_type {
             tar::EntryType::Regular | tar::EntryType::Directory => {}
-            tar::EntryType::GNULongName | tar::EntryType::GNULongLink => continue,
+            tar::EntryType::GNULongName
+            | tar::EntryType::GNULongLink
+            | tar::EntryType::XHeader
+            | tar::EntryType::XGlobalHeader => continue,
             tar::EntryType::Symlink | tar::EntryType::Link => {
                 return Err(BundleError::SymlinkNotAllowed(
                     entry_path.to_string_lossy().to_string(),

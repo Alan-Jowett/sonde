@@ -22,6 +22,11 @@ quiet = ["log/release_max_level_warn"]
 # default is INFO. Build with `--features esp,verbose --no-default-features`
 # (MD-0505).
 verbose = ["log/release_max_level_debug"]
+# Forward AES-256-GCM codec support to sonde-protocol.  The modem is a
+# transparent bridge and never decrypts frames, so no additional deps are
+# needed — only the protocol feature flag is propagated so that shared
+# constants and types are available when the workspace is built uniformly.
+aes-gcm-codec = ["sonde-protocol/aes-gcm-codec"]
 
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol", default-features = false }

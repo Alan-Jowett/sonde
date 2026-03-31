@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 pub mod admin;
+pub mod aead;
 pub mod ble_pairing;
 pub mod crypto;
 pub mod engine;
@@ -20,6 +21,8 @@ pub mod storage;
 pub mod transport;
 
 pub use admin::AdminService;
+#[cfg(feature = "aes-gcm-codec")]
+pub use aead::GatewayAead;
 pub use crypto::{RustCryptoHmac, RustCryptoSha256};
 pub use engine::{Gateway, PendingCommand};
 pub use gateway_identity::{GatewayIdentity, IdentityError};

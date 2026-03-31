@@ -17,6 +17,9 @@ use sonde_protocol::{
 
 use std::collections::BTreeMap;
 
+#[cfg(feature = "aes-gcm-codec")]
+use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame};
+
 use crate::crypto::{RustCryptoHmac, RustCryptoSha256};
 use crate::gateway_identity::GatewayIdentity;
 use crate::handler::HandlerRouter;
@@ -197,7 +200,72 @@ impl Gateway {
         }
     }
 
-    /// Lazy-load the gateway identity from storage (cached after first load).
+    /// Process a raw frame using AES-256-GCM authenticated encryption.
+    ///
+    /// This is the AEAD counterpart of [`process_frame`]. It decodes the
+    /// frame header, looks up candidate PSKs by `key_hint`, then tries
+    /// each candidate with [`open_frame`] (AES-256-GCM decrypt + auth).
+    ///
+    /// PEER_REQUEST is not supported over the AEAD path — those frames
+    /// must still use the HMAC codec.
+    #[cfg(feature = "aes-gcm-codec")]
+    pub async fn process_frame_aead(&self, raw: &[u8], peer: PeerAddress) -> Option<Vec<u8>> {
+        use crate::aead::GatewayAead;
+
+        let decoded = decode_frame_aead(raw).ok()?;
+
+        // PEER_REQUEST is not supported on the AEAD path.
+        if decoded.header.msg_type == MSG_PEER_REQUEST {
+            return None;
+        }
+
+        let key_hint = decoded.header.key_hint;
+        let candidates = self.storage.get_nodes_by_key_hint(key_hint).await.ok()?;
+        if candidates.is_empty() {
+            warn!(
+                key_hint,
+                "discarding AEAD frame from unknown node (no key_hint match)"
+            );
+            return None;
+        }
+
+        let aead = GatewayAead;
+        let mut matched_node: Option<NodeRecord> = None;
+        let mut plaintext_payload: Option<Vec<u8>> = None;
+        for candidate in &candidates {
+            if let Ok(pt) = open_frame(&decoded, &candidate.psk, &aead, &self.crypto_sha) {
+                matched_node = Some(candidate.clone());
+                plaintext_payload = Some(pt);
+                break;
+            }
+        }
+        let node = matched_node?;
+        let payload = plaintext_payload?;
+
+        match decoded.header.msg_type {
+            MSG_WAKE => {
+                self.handle_wake_aead(&node, &decoded.header, &payload, peer)
+                    .await
+            }
+            MSG_GET_CHUNK | MSG_PROGRAM_ACK | MSG_APP_DATA => {
+                self.handle_post_wake_aead(&node, &decoded.header, &payload)
+                    .await
+            }
+            _ => None,
+        }
+    }
+
+    /// Encode a response frame using AES-256-GCM.
+    #[cfg(feature = "aes-gcm-codec")]
+    fn encode_response_aead(
+        &self,
+        header: &FrameHeader,
+        cbor: &[u8],
+        psk: &[u8; 32],
+    ) -> Option<Vec<u8>> {
+        use crate::aead::GatewayAead;
+        encode_frame_aead(header, cbor, psk, &GatewayAead, &self.crypto_sha).ok()
+    }
     async fn get_identity(&self) -> Option<Arc<GatewayIdentity>> {
         // Fast path: return cached identity.
         {
@@ -515,14 +583,18 @@ impl Gateway {
         Some(frame)
     }
 
-    /// Handle a WAKE message: create session, determine command, respond.
-    async fn handle_wake(
+    /// Shared WAKE business logic: decode, session management, command
+    /// selection, telemetry update, and response CBOR encoding.
+    ///
+    /// Returns `(response_header, response_cbor)` so the caller can apply
+    /// the appropriate frame codec (HMAC or AEAD).
+    async fn handle_wake_core(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         payload: &[u8],
         peer: PeerAddress,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(FrameHeader, Vec<u8>)> {
         // 1. Decode NodeMessage::Wake from payload
         let (firmware_abi_version, program_hash, battery_mv) =
             match NodeMessage::decode(MSG_WAKE, payload) {
@@ -718,12 +790,26 @@ impl Gateway {
         };
         let response_cbor = response_msg.encode().ok()?;
 
-        // 6. Encode response frame (echoing wake nonce, using node's PSK)
+        // 6. Build response header (echoing wake nonce)
         let response_header = FrameHeader {
             key_hint: node.key_hint,
             msg_type: MSG_COMMAND,
             nonce: header.nonce,
         };
+
+        Some((response_header, response_cbor))
+    }
+
+    /// Handle a WAKE message: create session, determine command, respond.
+    async fn handle_wake(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        payload: &[u8],
+        peer: PeerAddress,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) =
+            self.handle_wake_core(node, header, payload, peer).await?;
         let frame = encode_frame(
             &response_header,
             &response_cbor,
@@ -731,8 +817,88 @@ impl Gateway {
             &self.crypto_hmac,
         )
         .ok()?;
-
         Some(frame)
+    }
+
+    /// AEAD variant of [`handle_wake`] — same business logic, AES-256-GCM encoding.
+    #[cfg(feature = "aes-gcm-codec")]
+    async fn handle_wake_aead(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        payload: &[u8],
+        peer: PeerAddress,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) =
+            self.handle_wake_core(node, header, payload, peer).await?;
+        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
+    }
+
+    /// AEAD variant of [`handle_post_wake`] — same dispatch, AES-256-GCM encoding.
+    #[cfg(feature = "aes-gcm-codec")]
+    async fn handle_post_wake_aead(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        payload: &[u8],
+    ) -> Option<Vec<u8>> {
+        let msg = match NodeMessage::decode(header.msg_type, payload) {
+            Ok(m) => m,
+            Err(e) => {
+                // GW-0101 AC3: log malformed inbound CBOR.
+                warn!(
+                    node_id = %node.node_id,
+                    msg_type = header.msg_type,
+                    error = %e,
+                    "discarding post-WAKE message with malformed CBOR payload"
+                );
+                return None;
+            }
+        };
+
+        self.session_manager
+            .verify_and_advance_seq(&node.node_id, header.nonce)
+            .await
+            .ok()?;
+
+        match msg {
+            NodeMessage::GetChunk { chunk_index } => {
+                self.handle_get_chunk_aead(node, header, chunk_index).await
+            }
+            NodeMessage::ProgramAck { program_hash } => {
+                self.handle_program_ack(node, program_hash).await;
+                None
+            }
+            NodeMessage::AppData { blob } => self.handle_app_data_aead(node, header, blob).await,
+            _ => None,
+        }
+    }
+
+    /// AEAD variant of [`handle_get_chunk`] — AES-256-GCM response encoding.
+    #[cfg(feature = "aes-gcm-codec")]
+    async fn handle_get_chunk_aead(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        chunk_index: u32,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) = self
+            .handle_get_chunk_core(node, header, chunk_index)
+            .await?;
+        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
+    }
+
+    /// AEAD variant of [`handle_app_data`] — AES-256-GCM response encoding.
+    #[cfg(feature = "aes-gcm-codec")]
+    async fn handle_app_data_aead(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        blob: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) =
+            self.handle_app_data_core(node, header, blob).await?;
+        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
     }
 
     /// Handle post-WAKE messages (GET_CHUNK, PROGRAM_ACK, APP_DATA).
@@ -783,13 +949,15 @@ impl Gateway {
         }
     }
 
-    /// Serve a chunk from the program library.
-    async fn handle_get_chunk(
+    /// Shared GET_CHUNK business logic: look up session/program, serve chunk.
+    ///
+    /// Returns `(response_header, response_cbor)` for the caller to encode.
+    async fn handle_get_chunk_core(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         chunk_index: u32,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(FrameHeader, Vec<u8>)> {
         // Look up program transfer state from session
         let session = self.session_manager.get_session(&node.node_id).await?;
         let (program_hash, chunk_size) = match &session.state {
@@ -822,6 +990,20 @@ impl Gateway {
             msg_type: MSG_CHUNK,
             nonce: header.nonce,
         };
+
+        Some((response_header, response_cbor))
+    }
+
+    /// Serve a chunk from the program library.
+    async fn handle_get_chunk(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        chunk_index: u32,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) = self
+            .handle_get_chunk_core(node, header, chunk_index)
+            .await?;
         let frame = encode_frame(
             &response_header,
             &response_cbor,
@@ -829,7 +1011,6 @@ impl Gateway {
             &self.crypto_hmac,
         )
         .ok()?;
-
         Some(frame)
     }
 
@@ -882,15 +1063,15 @@ impl Gateway {
             .await;
     }
 
-    /// Route APP_DATA to the handler router (Phase 2C). Looks up the node's
-    /// `current_program_hash` from storage, calls the handler, and wraps any
-    /// non-empty reply in a `GatewayMessage::AppDataReply` frame.
-    async fn handle_app_data(
+    /// Shared APP_DATA business logic: route to handler, build reply.
+    ///
+    /// Returns `(response_header, response_cbor)` for the caller to encode.
+    async fn handle_app_data_core(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         blob: Vec<u8>,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(FrameHeader, Vec<u8>)> {
         let router = self.handler_router.as_ref()?;
 
         // Use the node's `current_program_hash` (set via PROGRAM_ACK) for routing.
@@ -929,6 +1110,21 @@ impl Gateway {
             msg_type: MSG_APP_DATA_REPLY,
             nonce: header.nonce,
         };
+
+        Some((response_header, response_cbor))
+    }
+
+    /// Route APP_DATA to the handler router (Phase 2C). Looks up the node's
+    /// `current_program_hash` from storage, calls the handler, and wraps any
+    /// non-empty reply in a `GatewayMessage::AppDataReply` frame.
+    async fn handle_app_data(
+        &self,
+        node: &NodeRecord,
+        header: &FrameHeader,
+        blob: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        let (response_header, response_cbor) =
+            self.handle_app_data_core(node, header, blob).await?;
         let frame = encode_frame(
             &response_header,
             &response_cbor,
@@ -936,7 +1132,6 @@ impl Gateway {
             &self.crypto_hmac,
         )
         .ok()?;
-
         Some(frame)
     }
 

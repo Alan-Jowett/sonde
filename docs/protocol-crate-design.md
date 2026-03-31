@@ -163,8 +163,8 @@ Returns `EncodeError::FrameTooLarge` if the result exceeds `MAX_FRAME_SIZE`.
 #[derive(Debug)]
 pub struct DecodedFrame {
     pub header: FrameHeader,
-    pub payload: Vec<u8>,  // raw CBOR bytes, not yet deserialized
-    pub hmac: [u8; 32],
+    pub ciphertext: Vec<u8>,  // encrypted CBOR bytes
+    pub tag: [u8; 16],        // AES-256-GCM authentication tag
 }
 
 pub fn decode_frame(raw: &[u8]) -> Result<DecodedFrame, DecodeError>
@@ -172,21 +172,21 @@ pub fn decode_frame(raw: &[u8]) -> Result<DecodedFrame, DecodeError>
 
 1. Validate `raw.len() >= MIN_FRAME_SIZE`, otherwise return `DecodeError::TooShort`.
 2. Validate `raw.len() <= MAX_FRAME_SIZE`, otherwise return `DecodeError::TooLong`.
-3. Split into header (11), payload (middle), HMAC (last 32).
+3. Split into header (11), ciphertext (middle), tag (last 16).
 4. Parse header.
-5. Return `DecodedFrame`. Payload is **not** CBOR-decoded — caller does that after HMAC verification.
+5. Return `DecodedFrame`. Ciphertext is **not** decrypted — caller does that after AES-GCM verification.
 
-### 5.4  HMAC verification helper
+### 5.4  AES-GCM verification helper
 
 ```rust
 pub fn verify_frame(
     frame: &DecodedFrame,
     psk: &[u8],
-    hmac: &impl HmacProvider,
+    aead: &impl AeadProvider,
 ) -> bool
 ```
 
-Recomputes HMAC over the header + payload bytes and compares with `frame.hmac`.
+Constructs the GCM nonce, then decrypts + verifies the ciphertext and tag using the header as AAD.
 
 ### 5.5  `key_hint` derivation
 

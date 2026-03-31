@@ -230,13 +230,12 @@ A frame is three contiguous regions: the fixed 11-byte binary Header (`key_hint`
 **GCM nonce construction (12 bytes):**
 
 ```
-gcm_nonce = SHA-256(psk)[0..4] ‖ frame_nonce[8]
+gcm_nonce = SHA-256(psk)[0..4] ‖ frame_nonce
 ```
 
 The AEAD construction covers the full header (AAD) and encrypts + authenticates the payload:
 
 ```
-gcm_nonce  = SHA-256(psk)[0..4] ‖ frame_nonce[8]
 ciphertext, tag = AES-256-GCM-Seal(key = psk, nonce = gcm_nonce, aad = header, plaintext = payload)
 ```
 

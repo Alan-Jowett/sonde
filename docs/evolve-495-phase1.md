@@ -47,7 +47,7 @@ AAD       = full 11-byte header
 ```
 Phone ──BLE LESC (Numeric Comparison)──► Gateway
   ├── REGISTER_PHONE(label, phone_psk) ───►│  ← phone generates PSK
-  │◄── PHONE_REGISTERED(status=0) ────────┤  ← just an ACK
+  │◄── PHONE_REGISTERED(status, rf_channel, phone_key_hint) ──┤
 ```
 - Phone generates 256-bit random PSK.
 - BLE LESC provides confidentiality and authentication.
@@ -89,7 +89,7 @@ Phone ──BLE LESC (Numeric Comparison)──► Gateway
 | Payload confidentiality | None (cleartext CBOR) | Yes (CBOR encrypted) |
 | Phase 1 phone registration | Challenge–response + ECDH + HKDF + AES-GCM | Phone generates PSK, sends over BLE LESC |
 | `REGISTER_PHONE` content | Ephemeral X25519 pubkey + label | `phone_psk` + label |
-| `PHONE_REGISTERED` content | ECDH-encrypted PSK + channel + status | Status ACK only |
+| `PHONE_REGISTERED` content | ECDH-encrypted PSK + channel + status | `status` + `rf_channel` + `phone_key_hint` (4 bytes) |
 | PEER_REQUEST frame key | `node_psk` (HMAC) | `phone_psk` (AES-GCM) |
 | PEER_REQUEST inner payload | ECDH-encrypted, HMAC-authenticated | AES-256-GCM(`phone_psk`, AAD=`"sonde-pairing-v2"`) |
 | PEER_ACK authentication | HMAC + `registration_proof` | AES-GCM with `node_psk` (encryption = proof of registration) |
@@ -142,7 +142,7 @@ This document uses narrative requirements (MUST/SHALL), not formal REQ-IDs.
 | §5.2 REQUEST_GW_INFO | Challenge–response request | **RETIRE** | No gateway authentication challenge. BLE LESC suffices. |
 | §5.3 GW_INFO_RESPONSE | Ed25519 signature + public key | **RETIRE** | No gateway public key or identity. |
 | §5.4 REGISTER_PHONE | Ephemeral X25519 pubkey + label | **MODIFY (major)** | Phone sends `phone_psk` + label. No ephemeral keypair. |
-| §5.5 PHONE_REGISTERED | ECDH-encrypted PSK delivery | **MODIFY (major)** | Now a simple status ACK (`status=0`). No encryption needed — BLE LESC protects the channel. |
+| §5.5 PHONE_REGISTERED | ECDH-encrypted PSK delivery | **MODIFY (major)** | Now carries `status` + `rf_channel` + `phone_key_hint` (4 bytes). No encryption needed — BLE LESC protects the channel. |
 | §5.7 Phone persistence | Persist `gw_public_key`, `gateway_id`, `phone_psk` | MODIFY | Remove `gw_public_key`, `gateway_id`. Persist `phone_psk`, `phone_key_hint`, `rf_channel`. |
 | §6.4 Node pairing encryption | ECDH + HKDF + AES-GCM + HMAC | **MODIFY (major)** | Replace with AES-256-GCM(`phone_psk`, PairingRequest, AAD=`"sonde-pairing-v2"`). No ECDH, no HKDF, no phone HMAC. |
 | §7.1 PEER_REQUEST format | Header + CBOR + 32B HMAC (node PSK) | **MODIFY (major)** | Header + AES-GCM ciphertext + 16B tag. Frame encrypted with `phone_psk`. `key_hint` identifies phone. |
@@ -177,7 +177,7 @@ This document uses narrative requirements (MUST/SHALL), not formal REQ-IDs.
 |--------|-------|--------|-----------|
 | PT-0301 | Gateway authentication (REQUEST_GW_INFO / GW_INFO_RESPONSE) | **RETIRE** | No gateway challenge–response. BLE LESC provides authentication. |
 | PT-0302 | Trust-on-first-use (TOFU) | **RETIRE** | No gateway public key to pin. |
-| PT-0303 | Phone registration (REGISTER_PHONE / PHONE_REGISTERED) | **MODIFY (major)** | Phone generates 256-bit `phone_psk` from CSPRNG, writes `REGISTER_PHONE(label, phone_psk)`, receives `PHONE_REGISTERED(status)` as simple ACK. No ECDH, no HKDF, no AES-GCM decryption. |
+| PT-0303 | Phone registration (REGISTER_PHONE / PHONE_REGISTERED) | **MODIFY (major)** | Phone generates 256-bit `phone_psk` from CSPRNG, writes `REGISTER_PHONE(label, phone_psk)`, receives `PHONE_REGISTERED(status, rf_channel, phone_key_hint)`. No ECDH, no HKDF, no AES-GCM decryption. |
 | PT-0304 | Ephemeral key zeroing | **MODIFY** | Remove all ephemeral X25519 references. Zeroing applies to `phone_psk` and AES-GCM key material only. |
 | PT-0403 | PairingRequest CBOR construction | UNAFFECTED | CBOR structure unchanged. |
 | PT-0404 | Phone HMAC authentication | **RETIRE** | No phone HMAC. AEAD provides authentication. |
@@ -353,6 +353,7 @@ Where `frame_nonce` is the 8-byte value from the frame header (random for WAKE/P
 **NEW-REG-002**: The `PHONE_REGISTERED` BLE response is sent **only on successful registration** and MUST contain:
 - `status` (1 byte): `0x00` = accepted.
 - `rf_channel` (1 byte): WiFi channel 1–13.
+- `phone_key_hint` (2 bytes, big-endian): `SHA-256(phone_psk)[30..32]`.
 
 Registration rejections and window-closed conditions are reported using the `ERROR` (0xFF) envelope as defined in `ble-pairing-protocol.md`; `PHONE_REGISTERED` is **not** sent in those cases.
 

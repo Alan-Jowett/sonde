@@ -50,10 +50,10 @@ A frame consists of three consecutive regions: first the fixed 11-byte binary He
 **GCM nonce construction (12 bytes):**
 
 ```
-gcm_nonce = SHA-256(psk)[0..4] ‖ frame_nonce[8]
+gcm_nonce = SHA-256(psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]
 ```
 
-Where `psk` is the pre-shared key used for this frame and `frame_nonce` is the 8-byte value from the header's `nonce` field. The 4-byte PSK-derived prefix expands the 8-byte frame nonce to the 12 bytes required by AES-GCM. It is derived deterministically from the key via SHA-256, so nonces only need to be unique within a single key's usage — the prefix does not provide cross-key uniqueness.
+Where `psk` is the pre-shared key used for this frame, `msg_type` is the 1-byte message type from the header, and `frame_nonce` is the 8-byte value from the header's `nonce` field. Including `msg_type` in the nonce ensures that request/response pairs sharing the same `frame_nonce` (e.g., WAKE/COMMAND) produce distinct GCM nonces, preventing nonce reuse across directions. The 3-byte PSK-derived prefix makes cross-key nonce collisions extremely unlikely, but does not provide absolute cross-key uniqueness.
 
 **Per-message PSK assignment:**
 
@@ -498,7 +498,7 @@ The number of exchanges per wake cycle is determined by the BPF program. The pro
 For every frame (both directions):
 
 ```
-gcm_nonce  = SHA-256(psk)[0..4] ‖ frame_nonce[8]    // 12 bytes
+gcm_nonce  = SHA-256(psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]    // 12 bytes
 ciphertext, tag = AES-256-GCM-Seal(key = psk, nonce = gcm_nonce, aad = header, plaintext = payload)
 ```
 

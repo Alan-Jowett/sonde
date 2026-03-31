@@ -187,7 +187,7 @@ The protocol codec is provided by the shared `sonde-protocol` crate (see [protoc
 
 All types, constants, and functions in this section are provided by the `sonde-protocol` crate (see [protocol-crate-design.md](protocol-crate-design.md) for the full API). The gateway-specific code only provides the AES-256-GCM implementation.
 
-The frame is a flat byte array with fields at fixed offsets. The first 11 bytes form the binary header: `key_hint` occupies bytes 0–1 (big-endian u16), `msg_type` is byte 2, and `nonce` occupies bytes 3–10 (big-endian u64). Following the header is the AES-256-GCM ciphertext (encrypted CBOR payload). The final 16 bytes of the frame are the AES-256-GCM authentication tag. The 11-byte header is used as Additional Authenticated Data (AAD). The GCM nonce is constructed as `SHA-256(psk)[0..4] ‖ frame_nonce` (12 bytes total).
+The frame is a flat byte array with fields at fixed offsets. The first 11 bytes form the binary header: `key_hint` occupies bytes 0–1 (big-endian u16), `msg_type` is byte 2, and `nonce` occupies bytes 3–10 (big-endian u64). Following the header is the AES-256-GCM ciphertext (encrypted CBOR payload). The final 16 bytes of the frame are the AES-256-GCM authentication tag. The 11-byte header is used as Additional Authenticated Data (AAD). The GCM nonce is constructed as `SHA-256(psk)[0..3] ‖ msg_type ‖ frame_nonce` (12 bytes total).
 
 ```
 Offset 0:  key_hint    (2 bytes, big-endian)
@@ -207,7 +207,7 @@ The gateway performs AEAD decryption for each inbound frame:
 
 1. Parse the 11-byte header to extract `key_hint`, `msg_type`, and `frame_nonce`.
 2. Look up candidate PSKs by `key_hint` from the node registry (or phone PSK registry for `PEER_REQUEST`).
-3. For each candidate PSK, reconstruct the GCM nonce as `SHA-256(psk)[0..4] ‖ frame_nonce` (12 bytes) and attempt AES-256-GCM-Open with the 11-byte header as AAD.
+3. For each candidate PSK, reconstruct the GCM nonce as `SHA-256(psk)[0..3] ‖ msg_type ‖ frame_nonce` (12 bytes) and attempt AES-256-GCM-Open with the 11-byte header as AAD.
 4. If decryption succeeds (GCM tag verifies), the node is identified by the matching key and the plaintext CBOR payload is returned.
 5. If no candidate key produces a valid decryption, the frame is silently discarded.
 
@@ -1082,7 +1082,7 @@ When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x0
 
 **Pipeline:**
 
-1. **Outer frame decryption** — The `key_hint` identifies a phone PSK. The gateway looks up all non-revoked phone PSK candidates matching the `key_hint` and tries AES-256-GCM-Open with each (GCM nonce = `SHA-256(phone_psk)[0..4] ‖ frame_nonce`, AAD = 11-byte header). No match → discard (GW-1211).
+1. **Outer frame decryption** — The `key_hint` identifies a phone PSK. The gateway looks up all non-revoked phone PSK candidates matching the `key_hint` and tries AES-256-GCM-Open with each (GCM nonce = `SHA-256(phone_psk)[0..3] ‖ msg_type ‖ frame_nonce`, AAD = 11-byte header). No match → discard (GW-1211).
 2. **Inner payload decryption** — The `encrypted_payload` field from the outer CBOR is decrypted with AES-256-GCM using the same `phone_psk` (AAD = `"sonde-pairing-v2"`). GCM tag failure → discard (GW-1212).
 3. **Timestamp validation** — The `PairingRequest` timestamp must be within ± 86 400 s of current time. Out of range → discard (GW-1215).
 4. **Node ID duplicate handling** — If the `node_id` is already registered **and** the `node_psk` matches the existing record, the gateway skips registration but still proceeds to PEER_ACK generation (GW-1218 AC4). If the `node_id` is registered with a **different** PSK, the frame is silently discarded (potential replay or conflict).
@@ -1091,7 +1091,7 @@ When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x0
 
 ### 17.6  `PEER_ACK` generation
 
-After successful registration **or** duplicate detection with matching PSK, the gateway builds a `PEER_ACK` CBOR message `{1: 0}` (status = success), encrypts the frame with AES-256-GCM using `node_psk` (GCM nonce = `SHA-256(node_psk)[0..4] ‖ frame_nonce`, AAD = 11-byte header), and echoes the `nonce` from the `PEER_REQUEST` header (GW-1219).
+After successful registration **or** duplicate detection with matching PSK, the gateway builds a `PEER_ACK` CBOR message `{1: 0}` (status = success), encrypts the frame with AES-256-GCM using `node_psk` (GCM nonce = `SHA-256(node_psk)[0..3] ‖ msg_type ‖ frame_nonce`, AAD = 11-byte header), and echoes the `nonce` from the `PEER_REQUEST` header (GW-1219).
 
 ### 17.7  Admin session
 

@@ -30,7 +30,7 @@ All frames (WAKE, COMMAND, APP_DATA, PEER_REQUEST, PEER_ACK) use the same format
 Header (AAD, cleartext): key_hint(2B) ‖ msg_type(1B) ‖ nonce(8B)
 Body: AES-256-GCM ciphertext ‖ 16-byte GCM tag
 
-gcm_nonce = SHA-256(psk)[0..4] ‖ frame_nonce(8B)   // 12 bytes
+gcm_nonce = SHA-256(psk)[0..3] ‖ msg_type(1B) ‖ frame_nonce(8B)   // 12 bytes
 key       = PSK identified by key_hint
 AAD       = full 11-byte header
 ```
@@ -85,7 +85,7 @@ Phone ──BLE LESC (Numeric Comparison)──► Gateway
 | Frame authentication (ALL frames) | HMAC-SHA256 (32B tag, auth only) | AES-256-GCM (16B tag, auth + encryption) |
 | Frame overhead | 43B (11B header + 32B HMAC) | 27B (11B header + 16B GCM tag) |
 | Usable payload budget (250B frame) | 207B | 223B (+16B gained) |
-| Frame nonce → GCM nonce | `nonce` used directly (8B in HMAC input) | `gcm_nonce` = SHA-256(psk)[0..4] ‖ nonce(8B) = 12B |
+| Frame nonce → GCM nonce | `nonce` used directly (8B in HMAC input) | `gcm_nonce` = SHA-256(psk)[0..3] ‖ msg_type(1B) ‖ nonce(8B) = 12B |
 | Payload confidentiality | None (cleartext CBOR) | Yes (CBOR encrypted) |
 | Phase 1 phone registration | Challenge–response + ECDH + HKDF + AES-GCM | Phone generates PSK, sends over BLE LESC |
 | `REGISTER_PHONE` content | Ephemeral X25519 pubkey + label | `phone_psk` + label |
@@ -120,11 +120,11 @@ This document defines the radio frame format. **Every section** describing HMAC-
 
 | Section | Topic | Action | Rationale |
 |---------|-------|--------|-----------|
-| §3.1 Frame structure | Header + Payload + HMAC-SHA256 | **MODIFY (major)** | Replace `header ‖ payload ‖ hmac[32]` with `header ‖ AES-256-GCM(payload) ‖ tag[16]`. GCM nonce = SHA-256(psk)[0..4] ‖ frame_nonce. AAD = 11-byte header. |
+| §3.1 Frame structure | Header + Payload + HMAC-SHA256 | **MODIFY (major)** | Replace `header ‖ payload ‖ hmac[32]` with `header ‖ AES-256-GCM(payload) ‖ tag[16]`. GCM nonce = SHA-256(psk)[0..3] ‖ msg_type ‖ frame_nonce. AAD = 11-byte header. |
 | §3.2 What is authenticated | HMAC covers header + payload | MODIFY | AEAD covers header (AAD) + payload (ciphertext). Payload is now encrypted AND authenticated. |
 | §3.3 Gateway verification | Compute HMAC with candidate PSKs | MODIFY | Try AES-256-GCM-Open with candidate PSKs. First successful decryption = authenticated. |
 | §3.4 Node verification | Compute HMAC with own PSK | MODIFY | AES-256-GCM-Open with node's own PSK. |
-| §4 Replay protection | Nonce / sequence number | MODIFY | GCM nonce construction: 4-byte PSK-derived prefix + 8-byte frame nonce. Sequence-number semantics unchanged. |
+| §4 Replay protection | Nonce / sequence number | MODIFY | GCM nonce construction: 3-byte PSK-derived prefix + msg_type + 8-byte frame nonce. Sequence-number semantics unchanged. |
 | HMAC trailer size | 32 bytes | MODIFY | GCM tag: 16 bytes. Total frame overhead drops from 43B to 27B. |
 | msg_type 0x05 | PEER_REQUEST | MODIFY | Key used is `phone_psk` (not `node_psk`). `key_hint` identifies phone. |
 | msg_type 0x84 | PEER_ACK | MODIFY | Now AES-GCM encrypted with `node_psk`. `registration_proof` field retired. |
@@ -203,7 +203,7 @@ This document uses narrative requirements (MUST/SHALL), not formal REQ-IDs.
 
 | REQ-ID | Title | Action | Rationale |
 |--------|-------|--------|-----------|
-| GW-0600 | HMAC-SHA256 message authentication | **MODIFY (major)** | Replace HMAC-SHA256 with AES-256-GCM for ALL inbound/outbound frames. GCM nonce = SHA-256(psk)[0..4] ‖ frame_nonce. AAD = 11-byte header. |
+| GW-0600 | HMAC-SHA256 message authentication | **MODIFY (major)** | Replace HMAC-SHA256 with AES-256-GCM for ALL inbound/outbound frames. GCM nonce = SHA-256(psk)[0..3] ‖ msg_type ‖ frame_nonce. AAD = 11-byte header. |
 | GW-0601 | Per-node key management | UNAFFECTED | PSK lookup by `key_hint` unchanged. |
 | GW-0601a | Key store encryption at rest | **MODIFY** | No Ed25519 seed to protect. Master key still encrypts PSK database. |
 | GW-0601b | OS-native master key protection | UNAFFECTED | `KeyProvider` trait unchanged. |
@@ -247,7 +247,7 @@ This document uses narrative requirements (MUST/SHALL), not formal REQ-IDs.
 | ND-0301 | Inbound HMAC verification | **MODIFY (major)** | Replace with AES-256-GCM-Open. Decryption failure → discard. |
 | ND-0302 | Response binding verification | UNAFFECTED | Nonce matching unchanged. |
 | ND-0303 | Sequence number management | UNAFFECTED | Sequence number semantics unchanged. |
-| ND-0304 | Nonce generation | **MODIFY** | WAKE nonce still random 8B. GCM nonce = SHA-256(`node_psk`)[0..4] ‖ frame_nonce(8B). |
+| ND-0304 | Nonce generation | **MODIFY** | WAKE nonce still random 8B. GCM nonce = SHA-256(`node_psk`)[0..3] ‖ msg_type(1B) ‖ frame_nonce(8B). |
 | ND-0905 | NODE_PROVISION handling | UNAFFECTED | Node parses `encrypted_payload` as opaque blob. Format change is transparent. |
 | ND-0906 | NODE_PROVISION NVS persistence | UNAFFECTED | Same NVS keys stored. |
 | ND-0909 | PEER_REQUEST frame construction | **MODIFY (major)** | Frame encrypted with `phone_psk` (not `node_psk`). Node needs `phone_psk` and phone's `key_hint` from provisioning, OR the phone provides the complete pre-built PEER_REQUEST frame as the opaque blob. |
@@ -271,7 +271,7 @@ This is the **most heavily affected crate**. The frame codec is the core of `son
 | `HmacProvider` trait | **RETIRE or MODIFY** | No longer used for frame authentication. May be retained for backward compat or removed entirely. |
 | `Sha256Provider` trait | UNAFFECTED | Still needed for `key_hint` derivation. |
 | Frame codec (encode/decode) | **MODIFY (major)** | Replace HMAC computation/verification with AES-256-GCM encrypt/decrypt. New trait: `AeadProvider` (or similar). |
-| GCM nonce construction | **NEW** | `gcm_nonce` = SHA-256(psk)[0..4] ‖ frame_nonce(8B). Must be computed in codec. |
+| GCM nonce construction | **NEW** | `gcm_nonce` = SHA-256(psk)[0..3] ‖ msg_type(1B) ‖ frame_nonce(8B). Must be computed in codec. |
 | Frame overhead constants | **MODIFY** | AUTH_TAG_SIZE: 32 → 16. FRAME_OVERHEAD: 43 → 27. |
 | `msg_type` dispatch | MODIFY | PEER_REQUEST (0x05) uses different PSK (`phone_psk`) than other messages. |
 
@@ -317,7 +317,7 @@ This is the **most heavily affected crate**. The frame codec is the core of `son
 **NEW-FRAME-001**: All ESP-NOW frames MUST use AES-256-GCM authenticated encryption:
 - **Header (cleartext, used as AAD):** `key_hint`[2B] ‖ `msg_type`[1B] ‖ `nonce`[8B] — 11 bytes total.
 - **Body:** AES-256-GCM ciphertext ‖ GCM tag[16B].
-- **GCM nonce (12B):** SHA-256(psk)[0..4] ‖ frame_nonce[8B].
+- **GCM nonce (12B):** SHA-256(psk)[0..3] ‖ msg_type[1B] ‖ frame_nonce[8B].
 - **Key:** PSK identified by `key_hint`.
 - **AAD:** Full 11-byte header.
 
@@ -327,9 +327,9 @@ Frame on wire: `header[11] ‖ ciphertext[variable] ‖ tag[16]`.
 
 **NEW-FRAME-002**: The 12-byte GCM nonce MUST be constructed as:
 ```
-gcm_nonce = SHA-256(psk)[0..4] ‖ frame_nonce[8]
+gcm_nonce = SHA-256(psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]
 ```
-Where `frame_nonce` is the 8-byte value from the frame header (random for WAKE/PEER_REQUEST, sequence number for post-WAKE messages). The 4-byte PSK-derived prefix ensures nonce uniqueness across different PSKs even if frame nonces collide.
+Where `frame_nonce` is the 8-byte value from the frame header (random for WAKE/PEER_REQUEST, sequence number for post-WAKE messages) and `msg_type` is the 1-byte message type from the header. Including `msg_type` ensures that request/response pairs sharing the same `frame_nonce` produce distinct GCM nonces. The 3-byte PSK-derived prefix makes cross-key nonce collisions extremely unlikely even if frame nonces collide, but does not remove the requirement for per-PSK nonce uniqueness.
 
 ### 3.3  Per-Message PSK Assignment
 

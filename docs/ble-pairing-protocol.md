@@ -463,7 +463,7 @@ The gateway performs these steps **in order**.  Failure at any step causes **sil
 
 1. **Parse header.** Extract key_hint, verify msg_type = 0x05.  If not → discard.
 2. **Look up phone PSK.**  The `key_hint` in the PEER_REQUEST header identifies a phone PSK (not a node PSK).  Look up candidate phone PSKs matching the `key_hint`.  If no candidates (or all revoked) → discard.
-3. **Decrypt outer frame.**  For each candidate `phone_psk`, construct `gcm_nonce` = `SHA-256(phone_psk)[0..4] ‖ frame_nonce[8]` and attempt AES-256-GCM-Open (key = `phone_psk`, nonce = `gcm_nonce`, aad = 11-byte header).  If any decryption succeeds → accept that PSK.  If none succeed → discard.
+3. **Decrypt outer frame.**  For each candidate `phone_psk`, construct `gcm_nonce` = `SHA-256(phone_psk)[0..3] ‖ msg_type ‖ frame_nonce[8]` and attempt AES-256-GCM-Open (key = `phone_psk`, nonce = `gcm_nonce`, aad = 11-byte header).  If any decryption succeeds → accept that PSK.  If none succeed → discard.
 4. **Parse CBOR.**  Extract `encrypted_payload` (key 1, bstr) from the decrypted CBOR payload.  If missing or malformed → discard.
 5. **Decrypt inner payload.**
    - Extract `nonce[12] ‖ ciphertext[...]` from `encrypted_payload`.
@@ -609,7 +609,7 @@ For even higher assurance, BLE Passkey Entry can be used in place of Numeric Com
 | `PEER_REQUEST` ESP-NOW msg_type | 0x05 | Node → Gateway. |
 | `PEER_ACK` ESP-NOW msg_type | 0x84 | Gateway → Node. |
 | Inner payload AAD | `"sonde-pairing-v2"` | UTF-8 bytes, no null terminator. |
-| GCM nonce prefix | `SHA-256(psk)[0..4]` | First 4 bytes of SHA-256(psk). |
+| GCM nonce prefix | `SHA-256(psk)[0..3]` | First 3 bytes of SHA-256(psk), followed by `msg_type` byte. |
 | AES-256-GCM nonce | 12 bytes | |
 | AES-256-GCM tag | 16 bytes | |
 | PSK (phone and node) | 32 bytes | 256-bit. |

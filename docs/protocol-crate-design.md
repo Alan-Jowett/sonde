@@ -155,7 +155,7 @@ pub fn encode_frame(
 ```
 
 1. Serialize header to 11 bytes.
-2. Construct the 12-byte GCM nonce: `SHA-256(psk)[0..4] ‖ header.nonce` (8 bytes).
+2. Construct the 12-byte GCM nonce: `SHA-256(psk)[0..3] ‖ header.msg_type ‖ header.nonce` (8 bytes).
 3. Encrypt the payload with AES-256-GCM: `aead.seal(psk, &gcm_nonce, &header_bytes, payload_cbor)` — the 11-byte header is the AAD.
 4. Return `header || ciphertext || tag` (total ≤ `MAX_FRAME_SIZE`).
 
@@ -191,7 +191,7 @@ pub fn open_frame(
 ) -> Result<Vec<u8>, DecodeError>
 ```
 
-1. Construct the 12-byte GCM nonce: `SHA-256(psk)[0..4] ‖ frame.header.nonce`.
+1. Construct the 12-byte GCM nonce: `SHA-256(psk)[0..3] ‖ frame.header.msg_type ‖ frame.header.nonce`.
 2. Serialize the header to 11 bytes (AAD).
 3. Call `aead.open(psk, &gcm_nonce, &header_bytes, &[ciphertext ‖ tag])`.
 4. On success, return the decrypted plaintext CBOR bytes.

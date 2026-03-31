@@ -523,7 +523,7 @@ The gateway SHOULD accept `LOG` messages from handlers and route them through th
 **Source:** README § Authentication
 
 **Description:**  
-The gateway MUST authenticate and encrypt every inbound and outbound ESP-NOW frame using AES-256-GCM. GCM nonce = `SHA-256(psk)[0..4] ‖ frame_nonce[8]` (12 bytes). The 11-byte header is used as Additional Authenticated Data (AAD). The PSK is determined by message type: `node_psk` for WAKE, COMMAND, APP_DATA, APP_DATA_REPLY; `phone_psk` for PEER_REQUEST.
+The gateway MUST authenticate and encrypt every inbound and outbound ESP-NOW frame using AES-256-GCM. GCM nonce = `SHA-256(psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]` (12 bytes). The 11-byte header is used as Additional Authenticated Data (AAD). The PSK is determined by message type: `node_psk` for WAKE, COMMAND, APP_DATA, APP_DATA_REPLY; `phone_psk` for PEER_REQUEST.
 
 **Acceptance criteria:**
 

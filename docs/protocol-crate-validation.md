@@ -124,7 +124,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Procedure:**
 1. Encode a frame.
 2. Flip one bit in the ciphertext portion of the raw bytes.
-3. Call `decode_frame()` with the correct PSK — assert it succeeds.
+3. Call `decode_frame(raw)` — assert it succeeds.
 4. Call `open_frame()` with the correct PSK.
 5. Assert: `open_frame()` returns `DecodeError::AuthenticationFailed`.
 
@@ -215,9 +215,10 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 **Procedure:**
 1. Construct an invalid CBOR payload (e.g., raw bytes `[0xFF, 0xFF]`).
-2. Build a frame for a WAKE message (`msg_type = MSG_WAKE`) with a valid header and AES-256-GCM encryption applied over the header + these invalid CBOR bytes, so that `decode_frame()` succeeds and yields `MSG_WAKE` and the decrypted payload unchanged.
-3. Call `NodeMessage::decode(MSG_WAKE, &payload)`.
-4. Assert: returns `DecodeError::CborError`.
+2. Build a frame for a WAKE message (`msg_type = MSG_WAKE`) with a valid header and AES-256-GCM encryption applied over the header + these invalid CBOR bytes, such that `decode_frame()` parses the frame successfully.
+3. Call `open_frame()` on the parsed frame to obtain the decrypted (but still invalid) plaintext bytes.
+4. Pass the plaintext bytes to `NodeMessage::decode(MSG_WAKE, &payload)`.
+5. Assert: returns `DecodeError::CborError`.
 
 ---
 
@@ -234,12 +235,12 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ### T-P019d  GCM nonce construction
 
-**Validates:** protocol.md §7.1 (AES-256-GCM nonce derivation — `gcm_nonce = SHA-256(PSK)[0..4] ‖ frame_nonce`)
+**Validates:** protocol.md §7.1 (AES-256-GCM nonce derivation — `gcm_nonce = SHA-256(PSK)[0..3] ‖ msg_type ‖ frame_nonce`)
 
 **Procedure:**
 1. Choose a known PSK (e.g., `[0x42u8; 32]`) and compute `SHA-256(PSK)`.
-2. Choose a known 8-byte frame nonce (e.g., `0xDEADBEEFCAFEBABE`).
-3. Construct the expected 12-byte GCM nonce: `SHA-256(PSK)[0..4] ‖ frame_nonce.to_be_bytes()`.
+2. Choose a known 8-byte frame nonce (e.g., `0xDEADBEEFCAFEBABE`) and a `msg_type` (e.g., `MSG_WAKE = 0x01`).
+3. Construct the expected 12-byte GCM nonce: `SHA-256(PSK)[0..3] ‖ msg_type ‖ frame_nonce.to_be_bytes()`.
 4. Encode a frame using `encode_frame()` with that PSK and frame nonce.
 5. Manually derive the AES-256-GCM key from the PSK and decrypt the ciphertext with the expected 12-byte nonce and the header as AAD.
 6. Assert: decryption succeeds, confirming the nonce was constructed correctly.
@@ -253,11 +254,13 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Procedure:**
 1. Choose two distinct PSKs: `phone_psk = [0xAAu8; 32]` and `node_psk = [0xBBu8; 32]`.
 2. Encode a PEER_REQUEST frame using `phone_psk`.
-3. Decode the frame with `phone_psk`. Assert: `decode_frame()` succeeds.
-4. Attempt to decode the same frame with `node_psk`. Assert: `decode_frame()` returns `DecodeError::AuthenticationFailed`.
-5. Encode a WAKE frame using `node_psk`.
-6. Decode the frame with `node_psk`. Assert: `decode_frame()` succeeds.
-7. Attempt to decode the same frame with `phone_psk`. Assert: `decode_frame()` returns `DecodeError::AuthenticationFailed`.
+3. Call `decode_frame(raw)` on the encoded frame. Assert: `decode_frame(raw)` succeeds and returns a decoded frame independent of the PSK.
+4. Call `open_frame(decoded, phone_psk, …)` on the decoded PEER_REQUEST frame. Assert: `open_frame` succeeds.
+5. Call `open_frame(decoded, node_psk, …)` on the same decoded PEER_REQUEST frame. Assert: `open_frame` returns `DecodeError::AuthenticationFailed`.
+6. Encode a WAKE frame using `node_psk`.
+7. Call `decode_frame(raw)` on the WAKE frame. Assert: succeeds.
+8. Call `open_frame(decoded, node_psk, …)`. Assert: `open_frame` succeeds.
+9. Call `open_frame(decoded, phone_psk, …)`. Assert: `open_frame` returns `DecodeError::AuthenticationFailed`.
 
 ---
 
@@ -703,8 +706,8 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 2. Encode to CBOR.
 3. Build `FrameHeader` with appropriate msg_type.
 4. Call `encode_frame()` with PSK.
-5. Call `decode_frame()` on the result with PSK.
-6. Assert: decryption and authentication succeed.
+5. Call `decode_frame()` on the result.
+6. Call `open_frame()` with PSK. Assert: decryption and authentication succeed.
 7. Call `NodeMessage::decode()` on the decrypted payload → assert fields match.
 
 ---

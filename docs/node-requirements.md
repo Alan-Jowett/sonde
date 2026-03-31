@@ -189,7 +189,7 @@ The node MUST sleep for the configured wake interval after completing a wake cyc
 **Source:** protocol.md §7.1, security.md §3
 
 **Description:**  
-The node MUST encrypt and authenticate every outbound frame with AES-256-GCM: `gcm_nonce = SHA-256(node_psk)[0..4] ‖ frame_nonce[8]`, `ciphertext, tag = AES-256-GCM-Seal(key=node_psk, nonce=gcm_nonce, aad=header, plaintext=payload)`, and append the 16-byte GCM tag.
+The node MUST encrypt and authenticate every outbound frame with AES-256-GCM: `gcm_nonce = SHA-256(node_psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]`, `ciphertext, tag = AES-256-GCM-Seal(key=node_psk, nonce=gcm_nonce, aad=header, plaintext=payload)`, and append the 16-byte GCM tag.
 
 **Acceptance criteria:**
 
@@ -252,7 +252,7 @@ After receiving a valid COMMAND response, the node MUST use the `starting_seq` v
 **Source:** protocol.md §7.4, security.md §4.2
 
 **Description:**  
-The node MUST generate the WAKE nonce using the hardware random number generator. The nonce MUST NOT be a constant, a counter, or derived from predictable state. For AES-256-GCM, the 12-byte GCM nonce is constructed as: `SHA-256(node_psk)[0..4] ‖ frame_nonce[8]`, where `frame_nonce` is the 8-byte nonce from the frame header.
+The node MUST generate the WAKE nonce using the hardware random number generator. The nonce MUST NOT be a constant, a counter, or derived from predictable state. For AES-256-GCM, the 12-byte GCM nonce is constructed as: `SHA-256(node_psk)[0..3] ‖ msg_type[1] ‖ frame_nonce[8]`, where `msg_type` is the 1-byte message type and `frame_nonce` is the 8-byte nonce from the frame header.
 
 **Acceptance criteria:**
 

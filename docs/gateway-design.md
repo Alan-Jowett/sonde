@@ -1458,7 +1458,7 @@ creation functionality — only the parsing and validation modules.
 
 `sonde-admin deploy <bundle-path>` executes the following steps:
 
-1. **Parse and validate** — call `sonde_bundle::validate_bundle()` on the
+1. **Parse and validate** — call `sonde_bundle::archive::validate_bundle()` on the
    `.sondeapp` file.  Abort on any validation error.
 2. **Extract** — extract the bundle to a temporary directory.
 3. **Deploy handler files** — if the bundle contains handler files:
@@ -1594,7 +1594,7 @@ Each step checks for existing state before acting:
 ### 20.5  Validate command (GW-1603)
 
 `sonde-admin validate <bundle-path>` delegates to
-`sonde_bundle::validate_bundle()` and prints results.  This command does NOT
+`sonde_bundle::archive::validate_bundle()` and prints results.  This command does NOT
 contact the gateway — it is fully offline.
 
 ### 20.6  Dry-run mode (GW-1604)

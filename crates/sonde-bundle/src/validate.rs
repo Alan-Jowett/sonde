@@ -300,6 +300,19 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
                         wd
                     ),
                 });
+            } else {
+                let wd_path = source_dir.join(wd);
+                if !wd_path.exists() {
+                    result.errors.push(ValidationError {
+                        rule: "handler.working_dir",
+                        message: format!("working directory not found: `{}`", wd),
+                    });
+                } else if !wd_path.is_dir() {
+                    result.errors.push(ValidationError {
+                        rule: "handler.working_dir",
+                        message: format!("working_dir must be a directory: `{}`", wd),
+                    });
+                }
             }
         }
     }
@@ -826,5 +839,68 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.message.contains("duplicate handler")));
+    }
+
+    #[test]
+    fn test_handler_working_dir_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        let mut m = minimal_manifest();
+        m.handlers.push(HandlerEntry {
+            program: "test-prog".to_string(),
+            command: "python3".to_string(),
+            args: vec![],
+            working_dir: Some("handler/nonexistent".to_string()),
+            reply_timeout_ms: None,
+        });
+        let r = validate_manifest(&m, dir.path());
+        assert!(!r.is_valid());
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.message.contains("working directory not found")));
+    }
+
+    #[test]
+    fn test_handler_working_dir_is_file() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        // Create a file where working_dir expects a directory
+        std::fs::write(dir.path().join("not-a-dir"), b"data").unwrap();
+        let mut m = minimal_manifest();
+        m.handlers.push(HandlerEntry {
+            program: "test-prog".to_string(),
+            command: "python3".to_string(),
+            args: vec![],
+            working_dir: Some("not-a-dir".to_string()),
+            reply_timeout_ms: None,
+        });
+        let r = validate_manifest(&m, dir.path());
+        assert!(!r.is_valid());
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.message.contains("must be a directory")));
+    }
+
+    #[test]
+    fn test_handler_working_dir_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        std::fs::create_dir_all(dir.path().join("handler")).unwrap();
+        let mut m = minimal_manifest();
+        m.handlers.push(HandlerEntry {
+            program: "test-prog".to_string(),
+            command: "python3".to_string(),
+            args: vec![],
+            working_dir: Some("handler".to_string()),
+            reply_timeout_ms: None,
+        });
+        let r = validate_manifest(&m, dir.path());
+        assert!(
+            r.is_valid(),
+            "valid working_dir should pass: {:?}",
+            r.errors
+        );
     }
 }

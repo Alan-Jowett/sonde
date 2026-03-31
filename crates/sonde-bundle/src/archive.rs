@@ -46,12 +46,19 @@ fn check_path_safety(path: &Path) -> Result<(), BundleError> {
 }
 
 /// Extract a `.sondeapp` archive to a target directory.
+///
+/// Extraction uses a staging directory to ensure `target_dir` is not left
+/// in a partially-extracted state if a later entry fails validation.
 pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest, BundleError> {
     let file = std::fs::File::open(bundle_path)?;
     let gz = GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
     let mut total_size: u64 = 0;
     let mut entry_count: usize = 0;
+
+    // Extract into a staging directory to avoid partial extraction on error.
+    std::fs::create_dir_all(target_dir)?;
+    let staging_dir = tempfile::tempdir_in(target_dir)?;
 
     for entry_result in archive
         .entries()
@@ -92,7 +99,9 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
         let entry_type = entry.header().entry_type();
         match entry_type {
             tar::EntryType::Regular | tar::EntryType::Directory => {
-                entry.unpack_in(target_dir).map_err(BundleError::Io)?;
+                entry
+                    .unpack_in(staging_dir.path())
+                    .map_err(BundleError::Io)?;
             }
             // Internal tar metadata — consumed by the reader, skip unpacking
             tar::EntryType::GNULongName | tar::EntryType::GNULongLink => {}
@@ -106,6 +115,13 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
                 )));
             }
         }
+    }
+
+    // All entries validated. Move contents from staging to target_dir.
+    for item in std::fs::read_dir(staging_dir.path())? {
+        let item = item?;
+        let dest = target_dir.join(item.file_name());
+        std::fs::rename(item.path(), &dest)?;
     }
 
     // Parse manifest
@@ -226,6 +242,7 @@ pub fn inspect_bundle(bundle_path: &Path) -> Result<BundleInfo, BundleError> {
     let mut files = Vec::new();
     let mut manifest_yaml = None;
     let mut entry_count: usize = 0;
+    let mut total_size: u64 = 0;
 
     for entry_result in archive
         .entries()
@@ -239,6 +256,15 @@ pub fn inspect_bundle(bundle_path: &Path) -> Result<BundleInfo, BundleError> {
             return Err(BundleError::InvalidArchive(format!(
                 "archive exceeds maximum entry count ({})",
                 MAX_ENTRY_COUNT
+            )));
+        }
+
+        // Enforce cumulative size limit to prevent decompression bomb DoS
+        total_size = total_size.saturating_add(entry.size());
+        if total_size > MAX_EXTRACT_SIZE {
+            return Err(BundleError::InvalidArchive(format!(
+                "archive exceeds maximum extracted size ({} bytes)",
+                MAX_EXTRACT_SIZE
             )));
         }
 

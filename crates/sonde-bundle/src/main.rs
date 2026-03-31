@@ -92,17 +92,13 @@ fn cmd_create(
 fn cmd_validate(bundle: &std::path::Path) -> Result<(), BundleError> {
     let result = archive::validate_bundle(bundle)?;
 
-    for w in &result.warnings {
-        eprintln!("warning [{}]: {}", w.rule, w.message);
-    }
-
     if result.is_valid() {
+        for w in &result.warnings {
+            eprintln!("warning [{}]: {}", w.rule, w.message);
+        }
         println!("Bundle is valid.");
         Ok(())
     } else {
-        for e in &result.errors {
-            eprintln!("error [{}]: {}", e.rule, e.message);
-        }
         Err(BundleError::ValidationFailed(result))
     }
 }

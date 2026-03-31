@@ -171,9 +171,9 @@ SERIAL_PORT=/dev/ttyACM0
 Generate a master key and add it to the service configuration:
 
 ```sh
-sudo openssl rand -hex 32 > /etc/sonde/master-key.hex
-sudo chmod 640 /etc/sonde/master-key.hex
-sudo chown root:sonde /etc/sonde/master-key.hex
+# Atomically create the key file with restrictive permissions so the
+# key material is never world-readable, even transiently.
+sudo sh -c 'openssl rand -hex 32 | install -m 640 -o root -g sonde /dev/stdin /etc/sonde/master-key.hex'
 ```
 
 Create a systemd override to add the master key file:
@@ -486,9 +486,10 @@ journalctl -u sonde-gateway -p err
 To change the level, edit the environment file and restart:
 
 ```sh
-# Remove any existing RUST_LOG line, then set a new one
-sudo sed -i '/^RUST_LOG=/d' /etc/sonde/environment
-echo 'RUST_LOG=sonde_gateway=info' | sudo tee -a /etc/sonde/environment >/dev/null
+# Edit the environment file (preserves ownership/permissions unlike sed -i)
+sudoedit /etc/sonde/environment
+# In the editor: set the RUST_LOG line to the desired level, e.g.:
+#   RUST_LOG=sonde_gateway=info
 sudo systemctl restart sonde-gateway
 ```
 
@@ -526,10 +527,15 @@ The gateway service writes to two log sinks:
 # Set the desired log level at the machine scope (persists across restarts)
 [Environment]::SetEnvironmentVariable("RUST_LOG", "sonde_gateway=debug", "Machine")
 
-# Restart the service to pick up the new environment
+# Restart the service — the gateway reads RUST_LOG at startup, so a
+# restart is required for the new value to take effect.
 sc stop sonde-gateway
 sc start sonde-gateway
 ```
+
+> **Note:** The gateway does not currently support runtime log-level
+> reload via `sc control sonde-gateway paramchange`. Changing
+> `RUST_LOG` always requires a service restart.
 
 Release builds default to `sonde_gateway=warn`. Set
 `RUST_LOG=sonde_gateway=info` for lifecycle events during initial

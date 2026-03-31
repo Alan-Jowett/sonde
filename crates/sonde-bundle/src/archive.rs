@@ -91,10 +91,11 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
         // Only allow regular files and directories; reject all special types.
         let entry_type = entry.header().entry_type();
         match entry_type {
-            tar::EntryType::Regular
-            | tar::EntryType::Directory
-            | tar::EntryType::GNULongName
-            | tar::EntryType::GNULongLink => {}
+            tar::EntryType::Regular | tar::EntryType::Directory => {
+                entry.unpack_in(target_dir).map_err(BundleError::Io)?;
+            }
+            // Internal tar metadata — consumed by the reader, skip unpacking
+            tar::EntryType::GNULongName | tar::EntryType::GNULongLink => {}
             tar::EntryType::Symlink | tar::EntryType::Link => {
                 return Err(BundleError::SymlinkNotAllowed(path_str));
             }
@@ -105,8 +106,6 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
                 )));
             }
         }
-
-        entry.unpack_in(target_dir).map_err(BundleError::Io)?;
     }
 
     // Parse manifest

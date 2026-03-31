@@ -1462,24 +1462,46 @@ creation functionality — only the parsing and validation modules.
    `.sondeapp` file.  Abort on any validation error.
 2. **Extract** — extract the bundle to a temporary directory.
 3. **Deploy handler files** — if the bundle contains handler files:
-   a. Create a permanent handler directory at
+   a. Determine the permanent handler directory:
       `<gateway-data-dir>/handlers/<app-name>-<version>/`.
-      If the directory already exists (from a previous deploy), remove its
-      contents first (overwrite-on-conflict).
-   b. Copy all files from the extracted `handler/` directory to the
-      permanent handler directory.
-   c. Rewrite handler `working_dir` and file arguments to reference the
+      `sonde-admin` SHOULD compute a stable content hash for the extracted
+      `handler/` directory (e.g., over relative paths and file bytes) and
+      persist this hash in gateway- or admin-managed metadata alongside the
+      app version.
+   b. If the permanent handler directory already exists and the previously
+      recorded content hash for this app/version matches the newly computed
+      hash, `sonde-admin` MUST treat the handler deployment as idempotent:
+      it SHOULD NOT delete or recopy files, and it SHOULD log
+      "skipped (already deployed)" for the handler files step.
+   c. If the directory does not exist, or the stored hash differs from the
+      newly computed hash, create the permanent handler directory (creating
+      parent directories as needed).  If the directory already exists from
+      a previous, different deploy, remove its contents first
+      (overwrite-on-conflict), then copy all files from the extracted
+      `handler/` directory to the permanent handler directory.  Update the
+      stored content hash to the newly computed value.
+   d. Rewrite handler `working_dir` and file arguments to reference the
       permanent path.
 4. **Ingest programs** — for each program in the manifest:
-   a. Read the ELF binary from the extracted directory.
-   b. Call the `IngestProgram` gRPC with the ELF and profile.
-   c. Record the mapping: `program_name → program_hash` from the response.
-   d. For idempotent re-deploys, `sonde-admin` MUST treat repeated ingest
-      of identical ELF content as success.  The current gateway
-      implementation performs an upsert (`INSERT ... ON CONFLICT DO
-      UPDATE`) and always returns `Ok` for this call.  If a future gateway
-      version returns `ALREADY_EXISTS` for identical content, `sonde-admin`
-      MAY log "skipped (already ingested)" for that case.
+   a. Read the ELF binary from the extracted directory and compute its
+      content hash using the same algorithm the gateway uses to key stored
+      programs.
+   b. Before sending the ELF, query the gateway's program state (e.g., via
+      `ListPrograms`, `GetProgram`, or an equivalent lookup) to determine
+      whether a program with this content hash already exists.  If it
+      exists, record the mapping `program_name → program_hash`, log
+      "skipped (already ingested)", and MUST NOT call `IngestProgram` for
+      this program.
+   c. If no existing program with the same hash is found, call the
+      `IngestProgram` gRPC with the ELF and profile, and record the mapping:
+      `program_name → program_hash` from the response.
+   d. For gateways that implement `IngestProgram` as an upsert
+      (`INSERT ... ON CONFLICT DO UPDATE`) and always return `Ok`,
+      `sonde-admin` MUST still treat repeated ingest of identical ELF
+      content as success.  If the gateway instead returns `ALREADY_EXISTS`
+      for identical content, `sonde-admin` MAY rely on that signal rather
+      than a prior lookup and SHOULD log "skipped (already ingested)" in
+      that case.
 5. **Configure handlers** — for each handler in the manifest:
    a. Resolve `handler.program` name to the program hash from step 4.
    b. Call the `AddHandler` gRPC with the resolved hash, command, args
@@ -1508,21 +1530,31 @@ creation functionality — only the parsing and validation modules.
 
 Each step checks for existing state before acting:
 
-- **IngestProgram:** The gateway performs an upsert: it computes the content
-  hash from the ELF, and `store_program` uses `INSERT ... ON CONFLICT DO
-  UPDATE` — re-ingesting identical content always returns `Ok` with the
-  same program hash.  No `ALREADY_EXISTS` status is returned.  `sonde-admin`
-  treats any successful ingest as idempotent (log "ingested" regardless of
-  whether the content was new or already stored).
+- **Handler files:** `sonde-admin` computes a content hash over the
+  extracted `handler/` directory and compares it to the hash stored from
+  a previous deploy of the same app/version.  If the hashes match, the
+  handler files step is skipped entirely (no file I/O) and logs
+  "skipped (already deployed)".  If the hashes differ, the permanent
+  handler directory is replaced with the new contents.
+- **IngestProgram:** `sonde-admin` computes the ELF content hash locally
+  and checks the gateway's stored programs (via `ListPrograms` or
+  `GetProgram`) before calling `IngestProgram`.  If a program with
+  the same hash already exists, the call is skipped and
+  "skipped (already ingested)" is logged.  The current gateway
+  implementation performs an upsert (`INSERT ... ON CONFLICT DO UPDATE`)
+  and always returns `Ok` — `sonde-admin` SHOULD still pre-check to
+  avoid redundant I/O and to emit the correct "skipped" report.
 - **AddHandler:** The gateway returns `ALREADY_EXISTS` if a handler for
   the same program hash is already configured.  The deploy command then
   queries existing handler configuration via `ListHandlers` and compares
-  fields.  If identical, skip.  If the existing handler has DIFFERENT
-  configuration (different command/args), the deploy command warns the user
-  and does NOT overwrite (preserving the user's manual changes).
+  fields.  If identical, skip and log "skipped (already configured)".
+  If the existing handler has DIFFERENT configuration (different
+  command/args), the deploy command warns the user and does NOT overwrite
+  (preserving the user's manual changes).
 - **AssignProgram:** The deploy command calls `GetNode` to check the node's
-  current `assigned_program_hash`.  If it matches, skip.  If the node
-  does not exist (not registered), warn and continue with the next node.
+  current `assigned_program_hash`.  If it matches, skip and log
+  "skipped (already assigned)".  If the node does not exist (not
+  registered), warn and continue with the next node.
 
 ### 20.4  Undeploy command (GW-1602)
 

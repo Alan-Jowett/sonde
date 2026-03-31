@@ -304,7 +304,7 @@ pub enum BundleError {
     /// I/O error reading or writing files.
     Io(std::io::Error),
     /// YAML parse error.
-    Yaml(serde_yaml::Error),
+    Yaml(String),
     /// Archive is not valid gzip/tar.
     InvalidArchive(String),
     /// Path traversal detected in archive entry.

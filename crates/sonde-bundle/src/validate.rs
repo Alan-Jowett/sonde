@@ -344,10 +344,10 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
             }
             for sensor in &hw.sensors {
                 if let Some(ref label) = sensor.label {
-                    if label.chars().count() > 64 {
+                    if label.len() > 64 {
                         result.errors.push(ValidationError {
                             rule: "node.hardware.sensors.label",
-                            message: "sensor label must not exceed 64 characters".to_string(),
+                            message: "sensor label must not exceed 64 bytes UTF-8".to_string(),
                         });
                     }
                 }
@@ -746,7 +746,7 @@ mod tests {
         });
         let r = validate_manifest(&m, dir.path());
         assert!(!r.is_valid());
-        assert!(r.errors.iter().any(|e| e.message.contains("64 characters")));
+        assert!(r.errors.iter().any(|e| e.message.contains("64 bytes")));
     }
 
     #[test]

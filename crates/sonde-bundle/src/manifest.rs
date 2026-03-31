@@ -28,11 +28,27 @@ pub struct ProgramEntry {
 }
 
 /// Verification profile for a BPF program.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VerificationProfile {
     Resident,
     Ephemeral,
+}
+
+impl<'de> Deserialize<'de> for VerificationProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "resident" => Ok(VerificationProfile::Resident),
+            "ephemeral" => Ok(VerificationProfile::Ephemeral),
+            other => Err(serde::de::Error::custom(format!(
+                "unknown verification profile `{other}`, expected `resident` or `ephemeral`"
+            ))),
+        }
+    }
 }
 
 /// A handler process definition.

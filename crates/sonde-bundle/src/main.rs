@@ -3,7 +3,7 @@
 
 //! CLI entry point for `sonde-bundle`.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use sonde_bundle::archive;
 use sonde_bundle::error::BundleError;
 use sonde_bundle::manifest::Manifest;
@@ -15,6 +15,13 @@ use std::process;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+/// Output format for the inspect command.
+#[derive(Clone, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -36,9 +43,9 @@ enum Commands {
     Inspect {
         /// Path to .sondeapp file
         bundle: PathBuf,
-        /// Output format: text or json
+        /// Output format
         #[arg(long, default_value = "text")]
-        format: String,
+        format: OutputFormat,
     },
 }
 
@@ -48,7 +55,7 @@ fn main() {
     let result = match cli.command {
         Commands::Create { source_dir, output } => cmd_create(&source_dir, output.as_deref()),
         Commands::Validate { bundle } => cmd_validate(&bundle),
-        Commands::Inspect { bundle, format } => cmd_inspect(&bundle, &format),
+        Commands::Inspect { bundle, format } => cmd_inspect(&bundle, format),
     };
 
     if let Err(e) = result {
@@ -100,99 +107,107 @@ fn cmd_validate(bundle: &std::path::Path) -> Result<(), BundleError> {
     }
 }
 
-fn cmd_inspect(bundle: &std::path::Path, format: &str) -> Result<(), BundleError> {
+fn cmd_inspect(bundle: &std::path::Path, format: OutputFormat) -> Result<(), BundleError> {
     let info = archive::inspect_bundle(bundle)?;
 
-    if format == "json" {
-        let json = serde_json::json!({
-            "name": &info.manifest.name,
-            "version": &info.manifest.version,
-            "schema_version": info.manifest.schema_version,
-            "description": &info.manifest.description,
-            "archive_size": info.archive_size,
-            "programs": info.manifest.programs.iter().map(|p| {
-                serde_json::json!({
-                    "name": p.name,
-                    "path": p.path,
-                    "profile": format!("{}", p.profile),
-                })
-            }).collect::<Vec<_>>(),
-            "handlers": info.manifest.handlers.iter().map(|h| {
-                serde_json::json!({
-                    "program": h.program,
-                    "command": h.command,
-                    "args": h.args,
-                })
-            }).collect::<Vec<_>>(),
-            "nodes": info.manifest.nodes.iter().map(|n| {
-                serde_json::json!({
-                    "name": n.name,
-                    "program": n.program,
-                })
-            }).collect::<Vec<_>>(),
-            "files": info.files.iter().map(|f| {
-                serde_json::json!({
-                    "path": f.path,
-                    "size": f.size,
-                })
-            }).collect::<Vec<_>>(),
-        });
-        println!("{}", serde_json::to_string_pretty(&json).unwrap());
-    } else {
-        println!("Bundle: {} v{}", info.manifest.name, info.manifest.version);
-        if let Some(ref desc) = info.manifest.description {
-            println!("Description: {desc}");
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "name": &info.manifest.name,
+                "version": &info.manifest.version,
+                "schema_version": info.manifest.schema_version,
+                "description": &info.manifest.description,
+                "archive_size": info.archive_size,
+                "programs": info.manifest.programs.iter().map(|p| {
+                    serde_json::json!({
+                        "name": p.name,
+                        "path": p.path,
+                        "profile": p.profile.to_string(),
+                    })
+                }).collect::<Vec<_>>(),
+                "handlers": info.manifest.handlers.iter().map(|h| {
+                    serde_json::json!({
+                        "program": h.program,
+                        "command": h.command,
+                        "args": h.args,
+                    })
+                }).collect::<Vec<_>>(),
+                "nodes": info.manifest.nodes.iter().map(|n| {
+                    serde_json::json!({
+                        "name": n.name,
+                        "program": n.program,
+                    })
+                }).collect::<Vec<_>>(),
+                "files": info.files.iter().map(|f| {
+                    serde_json::json!({
+                        "path": f.path,
+                        "size": f.size,
+                    })
+                }).collect::<Vec<_>>(),
+            });
+            let json_str = serde_json::to_string_pretty(&json).map_err(|e| {
+                BundleError::Io(std::io::Error::other(format!(
+                    "JSON serialization failed: {e}"
+                )))
+            })?;
+            println!("{json_str}");
         }
-        println!("Schema version: {}", info.manifest.schema_version);
-        println!("Archive size: {} bytes", info.archive_size);
-        println!();
-
-        println!("Programs:");
-        for p in &info.manifest.programs {
-            let size = info
-                .files
-                .iter()
-                .find(|f| f.path == p.path)
-                .map(|f| f.size)
-                .unwrap_or(0);
-            println!("  {} ({}, {} bytes)", p.name, p.profile, size);
-        }
-
-        if !info.manifest.handlers.is_empty() {
-            println!();
-            println!("Handlers:");
-            for h in &info.manifest.handlers {
-                let args = if h.args.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}", h.args.join(" "))
-                };
-                println!("  {} -> {}{}", h.program, h.command, args);
+        OutputFormat::Text => {
+            println!("Bundle: {} v{}", info.manifest.name, info.manifest.version);
+            if let Some(ref desc) = info.manifest.description {
+                println!("Description: {desc}");
             }
-        }
+            println!("Schema version: {}", info.manifest.schema_version);
+            println!("Archive size: {} bytes", info.archive_size);
+            println!();
 
-        println!();
-        println!("Nodes:");
-        for n in &info.manifest.nodes {
-            print!("  {} -> {}", n.name, n.program);
-            if let Some(ref hw) = n.hardware {
-                if !hw.sensors.is_empty() {
-                    let sensors: Vec<String> = hw
-                        .sensors
-                        .iter()
-                        .map(|s| {
-                            let label = s
-                                .label
-                                .as_deref()
-                                .map(|l| format!(" ({l})"))
-                                .unwrap_or_default();
-                            format!("{}@{}{}", s.sensor_type, s.id, label)
-                        })
-                        .collect();
-                    print!(" [{}]", sensors.join(", "));
+            println!("Programs:");
+            for p in &info.manifest.programs {
+                let size = info
+                    .files
+                    .iter()
+                    .find(|f| f.path == p.path)
+                    .map(|f| f.size)
+                    .unwrap_or(0);
+                println!("  {} ({}, {} bytes)", p.name, p.profile, size);
+            }
+
+            if !info.manifest.handlers.is_empty() {
+                println!();
+                println!("Handlers:");
+                for h in &info.manifest.handlers {
+                    let args = if h.args.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", h.args.join(" "))
+                    };
+                    println!("  {} -> {}{}", h.program, h.command, args);
                 }
             }
+
             println!();
+            println!("Nodes:");
+            for n in &info.manifest.nodes {
+                print!("  {} -> {}", n.name, n.program);
+                if let Some(ref hw) = n.hardware {
+                    if !hw.sensors.is_empty() {
+                        let sensors: Vec<String> = hw
+                            .sensors
+                            .iter()
+                            .map(|s| {
+                                let label = s
+                                    .label
+                                    .as_deref()
+                                    .map(|l| format!(" ({l})"))
+                                    .unwrap_or_default();
+                                format!("{}@{}{}", s.sensor_type, s.id, label)
+                            })
+                            .collect();
+                        print!(" [{}]", sensors.join(", "));
+                    }
+                }
+                println!();
+            }
         }
     }
 

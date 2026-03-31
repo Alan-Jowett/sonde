@@ -1577,8 +1577,9 @@ pub fn chunked_transfer_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
 ///
 /// Functionally identical to `run_wake_cycle` but encodes/decodes all
 /// radio frames using AES-256-GCM (AEAD) instead of HMAC-SHA256.  The
-/// HMAC provider is still required for BPF helper dispatch and for the
-/// PEER_ACK registration proof (ble-pairing-protocol.md §7.2).
+/// HMAC provider is still required for BPF helper dispatch; AEAD
+/// authentication replaces the explicit PEER_ACK registration proof
+/// field per `ble-pairing-protocol.md` §7.2.
 #[cfg(feature = "aes-gcm-codec")]
 #[allow(clippy::too_many_arguments)]
 pub fn run_wake_cycle_aead<T, S, I, A, H>(
@@ -1636,6 +1637,8 @@ where
     let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
 
     // 3a. PEER_REQUEST/PEER_ACK exchange via AEAD (ND-0909–ND-0913).
+    // TODO(#495 follow-up): pass phone_psk/phone_key_hint once BLE
+    // provisioning stores them (ble-pairing-protocol.md §6.6/§7.1).
     if !storage.read_reg_complete() {
         if let Some(encrypted_payload) = storage.read_peer_payload() {
             match peer_request_exchange_aead(
@@ -1647,7 +1650,6 @@ where
                 clock,
                 aead,
                 sha,
-                hmac,
             ) {
                 Ok(true) => {
                     // Registration complete — fall through to normal WAKE cycle.

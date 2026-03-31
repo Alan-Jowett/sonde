@@ -93,26 +93,29 @@ fn is_valid_program_name(name: &str) -> bool {
 }
 
 /// Check if a path is safe (relative, no parent-dir or prefix components).
-fn has_path_traversal(path: &str) -> bool {
-    let p = Path::new(path);
-    if p.is_absolute() {
+pub(crate) fn is_path_unsafe(path: &Path) -> bool {
+    if path.is_absolute() {
         return true;
     }
-    for component in p.components() {
+    for component in path.components() {
         match component {
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => return true,
             _ => {}
         }
     }
-    if path.starts_with('/') || path.starts_with('\\') {
+    let raw = path.as_os_str().as_encoded_bytes();
+    if !raw.is_empty() && (raw[0] == b'/' || raw[0] == b'\\') {
         return true;
     }
     // Reject Windows drive letters (e.g., "C:\foo") on any platform
-    let bytes = path.as_bytes();
-    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+    if raw.len() >= 2 && raw[1] == b':' && raw[0].is_ascii_alphabetic() {
         return true;
     }
     false
+}
+
+fn has_path_traversal(path: &str) -> bool {
+    is_path_unsafe(Path::new(path))
 }
 
 /// Validate a manifest against a source directory.
@@ -341,10 +344,10 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
             }
             for sensor in &hw.sensors {
                 if let Some(ref label) = sensor.label {
-                    if label.len() > 64 {
+                    if label.chars().count() > 64 {
                         result.errors.push(ValidationError {
                             rule: "node.hardware.sensors.label",
-                            message: "sensor label must not exceed 64 bytes".to_string(),
+                            message: "sensor label must not exceed 64 characters".to_string(),
                         });
                     }
                 }
@@ -743,7 +746,7 @@ mod tests {
         });
         let r = validate_manifest(&m, dir.path());
         assert!(!r.is_valid());
-        assert!(r.errors.iter().any(|e| e.message.contains("64 bytes")));
+        assert!(r.errors.iter().any(|e| e.message.contains("64 characters")));
     }
 
     #[test]

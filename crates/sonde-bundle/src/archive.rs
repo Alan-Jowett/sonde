@@ -31,28 +31,15 @@ pub struct BundleInfo {
 /// Maximum total extracted size (100 MB) to prevent decompression bombs.
 const MAX_EXTRACT_SIZE: u64 = 100 * 1024 * 1024;
 
+/// Maximum number of entries in an archive to prevent DoS via entry flooding.
+const MAX_ENTRY_COUNT: usize = 10_000;
+
+/// Maximum manifest size when reading from an archive (1 MB).
+const MAX_MANIFEST_SIZE: u64 = 1_048_576;
+
 /// Check an archive entry path for safety.
 fn check_path_safety(path: &Path) -> Result<(), BundleError> {
-    if path.is_absolute() {
-        return Err(BundleError::PathTraversal(path.display().to_string()));
-    }
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir
-            | std::path::Component::RootDir
-            | std::path::Component::Prefix(_) => {
-                return Err(BundleError::PathTraversal(path.display().to_string()));
-            }
-            _ => {}
-        }
-    }
-    // Reject paths starting with / or \ that may not parse as absolute on all platforms
-    let raw = path.as_os_str().as_encoded_bytes();
-    if !raw.is_empty() && (raw[0] == b'/' || raw[0] == b'\\') {
-        return Err(BundleError::PathTraversal(path.display().to_string()));
-    }
-    // Reject Windows drive letters (e.g., "C:\foo") on non-Windows platforms
-    if raw.len() >= 2 && raw[1] == b':' && raw[0].is_ascii_alphabetic() {
+    if crate::validate::is_path_unsafe(path) {
         return Err(BundleError::PathTraversal(path.display().to_string()));
     }
     Ok(())
@@ -64,6 +51,7 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
     let gz = GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
     let mut total_size: u64 = 0;
+    let mut entry_count: usize = 0;
 
     for entry_result in archive
         .entries()
@@ -72,6 +60,14 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
         let mut entry = entry_result.map_err(|e| {
             BundleError::InvalidArchive(format!("failed to read archive entry: {e}"))
         })?;
+
+        entry_count += 1;
+        if entry_count > MAX_ENTRY_COUNT {
+            return Err(BundleError::InvalidArchive(format!(
+                "archive exceeds maximum entry count ({})",
+                MAX_ENTRY_COUNT
+            )));
+        }
 
         // Check cumulative extracted size
         total_size = total_size.saturating_add(entry.size());
@@ -92,10 +88,22 @@ pub fn extract_bundle(bundle_path: &Path, target_dir: &Path) -> Result<Manifest,
 
         let path_str = path.to_string_lossy().to_string();
 
-        // Reject symlinks and hardlinks
+        // Only allow regular files and directories; reject all special types.
         let entry_type = entry.header().entry_type();
-        if entry_type == tar::EntryType::Symlink || entry_type == tar::EntryType::Link {
-            return Err(BundleError::SymlinkNotAllowed(path_str));
+        match entry_type {
+            tar::EntryType::Regular
+            | tar::EntryType::Directory
+            | tar::EntryType::GNULongName
+            | tar::EntryType::GNULongLink => {}
+            tar::EntryType::Symlink | tar::EntryType::Link => {
+                return Err(BundleError::SymlinkNotAllowed(path_str));
+            }
+            _ => {
+                return Err(BundleError::InvalidArchive(format!(
+                    "unsupported entry type for path: {}",
+                    path_str
+                )));
+            }
         }
 
         entry.unpack_in(target_dir).map_err(BundleError::Io)?;
@@ -154,9 +162,10 @@ pub fn create_bundle(source_dir: &Path, output_path: &Path) -> Result<BundleInfo
         }
     }
 
-    // Create archive
-    let output_file = std::fs::File::create(output_path)?;
-    let gz = GzEncoder::new(output_file, Compression::default());
+    // Create archive in a temporary file for atomic writes
+    let output_dir = output_path.parent().unwrap_or(Path::new("."));
+    let tmp_file = tempfile::NamedTempFile::new_in(output_dir)?;
+    let gz = GzEncoder::new(&tmp_file, Compression::default());
     let mut builder = tar::Builder::new(gz);
 
     // Sort files for deterministic archive ordering
@@ -167,6 +176,10 @@ pub fn create_bundle(source_dir: &Path, output_path: &Path) -> Result<BundleInfo
 
     for rel_path in sorted_files {
         let full_path = source_dir.join(rel_path);
+        // Reject symlinks to prevent bundling symlink targets
+        if std::fs::symlink_metadata(&full_path)?.is_symlink() {
+            return Err(BundleError::SymlinkNotAllowed(rel_path.clone()));
+        }
         if full_path.is_file() {
             let size = full_path.metadata()?.len();
             builder
@@ -190,6 +203,11 @@ pub fn create_bundle(source_dir: &Path, output_path: &Path) -> Result<BundleInfo
     })?;
     gz.finish()?;
 
+    // Atomically move temp file to final output path
+    tmp_file
+        .persist(output_path)
+        .map_err(|e| BundleError::Io(e.error))?;
+
     let archive_size = std::fs::metadata(output_path)?.len();
 
     Ok(BundleInfo {
@@ -208,6 +226,7 @@ pub fn inspect_bundle(bundle_path: &Path) -> Result<BundleInfo, BundleError> {
 
     let mut files = Vec::new();
     let mut manifest_yaml = None;
+    let mut entry_count: usize = 0;
 
     for entry_result in archive
         .entries()
@@ -216,11 +235,21 @@ pub fn inspect_bundle(bundle_path: &Path) -> Result<BundleInfo, BundleError> {
         let mut entry = entry_result
             .map_err(|e| BundleError::InvalidArchive(format!("failed to read entry: {e}")))?;
 
-        let path = entry
+        entry_count += 1;
+        if entry_count > MAX_ENTRY_COUNT {
+            return Err(BundleError::InvalidArchive(format!(
+                "archive exceeds maximum entry count ({})",
+                MAX_ENTRY_COUNT
+            )));
+        }
+
+        let entry_path = entry
             .path()
-            .map_err(|e| BundleError::InvalidArchive(format!("invalid path: {e}")))?
-            .to_string_lossy()
-            .to_string();
+            .map_err(|e| BundleError::InvalidArchive(format!("invalid path: {e}")))?;
+
+        check_path_safety(&entry_path)?;
+
+        let path = entry_path.to_string_lossy().to_string();
 
         let size = entry.size();
         files.push(BundleFile {
@@ -229,6 +258,12 @@ pub fn inspect_bundle(bundle_path: &Path) -> Result<BundleInfo, BundleError> {
         });
 
         if path == "app.yaml" {
+            if size > MAX_MANIFEST_SIZE {
+                return Err(BundleError::InvalidArchive(format!(
+                    "app.yaml exceeds maximum manifest size ({} bytes)",
+                    MAX_MANIFEST_SIZE
+                )));
+            }
             let mut content = String::new();
             entry.read_to_string(&mut content)?;
             manifest_yaml = Some(content);
@@ -488,6 +523,66 @@ nodes:
         assert!(
             matches!(result, Err(BundleError::SymlinkNotAllowed(_))),
             "expected SymlinkNotAllowed error, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_hardlink_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = dir.path().join("hardlink.sondeapp");
+        let file = std::fs::File::create(&bundle_path).unwrap();
+        let gz = GzEncoder::new(file, Compression::default());
+        let mut builder = tar::Builder::new(gz);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Link);
+        header.set_size(0);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_link(&mut header, "evil-hardlink", "../../etc/passwd")
+            .unwrap();
+
+        let gz = builder.into_inner().unwrap();
+        gz.finish().unwrap();
+
+        let extract_dir = tempfile::tempdir().unwrap();
+        let result = extract_bundle(&bundle_path, extract_dir.path());
+        assert!(
+            matches!(result, Err(BundleError::SymlinkNotAllowed(_))),
+            "expected SymlinkNotAllowed error for hardlink, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_fifo_entry_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = dir.path().join("fifo.sondeapp");
+
+        let mut tar_bytes = Vec::new();
+        {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Fifo);
+            header.set_size(0);
+            header.set_mode(0o644);
+            header.as_gnu_mut().unwrap().name[..9].copy_from_slice(b"evil-fifo");
+            header.set_cksum();
+            tar_bytes.extend_from_slice(header.as_bytes());
+            tar_bytes.extend_from_slice(&[0u8; 1024]);
+        }
+
+        let file = std::fs::File::create(&bundle_path).unwrap();
+        let mut gz = GzEncoder::new(file, Compression::default());
+        std::io::Write::write_all(&mut gz, &tar_bytes).unwrap();
+        gz.finish().unwrap();
+
+        let extract_dir = tempfile::tempdir().unwrap();
+        let result = extract_bundle(&bundle_path, extract_dir.path());
+        assert!(
+            matches!(result, Err(BundleError::InvalidArchive(_))),
+            "expected InvalidArchive error for FIFO entry, got: {:?}",
             result
         );
     }

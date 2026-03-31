@@ -96,7 +96,7 @@ fn cmd_validate(bundle: &std::path::Path) -> Result<(), BundleError> {
         for e in &result.errors {
             eprintln!("error [{}]: {}", e.rule, e.message);
         }
-        process::exit(1);
+        Err(BundleError::ValidationFailed(result))
     }
 }
 

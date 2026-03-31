@@ -122,11 +122,11 @@ fn has_path_traversal(path: &str) -> bool {
 pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationResult {
     let mut result = ValidationResult::new();
 
-    // §6.2 Manifest validation
+    // §6.2 Manifest validation — missing required fields first, then value checks
     if manifest.schema_version == 0 {
         result.errors.push(ValidationError {
             rule: "schema_version",
-            message: "schema_version must be >= 1".to_string(),
+            message: "missing required field: `schema_version`".to_string(),
         });
     } else if manifest.schema_version > 1 {
         result.errors.push(ValidationError {
@@ -138,7 +138,12 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
         });
     }
 
-    if !is_valid_app_name(&manifest.name) {
+    if manifest.name.is_empty() {
+        result.errors.push(ValidationError {
+            rule: "name",
+            message: "missing required field: `name`".to_string(),
+        });
+    } else if !is_valid_app_name(&manifest.name) {
         result.errors.push(ValidationError {
             rule: "name",
             message: format!(
@@ -148,7 +153,12 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
         });
     }
 
-    if semver::Version::parse(&manifest.version).is_err() {
+    if manifest.version.trim().is_empty() {
+        result.errors.push(ValidationError {
+            rule: "version",
+            message: "missing required field: `version`".to_string(),
+        });
+    } else if semver::Version::parse(&manifest.version).is_err() {
         result.errors.push(ValidationError {
             rule: "version",
             message: format!("version must be valid semver, got: `{}`", manifest.version),
@@ -462,7 +472,10 @@ mod tests {
         m.schema_version = 0;
         let r = validate_manifest(&m, dir.path());
         assert!(!r.is_valid());
-        assert!(r.errors.iter().any(|e| e.message.contains(">= 1")));
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.message.contains("missing required field")));
     }
 
     #[test]

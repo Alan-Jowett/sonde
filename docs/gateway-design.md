@@ -1458,11 +1458,13 @@ creation functionality — only the parsing and validation modules.
 
 `sonde-admin deploy <bundle-path>` executes the following steps:
 
-1. **Parse and validate** — call `sonde_bundle::archive::validate_bundle()` on the
-   `.sondeapp` file, then abort if `!result.is_valid()` (i.e., if the returned
-   `ValidationResult` contains any errors).
-2. **Extract** — extract the bundle to a temporary directory.
-3. **Deploy handler files** — if the bundle contains handler files:
+1. **Extract and validate** — call `sonde_bundle::archive::extract_bundle()`
+   to extract the `.sondeapp` to a temporary directory, then call
+   `sonde_bundle::validate::validate_manifest()` on the returned manifest
+   and extracted directory.  Abort if `!result.is_valid()`.  This performs
+   a single extraction pass; `validate_bundle()` is not used here because
+   it would extract a second time internally.
+2. **Deploy handler files** — if the bundle contains handler files:
    a. Determine the permanent handler directory:
       `<gateway-data-dir>/handlers/<app-name>-<version>/`.
       `sonde-admin` SHOULD compute a stable content hash for the extracted
@@ -1483,7 +1485,7 @@ creation functionality — only the parsing and validation modules.
       stored content hash to the newly computed value.
    d. Rewrite handler `working_dir` and file arguments to reference the
       permanent path.
-4. **Ingest programs** — for each program in the manifest:
+3. **Ingest programs** — for each program in the manifest:
    a. Read the ELF binary from the extracted directory and compute its
       content hash using the same algorithm the gateway uses to key stored
       programs.
@@ -1503,23 +1505,23 @@ creation functionality — only the parsing and validation modules.
       for identical content, `sonde-admin` MAY rely on that signal rather
       than a prior lookup and SHOULD log "skipped (already ingested)" in
       that case.
-5. **Configure handlers** — for each handler in the manifest:
-   a. Resolve `handler.program` name to the program hash from step 4.
+4. **Configure handlers** — for each handler in the manifest:
+   a. Resolve `handler.program` name to the program hash from step 3.
    b. Call the `AddHandler` gRPC with the resolved hash, command, args
-      (rewritten to permanent paths in step 3c), working directory
+      (rewritten to permanent paths in step 2d), working directory
       (permanent path), and reply timeout.
    c. If the gateway returns `ALREADY_EXISTS`, query the existing handler
       via `ListHandlers` and compare configuration.  If identical, log
       "skipped (already configured)".  If different, warn per §20.3 and
       continue.
-6. **Assign programs to nodes** — for each node in the manifest:
-   a. Resolve `node.program` name to the program hash from step 4.
+5. **Assign programs to nodes** — for each node in the manifest:
+   a. Resolve `node.program` name to the program hash from step 3.
    b. Call the `AssignProgram` gRPC with `node.name` and the resolved hash.
    c. If the node is already assigned the same hash (check via
       `GetNode` first), log "skipped (already assigned)" and continue.
-7. **Clean up** — remove the temporary extraction directory (handler files
-   have already been copied to the permanent location in step 3).
-8. **Report** — print a summary table:
+6. **Clean up** — remove the temporary extraction directory (handler files
+   have already been copied to the permanent location in step 2).
+7. **Report** — print a summary table:
    ```
    Deploy complete: temperature-monitor v0.1.0
      Programs:  1 ingested, 0 skipped

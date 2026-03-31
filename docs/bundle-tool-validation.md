@@ -137,7 +137,7 @@ A `test_helpers` module provides:
 2. Parse.
 
 **Expected:**
-- Parse fails (required field missing).
+- Validation error: `schema_version` is required (missing).
 
 ---
 

@@ -18,3 +18,7 @@ serde_yaml_ng = "0.10"
 semver = { version = "1", features = ["serde"] }
 tar = "0.4"
 tempfile = "3"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"

@@ -42,7 +42,7 @@ gh run download "$(gh run list --branch "$BRANCH" \
 
 # Gateway + admin installer (.deb)
 gh run download "$(gh run list --branch "$BRANCH" \
-  -w 'Nightly Release CI' --json databaseId -q '.[0].databaseId')" \
+  -w 'Nightly Release' --json databaseId -q '.[0].databaseId')" \
   --name sonde-installer-linux --dir ./installer/
 
 # Pairing tool (.deb package)
@@ -65,7 +65,7 @@ $runId = (gh run list --branch $BRANCH -w "ESP32-S3 Modem Firmware CI" --json da
 gh run download $runId --name modem-firmware --dir .\firmware-modem\
 
 # Gateway + admin installer (.msi)
-$runId = (gh run list --branch $BRANCH -w "Nightly Release CI" --json databaseId -q ".[0].databaseId")
+$runId = (gh run list --branch $BRANCH -w "Nightly Release" --json databaseId -q ".[0].databaseId")
 gh run download $runId --name sonde-installer-windows --dir .\installer\
 
 # Pairing tool (NSIS installer)
@@ -123,7 +123,7 @@ sudo dpkg -i ./installer/sonde_*_amd64.deb
 
 The `.deb` package:
 - Installs `sonde-gateway` and `sonde-admin` to `/usr/local/bin/`
-- Creates a `sonde` system user in the `dialout` group (for serial access)
+- Creates a `sonde` system user and group, and adds `sonde` to the `dialout` group (for serial access)
 - Installs a systemd service unit (`sonde-gateway.service`)
 - Creates `/etc/sonde/` (config) and `/var/lib/sonde/` (database, keys)
 - Enables and starts the service (it will fail until configured — see step 5)
@@ -147,7 +147,7 @@ The MSI:
 
 For silent/unattended installs, pass the modem port explicitly:
 ```powershell
-msiexec /i sonde-x86_64.msi MODEM_PORT=COM5 /quiet
+msiexec /i .\installer\sonde-x86_64.msi MODEM_PORT=COM5 /quiet
 ```
 
 > **Note:** The installer requires the modem to be connected. If no
@@ -486,7 +486,9 @@ journalctl -u sonde-gateway -p err
 To change the level, edit the environment file and restart:
 
 ```sh
-echo 'RUST_LOG=sonde_gateway=info' | sudo tee -a /etc/sonde/environment
+# Remove any existing RUST_LOG line, then set a new one
+sudo sed -i '/^RUST_LOG=/d' /etc/sonde/environment
+echo 'RUST_LOG=sonde_gateway=info' | sudo tee -a /etc/sonde/environment >/dev/null
 sudo systemctl restart sonde-gateway
 ```
 
@@ -518,14 +520,15 @@ The gateway service writes to two log sinks:
    logman stop sonde
    ```
 
-**Runtime log-level reload (no restart required):**
+**Changing the log level (requires service restart):**
 
 ```powershell
-# Set the desired log level in the service's environment
+# Set the desired log level at the machine scope (persists across restarts)
 [Environment]::SetEnvironmentVariable("RUST_LOG", "sonde_gateway=debug", "Machine")
 
-# Signal the service to reload the filter
-sc control sonde-gateway paramchange
+# Restart the service to pick up the new environment
+sc stop sonde-gateway
+sc start sonde-gateway
 ```
 
 Release builds default to `sonde_gateway=warn`. Set

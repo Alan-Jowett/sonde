@@ -1058,23 +1058,23 @@ regardless of serial port state (Issue #551).
 
 The gateway implements the pairing protocol logic defined in [ble-pairing-protocol.md](ble-pairing-protocol.md). The physical BLE layer (GATT service, advertising, ATT MTU negotiation, indication fragmentation) is hosted by the USB modem (GW-1204, GW-1205); the gateway processes pairing messages relayed over the modem serial protocol: inbound messages arrive as `BLE_RECV` and responses are sent as `BLE_INDICATE` (see §4.2 `UsbEspNowTransport`). `PEER_REQUEST` / `PEER_ACK` frames travel over ESP-NOW, not BLE, and follow the standard transport path.
 
-### 17.1  Gateway identity
+### 17.1  Gateway identity — RETIRED
 
-On first startup, the gateway generates a random 16-byte `gateway_id` from OS CSPRNG and persists it encrypted at rest using the master key (GW-1201). The `gateway_id` is stable across restarts and can be exported/imported via the admin API (`ExportState` / `ImportState`) so that all members of a failover group share the same identity (GW-1203). The gateway stores phone PSKs (from BLE registration) and node PSKs (from PEER_REQUEST pairing) — no asymmetric keys are needed.
+> **RETIRED (issue #495).** The gateway no longer generates or persists a `gateway_id` (GW-1201, GW-1203 — both RETIRED). Gateway authority derives solely from possession of the node PSK database and phone PSK store. Failover requires replicating these databases (see GW-1000 `ExportState` / `ImportState`). No asymmetric keys are needed.
 
 ### 17.2  BLE message relay
 
 The modem hosts the Gateway Pairing Service GATT service (UUID `0000FE60-…`) and controls BLE advertising. The gateway controls advertising lifetime by sending `BLE_ENABLE` / `BLE_DISABLE` to the modem when the registration window opens or closes (GW-1208). When a phone writes to the Gateway Command characteristic, the modem forwards the raw bytes to the gateway as a `BLE_RECV` serial message. The gateway processes the command and sends any response back via `BLE_INDICATE`; the modem handles fragmentation to fit within the negotiated ATT MTU (GW-1205). Numeric Comparison passkeys are relayed from the modem via `BLE_PAIRING_CONFIRM` and surfaced to the operator through the admin API streaming RPC (GW-1222).
 
-### 17.3  `REQUEST_GW_INFO` handling
+### 17.3  `REQUEST_GW_INFO` handling — RETIRED
 
-On receiving a `REQUEST_GW_INFO` command (BLE command `0x01`) via `BLE_RECV`, the gateway returns a `GW_INFO_RESPONSE` containing `gateway_id` and the RF channel via `BLE_INDICATE` (GW-1206). No signing is performed — the BLE LESC encrypted link provides authentication.
+> **RETIRED (issue #495).** `REQUEST_GW_INFO` (BLE command `0x01`) and `GW_INFO_RESPONSE` are eliminated along with GW-1206. The simplified pairing pipeline uses `REGISTER_PHONE` / `PHONE_REGISTERED` only. No challenge–response or gateway identity exchange is needed — BLE LESC Numeric Comparison provides mutual authentication.
 
 ### 17.4  Registration window and `REGISTER_PHONE`
 
 The registration window is opened by a physical button hold (≥ 2 s) or by the admin API `OpenBlePairing` RPC. Opening sends `BLE_ENABLE` to the modem; closing (explicit or auto-close after a configurable duration, default 120 s) sends `BLE_DISABLE` (GW-1207, GW-1208). `REGISTER_PHONE` commands received while the window is closed are rejected with `ERROR(0x02)` (GW-1207).
 
-When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: generates a 256-bit phone PSK from OS CSPRNG; derives `phone_key_hint` = `u16::from_be_bytes(SHA-256(psk)[30..32])` (big-endian u16 from the last two bytes of the hash); encrypts the response (containing the phone PSK, `phone_key_hint`, and RF channel) with AES-256-GCM using a session key derived from the BLE LESC pairing; and returns the encrypted `PHONE_REGISTERED` response via `BLE_INDICATE` (GW-1209). The phone PSK is stored with a label, issuance timestamp, and active status. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from AES-GCM decryption (GW-1210).
+When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: receives a phone-generated 256-bit PSK from the phone; derives `phone_key_hint` = `u16::from_be_bytes(SHA-256(psk)[30..32])` (big-endian u16 from the last two bytes of the hash); stores the PSK with its label, issuance timestamp, and active status; and responds with a plaintext `PHONE_REGISTERED` indication containing `status`, `rf_channel`, and `phone_key_hint` via `BLE_INDICATE` (GW-1209). No ECDH, HKDF, or AES-GCM encryption of the BLE response is needed — the BLE LESC link provides confidentiality. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from AES-GCM decryption (GW-1210).
 
 ### 17.5  `PEER_REQUEST` processing
 
@@ -1086,7 +1086,7 @@ When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x0
 2. **Inner payload decryption** — The `encrypted_payload` field from the outer CBOR is decrypted with AES-256-GCM using the same `phone_psk` (AAD = `"sonde-pairing-v2"`). GCM tag failure → discard (GW-1212).
 3. **Timestamp validation** — The `PairingRequest` timestamp must be within ± 86 400 s of current time. Out of range → discard (GW-1215).
 4. **Node ID duplicate handling** — If the `node_id` is already registered **and** the `node_psk` matches the existing record, the gateway skips registration but still proceeds to PEER_ACK generation (GW-1218 AC4). If the `node_id` is registered with a **different** PSK, the frame is silently discarded (potential replay or conflict).
-5. **Key-hint consistency** — The frame header `key_hint` must match the CBOR `node_key_hint`. Mismatch → discard (GW-1217).
+5. **Key-hint consistency** — The gateway computes `expected_node_key_hint = u16::from_be_bytes(SHA-256(node_psk)[30..32])` and verifies it matches the CBOR `node_key_hint`. The frame header `key_hint` identifies the *phone* PSK (used for the outer AES-GCM layer) and is expected to differ from `node_key_hint`. Mismatch between the CBOR `node_key_hint` and the derived value → discard (GW-1217).
 6. **Node registration** — The node is registered with `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, and `registered_by` = phone_id (GW-1218). The node registry (§7) stores the new record through the storage trait.
 
 ### 17.6  `PEER_ACK` generation

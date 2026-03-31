@@ -927,7 +927,7 @@ A test MUST exercise the complete Phase 2 flow: construct PairingRequest CBOR โ
 **Source:** ble-pairing-protocol.md ยง6
 
 **Description:**  
-Tests MUST cover: `NODE_ACK(0x01)` (already paired), `NODE_ACK(0x02)` (storage error), timeout on `NODE_ACK` (5 s), no prior Phase 1, payload size exceeds 202 bytes, wrong PSK (GCM tag mismatch on gateway side), AAD mismatch.
+Tests MUST cover: `NODE_ACK(0x01)` (already paired), `NODE_ACK(0x02)` (storage error), timeout on `NODE_ACK` (5 s), no prior Phase 1, payload size exceeds 218 bytes, wrong PSK (GCM tag mismatch on gateway side), AAD mismatch.
 
 **Acceptance criteria:**
 

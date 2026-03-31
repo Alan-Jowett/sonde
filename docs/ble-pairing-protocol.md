@@ -345,7 +345,7 @@ Phone                    Node                    Gateway
 
 ### 6.6  NODE_PROVISION (0x01, Phone → Node)
 
-**Body: 37 + payload_len bytes.**
+**Body: 71 + payload_len bytes.**
 
 ```
 Offset      Size          Field
@@ -353,11 +353,13 @@ Offset      Size          Field
 0           2             node_key_hint     BE u16
 2           32            node_psk          256-bit PSK
 34          1             rf_channel        WiFi channel (1–13)
-35          2             payload_len       BE u16, length of encrypted_payload
-37          payload_len   encrypted_payload Opaque blob for gateway (§6.4)
+35          2             phone_key_hint    BE u16 (for PEER_REQUEST header)
+37          32            phone_psk         256-bit phone PSK (for PEER_REQUEST encryption)
+69          2             payload_len       BE u16, length of encrypted_payload
+71          payload_len   encrypted_payload Opaque blob for gateway (§6.4)
 ```
 
-The node stores all fields in NVS.  The `encrypted_payload` is opaque to the node.
+The node stores all fields in NVS (see §8.4).  The `encrypted_payload` is opaque to the node.  The `phone_psk` and `phone_key_hint` are used by the node to build the PEER_REQUEST outer frame (§7.1, §8.3) and are not interpreted beyond that.
 
 ### 6.7  NODE_ACK (0x81, Node → Phone)
 
@@ -469,9 +471,13 @@ The gateway performs these steps **in order**.  Failure at any step causes **sil
    - If decryption fails (bad GCM tag) → discard.
 6. **Parse PairingRequest CBOR.**  Extract `node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, `timestamp`.
 7. **Verify timestamp.** If `|now − timestamp| > 86400` → discard.
-8. **Check node_id uniqueness.** If node_id already registered → discard.
-9. **Register node.** Store (`node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, `registered_by` = phone_id) where `phone_id` is the gateway's internal identifier for the phone PSK record (e.g., database primary key or a stable fingerprint of the phone PSK).
-10. **Send PEER_ACK(0).**  Build CBOR payload `{ 1: 0 }`.  Encrypt the frame with `node_psk` using the standard AES-256-GCM frame format.  The `key_hint` is the node's `key_hint` from the PairingRequest.  The `nonce` field echoes the `nonce` from the PEER_REQUEST header.
+8. **Check existing node registration.** Look up any existing record for `node_id`:
+   - If no existing record → proceed to step 9.
+   - If an existing record has a **matching** `node_psk` → skip registration (step 10) but still proceed to PEER_ACK generation (step 11).  This ensures enrollment completes even if a prior PEER_ACK was lost (GW-1218 AC4).
+   - If an existing record has a **different** `node_psk` → discard (potential replay or conflict).
+9. **Validate node_key_hint.** Compute `expected_node_key_hint = u16::from_be_bytes(SHA-256(node_psk)[30..32])`. If `node_key_hint != expected_node_key_hint` → discard (GW-1217).
+10. **Register node.** Store (`node_id`, `node_key_hint`, `node_psk`, `rf_channel`, `sensors`, `registered_by` = phone_id) where `phone_id` is the gateway's internal identifier for the phone PSK record (e.g., database primary key or a stable fingerprint of the phone PSK).
+11. **Send PEER_ACK(0).**  Build CBOR payload `{ 1: 0 }`.  Encrypt the frame with `node_psk` using the standard AES-256-GCM frame format.  The `key_hint` is the node's `key_hint` from the PairingRequest.  The `nonce` field echoes the `nonce` from the PEER_REQUEST header.
 
 ### 7.4  HMAC bootstrap rationale — RETIRED
 
@@ -516,8 +522,8 @@ There is no dedicated BLE factory-reset message.  To factory-reset a node via BL
 ### 8.3  Post-provision boot (registration pending)
 
 1. Initialize ESP-NOW on the stored `rf_channel`.
-2. Load `encrypted_payload` from NVS.
-3. Build and transmit `PEER_REQUEST` frame (§7.1).
+2. Load `encrypted_payload`, `phone_psk`, and `phone_key_hint` from NVS.
+3. Build and transmit `PEER_REQUEST` frame (§7.1): wrap `encrypted_payload` in CBOR `{1: encrypted_payload}`, encrypt the frame with `phone_psk` using AES-256-GCM, and set the frame header `key_hint` to `phone_key_hint`.
 4. Listen for `PEER_ACK` for 10 seconds.
 5. On `PEER_ACK(0)` with successful AES-GCM decryption and nonce echo:
    - Set registration-complete flag in NVS.
@@ -541,6 +547,8 @@ If the WAKE fails (no response or AEAD decryption failure), the node clears the 
 | `key_hint` | u32 | 4 | Node key_hint (stored as u32, used as u16). |
 | `psk` | blob | 32 | Node PSK. |
 | `channel` | u32 | 4 | RF channel (1–13). |
+| `phone_psk` | blob | 32 | Phone PSK (for PEER_REQUEST outer-frame encryption, ND-0916). |
+| `phone_key_hint` | u32 | 4 | Phone key_hint (stored as u32, used as u16; for PEER_REQUEST header, ND-0916). |
 | `peer_payload` | blob | variable | Encrypted pairing payload.  Retained until the first successful WAKE/COMMAND exchange, then erased. |
 | `reg_complete` | u32 | 4 | Registration-complete flag (1 = registered). |
 | `interval` | u32 | 4 | Wake cycle interval (seconds). |
@@ -560,7 +568,7 @@ If the WAKE fails (no response or AEAD decryption failure), the node clears the 
 | Unauthorized phone registration | Registration window must be opened by operator action; gateway rejects `REGISTER_PHONE` when closed (§5.4.1). |
 | Rogue phone registers a node | AEAD decryption of PEER_REQUEST and inner payload requires valid `phone_psk`.  Attacker needs a valid phone PSK. |
 | Compromised phone PSK | Gateway operator revokes the phone PSK.  Previously registered nodes remain valid. |
-| BLE eavesdrop / MITM captures node PSK | `NODE_PROVISION` sends both `node_psk` and `encrypted_payload` over BLE.  Passive eavesdropping cannot recover this data when LESC encryption is active; an **active MITM** (defeating Just Works) is required.  Mitigated by one-time-use of the encrypted payload (`node_id` uniqueness, step 8 in §7.3), timestamp tolerance (±86400 s, step 7), and using Numeric Comparison (default) to prevent MITM. |
+| BLE eavesdrop / MITM captures node PSK | `NODE_PROVISION` sends `node_psk`, `phone_psk`, `phone_key_hint`, and `encrypted_payload` over BLE.  Passive eavesdropping cannot recover this data when LESC encryption is active; an **active MITM** (defeating Just Works) is required.  Mitigated by one-time-use of the encrypted payload (`node_id` uniqueness, step 8 in §7.3), timestamp tolerance (±86400 s, step 7), and using Numeric Comparison (default) to prevent MITM. |
 | BLE active MITM captures node PSK | Same as above.  Numeric Comparison (the default pairing method) prevents active MITM by requiring operator verification of a 6-digit passkey.  Just Works is acceptable as a fallback for low-threat environments without operator presence. |
 | Forged PEER_ACK | AES-256-GCM encryption with `node_psk` makes forging computationally infeasible without key knowledge.  Deferred payload erasure (§8.3.1) ensures the node self-heals if a forged ACK is somehow accepted — it reverts to PEER_REQUEST if the subsequent WAKE fails. |
 | Replay of PEER_REQUEST | Timestamp check (±24h) + node_id uniqueness (steps 7–8 in §7.3). |
@@ -573,7 +581,7 @@ BLE LESC Numeric Comparison is the **default** pairing method for the **gateway 
 
 > **Note:** The node provisioning service (phone ↔ node) uses LESC Just Works, because nodes are headless devices with no operator interface to display or confirm a pin.  Numeric Comparison applies only to the gateway/modem side.
 
-Just Works remains available as a fallback for the gateway pairing service in environments without operator presence, but does not provide MITM protection.  When using Just Works, an active MITM can defeat the pairing and capture both the `node_psk` and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The primary mitigations are the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations, step 8 in §7.3) and the PairingRequest timestamp tolerance (±86400 s, step 7 in §7.3).  The 120 s registration window applies only to Phase 1 phone registration (`REGISTER_PHONE` §5.4.1), not to Phase 2 node registration.
+Just Works remains available as a fallback for the gateway pairing service in environments without operator presence, but does not provide MITM protection.  When using Just Works, an active MITM can defeat the pairing and capture `node_psk`, `phone_psk`, `phone_key_hint`, and `encrypted_payload` from `NODE_PROVISION`, which is sufficient to craft a valid `PEER_REQUEST`.  The primary mitigations are the one-time-use nature of the encrypted payload (the gateway rejects duplicate `node_id` registrations, step 8 in §7.3) and the PairingRequest timestamp tolerance (±86400 s, step 7 in §7.3).  The 120 s registration window applies only to Phase 1 phone registration (`REGISTER_PHONE` §5.4.1), not to Phase 2 node registration.
 
 For even higher assurance, BLE Passkey Entry can be used in place of Numeric Comparison — the protocol is agnostic to the specific LESC pairing method.
 

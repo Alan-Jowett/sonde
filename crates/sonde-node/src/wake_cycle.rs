@@ -1677,8 +1677,8 @@ where
     let mut sleep_mgr = SleepManager::new(base_interval_s, wake_reason);
 
     // 3a. PEER_REQUEST/PEER_ACK exchange via AEAD (ND-0909–ND-0913).
-    // TODO(#495 follow-up): pass phone_psk/phone_key_hint once BLE
-    // provisioning stores them (ble-pairing-protocol.md §6.6/§7.1).
+    // The encrypted_payload is a complete ESP-NOW frame built by the
+    // phone — the node transmits it verbatim.
     if !storage.read_reg_complete() {
         if let Some(encrypted_payload) = storage.read_peer_payload() {
             match peer_request_exchange_aead(
@@ -1686,7 +1686,6 @@ where
                 storage,
                 &identity,
                 &encrypted_payload,
-                rng,
                 clock,
                 aead,
                 sha,
@@ -1996,10 +1995,8 @@ where
     }
 
     // 10. Determine sleep duration
-    if sleep_mgr.will_wake_early() {
-        if storage.set_early_wake_flag().is_err() {
-            let _ = storage.set_early_wake_flag();
-        }
+    if sleep_mgr.will_wake_early() && storage.set_early_wake_flag().is_err() {
+        let _ = storage.set_early_wake_flag();
     }
 
     log_and_sleep(&sleep_mgr)

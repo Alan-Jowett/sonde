@@ -147,26 +147,95 @@ const GCM_NONCE_LEN: usize = 12;
 #[cfg(feature = "aes-gcm-codec")]
 const GCM_TAG_LEN: usize = 16;
 
-/// Encrypt a pairing request using AES-256-GCM with the phone PSK.
+/// [`sonde_protocol::Sha256Provider`] backed by `sha2::Sha256`.
+#[cfg(feature = "aes-gcm-codec")]
+struct PairSha256;
+
+#[cfg(feature = "aes-gcm-codec")]
+impl sonde_protocol::Sha256Provider for PairSha256 {
+    fn hash(&self, data: &[u8]) -> [u8; 32] {
+        sha256(data)
+    }
+}
+
+/// [`sonde_protocol::AeadProvider`] backed by `aes_gcm::Aes256Gcm`.
+#[cfg(feature = "aes-gcm-codec")]
+struct PairAead;
+
+#[cfg(feature = "aes-gcm-codec")]
+impl sonde_protocol::AeadProvider for PairAead {
+    fn seal(&self, key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
+        aes256gcm_encrypt(key, nonce, plaintext, aad).expect("AES-256-GCM seal failed")
+    }
+
+    fn open(
+        &self,
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        ciphertext_and_tag: &[u8],
+    ) -> Option<Vec<u8>> {
+        aes256gcm_decrypt(key, nonce, ciphertext_and_tag, aad)
+            .ok()
+            .map(|z| z.to_vec())
+    }
+}
+
+/// Build a complete ESP-NOW PEER_REQUEST frame using AES-256-GCM.
 ///
-/// Returns `nonce(12) ‖ ciphertext ‖ tag(16)`.
+/// 1. Encrypts `pairing_request_cbor` with `phone_psk` (inner layer,
+///    AAD = `"sonde-pairing-v2"`).
+/// 2. Wraps the inner ciphertext in CBOR `{1: encrypted_payload}`.
+/// 3. Builds a complete ESP-NOW AEAD frame (header + outer-layer
+///    AES-256-GCM encryption with `phone_psk`).
 ///
-/// The AAD is fixed to `"sonde-pairing-v2"` for domain separation.
+/// The returned blob is what the node stores and forwards verbatim.
 #[cfg(feature = "aes-gcm-codec")]
 pub fn encrypt_pairing_request_aead(
     phone_psk: &[u8; 32],
     pairing_request_cbor: &[u8],
 ) -> Result<Vec<u8>, PairingError> {
-    let mut nonce = [0u8; GCM_NONCE_LEN];
-    getrandom::fill(&mut nonce).map_err(|e| PairingError::RngFailed(e.to_string()))?;
+    // Inner layer: encrypt PairingRequest CBOR with phone_psk.
+    let mut inner_nonce = [0u8; GCM_NONCE_LEN];
+    getrandom::fill(&mut inner_nonce).map_err(|e| PairingError::RngFailed(e.to_string()))?;
 
-    let ciphertext_and_tag =
-        aes256gcm_encrypt(phone_psk, &nonce, pairing_request_cbor, PAIRING_REQUEST_AAD)?;
+    let ciphertext_and_tag = aes256gcm_encrypt(
+        phone_psk,
+        &inner_nonce,
+        pairing_request_cbor,
+        PAIRING_REQUEST_AAD,
+    )?;
 
-    let mut result = Vec::with_capacity(GCM_NONCE_LEN + ciphertext_and_tag.len());
-    result.extend_from_slice(&nonce);
-    result.extend_from_slice(&ciphertext_and_tag);
-    Ok(result)
+    let mut encrypted_payload = Vec::with_capacity(GCM_NONCE_LEN + ciphertext_and_tag.len());
+    encrypted_payload.extend_from_slice(&inner_nonce);
+    encrypted_payload.extend_from_slice(&ciphertext_and_tag);
+
+    // Wrap in CBOR: { 1: encrypted_payload }
+    let cbor_map = ciborium::Value::Map(vec![(
+        ciborium::Value::Integer(sonde_protocol::PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(encrypted_payload),
+    )]);
+    let mut cbor_buf = Vec::new();
+    ciborium::into_writer(&cbor_map, &mut cbor_buf)
+        .map_err(|_| PairingError::EncryptionFailed("CBOR encode failed".into()))?;
+
+    // Outer layer: build complete ESP-NOW AEAD frame.
+    let sha = PairSha256;
+    let aead = PairAead;
+    let phone_key_hint = sonde_protocol::key_hint_from_psk(phone_psk, &sha);
+
+    let mut frame_nonce_bytes = [0u8; 8];
+    getrandom::fill(&mut frame_nonce_bytes).map_err(|e| PairingError::RngFailed(e.to_string()))?;
+    let frame_nonce = u64::from_be_bytes(frame_nonce_bytes);
+
+    let header = sonde_protocol::FrameHeader {
+        key_hint: phone_key_hint,
+        msg_type: sonde_protocol::MSG_PEER_REQUEST,
+        nonce: frame_nonce,
+    };
+
+    sonde_protocol::encode_frame_aead(&header, &cbor_buf, phone_psk, &aead, &sha)
+        .map_err(|_| PairingError::EncryptionFailed("frame encode failed".into()))
 }
 
 /// Decrypt a pairing request using AES-256-GCM with the phone PSK.
@@ -465,65 +534,93 @@ mod tests {
 mod aead_tests {
     use super::*;
 
+    /// Helper: open the outer ESP-NOW frame and extract the inner
+    /// `encrypted_payload` from the CBOR `{1: bstr}`.
+    fn open_frame_and_extract_inner(phone_psk: &[u8; 32], frame: &[u8]) -> Vec<u8> {
+        let sha = PairSha256;
+        let aead = PairAead;
+        let decoded = sonde_protocol::decode_frame_aead(frame).expect("decode_frame_aead failed");
+        let cbor_payload = sonde_protocol::open_frame(&decoded, phone_psk, &aead, &sha)
+            .expect("open_frame failed");
+        let cbor: ciborium::Value =
+            ciborium::from_reader(&cbor_payload[..]).expect("CBOR parse failed");
+        let map = cbor.as_map().expect("expected CBOR map");
+        assert_eq!(map.len(), 1);
+        let (k, v) = &map[0];
+        assert_eq!(u64::try_from(k.as_integer().unwrap()).unwrap(), 1);
+        v.as_bytes().expect("expected bytes").clone()
+    }
+
     /// Round-trip: encrypt then decrypt must recover the original plaintext.
     #[test]
     fn pairing_request_aead_round_trip() {
         let psk = [0x42u8; 32];
         let plaintext = b"pairing request CBOR data for node-42";
 
-        let encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
-        let decrypted = decrypt_pairing_request_aead(&psk, &encrypted);
+        let frame = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+
+        // Verify it's a valid AEAD frame with PEER_REQUEST msg_type.
+        let decoded = sonde_protocol::decode_frame_aead(&frame).unwrap();
+        assert_eq!(decoded.header.msg_type, sonde_protocol::MSG_PEER_REQUEST);
+
+        let inner = open_frame_and_extract_inner(&psk, &frame);
+        let decrypted = decrypt_pairing_request_aead(&psk, &inner);
         assert_eq!(
             decrypted.as_ref().map(|z| z.as_slice()),
             Some(plaintext.as_slice())
         );
     }
 
-    /// Wrong PSK must fail decryption (authentication failure).
+    /// Wrong PSK must fail outer-frame decryption.
     #[test]
     fn pairing_request_aead_wrong_psk_fails() {
         let psk = [0x42u8; 32];
         let wrong_psk = [0x43u8; 32];
         let plaintext = b"secret pairing request";
 
-        let encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        let frame = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+
+        let sha = PairSha256;
+        let aead = PairAead;
+        let decoded = sonde_protocol::decode_frame_aead(&frame).unwrap();
         assert!(
-            decrypt_pairing_request_aead(&wrong_psk, &encrypted).is_none(),
-            "wrong PSK must fail decryption"
+            sonde_protocol::open_frame(&decoded, &wrong_psk, &aead, &sha).is_err(),
+            "wrong PSK must fail outer-frame decryption"
         );
     }
 
-    /// Tampered ciphertext must fail authentication.
+    /// Tampered frame must fail authentication.
     #[test]
     fn pairing_request_aead_tampered_payload_fails() {
         let psk = [0x42u8; 32];
         let plaintext = b"original pairing request";
 
-        let mut encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
-        // Flip a byte in the ciphertext (after the 12-byte nonce)
-        let flip_idx = GCM_NONCE_LEN + 1;
-        encrypted[flip_idx] ^= 0xFF;
+        let mut frame = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        // Flip a byte in the ciphertext (after the 11-byte header)
+        let flip_idx = sonde_protocol::HEADER_SIZE + 1;
+        frame[flip_idx] ^= 0xFF;
+
+        let sha = PairSha256;
+        let aead = PairAead;
+        let decoded = sonde_protocol::decode_frame_aead(&frame).unwrap();
         assert!(
-            decrypt_pairing_request_aead(&psk, &encrypted).is_none(),
+            sonde_protocol::open_frame(&decoded, &psk, &aead, &sha).is_err(),
             "tampered ciphertext must fail authentication"
         );
     }
 
-    /// AAD binding: decrypting with a different AAD must fail.
-    ///
-    /// We verify this indirectly by encrypting with the AEAD function
-    /// (which uses `"sonde-pairing-v2"`) and decrypting with the raw
-    /// AES-GCM function using a wrong AAD.
+    /// AAD binding: decrypting the inner payload with a different AAD must fail.
     #[test]
     fn pairing_request_aead_wrong_aad_fails() {
         let psk = [0x42u8; 32];
         let plaintext = b"aad-bound payload";
 
-        let encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        let frame = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        let inner = open_frame_and_extract_inner(&psk, &frame);
 
-        // Extract nonce and ciphertext_and_tag
-        let nonce: [u8; 12] = encrypted[..12].try_into().unwrap();
-        let ciphertext_and_tag = &encrypted[12..];
+        // Extract nonce and ciphertext_and_tag from inner payload
+        let nonce: [u8; 12] = inner[..12].try_into().unwrap();
+        let ciphertext_and_tag = &inner[12..];
 
         // Decrypt with wrong AAD must fail
         assert!(
@@ -551,10 +648,16 @@ mod aead_tests {
     #[test]
     fn pairing_request_aead_empty_plaintext_round_trip() {
         let psk = [0x42u8; 32];
-        let encrypted = encrypt_pairing_request_aead(&psk, b"").unwrap();
-        // nonce(12) + tag(16) = 28 bytes, no ciphertext
-        assert_eq!(encrypted.len(), GCM_NONCE_LEN + GCM_TAG_LEN);
-        let decrypted = decrypt_pairing_request_aead(&psk, &encrypted);
+        let frame = encrypt_pairing_request_aead(&psk, b"").unwrap();
+
+        // Verify it's a valid frame
+        let decoded = sonde_protocol::decode_frame_aead(&frame).unwrap();
+        assert_eq!(decoded.header.msg_type, sonde_protocol::MSG_PEER_REQUEST);
+
+        let inner = open_frame_and_extract_inner(&psk, &frame);
+        // inner = nonce(12) + tag(16) = 28 bytes, no ciphertext
+        assert_eq!(inner.len(), GCM_NONCE_LEN + GCM_TAG_LEN);
+        let decrypted = decrypt_pairing_request_aead(&psk, &inner);
         assert_eq!(
             decrypted.as_ref().map(|z| z.as_slice()),
             Some([].as_slice())

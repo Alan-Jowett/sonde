@@ -168,9 +168,10 @@ async fn aead_tampered_frame_discarded() {
     assert!(resp.is_none(), "tampered frame must be silently discarded");
 }
 
-/// PEER_REQUEST is explicitly rejected on the AEAD path.
+/// PEER_REQUEST with no matching phone PSK is silently discarded.
+/// With a matching phone PSK, it should be accepted and produce a PEER_ACK.
 #[tokio::test]
-async fn aead_peer_request_rejected() {
+async fn aead_peer_request_no_phone_psk_discarded() {
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway(storage.clone());
 
@@ -178,7 +179,8 @@ async fn aead_peer_request_rejected() {
     let node_record = NodeRecord::new("node-aead-peer".into(), 0x0004, psk);
     storage.upsert_node(&node_record).await.unwrap();
 
-    // Build a frame with MSG_PEER_REQUEST type.
+    // Build a frame with MSG_PEER_REQUEST type using a PSK with no
+    // matching phone PSK registered — the gateway should discard.
     let header = FrameHeader {
         key_hint: 0x0004,
         msg_type: MSG_PEER_REQUEST,
@@ -189,7 +191,10 @@ async fn aead_peer_request_rejected() {
         encode_frame_aead(&header, &payload, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
 
     let resp = gw.process_frame_aead(&frame, b"phone".to_vec()).await;
-    assert!(resp.is_none(), "PEER_REQUEST must be rejected on AEAD path");
+    assert!(
+        resp.is_none(),
+        "PEER_REQUEST with no matching phone PSK must be discarded"
+    );
 }
 
 /// Unknown key_hint: frame from an unregistered node is silently discarded.

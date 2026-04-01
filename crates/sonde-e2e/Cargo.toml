@@ -19,6 +19,7 @@ tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_i
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
+default = ["aes-gcm-codec"]
 aes-gcm-codec = [
     "sonde-protocol/aes-gcm-codec",
     "sonde-gateway/aes-gcm-codec",

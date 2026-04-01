@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sonde contributors
+#
+# Wokwi firmware smoke test — validates that ESP32 firmware boots
+# successfully in Wokwi's full-chip simulator (BLE, WiFi, peripherals).
+#
+# Requires the WOKWI_CLI_TOKEN repository secret.
+# Get a token from https://wokwi.com/dashboard/ci
+
+name: Wokwi Firmware Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'crates/sonde-node/**'
+      - 'crates/sonde-modem/**'
+      - 'crates/sonde-protocol/**'
+      - 'wokwi/**'
+      - '.github/workflows/wokwi-smoke.yml'
+  workflow_dispatch:
+
+# Cancel superseded runs on the same PR / branch.
+concurrency:
+  group: wokwi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── ESP32-C3 Node ──────────────────────────────────────────────
+  node-smoke:
+    name: ESP32-C3 Node (Wokwi)
+    runs-on: ubuntu-latest
+    # Only run when the secret is available (forks won't have it).
+    if: ${{ secrets.WOKWI_CLI_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download the latest node firmware built by ESP32-C3 Node Firmware CI.
+      # The flash_image.bin is a merged image (bootloader + partitions + app).
+      - name: Download node firmware artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::group::Download node-firmware artifact"
+          # Prefer artifacts from the current branch; fall back to main.
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          RUN_ID=$(gh run list \
+            --branch "$BRANCH" \
+            -w 'ESP32-C3 Node Firmware CI' \
+            --status success \
+            --json databaseId \
+            -q '.[0].databaseId' 2>/dev/null || true)
+
+          if [ -z "$RUN_ID" ]; then
+            echo "No artifact on branch $BRANCH — trying main"
+            RUN_ID=$(gh run list \
+              --branch main \
+              -w 'ESP32-C3 Node Firmware CI' \
+              --status success \
+              --json databaseId \
+              -q '.[0].databaseId')
+          fi
+
+          echo "Using run $RUN_ID"
+          gh run download "$RUN_ID" --name node-firmware --dir firmware/
+          ls -lh firmware/
+          echo "::endgroup::"
+
+      - name: Wokwi — boot ESP32-C3 node
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: wokwi/node
+          timeout: 30000           # 30 s — enough for full boot cycle
+          expect_text: 'sonde-node booting'
+          fail_text: 'panic'
+          serial_log_file: node-serial.log
+
+      - name: Upload node serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wokwi-node-serial-log
+          path: wokwi/node/node-serial.log
+          retention-days: 7
+
+  # ── ESP32-S3 Modem ─────────────────────────────────────────────
+  modem-smoke:
+    name: ESP32-S3 Modem (Wokwi)
+    runs-on: ubuntu-latest
+    if: ${{ secrets.WOKWI_CLI_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download modem firmware artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::group::Download modem-firmware artifact"
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          RUN_ID=$(gh run list \
+            --branch "$BRANCH" \
+            -w 'ESP32-S3 Modem Firmware CI' \
+            --status success \
+            --json databaseId \
+            -q '.[0].databaseId' 2>/dev/null || true)
+
+          if [ -z "$RUN_ID" ]; then
+            echo "No artifact on branch $BRANCH — trying main"
+            RUN_ID=$(gh run list \
+              --branch main \
+              -w 'ESP32-S3 Modem Firmware CI' \
+              --status success \
+              --json databaseId \
+              -q '.[0].databaseId')
+          fi
+
+          echo "Using run $RUN_ID"
+          gh run download "$RUN_ID" --name modem-firmware --dir firmware-modem/
+          ls -lh firmware-modem/
+          echo "::endgroup::"
+
+      - name: Wokwi — boot ESP32-S3 modem
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: wokwi/modem
+          timeout: 30000
+          expect_text: 'sonde-modem firmware starting'
+          fail_text: 'panic'
+          serial_log_file: modem-serial.log
+
+      - name: Upload modem serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wokwi-modem-serial-log
+          path: wokwi/modem/modem-serial.log
+          retention-days: 7

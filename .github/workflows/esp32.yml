@@ -259,6 +259,7 @@ jobs:
           path: |
             flash_image.bin
             target/riscv32imc-esp-espidf/firmware/node
+            target/riscv32imc-esp-espidf/firmware/node.bin
           if-no-files-found: error
           retention-days: 7
 

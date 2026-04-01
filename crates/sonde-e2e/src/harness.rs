@@ -242,6 +242,10 @@ impl NodeProxy {
 
     /// Run one AEAD wake cycle, relaying frames through the gateway's
     /// `process_frame_aead` path (AES-256-GCM).
+    ///
+    /// Uses `block_in_place` internally, so the caller must be running
+    /// inside a multi-thread Tokio runtime. All E2E tests that call this
+    /// must use `#[tokio::test(flavor = "multi_thread")]`.
     #[cfg(feature = "aes-gcm-codec")]
     pub fn run_wake_cycle_aead(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
         let mut interpreter = MockBpfInterpreter::new();
@@ -250,6 +254,8 @@ impl NodeProxy {
 
     /// Like [`run_wake_cycle_aead`] but accepts a caller-supplied BPF
     /// interpreter for tests that require real BPF program execution.
+    ///
+    /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle_aead`]).
     #[cfg(feature = "aes-gcm-codec")]
     pub fn run_wake_cycle_aead_with(
         &mut self,
@@ -264,6 +270,8 @@ impl NodeProxy {
     /// A bit is flipped in the ciphertext region of every non-APP_DATA
     /// frame before forwarding to the gateway, causing GCM authentication
     /// failure and silent discard.
+    ///
+    /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle_aead`]).
     #[cfg(feature = "aes-gcm-codec")]
     pub fn run_wake_cycle_aead_tampered(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
         let mut interpreter = MockBpfInterpreter::new();
@@ -466,9 +474,10 @@ impl NodeTransport for BridgeTransport {
 /// In-memory frame relay that routes frames through the gateway's AEAD path.
 ///
 /// WAKE, GET_CHUNK, and PROGRAM_ACK frames are processed via
-/// `process_frame_aead` (AES-256-GCM). APP_DATA frames are routed through
-/// `process_frame` (HMAC) because the BPF dispatch helpers still use the
-/// HMAC codec.
+/// `process_frame_aead` (AES-256-GCM). APP_DATA and PEER_REQUEST frames
+/// are routed through `process_frame` (HMAC) — APP_DATA because the BPF
+/// dispatch helpers still use the HMAC codec, and PEER_REQUEST because the
+/// AEAD handler rejects it (the node is not yet registered at that point).
 #[cfg(feature = "aes-gcm-codec")]
 struct BridgeTransportAead {
     gateway: Arc<Gateway>,

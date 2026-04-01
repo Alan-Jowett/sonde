@@ -335,7 +335,7 @@ individual nodes. Repeat this phase for each new node.
 > remove the stale BLE pairing from Windows first:
 > **Settings → Bluetooth & devices → Devices**, find the sonde node/modem
 > entry, click **Remove device**. Without this step, Windows reuses
-> cached pairing keys that no longer match the node and the LESC
+> cached pairing keys that no longer match the node and the BLE pairing
 > handshake fails silently.
 
 1. **Launch the pairing tool** (already registered from Phase 1).

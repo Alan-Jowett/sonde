@@ -173,6 +173,13 @@ jobs:
       # QEMU smoke test
       # ------------------------------------------------------------------ #
 
+      - name: Install Espressif QEMU
+        run: |
+          curl -sSL https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20250817/qemu-riscv32-softmmu-esp_develop_9.2.2_20250817-x86_64-linux-gnu.tar.xz \
+            | tar xJ -C /opt/
+          ln -sf /opt/qemu/bin/qemu-system-riscv32 /usr/local/bin/qemu-system-riscv32
+          qemu-system-riscv32 --version
+
       - name: Run QEMU smoke test
         # Espressif QEMU esp-develop-9.2.2-20250817 fixed the systimer
         # peripheral (#120), so the FreeRTOS scheduler now starts and

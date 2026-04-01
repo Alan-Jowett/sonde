@@ -5,7 +5,7 @@ edition = "2021"
 description = "Sonde node firmware — wake cycle engine, BPF runtime, and platform abstractions"
 
 [features]
-default = ["quiet"]
+default = ["quiet", "aes-gcm-codec"]
 # Enable ESP-IDF platform support (required for firmware builds).
 # Without this feature, only platform-independent modules compile,
 # enabling host-side testing of the wake cycle engine and protocol logic.

@@ -62,6 +62,6 @@ hyper-util = "0.1"
 tower = "0.5"
 
 [features]
-default = []
+default = ["aes-gcm-codec"]
 aes-gcm-codec = ["sonde-protocol/aes-gcm-codec"]
 python-tests = []

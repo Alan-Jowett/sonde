@@ -6,7 +6,7 @@ license = "MIT"
 description = "ESP32-S3 radio modem firmware — USB-CDC to ESP-NOW bridge"
 
 [features]
-default = ["quiet"]
+default = ["quiet", "aes-gcm-codec"]
 # Enable ESP-IDF platform support (required for firmware builds).
 # Without this feature, only platform-independent modules compile,
 # enabling host-side testing of bridge logic, peer table, and status.

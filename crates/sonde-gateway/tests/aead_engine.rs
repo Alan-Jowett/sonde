@@ -20,7 +20,8 @@ use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
     decode_frame_aead, encode_frame_aead, open_frame, FrameHeader, GatewayMessage, NodeMessage,
-    MSG_GET_CHUNK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE,
+    MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_STATUS,
+    PEER_REQ_KEY_PAYLOAD,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -168,9 +169,10 @@ async fn aead_tampered_frame_discarded() {
     assert!(resp.is_none(), "tampered frame must be silently discarded");
 }
 
-/// PEER_REQUEST is explicitly rejected on the AEAD path.
+/// PEER_REQUEST with no matching phone PSK is silently discarded.
+/// With a matching phone PSK, it should be accepted and produce a PEER_ACK.
 #[tokio::test]
-async fn aead_peer_request_rejected() {
+async fn aead_peer_request_no_phone_psk_discarded() {
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway(storage.clone());
 
@@ -178,7 +180,8 @@ async fn aead_peer_request_rejected() {
     let node_record = NodeRecord::new("node-aead-peer".into(), 0x0004, psk);
     storage.upsert_node(&node_record).await.unwrap();
 
-    // Build a frame with MSG_PEER_REQUEST type.
+    // Build a frame with MSG_PEER_REQUEST type using a PSK with no
+    // matching phone PSK registered — the gateway should discard.
     let header = FrameHeader {
         key_hint: 0x0004,
         msg_type: MSG_PEER_REQUEST,
@@ -189,7 +192,10 @@ async fn aead_peer_request_rejected() {
         encode_frame_aead(&header, &payload, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
 
     let resp = gw.process_frame_aead(&frame, b"phone".to_vec()).await;
-    assert!(resp.is_none(), "PEER_REQUEST must be rejected on AEAD path");
+    assert!(
+        resp.is_none(),
+        "PEER_REQUEST with no matching phone PSK must be discarded"
+    );
 }
 
 /// Unknown key_hint: frame from an unregistered node is silently discarded.
@@ -207,4 +213,156 @@ async fn aead_unknown_key_hint_discarded() {
         resp.is_none(),
         "unknown key_hint must be silently discarded"
     );
+}
+
+/// Happy-path AEAD PEER_REQUEST: register a phone PSK, build a properly
+/// nested PEER_REQUEST (outer AEAD frame encrypted with `phone_psk`
+/// containing inner `nonce(12) ‖ ciphertext ‖ tag`), and assert the
+/// gateway returns a PEER_ACK that decrypts with `node_psk` and echoes
+/// the nonce.
+#[tokio::test]
+async fn aead_peer_request_happy_path() {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    use sonde_gateway::{PhonePskRecord, PhonePskStatus};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use zeroize::Zeroizing;
+
+    let sha = RustCryptoSha256;
+
+    // --- Keys ---
+    let phone_psk = [0x42u8; 32];
+    let node_psk = [0xBBu8; 32];
+    let phone_key_hint = sonde_protocol::key_hint_from_psk(&phone_psk, &sha);
+    let node_key_hint = sonde_protocol::key_hint_from_psk(&node_psk, &sha);
+
+    // --- Storage setup ---
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    // Register the phone PSK so the gateway can decrypt the outer frame.
+    let phone_record = PhonePskRecord {
+        phone_id: 0, // assigned by store
+        phone_key_hint,
+        psk: Zeroizing::new(phone_psk),
+        label: "test-phone".into(),
+        issued_at: SystemTime::now(),
+        status: PhonePskStatus::Active,
+    };
+    storage.store_phone_psk(&phone_record).await.unwrap();
+
+    // --- Build PairingRequest CBOR ---
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let pairing_cbor = ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Text("node-aead-pair-01".into()),
+        ),
+        (
+            ciborium::Value::Integer(2.into()),
+            ciborium::Value::Integer((node_key_hint as u64).into()),
+        ),
+        (
+            ciborium::Value::Integer(3.into()),
+            ciborium::Value::Bytes(node_psk.to_vec()),
+        ),
+        (
+            ciborium::Value::Integer(4.into()),
+            ciborium::Value::Integer(1.into()), // rf_channel = 1
+        ),
+        (
+            ciborium::Value::Integer(6.into()),
+            ciborium::Value::Integer(now.into()),
+        ),
+    ]);
+    let mut pairing_bytes = Vec::new();
+    ciborium::into_writer(&pairing_cbor, &mut pairing_bytes).unwrap();
+
+    // --- Encrypt inner payload with phone_psk (AAD = "sonde-pairing-v2") ---
+    let inner_nonce_bytes = [0x01u8; 12];
+    let inner_nonce = Nonce::from_slice(&inner_nonce_bytes);
+    let cipher = Aes256Gcm::new_from_slice(&phone_psk).unwrap();
+    let inner_ciphertext = cipher
+        .encrypt(
+            inner_nonce,
+            aes_gcm::aead::Payload {
+                msg: &pairing_bytes,
+                aad: b"sonde-pairing-v2",
+            },
+        )
+        .unwrap();
+
+    // encrypted_payload = inner_nonce(12) ‖ ciphertext+tag
+    let mut encrypted_payload = Vec::with_capacity(12 + inner_ciphertext.len());
+    encrypted_payload.extend_from_slice(&inner_nonce_bytes);
+    encrypted_payload.extend_from_slice(&inner_ciphertext);
+
+    // --- Wrap in outer CBOR: {1: bstr(encrypted_payload)} ---
+    let outer_cbor = ciborium::Value::Map(vec![(
+        ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
+        ciborium::Value::Bytes(encrypted_payload),
+    )]);
+    let mut outer_cbor_bytes = Vec::new();
+    ciborium::into_writer(&outer_cbor, &mut outer_cbor_bytes).unwrap();
+
+    // --- Encode outer AEAD frame (MSG_PEER_REQUEST, key_hint = phone_key_hint) ---
+    let frame_nonce: u64 = 12345;
+    let outer_header = FrameHeader {
+        key_hint: phone_key_hint,
+        msg_type: MSG_PEER_REQUEST,
+        nonce: frame_nonce,
+    };
+    let frame = encode_frame_aead(
+        &outer_header,
+        &outer_cbor_bytes,
+        &phone_psk,
+        &GatewayAead,
+        &sha,
+    )
+    .unwrap();
+
+    // --- Send to gateway ---
+    let resp = gw
+        .process_frame_aead(&frame, b"phone-peer".to_vec())
+        .await
+        .expect("AEAD PEER_REQUEST must produce a PEER_ACK");
+
+    // --- Verify response is a PEER_ACK decryptable with node_psk ---
+    let decoded = decode_frame_aead(&resp).expect("response must decode as AEAD frame");
+    assert_eq!(
+        decoded.header.msg_type, MSG_PEER_ACK,
+        "response must be PEER_ACK"
+    );
+    assert_eq!(
+        decoded.header.nonce, frame_nonce,
+        "PEER_ACK must echo the request nonce"
+    );
+
+    let plaintext = open_frame(&decoded, &node_psk, &GatewayAead, &sha)
+        .expect("PEER_ACK must decrypt with node_psk");
+
+    // Verify CBOR contains status = 0 (registered).
+    let ack_cbor: ciborium::Value = ciborium::from_reader(&plaintext[..]).unwrap();
+    let ack_map = ack_cbor.as_map().expect("PEER_ACK payload must be a map");
+    let mut status: Option<u64> = None;
+    for (k, v) in ack_map {
+        if let Some(key_val) = k.as_integer().and_then(|i| u64::try_from(i).ok()) {
+            if key_val == PEER_ACK_KEY_STATUS {
+                status = v.as_integer().and_then(|i| u64::try_from(i).ok());
+            }
+        }
+    }
+    assert_eq!(status, Some(0), "PEER_ACK status must be 0 (registered)");
+
+    // Verify the node was registered in storage.
+    let stored_node = storage
+        .get_node("node-aead-pair-01")
+        .await
+        .unwrap()
+        .expect("node must be registered after PEER_ACK");
+    assert_eq!(stored_node.psk, node_psk);
+    assert_eq!(stored_node.key_hint, node_key_hint);
 }

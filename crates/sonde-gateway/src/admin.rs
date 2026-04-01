@@ -1468,18 +1468,18 @@ pub async fn serve_admin(
     // (BA) and SYSTEM (SY) full access.  Without this, a pipe created
     // by the SYSTEM service account may not be connectable from a
     // non-elevated Administrator session (#605).
-    let sa = create_pipe_security_attributes()?;
+    let sd = create_pipe_security_descriptor()?;
 
     // Build a stream that accepts connections from the named pipe one at a time.
     // Each iteration creates a new server instance to wait for the next client.
-    let incoming = futures::stream::unfold((true, pipe_name, sa), |(first, name, sa)| async move {
-        let server = match create_named_pipe(&name, first, &sa) {
+    let incoming = futures::stream::unfold((true, pipe_name, sd), |(first, name, sd)| async move {
+        let server = match create_named_pipe(&name, first, &sd) {
             Ok(s) => s,
-            Err(e) => return Some((Err::<NamedPipeConn, _>(e), (false, name, sa))),
+            Err(e) => return Some((Err::<NamedPipeConn, _>(e), (false, name, sd))),
         };
         match server.connect().await {
-            Ok(()) => Some((Ok(NamedPipeConn(server)), (false, name, sa))),
-            Err(e) => Some((Err(e), (false, name, sa))),
+            Ok(()) => Some((Ok(NamedPipeConn(server)), (false, name, sd))),
+            Err(e) => Some((Err(e), (false, name, sd))),
         }
     });
 
@@ -1518,13 +1518,13 @@ impl Drop for PipeSecurityDescriptor {
     }
 }
 
-/// Parse a SDDL string into a self-contained security descriptor.
+/// Parse a SDDL string into a security descriptor for the admin pipe.
 ///
 /// Grants BUILTIN\Administrators (BA) and SYSTEM (SY) full access.
 /// Non-elevated admin users belong to the BA SID and can open the pipe
 /// without running an elevated prompt.
 #[cfg(windows)]
-fn create_pipe_security_attributes() -> Result<PipeSecurityDescriptor, Box<dyn std::error::Error>> {
+fn create_pipe_security_descriptor() -> Result<PipeSecurityDescriptor, Box<dyn std::error::Error>> {
     use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 
     // D:  — DACL
@@ -1559,7 +1559,7 @@ fn create_pipe_security_attributes() -> Result<PipeSecurityDescriptor, Box<dyn s
 fn create_named_pipe(
     name: &str,
     first: bool,
-    sa: &PipeSecurityDescriptor,
+    sd: &PipeSecurityDescriptor,
 ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -1571,6 +1571,7 @@ fn create_named_pipe(
     const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x0008_0000;
     const PIPE_TYPE_BYTE: u32 = 0x0000_0000;
     const PIPE_WAIT: u32 = 0x0000_0000;
+    const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x0000_0008;
 
     let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
 
@@ -1581,7 +1582,7 @@ fn create_named_pipe(
 
     let security_attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: sa.sd,
+        lpSecurityDescriptor: sd.sd,
         bInheritHandle: 0,
     };
 
@@ -1590,7 +1591,7 @@ fn create_named_pipe(
         CreateNamedPipeW(
             wide_name.as_ptr(),
             open_mode,
-            PIPE_TYPE_BYTE | PIPE_WAIT,
+            PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             255,  // max instances
             4096, // out buffer
             4096, // in buffer

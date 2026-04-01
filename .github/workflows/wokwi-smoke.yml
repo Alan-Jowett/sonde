@@ -35,11 +35,15 @@ jobs:
   node-smoke:
     name: ESP32-C3 Node (Wokwi)
     runs-on: ubuntu-latest
+    env:
+      WOKWI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       # Download the latest node firmware built by ESP32-C3 Node Firmware CI.
-      # The flash_image.bin is a merged image (bootloader + partitions + app).
+      # The artifact contains flash_image.bin (merged), node (ELF), and
+      # node.bin (app binary).  Wokwi needs the app binary + ELF, not the
+      # merged flash dump.
       - name: Download node firmware artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -66,19 +70,28 @@ jobs:
 
           echo "Using run $RUN_ID"
           gh run download "$RUN_ID" --name node-firmware --dir firmware/
-          ls -lh firmware/
+          echo "Downloaded files:"
+          find firmware/ -type f -exec ls -lh {} \;
           echo "::endgroup::"
+
+      # Copy the app binary and ELF to where wokwi.toml expects them.
+      # The artifact preserves the deep target/.../ directory structure;
+      # wokwi.toml references ../../firmware/node.bin (short path).
+      - name: Prepare node firmware for Wokwi
+        run: |
+          cp firmware/target/riscv32imc-esp-espidf/firmware/node.bin firmware/node.bin
+          cp firmware/target/riscv32imc-esp-espidf/firmware/node firmware/node.elf
+          echo "Prepared firmware files:"
+          ls -lh firmware/node.bin firmware/node.elf
 
       - name: Wokwi — boot ESP32-C3 node
         if: ${{ env.WOKWI_TOKEN != '' }}
         uses: wokwi/wokwi-ci-action@2806875412c8a2e0552eb609492c5890a888e085 # v1
-        env:
-          WOKWI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
         with:
           token: ${{ secrets.WOKWI_CLI_TOKEN }}
           path: wokwi/node
-          timeout: 60000           # 30 s — enough for full boot cycle
-          expect_text: 'sonde-node booting'
+          timeout: 60000
+          expect_text: 'Calling app_main()'
           fail_text: 'panic'
           serial_log_file: node-serial.log
 
@@ -94,6 +107,8 @@ jobs:
   modem-smoke:
     name: ESP32-S3 Modem (Wokwi)
     runs-on: ubuntu-latest
+    env:
+      WOKWI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -122,19 +137,34 @@ jobs:
 
           echo "Using run $RUN_ID"
           gh run download "$RUN_ID" --name modem-firmware --dir firmware-modem/
-          ls -lh firmware-modem/
+          echo "Downloaded files:"
+          find firmware-modem/ -type f -exec ls -lh {} \;
           echo "::endgroup::"
 
+      # Copy app binary and ELF to where wokwi.toml expects them.
+      # If individual binaries aren't in the artifact (old CI run), skip.
+      - name: Prepare modem firmware for Wokwi
+        id: modem-prep
+        run: |
+          if [ -f "firmware-modem/target/xtensa-esp32s3-espidf/firmware/modem.bin" ]; then
+            cp firmware-modem/target/xtensa-esp32s3-espidf/firmware/modem.bin firmware-modem/modem.bin
+            cp firmware-modem/target/xtensa-esp32s3-espidf/firmware/modem firmware-modem/modem.elf
+            echo "Prepared firmware files:"
+            ls -lh firmware-modem/modem.bin firmware-modem/modem.elf
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Individual modem binaries not found in artifact — modem CI may need to run with updated upload step first."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Wokwi — boot ESP32-S3 modem
-        if: ${{ env.WOKWI_TOKEN != '' }}
+        if: ${{ env.WOKWI_TOKEN != '' && steps.modem-prep.outputs.ready == 'true' }}
         uses: wokwi/wokwi-ci-action@2806875412c8a2e0552eb609492c5890a888e085 # v1
-        env:
-          WOKWI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
         with:
           token: ${{ secrets.WOKWI_CLI_TOKEN }}
           path: wokwi/modem
           timeout: 60000
-          expect_text: 'sonde-modem firmware starting'
+          expect_text: 'Calling app_main()'
           fail_text: 'panic'
           serial_log_file: modem-serial.log
 

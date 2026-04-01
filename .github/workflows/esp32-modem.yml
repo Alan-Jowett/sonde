@@ -175,6 +175,9 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ matrix.artifact }}
-          path: flash_image.bin
+          path: |
+            flash_image.bin
+            target/xtensa-esp32s3-espidf/firmware/modem
+            target/xtensa-esp32s3-espidf/firmware/modem.bin
           if-no-files-found: error
           retention-days: 7

@@ -3,4 +3,8 @@
 
 [wokwi]
 version = 1
-firmware = '../../firmware/flash_image.bin'
+# Use the app-only binary (not the merged flash image).
+# Wokwi provides its own bootloader when loading a .bin file.
+# The merged flash_image.bin is a 4 MB flash dump that Wokwi cannot parse.
+firmware = '../../firmware/node.bin'
+elf = '../../firmware/node.elf'

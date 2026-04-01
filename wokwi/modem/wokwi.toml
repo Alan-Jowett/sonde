@@ -6,4 +6,8 @@
 
 [wokwi]
 version = 1
-firmware = '../../firmware-modem/flash_image.bin'
+# Use the app-only binary (not the merged flash image).
+# Wokwi provides its own bootloader when loading a .bin file.
+# The merged flash_image.bin is a raw flash dump that Wokwi cannot parse.
+firmware = '../../firmware-modem/modem.bin'
+elf = '../../firmware-modem/modem.elf'

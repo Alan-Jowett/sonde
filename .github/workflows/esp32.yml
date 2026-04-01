@@ -174,31 +174,32 @@ jobs:
       # ------------------------------------------------------------------ #
 
       - name: Run QEMU smoke test
-        # Source IDF export.sh so qemu-system-riscv32 is on PATH.
+        # Espressif QEMU esp-develop-9.2.2-20250817 fixed the systimer
+        # peripheral (#120), so the FreeRTOS scheduler now starts and
+        # Rust `main()` is reached. This lets us validate app-level boot
+        # markers (not just ESP-IDF bootloader markers as before).
         #
-        # NOTE: The smoke test checks for ESP-IDF boot markers instead of
-        # Rust-level markers (`sonde-node booting`). ESP32-C3 QEMU support
-        # is experimental — the systimer peripheral used for FreeRTOS tick
-        # generation is not fully emulated, so the FreeRTOS scheduler never
-        # starts and `app_main()` / Rust `main()` is never called. See #105.
+        # qemu-system-riscv32 is installed to /usr/local/bin by the
+        # Docker image — no need to source IDF export.sh.
         #
-        # The ESP-IDF markers still prove the firmware was correctly:
-        #   1. Cross-compiled for riscv32imc-esp-espidf
-        #   2. Converted from ELF → binary → merged flash image
-        #   3. Loaded and validated by the ESP-IDF 2nd-stage bootloader
-        #   4. Initialized through CPU start, heap, and flash detection
+        # Markers checked:
+        #   1. ESP-IDF boot markers (cross-compilation, flash image, bootloader)
+        #   2. "sonde-node booting" — proves FreeRTOS started and Rust main ran
+        #
+        # Note: `ESP-NOW channel=` (ND-1016) is NOT checked because it
+        # requires a pre-provisioned PSK in NVS. Without a PSK the node
+        # enters BLE pairing mode and never reaches ESP-NOW init.
         run: |
-          . "$IDF_PATH/export.sh"
           QEMU_OUTPUT="/tmp/qemu_uart.txt"
 
           # Boot the firmware under QEMU with a hard timeout.
           # -no-reboot prevents restart loops on early failures.
-          # 15s is enough — ESP-IDF boot markers appear within 2s; the
-          # remaining time is buffer for slow CI runners. The firmware
-          # hangs after eFuse init (before FreeRTOS scheduler start) so
-          # a longer timeout just wastes CI time.
+          # 30s allows time for FreeRTOS scheduler start and Rust main
+          # (previously 15s when only bootloader markers were expected).
+          # The firmware eventually enters deep-sleep (no PSK in NVS)
+          # so the timeout is the normal exit path.
           set +e
-          timeout 15 qemu-system-riscv32 \
+          timeout 30 qemu-system-riscv32 \
             -nographic \
             -machine esp32c3 \
             -drive file=flash_image.bin,if=mtd,format=raw \
@@ -212,27 +213,22 @@ jobs:
           cat "$QEMU_OUTPUT"
           echo "========================"
 
-          # Exit 124 = timeout (expected — QEMU hangs after eFuse init).
-          # Exit 0   = QEMU exited cleanly (unusual but acceptable).
+          # Exit 124 = timeout (expected — deep sleep or BLE wait).
+          # Exit 0   = QEMU exited cleanly (acceptable).
           # Any other non-zero = QEMU crashed or was killed → fail.
           if [ "$QEMU_EXIT" -ne 0 ] && [ "$QEMU_EXIT" -ne 124 ]; then
             echo "ERROR: QEMU exited with unexpected code $QEMU_EXIT" >&2
             exit 1
           fi
 
-          # Assert ESP-IDF boot markers that prove the firmware image is
-          # valid and bootable. These are printed before the FreeRTOS
-          # scheduler starts, so they work even though QEMU can't fully
-          # boot ESP32-C3 firmware (see note above).
-          #
-          # "cpu_start: Pro cpu start user code" — CPU init reached user code
-          # "app_init: Application information"  — app metadata loaded
-          # "heap_init: Initializing"            — RAM layout correct
+          # Assert boot markers that prove the firmware image is valid,
+          # bootable, and reaches Rust application code.
           PASS=true
           for marker in \
             "cpu_start: Pro cpu start user code" \
             "app_init: Application information" \
-            "heap_init: Initializing"; do
+            "heap_init: Initializing" \
+            "sonde-node booting"; do
             if grep -qF "$marker" "$QEMU_OUTPUT"; then
               echo "✓  Found marker: '$marker'"
             else

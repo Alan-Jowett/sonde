@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa).
+# ESP32-S3 modem firmware CI: build sonde-modem for ESP32-S3 (Xtensa) and run
+# a QEMU smoke test that asserts boot-marker strings appear on UART.
 
 name: ESP32-S3 Modem Firmware CI
 
@@ -25,7 +26,7 @@ concurrency:
 
 jobs:
   esp32s3-modem-build:
-    name: Build ESP32-S3 modem firmware (${{ matrix.variant }})
+    name: Build ESP32-S3 modem firmware + smoke test (${{ matrix.variant }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -159,13 +160,81 @@ jobs:
 
           # Merge bootloader + partition table + app into a single image.
           # On ESP32-S3 the bootloader loads at flash offset 0x0 (not 0x1000).
+          # --fill-flash-size pads to the full flash size, which QEMU requires.
           esptool.py --chip esp32s3 merge_bin \
             --output flash_image.bin \
+            --fill-flash-size "$FLASH_SIZE" \
             0x0     "$BOOTLOADER" \
             0x8000  "$PARTITION_TABLE" \
             0x10000 "$TARGET_DIR/modem.bin"
 
           echo "flash_image.bin created ($(wc -c < flash_image.bin) bytes)"
+
+      # ------------------------------------------------------------------ #
+      # QEMU smoke test
+      # ------------------------------------------------------------------ #
+
+      - name: Run QEMU smoke test
+        # Espressif QEMU esp-develop-9.2.2-20250817 added ESP32-S3 machine
+        # support and fixed the systimer peripheral, enabling FreeRTOS boot.
+        #
+        # qemu-system-xtensa is installed to /usr/local/bin by the Docker
+        # image — no need to source IDF export.sh.
+        #
+        # The modem will reach Rust main but panic on USB-CDC init (QEMU
+        # does not emulate USB hardware). The ESP-IDF boot markers still
+        # prove the firmware was correctly cross-compiled, linked, and
+        # assembled into a bootable flash image.
+        run: |
+          QEMU_OUTPUT="/tmp/qemu_uart.txt"
+
+          # Boot the firmware under QEMU with a hard timeout.
+          # -no-reboot prevents restart loops after the USB-CDC panic.
+          # 30s allows time for FreeRTOS scheduler start; the modem
+          # panics shortly after reaching Rust main.
+          set +e
+          timeout 30 qemu-system-xtensa \
+            -nographic \
+            -machine esp32s3 \
+            -drive file=flash_image.bin,if=mtd,format=raw \
+            -no-reboot \
+            > "$QEMU_OUTPUT" 2>&1
+          QEMU_EXIT=$?
+          set -e
+
+          echo ""
+          echo "=== QEMU UART output ==="
+          cat "$QEMU_OUTPUT"
+          echo "========================"
+
+          # Exit 124 = timeout (expected).
+          # Exit 0   = QEMU exited cleanly (acceptable).
+          # Any other non-zero = QEMU crashed or was killed → fail.
+          if [ "$QEMU_EXIT" -ne 0 ] && [ "$QEMU_EXIT" -ne 124 ]; then
+            echo "ERROR: QEMU exited with unexpected code $QEMU_EXIT" >&2
+            exit 1
+          fi
+
+          # Assert ESP-IDF boot markers that prove the firmware image is
+          # valid and bootable on ESP32-S3.
+          PASS=true
+          for marker in \
+            "cpu_start:" \
+            "heap_init: Initializing"; do
+            if grep -qF "$marker" "$QEMU_OUTPUT"; then
+              echo "✓  Found marker: '$marker'"
+            else
+              echo "✗  Missing marker: '$marker'" >&2
+              PASS=false
+            fi
+          done
+
+          if [ "$PASS" = "false" ]; then
+            echo "Smoke test FAILED — one or more expected markers were not found." >&2
+            exit 1
+          fi
+
+          echo "Smoke test passed."
 
       # ------------------------------------------------------------------ #
       # Upload firmware artifact

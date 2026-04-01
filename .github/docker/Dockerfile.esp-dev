@@ -3,7 +3,7 @@
 #
 # Pre-built ESP32 development container for sonde firmware builds.
 # Includes Rust stable, the Espressif `esp` toolchain (RISC-V + Xtensa),
-# ldproxy, QEMU for RISC-V, and host build dependencies.
+# ldproxy, QEMU for RISC-V and Xtensa, and host build dependencies.
 #
 # Published to ghcr.io/alan-jowett/sonde-esp-dev by the
 # esp-dev-container.yml CI workflow.
@@ -67,9 +67,19 @@ SHELL ["/bin/bash", "-c"]
 # Remove this when embuild is updated to pass --interface_version 4+.
 ENV IDF_COMPONENT_MANAGER=0
 
-# ── QEMU for RISC-V (ESP32-C3 smoke tests) ──────────────────────────────────
-RUN . "$IDF_PATH/export.sh" && \
-    "$IDF_PATH/tools/idf_tools.py" install qemu-riscv32
+# ── Espressif QEMU for ESP32 smoke tests ─────────────────────────────────────
+# Pin QEMU esp-develop-9.2.2-20250817 for the systimer fix
+# (https://github.com/espressif/qemu/issues/120) which enables full FreeRTOS
+# boot on ESP32-C3, and adds ESP32-S3 machine support.
+# Install both RISC-V (ESP32-C3) and Xtensa (ESP32-S3) builds; the tarballs
+# extract into /opt/qemu/ and the symlinks make them available without
+# sourcing IDF export.sh.
+RUN curl -sSL https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20250817/qemu-riscv32-softmmu-esp_develop_9.2.2_20250817-x86_64-linux-gnu.tar.xz \
+    | tar xJ -C /opt/ && \
+    ln -s /opt/qemu/bin/qemu-system-riscv32 /usr/local/bin/qemu-system-riscv32 && \
+    curl -sSL https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20250817/qemu-xtensa-softmmu-esp_develop_9.2.2_20250817-x86_64-linux-gnu.tar.xz \
+    | tar xJ -C /opt/ && \
+    ln -s /opt/qemu/bin/qemu-system-xtensa /usr/local/bin/qemu-system-xtensa
 
 # ── cargo-fuzz (optional, for local fuzz testing) ────────────────────────────
 RUN cargo install cargo-fuzz@0.12.0 --locked

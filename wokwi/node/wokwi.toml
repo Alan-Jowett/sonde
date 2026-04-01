@@ -6,4 +6,5 @@
 
 [wokwi]
 version = 1
+elf = '../../firmware/node'
 firmware = '../../firmware/flash_image.bin'

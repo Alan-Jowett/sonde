@@ -167,6 +167,24 @@ jobs:
 
           echo "flash_image.bin created ($(wc -c < flash_image.bin) bytes)"
 
+          # Assemble flash-parts/ directory for Wokwi CI consumption.
+          mkdir -p flash-parts
+          cp "$BOOTLOADER"    flash-parts/bootloader.bin
+          cp "$PARTITION_TABLE" flash-parts/partition-table.bin
+          cp "$TARGET_DIR/modem.bin" flash-parts/app.bin
+          cat > flash-parts/flasher_args.json <<'EOF'
+          {
+            "flash_files": {
+              "0x0":     "bootloader.bin",
+              "0x8000":  "partition-table.bin",
+              "0x10000": "app.bin"
+            },
+            "extra_esptool_args": {
+              "chip": "esp32s3"
+            }
+          }
+          EOF
+
       # ------------------------------------------------------------------ #
       # Upload firmware artifact
       # ------------------------------------------------------------------ #
@@ -177,6 +195,7 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             flash_image.bin
+            flash-parts/
             target/xtensa-esp32s3-espidf/firmware/modem
             target/xtensa-esp32s3-espidf/firmware/modem.bin
           if-no-files-found: error

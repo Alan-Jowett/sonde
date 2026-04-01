@@ -3,8 +3,8 @@
 
 [wokwi]
 version = 1
-# Use the app-only binary (not the merged flash image).
-# Wokwi provides its own bootloader when loading a .bin file.
-# The merged flash_image.bin is a 4 MB flash dump that Wokwi cannot parse.
-firmware = '../../firmware/node.bin'
+# Use flasher_args.json to load bootloader + partition table + app at the
+# correct flash offsets.  This is the documented approach for ESP-IDF apps.
+# See https://docs.wokwi.com/vscode/project-config#esp-idf-support
+firmware = '../../firmware/flash-parts/flasher_args.json'
 elf = '../../firmware/node.elf'

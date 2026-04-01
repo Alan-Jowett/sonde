@@ -74,15 +74,24 @@ jobs:
           find firmware/ -type f -exec ls -lh {} \;
           echo "::endgroup::"
 
-      # Copy the app binary and ELF to where wokwi.toml expects them.
-      # The artifact preserves the deep target/.../ directory structure;
-      # wokwi.toml references ../../firmware/node.bin (short path).
+      # The flash-parts/ directory in the artifact contains flasher_args.json
+      # alongside bootloader.bin, partition-table.bin, and app.bin.
+      # The paths in flasher_args.json are relative to itself, so the
+      # directory is self-contained — just copy the ELF for debug symbols.
       - name: Prepare node firmware for Wokwi
         run: |
-          cp firmware/target/riscv32imc-esp-espidf/firmware/node.bin firmware/node.bin
-          cp firmware/target/riscv32imc-esp-espidf/firmware/node firmware/node.elf
-          echo "Prepared firmware files:"
-          ls -lh firmware/node.bin firmware/node.elf
+          if [ -d "firmware/flash-parts" ]; then
+            echo "flash-parts directory found:"
+            ls -lh firmware/flash-parts/
+            cat firmware/flash-parts/flasher_args.json
+          else
+            echo "::error::flash-parts directory not found — ESP32-C3 CI may need to run first"
+            exit 1
+          fi
+          # Copy ELF for debug symbols (wokwi.toml references ../../firmware/node.elf).
+          if [ -f "firmware/target/riscv32imc-esp-espidf/firmware/node" ]; then
+            cp firmware/target/riscv32imc-esp-espidf/firmware/node firmware/node.elf
+          fi
 
       - name: Wokwi — boot ESP32-C3 node
         if: ${{ env.WOKWI_TOKEN != '' }}
@@ -142,19 +151,22 @@ jobs:
           echo "::endgroup::"
 
       # Copy app binary and ELF to where wokwi.toml expects them.
-      # If individual binaries aren't in the artifact (old CI run), skip.
+      # If flash-parts aren't in the artifact (old CI run), skip.
       - name: Prepare modem firmware for Wokwi
         id: modem-prep
         run: |
-          if [ -f "firmware-modem/target/xtensa-esp32s3-espidf/firmware/modem.bin" ]; then
-            cp firmware-modem/target/xtensa-esp32s3-espidf/firmware/modem.bin firmware-modem/modem.bin
-            cp firmware-modem/target/xtensa-esp32s3-espidf/firmware/modem firmware-modem/modem.elf
-            echo "Prepared firmware files:"
-            ls -lh firmware-modem/modem.bin firmware-modem/modem.elf
+          if [ -d "firmware-modem/flash-parts" ]; then
+            echo "flash-parts directory found:"
+            ls -lh firmware-modem/flash-parts/
+            cat firmware-modem/flash-parts/flasher_args.json
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::Individual modem binaries not found in artifact — modem CI may need to run with updated upload step first."
+            echo "::warning::flash-parts directory not found — modem CI may need to run with updated artifact upload first."
             echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Copy ELF for debug symbols.
+          if [ -f "firmware-modem/target/xtensa-esp32s3-espidf/firmware/modem" ]; then
+            cp firmware-modem/target/xtensa-esp32s3-espidf/firmware/modem firmware-modem/modem.elf
           fi
 
       - name: Wokwi — boot ESP32-S3 modem

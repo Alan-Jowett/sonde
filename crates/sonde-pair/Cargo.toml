@@ -6,6 +6,7 @@ license = "MIT"
 
 [features]
 default = []
+aes-gcm-codec = []
 btleplug = ["dep:btleplug", "dep:uuid", "dep:tokio", "dep:futures"]
 file-store = ["dep:serde", "dep:serde_json"]
 dpapi = ["dep:windows-sys", "file-store"]

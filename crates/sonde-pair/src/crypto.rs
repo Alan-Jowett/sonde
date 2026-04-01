@@ -135,6 +135,65 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// AAD string for the AES-256-GCM pairing request AEAD codec.
+#[cfg(feature = "aes-gcm-codec")]
+pub const PAIRING_REQUEST_AAD: &[u8] = b"sonde-pairing-v2";
+
+/// GCM nonce length in bytes.
+#[cfg(feature = "aes-gcm-codec")]
+const GCM_NONCE_LEN: usize = 12;
+
+/// GCM tag length in bytes.
+#[cfg(feature = "aes-gcm-codec")]
+const GCM_TAG_LEN: usize = 16;
+
+/// Encrypt a pairing request using AES-256-GCM with the phone PSK.
+///
+/// Returns `nonce(12) ‖ ciphertext ‖ tag(16)`.
+///
+/// The AAD is fixed to `"sonde-pairing-v2"` for domain separation.
+#[cfg(feature = "aes-gcm-codec")]
+pub fn encrypt_pairing_request_aead(
+    phone_psk: &[u8; 32],
+    pairing_request_cbor: &[u8],
+) -> Result<Vec<u8>, PairingError> {
+    let mut nonce = [0u8; GCM_NONCE_LEN];
+    getrandom::fill(&mut nonce).map_err(|e| PairingError::RngFailed(e.to_string()))?;
+
+    let ciphertext_and_tag =
+        aes256gcm_encrypt(phone_psk, &nonce, pairing_request_cbor, PAIRING_REQUEST_AAD)?;
+
+    let mut result = Vec::with_capacity(GCM_NONCE_LEN + ciphertext_and_tag.len());
+    result.extend_from_slice(&nonce);
+    result.extend_from_slice(&ciphertext_and_tag);
+    Ok(result)
+}
+
+/// Decrypt a pairing request using AES-256-GCM with the phone PSK.
+///
+/// Expects `nonce(12) ‖ ciphertext ‖ tag(16)`. Returns the plaintext
+/// CBOR in a [`Zeroizing`] wrapper on success, or `None` if
+/// authentication fails.
+///
+/// The AAD is fixed to `"sonde-pairing-v2"` for domain separation.
+#[cfg(feature = "aes-gcm-codec")]
+pub fn decrypt_pairing_request_aead(
+    phone_psk: &[u8; 32],
+    encrypted_payload: &[u8],
+) -> Option<Zeroizing<Vec<u8>>> {
+    // Minimum length: 12-byte nonce + 16-byte tag (ciphertext may be empty)
+    if encrypted_payload.len() < GCM_NONCE_LEN + GCM_TAG_LEN {
+        return None;
+    }
+
+    let nonce: &[u8; GCM_NONCE_LEN] = encrypted_payload[..GCM_NONCE_LEN].try_into().ok()?;
+    let ciphertext_and_tag = &encrypted_payload[GCM_NONCE_LEN..];
+
+    let plaintext =
+        aes256gcm_decrypt(phone_psk, nonce, ciphertext_and_tag, PAIRING_REQUEST_AAD).ok()?;
+    Some(plaintext)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,5 +458,113 @@ mod tests {
         pub fn encode(data: impl AsRef<[u8]>) -> String {
             data.as_ref().iter().map(|b| format!("{b:02x}")).collect()
         }
+    }
+}
+
+#[cfg(all(test, feature = "aes-gcm-codec"))]
+mod aead_tests {
+    use super::*;
+
+    /// Round-trip: encrypt then decrypt must recover the original plaintext.
+    #[test]
+    fn pairing_request_aead_round_trip() {
+        let psk = [0x42u8; 32];
+        let plaintext = b"pairing request CBOR data for node-42";
+
+        let encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        let decrypted = decrypt_pairing_request_aead(&psk, &encrypted);
+        assert_eq!(
+            decrypted.as_ref().map(|z| z.as_slice()),
+            Some(plaintext.as_slice())
+        );
+    }
+
+    /// Wrong PSK must fail decryption (authentication failure).
+    #[test]
+    fn pairing_request_aead_wrong_psk_fails() {
+        let psk = [0x42u8; 32];
+        let wrong_psk = [0x43u8; 32];
+        let plaintext = b"secret pairing request";
+
+        let encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        assert!(
+            decrypt_pairing_request_aead(&wrong_psk, &encrypted).is_none(),
+            "wrong PSK must fail decryption"
+        );
+    }
+
+    /// Tampered ciphertext must fail authentication.
+    #[test]
+    fn pairing_request_aead_tampered_payload_fails() {
+        let psk = [0x42u8; 32];
+        let plaintext = b"original pairing request";
+
+        let mut encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        // Flip a byte in the ciphertext (after the 12-byte nonce)
+        let flip_idx = GCM_NONCE_LEN + 1;
+        encrypted[flip_idx] ^= 0xFF;
+        assert!(
+            decrypt_pairing_request_aead(&psk, &encrypted).is_none(),
+            "tampered ciphertext must fail authentication"
+        );
+    }
+
+    /// AAD binding: decrypting with a different AAD must fail.
+    ///
+    /// We verify this indirectly by encrypting with the AEAD function
+    /// (which uses `"sonde-pairing-v2"`) and decrypting with the raw
+    /// AES-GCM function using a wrong AAD.
+    #[test]
+    fn pairing_request_aead_wrong_aad_fails() {
+        let psk = [0x42u8; 32];
+        let plaintext = b"aad-bound payload";
+
+        let encrypted = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+
+        // Extract nonce and ciphertext_and_tag
+        let nonce: [u8; 12] = encrypted[..12].try_into().unwrap();
+        let ciphertext_and_tag = &encrypted[12..];
+
+        // Decrypt with wrong AAD must fail
+        assert!(
+            aes256gcm_decrypt(&psk, &nonce, ciphertext_and_tag, b"wrong-aad").is_err(),
+            "wrong AAD must fail decryption"
+        );
+
+        // Correct AAD must succeed
+        assert!(
+            aes256gcm_decrypt(&psk, &nonce, ciphertext_and_tag, PAIRING_REQUEST_AAD).is_ok(),
+            "correct AAD must succeed"
+        );
+    }
+
+    /// Payload too short (less than nonce + tag) must return None.
+    #[test]
+    fn pairing_request_aead_short_payload_returns_none() {
+        let psk = [0x42u8; 32];
+        // 27 bytes < 12 nonce + 16 tag = 28 minimum
+        let short = [0u8; 27];
+        assert!(decrypt_pairing_request_aead(&psk, &short).is_none());
+    }
+
+    /// Empty plaintext round-trip: encrypt then decrypt an empty buffer.
+    #[test]
+    fn pairing_request_aead_empty_plaintext_round_trip() {
+        let psk = [0x42u8; 32];
+        let encrypted = encrypt_pairing_request_aead(&psk, b"").unwrap();
+        // nonce(12) + tag(16) = 28 bytes, no ciphertext
+        assert_eq!(encrypted.len(), GCM_NONCE_LEN + GCM_TAG_LEN);
+        let decrypted = decrypt_pairing_request_aead(&psk, &encrypted);
+        assert_eq!(
+            decrypted.as_ref().map(|z| z.as_slice()),
+            Some([].as_slice())
+        );
+    }
+
+    /// Empty payload must return None.
+    #[test]
+    fn pairing_request_aead_empty_payload_returns_none() {
+        let psk = [0x42u8; 32];
+        assert!(decrypt_pairing_request_aead(&psk, &[]).is_none());
     }
 }

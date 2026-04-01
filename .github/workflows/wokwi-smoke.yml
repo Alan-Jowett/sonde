@@ -71,7 +71,7 @@ jobs:
 
       - name: Wokwi — boot ESP32-C3 node
         if: ${{ env.WOKWI_TOKEN != '' }}
-        uses: wokwi/wokwi-ci-action@f56636613c4aab0a0fb1923112e7854668a185da # v1
+        uses: wokwi/wokwi-ci-action@2806875412c8a2e0552eb609492c5890a888e085 # v1
         env:
           WOKWI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
         with:
@@ -127,7 +127,7 @@ jobs:
 
       - name: Wokwi — boot ESP32-S3 modem
         if: ${{ env.WOKWI_TOKEN != '' }}
-        uses: wokwi/wokwi-ci-action@f56636613c4aab0a0fb1923112e7854668a185da # v1
+        uses: wokwi/wokwi-ci-action@2806875412c8a2e0552eb609492c5890a888e085 # v1
         env:
           WOKWI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
         with:

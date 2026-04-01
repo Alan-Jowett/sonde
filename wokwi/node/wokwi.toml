@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
-#
-# Wokwi simulation config for the ESP32-C3 node firmware.
-# See wokwi/README.md for usage.
 
 [wokwi]
 version = 1
-elf = '../../firmware/node'
 firmware = '../../firmware/flash_image.bin'

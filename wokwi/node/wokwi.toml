@@ -7,4 +7,4 @@
 [wokwi]
 version = 1
 firmware = '../../firmware/flash_image.bin'
-elf = '../../target/riscv32imc-esp-espidf/firmware/sonde-node'
+elf = '../../target/riscv32imc-esp-espidf/firmware/node'

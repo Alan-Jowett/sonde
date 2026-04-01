@@ -7,4 +7,4 @@
 [wokwi]
 version = 1
 firmware = '../../firmware-modem/flash_image.bin'
-elf = '../../target/xtensa-esp32s3-espidf/firmware/sonde-modem'
+elf = '../../target/xtensa-esp32s3-espidf/firmware/modem'

@@ -254,20 +254,18 @@ pub fn peer_request_exchange<T: Transport, S: PlatformStorage>(
 /// AES-GCM variant of [`build_peer_request_frame`].
 ///
 /// The phone builds the complete ESP-NOW PEER_REQUEST frame during BLE
-/// provisioning.  This function validates the stored blob and returns
+/// provisioning.  This function validates the stored blob is a
+/// decodable AEAD frame with `msg_type == MSG_PEER_REQUEST` and returns
 /// it as-is for transmission.
 #[cfg(feature = "aes-gcm-codec")]
 pub fn build_peer_request_frame_aead(complete_frame: &[u8]) -> NodeResult<Vec<u8>> {
-    if complete_frame.len() < sonde_protocol::MIN_FRAME_SIZE_AEAD {
-        return Err(NodeError::MalformedPayload(
-            "PEER_REQUEST frame too short for AEAD",
-        ));
+    let decoded = sonde_protocol::decode_frame_aead(complete_frame)
+        .map_err(|_| NodeError::MalformedPayload("PEER_REQUEST frame is not a valid AEAD frame"))?;
+
+    if decoded.header.msg_type != MSG_PEER_REQUEST {
+        return Err(NodeError::UnexpectedMsgType(decoded.header.msg_type));
     }
-    if complete_frame.len() > sonde_protocol::MAX_FRAME_SIZE {
-        return Err(NodeError::MalformedPayload(
-            "PEER_REQUEST frame exceeds ESP-NOW frame budget",
-        ));
-    }
+
     Ok(complete_frame.to_vec())
 }
 
@@ -355,12 +353,10 @@ pub fn peer_request_exchange_aead<
 ) -> NodeResult<bool> {
     let frame = build_peer_request_frame_aead(complete_frame)?;
 
-    // Extract nonce from the frame header (bytes 3..11, big-endian u64).
-    let nonce = u64::from_be_bytes(
-        frame[sonde_protocol::OFFSET_NONCE..sonde_protocol::OFFSET_NONCE + 8]
-            .try_into()
-            .map_err(|_| NodeError::MalformedPayload("cannot extract nonce from frame"))?,
-    );
+    // Extract nonce via decode (already validated by build_peer_request_frame_aead).
+    let decoded = sonde_protocol::decode_frame_aead(&frame)
+        .map_err(|_| NodeError::MalformedPayload("cannot decode validated frame"))?;
+    let nonce = decoded.header.nonce;
 
     transport.send(&frame)?;
     log::info!("PEER_REQUEST sent (relayed phone-built frame, ND-1004)");
@@ -1007,9 +1003,44 @@ mod tests {
 
         #[test]
         fn build_peer_request_frame_aead_accepts_max_size() {
-            let exact = vec![0xCCu8; sonde_protocol::MAX_FRAME_SIZE];
+            // Build a frame of exactly MAX_FRAME_SIZE with a valid header
+            // (msg_type = MSG_PEER_REQUEST).
+            let mut exact = vec![0xCCu8; sonde_protocol::MAX_FRAME_SIZE];
+            let header = FrameHeader {
+                key_hint: 0x0001,
+                msg_type: MSG_PEER_REQUEST,
+                nonce: 1,
+            };
+            let header_bytes = header.to_bytes();
+            exact[..header_bytes.len()].copy_from_slice(&header_bytes);
             let result = build_peer_request_frame_aead(&exact);
             assert!(result.is_ok(), "MAX_FRAME_SIZE must succeed");
+        }
+
+        #[test]
+        fn build_peer_request_frame_aead_rejects_wrong_msg_type() {
+            let phone_psk = [0x42u8; 32];
+            let sha = TestSha256;
+            let aead = NodeAead;
+            let phone_key_hint = sonde_protocol::key_hint_from_psk(&phone_psk, &sha);
+
+            let header = FrameHeader {
+                key_hint: phone_key_hint,
+                msg_type: sonde_protocol::MSG_WAKE, // wrong type
+                nonce: 1,
+            };
+            let cbor_map = ciborium::Value::Map(alloc::vec![(
+                ciborium::Value::Integer(sonde_protocol::PEER_REQ_KEY_PAYLOAD.into()),
+                ciborium::Value::Bytes(vec![0xAA; 10]),
+            )]);
+            let mut cbor_buf = Vec::new();
+            ciborium::into_writer(&cbor_map, &mut cbor_buf).unwrap();
+
+            let frame =
+                sonde_protocol::encode_frame_aead(&header, &cbor_buf, &phone_psk, &aead, &sha)
+                    .unwrap();
+            let result = build_peer_request_frame_aead(&frame);
+            assert!(result.is_err(), "wrong msg_type must be rejected");
         }
 
         // --- AEAD peer registration exchange tests ---

@@ -1995,8 +1995,10 @@ where
     }
 
     // 10. Determine sleep duration
-    if sleep_mgr.will_wake_early() && storage.set_early_wake_flag().is_err() {
-        let _ = storage.set_early_wake_flag();
+    if sleep_mgr.will_wake_early() {
+        if let Err(err) = storage.set_early_wake_flag() {
+            log::warn!("Failed to set early-wake flag: {:?}", err);
+        }
     }
 
     log_and_sleep(&sleep_mgr)

@@ -33,6 +33,135 @@ use crate::transport::PeerAddress;
 /// Default chunk size for program transfers (bytes).
 const DEFAULT_CHUNK_SIZE: u32 = 128;
 
+/// Parsed fields from a PairingRequest CBOR payload.
+///
+/// Used by both the HMAC and AEAD `handle_peer_request` paths to avoid
+/// duplicating the CBOR parsing and validation logic.
+struct PairingRequestFields {
+    node_id: String,
+    node_key_hint: u16,
+    node_psk: [u8; 32],
+    rf_channel: u8,
+    timestamp: u64,
+    sensors: Vec<crate::registry::SensorDescriptor>,
+}
+
+/// Parse and validate a PairingRequest CBOR payload.
+///
+/// Returns `None` on any parse/validation failure (silent discard per protocol).
+fn parse_pairing_request(cbor_bytes: &[u8]) -> Option<PairingRequestFields> {
+    use crate::registry::SensorDescriptor;
+
+    let pairing_cbor: ciborium::Value = ciborium::from_reader(cbor_bytes).ok()?;
+    let pairing_map = pairing_cbor.as_map()?;
+
+    let mut node_id: Option<String> = None;
+    let mut node_key_hint: Option<u16> = None;
+    let mut node_psk: Option<[u8; 32]> = None;
+    let mut rf_channel: Option<u8> = None;
+    let mut timestamp: Option<u64> = None;
+    let mut sensors: Vec<SensorDescriptor> = Vec::new();
+
+    for (k, v) in pairing_map {
+        let key = k.as_integer().and_then(|i| u64::try_from(i).ok())?;
+        match key {
+            1 => node_id = v.as_text().map(|s| s.to_owned()),
+            2 => {
+                node_key_hint = v
+                    .as_integer()
+                    .and_then(|i| u64::try_from(i).ok())
+                    .and_then(|v| u16::try_from(v).ok())
+            }
+            3 => {
+                if let Some(b) = v.as_bytes() {
+                    if b.len() == 32 {
+                        let mut psk = [0u8; 32];
+                        psk.copy_from_slice(b);
+                        node_psk = Some(psk);
+                    }
+                }
+            }
+            4 => {
+                rf_channel = v
+                    .as_integer()
+                    .and_then(|i| u64::try_from(i).ok())
+                    .and_then(|v| u8::try_from(v).ok())
+            }
+            5 => {
+                if let Some(arr) = v.as_array() {
+                    for item in arr {
+                        if let Some(sensor_map) = item.as_map() {
+                            let mut sensor_type: Option<u8> = None;
+                            let mut sensor_id: Option<u8> = None;
+                            let mut label: Option<String> = None;
+                            for (sk, sv) in sensor_map {
+                                let skey = sk.as_integer().and_then(|i| u64::try_from(i).ok());
+                                match skey {
+                                    Some(1) => {
+                                        sensor_type = sv
+                                            .as_integer()
+                                            .and_then(|i| u64::try_from(i).ok())
+                                            .and_then(|v| u8::try_from(v).ok())
+                                    }
+                                    Some(2) => {
+                                        sensor_id = sv
+                                            .as_integer()
+                                            .and_then(|i| u64::try_from(i).ok())
+                                            .and_then(|v| u8::try_from(v).ok())
+                                    }
+                                    Some(3) => {
+                                        if let Some(s) = sv.as_text() {
+                                            if s.len() > 64 {
+                                                return None;
+                                            }
+                                            label = Some(s.to_owned());
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if let (Some(st), Some(si)) = (sensor_type, sensor_id) {
+                                if !(1..=4).contains(&st) {
+                                    return None;
+                                }
+                                sensors.push(SensorDescriptor {
+                                    sensor_type: st,
+                                    sensor_id: si,
+                                    label,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            6 => timestamp = v.as_integer().and_then(|i| u64::try_from(i).ok()),
+            _ => {}
+        }
+    }
+
+    let node_id = node_id?;
+    let node_key_hint = node_key_hint?;
+    let node_psk = node_psk?;
+    let rf_channel = rf_channel?;
+    let timestamp = timestamp?;
+
+    if node_id.is_empty() || node_id.len() > 64 {
+        return None;
+    }
+    if !(1..=13).contains(&rf_channel) {
+        return None;
+    }
+
+    Some(PairingRequestFields {
+        node_id,
+        node_key_hint,
+        node_psk,
+        rf_channel,
+        timestamp,
+        sensors,
+    })
+}
+
 /// A pending command queued for a specific node.
 #[derive(Debug, Clone)]
 pub enum PendingCommand {
@@ -299,8 +428,6 @@ impl Gateway {
         use x25519_dalek::PublicKey as X25519PublicKey;
         use zeroize::Zeroizing;
 
-        use crate::registry::SensorDescriptor;
-
         const HKDF_INFO: &[u8] = b"sonde-node-pair-v1";
         const PROOF_DOMAIN: &[u8] = b"sonde-peer-ack-v1";
         const MAX_TIMESTAMP_DRIFT_S: u64 = 86400;
@@ -388,114 +515,11 @@ impl Gateway {
         }
         let phone_id = matched_phone_id?;
 
-        // Step 7: Parse PairingRequest CBOR.
-        let pairing_cbor: ciborium::Value = ciborium::from_reader(cbor_bytes).ok()?;
-        let pairing_map = pairing_cbor.as_map()?;
-
-        let mut node_id: Option<String> = None;
-        let mut node_key_hint: Option<u16> = None;
-        let mut node_psk: Option<[u8; 32]> = None;
-        let mut rf_channel: Option<u8> = None;
-        let mut timestamp: Option<u64> = None;
-        let mut sensors: Vec<SensorDescriptor> = Vec::new();
-
-        for (k, v) in pairing_map {
-            let key = k.as_integer().and_then(|i| u64::try_from(i).ok())?;
-            match key {
-                1 => node_id = v.as_text().map(|s| s.to_owned()),
-                2 => {
-                    node_key_hint = v
-                        .as_integer()
-                        .and_then(|i| u64::try_from(i).ok())
-                        .and_then(|v| u16::try_from(v).ok())
-                }
-                3 => {
-                    if let Some(b) = v.as_bytes() {
-                        if b.len() == 32 {
-                            let mut psk = [0u8; 32];
-                            psk.copy_from_slice(b);
-                            node_psk = Some(psk);
-                        }
-                    }
-                }
-                4 => {
-                    rf_channel = v
-                        .as_integer()
-                        .and_then(|i| u64::try_from(i).ok())
-                        .and_then(|v| u8::try_from(v).ok())
-                }
-                5 => {
-                    // Parse sensor descriptor array.
-                    if let Some(arr) = v.as_array() {
-                        for item in arr {
-                            if let Some(sensor_map) = item.as_map() {
-                                let mut sensor_type: Option<u8> = None;
-                                let mut sensor_id: Option<u8> = None;
-                                let mut label: Option<String> = None;
-                                for (sk, sv) in sensor_map {
-                                    let skey = sk.as_integer().and_then(|i| u64::try_from(i).ok());
-                                    match skey {
-                                        Some(1) => {
-                                            sensor_type = sv
-                                                .as_integer()
-                                                .and_then(|i| u64::try_from(i).ok())
-                                                .and_then(|v| u8::try_from(v).ok())
-                                        }
-                                        Some(2) => {
-                                            sensor_id = sv
-                                                .as_integer()
-                                                .and_then(|i| u64::try_from(i).ok())
-                                                .and_then(|v| u8::try_from(v).ok())
-                                        }
-                                        Some(3) => {
-                                            if let Some(s) = sv.as_text() {
-                                                if s.len() > 64 {
-                                                    return None; // label exceeds 64-byte limit
-                                                }
-                                                label = Some(s.to_owned());
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                if let (Some(st), Some(si)) = (sensor_type, sensor_id) {
-                                    // Validate sensor_type: 1=I2C, 2=ADC, 3=GPIO, 4=SPI.
-                                    if !(1..=4).contains(&st) {
-                                        return None;
-                                    }
-                                    sensors.push(SensorDescriptor {
-                                        sensor_type: st,
-                                        sensor_id: si,
-                                        label,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                6 => timestamp = v.as_integer().and_then(|i| u64::try_from(i).ok()),
-                _ => {} // ignore unknown keys for forward compatibility
-            }
-        }
-
-        let node_id = node_id?;
-        let node_key_hint = node_key_hint?;
-        let node_psk = node_psk?;
-        let rf_channel = rf_channel?;
-        let timestamp = timestamp?;
-
-        // Validate node_id length (1–64 bytes).
-        if node_id.is_empty() || node_id.len() > 64 {
-            return None;
-        }
-
-        // Validate rf_channel range (1–13).
-        if !(1..=13).contains(&rf_channel) {
-            return None;
-        }
+        // Step 7: Parse PairingRequest CBOR (shared with AEAD path).
+        let pr = parse_pairing_request(cbor_bytes)?;
 
         // Step 8: Verify frame HMAC with extracted node_psk (GW-1214).
-        if !verify_frame(decoded, &node_psk, &self.crypto_hmac) {
+        if !verify_frame(decoded, &pr.node_psk, &self.crypto_hmac) {
             return None;
         }
 
@@ -504,19 +528,19 @@ impl Gateway {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_secs();
-        if now.abs_diff(timestamp) > MAX_TIMESTAMP_DRIFT_S {
+        if now.abs_diff(pr.timestamp) > MAX_TIMESTAMP_DRIFT_S {
             return None;
         }
 
         // Step 10 + 11: Verify key_hint consistency (GW-1217).
-        if decoded.header.key_hint != node_key_hint {
+        if decoded.header.key_hint != pr.node_key_hint {
             return None;
         }
 
         // Step 10 + 12: Atomically register node, rejecting if node_id exists (GW-1216, GW-1218).
-        let mut record = NodeRecord::new(node_id, node_key_hint, node_psk);
-        record.rf_channel = Some(rf_channel);
-        record.sensors = sensors;
+        let mut record = NodeRecord::new(pr.node_id, pr.node_key_hint, pr.node_psk);
+        record.rf_channel = Some(pr.rf_channel);
+        record.sensors = pr.sensors;
         record.registered_by_phone_id = Some(phone_id);
         if !self.storage.insert_node_if_not_exists(&record).await.ok()? {
             // Duplicate node_id. Check if PSK matches the existing record
@@ -554,7 +578,7 @@ impl Gateway {
         let mut proof_input = Vec::with_capacity(PROOF_DOMAIN.len() + encrypted_payload.len());
         proof_input.extend_from_slice(PROOF_DOMAIN);
         proof_input.extend_from_slice(encrypted_payload);
-        let proof = self.crypto_hmac.compute(&node_psk, &proof_input);
+        let proof = self.crypto_hmac.compute(&record.psk, &proof_input);
 
         // Build CBOR: { 1: 0, 2: registration_proof }
         let ack_cbor = ciborium::Value::Map(vec![
@@ -571,12 +595,13 @@ impl Gateway {
         ciborium::into_writer(&ack_cbor, &mut ack_cbor_buf).ok()?;
 
         let ack_header = FrameHeader {
-            key_hint: node_key_hint,
+            key_hint: record.key_hint,
             msg_type: MSG_PEER_ACK,
             nonce: decoded.header.nonce, // echo nonce
         };
 
-        let frame = encode_frame(&ack_header, &ack_cbor_buf, &node_psk, &self.crypto_hmac).ok()?;
+        let frame =
+            encode_frame(&ack_header, &ack_cbor_buf, &record.psk, &self.crypto_hmac).ok()?;
 
         // GW-1300 AC2: log PEER_ACK frame encoded (transport send happens later).
         info!(node_id = %record.node_id, "PEER_ACK frame encoded");
@@ -604,7 +629,6 @@ impl Gateway {
         use sonde_protocol::Sha256Provider;
 
         use crate::aead::GatewayAead;
-        use crate::registry::SensorDescriptor;
 
         const PAIRING_AAD: &[u8] = b"sonde-pairing-v2";
         const MAX_TIMESTAMP_DRIFT_S: u64 = 86400;
@@ -620,24 +644,24 @@ impl Gateway {
             .ok()?;
 
         // Step 2: Decrypt outer AEAD frame with each candidate phone_psk.
-        let mut matched_phone_id: Option<u32> = None;
+        // Keep a reference to the matched record to avoid copying PSK out
+        // of its `Zeroizing` wrapper.
+        let mut matched_phone: Option<&crate::phone_trust::PhonePskRecord> = None;
         let mut outer_payload: Option<Vec<u8>> = None;
-        let mut matched_phone_psk: Option<[u8; 32]> = None;
 
         for phone in &phone_candidates {
             if matches!(phone.status, PhonePskStatus::Revoked) {
                 continue;
             }
             if let Ok(pt) = open_frame(decoded, &phone.psk, &aead, &self.crypto_sha) {
-                matched_phone_id = Some(phone.phone_id);
+                matched_phone = Some(phone);
                 outer_payload = Some(pt);
-                matched_phone_psk = Some(*phone.psk);
                 break;
             }
         }
-        let phone_id = matched_phone_id?;
+        let matched_phone = matched_phone?;
+        let phone_id = matched_phone.phone_id;
         let cbor_payload = outer_payload?;
-        let phone_psk = matched_phone_psk?;
 
         // Step 3: Parse CBOR, extract encrypted_payload (key 1).
         let cbor: ciborium::Value = ciborium::from_reader(&cbor_payload[..]).ok()?;
@@ -652,7 +676,7 @@ impl Gateway {
         }
         let encrypted_payload = encrypted_payload?;
 
-        // Step 4: Decrypt inner payload with phone_psk.
+        // Step 4: Decrypt inner payload with phone_psk (via Zeroizing ref).
         // Layout: inner_nonce(12) ‖ ciphertext ‖ tag(16)
         if encrypted_payload.len() < 12 + 16 {
             return None;
@@ -660,7 +684,7 @@ impl Gateway {
         let inner_nonce = Nonce::from_slice(&encrypted_payload[..12]);
         let inner_ciphertext = &encrypted_payload[12..];
 
-        let cipher = Aes256Gcm::new_from_slice(&phone_psk).ok()?;
+        let cipher = Aes256Gcm::new_from_slice(&*matched_phone.psk).ok()?;
         let pairing_request_bytes = cipher
             .decrypt(
                 inner_nonce,
@@ -671,127 +695,28 @@ impl Gateway {
             )
             .ok()?;
 
-        // Step 5: Parse PairingRequest CBOR.
-        let pairing_cbor: ciborium::Value =
-            ciborium::from_reader(&pairing_request_bytes[..]).ok()?;
-        let pairing_map = pairing_cbor.as_map()?;
-
-        let mut node_id: Option<String> = None;
-        let mut node_key_hint: Option<u16> = None;
-        let mut node_psk: Option<[u8; 32]> = None;
-        let mut rf_channel: Option<u8> = None;
-        let mut timestamp: Option<u64> = None;
-        let mut sensors: Vec<SensorDescriptor> = Vec::new();
-
-        for (k, v) in pairing_map {
-            let key_val = k.as_integer().and_then(|i| u64::try_from(i).ok())?;
-            match key_val {
-                1 => node_id = v.as_text().map(|s| s.to_owned()),
-                2 => {
-                    node_key_hint = v
-                        .as_integer()
-                        .and_then(|i| u64::try_from(i).ok())
-                        .and_then(|v| u16::try_from(v).ok())
-                }
-                3 => {
-                    if let Some(b) = v.as_bytes() {
-                        if b.len() == 32 {
-                            let mut psk = [0u8; 32];
-                            psk.copy_from_slice(b);
-                            node_psk = Some(psk);
-                        }
-                    }
-                }
-                4 => {
-                    rf_channel = v
-                        .as_integer()
-                        .and_then(|i| u64::try_from(i).ok())
-                        .and_then(|v| u8::try_from(v).ok())
-                }
-                5 => {
-                    if let Some(arr) = v.as_array() {
-                        for item in arr {
-                            if let Some(sensor_map) = item.as_map() {
-                                let mut sensor_type: Option<u8> = None;
-                                let mut sensor_id: Option<u8> = None;
-                                let mut label: Option<String> = None;
-                                for (sk, sv) in sensor_map {
-                                    let skey = sk.as_integer().and_then(|i| u64::try_from(i).ok());
-                                    match skey {
-                                        Some(1) => {
-                                            sensor_type = sv
-                                                .as_integer()
-                                                .and_then(|i| u64::try_from(i).ok())
-                                                .and_then(|v| u8::try_from(v).ok())
-                                        }
-                                        Some(2) => {
-                                            sensor_id = sv
-                                                .as_integer()
-                                                .and_then(|i| u64::try_from(i).ok())
-                                                .and_then(|v| u8::try_from(v).ok())
-                                        }
-                                        Some(3) => {
-                                            if let Some(s) = sv.as_text() {
-                                                if s.len() > 64 {
-                                                    return None;
-                                                }
-                                                label = Some(s.to_owned());
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                if let (Some(st), Some(si)) = (sensor_type, sensor_id) {
-                                    if !(1..=4).contains(&st) {
-                                        return None;
-                                    }
-                                    sensors.push(SensorDescriptor {
-                                        sensor_type: st,
-                                        sensor_id: si,
-                                        label,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                6 => timestamp = v.as_integer().and_then(|i| u64::try_from(i).ok()),
-                _ => {}
-            }
-        }
-
-        let node_id = node_id?;
-        let node_key_hint = node_key_hint?;
-        let node_psk = node_psk?;
-        let rf_channel = rf_channel?;
-        let timestamp = timestamp?;
-
-        if node_id.is_empty() || node_id.len() > 64 {
-            return None;
-        }
-        if !(1..=13).contains(&rf_channel) {
-            return None;
-        }
+        // Step 5: Parse PairingRequest CBOR (shared with HMAC path).
+        let pr = parse_pairing_request(&pairing_request_bytes)?;
 
         // Step 6: Verify timestamp within ±86400s (GW-1215).
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-        if now.abs_diff(timestamp) > MAX_TIMESTAMP_DRIFT_S {
+        if now.abs_diff(pr.timestamp) > MAX_TIMESTAMP_DRIFT_S {
             return None;
         }
 
         // Step 7: Validate key_hint consistency (GW-1217).
         let expected_hint = {
-            let hash = self.crypto_sha.hash(&node_psk);
+            let hash = self.crypto_sha.hash(&pr.node_psk);
             u16::from_be_bytes([hash[30], hash[31]])
         };
-        if node_key_hint != expected_hint {
+        if pr.node_key_hint != expected_hint {
             return None;
         }
 
         // Step 8: Register node (GW-1216, GW-1218).
-        let mut record = NodeRecord::new(node_id, node_key_hint, node_psk);
-        record.rf_channel = Some(rf_channel);
-        record.sensors = sensors;
+        let mut record = NodeRecord::new(pr.node_id, pr.node_key_hint, pr.node_psk);
+        record.rf_channel = Some(pr.rf_channel);
+        record.sensors = pr.sensors;
         record.registered_by_phone_id = Some(phone_id);
         if !self.storage.insert_node_if_not_exists(&record).await.ok()? {
             let existing = self.storage.get_node(&record.node_id).await.ok()??;
@@ -828,7 +753,7 @@ impl Gateway {
         ciborium::into_writer(&ack_cbor, &mut ack_cbor_buf).ok()?;
 
         let ack_header = FrameHeader {
-            key_hint: node_key_hint,
+            key_hint: record.key_hint,
             msg_type: MSG_PEER_ACK,
             nonce: decoded.header.nonce,
         };
@@ -836,7 +761,7 @@ impl Gateway {
         let frame = encode_frame_aead(
             &ack_header,
             &ack_cbor_buf,
-            &node_psk,
+            &record.psk,
             &aead,
             &self.crypto_sha,
         )

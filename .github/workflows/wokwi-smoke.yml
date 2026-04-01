@@ -95,14 +95,49 @@ jobs:
 
       - name: Wokwi — boot ESP32-C3 node
         if: ${{ env.WOKWI_TOKEN != '' }}
-        uses: wokwi/wokwi-ci-action@2806875412c8a2e0552eb609492c5890a888e085 # v1
-        with:
-          token: ${{ secrets.WOKWI_CLI_TOKEN }}
-          path: wokwi/node
-          timeout: 60000
-          expect_text: 'Calling app_main()'
-          fail_text: 'panic'
-          serial_log_file: node-serial.log
+        run: |
+          # Install wokwi-cli
+          wget -q -O /usr/local/bin/wokwi-cli \
+            https://github.com/wokwi/wokwi-cli/releases/latest/download/wokwi-cli-linuxstatic-x64
+          chmod +x /usr/local/bin/wokwi-cli
+
+          echo "=== wokwi-cli version ==="
+          wokwi-cli --version || true
+
+          echo "=== wokwi.toml ==="
+          cat wokwi/node/wokwi.toml
+
+          echo "=== diagram.json ==="
+          cat wokwi/node/diagram.json
+
+          echo "=== Verifying firmware path from wokwi/node/ ==="
+          ls -lh wokwi/node/../../firmware/flash-parts/ || echo "WARN: cannot ls flash-parts from wokwi/node context"
+
+          echo "=== Running wokwi-cli ==="
+          set +e
+          WOKWI_CLI_TOKEN="$WOKWI_TOKEN" wokwi-cli \
+            --timeout 60000 \
+            --expect-text "app_main" \
+            --fail-text "panic" \
+            --serial-log-file "node-serial.log" \
+            wokwi/node 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          echo ""
+          echo "=== Exit code: $EXIT_CODE ==="
+
+          echo "=== Serial log contents ==="
+          if [ -f wokwi/node/node-serial.log ]; then
+            cat wokwi/node/node-serial.log
+            echo "($(wc -c < wokwi/node/node-serial.log) bytes)"
+          else
+            echo "Serial log file NOT created"
+            # Check if it was created in a different location
+            find . -name "node-serial.log" -type f 2>/dev/null || echo "Not found anywhere"
+          fi
+
+          exit $EXIT_CODE
 
       - name: Upload node serial log
         if: always()

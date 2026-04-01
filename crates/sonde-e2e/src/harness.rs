@@ -535,19 +535,29 @@ impl NodeTransport for BridgeTransportAead {
 
         let gateway = self.gateway.clone();
         let peer = self.peer.clone();
-        let msg_type = if frame.len() >= 3 { frame[2] } else { 0 };
+        let msg_type = if frame.len() > sonde_protocol::OFFSET_MSG_TYPE {
+            frame[sonde_protocol::OFFSET_MSG_TYPE]
+        } else {
+            0
+        };
 
-        // BPF dispatch encodes APP_DATA with HMAC, so route those through
-        // the HMAC path; all other message types use the AEAD path.
-        let response = if msg_type == sonde_protocol::MSG_APP_DATA {
+        // APP_DATA uses the HMAC codec (BPF dispatch helpers haven't
+        // migrated to AEAD yet). PEER_REQUEST also uses the HMAC path
+        // because the gateway's AEAD handler explicitly rejects it —
+        // the node is not yet registered, so the HMAC-based
+        // `handle_peer_request` path is the only valid route.
+        let response = if msg_type == sonde_protocol::MSG_APP_DATA
+            || msg_type == sonde_protocol::MSG_PEER_REQUEST
+        {
             let frame_vec = frame.to_vec();
             tokio::task::block_in_place(|| {
                 self.rt.block_on(gateway.process_frame(&frame_vec, peer))
             })
         } else {
             let mut frame_vec = frame.to_vec();
-            if self.tamper_outgoing && frame_vec.len() > 12 {
-                frame_vec[12] ^= 0x01;
+            if self.tamper_outgoing && frame_vec.len() > sonde_protocol::HEADER_SIZE {
+                // Flip a bit in the first ciphertext byte to trigger GCM auth failure.
+                frame_vec[sonde_protocol::HEADER_SIZE] ^= 0x01;
             }
             tokio::task::block_in_place(|| {
                 self.rt

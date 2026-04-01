@@ -20,8 +20,8 @@ use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
     decode_frame_aead, encode_frame_aead, open_frame, FrameHeader, GatewayMessage, NodeMessage,
-    Sha256Provider, MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE,
-    PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
+    MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_STATUS,
+    PEER_REQ_KEY_PAYLOAD,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────

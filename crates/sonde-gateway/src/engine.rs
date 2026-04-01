@@ -533,7 +533,10 @@ impl Gateway {
         }
 
         // Step 10 + 11: Verify key_hint consistency (GW-1217).
-        if decoded.header.key_hint != pr.node_key_hint {
+        // Verify that the CBOR key_hint matches the frame header AND that it
+        // is correctly derived from node_psk, preventing divergent records.
+        let derived_hint = sonde_protocol::key_hint_from_psk(&pr.node_psk, &self.crypto_sha);
+        if decoded.header.key_hint != derived_hint || pr.node_key_hint != derived_hint {
             return None;
         }
 
@@ -626,7 +629,6 @@ impl Gateway {
     ) -> Option<Vec<u8>> {
         use aes_gcm::aead::{Aead, KeyInit};
         use aes_gcm::{Aes256Gcm, Nonce};
-        use sonde_protocol::Sha256Provider;
 
         use crate::aead::GatewayAead;
 
@@ -705,10 +707,7 @@ impl Gateway {
         }
 
         // Step 7: Validate key_hint consistency (GW-1217).
-        let expected_hint = {
-            let hash = self.crypto_sha.hash(&pr.node_psk);
-            u16::from_be_bytes([hash[30], hash[31]])
-        };
+        let expected_hint = sonde_protocol::key_hint_from_psk(&pr.node_psk, &self.crypto_sha);
         if pr.node_key_hint != expected_hint {
             return None;
         }

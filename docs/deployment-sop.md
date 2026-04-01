@@ -330,6 +330,14 @@ register itself with the gateway. This is a one-time step per device.
 Once your provisioning device is registered (Phase 1), you can provision
 individual nodes. Repeat this phase for each new node.
 
+> **Windows re-provisioning:** If you are re-provisioning a node that was
+> previously paired (e.g., after a factory reset or firmware reflash),
+> remove the stale BLE pairing for that node from Windows first:
+> **Settings → Bluetooth & devices → Devices**, find the sonde node entry
+> corresponding to the device you're re-provisioning, and click **Remove device**.
+> Without this step, Windows reuses cached pairing keys that no longer match
+> the node and the LESC handshake fails silently.
+
 1. **Launch the pairing tool** (already registered from Phase 1).
 2. The tool scans for sonde nodes advertising the pairing service.
 3. Select the node, confirm the passkey, and enter a label + RF channel.

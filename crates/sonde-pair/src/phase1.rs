@@ -453,11 +453,13 @@ async fn do_pair_with_gateway_aead(
             0x03 => Err(PairingError::GatewayAlreadyPaired),
             code => {
                 let reason = if diagnostic.is_empty() {
-                    format!("gateway error code 0x{code:02x}")
+                    format!("AEAD registration failed: gateway error code 0x{code:02x}")
                 } else {
-                    format!("gateway error code 0x{code:02x}: {diagnostic}")
+                    format!(
+                        "AEAD registration failed: gateway error code 0x{code:02x}: {diagnostic}"
+                    )
                 };
-                Err(PairingError::GatewayAuthFailed(reason))
+                Err(PairingError::RegistrationFailed(reason))
             }
         };
     }
@@ -481,7 +483,7 @@ async fn do_pair_with_gateway_aead(
 
     let status = payload[0];
     if status != 0x00 {
-        return Err(PairingError::GatewayAuthFailed(format!(
+        return Err(PairingError::RegistrationFailed(format!(
             "PHONE_REGISTERED status: 0x{status:02x}"
         )));
     }
@@ -518,7 +520,6 @@ async fn do_pair_with_gateway_aead(
 /// (no Ed25519 keypair or `gateway_id`). Gateway authority derives
 /// solely from possession of the phone PSK.
 #[cfg(feature = "aes-gcm-codec")]
-#[derive(Clone)]
 pub struct PairingArtifactsAead {
     pub phone_psk: Zeroizing<[u8; 32]>,
     pub phone_key_hint: u16,

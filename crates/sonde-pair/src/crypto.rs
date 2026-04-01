@@ -181,8 +181,8 @@ pub fn decrypt_pairing_request_aead(
     phone_psk: &[u8; 32],
     encrypted_payload: &[u8],
 ) -> Option<Zeroizing<Vec<u8>>> {
-    // Minimum length: 12-byte nonce + 16-byte tag + 1 byte ciphertext
-    if encrypted_payload.len() < GCM_NONCE_LEN + GCM_TAG_LEN + 1 {
+    // Minimum length: 12-byte nonce + 16-byte tag (ciphertext may be empty)
+    if encrypted_payload.len() < GCM_NONCE_LEN + GCM_TAG_LEN {
         return None;
     }
 
@@ -538,13 +538,27 @@ mod aead_tests {
         );
     }
 
-    /// Payload too short (less than nonce + tag + 1 byte) must return None.
+    /// Payload too short (less than nonce + tag) must return None.
     #[test]
     fn pairing_request_aead_short_payload_returns_none() {
         let psk = [0x42u8; 32];
-        // 28 bytes = 12 nonce + 16 tag, needs at least 29
-        let short = [0u8; 28];
+        // 27 bytes < 12 nonce + 16 tag = 28 minimum
+        let short = [0u8; 27];
         assert!(decrypt_pairing_request_aead(&psk, &short).is_none());
+    }
+
+    /// Empty plaintext round-trip: encrypt then decrypt an empty buffer.
+    #[test]
+    fn pairing_request_aead_empty_plaintext_round_trip() {
+        let psk = [0x42u8; 32];
+        let encrypted = encrypt_pairing_request_aead(&psk, b"").unwrap();
+        // nonce(12) + tag(16) = 28 bytes, no ciphertext
+        assert_eq!(encrypted.len(), GCM_NONCE_LEN + GCM_TAG_LEN);
+        let decrypted = decrypt_pairing_request_aead(&psk, &encrypted);
+        assert_eq!(
+            decrypted.as_ref().map(|z| z.as_slice()),
+            Some([].as_slice())
+        );
     }
 
     /// Empty payload must return None.

@@ -54,6 +54,9 @@ pub enum PairingError {
     #[error("gateway authentication failed: {0} — verify the gateway is running and the registration window is open")]
     GatewayAuthFailed(String),
 
+    #[error("registration failed: {0} — verify the gateway is running and the registration window is open")]
+    RegistrationFailed(String),
+
     #[error("Ed25519 signature verification failed — the gateway identity may have changed or data was corrupted")]
     SignatureVerificationFailed,
 

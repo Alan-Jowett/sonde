@@ -1419,13 +1419,13 @@ pub async fn serve_admin(
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-    use tokio::net::windows::named_pipe::ServerOptions;
+    use tokio::net::windows::named_pipe::NamedPipeServer;
     use tonic::transport::server::Connected;
     use tracing::info;
 
     /// Wraps a Windows named pipe server connection so it satisfies tonic's
     /// `Connected + AsyncRead + AsyncWrite + Unpin` bound.
-    struct NamedPipeConn(tokio::net::windows::named_pipe::NamedPipeServer);
+    struct NamedPipeConn(NamedPipeServer);
 
     impl Connected for NamedPipeConn {
         type ConnectInfo = ();
@@ -1464,19 +1464,22 @@ pub async fn serve_admin(
     let pipe_name = pipe_name.to_owned();
     info!(pipe = %pipe_name, "gRPC admin server listening on named pipe");
 
+    // Build a security descriptor that grants BUILTIN\Administrators
+    // (BA) and SYSTEM (SY) full access.  Without this, a pipe created
+    // by the SYSTEM service account may not be connectable from a
+    // non-elevated Administrator session (#605).
+    let sd = create_pipe_security_descriptor()?;
+
     // Build a stream that accepts connections from the named pipe one at a time.
     // Each iteration creates a new server instance to wait for the next client.
-    let incoming = futures::stream::unfold((true, pipe_name), |(first, name)| async move {
-        let server = match ServerOptions::new()
-            .first_pipe_instance(first)
-            .create(&name)
-        {
+    let incoming = futures::stream::unfold((true, pipe_name, sd), |(first, name, sd)| async move {
+        let server = match create_named_pipe(&name, first, &sd) {
             Ok(s) => s,
-            Err(e) => return Some((Err::<NamedPipeConn, _>(e), (false, name))),
+            Err(e) => return Some((Err::<NamedPipeConn, _>(e), (false, name, sd))),
         };
         match server.connect().await {
-            Ok(()) => Some((Ok(NamedPipeConn(server)), (false, name))),
-            Err(e) => Some((Err(e), (false, name))),
+            Ok(()) => Some((Ok(NamedPipeConn(server)), (false, name, sd))),
+            Err(e) => Some((Err(e), (false, name, sd))),
         }
     });
 
@@ -1485,6 +1488,132 @@ pub async fn serve_admin(
         .serve_with_incoming(incoming)
         .await?;
     Ok(())
+}
+
+/// Security descriptor wrapper that frees the descriptor on drop.
+#[cfg(windows)]
+struct PipeSecurityDescriptor {
+    sd: *mut std::ffi::c_void,
+}
+
+// SAFETY: The security descriptor is a plain data buffer allocated by
+// `ConvertStringSecurityDescriptorToSecurityDescriptorW` and only read
+// (via pointer) by `CreateNamedPipeW`. It has no thread affinity.
+#[cfg(windows)]
+unsafe impl Send for PipeSecurityDescriptor {}
+#[cfg(windows)]
+unsafe impl Sync for PipeSecurityDescriptor {}
+
+#[cfg(windows)]
+impl Drop for PipeSecurityDescriptor {
+    fn drop(&mut self) {
+        if !self.sd.is_null() {
+            // SAFETY: `sd` was allocated by
+            // `ConvertStringSecurityDescriptorToSecurityDescriptorW`
+            // and must be freed with `LocalFree`.
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(self.sd as _);
+            }
+        }
+    }
+}
+
+/// Parse a SDDL string into a security descriptor for the admin pipe.
+///
+/// Grants BUILTIN\Administrators (BA) and SYSTEM (SY) full access.
+/// Non-elevated admin users belong to the BA SID and can open the pipe
+/// without running an elevated prompt.
+#[cfg(windows)]
+fn create_pipe_security_descriptor() -> Result<PipeSecurityDescriptor, Box<dyn std::error::Error>> {
+    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+
+    // D:  — DACL
+    // (A;;GA;;;SY) — Allow SYSTEM Generic All
+    // (A;;GA;;;BA) — Allow BUILTIN\Administrators Generic All
+    let sddl: Vec<u16> = "D:(A;;GA;;;SY)(A;;GA;;;BA)\0".encode_utf16().collect();
+
+    let mut sd: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SDDL_REVISION_1 = 1
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            1, // SDDL_REVISION_1
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW failed: {}",
+            std::io::Error::last_os_error()
+        )
+        .into());
+    }
+    Ok(PipeSecurityDescriptor { sd })
+}
+
+/// Create a named pipe with the given security descriptor.
+///
+/// Returns a tokio `NamedPipeServer` ready for `connect().await`.
+#[cfg(windows)]
+fn create_named_pipe(
+    name: &str,
+    first: bool,
+    sd: &PipeSecurityDescriptor,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Pipes::CreateNamedPipeW;
+
+    // Well-known constants for CreateNamedPipeW.
+    const PIPE_ACCESS_DUPLEX: u32 = 0x0000_0003;
+    const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
+    const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x0008_0000;
+    const PIPE_TYPE_BYTE: u32 = 0x0000_0000;
+    const PIPE_WAIT: u32 = 0x0000_0000;
+    const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x0000_0008;
+
+    let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
+    if first {
+        open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+    }
+
+    let security_attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd.sd,
+        bInheritHandle: 0,
+    };
+
+    // SAFETY: We pass valid pointers and the handle is checked below.
+    let handle = unsafe {
+        CreateNamedPipeW(
+            wide_name.as_ptr(),
+            open_mode,
+            PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            255,  // max instances
+            4096, // out buffer
+            4096, // in buffer
+            0,    // default timeout
+            &security_attributes,
+        )
+    };
+
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // SAFETY: handle is valid (not INVALID_HANDLE_VALUE) and we own it.
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle as _) };
+
+    // SAFETY: The handle is a valid named pipe handle created with
+    // FILE_FLAG_OVERLAPPED, which tokio requires.
+    unsafe {
+        tokio::net::windows::named_pipe::NamedPipeServer::from_raw_handle(
+            std::os::windows::io::IntoRawHandle::into_raw_handle(owned),
+        )
+    }
 }
 
 #[cfg(not(any(unix, windows)))]

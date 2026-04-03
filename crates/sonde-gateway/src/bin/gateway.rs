@@ -477,7 +477,7 @@ async fn run_gateway(
                 match transport_ref.recv().await {
                     Ok((raw_frame, peer_addr)) => {
                         if let Some(response) = gateway_ref
-                            .process_frame(&raw_frame, peer_addr.clone())
+                            .process_frame_aead(&raw_frame, peer_addr.clone())
                             .await
                         {
                             if let Err(e) = transport_ref.send(&response, &peer_addr).await {

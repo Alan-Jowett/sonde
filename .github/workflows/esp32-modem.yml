@@ -37,10 +37,10 @@ jobs:
         variant: [default, verbose]
         include:
           - variant: default
-            features: esp
+            features: esp,aes-gcm-codec
             artifact: modem-firmware
           - variant: verbose
-            features: esp,verbose
+            features: esp,verbose,aes-gcm-codec
             no_default_features: --no-default-features
             artifact: modem-firmware-verbose
 

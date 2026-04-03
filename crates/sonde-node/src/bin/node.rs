@@ -33,7 +33,7 @@ fn main() {
     use sonde_node::map_storage::{MapStorage, MAP_BUDGET};
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
     use sonde_node::traits::{PlatformStorage, SleepController};
-    use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
+    use sonde_node::wake_cycle::{run_wake_cycle_aead, WakeCycleOutcome};
 
     // Link ESP-IDF patches and initialize logging.
     esp_idf_svc::sys::link_patches();
@@ -150,6 +150,7 @@ fn main() {
     // --- Node is paired — initialize radio and run wake cycle ---
     let hmac = SoftwareHmac;
     let sha = SoftwareSha256;
+    let aead = sonde_node::node_aead::NodeAead;
     let mut rng = EspRng;
     let clock = EspClock;
     // Read I2C pin config from NVS (ND-0608), falling back to defaults.
@@ -169,7 +170,7 @@ fn main() {
 
     info!("sonde-node ready");
 
-    let outcome = run_wake_cycle(
+    let outcome = run_wake_cycle_aead(
         &mut transport,
         &mut storage,
         &mut hal,
@@ -180,6 +181,7 @@ fn main() {
         &mut map_storage,
         &hmac,
         &sha,
+        &aead,
     );
 
     match outcome {

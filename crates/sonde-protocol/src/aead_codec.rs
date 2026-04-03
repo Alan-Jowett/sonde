@@ -44,7 +44,7 @@ pub fn build_gcm_nonce(
     psk: &[u8; 32],
     msg_type: u8,
     frame_nonce: &[u8; 8],
-    sha256: &impl Sha256Provider,
+    sha256: &(impl Sha256Provider + ?Sized),
 ) -> [u8; GCM_NONCE_SIZE] {
     let hash = sha256.hash(psk);
     let mut nonce = [0u8; GCM_NONCE_SIZE];
@@ -62,8 +62,8 @@ pub fn encode_frame_aead(
     header: &FrameHeader,
     payload_cbor: &[u8],
     psk: &[u8; 32],
-    aead: &impl AeadProvider,
-    sha: &impl Sha256Provider,
+    aead: &(impl AeadProvider + ?Sized),
+    sha: &(impl Sha256Provider + ?Sized),
 ) -> Result<Vec<u8>, EncodeError> {
     let total_size = HEADER_SIZE + payload_cbor.len() + AEAD_TAG_SIZE;
     if total_size > MAX_FRAME_SIZE {
@@ -122,8 +122,8 @@ pub fn decode_frame_aead(raw: &[u8]) -> Result<DecodedFrameAead<'_>, DecodeError
 pub fn open_frame(
     frame: &DecodedFrameAead<'_>,
     psk: &[u8; 32],
-    aead: &impl AeadProvider,
-    sha: &impl Sha256Provider,
+    aead: &(impl AeadProvider + ?Sized),
+    sha: &(impl Sha256Provider + ?Sized),
 ) -> Result<Vec<u8>, DecodeError> {
     let header_bytes = frame.header.to_bytes();
     let frame_nonce_bytes = frame.header.nonce.to_be_bytes();

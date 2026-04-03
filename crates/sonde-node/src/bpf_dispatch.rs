@@ -20,6 +20,8 @@
 use std::cell::RefCell;
 
 use sonde_protocol::HmacProvider;
+#[cfg(feature = "aes-gcm-codec")]
+use sonde_protocol::{AeadProvider, Sha256Provider};
 
 use crate::bpf_helpers::ProgramClass;
 use crate::hal::Hal;
@@ -121,6 +123,9 @@ struct DispatchContext {
     map_storage: *mut MapStorage,
     sleep_mgr: *mut SleepManager,
     clock: *const dyn Clock,
+    /// HMAC provider — used for APP_DATA framing when `aes-gcm-codec` is disabled.
+    /// Retained (but unused) when AEAD is active so the HMAC wake cycle still compiles.
+    #[cfg_attr(feature = "aes-gcm-codec", allow(dead_code))]
     hmac: *const dyn HmacProvider,
     identity: *const NodeIdentity,
     current_seq: *mut u64,
@@ -131,6 +136,10 @@ struct DispatchContext {
     battery_mv: u32,
     /// Relocated map pointer → index mapping (linear scan, bounded by MAX_MAPS).
     map_ptr_index: MapPtrIndex,
+    /// AEAD + SHA providers for AES-256-GCM frame encoding.
+    /// Null when running under HMAC-only wake cycle.
+    #[cfg(feature = "aes-gcm-codec")]
+    aead: Option<(*const dyn AeadProvider, *const dyn Sha256Provider)>,
 }
 
 thread_local! {
@@ -176,6 +185,87 @@ pub unsafe fn install(
     gateway_timestamp_ms: u64,
     command_received_at_ms: u64,
     battery_mv: u32,
+) {
+    install_core(
+        hal,
+        transport,
+        map_storage,
+        sleep_mgr,
+        clock,
+        hmac,
+        identity,
+        current_seq,
+        program_class,
+        trace_log,
+        gateway_timestamp_ms,
+        command_received_at_ms,
+        battery_mv,
+        #[cfg(feature = "aes-gcm-codec")]
+        None,
+    );
+}
+
+/// Install with AEAD providers for AES-256-GCM frame encoding.
+///
+/// # Safety
+///
+/// Same contract as [`install`], plus `aead` and `sha` must remain valid.
+#[cfg(feature = "aes-gcm-codec")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn install_aead(
+    hal: *mut dyn Hal,
+    transport: *mut dyn Transport,
+    map_storage: *mut MapStorage,
+    sleep_mgr: *mut SleepManager,
+    clock: *const dyn Clock,
+    hmac: *const dyn HmacProvider,
+    identity: *const NodeIdentity,
+    current_seq: *mut u64,
+    program_class: ProgramClass,
+    trace_log: *mut Vec<String>,
+    gateway_timestamp_ms: u64,
+    command_received_at_ms: u64,
+    battery_mv: u32,
+    aead: *const dyn AeadProvider,
+    sha: *const dyn Sha256Provider,
+) {
+    install_core(
+        hal,
+        transport,
+        map_storage,
+        sleep_mgr,
+        clock,
+        hmac,
+        identity,
+        current_seq,
+        program_class,
+        trace_log,
+        gateway_timestamp_ms,
+        command_received_at_ms,
+        battery_mv,
+        Some((aead, sha)),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn install_core(
+    hal: *mut dyn Hal,
+    transport: *mut dyn Transport,
+    map_storage: *mut MapStorage,
+    sleep_mgr: *mut SleepManager,
+    clock: *const dyn Clock,
+    hmac: *const dyn HmacProvider,
+    identity: *const NodeIdentity,
+    current_seq: *mut u64,
+    program_class: ProgramClass,
+    trace_log: *mut Vec<String>,
+    gateway_timestamp_ms: u64,
+    command_received_at_ms: u64,
+    battery_mv: u32,
+    #[cfg(feature = "aes-gcm-codec")] aead_sha: Option<(
+        *const dyn AeadProvider,
+        *const dyn Sha256Provider,
+    )>,
 ) {
     CTX.with(|cell| {
         let mut borrow = cell.borrow_mut();
@@ -232,6 +322,8 @@ pub unsafe fn install(
             command_received_at_ms,
             battery_mv,
             map_ptr_index,
+            #[cfg(feature = "aes-gcm-codec")]
+            aead: aead_sha,
         });
     });
 }
@@ -424,13 +516,35 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
         unsafe {
             let blob = core::slice::from_raw_parts(blob_ptr, blob_len);
             let identity = &*ctx.identity;
-            let hmac = &*ctx.hmac;
             let transport = &mut *ctx.transport;
             let seq = &mut *ctx.current_seq;
 
-            match crate::wake_cycle::send_app_data(transport, identity, seq, blob, hmac) {
-                Ok(()) => 0,
-                Err(_) => (-1i64) as u64,
+            #[cfg(feature = "aes-gcm-codec")]
+            {
+                if let Some((aead_ptr, sha_ptr)) = ctx.aead {
+                    let aead = &*aead_ptr;
+                    let sha = &*sha_ptr;
+                    match crate::wake_cycle::send_app_data_aead(
+                        transport, identity, seq, blob, aead, sha,
+                    ) {
+                        Ok(()) => 0,
+                        Err(_) => (-1i64) as u64,
+                    }
+                } else {
+                    let hmac = &*ctx.hmac;
+                    match crate::wake_cycle::send_app_data(transport, identity, seq, blob, hmac) {
+                        Ok(()) => 0,
+                        Err(_) => (-1i64) as u64,
+                    }
+                }
+            }
+            #[cfg(not(feature = "aes-gcm-codec"))]
+            {
+                let hmac = &*ctx.hmac;
+                match crate::wake_cycle::send_app_data(transport, identity, seq, blob, hmac) {
+                    Ok(()) => 0,
+                    Err(_) => (-1i64) as u64,
+                }
             }
         }
     })
@@ -465,14 +579,32 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
         unsafe {
             let blob = core::slice::from_raw_parts(blob_ptr, blob_len);
             let identity = &*ctx.identity;
-            let hmac = &*ctx.hmac;
             let transport = &mut *ctx.transport;
             let clock = &*ctx.clock;
             let seq = &mut *ctx.current_seq;
 
-            match crate::wake_cycle::send_recv_app_data(
-                transport, identity, seq, blob, timeout_ms, clock, hmac,
-            ) {
+            #[cfg(feature = "aes-gcm-codec")]
+            let send_result = if let Some((aead_ptr, sha_ptr)) = ctx.aead {
+                let aead = &*aead_ptr;
+                let sha = &*sha_ptr;
+                crate::wake_cycle::send_recv_app_data_aead(
+                    transport, identity, seq, blob, timeout_ms, clock, aead, sha,
+                )
+            } else {
+                let hmac = &*ctx.hmac;
+                crate::wake_cycle::send_recv_app_data(
+                    transport, identity, seq, blob, timeout_ms, clock, hmac,
+                )
+            };
+            #[cfg(not(feature = "aes-gcm-codec"))]
+            let send_result = {
+                let hmac = &*ctx.hmac;
+                crate::wake_cycle::send_recv_app_data(
+                    transport, identity, seq, blob, timeout_ms, clock, hmac,
+                )
+            };
+
+            match send_result {
                 Ok(reply_blob) => {
                     if reply_blob.len() > reply_cap {
                         return (-1i64) as u64;

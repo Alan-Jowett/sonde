@@ -1157,7 +1157,7 @@ use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame, AeadProvi
 ///
 /// Returns `(header, plaintext_payload)` on success.
 #[cfg(feature = "aes-gcm-codec")]
-fn decode_verify_frame_aead<A: AeadProvider, S: Sha256Provider>(
+fn decode_verify_frame_aead<A: AeadProvider + ?Sized, S: Sha256Provider + ?Sized>(
     raw: &[u8],
     psk: &[u8; 32],
     aead: &A,
@@ -1274,7 +1274,11 @@ fn verify_and_decode_command_aead<A: AeadProvider, S: Sha256Provider>(
 
 /// AES-GCM variant of [`send_app_data`].
 #[cfg(feature = "aes-gcm-codec")]
-pub fn send_app_data_aead<T: Transport + ?Sized, A: AeadProvider, S: Sha256Provider>(
+pub fn send_app_data_aead<
+    T: Transport + ?Sized,
+    A: AeadProvider + ?Sized,
+    S: Sha256Provider + ?Sized,
+>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
@@ -1323,8 +1327,8 @@ pub fn send_app_data_aead<T: Transport + ?Sized, A: AeadProvider, S: Sha256Provi
 pub fn send_recv_app_data_aead<
     T: Transport + ?Sized,
     C: Clock + ?Sized,
-    A: AeadProvider,
-    S: Sha256Provider,
+    A: AeadProvider + ?Sized,
+    S: Sha256Provider + ?Sized,
 >(
     transport: &mut T,
     identity: &NodeIdentity,
@@ -1639,8 +1643,8 @@ where
     T: Transport + 'static,
     S: PlatformStorage,
     I: BpfInterpreter,
-    A: AeadProvider,
-    H: Sha256Provider,
+    A: AeadProvider + 'static,
+    H: Sha256Provider + 'static,
 {
     // 1. Load identity
     let identity = match storage.read_key() {
@@ -1930,11 +1934,10 @@ where
         };
 
         let mut trace_log = Vec::new();
-        // BPF dispatch still uses HMAC for helper functions.
         // SAFETY: all referenced objects are alive on this stack frame
         // and will not be moved until `_guard` is dropped below.
         unsafe {
-            crate::bpf_dispatch::install(
+            crate::bpf_dispatch::install_aead(
                 hal as *mut dyn crate::hal::Hal,
                 transport as *mut T as *mut dyn crate::traits::Transport,
                 map_storage as *mut MapStorage,
@@ -1948,6 +1951,8 @@ where
                 timestamp_ms,
                 command_received_at,
                 battery_mv,
+                aead as *const dyn AeadProvider,
+                sha as *const dyn Sha256Provider,
             );
         }
         let _guard = crate::bpf_dispatch::DispatchGuard;

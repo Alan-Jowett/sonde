@@ -20,8 +20,8 @@ use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
     decode_frame_aead, encode_frame_aead, open_frame, FrameHeader, GatewayMessage, NodeMessage,
-    MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_STATUS,
-    PEER_REQ_KEY_PAYLOAD,
+    MSG_APP_DATA, MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE,
+    PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -91,6 +91,19 @@ impl TestNode {
         };
         let msg = NodeMessage::ProgramAck {
             program_hash: program_hash.to_vec(),
+        };
+        let cbor = msg.encode().unwrap();
+        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+    }
+
+    fn build_app_data_aead(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
+        let header = FrameHeader {
+            key_hint: self.key_hint,
+            msg_type: MSG_APP_DATA,
+            nonce: seq,
+        };
+        let msg = NodeMessage::AppData {
+            blob: blob.to_vec(),
         };
         let cbor = msg.encode().unwrap();
         encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
@@ -365,4 +378,148 @@ async fn aead_peer_request_happy_path() {
         .expect("node must be registered after PEER_ACK");
     assert_eq!(stored_node.psk, node_psk);
     assert_eq!(stored_node.key_hint, node_key_hint);
+}
+
+// ── APP_DATA AEAD tests (T-0503a, T-0503b, T-0503c) ────────────────
+
+/// Helper: do WAKE handshake and extract starting_seq from COMMAND response.
+async fn wake_and_get_seq(gw: &Gateway, node: &TestNode, nonce: u64, program_hash: &[u8]) -> u64 {
+    let frame = node.build_wake_aead(nonce, 1, program_hash, 3300);
+    let resp = gw
+        .process_frame_aead(&frame, node.peer_address())
+        .await
+        .expect("WAKE must produce COMMAND");
+    let decoded = decode_frame_aead(&resp).unwrap();
+    let plaintext = open_frame(&decoded, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
+    match msg {
+        GatewayMessage::Command { starting_seq, .. } => starting_seq,
+        _ => panic!("expected Command"),
+    }
+}
+
+/// T-0503a: APP_DATA with valid AEAD is accepted (auth + decode + seq advance).
+///
+/// Verifies that a correctly AEAD-authenticated APP_DATA frame passes
+/// decryption, CBOR decode, and sequence validation. The session's
+/// `next_expected_seq` advancing proves the frame was not silently
+/// discarded. Handler routing is not exercised here (no HandlerRouter
+/// configured) — see T-E2E-032 / T-E2E-051 for the full end-to-end
+/// handler delivery path.
+#[tokio::test]
+async fn t0503a_app_data_valid_aead_accepted() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let program_hash = vec![0x42u8; 32];
+    let node = TestNode::new("node-appdata-aead", 0x0010, [0x42u8; 32]);
+    let mut rec = node.to_record();
+    rec.current_program_hash = Some(program_hash.clone());
+    storage.upsert_node(&rec).await.unwrap();
+
+    let seq = wake_and_get_seq(&gw, &node, 1000, &program_hash).await;
+
+    // Verify session exists and check initial expected_seq.
+    let session_before = gw.session_manager().get_session("node-appdata-aead").await;
+    assert!(session_before.is_some(), "session must exist after WAKE");
+    let expected_before = session_before.unwrap().next_expected_seq;
+
+    // Send APP_DATA with valid AEAD.
+    let frame = node.build_app_data_aead(seq, &[0xDE, 0xAD]);
+    let _resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+
+    // Assert the session sequence advanced — proves the frame was authenticated
+    // and processed (not silently discarded).
+    let session_after = gw.session_manager().get_session("node-appdata-aead").await;
+    assert!(session_after.is_some(), "session must still exist");
+    assert_eq!(
+        session_after.unwrap().next_expected_seq,
+        expected_before + 1,
+        "sequence must advance after valid APP_DATA"
+    );
+}
+
+/// T-0503b: APP_DATA with invalid GCM tag is silently discarded.
+#[tokio::test]
+async fn t0503b_app_data_invalid_gcm_tag_rejected() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let program_hash = vec![0x43u8; 32];
+    let node = TestNode::new("node-appdata-tamper", 0x0011, [0x43u8; 32]);
+    let mut rec = node.to_record();
+    rec.current_program_hash = Some(program_hash.clone());
+    storage.upsert_node(&rec).await.unwrap();
+
+    let seq = wake_and_get_seq(&gw, &node, 2000, &program_hash).await;
+
+    // Build valid APP_DATA then corrupt GCM tag.
+    let mut frame = node.build_app_data_aead(seq, &[0xBE, 0xEF]);
+    // Flip a bit in the GCM tag (last 16 bytes).
+    let tag_offset = frame.len() - 1;
+    frame[tag_offset] ^= 0x01;
+
+    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    assert!(
+        resp.is_none(),
+        "APP_DATA with corrupted GCM tag must be silently discarded"
+    );
+}
+
+/// T-0503c: APP_DATA with HMAC framing (wrong crypto) is rejected by AEAD gateway.
+#[tokio::test]
+async fn t0503c_app_data_hmac_framing_rejected() {
+    use sonde_protocol::{encode_frame, HmacProvider};
+
+    struct TestHmac;
+    impl HmacProvider for TestHmac {
+        fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+            let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+            mac.update(data);
+            mac.finalize().into_bytes().into()
+        }
+        fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+            let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+            mac.update(data);
+            mac.verify_slice(expected).is_ok()
+        }
+    }
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let psk = [0x44u8; 32];
+    let program_hash = vec![0x44u8; 32];
+    let node = TestNode::new("node-appdata-hmac", 0x0012, psk);
+    let mut rec = node.to_record();
+    rec.current_program_hash = Some(program_hash.clone());
+    storage.upsert_node(&rec).await.unwrap();
+
+    let seq = wake_and_get_seq(&gw, &node, 3000, &program_hash).await;
+
+    // Build APP_DATA using HMAC framing (old format) instead of AEAD.
+    let header = FrameHeader {
+        key_hint: node.key_hint,
+        msg_type: MSG_APP_DATA,
+        nonce: seq,
+    };
+    let msg = NodeMessage::AppData {
+        blob: vec![0xCA, 0xFE],
+    };
+    let cbor = msg.encode().unwrap();
+    let hmac_frame = encode_frame(&header, &cbor, &psk, &TestHmac).unwrap();
+
+    // The AEAD gateway should reject this because the frame format
+    // doesn't match (HMAC = 32B trailer, AEAD = 16B GCM tag + ciphertext).
+    let resp = gw
+        .process_frame_aead(&hmac_frame, node.peer_address())
+        .await;
+    assert!(
+        resp.is_none(),
+        "HMAC-framed APP_DATA must be rejected by AEAD gateway"
+    );
 }

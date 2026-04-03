@@ -550,14 +550,10 @@ impl NodeTransport for BridgeTransportAead {
             0
         };
 
-        // APP_DATA uses the HMAC codec (BPF dispatch helpers haven't
-        // migrated to AEAD yet). PEER_REQUEST also uses the HMAC path
-        // because the gateway's AEAD handler explicitly rejects it —
-        // the node is not yet registered, so the HMAC-based
-        // `handle_peer_request` path is the only valid route.
-        let response = if msg_type == sonde_protocol::MSG_APP_DATA
-            || msg_type == sonde_protocol::MSG_PEER_REQUEST
-        {
+        // PEER_REQUEST uses the HMAC path because the gateway's AEAD
+        // handler requires a registered phone PSK. All other frames
+        // (including APP_DATA) use the AEAD codec.
+        let response = if msg_type == sonde_protocol::MSG_PEER_REQUEST {
             let frame_vec = frame.to_vec();
             tokio::task::block_in_place(|| {
                 self.rt.block_on(gateway.process_frame(&frame_vec, peer))

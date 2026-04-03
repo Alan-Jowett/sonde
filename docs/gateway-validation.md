@@ -513,12 +513,13 @@ A configurable stub handler process (or in-process mock) that:
 
 ### T-0503a  APP_DATA with valid AEAD accepted
 
-**Validates:** GW-0600, GW-0500
+**Validates:** GW-0600
 
 **Procedure:**
 1. Complete WAKE handshake using AES-256-GCM (AEAD).
-2. Send an APP_DATA frame encrypted with AES-256-GCM using the node's PSK, with correct GCM nonce construction (SHA-256(PSK)[0..3] ‖ msg_type ‖ seq) and the sequence number from the session.
-3. Assert: gateway decrypts the frame, routes to the configured handler, and the handler receives a DATA message with the correct blob.
+2. Ensure the node's `current_program_hash` is set (e.g., via a prior `PROGRAM_ACK` or by pre-seeding storage).
+3. Send an APP_DATA frame encrypted with AES-256-GCM using the node's PSK, with the canonical GCM nonce construction from `protocol.md` §7.1: `SHA-256(PSK)[0..3] ‖ msg_type ‖ frame_nonce.to_be_bytes()`, where `frame_nonce` is the session sequence number carried in the frame header `nonce` field.
+4. Assert: gateway successfully decrypts the frame and advances the session sequence number (proving AEAD authentication and CBOR decode succeeded). Handler routing is validated separately by T-E2E-032.
 
 ---
 

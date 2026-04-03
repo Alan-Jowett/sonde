@@ -241,11 +241,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ## 5  Authentication and replay protection tests
 
-### T-N300  HMAC on outbound frames
+### T-N300  HMAC on outbound frames (legacy)
 
-**Validates:** ND-0300
+**Traceability:** Legacy test — does not map to a current requirement. ND-0300 is now AES-256-GCM; see T-N606a and T-N606b for AEAD verification.
 
-**Note:** This test applies to the HMAC code path (when `aes-gcm-codec` is disabled). When `aes-gcm-codec` is enabled, outbound frames use AES-256-GCM instead — see T-N606a and T-N606b for AEAD verification.
+**Note:** This test applies only to the HMAC code path when `aes-gcm-codec` is disabled.
 
 **Procedure:**
 1. Capture any outbound frame (with HMAC code path active).
@@ -1748,7 +1748,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0201 | T-N202, T-N203 |
 | ND-0202 | T-N204, T-N205, T-N206, T-N207, T-N922 |
 | ND-0203 | T-N205, T-N208, T-N209, T-N923 |
-| ND-0300 | T-N300 |
+| ND-0300 | T-N606a, T-N606b (AEAD path) |
 | ND-0301 | T-N301, T-N924 |
 | ND-0302 | T-N302, T-N303, T-N304, T-N925 |
 | ND-0303 | T-N305, T-N926 |

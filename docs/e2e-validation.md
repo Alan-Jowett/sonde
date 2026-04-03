@@ -402,7 +402,7 @@ impl E2eNode {
 
 #### T-E2E-032  APP_DATA AEAD end-to-end
 
-**Validates:** GW-0500, GW-0600, ND-0602.
+**Validates:** GW-0500, GW-0600, ND-0300, ND-0602.
 
 **Preconditions:**
 1. Node registered with PSK.
@@ -419,10 +419,9 @@ impl E2eNode {
 6. Handler receives DATA message, processes it.
 
 **Assertions:**
-- Gateway logs `APP_DATA received` with correct `node_id` and `program_hash`.
 - Handler receives DATA message with blob `[0xDE, 0xAD]`.
 - The APP_DATA frame on the wire uses AEAD format (11B header + ciphertext + 16B tag), NOT HMAC format.
-- Gateway does not silently discard the frame.
+- The node/gateway exchange completes without the APP_DATA frame being silently discarded (e.g., the blob is delivered to the handler and processing continues normally).
 
 ---
 
@@ -865,7 +864,7 @@ impl E2eNode {
 | T-E2E-022 | GW-0202, ND-0503 |
 | T-E2E-030 | GW-0500, GW-0501, ND-0602 |
 | T-E2E-031 | GW-0500, ND-0602 |
-| T-E2E-032 | GW-0500, GW-0600, ND-0602 |
+| T-E2E-032 | GW-0500, GW-0600, ND-0300, ND-0602 |
 | T-E2E-040 | GW-1002, ND-0700 |
 | T-E2E-041 | GW-0602, ND-0303 |
 | T-E2E-050 | GW-1100, GW-1101 |

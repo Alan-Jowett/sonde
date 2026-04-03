@@ -137,7 +137,7 @@ struct DispatchContext {
     /// Relocated map pointer → index mapping (linear scan, bounded by MAX_MAPS).
     map_ptr_index: MapPtrIndex,
     /// AEAD + SHA providers for AES-256-GCM frame encoding.
-    /// Null when running under HMAC-only wake cycle.
+    /// `None` when running under the HMAC-only wake cycle (no AEAD providers installed).
     #[cfg(feature = "aes-gcm-codec")]
     aead: Option<(*const dyn AeadProvider, *const dyn Sha256Provider)>,
 }
@@ -509,7 +509,15 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     let result = with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
-        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
+        #[cfg(feature = "aes-gcm-codec")]
+        let max_payload = if ctx.aead.is_some() {
+            sonde_protocol::MAX_PAYLOAD_SIZE_AEAD
+        } else {
+            sonde_protocol::MAX_PAYLOAD_SIZE
+        };
+        #[cfg(not(feature = "aes-gcm-codec"))]
+        let max_payload = sonde_protocol::MAX_PAYLOAD_SIZE;
+        if blob_ptr.is_null() || blob_len > max_payload {
             return (-1i64) as u64;
         }
 
@@ -562,11 +570,15 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
         let blob_len = r2 as usize;
         let reply_ptr = r3 as *mut u8;
         let reply_cap = r4 as usize;
-        if blob_ptr.is_null()
-            || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE
-            || reply_ptr.is_null()
-            || reply_cap == 0
-        {
+        #[cfg(feature = "aes-gcm-codec")]
+        let max_payload = if ctx.aead.is_some() {
+            sonde_protocol::MAX_PAYLOAD_SIZE_AEAD
+        } else {
+            sonde_protocol::MAX_PAYLOAD_SIZE
+        };
+        #[cfg(not(feature = "aes-gcm-codec"))]
+        let max_payload = sonde_protocol::MAX_PAYLOAD_SIZE;
+        if blob_ptr.is_null() || blob_len > max_payload || reply_ptr.is_null() || reply_cap == 0 {
             return (-1i64) as u64;
         }
 
@@ -2363,5 +2375,168 @@ mod tests {
             "non-I/O helpers must not emit DEBUG 'bpf helper' logs, got: {:?}",
             records
         );
+    }
+
+    // -- AEAD-path tests (feature-gated) ------------------------------------
+
+    #[cfg(feature = "aes-gcm-codec")]
+    #[allow(clippy::too_many_arguments)]
+    fn with_test_context_aead<F, R>(
+        hal: &mut TestHal,
+        transport: &mut TestTransport,
+        map_storage: &mut MapStorage,
+        sleep_mgr: &mut SleepManager,
+        clock: &TestClock,
+        hmac: &TestHmac,
+        identity: &NodeIdentity,
+        seq: &mut u64,
+        program_class: ProgramClass,
+        trace_log: &mut Vec<String>,
+        aead: &(dyn sonde_protocol::AeadProvider + 'static),
+        sha: &(dyn sonde_protocol::Sha256Provider + 'static),
+        f: F,
+    ) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        unsafe {
+            install_aead(
+                hal as *mut TestHal as *mut dyn Hal,
+                transport as *mut TestTransport as *mut dyn Transport,
+                map_storage as *mut MapStorage,
+                sleep_mgr as *mut SleepManager,
+                clock as *const TestClock as *const dyn Clock,
+                hmac as *const TestHmac as *const dyn HmacProvider,
+                identity as *const NodeIdentity,
+                seq as *mut u64,
+                program_class,
+                trace_log as *mut Vec<String>,
+                1_710_000_000_000,
+                100,
+                3300,
+                aead,
+                sha,
+            );
+        }
+        let _guard = DispatchGuard;
+        f()
+    }
+
+    #[test]
+    #[cfg(feature = "aes-gcm-codec")]
+    fn test_helper_send_aead() {
+        use sonde_protocol::{decode_frame_aead, open_frame};
+
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 100u64;
+        let mut trace = Vec::new();
+        let blob: Vec<u8> = vec![0xAA, 0xBB];
+
+        let aead = crate::node_aead::NodeAead;
+        let sha = crate::crypto::SoftwareSha256;
+
+        with_test_context_aead(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            &aead,
+            &sha,
+            || {
+                let result = helper_send(blob.as_ptr() as u64, blob.len() as u64, 0, 0, 0);
+                assert_eq!(result, 0, "helper_send should succeed");
+            },
+        );
+
+        assert_eq!(seq, 101, "sequence should advance");
+        assert_eq!(transport.outbound.len(), 1);
+
+        // Verify the frame is AEAD-authenticated (not HMAC)
+        let frame = &transport.outbound[0];
+        let decoded = decode_frame_aead(frame).expect("should be valid AEAD frame");
+        assert_eq!(decoded.header.msg_type, MSG_APP_DATA);
+        let plaintext =
+            open_frame(&decoded, &identity.psk, &aead, &sha).expect("AEAD decrypt should succeed");
+        let msg = NodeMessage::decode(MSG_APP_DATA, &plaintext).unwrap();
+        match msg {
+            NodeMessage::AppData { blob: received } => assert_eq!(received, vec![0xAA, 0xBB]),
+            _ => panic!("expected AppData"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "aes-gcm-codec")]
+    fn test_helper_send_recv_aead() {
+        use sonde_protocol::{encode_frame_aead, FrameHeader, GatewayMessage, MSG_APP_DATA_REPLY};
+
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let hmac = TestHmac;
+        let identity = default_identity();
+        let mut seq = 100u64;
+        let mut trace = Vec::new();
+
+        let aead = crate::node_aead::NodeAead;
+        let sha = crate::crypto::SoftwareSha256;
+
+        // Pre-queue an AEAD APP_DATA_REPLY for the transport to return.
+        let reply_msg = GatewayMessage::AppDataReply {
+            blob: vec![0xCC, 0xDD],
+        };
+        let reply_cbor = reply_msg.encode().unwrap();
+        let reply_header = FrameHeader {
+            key_hint: identity.key_hint,
+            msg_type: MSG_APP_DATA_REPLY,
+            nonce: 100, // must match the seq used for the outbound APP_DATA
+        };
+        let reply_frame =
+            encode_frame_aead(&reply_header, &reply_cbor, &identity.psk, &aead, &sha).unwrap();
+        transport.inbound.push_back(Some(reply_frame));
+
+        let blob: Vec<u8> = vec![0xAA, 0xBB];
+        let mut reply_buf = [0u8; 64];
+
+        with_test_context_aead(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &hmac,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            &aead,
+            &sha,
+            || {
+                let result = helper_send_recv(
+                    blob.as_ptr() as u64,
+                    blob.len() as u64,
+                    reply_buf.as_mut_ptr() as u64,
+                    reply_buf.len() as u64,
+                    1000,
+                );
+                assert_eq!(result, 2, "should return 2 bytes of reply");
+            },
+        );
+
+        assert_eq!(seq, 101);
+        assert_eq!(&reply_buf[..2], &[0xCC, 0xDD]);
     }
 }

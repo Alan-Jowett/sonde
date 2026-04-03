@@ -1621,9 +1621,11 @@ pub fn chunked_transfer_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
 ///
 /// Functionally identical to `run_wake_cycle` but encodes/decodes all
 /// radio frames using AES-256-GCM (AEAD) instead of HMAC-SHA256.  The
-/// HMAC provider is still required for BPF helper dispatch; AEAD
-/// authentication replaces the explicit PEER_ACK registration proof
-/// field per `ble-pairing-protocol.md` §7.2.
+/// AEAD providers are installed into the BPF dispatch context so that
+/// `send()` / `send_recv()` helpers also produce AEAD-authenticated
+/// APP_DATA frames.  The HMAC provider is retained for backward
+/// compatibility (fallback when AEAD providers are absent) but is not
+/// used in the normal AEAD code path.
 #[cfg(feature = "aes-gcm-codec")]
 #[allow(clippy::too_many_arguments)]
 pub fn run_wake_cycle_aead<T, S, I, A, H>(

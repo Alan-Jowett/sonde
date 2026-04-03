@@ -732,7 +732,7 @@ const DEFAULT_FILTER: &str = "sonde_gateway=info";
 const DEFAULT_FILTER: &str = "sonde_gateway=warn";
 ```
 
-`RUST_LOG` overrides the default in both builds. In release, `RUST_LOG=sonde_gateway=info` re-enables INFO output (since INFO is still compiled in). `RUST_LOG=sonde_gateway=debug` has no effect in release builds (DEBUG is stripped at compile time).
+`RUST_LOG` overrides the default in both builds. In release, `RUST_LOG=sonde_gateway=debug` enables DEBUG output (all levels up to TRACE are compiled in). The runtime default of `sonde_gateway=warn` keeps release output quiet unless the operator explicitly requests more detail.
 
 ### 11A.1  Engine lifecycle logging
 

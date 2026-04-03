@@ -710,16 +710,16 @@ The gateway uses the `tracing` crate for structured, levelled logging. All log e
 
 ### 11A.0a  Build-type–aware log levels (GW-1304)
 
-The gateway applies compile-time log-level gating and build-type–aware runtime defaults to reduce overhead in release deployments.
+The gateway compiles in all log levels (up to TRACE) in both debug and release builds, enabling operators to enable debug logging on release binaries via `RUST_LOG` without recompilation.
 
 **Compile-time filtering:**
 
 | Build profile | Cargo feature | Effect |
 |---|---|---|
 | `dev` (debug) | `max_level_trace` | All levels compiled in |
-| `release` | `release_max_level_info` | `trace!` and `debug!` call-sites become no-ops; `info!` remains available |
+| `release` | `max_level_trace` | All levels compiled in (no compile-time stripping) |
 
-The gateway uses `release_max_level_info` (not `_warn`) so that operators can enable INFO output via `RUST_LOG=sonde_gateway=info` in production when needed.
+This differs from the node firmware, which uses `release_max_level_warn` to minimize code size on embedded targets. The gateway runs on a host with ample resources and benefits from runtime-configurable debug output.
 
 **Runtime default:**
 

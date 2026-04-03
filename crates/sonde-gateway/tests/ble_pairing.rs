@@ -7,10 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce as GcmNonce};
 use ed25519_dalek::{Signature, VerifyingKey};
-use hkdf::Hkdf;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 
@@ -29,8 +26,6 @@ const BLE_MSG_PHONE_REGISTERED: u8 = 0x82;
 const BLE_MSG_ERROR: u8 = 0xFF;
 
 const ERROR_WINDOW_CLOSED: u8 = 0x02;
-
-const HKDF_INFO: &[u8] = b"sonde-phone-reg-v1";
 
 // ── T-1200: Ed25519 keypair generation ──────────────────────────────────────
 
@@ -252,7 +247,7 @@ async fn t1206_registration_window_auto_close() {
 
 // ── T-1207: REGISTER_PHONE happy path ───────────────────────────────────────
 
-/// T-1207  REGISTER_PHONE happy path — full ECDH key exchange.
+/// T-1207  REGISTER_PHONE happy path — AEAD (phone sends PSK directly).
 #[tokio::test]
 async fn t1207_register_phone_happy_path() {
     let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
@@ -260,15 +255,13 @@ async fn t1207_register_phone_happy_path() {
     let mut window = RegistrationWindow::new();
     window.open(60);
 
-    // Generate ephemeral X25519 keypair on the "phone" side.
-    let mut phone_scalar = [0u8; 32];
-    getrandom::fill(&mut phone_scalar).unwrap();
-    let phone_secret = X25519StaticSecret::from(phone_scalar);
-    let phone_pub = X25519PublicKey::from(&phone_secret);
+    // Phone generates PSK and sends it directly.
+    let mut phone_psk = [0x42u8; 32];
+    getrandom::fill(&mut phone_psk).unwrap();
 
     let label = b"test-phone";
     let mut body = Vec::with_capacity(33 + label.len());
-    body.extend_from_slice(phone_pub.as_bytes());
+    body.extend_from_slice(&phone_psk);
     body.push(label.len() as u8);
     body.extend_from_slice(label);
 
@@ -280,50 +273,22 @@ async fn t1207_register_phone_happy_path() {
     let (msg_type, resp_body) = parse_ble_envelope(&resp_bytes).unwrap();
     assert_eq!(msg_type, BLE_MSG_PHONE_REGISTERED);
 
-    // Decrypt: resp_body = nonce(12) + ciphertext(36 + 16 tag)
-    assert!(
-        resp_body.len() >= 12 + 36 + 16,
-        "PHONE_REGISTERED body too short: {}",
-        resp_body.len()
-    );
-    let nonce: &[u8; 12] = resp_body[..12].try_into().unwrap();
-    let ciphertext = &resp_body[12..];
-
-    // Derive AES key via ECDH + HKDF.
-    // Phone computes: shared_secret = phone_secret * gw_x25519_pub
-    let (_, gw_x25519_pub) = identity.to_x25519().unwrap();
-    let shared_secret = phone_secret.diffie_hellman(&gw_x25519_pub);
-
-    let gateway_id = identity.gateway_id();
-    let hkdf = Hkdf::<Sha256>::new(Some(gateway_id), shared_secret.as_bytes());
-    let mut aes_key = [0u8; 32];
-    hkdf.expand(HKDF_INFO, &mut aes_key).unwrap();
-
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
-    let gcm_nonce = GcmNonce::from_slice(nonce);
-    let plaintext = cipher
-        .decrypt(
-            gcm_nonce,
-            aes_gcm::aead::Payload {
-                msg: ciphertext,
-                aad: gateway_id,
-            },
-        )
-        .expect("AES-GCM decryption must succeed");
-
-    // Plaintext: status(1) + phone_psk(32) + phone_key_hint(2) + rf_channel(1) = 36
-    assert_eq!(plaintext.len(), 36);
-    assert_eq!(plaintext[0], 0x00, "status must be 0 (accepted)");
-    let phone_psk = &plaintext[1..33];
-    assert_ne!(phone_psk, &[0u8; 32], "phone PSK must not be all-zero");
-    let phone_key_hint = u16::from_be_bytes([plaintext[33], plaintext[34]]);
-    assert_eq!(plaintext[35], 7, "rf_channel must match");
+    // AEAD response: status(1) + rf_channel(1) + phone_key_hint(2 BE) = 4 bytes
+    assert_eq!(resp_body.len(), 4, "PHONE_REGISTERED body must be 4 bytes");
+    assert_eq!(resp_body[0], 0x00, "status must be 0 (accepted)");
+    assert_eq!(resp_body[1], 7, "rf_channel must match");
+    let phone_key_hint = u16::from_be_bytes([resp_body[2], resp_body[3]]);
 
     // Verify phone_key_hint = SHA-256(psk)[30..32].
     use sha2::Digest;
     let psk_hash = Sha256::digest(phone_psk);
     let expected_hint = u16::from_be_bytes([psk_hash[30], psk_hash[31]]);
     assert_eq!(phone_key_hint, expected_hint);
+
+    // Verify phone PSK was stored with the value we sent.
+    let phones = storage.list_phone_psks().await.unwrap();
+    assert_eq!(phones.len(), 1);
+    assert_eq!(&*phones[0].psk, &phone_psk);
 }
 
 // ── T-1208: Phone PSK storage, labelling, and revocation ────────────────────
@@ -336,14 +301,12 @@ async fn t1208_phone_psk_storage_and_revocation() {
     let mut window = RegistrationWindow::new();
     window.open(60);
 
-    // Register a phone.
-    let mut phone_scalar = [0u8; 32];
-    getrandom::fill(&mut phone_scalar).unwrap();
-    let phone_secret = X25519StaticSecret::from(phone_scalar);
-    let phone_pub = X25519PublicKey::from(&phone_secret);
+    // Register a phone (AEAD: send PSK directly).
+    let mut phone_psk = [0x55u8; 32];
+    getrandom::fill(&mut phone_psk).unwrap();
     let label = b"my-phone";
     let mut body = Vec::with_capacity(33 + label.len());
-    body.extend_from_slice(phone_pub.as_bytes());
+    body.extend_from_slice(&phone_psk);
     body.push(label.len() as u8);
     body.extend_from_slice(label);
 

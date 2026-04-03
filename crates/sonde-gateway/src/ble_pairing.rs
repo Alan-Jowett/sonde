@@ -226,7 +226,7 @@ pub async fn handle_ble_recv(
     match msg_type {
         BLE_MSG_REQUEST_GW_INFO => handle_request_gw_info(body, identity),
         BLE_MSG_REGISTER_PHONE => {
-            handle_register_phone(body, identity, storage, window, rf_channel, controller).await
+            handle_register_phone_aead(body, storage, window, rf_channel, controller).await
         }
         _ => {
             debug!(msg_type, "ignoring unknown BLE message type");
@@ -279,6 +279,7 @@ fn handle_request_gw_info(body: &[u8], identity: &GatewayIdentity) -> Option<Vec
 /// REGISTER_PHONE body: ephemeral_pubkey(32) + label_len(1) + label(label_len).
 /// PHONE_REGISTERED body: nonce(12) + ciphertext (AES-256-GCM encrypted inner).
 /// Inner plaintext: status(1) + phone_psk(32) + phone_key_hint(2) + rf_channel(1) = 36 bytes.
+#[allow(dead_code)] // Retained for ECDH/HMAC fallback; will be removed with full HMAC cleanup.
 async fn handle_register_phone(
     body: &[u8],
     identity: &GatewayIdentity,
@@ -440,6 +441,102 @@ async fn handle_register_phone(
         });
     }
 
+    encode_ble_envelope(BLE_MSG_PHONE_REGISTERED, &response)
+}
+
+// ---------------------------------------------------------------------------
+// REGISTER_PHONE — AEAD variant (simplified, phone generates PSK)
+// ---------------------------------------------------------------------------
+
+/// Handle REGISTER_PHONE (AEAD): phone sends its PSK, gateway stores it.
+///
+/// REGISTER_PHONE body: phone_psk(32) + label_len(1) + label(label_len).
+/// PHONE_REGISTERED body: status(1) + rf_channel(1) + phone_key_hint(2 BE).
+async fn handle_register_phone_aead(
+    body: &[u8],
+    storage: &Arc<dyn Storage>,
+    window: &mut RegistrationWindow,
+    rf_channel: u8,
+    controller: Option<&BlePairingController>,
+) -> Option<Vec<u8>> {
+    const ERROR_GENERIC: u8 = 0x01;
+
+    if !window.is_open() {
+        info!("REGISTER_PHONE (AEAD) rejected: registration window closed");
+        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_WINDOW_CLOSED]);
+    }
+
+    if body.len() < 33 {
+        warn!(
+            len = body.len(),
+            "REGISTER_PHONE (AEAD): body too short (min 33 bytes)"
+        );
+        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
+    }
+
+    let mut phone_psk = Zeroizing::new([0u8; 32]);
+    phone_psk.copy_from_slice(&body[..32]);
+    let label_len = body[32] as usize;
+
+    if label_len > PHONE_LABEL_MAX_BYTES {
+        warn!(
+            label_len,
+            "REGISTER_PHONE (AEAD): label too long (max 64 bytes)"
+        );
+        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
+    }
+
+    if body.len() != 33 + label_len {
+        warn!(
+            expected = 33 + label_len,
+            actual = body.len(),
+            "REGISTER_PHONE (AEAD): body length mismatch"
+        );
+        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
+    }
+
+    let label = match std::str::from_utf8(&body[33..33 + label_len]) {
+        Ok(s) => s.to_owned(),
+        Err(_) => {
+            warn!("REGISTER_PHONE (AEAD): label is not valid UTF-8");
+            return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
+        }
+    };
+
+    // Derive phone_key_hint = SHA-256(psk)[30..32] as BE u16
+    let psk_hash = Sha256::digest(phone_psk.as_slice());
+    let phone_key_hint = u16::from_be_bytes([psk_hash[30], psk_hash[31]]);
+
+    // Store phone PSK
+    let record = PhonePskRecord {
+        phone_id: 0,
+        phone_key_hint,
+        psk: phone_psk,
+        label: label.clone(),
+        issued_at: SystemTime::now(),
+        status: PhonePskStatus::Active,
+    };
+
+    if let Err(e) = storage.store_phone_psk(&record).await {
+        warn!(?e, "REGISTER_PHONE (AEAD): failed to store phone PSK");
+        return None;
+    }
+
+    info!(
+        phone_key_hint,
+        label = record.label,
+        "phone registered successfully (AEAD)"
+    );
+
+    if let Some(ctrl) = controller {
+        ctrl.broadcast_event(BlePairingEventKind::PhoneRegistered {
+            label,
+            phone_key_hint,
+        });
+    }
+
+    // Build PHONE_REGISTERED response: status(1) + rf_channel(1) + phone_key_hint(2 BE)
+    let response = [0x00, rf_channel, psk_hash[30], psk_hash[31]];
     encode_ble_envelope(BLE_MSG_PHONE_REGISTERED, &response)
 }
 

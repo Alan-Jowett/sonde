@@ -321,7 +321,7 @@ Offset  Size              Field
 
 Total: 12 + len(PairingRequest_cbor) + 16 bytes.
 
-No ECDH, HKDF, ephemeral keypair, or phone HMAC is involved. Authentication is provided by the AEAD construction — only a holder of `phone_psk` can produce a valid ciphertext.
+No ephemeral keypair or separate authentication step is involved. Authentication is provided by the AEAD construction — only a holder of `phone_psk` can produce a valid ciphertext.
 
 ### 6.5  Sequence
 
@@ -448,7 +448,7 @@ The `PEER_ACK` frame follows the standard AES-256-GCM frame layout: an 11-byte H
 
 The only status value sent is `0` (registered).  All error conditions result in silent discard — no `PEER_ACK` is sent.  This is consistent with the radio protocol's silent-discard security model ([protocol.md §8](protocol.md#8--error-handling)).
 
-The `registration_proof` field (formerly CBOR key 2) is **RETIRED (issue #495)**.  Successful AES-256-GCM decryption of the PEER_ACK frame using `node_psk` constitutes proof that the gateway holds the node's PSK — this replaces the explicit `registration_proof` HMAC.
+The `registration_proof` field (formerly CBOR key 2) is **RETIRED (issue #495)**.  Successful AES-256-GCM decryption of the PEER_ACK frame using `node_psk` constitutes proof that the gateway holds the node's PSK.
 
 **Node verification of PEER_ACK:**
 

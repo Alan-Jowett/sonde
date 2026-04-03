@@ -286,7 +286,7 @@ The tool MUST generate a 256-bit `phone_psk` from OS CSPRNG, write `REGISTER_PHO
 4. `ERROR(0x03)` → "already paired with this gateway".
 5. Timeout → "gateway did not respond — ensure registration window is open".
 6. On success, `phone_psk`, `phone_key_hint`, `rf_channel`, and `phone_label` are persisted.
-7. No ECDH, HKDF, or AES-GCM decryption is performed during registration.
+7. No additional encryption is performed during registration — the BLE LESC link provides confidentiality.
 
 ---
 

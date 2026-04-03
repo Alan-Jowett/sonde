@@ -140,7 +140,7 @@ Sent when a node's BPF program calls `send()` or `send_recv()`. The handler proc
 
 **Key design decisions:**
 
-- `node_id` is an **opaque string** assigned by the gateway admin (e.g., `"greenhouse-sensor-3"`). The developer never sees HMAC keys or key_hints.
+- `node_id` is an **opaque string** assigned by the gateway admin (e.g., `"greenhouse-sensor-3"`). The developer never sees encryption keys or key_hints.
 - `program_hash` tells the handler which BPF program produced this data, so it knows how to decode the blob.
 - `data` is opaque to the gateway — the BPF program and handler define their own schema.
 

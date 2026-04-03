@@ -140,7 +140,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 - Follow Rust standard conventions enforced by `rustfmt` and `clippy`.
 - Use backticks (not backslash-escaped quotes) to wrap identifiers in PR descriptions and commit messages.
 - CBOR maps use integer keys (not strings) for compactness — see [protocol.md](protocol.md) for details.
-- Platform-specific behavior must be injected via traits (`HmacProvider`, `Sha256Provider`, `Transport`, `Storage`, `BpfInterpreter`), never hard-coded.
+- Platform-specific behavior must be injected via traits (`AeadProvider`, `Sha256Provider`, `Transport`, `Storage`, `BpfInterpreter`), never hard-coded.
 
 ---
 

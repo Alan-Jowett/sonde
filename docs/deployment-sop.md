@@ -321,8 +321,8 @@ register itself with the gateway. This is a one-time step per device.
    sonde-admin pairing start --duration-s 120
    ```
 3. **Launch the pairing tool** on a machine with Bluetooth.
-4. The tool connects to the modem's BLE GATT service, performs ECDH key
-   exchange, and receives a phone PSK and RF channel from the gateway.
+4. The tool connects to the modem's BLE GATT service, authenticates via BLE LESC,
+   and receives a phone PSK and RF channel from the gateway.
 5. Confirm the passkey to complete registration.
 
 ### Phase 2: Provision a node over BLE

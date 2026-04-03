@@ -1231,7 +1231,7 @@ The gateway MUST open the registration window via a physical button hold (≥2 s
 **Source:** ble-pairing-protocol.md §5.5
 
 **Description:**  
-On `REGISTER_PHONE`, the gateway MUST receive a phone-generated 256-bit PSK from the phone, derive `phone_key_hint` = `SHA-256(psk)[30..32]`, and store the PSK with its label and issuance timestamp. The gateway responds with a simple `PHONE_REGISTERED(status, rf_channel, phone_key_hint)` indication. No ECDH, HKDF, or AES-GCM encryption of the BLE response is required.
+On `REGISTER_PHONE`, the gateway MUST receive a phone-generated 256-bit PSK from the phone, derive `phone_key_hint` = `SHA-256(psk)[30..32]`, and store the PSK with its label and issuance timestamp. The gateway responds with a simple `PHONE_REGISTERED(status, rf_channel, phone_key_hint)` indication. No additional encryption of the BLE response is required.
 
 **Acceptance criteria:**
 
@@ -1376,7 +1376,7 @@ The gateway MUST register the node with `node_id`, `node_key_hint`, `node_psk`, 
 **Source:** ble-pairing-protocol.md §7.2, §7.3 step 13
 
 **Description:**  
-The gateway MUST build a `PEER_ACK` CBOR message `{1: 0}` (status only), encrypt the frame with `node_psk` via AES-256-GCM, and echo the `nonce` from the `PEER_REQUEST`. Encryption with `node_psk` proves the gateway holds the key (no separate `registration_proof` HMAC).
+The gateway MUST build a `PEER_ACK` CBOR message `{1: 0}` (status only), encrypt the frame with `node_psk` via AES-256-GCM, and echo the `nonce` from the `PEER_REQUEST`. Encryption with `node_psk` proves the gateway holds the key (no separate `registration_proof` needed).
 
 **Acceptance criteria:**
 

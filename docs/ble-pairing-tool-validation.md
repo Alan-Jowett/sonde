@@ -983,13 +983,13 @@ TestNode {
 
 ## 11  Cryptographic tests
 
-### T-PT-900  HKDF parameters correct for Phase 1
+### T-PT-900  HKDF parameters correct for Phase 1 — RETIRED
 
 > **RETIRED (issue #495).** HKDF key derivation removed; the simplified pairing flow uses `phone_psk` directly as the AES-256-GCM key.
 
 ---
 
-### T-PT-901  HKDF parameters correct for Phase 2
+### T-PT-901  HKDF parameters correct for Phase 2 — RETIRED
 
 > **RETIRED (issue #495).** HKDF key derivation removed; Phase 2 encryption uses `phone_psk` directly as the AES-256-GCM key.
 

@@ -13,7 +13,7 @@
 
 `sonde-protocol` is a `no_std`-compatible Rust crate that encapsulates all wire-format logic for the Sonde protocol. It is the single source of truth for frame encoding, decoding, message types, and constants — shared by the gateway, node firmware, and test harnesses.
 
-The crate has **no platform dependencies**. All platform-specific behavior (HMAC computation, transport I/O) is injected via traits.
+The crate has **no platform dependencies**. All platform-specific behavior (AEAD encryption, transport I/O) is injected via traits.
 
 ---
 
@@ -42,10 +42,10 @@ The crate is `#![no_std]` by default, with `alloc` for heap types (`Vec<u8>`). B
 ```rust
 // Frame structure
 pub const HEADER_SIZE: usize = 11;
-pub const HMAC_SIZE: usize = 32;
-pub const MIN_FRAME_SIZE: usize = HEADER_SIZE + HMAC_SIZE; // 43
+pub const AEAD_TAG_SIZE: usize = 16;
+pub const MIN_FRAME_SIZE: usize = HEADER_SIZE + AEAD_TAG_SIZE; // 27
 pub const MAX_FRAME_SIZE: usize = 250;  // ESP-NOW reference
-pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE - HMAC_SIZE; // 207
+pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE - AEAD_TAG_SIZE; // 223
 
 // Header offsets
 pub const OFFSET_KEY_HINT: usize = 0;

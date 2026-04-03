@@ -30,11 +30,11 @@ sonde/
 │   │       ├── lib.rs
 │   │       ├── constants.rs      # msg_type codes, CBOR keys, frame sizes
 │   │       ├── header.rs         # FrameHeader (de)serialization
-│   │       ├── codec.rs          # encode_frame, decode_frame, verify_frame
+│   │       ├── codec.rs          # aead_seal, aead_open, header parsing
 │   │       ├── messages.rs       # NodeMessage, GatewayMessage enums
 │   │       ├── program_image.rs  # ProgramImage, MapDef, deterministic encoding
 │   │       ├── chunk.rs          # chunk_count, get_chunk
-│   │       ├── traits.rs         # HmacProvider, Sha256Provider
+│   │       ├── traits.rs         # AeadProvider, Sha256Provider
 │   │       └── error.rs          # EncodeError, DecodeError
 │   │
 │   ├── sonde-gateway/            # gateway service (Phase 2)
@@ -51,7 +51,7 @@ sonde/
 │   │       ├── storage.rs        # Storage trait
 │   │       ├── sqlite_storage.rs # SQLite-backed Storage implementation
 │   │       ├── admin.rs          # gRPC admin API (tonic)
-│   │       └── crypto.rs         # RustCryptoHmac, RustCryptoSha256
+│   │       └── crypto.rs         # RustCryptoAead, RustCryptoSha256
 │   │
 │   ├── sonde-node/               # node firmware (Phase 3)
 │   │   ├── Cargo.toml
@@ -66,7 +66,7 @@ sonde/
 │   │       ├── map_storage.rs     # RTC SRAM map allocation and access
 │   │       ├── hal.rs             # I2C, SPI, GPIO, ADC wrappers
 │   │       ├── sleep.rs           # sleep manager, wake reason
-│   │       ├── crypto.rs          # software HMAC/SHA256; ESP hardware (feature: esp)
+│   │       ├── crypto.rs          # software AES-GCM/SHA256; ESP hardware (feature: esp)
 │   │       ├── sonde_bpf_adapter.rs   # BpfInterpreter impl for sonde-bpf backend
 │   │       ├── traits.rs          # Transport, Rng, Clock, SleepController, PlatformStorage
 │   │       ├── error.rs           # NodeError enum
@@ -172,7 +172,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 
 **Design doc:** [protocol-crate-design.md](protocol-crate-design.md)  
 **Validation:** [protocol-crate-validation.md](protocol-crate-validation.md) (41 tests)  
-**Runtime dependencies:** `ciborium` only. **Dev-dependencies (for tests):** `hmac`, `sha2`.
+**Runtime dependencies:** `ciborium` only. **Dev-dependencies (for tests):** `aes-gcm`, `sha2`.
 
 **Status:** Complete. All tests pass (`cargo test -p sonde-protocol`).
 
@@ -182,16 +182,16 @@ sonde-protocol  (no_std + alloc, no platform deps)
 |---|---|---|---|
 | 1.1 | `constants.rs` | All protocol constants | Compile check |
 | 1.2 | `error.rs` | `EncodeError`, `DecodeError` enums | Compile check |
-| 1.3 | `traits.rs` | `HmacProvider`, `Sha256Provider` traits | Compile check |
+| 1.3 | `traits.rs` | `AeadProvider`, `Sha256Provider` traits | Compile check |
 | 1.4 | `header.rs` | `FrameHeader` with `to_bytes`/`from_bytes` | T-P001 to T-P004 |
-| 1.5 | `codec.rs` | `encode_frame`, `decode_frame`, `verify_frame` | T-P010 to T-P019 |
+| 1.5 | `codec.rs` | `aead_seal`, `aead_open` | T-P010 to T-P019 |
 | 1.6 | `messages.rs` | `NodeMessage`, `GatewayMessage` with CBOR encode/decode | T-P020 to T-P032 |
 | 1.7 | `program_image.rs` | `ProgramImage`, `MapDef`, deterministic encoding, `program_hash` | T-P040 to T-P046 |
 | 1.8 | `chunk.rs` | `chunk_count`, `get_chunk` | T-P050 to T-P053 |
 | 1.9 | `modem.rs` | Modem serial protocol codec: frame envelope encode/decode, message types | Unit tests |
 | 1.10 | Integration | Full frame round-trips | T-P060 to T-P062 |
 
-**Test HMAC/SHA providers:** Implement a software `HmacProvider` and `Sha256Provider` using `hmac`, `sha2` crates in `#[cfg(test)]` for running the protocol crate's own tests.
+**Test AEAD/SHA providers:** Implement a software `AeadProvider` and `Sha256Provider` using `aes-gcm`, `sha2` crates in `#[cfg(test)]` for running the protocol crate's own tests.
 
 **Exit criteria:** `cargo test -p sonde-protocol` — all tests pass. ✅
 
@@ -203,7 +203,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 
 **Design doc:** [gateway-design.md](gateway-design.md)  
 **Validation:** [gateway-validation.md](gateway-validation.md)  
-**Key dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail`, `rusqlite`, `hmac`, `sha2`, `ciborium`, `clap`, `tokio-serial`, `tracing`. See `crates/sonde-gateway/Cargo.toml` for the full list.
+**Key dependencies:** `sonde-protocol`, `tokio`, `tonic`, `prevail`, `rusqlite`, `aes-gcm`, `sha2`, `ciborium`, `clap`, `tokio-serial`, `tracing`. See `crates/sonde-gateway/Cargo.toml` for the full list.
 
 **Status:** Complete. All tests pass (`cargo test -p sonde-gateway`) across integration test files (phase2a through phase2d) and unit tests within source modules. Uses `sqlite_storage.rs` for persistence (added beyond original plan). Binary entry point is `src/bin/gateway.rs`.
 
@@ -215,7 +215,7 @@ Core infrastructure — traits, mocks, and standalone modules. Each module is te
 
 | Step | Module | What to build | Test with |
 |---|---|---|---|
-| 2.1 | `crypto.rs` | `RustCryptoHmac`, `RustCryptoSha256` implementing protocol traits | Unit tests |
+| 2.1 | `crypto.rs` | `RustCryptoAead`, `RustCryptoSha256` implementing protocol traits | Unit tests |
 | 2.2 | `transport.rs` | `Transport` trait (mock impl for testing) | T-0100 |
 | 2.3 | `storage.rs` | `Storage` trait (in-memory mock impl for testing) | Unit tests |
 | 2.4 | `registry.rs` | `NodeRecord`, key lookup by `key_hint`, CRUD operations | T-0700, T-0702, T-0703 |
@@ -299,7 +299,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 **Design doc:** [node-design.md](node-design.md)  
 **Validation:** [node-validation.md](node-validation.md)  
-**Key dependencies:** `sonde-protocol`, `sonde-bpf`, `ciborium`, `hmac`, `sha2`, `log`. ESP-IDF dependencies (`esp-idf-hal`, `esp-idf-svc`) are behind the `esp` feature. See `crates/sonde-node/Cargo.toml` for the full list.
+**Key dependencies:** `sonde-protocol`, `sonde-bpf`, `ciborium`, `aes-gcm`, `sha2`, `log`. ESP-IDF dependencies (`esp-idf-hal`, `esp-idf-svc`) are behind the `esp` feature. See `crates/sonde-node/Cargo.toml` for the full list.
 
 **Status:** Mostly complete. 101 tests pass covering all validation test cases (T-N100 through T-N802). All 19 modules implemented including ESP-specific platform adapters. Modules added beyond original plan: `bpf_dispatch.rs` (helper dispatch), `sonde_bpf_adapter.rs` (BpfInterpreter impl for sonde-bpf), `traits.rs` (platform abstractions), `error.rs` (error types), and four ESP-specific modules (`esp_hal.rs`, `esp_sleep.rs`, `esp_storage.rs`, `esp_transport.rs`).
 
@@ -307,7 +307,7 @@ USB modem serial transport. The gateway can communicate with nodes via an ESP32-
 
 | Step | Module | What to build | Test with |
 |---|---|---|---|
-| 3.1 | `crypto.rs` | Software HMAC/SHA256 (ESP hardware impl behind `esp` feature) | Unit tests |
+| 3.1 | `crypto.rs` | Software AES-GCM/SHA256 (ESP hardware impl behind `esp` feature) | Unit tests |
 | 3.2 | `traits.rs` / `esp_transport.rs` | `Transport` trait + ESP-NOW send/receive (feature: esp) | T-N100, T-N102 |
 | 3.3 | `key_store.rs` | PSK flash partition read/write, magic check | T-N400, T-N401, T-N404 |
 | 3.4 | `sleep.rs` | Deep sleep entry, wake reason, interval management | T-N208, T-N209 |
@@ -483,7 +483,7 @@ The CI pipeline (`.github/workflows/ci.yml`) runs three jobs:
 
 Consider a `crates/sonde-test-utils/` crate (dev-dependency only) containing:
 
-- Software `HmacProvider` and `Sha256Provider` implementations.
+- Software `AeadProvider` and `Sha256Provider` implementations.
 - `TestNode` helper (constructs valid authenticated frames).
 - `MockTransport` and `MockStorage` implementations.
 - Pre-compiled BPF test program images (CBOR-encoded).

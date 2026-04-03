@@ -1473,15 +1473,15 @@ The admin API MUST expose a `RevokePhone` RPC (and corresponding `sonde-admin pa
 **Source:** Issue #496
 
 **Description:**  
-The gateway MUST apply build-type–aware log-level policies: compile-time gating to strip DEBUG/TRACE call-sites in release builds, and a runtime default that differs between debug and release.
+The gateway MUST compile in all log levels (up to TRACE) in both debug and release builds, and use a runtime `EnvFilter` default that differs between debug and release. This allows operators to enable debug logging on release builds via `RUST_LOG` without recompilation.
 
 **Acceptance criteria:**
 
 1. In debug builds, the compile-time maximum tracing level is TRACE.
-2. In release builds, the compile-time maximum tracing level is INFO (`trace!` and `debug!` call-sites are no-ops).
+2. In release builds, the compile-time maximum tracing level is TRACE (debug and trace call-sites are preserved).
 3. The runtime default `EnvFilter` is `sonde_gateway=info` in debug builds and `sonde_gateway=warn` in release builds.
-4. `RUST_LOG` overrides the default in both build types (within compile-time limits).
-5. The `tracing` crate dependency specifies `features = ["max_level_trace", "release_max_level_info"]`.
+4. `RUST_LOG` overrides the default in both build types.
+5. The `tracing` crate dependency specifies `features = ["max_level_trace"]` (no `release_max_level_*`).
 6. Both console mode and Windows service mode apply the same default `EnvFilter` policy for console/file sinks; in Windows service mode, the ETW sink remains unfiltered and relies on ETW-side filtering.
 
 ### GW-1305  Verification failure diagnostics
@@ -1510,7 +1510,7 @@ When the gateway runs as a Windows service (no interactive console), it MUST pro
 
 1. In Windows service mode, the gateway writes log output to a file at `<db-path>.log` where `<db-path>` is the configured database file path (e.g., if the database is `C:\ProgramData\sonde\gateway.db`, the log file is `C:\ProgramData\sonde\gateway.db.log`).
 2. The default `EnvFilter` for the file sink in release builds is `sonde_gateway=warn`, consistent with the console-mode default (GW-1304 criterion 3).
-3. The gateway registers an ETW provider with the name `sonde-gateway`. The ETW sink is unfiltered; all events up to the compile-time maximum level (`INFO` in release, `TRACE` in debug) are forwarded to any active ETW session.
+3. The gateway registers an ETW provider with the name `sonde-gateway`. The ETW sink is unfiltered; all events up to the compile-time maximum level (TRACE in both debug and release) are forwarded to any active ETW session.
 4. The file log level can be changed at runtime without restarting the service: setting `RUST_LOG` and delivering a platform-appropriate reload signal causes the gateway to re-read the environment variable and apply the new `EnvFilter` within 5 seconds.
 5. If the log file cannot be created or written (e.g., permission denied), the gateway MUST log an `ERROR`-level diagnostic to the ETW sink and continue operating without file logging rather than failing to start.
 

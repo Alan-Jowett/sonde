@@ -293,6 +293,108 @@ impl FilePairingStore {
             phone_label: s.phone_label.clone(),
         })
     }
+
+    /// Save AEAD pairing artifacts to a companion file (`pairing-aead.json`).
+    #[cfg(feature = "aes-gcm-codec")]
+    pub fn save_artifacts_aead(
+        &self,
+        artifacts: &crate::phase1::PairingArtifactsAead,
+    ) -> Result<(), PairingError> {
+        let aead_path = self.aead_path();
+        if let Some(parent) = aead_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+        }
+
+        let stored = StoredAeadArtifacts {
+            phone_psk: to_hex(&*artifacts.phone_psk),
+            phone_key_hint: artifacts.phone_key_hint,
+            rf_channel: artifacts.rf_channel,
+            phone_label: artifacts.phone_label.clone(),
+        };
+
+        let json = serde_json::to_string_pretty(&stored)
+            .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+
+        let tmp = aead_path.with_extension("tmp");
+        let mut file =
+            fs::File::create(&tmp).map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+        file.sync_all()
+            .map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+        drop(file);
+        fs::rename(&tmp, &aead_path).map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Load AEAD pairing artifacts from the companion file.
+    #[cfg(feature = "aes-gcm-codec")]
+    pub fn load_artifacts_aead(
+        &self,
+    ) -> Result<Option<crate::phase1::PairingArtifactsAead>, PairingError> {
+        let aead_path = self.aead_path();
+        let bytes = match fs::read(&aead_path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(PairingError::StoreLoadFailed(e.to_string())),
+        };
+
+        let stored: StoredAeadArtifacts = serde_json::from_slice(&bytes).map_err(|e| {
+            PairingError::StoreCorrupted(format!("{e}: delete or fix {}", aead_path.display()))
+        })?;
+
+        let mut psk_bytes = from_hex(&stored.phone_psk, 32)?;
+        let mut psk = Zeroizing::new([0u8; 32]);
+        psk.copy_from_slice(&psk_bytes);
+        psk_bytes.zeroize();
+
+        // Recompute key_hint from PSK to detect corruption.
+        let expected_hint = crate::validation::compute_key_hint(&psk);
+        if stored.phone_key_hint != expected_hint {
+            return Err(PairingError::StoreCorrupted(
+                "phone_key_hint does not match phone_psk".into(),
+            ));
+        }
+
+        Ok(Some(crate::phase1::PairingArtifactsAead {
+            phone_psk: psk,
+            phone_key_hint: expected_hint,
+            rf_channel: stored.rf_channel,
+            phone_label: stored.phone_label,
+        }))
+    }
+
+    /// Clear AEAD artifacts file (`pairing-aead.json`).
+    ///
+    /// This only removes the AEAD file; the legacy `pairing.json` is
+    /// managed separately by the [`PairingStore::clear`] implementation.
+    #[cfg(feature = "aes-gcm-codec")]
+    pub fn clear_aead(&self) -> Result<(), PairingError> {
+        let aead_path = self.aead_path();
+        // Also remove any leftover temp file from a crashed save.
+        let tmp_path = aead_path.with_extension("tmp");
+        let _ = fs::remove_file(&tmp_path);
+        match fs::remove_file(&aead_path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(PairingError::StoreSaveFailed(e.to_string())),
+        }
+    }
+
+    #[cfg(feature = "aes-gcm-codec")]
+    fn aead_path(&self) -> PathBuf {
+        self.path.with_file_name("pairing-aead.json")
+    }
+}
+
+#[cfg(feature = "aes-gcm-codec")]
+#[derive(Serialize, Deserialize)]
+struct StoredAeadArtifacts {
+    phone_psk: String,
+    phone_key_hint: u16,
+    rf_channel: u8,
+    phone_label: String,
 }
 
 impl PairingStore for FilePairingStore {

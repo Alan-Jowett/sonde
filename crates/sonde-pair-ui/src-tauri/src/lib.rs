@@ -3,9 +3,13 @@
 
 //! Tauri v2 backend for the Sonde BLE pairing tool.
 //!
-//! On desktop, BLE operations use [`BtleplugTransport`] and [`FilePairingStore`].
-//! On Android, BLE operations use [`AndroidBleTransport`] and [`AndroidPairingStore`],
-//! initialized from the Tauri Android activity via JNI.
+//! On desktop, BLE operations use [`BtleplugTransport`].
+//! On Android, BLE operations use [`AndroidBleTransport`].
+//!
+//! Pairing artifacts (phone PSK) are held in memory during the session
+//! and persisted to `pairing-aead.json` via [`FilePairingStore`] on
+//! desktop. The simplified AEAD flow does not use ECDH or gateway
+//! identity TOFU.
 //!
 //! All BLE operations use `spawn_blocking` + `Handle::block_on` so that
 //! non-Send futures from [`sonde_pair::transport::BleTransport`] work on
@@ -17,7 +21,6 @@ use serde::Serialize;
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
 use sonde_pair::phase1::PairingProgress;
 use sonde_pair::rng::OsRng;
-use sonde_pair::store::PairingStore;
 use sonde_pair::types::ScannedDevice;
 use sonde_pair::{phase1, phase2};
 
@@ -40,10 +43,10 @@ struct AppState {
     scanner: Mutex<Option<DeviceScanner<BtleplugTransport>>>,
     #[cfg(target_os = "android")]
     scanner: Mutex<Option<DeviceScanner<AndroidBleTransport>>>,
-    #[cfg(target_os = "android")]
-    store: Mutex<Option<AndroidPairingStore>>,
     phase: Arc<Mutex<String>>,
     logs: Arc<Mutex<Vec<String>>>,
+    /// Phase 1 AEAD artifacts, held in memory for Phase 2 provisioning.
+    pairing_artifacts: Mutex<Option<Arc<phase1::PairingArtifactsAead>>>,
 }
 
 /// Reports Phase 1 sub-phase transitions to the UI via the shared `phase` mutex.
@@ -192,30 +195,9 @@ async fn pair_gateway(
     state: tauri::State<'_, AppState>,
     address: String,
     phone_label: String,
-    force: Option<bool>,
+    _force: Option<bool>,
 ) -> Result<(), String> {
     *state.scanner.lock().unwrap() = None;
-
-    // PT-0601: check for existing pairing and require explicit confirmation.
-    if !force.unwrap_or(false) {
-        let existing_identity = tokio::task::spawn_blocking(|| {
-            let store = FilePairingStore::new()?;
-            store.load_gateway_identity()
-        })
-        .await
-        .map_err(|e| format!("task panicked: {e}"))?
-        .map_err(|e| e.to_string())?;
-
-        if let Some(identity) = existing_identity {
-            let gw_hex = hex::encode(identity.gateway_id);
-            *state.phase.lock().unwrap() = format!(
-                "Error: Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
-            );
-            return Err(format!(
-                "Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
-            ));
-        }
-    }
 
     let addr = match parse_address(&address) {
         Ok(a) => a,
@@ -235,11 +217,9 @@ async fn pair_gateway(
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = BtleplugTransport::new().await?;
-            let mut store = FilePairingStore::new()?;
             let rng = OsRng;
-            phase1::pair_with_gateway(
+            phase1::pair_with_gateway_aead(
                 &mut transport,
-                &mut store,
                 &rng,
                 &addr,
                 &phone_label,
@@ -252,7 +232,13 @@ async fn pair_gateway(
     .map_err(|e| format!("task panicked: {e}"))?;
 
     match result {
-        Ok(_) => {
+        Ok(artifacts) => {
+            // Persist to file store so provisioning works across app restarts.
+            let store = FilePairingStore::new().map_err(|e| e.to_string())?;
+            store
+                .save_artifacts_aead(&artifacts)
+                .map_err(|e| e.to_string())?;
+            *state.pairing_artifacts.lock().unwrap() = Some(Arc::new(artifacts));
             *state.phase.lock().unwrap() = "Complete".into();
             Ok(())
         }
@@ -281,14 +267,32 @@ async fn provision_node(
         }
     };
 
+    // Load artifacts from in-memory cache, falling back to file store.
+    let artifacts = {
+        let mut guard = state.pairing_artifacts.lock().unwrap();
+        if guard.is_none() {
+            let store = FilePairingStore::new().map_err(|e| e.to_string())?;
+            match store.load_artifacts_aead() {
+                Ok(Some(loaded)) => {
+                    *guard = Some(Arc::new(loaded));
+                }
+                Ok(None) => {}
+                Err(e) => return Err(format!("failed to load pairing artifacts: {e}")),
+            }
+        }
+        guard
+            .clone()
+            .ok_or_else(|| "Not paired — run pair_gateway first".to_string())?
+    };
+
     *state.phase.lock().unwrap() = "Provisioning".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = BtleplugTransport::new().await?;
-            let store = FilePairingStore::new()?;
             let rng = OsRng;
-            phase2::provision_node(&mut transport, &store, &rng, &addr, &node_id, &[]).await
+            phase2::provision_node_aead(&mut transport, &artifacts, &rng, &addr, &node_id, &[])
+                .await
         })
     })
     .await
@@ -309,20 +313,28 @@ async fn provision_node(
 
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
-fn get_pairing_status() -> Result<PairingStatus, String> {
-    let store = FilePairingStore::new().map_err(|e| e.to_string())?;
-    let identity = store.load_gateway_identity().map_err(|e| e.to_string())?;
+fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus, String> {
+    let mut paired = state.pairing_artifacts.lock().unwrap().is_some();
+    if !paired {
+        let store = FilePairingStore::new().map_err(|e| e.to_string())?;
+        match store.load_artifacts_aead() {
+            Ok(Some(_)) => paired = true,
+            Ok(None) => {}
+            Err(e) => return Err(format!("failed to check pairing status: {e}")),
+        }
+    }
     Ok(PairingStatus {
-        paired: identity.is_some(),
-        gateway_id: identity.map(|id| hex::encode(id.gateway_id)),
+        paired,
+        gateway_id: None,
     })
 }
 
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut store = FilePairingStore::new().map_err(|e| e.to_string())?;
-    store.clear().map_err(|e| e.to_string())?;
+    *state.pairing_artifacts.lock().unwrap() = None;
+    let store = FilePairingStore::new().map_err(|e| e.to_string())?;
+    store.clear_aead().map_err(|e| e.to_string())?;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
 }
@@ -406,24 +418,9 @@ async fn pair_gateway(
     state: tauri::State<'_, AppState>,
     address: String,
     phone_label: String,
-    force: Option<bool>,
+    _force: Option<bool>,
 ) -> Result<(), String> {
     *state.scanner.lock().unwrap() = None;
-
-    // PT-0601: check for existing pairing and require explicit confirmation.
-    if !force.unwrap_or(false) {
-        let guard = get_or_init_store(&state.store)?;
-        let store = guard.as_ref().unwrap();
-        if let Some(identity) = store.load_gateway_identity().map_err(|e| e.to_string())? {
-            let gw_hex = hex::encode(identity.gateway_id);
-            *state.phase.lock().unwrap() = format!(
-                "Error: Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
-            );
-            return Err(format!(
-                "Gateway already paired with ID {gw_hex}. To re-pair, clear the existing pairing in the app, then retry."
-            ));
-        }
-    }
 
     let addr = match parse_address(&address) {
         Ok(a) => a,
@@ -433,8 +430,6 @@ async fn pair_gateway(
         }
     };
 
-    // Set an immediate initial phase so the UI doesn't show stale state
-    // while the blocking task is being spawned.
     *state.phase.lock().unwrap() = "Connecting".into();
 
     let phase = state.phase.clone();
@@ -443,11 +438,9 @@ async fn pair_gateway(
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = AndroidBleTransport::from_cached_vm()?;
-            let mut store = AndroidPairingStore::from_cached_vm()?;
             let rng = OsRng;
-            phase1::pair_with_gateway(
+            phase1::pair_with_gateway_aead(
                 &mut transport,
-                &mut store,
                 &rng,
                 &addr,
                 &phone_label,
@@ -460,7 +453,8 @@ async fn pair_gateway(
     .map_err(|e| format!("task panicked: {e}"))?;
 
     match result {
-        Ok(_) => {
+        Ok(artifacts) => {
+            *state.pairing_artifacts.lock().unwrap() = Some(Arc::new(artifacts));
             *state.phase.lock().unwrap() = "Complete".into();
             Ok(())
         }
@@ -489,14 +483,21 @@ async fn provision_node(
         }
     };
 
+    let artifacts = state
+        .pairing_artifacts
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "Not paired — run pair_gateway first".to_string())?;
+
     *state.phase.lock().unwrap() = "Provisioning".into();
 
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = AndroidBleTransport::from_cached_vm()?;
-            let store = AndroidPairingStore::from_cached_vm()?;
             let rng = OsRng;
-            phase2::provision_node(&mut transport, &store, &rng, &addr, &node_id, &[]).await
+            phase2::provision_node_aead(&mut transport, &artifacts, &rng, &addr, &node_id, &[])
+                .await
         })
     })
     .await
@@ -516,34 +517,19 @@ async fn provision_node(
 }
 
 #[cfg(target_os = "android")]
-fn get_or_init_store(
-    store_lock: &Mutex<Option<AndroidPairingStore>>,
-) -> Result<std::sync::MutexGuard<'_, Option<AndroidPairingStore>>, String> {
-    let mut guard = store_lock.lock().unwrap();
-    if guard.is_none() {
-        *guard = Some(AndroidPairingStore::from_cached_vm().map_err(|e| e.to_string())?);
-    }
-    Ok(guard)
-}
-
-#[cfg(target_os = "android")]
 #[tauri::command]
 fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus, String> {
-    let guard = get_or_init_store(&state.store)?;
-    let store = guard.as_ref().unwrap();
-    let identity = store.load_gateway_identity().map_err(|e| e.to_string())?;
+    let paired = state.pairing_artifacts.lock().unwrap().is_some();
     Ok(PairingStatus {
-        paired: identity.is_some(),
-        gateway_id: identity.map(|id| hex::encode(id.gateway_id)),
+        paired,
+        gateway_id: None,
     })
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
 fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut guard = get_or_init_store(&state.store)?;
-    let store = guard.as_mut().unwrap();
-    store.clear().map_err(|e| e.to_string())?;
+    *state.pairing_artifacts.lock().unwrap() = None;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
 }
@@ -609,12 +595,6 @@ mod log_capture {
                 }
             }
         }
-    }
-}
-
-mod hex {
-    pub fn encode(bytes: impl AsRef<[u8]>) -> String {
-        bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
     }
 }
 
@@ -705,10 +685,9 @@ pub fn run() {
 
     let state = AppState {
         scanner: Mutex::new(None),
-        #[cfg(target_os = "android")]
-        store: Mutex::new(None),
         phase: Arc::new(Mutex::new("Idle".into())),
         logs,
+        pairing_artifacts: Mutex::new(None),
     };
 
     tauri::Builder::default()

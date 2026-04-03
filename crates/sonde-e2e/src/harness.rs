@@ -471,13 +471,8 @@ impl NodeTransport for BridgeTransport {
 // BridgeTransportAead — AEAD variant for AES-256-GCM E2E tests
 // ---------------------------------------------------------------------------
 
-/// In-memory frame relay that routes frames through the gateway's AEAD path.
-///
-/// WAKE, GET_CHUNK, and PROGRAM_ACK frames are processed via
-/// `process_frame_aead` (AES-256-GCM). APP_DATA and PEER_REQUEST frames
-/// are routed through `process_frame` (HMAC) — APP_DATA because the BPF
-/// dispatch helpers still use the HMAC codec, and PEER_REQUEST because the
-/// AEAD handler rejects it (the node is not yet registered at that point).
+/// In-memory frame relay that routes all frames through the gateway's
+/// `process_frame_aead` path (AES-256-GCM), including PEER_REQUEST.
 #[cfg(feature = "aes-gcm-codec")]
 struct BridgeTransportAead {
     gateway: Arc<Gateway>,
@@ -544,31 +539,17 @@ impl NodeTransport for BridgeTransportAead {
 
         let gateway = self.gateway.clone();
         let peer = self.peer.clone();
-        let msg_type = if frame.len() > sonde_protocol::OFFSET_MSG_TYPE {
-            frame[sonde_protocol::OFFSET_MSG_TYPE]
-        } else {
-            0
-        };
 
-        // PEER_REQUEST uses the HMAC path because the gateway's AEAD
-        // handler requires a registered phone PSK. All other frames
-        // (including APP_DATA) use the AEAD codec.
-        let response = if msg_type == sonde_protocol::MSG_PEER_REQUEST {
-            let frame_vec = frame.to_vec();
-            tokio::task::block_in_place(|| {
-                self.rt.block_on(gateway.process_frame(&frame_vec, peer))
-            })
-        } else {
-            let mut frame_vec = frame.to_vec();
-            if self.tamper_outgoing && frame_vec.len() > sonde_protocol::HEADER_SIZE {
-                // Flip a bit in the first ciphertext byte to trigger GCM auth failure.
-                frame_vec[sonde_protocol::HEADER_SIZE] ^= 0x01;
-            }
-            tokio::task::block_in_place(|| {
-                self.rt
-                    .block_on(gateway.process_frame_aead(&frame_vec, peer))
-            })
-        };
+        // All frames (including PEER_REQUEST) use the AEAD codec.
+        let mut frame_vec = frame.to_vec();
+        if self.tamper_outgoing && frame_vec.len() > sonde_protocol::HEADER_SIZE {
+            // Flip a bit in the first ciphertext byte to trigger GCM auth failure.
+            frame_vec[sonde_protocol::HEADER_SIZE] ^= 0x01;
+        }
+        let response = tokio::task::block_in_place(|| {
+            self.rt
+                .block_on(gateway.process_frame_aead(&frame_vec, peer))
+        });
 
         if response.is_some() {
             self.response_count += 1;
@@ -1438,15 +1419,11 @@ pub async fn simulate_phone_registration(
     rf_channel: u8,
 ) -> (Zeroizing<[u8; 32]>, u16) {
     use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
-    use sonde_pair::crypto::{
-        aes256gcm_decrypt, ed25519_to_x25519_public, generate_x25519_keypair, hkdf_sha256,
-        verify_ed25519_signature, x25519_ecdh,
-    };
-    use sonde_pair::envelope::{
-        build_envelope, parse_envelope, parse_gw_info_response, parse_phone_registered,
-    };
+    use sonde_pair::crypto::verify_ed25519_signature;
+    use sonde_pair::envelope::{build_envelope, parse_envelope, parse_gw_info_response};
     use sonde_pair::rng::{OsRng, RngProvider};
     use sonde_pair::types;
+    use std::sync::Arc;
 
     let mut window = RegistrationWindow::new();
     window.open(120);
@@ -1490,11 +1467,12 @@ pub async fn simulate_phone_registration(
         "response gateway_id must match gateway identity"
     );
 
-    // Phase 1b: REGISTER_PHONE
-    let (eph_secret, eph_public) = generate_x25519_keypair(&rng).unwrap();
+    // Phase 1b: REGISTER_PHONE (AEAD — phone sends PSK directly)
+    let mut phone_psk = Zeroizing::new([0u8; 32]);
+    rng.fill_bytes(&mut *phone_psk).unwrap();
     let label = b"e2e-test-phone";
     let mut register_body = Vec::with_capacity(32 + 1 + label.len());
-    register_body.extend_from_slice(&eph_public);
+    register_body.extend_from_slice(&*phone_psk);
     register_body.push(label.len() as u8);
     register_body.extend_from_slice(label);
     let register_request = build_envelope(types::REGISTER_PHONE, &register_body).unwrap();
@@ -1510,49 +1488,27 @@ pub async fn simulate_phone_registration(
     .await
     .expect("PHONE_REGISTERED must be returned");
 
-    // Decrypt PHONE_REGISTERED
+    // Parse PHONE_REGISTERED (AEAD): status(1) + rf_channel(1) + phone_key_hint(2 BE)
     let (msg_type, body) = parse_envelope(&register_response).unwrap();
     assert_eq!(msg_type, types::PHONE_REGISTERED);
-    let registered = parse_phone_registered(body).unwrap();
-
-    // Decrypt using fields from the GW_INFO_RESPONSE (not the caller's
-    // identity) so the helper validates the response like a real phone.
-    let gw_x25519 = ed25519_to_x25519_public(&gw_info.gw_public_key).unwrap();
-    let shared_secret = x25519_ecdh(&eph_secret, &gw_x25519);
-    let aes_key = hkdf_sha256(&shared_secret, &gw_info.gateway_id, b"sonde-phone-reg-v1");
-    let plaintext = aes256gcm_decrypt(
-        &aes_key,
-        &registered.nonce,
-        &registered.ciphertext,
-        &gw_info.gateway_id,
-    )
-    .unwrap();
-
-    // Inner: status(1) + phone_psk(32) + phone_key_hint(2) + rf_channel(1)
-    assert_eq!(
-        plaintext.len(),
-        36,
-        "PHONE_REGISTERED inner must be 36 bytes"
-    );
-    assert_eq!(plaintext[0], 0x00, "status must be success");
-    let mut phone_psk = Zeroizing::new([0u8; 32]);
-    phone_psk.copy_from_slice(&plaintext[1..33]);
-    let phone_key_hint = u16::from_be_bytes([plaintext[33], plaintext[34]]);
-    assert_eq!(plaintext[35], rf_channel, "rf_channel must match");
+    assert_eq!(body.len(), 4, "PHONE_REGISTERED body must be 4 bytes");
+    assert_eq!(body[0], 0x00, "status must be success");
+    assert_eq!(body[1], rf_channel, "rf_channel must match");
+    let phone_key_hint = u16::from_be_bytes([body[2], body[3]]);
 
     (phone_psk, phone_key_hint)
 }
 
-/// Build the encrypted_payload for NODE_PROVISION and PEER_REQUEST.
+/// Build the complete ESP-NOW PEER_REQUEST frame for NODE_PROVISION.
 ///
-/// Mirrors the payload construction from `sonde_pair::phase2::provision_node`
-/// using the public crypto and CBOR building blocks.
+/// Uses `encrypt_pairing_request_aead` to build a frame the node relays
+/// verbatim during the PEER_REQUEST exchange.
 #[allow(clippy::too_many_arguments)]
 pub fn build_encrypted_payload(
-    gw_public_key: &[u8; 32],
-    gw_gateway_id: &[u8; 16],
+    _gw_public_key: &[u8; 32],
+    _gw_gateway_id: &[u8; 16],
     phone_psk: &[u8; 32],
-    phone_key_hint: u16,
+    _phone_key_hint: u16,
     node_id: &str,
     node_psk: &[u8; 32],
     rf_channel: u8,
@@ -1564,10 +1520,10 @@ pub fn build_encrypted_payload(
         .as_secs() as i64;
 
     build_encrypted_payload_with_timestamp(
-        gw_public_key,
-        gw_gateway_id,
+        _gw_public_key,
+        _gw_gateway_id,
         phone_psk,
-        phone_key_hint,
+        _phone_key_hint,
         node_id,
         node_psk,
         rf_channel,
@@ -1576,16 +1532,16 @@ pub fn build_encrypted_payload(
     )
 }
 
-/// Build the encrypted_payload with a caller-supplied timestamp.
+/// Build the complete ESP-NOW PEER_REQUEST frame with a caller-supplied timestamp.
 ///
 /// Same as [`build_encrypted_payload`] but accepts an explicit timestamp
 /// for negative testing (e.g. stale timestamps outside the ±86400 s window).
 #[allow(clippy::too_many_arguments)]
 pub fn build_encrypted_payload_with_timestamp(
-    gw_public_key: &[u8; 32],
-    gw_gateway_id: &[u8; 16],
+    _gw_public_key: &[u8; 32],
+    _gw_gateway_id: &[u8; 16],
     phone_psk: &[u8; 32],
-    phone_key_hint: u16,
+    _phone_key_hint: u16,
     node_id: &str,
     node_psk: &[u8; 32],
     rf_channel: u8,
@@ -1593,41 +1549,11 @@ pub fn build_encrypted_payload_with_timestamp(
     timestamp: i64,
 ) -> Vec<u8> {
     use sonde_pair::cbor::encode_pairing_request;
-    use sonde_pair::crypto::{
-        aes256gcm_encrypt, ed25519_to_x25519_public, generate_x25519_keypair, hkdf_sha256,
-        hmac_sha256, x25519_ecdh,
-    };
-    use sonde_pair::rng::{OsRng, RngProvider};
+    use sonde_pair::crypto::encrypt_pairing_request_aead;
 
-    // Step 1: Encode PairingRequest as CBOR
     let cbor = encode_pairing_request(node_id, node_psk, rf_channel, sensors, timestamp).unwrap();
-
-    // Step 2: authenticated_request = phone_key_hint(2) + cbor + hmac(32)
-    let phone_hmac = hmac_sha256(phone_psk, &cbor);
-    let mut auth_request = Vec::with_capacity(2 + cbor.len() + 32);
-    auth_request.extend_from_slice(&phone_key_hint.to_be_bytes());
-    auth_request.extend_from_slice(&cbor);
-    auth_request.extend_from_slice(&phone_hmac);
-
-    // Step 3: ECDH with gateway
-    let gw_x25519 = ed25519_to_x25519_public(gw_public_key).unwrap();
-    let rng = OsRng;
-    let (eph_secret, eph_public) = generate_x25519_keypair(&rng).unwrap();
-    let shared_secret = x25519_ecdh(&eph_secret, &gw_x25519);
-    let aes_key = hkdf_sha256(&shared_secret, gw_gateway_id, b"sonde-node-pair-v1");
-
-    // Step 4: Encrypt
-    let mut nonce = [0u8; 12];
-    rng.fill_bytes(&mut nonce).unwrap();
-    let ciphertext = aes256gcm_encrypt(&aes_key, &nonce, &auth_request, gw_gateway_id).unwrap();
-
-    // Step 5: encrypted_payload = eph_public(32) + nonce(12) + ciphertext
-    let mut payload = Vec::with_capacity(32 + 12 + ciphertext.len());
-    payload.extend_from_slice(&eph_public);
-    payload.extend_from_slice(&nonce);
-    payload.extend_from_slice(&ciphertext);
-
-    payload
+    encrypt_pairing_request_aead(phone_psk, &cbor)
+        .expect("encrypt_pairing_request_aead must succeed in test")
 }
 
 // ---------------------------------------------------------------------------

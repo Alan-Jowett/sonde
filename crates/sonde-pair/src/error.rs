@@ -139,6 +139,9 @@ pub enum PairingError {
     #[error("scan is already active")]
     ScanAlreadyActive,
 
+    #[error("system clock error — check that the system time is set correctly")]
+    TimestampUnavailable,
+
     // Platform / JNI errors (Android)
     #[cfg(feature = "android")]
     #[error("JNI error: {0}")]

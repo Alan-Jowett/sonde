@@ -520,6 +520,7 @@ async fn do_pair_with_gateway_aead(
 /// (no Ed25519 keypair or `gateway_id`). Gateway authority derives
 /// solely from possession of the phone PSK.
 #[cfg(feature = "aes-gcm-codec")]
+#[derive(Clone)]
 pub struct PairingArtifactsAead {
     pub phone_psk: Zeroizing<[u8; 32]>,
     pub phone_key_hint: u16,

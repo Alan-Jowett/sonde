@@ -511,6 +511,39 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0503a  APP_DATA with valid AEAD accepted
+
+**Validates:** GW-0600, GW-0500
+
+**Procedure:**
+1. Complete WAKE handshake using AES-256-GCM (AEAD).
+2. Send an APP_DATA frame encrypted with AES-256-GCM using the node's PSK, with correct GCM nonce construction (SHA-256(PSK)[0..3] ‖ msg_type ‖ seq) and the sequence number from the session.
+3. Assert: gateway decrypts the frame, routes to the configured handler, and the handler receives a DATA message with the correct blob.
+
+---
+
+### T-0503b  APP_DATA with invalid GCM tag rejected
+
+**Validates:** GW-0600
+
+**Procedure:**
+1. Complete WAKE handshake using AEAD.
+2. Construct an APP_DATA frame with valid header and CBOR payload, but corrupt the 16-byte GCM authentication tag (flip one bit).
+3. Assert: gateway silently discards the frame — no handler invocation, no APP_DATA_REPLY, no crash.
+
+---
+
+### T-0503c  APP_DATA with HMAC framing rejected by AEAD gateway
+
+**Validates:** GW-0600
+
+**Procedure:**
+1. Complete WAKE handshake using AEAD.
+2. Send an APP_DATA frame authenticated with HMAC-SHA256 (old framing format: 11B header + plaintext CBOR + 32B HMAC) instead of AES-256-GCM.
+3. Assert: gateway silently discards the frame — the AEAD decode/decrypt fails because the frame structure does not match the expected AEAD format (ciphertext + 16B GCM tag).
+
+---
+
 ### T-0504  Handler transport framing
 
 **Validates:** GW-0502

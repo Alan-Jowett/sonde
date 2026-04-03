@@ -245,8 +245,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Validates:** ND-0300
 
+**Note:** This test applies to the HMAC code path (when `aes-gcm-codec` is disabled). When `aes-gcm-codec` is enabled, outbound frames use AES-256-GCM instead — see T-N606a and T-N606b for AEAD verification.
+
 **Procedure:**
-1. Capture any outbound frame.
+1. Capture any outbound frame (with HMAC code path active).
 2. Independently compute HMAC-SHA256 over header + payload using the node's PSK.
 3. Assert: computed HMAC matches the frame's last 32 bytes.
 
@@ -604,6 +606,32 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Install `send_recv_program`. Mock gateway does not reply.
 2. Assert: `send_recv()` returns negative (timeout).
 3. Assert: program continues execution.
+
+---
+
+### T-N606a  BPF send() produces AEAD-authenticated frame
+
+**Validates:** ND-0602, ND-0300
+
+**Procedure:**
+1. Install a program that calls `send([0xAA, 0xBB])`.
+2. Run wake cycle with AEAD providers installed (via `install_aead`).
+3. Capture the outbound APP_DATA frame from the transport.
+4. Assert: the frame has the AEAD wire format (11B header + ciphertext + 16B GCM tag), NOT the HMAC format (11B header + plaintext + 32B HMAC).
+5. Assert: `decode_frame_aead()` + `open_frame()` successfully decrypts the frame using the node's PSK.
+6. Assert: the decrypted CBOR contains AppData with blob `[0xAA, 0xBB]`.
+
+---
+
+### T-N606b  BPF send_recv() AEAD round-trip
+
+**Validates:** ND-0602, ND-0300
+
+**Procedure:**
+1. Install a program that calls `send_recv([0xAA, 0xBB])`.
+2. Run wake cycle with AEAD providers installed. Pre-queue an AEAD-encrypted APP_DATA_REPLY on the transport.
+3. Assert: the outbound APP_DATA frame is AEAD-authenticated (same checks as T-N606a).
+4. Assert: the node successfully decrypts the AEAD APP_DATA_REPLY and `send_recv()` returns the reply data.
 
 ---
 

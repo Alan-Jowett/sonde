@@ -331,7 +331,7 @@ x86_64.  macOS aarch64 SHOULD be provided when CI runner cost is acceptable.
 1. Each CI run produces at least two artifacts: `sonde-bundle-linux-x86_64` and `sonde-bundle-windows-x86_64`.
 2. A `sonde-bundle-macos-aarch64` artifact SHOULD also be produced.
 3. Each artifact contains the `sonde-bundle` binary (or `.exe` on Windows).
-4. Each binary is statically linked or self-contained (no runtime dependencies beyond the OS).
+4. Each binary MUST run on the target platform without requiring any additional Sonde-specific runtime installation or bundled third-party runtime files beyond the platform's standard system libraries (e.g., glibc on Linux, MSVC CRT on Windows).
 
 > **Note:** macOS aarch64 runners cost ~10× more CI minutes than Linux.
 > The macOS build MAY be deferred or run only on tagged releases to control costs.

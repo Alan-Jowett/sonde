@@ -126,7 +126,7 @@ jobs:
   sonde-bundle:
     name: Build sonde-bundle (${{ matrix.os }})
     # Skip macOS on PRs to control runner costs (SB-0601).
-    if: ${{ matrix.os != 'macos-latest' || github.event_name == 'push' }}
+    if: ${{ matrix.os != 'macos-14' || github.event_name == 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -137,7 +137,7 @@ jobs:
           - os: windows-latest
             artifact: sonde-bundle-windows-x86_64
             binary: target/release/sonde-bundle.exe
-          - os: macos-latest
+          - os: macos-14
             artifact: sonde-bundle-macos-aarch64
             binary: target/release/sonde-bundle
     runs-on: ${{ matrix.os }}

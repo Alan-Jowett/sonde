@@ -441,7 +441,7 @@ The existing `ci.yml` workflow is extended with a new job matrix that builds
 |--------|--------|---------------|
 | `ubuntu-latest` | x86_64-unknown-linux-gnu | `sonde-bundle-linux-x86_64` |
 | `windows-latest` | x86_64-pc-windows-msvc | `sonde-bundle-windows-x86_64` |
-| `macos-latest` | aarch64-apple-darwin | `sonde-bundle-macos-aarch64` |
+| `macos-14` | aarch64-apple-darwin | `sonde-bundle-macos-aarch64` |
 
 Each job runs:
 1. Checkout + Rust toolchain setup
@@ -516,12 +516,12 @@ sonde-app-template/
    - if it is a branch name, query the latest successful CI run on that
      branch and use that run's ID
 3. Download `sonde-bundle-linux-x86_64` artifact from the sonde repo's CI
-   using `gh run download --repo alan-jowett/sonde <resolved-run-id>`,
+   using `gh run download --repo alan-jowett/sonde <resolved-run-id> --name sonde-bundle-linux-x86_64 --dir ./bin/`,
    authenticating with a token that has `actions:read` access
 4. Install clang (via `apt-get install clang` or pre-installed on runner)
 5. `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake`
 6. `cmake --build build`
-7. `chmod +x sonde-bundle && ./sonde-bundle create .`
+7. `chmod +x ./bin/sonde-bundle && ./bin/sonde-bundle create .`
 8. Upload `.sondeapp` as workflow artifact
 
 ### 10.5  Version pinning

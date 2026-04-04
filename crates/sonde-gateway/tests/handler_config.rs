@@ -1111,11 +1111,11 @@ async fn t1403_handler_live_reload_add() {
     let node = TestNode::new("node-1403", 0x1403, [0x43u8; 32]);
     setup_node_with_program(&mem_storage, &node, &program_hash).await;
 
-    // Gateway sharing state with admin — initially no handler router.
+    // Gateway sharing state with admin — initially empty handler router.
     let handler_router = Arc::new(RwLock::new(HandlerRouter::new(Vec::new())));
     let gw = Gateway::new_with_pending(storage.clone(), pending.clone(), sm.clone(), handler_router.clone());
 
-    // 1. No handler router → APP_DATA produces no reply.
+    // 1. Empty handler router → APP_DATA produces no reply.
     let seq = do_wake(&gw, &node, 1000, &program_hash).await;
     let resp = gw
         .process_frame(

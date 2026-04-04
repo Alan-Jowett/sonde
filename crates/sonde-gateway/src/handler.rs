@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ciborium::Value;
@@ -781,7 +782,7 @@ pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerCo
 // --- HandlerRouter ---
 
 pub struct HandlerRouter {
-    handlers: Vec<(HandlerConfig, Mutex<HandlerProcess>)>,
+    handlers: Vec<(HandlerConfig, Arc<Mutex<HandlerProcess>>)>,
 }
 
 impl HandlerRouter {
@@ -790,7 +791,7 @@ impl HandlerRouter {
             .into_iter()
             .map(|c| {
                 let process = HandlerProcess::new(c.clone());
-                (c, Mutex::new(process))
+                (c, Arc::new(Mutex::new(process)))
             })
             .collect();
         Self { handlers }
@@ -816,6 +817,27 @@ impl HandlerRouter {
             }
         }
         None
+    }
+
+    /// Find the handler matching `program_hash` and return cloned references.
+    ///
+    /// The returned `Arc<Mutex<HandlerProcess>>` can be used after releasing
+    /// the `RwLock` read guard, avoiding lock contention during handler I/O.
+    pub fn find_handler_cloned(
+        &self,
+        program_hash: &[u8],
+    ) -> Option<(HandlerConfig, Arc<Mutex<HandlerProcess>>)> {
+        let idx = self.find_handler(program_hash)?;
+        let (config, process) = &self.handlers[idx];
+        Some((config.clone(), Arc::clone(process)))
+    }
+
+    /// Clone all handler process references for event broadcasting.
+    ///
+    /// The returned `Arc`s can be used after releasing the `RwLock` read
+    /// guard, avoiding lock contention during handler I/O.
+    pub fn clone_all_process_refs(&self) -> Vec<Arc<Mutex<HandlerProcess>>> {
+        self.handlers.iter().map(|(_, p)| Arc::clone(p)).collect()
     }
 
     /// Route APP_DATA to the matching handler. Returns the reply data blob,
@@ -898,9 +920,9 @@ impl HandlerRouter {
     /// - **Removed** handlers are returned for the caller to shut down *after*
     ///   releasing the write lock, avoiding prolonged lock contention.
     /// - **Unchanged** handlers (same config) retain their existing `HandlerProcess`.
-    pub fn reload(&mut self, new_configs: Vec<HandlerConfig>) -> Vec<(HandlerConfig, Mutex<HandlerProcess>)> {
+    pub fn reload(&mut self, new_configs: Vec<HandlerConfig>) -> Vec<(HandlerConfig, Arc<Mutex<HandlerProcess>>)> {
         // Build the new handler list, reusing existing processes where configs match.
-        let mut old_handlers: Vec<Option<(HandlerConfig, Mutex<HandlerProcess>)>> =
+        let mut old_handlers: Vec<Option<(HandlerConfig, Arc<Mutex<HandlerProcess>>)>> =
             self.handlers.drain(..).map(Some).collect();
         let mut new_handlers = Vec::with_capacity(new_configs.len());
 
@@ -920,7 +942,7 @@ impl HandlerRouter {
             } else {
                 // Added handler — create new process (spawned lazily).
                 let process = HandlerProcess::new(new_cfg.clone());
-                new_handlers.push((new_cfg, Mutex::new(process)));
+                new_handlers.push((new_cfg, Arc::new(Mutex::new(process))));
             }
         }
 
@@ -935,11 +957,11 @@ impl HandlerRouter {
 ///
 /// Call this *after* releasing the `HandlerRouter` write lock so that the
 /// shutdown timeout (5 s per handler) does not block APP_DATA routing.
-pub async fn shutdown_removed_handlers(removed: Vec<(HandlerConfig, Mutex<HandlerProcess>)>) {
+pub async fn shutdown_removed_handlers(removed: Vec<(HandlerConfig, Arc<Mutex<HandlerProcess>>)>) {
     const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(5);
-    for (cfg, process_mutex) in removed {
+    for (cfg, process_arc) in removed {
         info!(command = %cfg.command, "removing handler — initiating graceful shutdown");
-        let mut process = process_mutex.into_inner();
+        let mut process = process_arc.lock().await;
         process.graceful_shutdown(GRACEFUL_TIMEOUT).await;
     }
 }

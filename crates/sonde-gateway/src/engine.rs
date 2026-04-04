@@ -673,7 +673,8 @@ impl Gateway {
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)
         {
-            let router = self.handler_router.read().await;
+            let process_refs = self.handler_router.read().await.clone_all_process_refs();
+            // Lock released — broadcast events without holding router lock.
             let mut details = BTreeMap::new();
             details.insert(
                 "battery_mv".to_string(),
@@ -683,9 +684,16 @@ impl Gateway {
                 "firmware_abi_version".to_string(),
                 ciborium::Value::Integer(firmware_abi_version.into()),
             );
-            router
-                .route_event(&node.node_id, "node_online", details, timestamp_ms / 1000)
-                .await;
+            let msg = crate::handler::HandlerMessage::Event {
+                node_id: node.node_id.clone(),
+                event_type: "node_online".to_string(),
+                details,
+                timestamp: timestamp_ms / 1000,
+            };
+            for process_arc in &process_refs {
+                let mut process = process_arc.lock().await;
+                process.send_event(&msg).await;
+            }
         }
 
         // GW-1300 AC4: log COMMAND selected (transport send happens later).
@@ -878,7 +886,8 @@ impl Gateway {
 
         // Emit program_updated EVENT to handlers (GW-0507)
         {
-            let router = self.handler_router.read().await;
+            let process_refs = self.handler_router.read().await.clone_all_process_refs();
+            // Lock released — broadcast events without holding router lock.
             let mut details = BTreeMap::new();
             details.insert(
                 "program_hash".to_string(),
@@ -888,9 +897,16 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            router
-                .route_event(&node.node_id, "program_updated", details, timestamp)
-                .await;
+            let msg = crate::handler::HandlerMessage::Event {
+                node_id: node.node_id.clone(),
+                event_type: "program_updated".to_string(),
+                details,
+                timestamp,
+            };
+            for process_arc in &process_refs {
+                let mut process = process_arc.lock().await;
+                process.send_event(&msg).await;
+            }
         }
 
         // Transition session from ChunkedTransfer to BpfExecuting
@@ -909,14 +925,18 @@ impl Gateway {
         header: &FrameHeader,
         blob: Vec<u8>,
     ) -> Option<(FrameHeader, Vec<u8>)> {
-        let router = self.handler_router.read().await;
-
         // Use the node's `current_program_hash` (set via PROGRAM_ACK) for routing.
         // The node record was already loaded during frame authentication.
         let program_hash = match &node.current_program_hash {
             Some(hash) => hash.clone(),
             None => return None,
         };
+
+        // Find the matching handler under the read lock, then release before I/O.
+        let (config, process_arc) = {
+            let router = self.handler_router.read().await;
+            router.find_handler_cloned(&program_hash)?
+        }; // read lock released here
 
         // GW-1308 AC1: log APP_DATA received with node_id, program_hash, len.
         if tracing::enabled!(tracing::Level::INFO) {
@@ -929,26 +949,56 @@ impl Gateway {
             );
         }
 
+        // GW-1308 AC2: handler matched with program_hash and command.
+        if tracing::enabled!(tracing::Level::INFO) {
+            let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+            info!(
+                program_hash = %ph_hex,
+                command = %config.command,
+                "handler matched"
+            );
+        }
+
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        let reply_data = router
-            .route_app_data(&node.node_id, &program_hash, &blob, timestamp, header.nonce)
-            .await?;
+        // GW-1308 AC3: handler invoked with command.
+        info!(command = %config.command, "handler invoked");
 
-        // Encode APP_DATA_REPLY with the same nonce as the incoming APP_DATA
-        let response_msg = GatewayMessage::AppDataReply { blob: reply_data };
-        let response_cbor = response_msg.encode().ok()?;
-
-        let response_header = FrameHeader {
-            key_hint: node.key_hint,
-            msg_type: MSG_APP_DATA_REPLY,
-            nonce: header.nonce,
+        let msg = crate::handler::HandlerMessage::Data {
+            request_id: header.nonce,
+            node_id: node.node_id.clone(),
+            program_hash: program_hash.to_vec(),
+            data: blob,
+            timestamp,
         };
 
-        Some((response_header, response_cbor))
+        let mut process = process_arc.lock().await;
+        let reply = process.send_data(&msg).await?;
+        match reply {
+            crate::handler::HandlerMessage::DataReply { data, .. } => {
+                if data.is_empty() {
+                    None
+                } else {
+                    // GW-1308 AC4: handler replied with len.
+                    info!(len = data.len(), "handler replied");
+
+                    let response_msg = GatewayMessage::AppDataReply { blob: data };
+                    let response_cbor = response_msg.encode().ok()?;
+
+                    let response_header = FrameHeader {
+                        key_hint: node.key_hint,
+                        msg_type: MSG_APP_DATA_REPLY,
+                        nonce: header.nonce,
+                    };
+
+                    Some((response_header, response_cbor))
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Command selection logic (priority order per design doc 6.4).
@@ -1149,7 +1199,8 @@ impl Gateway {
     /// per gateway-design.md). Call this periodically from the gateway main
     /// loop.
     pub async fn check_node_timeouts(&self, multiplier: u64) {
-        let router = self.handler_router.read().await;
+        // Clone handler process refs under the read lock, then release.
+        let process_refs = self.handler_router.read().await.clone_all_process_refs();
 
         let multiplier = if multiplier == 0 { 3 } else { multiplier };
 
@@ -1183,9 +1234,16 @@ impl Gateway {
                     "expected_interval_s".to_string(),
                     ciborium::Value::Integer(interval.into()),
                 );
-                router
-                    .route_event(&node.node_id, "node_timeout", details, now.as_secs())
-                    .await;
+                let msg = crate::handler::HandlerMessage::Event {
+                    node_id: node.node_id.clone(),
+                    event_type: "node_timeout".to_string(),
+                    details,
+                    timestamp: now.as_secs(),
+                };
+                for process_arc in &process_refs {
+                    let mut process = process_arc.lock().await;
+                    process.send_event(&msg).await;
+                }
             }
         }
     }

@@ -298,6 +298,126 @@ bundle contents and manifest in a human-readable format.
 
 ---
 
+## 8  Distribution
+
+### SB-0600  CI binary artifacts
+
+**Priority:** Must
+**Source:** [issue #632](https://github.com/Alan-Jowett/sonde/issues/632)
+
+**Description:**
+The sonde CI workflow MUST build the `sonde-bundle` CLI binary and upload it
+as a workflow artifact on every push to `main`.
+
+**Acceptance criteria:**
+
+1. A push to `main` that changes `crates/sonde-bundle/**` or `Cargo.lock` triggers a CI job that builds `sonde-bundle` in release mode.
+2. The built binary is uploaded as a GitHub Actions artifact with a platform-identifying name (e.g., `sonde-bundle-linux-x86_64`).
+3. The artifact is downloadable via `gh run download` or the Actions UI.
+
+---
+
+### SB-0601  Cross-platform builds
+
+**Priority:** Must
+**Source:** [issue #632](https://github.com/Alan-Jowett/sonde/issues/632)
+
+**Description:**
+The CI MUST produce `sonde-bundle` binaries for Linux x86_64 and Windows
+x86_64.  macOS aarch64 SHOULD be provided when CI runner cost is acceptable.
+
+**Acceptance criteria:**
+
+1. Each CI run produces at least two artifacts: `sonde-bundle-linux-x86_64` and `sonde-bundle-windows-x86_64`.
+2. A `sonde-bundle-macos-aarch64` artifact SHOULD also be produced.
+3. Each artifact contains the `sonde-bundle` binary (or `.exe` on Windows).
+4. Each binary is statically linked or self-contained (no runtime dependencies beyond the OS).
+
+> **Note:** macOS aarch64 runners cost ~10× more CI minutes than Linux.
+> The macOS build MAY be deferred or run only on tagged releases to control costs.
+
+---
+
+### SB-0602  Template repo structure
+
+**Priority:** Must
+**Source:** [issue #632](https://github.com/Alan-Jowett/sonde/issues/632)
+
+**Description:**
+A GitHub template repository (`sonde-app-template`) MUST provide a
+ready-to-use project scaffold for sonde app developers. It MUST contain:
+a CMake-based BPF build system with a BPF toolchain file, the `sonde_helpers.h`
+header, an example BPF program, an example Python handler, an `app.yaml`
+manifest, and a README.
+
+**Acceptance criteria:**
+
+1. The repository is marked as a GitHub template (users can click "Use this template").
+2. The repo contains at minimum: `CMakeLists.txt`, `cmake/bpf-toolchain.cmake`, `bpf/include/sonde_helpers.h`, `bpf/my_sensor.c`, `handler/handler.py`, `app.yaml`, `README.md`, `.github/workflows/build.yml`.
+3. `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake && cmake --build build` compiles `bpf/my_sensor.c` to a BPF ELF object file.
+4. `cmake --build build` generates `compile_commands.json` for IDE integration.
+5. `sonde_helpers.h` includes a comment indicating the sonde ABI version it targets.
+
+---
+
+### SB-0603  Template CI workflow
+
+**Priority:** Must
+**Source:** [issue #632](https://github.com/Alan-Jowett/sonde/issues/632)
+
+**Description:**
+The template repository MUST include a GitHub Actions workflow that:
+downloads a `sonde-bundle` binary, compiles BPF programs with CMake,
+runs `sonde-bundle create`, and uploads the resulting `.sondeapp` as an
+artifact.
+
+**Acceptance criteria:**
+
+1. On push to `main`, the CI workflow runs to completion and produces a `.sondeapp` artifact.
+2. The workflow downloads `sonde-bundle` from the sonde repo using `gh run download --repo alan-jowett/sonde` (public repos grant `actions:read` by default).
+3. BPF programs are compiled with `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake && cmake --build build`.
+4. `sonde-bundle create .` packages the compiled programs and handler into a `.sondeapp`.  The `app.yaml` `path:` entries point to `build/bpf/<name>.o`.
+5. The `.sondeapp` artifact is uploaded and downloadable from the Actions UI.
+6. If `sonde-bundle create` fails validation, the workflow fails with a non-zero exit code.
+
+---
+
+### SB-0604  Version pinning
+
+**Priority:** Must
+**Source:** [issue #632](https://github.com/Alan-Jowett/sonde/issues/632)
+
+**Description:**
+The template repository MUST allow the developer to control which version of
+`sonde-bundle` the CI workflow downloads, via a version variable.
+
+**Acceptance criteria:**
+
+1. A variable (e.g., `SONDE_VERSION` in the workflow file or a `.sonde-version` file) controls which CI run or release tag to download `sonde-bundle` from.
+2. Changing the variable and pushing triggers a build with the new version.
+3. The README documents how to update the version.
+
+---
+
+### SB-0605  Local build and validate
+
+**Priority:** Should
+**Source:** [issue #632](https://github.com/Alan-Jowett/sonde/issues/632)
+
+**Description:**
+The template repository SHOULD include instructions and tooling for a local
+development loop: compile BPF programs with CMake, then validate the bundle
+with `sonde-bundle validate`.
+
+**Acceptance criteria:**
+
+1. The README includes a "Local Development" section with step-by-step commands.
+2. `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake && cmake --build build` compiles BPF programs locally.
+3. `sonde-bundle validate .` (or equivalent) validates the bundle directory without creating an archive.
+4. If `sonde-bundle` is not installed, the README explains how to obtain it (download from CI artifacts or `cargo install`).
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -316,3 +436,9 @@ bundle contents and manifest in a human-readable format.
 | SB-0500 | `sonde-bundle create` command | Must |
 | SB-0501 | `sonde-bundle validate` command | Must |
 | SB-0502 | `sonde-bundle inspect` command | Should |
+| SB-0600 | CI binary artifacts | Must |
+| SB-0601 | Cross-platform builds | Must |
+| SB-0602 | Template repo structure | Must |
+| SB-0603 | Template CI workflow | Must |
+| SB-0604 | Version pinning | Must |
+| SB-0605 | Local build and validate | Should |

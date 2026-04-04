@@ -684,6 +684,101 @@ A `test_helpers` module provides:
 
 ---
 
+## 10  Distribution tests
+
+### T-SB-1100  CI produces sonde-bundle artifact
+
+**Traces to:** SB-0600
+
+**Steps:**
+1. Push a change to `crates/sonde-bundle/` on the `main` branch.
+2. Wait for CI to complete.
+3. List workflow artifacts for the completed run.
+
+**Expected:**
+- An artifact named `sonde-bundle-linux-x86_64` exists and contains a
+  valid executable.
+
+---
+
+### T-SB-1101  Cross-platform artifacts
+
+**Traces to:** SB-0601
+
+**Steps:**
+1. Trigger a CI run that includes the sonde-bundle build job.
+2. List all artifacts for the run.
+
+**Expected:**
+- Artifacts exist for at least two platforms: `sonde-bundle-linux-x86_64`
+  and `sonde-bundle-windows-x86_64`.
+- A `sonde-bundle-macos-aarch64` artifact SHOULD also exist.
+- Each contains a valid binary for the target platform.
+
+---
+
+### T-SB-1102  Template repo CMake build
+
+**Traces to:** SB-0602
+
+**Steps:**
+1. Clone the `sonde-app-template` repository.
+2. Install clang with BPF target support.
+3. Run `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake`.
+4. Run `cmake --build build`.
+
+**Expected:**
+- Build completes without errors.
+- `build/bpf/my_sensor.o` exists and starts with `\x7fELF` magic.
+- `build/compile_commands.json` exists.
+
+---
+
+### T-SB-1103  Template CI produces sondeapp
+
+**Traces to:** SB-0603
+
+**Steps:**
+1. Push a commit to the template repo's `main` branch.
+2. Wait for the `build.yml` workflow to complete.
+3. List workflow artifacts.
+
+**Expected:**
+- A `.sondeapp` artifact exists.
+- Downloading and running `sonde-bundle validate` on it succeeds (exit 0).
+
+---
+
+### T-SB-1104  Version pinning
+
+**Traces to:** SB-0604
+
+**Steps:**
+1. In the template repo, set `.sonde-version` to a specific sonde CI run ID.
+2. Push and wait for CI.
+3. Check which sonde-bundle binary was downloaded.
+
+**Expected:**
+- The CI log shows downloading sonde-bundle from the pinned run, not latest.
+
+---
+
+### T-SB-1105  Local build and validate
+
+**Traces to:** SB-0605
+
+**Steps:**
+1. Clone the template repo locally.
+2. Install clang and sonde-bundle.
+3. Run `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake && cmake --build build`.
+4. Run `sonde-bundle validate .`.
+
+**Expected:**
+- BPF programs compile without errors.
+- `sonde-bundle validate .` exits 0.
+
+---
+
 ## Appendix A  Traceability matrix
 
 | Requirement | Test case(s) |
@@ -702,3 +797,9 @@ A `test_helpers` module provides:
 | SB-0500 | T-SB-1000, T-SB-1001 |
 | SB-0501 | T-SB-1002, T-SB-1003, T-SB-1004 |
 | SB-0502 | T-SB-1005, T-SB-1006 |
+| SB-0600 | T-SB-1100 |
+| SB-0601 | T-SB-1101 |
+| SB-0602 | T-SB-1102 |
+| SB-0603 | T-SB-1103 |
+| SB-0604 | T-SB-1104 |
+| SB-0605 | T-SB-1105 |

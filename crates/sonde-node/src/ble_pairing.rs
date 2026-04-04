@@ -394,6 +394,13 @@ pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Vec<u8> {
 ///
 /// Retries up to 3 times with 200ms backoff and 2s listen window per attempt
 /// (matching WAKE retry parameters per ND-1103).
+///
+/// **Channel switching** (ND-1101): The caller is responsible for tuning the
+/// ESP-NOW radio to `params.rf_channel` before calling this function and
+/// restoring it afterwards (ND-1106). On ESP32, this is done in
+/// `esp_ble_pairing.rs` using `esp_wifi_set_channel()`. This function is
+/// platform-independent and operates on whatever channel the transport is
+/// currently configured for.
 pub fn do_diag_relay<T: crate::traits::Transport>(
     transport: &mut T,
     params: &DiagRelayParams,

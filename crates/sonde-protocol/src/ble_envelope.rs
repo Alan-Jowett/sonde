@@ -121,6 +121,9 @@ pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>,
             "DIAG_RELAY_RESPONSE: payload must be empty for non-OK status".into(),
         ));
     }
+    if payload.len() > MAX_FRAME_SIZE {
+        return Err(EncodeError::FrameTooLarge);
+    }
     let payload_len = payload.len() as u16;
     let mut body = Vec::with_capacity(3 + payload.len());
     body.push(status);

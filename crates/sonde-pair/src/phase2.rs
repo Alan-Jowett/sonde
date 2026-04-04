@@ -633,4 +633,62 @@ mod tests {
             "no BLE writes on validation failure"
         );
     }
+
+    // ── RSSI diagnostic tests ─────────────────────────────────────
+
+    fn mock_artifacts() -> crate::phase1::PairingArtifacts {
+        use crate::crypto::PairSha256;
+        let psk = [0x55u8; 32];
+        crate::phase1::PairingArtifacts {
+            phone_psk: zeroize::Zeroizing::new(psk),
+            phone_key_hint: sonde_protocol::key_hint_from_psk(&psk, &PairSha256),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_rssi_timeout_status() {
+        let artifacts = mock_artifacts();
+
+        let relay_body = sonde_protocol::encode_diag_relay_response(
+            sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        let ble_response = sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_DIAG_RELAY_RESPONSE,
+            &relay_body,
+        )
+        .unwrap();
+
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(ble_response));
+
+        let result = check_rssi(&mut transport, &artifacts).await;
+        assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+        assert_eq!(transport.written.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn check_rssi_channel_error_status() {
+        let artifacts = mock_artifacts();
+
+        let relay_body = sonde_protocol::encode_diag_relay_response(
+            sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
+            &[],
+        )
+        .unwrap();
+        let ble_response = sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_DIAG_RELAY_RESPONSE,
+            &relay_body,
+        )
+        .unwrap();
+
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(ble_response));
+
+        let result = check_rssi(&mut transport, &artifacts).await;
+        assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+    }
 }

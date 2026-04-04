@@ -10,9 +10,9 @@ use tracing::{info, warn};
 
 use sonde_protocol::{
     decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
-    NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK,
-    MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_STATUS,
-    PEER_REQ_KEY_PAYLOAD,
+    NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_DIAG_REPLY,
+    MSG_DIAG_REQUEST, MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE,
+    PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
 };
 
 use std::collections::BTreeMap;
@@ -182,6 +182,10 @@ pub struct Gateway {
     /// Cached gateway identity metadata for pairing/peer-request handling (lazy-loaded from storage).
     #[allow(dead_code)]
     identity_cache: RwLock<Option<Arc<GatewayIdentity>>>,
+    /// RSSI threshold (dBm) at or above which signal is "good".
+    rssi_good_threshold: i8,
+    /// RSSI threshold (dBm) below which signal is "bad".
+    rssi_bad_threshold: i8,
 }
 
 impl Gateway {
@@ -196,6 +200,8 @@ impl Gateway {
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
             handler_router: Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(Vec::new()))),
             identity_cache: RwLock::new(None),
+            rssi_good_threshold: -60,
+            rssi_bad_threshold: -75,
         }
     }
 
@@ -221,6 +227,8 @@ impl Gateway {
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
             handler_router,
             identity_cache: RwLock::new(None),
+            rssi_good_threshold: -60,
+            rssi_bad_threshold: -75,
         }
     }
 
@@ -239,6 +247,21 @@ impl Gateway {
             pending_commands,
             handler_router,
             identity_cache: RwLock::new(None),
+            rssi_good_threshold: -60,
+            rssi_bad_threshold: -75,
+        }
+    }
+
+    /// Set RSSI thresholds for diagnostic signal quality assessment (GW-1705).
+    pub fn set_rssi_thresholds(&mut self, good: i8, bad: i8) {
+        if good > bad {
+            self.rssi_good_threshold = good;
+            self.rssi_bad_threshold = bad;
+        } else {
+            warn!(
+                good,
+                bad, "invalid RSSI thresholds (good must be > bad), using defaults"
+            );
         }
     }
 
@@ -272,6 +295,18 @@ impl Gateway {
     /// (not a node PSK).  The outer frame is decrypted with `phone_psk`,
     /// and the inner payload is also decrypted with `phone_psk`.
     pub async fn process_frame(&self, raw: &[u8], peer: PeerAddress) -> Option<Vec<u8>> {
+        self.process_frame_with_rssi(raw, peer, None).await
+    }
+
+    /// Process a raw frame with optional RSSI metadata from the modem.
+    ///
+    /// RSSI is used for DIAG_REQUEST signal quality assessment (GW-1702).
+    pub async fn process_frame_with_rssi(
+        &self,
+        raw: &[u8],
+        peer: PeerAddress,
+        rssi: Option<i8>,
+    ) -> Option<Vec<u8>> {
         use crate::aead::GatewayAead;
 
         let decoded = decode_frame(raw).ok()?;
@@ -279,6 +314,11 @@ impl Gateway {
         // PEER_REQUEST: key_hint identifies a phone PSK, not a node.
         if decoded.header.msg_type == MSG_PEER_REQUEST {
             return self.handle_peer_request(&decoded).await;
+        }
+
+        // DIAG_REQUEST: key_hint identifies a phone PSK (GW-1700).
+        if decoded.header.msg_type == MSG_DIAG_REQUEST {
+            return self.handle_diag_request(&decoded, rssi).await;
         }
 
         let key_hint = decoded.header.key_hint;
@@ -498,6 +538,100 @@ impl Gateway {
         .ok()?;
 
         info!(node_id = %record.node_id, "PEER_ACK (AEAD) frame encoded");
+
+        Some(frame)
+    }
+
+    /// Handle a DIAG_REQUEST frame (GW-1700 through GW-1706).
+    ///
+    /// Authenticates with phone PSK, measures RSSI, and returns a
+    /// DIAG_REPLY with signal quality assessment. No session required.
+    async fn handle_diag_request(
+        &self,
+        decoded: &sonde_protocol::DecodedFrame<'_>,
+        rssi: Option<i8>,
+    ) -> Option<Vec<u8>> {
+        use crate::aead::GatewayAead;
+
+        let aead = GatewayAead;
+        let key_hint = decoded.header.key_hint;
+
+        // Step 1: Look up phone PSK candidates by key_hint (GW-1700).
+        let phone_candidates = self
+            .storage
+            .get_phone_psks_by_key_hint(key_hint)
+            .await
+            .ok()?;
+
+        // Step 2: Decrypt with each non-revoked candidate.
+        let mut matched_psk: Option<[u8; 32]> = None;
+        let mut payload: Option<Vec<u8>> = None;
+
+        for phone in &phone_candidates {
+            if matches!(phone.status, PhonePskStatus::Revoked) {
+                continue;
+            }
+            if let Ok(pt) = open_frame(decoded, &phone.psk, &aead, &self.crypto_sha) {
+                matched_psk = Some(*phone.psk);
+                payload = Some(pt);
+                break;
+            }
+        }
+        let phone_psk = matched_psk?;
+        let cbor_payload = payload?;
+
+        // Step 3: Decode DIAG_REQUEST CBOR (GW-1700).
+        let msg = NodeMessage::decode(MSG_DIAG_REQUEST, &cbor_payload).ok()?;
+        let _diagnostic_type = match msg {
+            NodeMessage::DiagRequest { diagnostic_type } => diagnostic_type,
+            _ => return None,
+        };
+
+        info!(
+            key_hint,
+            rssi = rssi.unwrap_or(0),
+            "DIAG_REQUEST received (GW-1706)"
+        );
+
+        // Step 4: Assess signal quality (GW-1703).
+        let (rssi_dbm, signal_quality) = match rssi {
+            Some(r) => {
+                let sq = if r >= self.rssi_good_threshold {
+                    sonde_protocol::SIGNAL_QUALITY_GOOD
+                } else if r >= self.rssi_bad_threshold {
+                    sonde_protocol::SIGNAL_QUALITY_MARGINAL
+                } else {
+                    sonde_protocol::SIGNAL_QUALITY_BAD
+                };
+                (r, sq)
+            }
+            None => {
+                warn!("RSSI unavailable for DIAG_REQUEST, using sentinel (GW-1702)");
+                (0i8, 255u8) // sentinel: unknown
+            }
+        };
+
+        // Step 5: Build DIAG_REPLY (GW-1704).
+        let reply = GatewayMessage::DiagReply {
+            diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
+            rssi_dbm,
+            signal_quality,
+        };
+        let reply_cbor = reply.encode().ok()?;
+
+        // Echo the request nonce (GW-1704).
+        let reply_header = FrameHeader {
+            key_hint,
+            msg_type: MSG_DIAG_REPLY,
+            nonce: decoded.header.nonce,
+        };
+
+        let frame = self.encode_response(&reply_header, &reply_cbor, &phone_psk)?;
+
+        info!(
+            rssi_dbm,
+            signal_quality, "DIAG_REPLY sent (GW-1706)"
+        );
 
         Some(frame)
     }

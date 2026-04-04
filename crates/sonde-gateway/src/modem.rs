@@ -20,8 +20,8 @@ use sonde_protocol::modem::{
 };
 
 use sonde_protocol::constants::{
-    MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK, MSG_PEER_ACK,
-    MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, OFFSET_MSG_TYPE,
+    MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_DIAG_REPLY, MSG_DIAG_REQUEST,
+    MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, OFFSET_MSG_TYPE,
 };
 
 use crate::transport::{PeerAddress, Transport, TransportError};
@@ -37,10 +37,12 @@ fn protocol_msg_type_label(frame: &[u8]) -> &'static str {
         MSG_PROGRAM_ACK => "PROGRAM_ACK",
         MSG_APP_DATA => "APP_DATA",
         MSG_PEER_REQUEST => "PEER_REQUEST",
+        MSG_DIAG_REQUEST => "DIAG_REQUEST",
         MSG_COMMAND => "COMMAND",
         MSG_CHUNK => "CHUNK",
         MSG_APP_DATA_REPLY => "APP_DATA_REPLY",
         MSG_PEER_ACK => "PEER_ACK",
+        MSG_DIAG_REPLY => "DIAG_REPLY",
         _ => "unknown",
     }
 }
@@ -95,7 +97,7 @@ type SharedWriter = Arc<Mutex<Box<dyn AsyncWrite + Send + Unpin>>>;
 /// the appropriate consumer (recv channel, oneshot signals, etc.).
 pub struct UsbEspNowTransport {
     writer: SharedWriter,
-    recv_rx: Mutex<mpsc::Receiver<(Vec<u8>, PeerAddress)>>,
+    recv_rx: Mutex<mpsc::Receiver<(Vec<u8>, PeerAddress, i8)>>,
     ble_rx: Mutex<mpsc::Receiver<BleEvent>>,
     status_slot: Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
     channel_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
@@ -123,7 +125,7 @@ impl UsbEspNowTransport {
         let (read_half, write_half) = split(port);
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(write_half)));
 
-        let (recv_tx, recv_rx) = mpsc::channel::<(Vec<u8>, PeerAddress)>(256);
+        let (recv_tx, recv_rx) = mpsc::channel::<(Vec<u8>, PeerAddress, i8)>(256);
         let (ble_tx, ble_rx) = mpsc::channel::<BleEvent>(64);
         let (ready_tx, ready_rx) = oneshot::channel::<ModemReady>();
         let (ack_tx, ack_rx) = oneshot::channel::<u8>();
@@ -282,6 +284,18 @@ impl UsbEspNowTransport {
     /// Returns `None` when the reader task has stopped.
     pub async fn recv_ble_event(&self) -> Option<BleEvent> {
         self.ble_rx.lock().await.recv().await
+    }
+
+    /// Receive the next inbound frame with its RSSI measurement.
+    ///
+    /// Returns `(frame_data, peer_address, rssi)`.
+    pub async fn recv_with_rssi(&self) -> Result<(Vec<u8>, PeerAddress, i8), TransportError> {
+        self.recv_rx
+            .lock()
+            .await
+            .recv()
+            .await
+            .ok_or(TransportError::Io("modem reader task stopped".into()))
     }
 
     /// Send a BLE_INDICATE command to the modem (relayed to the connected phone).
@@ -543,12 +557,14 @@ impl UsbEspNowTransport {
 #[async_trait]
 impl Transport for UsbEspNowTransport {
     async fn recv(&self) -> Result<(Vec<u8>, PeerAddress), TransportError> {
-        self.recv_rx
+        let (frame, peer, _rssi) = self
+            .recv_rx
             .lock()
             .await
             .recv()
             .await
-            .ok_or(TransportError::Io("modem reader task stopped".into()))
+            .ok_or(TransportError::Io("modem reader task stopped".into()))?;
+        Ok((frame, peer))
     }
 
     async fn send(&self, frame: &[u8], peer: &PeerAddress) -> Result<(), TransportError> {
@@ -707,7 +723,7 @@ impl<T> Drop for SlotGuard<T> {
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_message(
     msg: ModemMessage,
-    recv_tx: &mpsc::Sender<(Vec<u8>, PeerAddress)>,
+    recv_tx: &mpsc::Sender<(Vec<u8>, PeerAddress, i8)>,
     ble_tx: &mpsc::Sender<BleEvent>,
     ready_tx: &mut Option<oneshot::Sender<ModemReady>>,
     ack_tx: &mut Option<oneshot::Sender<u8>>,
@@ -722,10 +738,12 @@ async fn dispatch_message(
                 msg_type = protocol_msg_type_label(&rf.frame_data),
                 peer_mac = ?rf.peer_mac,
                 len = rf.frame_data.len(),
+                rssi = rf.rssi,
                 "frame received from modem"
             );
             let peer = rf.peer_mac.to_vec();
-            match recv_tx.try_send((rf.frame_data, peer)) {
+            let rssi = rf.rssi;
+            match recv_tx.try_send((rf.frame_data, peer, rssi)) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     debug!("recv channel full, dropping frame");

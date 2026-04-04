@@ -26,6 +26,9 @@ pub enum NodeMessage {
     AppData {
         blob: Vec<u8>,
     },
+    DiagRequest {
+        diagnostic_type: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +78,11 @@ pub enum GatewayMessage {
     },
     AppDataReply {
         blob: Vec<u8>,
+    },
+    DiagReply {
+        diagnostic_type: u8,
+        rssi_dbm: i8,
+        signal_quality: u8,
     },
 }
 
@@ -136,6 +144,17 @@ fn get_u8(fields: &[(u64, Value)], key: u64) -> Result<u8, DecodeError> {
     u8::try_from(v).map_err(|_| DecodeError::InvalidFieldType(key))
 }
 
+fn get_i8(fields: &[(u64, Value)], key: u64) -> Result<i8, DecodeError> {
+    let val = get_field(fields, key)?;
+    let i = val
+        .as_integer()
+        .ok_or(DecodeError::InvalidFieldType(key))?;
+    let v: i64 = i
+        .try_into()
+        .map_err(|_| DecodeError::InvalidFieldType(key))?;
+    i8::try_from(v).map_err(|_| DecodeError::InvalidFieldType(key))
+}
+
 fn get_bytes(fields: &[(u64, Value)], key: u64) -> Result<Vec<u8>, DecodeError> {
     let val = get_field(fields, key)?;
     val.as_bytes()
@@ -177,6 +196,11 @@ fn u8_val(v: u8) -> Value {
     Value::Integer(v.into())
 }
 
+/// Encode an i8 as a CBOR integer Value (signed).
+fn i8_val(v: i8) -> Value {
+    Value::Integer((v as i64).into())
+}
+
 impl NodeMessage {
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let pairs: Vec<(u64, Value)> = match self {
@@ -200,6 +224,9 @@ impl NodeMessage {
             NodeMessage::AppData { blob } => {
                 alloc::vec![(KEY_BLOB, Value::Bytes(blob.clone()))]
             }
+            NodeMessage::DiagRequest { diagnostic_type } => {
+                alloc::vec![(DIAG_KEY_DIAGNOSTIC_TYPE, u8_val(*diagnostic_type))]
+            }
         };
         cbor_encode_map(&pairs)
     }
@@ -221,6 +248,9 @@ impl NodeMessage {
             MSG_APP_DATA => Ok(NodeMessage::AppData {
                 blob: get_bytes(&fields, KEY_BLOB)?,
             }),
+            MSG_DIAG_REQUEST => Ok(NodeMessage::DiagRequest {
+                diagnostic_type: get_u8(&fields, DIAG_KEY_DIAGNOSTIC_TYPE)?,
+            }),
             _ => Err(DecodeError::InvalidMsgType(msg_type)),
         }
     }
@@ -231,6 +261,7 @@ impl NodeMessage {
             NodeMessage::GetChunk { .. } => MSG_GET_CHUNK,
             NodeMessage::ProgramAck { .. } => MSG_PROGRAM_ACK,
             NodeMessage::AppData { .. } => MSG_APP_DATA,
+            NodeMessage::DiagRequest { .. } => MSG_DIAG_REQUEST,
         }
     }
 }
@@ -304,6 +335,17 @@ impl GatewayMessage {
             GatewayMessage::AppDataReply { blob } => {
                 alloc::vec![(KEY_BLOB, Value::Bytes(blob.clone()))]
             }
+            GatewayMessage::DiagReply {
+                diagnostic_type,
+                rssi_dbm,
+                signal_quality,
+            } => {
+                alloc::vec![
+                    (DIAG_KEY_DIAGNOSTIC_TYPE, u8_val(*diagnostic_type)),
+                    (DIAG_KEY_RSSI_DBM, i8_val(*rssi_dbm)),
+                    (DIAG_KEY_SIGNAL_QUALITY, u8_val(*signal_quality)),
+                ]
+            }
         };
         cbor_encode_map(&pairs)
     }
@@ -368,6 +410,11 @@ impl GatewayMessage {
             MSG_APP_DATA_REPLY => Ok(GatewayMessage::AppDataReply {
                 blob: get_bytes(&fields, KEY_BLOB)?,
             }),
+            MSG_DIAG_REPLY => Ok(GatewayMessage::DiagReply {
+                diagnostic_type: get_u8(&fields, DIAG_KEY_DIAGNOSTIC_TYPE)?,
+                rssi_dbm: get_i8(&fields, DIAG_KEY_RSSI_DBM)?,
+                signal_quality: get_u8(&fields, DIAG_KEY_SIGNAL_QUALITY)?,
+            }),
             _ => Err(DecodeError::InvalidMsgType(msg_type)),
         }
     }
@@ -377,6 +424,7 @@ impl GatewayMessage {
             GatewayMessage::Command { .. } => MSG_COMMAND,
             GatewayMessage::Chunk { .. } => MSG_CHUNK,
             GatewayMessage::AppDataReply { .. } => MSG_APP_DATA_REPLY,
+            GatewayMessage::DiagReply { .. } => MSG_DIAG_REPLY,
         }
     }
 }

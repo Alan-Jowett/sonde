@@ -104,3 +104,103 @@ fn test_command_cbor_key_order() {
         panic!("Expected CBOR map");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Diagnostic message tests (T-P110 through T-P113)
+// ---------------------------------------------------------------------------
+
+// T-P110: DIAG_REQUEST round-trip encode/decode
+#[test]
+fn test_diag_request_round_trip() {
+    let msg = NodeMessage::DiagRequest {
+        diagnostic_type: DIAG_TYPE_RSSI,
+    };
+    assert_eq!(msg.msg_type(), MSG_DIAG_REQUEST);
+
+    let cbor = msg.encode().expect("encode");
+    let decoded = NodeMessage::decode(MSG_DIAG_REQUEST, &cbor).expect("decode");
+    assert_eq!(decoded, msg);
+}
+
+// T-P111: DIAG_REPLY round-trip encode/decode
+#[test]
+fn test_diag_reply_round_trip() {
+    let msg = GatewayMessage::DiagReply {
+        diagnostic_type: DIAG_TYPE_RSSI,
+        rssi_dbm: -55,
+        signal_quality: SIGNAL_QUALITY_GOOD,
+    };
+    assert_eq!(msg.msg_type(), MSG_DIAG_REPLY);
+
+    let cbor = msg.encode().expect("encode");
+    let decoded = GatewayMessage::decode(MSG_DIAG_REPLY, &cbor).expect("decode");
+    assert_eq!(decoded, msg);
+}
+
+// T-P111 additional: negative RSSI values round-trip correctly
+#[test]
+fn test_diag_reply_negative_rssi() {
+    for rssi in [-90i8, -75, -60, -30, 0] {
+        let msg = GatewayMessage::DiagReply {
+            diagnostic_type: DIAG_TYPE_RSSI,
+            rssi_dbm: rssi,
+            signal_quality: SIGNAL_QUALITY_BAD,
+        };
+        let cbor = msg.encode().expect("encode");
+        let decoded = GatewayMessage::decode(MSG_DIAG_REPLY, &cbor).expect("decode");
+        assert_eq!(decoded, msg, "failed for rssi={}", rssi);
+    }
+}
+
+// T-P112: DIAG_REQUEST unknown CBOR keys ignored
+#[test]
+fn test_diag_request_unknown_keys_ignored() {
+    // Manually build CBOR: {1: 0x01, 99: "extra"}
+    let value = ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(99.into()),
+            ciborium::Value::Text("extra".into()),
+        ),
+    ]);
+    let mut cbor = Vec::new();
+    ciborium::into_writer(&value, &mut cbor).unwrap();
+
+    let decoded = NodeMessage::decode(MSG_DIAG_REQUEST, &cbor).expect("decode");
+    match decoded {
+        NodeMessage::DiagRequest { diagnostic_type } => {
+            assert_eq!(diagnostic_type, DIAG_TYPE_RSSI);
+        }
+        _ => panic!("expected DiagRequest"),
+    }
+}
+
+// T-P113: DIAG_REPLY deterministic CBOR encoding
+#[test]
+fn test_diag_reply_deterministic_encoding() {
+    let msg = GatewayMessage::DiagReply {
+        diagnostic_type: DIAG_TYPE_RSSI,
+        rssi_dbm: -70,
+        signal_quality: SIGNAL_QUALITY_MARGINAL,
+    };
+    let cbor1 = msg.encode().expect("encode 1");
+    let cbor2 = msg.encode().expect("encode 2");
+    assert_eq!(cbor1, cbor2, "encoding must be deterministic");
+
+    // Verify CBOR keys are in ascending order (1, 2, 3)
+    let value: ciborium::Value = ciborium::from_reader(cbor1.as_slice()).expect("valid CBOR");
+    if let ciborium::Value::Map(pairs) = value {
+        let keys: Vec<u64> = pairs
+            .iter()
+            .map(|(k, _)| {
+                u64::try_from(k.as_integer().expect("integer key")).expect("non-negative")
+            })
+            .collect();
+        assert_eq!(keys, vec![1, 2, 3], "CBOR keys must be 1, 2, 3 in order");
+    } else {
+        panic!("Expected CBOR map");
+    }
+}

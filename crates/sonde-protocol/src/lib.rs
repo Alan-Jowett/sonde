@@ -17,7 +17,10 @@ pub mod program_image;
 pub mod traits;
 
 pub use aead_codec::{build_gcm_nonce, decode_frame, encode_frame, open_frame, DecodedFrame};
-pub use ble_envelope::{encode_ble_envelope, parse_ble_envelope};
+pub use ble_envelope::{
+    decode_diag_relay_request, decode_diag_relay_response, encode_ble_envelope,
+    encode_diag_relay_request, encode_diag_relay_response, parse_ble_envelope,
+};
 pub use chunk::{chunk_count, get_chunk};
 pub use constants::*;
 pub use error::{DecodeError, EncodeError};

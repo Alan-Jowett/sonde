@@ -2780,6 +2780,286 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+## 16  Pairing-time diagnostic tests
+
+### T-1700  DIAG_REQUEST valid frame accepted
+
+**Traces to:** GW-1700 (AC-1, AC-2, AC-3)
+
+**Preconditions:** Gateway running with a registered phone PSK (key_hint=0x1234).
+
+**Steps:**
+1. Construct a `DIAG_REQUEST` frame with `key_hint=0x1234`, `msg_type=0x06`, random nonce, CBOR `{1: 0x01}`, encrypted with phone_psk.
+2. Deliver the frame to the gateway via the transport.
+
+**Expected:**
+1. Gateway decrypts the frame successfully.
+2. Gateway processes the `DIAG_REQUEST` and sends a `DIAG_REPLY`.
+
+---
+
+### T-1701  DIAG_REQUEST wrong PSK silently discarded
+
+**Traces to:** GW-1700 (AC-4)
+
+**Preconditions:** Gateway running with a registered phone PSK.
+
+**Steps:**
+1. Construct a `DIAG_REQUEST` frame encrypted with a different PSK (not registered).
+2. Deliver the frame to the gateway.
+
+**Expected:**
+1. Gateway silently discards the frame.
+2. No `DIAG_REPLY` is sent.
+3. A debug-level log entry is recorded.
+
+---
+
+### T-1702  DIAG_REQUEST revoked PSK rejected
+
+**Traces to:** GW-1700 (AC-2)
+
+**Preconditions:** Gateway running. Register a phone PSK, then revoke it.
+
+**Steps:**
+1. Construct a `DIAG_REQUEST` encrypted with the revoked PSK.
+2. Deliver the frame to the gateway.
+
+**Expected:**
+1. Gateway silently discards the frame (revoked PSKs are not candidates).
+2. No `DIAG_REPLY` is sent.
+
+---
+
+### T-1703  DIAG_REQUEST no session required
+
+**Traces to:** GW-1701 (AC-1, AC-2, AC-3)
+
+**Preconditions:** Gateway running with a registered phone PSK. No active node sessions.
+
+**Steps:**
+1. Construct a valid `DIAG_REQUEST` from an unknown sender MAC.
+2. Deliver the frame to the gateway.
+
+**Expected:**
+1. Gateway processes the request despite no active session for the sender.
+2. A `DIAG_REPLY` is sent.
+3. No session state is created.
+
+---
+
+### T-1704  DIAG_REPLY contains correct RSSI
+
+**Traces to:** GW-1702 (AC-1, AC-2)
+
+**Preconditions:** Gateway running. Transport metadata reports RSSI = −65 dBm.
+
+**Steps:**
+1. Send a valid `DIAG_REQUEST`.
+2. Capture the `DIAG_REPLY` frame.
+3. Decrypt and decode the CBOR payload.
+
+**Expected:**
+1. `rssi_dbm` field = −65.
+2. `diagnostic_type` = 0x01.
+
+---
+
+### T-1705  Signal quality assessment — good
+
+**Traces to:** GW-1703 (AC-1, AC-3)
+
+**Preconditions:** Gateway running with default thresholds (good ≥ −60, bad < −75).
+
+**Steps:**
+1. Deliver a `DIAG_REQUEST` with transport RSSI = −50 dBm.
+2. Decode the `DIAG_REPLY`.
+
+**Expected:**
+1. `signal_quality` = 0 (good).
+
+---
+
+### T-1706  Signal quality assessment — marginal
+
+**Traces to:** GW-1703 (AC-1, AC-3)
+
+**Preconditions:** Gateway running with default thresholds.
+
+**Steps:**
+1. Deliver a `DIAG_REQUEST` with transport RSSI = −70 dBm.
+2. Decode the `DIAG_REPLY`.
+
+**Expected:**
+1. `signal_quality` = 1 (marginal).
+
+---
+
+### T-1707  Signal quality assessment — bad
+
+**Traces to:** GW-1703 (AC-1, AC-3)
+
+**Preconditions:** Gateway running with default thresholds.
+
+**Steps:**
+1. Deliver a `DIAG_REQUEST` with transport RSSI = −80 dBm.
+2. Decode the `DIAG_REPLY`.
+
+**Expected:**
+1. `signal_quality` = 2 (bad).
+
+---
+
+### T-1708  Signal quality with custom thresholds
+
+**Traces to:** GW-1705 (AC-1, AC-2)
+
+**Preconditions:** Gateway configured with good_threshold = −50, bad_threshold = −65.
+
+**Steps:**
+1. Deliver a `DIAG_REQUEST` with RSSI = −55 dBm.
+2. Decode the `DIAG_REPLY`.
+
+**Expected:**
+1. `signal_quality` = 1 (marginal — below −50 but above −65).
+
+---
+
+### T-1709  DIAG_REPLY nonce echoes request
+
+**Traces to:** GW-1704 (AC-2)
+
+**Preconditions:** Gateway running with a registered phone PSK.
+
+**Steps:**
+1. Construct a `DIAG_REQUEST` with nonce = `[0x01, 0x02, ..., 0x08]`.
+2. Capture the `DIAG_REPLY` frame header.
+
+**Expected:**
+1. The `nonce` field in the reply header equals `[0x01, 0x02, ..., 0x08]`.
+
+---
+
+### T-1710  DIAG_REPLY uses phone key_hint
+
+**Traces to:** GW-1704 (AC-3)
+
+**Preconditions:** Gateway running with phone PSK (key_hint=0xABCD).
+
+**Steps:**
+1. Send a `DIAG_REQUEST` with `key_hint=0xABCD`.
+2. Capture the `DIAG_REPLY` frame header.
+
+**Expected:**
+1. The `key_hint` in the reply header = `0xABCD`.
+2. The reply can be decrypted with the phone PSK.
+
+---
+
+### T-1711  Diagnostic logging
+
+**Traces to:** GW-1706 (AC-1, AC-2, AC-3)
+
+**Preconditions:** Gateway running with tracing subscriber capturing INFO-level events.
+
+**Steps:**
+1. Send a valid `DIAG_REQUEST`.
+2. Capture log output.
+
+**Expected:**
+1. An INFO-level log entry for DIAG_REQUEST reception includes sender MAC and key_hint.
+2. An INFO-level log entry for DIAG_REPLY transmission includes RSSI and signal quality.
+3. No PSK material appears in any log entry.
+
+---
+
+### T-1712  Signal quality boundary — exact good threshold
+
+**Traces to:** GW-1703 (AC-1)
+
+**Preconditions:** Gateway running with default thresholds (good ≥ −60).
+
+**Steps:**
+1. Deliver a `DIAG_REQUEST` with transport RSSI = −60 dBm (exact boundary).
+
+**Expected:**
+1. `signal_quality` = 0 (good — boundary is inclusive).
+
+---
+
+### T-1713  Signal quality boundary — just below good threshold
+
+**Traces to:** GW-1703 (AC-1)
+
+**Preconditions:** Gateway running with default thresholds.
+
+**Steps:**
+1. Deliver a `DIAG_REQUEST` with transport RSSI = −61 dBm.
+
+**Expected:**
+1. `signal_quality` = 1 (marginal).
+
+---
+
+### T-1714  Signal quality boundary — exact bad threshold
+
+**Traces to:** GW-1703 (AC-1)
+
+**Preconditions:** Gateway running with default thresholds (bad < −75).
+
+**Steps:**
+1. Deliver a `DIAG_REQUEST` with transport RSSI = −75 dBm (exact boundary).
+
+**Expected:**
+1. `signal_quality` = 1 (marginal — bad threshold is exclusive).
+
+---
+
+### T-1715  Signal quality boundary — just below bad threshold
+
+**Traces to:** GW-1703 (AC-1)
+
+**Preconditions:** Gateway running with default thresholds.
+
+**Steps:**
+1. Deliver a `DIAG_REQUEST` with transport RSSI = −76 dBm.
+
+**Expected:**
+1. `signal_quality` = 2 (bad).
+
+---
+
+### T-1716  RSSI sentinel when transport provides no RSSI
+
+**Traces to:** GW-1702 (AC-3)
+
+**Preconditions:** Gateway running with a loopback transport (no RSSI metadata).
+
+**Steps:**
+1. Send a valid `DIAG_REQUEST` via the loopback transport.
+2. Decode the `DIAG_REPLY`.
+
+**Expected:**
+1. `rssi_dbm` = 0 (sentinel value).
+2. A WARN-level log entry indicates RSSI was unavailable.
+
+---
+
+### T-1717  Invalid threshold configuration rejected at startup
+
+**Traces to:** GW-1705 (AC-3)
+
+**Preconditions:** Gateway configured with good_threshold = −80, bad_threshold = −60 (invalid: good must be > bad).
+
+**Steps:**
+1. Start the gateway.
+
+**Expected:**
+1. An ERROR-level log entry indicates the RSSI thresholds are invalid.
+2. The gateway falls back to default thresholds (good = −60, bad = −75).
+
+---
+
 | GW-1306 | T-1306a, T-1306b, T-1306c, T-1306d |
 | GW-1307 | T-1307a, T-1307b, T-1307c, T-1307d, T-1307e, T-1307f, T-1307g, T-1307h, T-1307i |
 | GW-1308 | T-1308 |
@@ -2799,3 +3079,10 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1602 | T-1603, T-1603a, T-1604, T-1605, T-1605a |
 | GW-1603 | T-1606, T-1606a |
 | GW-1604 | T-1607 |
+| GW-1700 | T-1700, T-1701, T-1702 |
+| GW-1701 | T-1703 |
+| GW-1702 | T-1704, T-1716 |
+| GW-1703 | T-1705, T-1706, T-1707, T-1712, T-1713, T-1714, T-1715 |
+| GW-1704 | T-1709, T-1710 |
+| GW-1705 | T-1708, T-1717 |
+| GW-1706 | T-1711 |

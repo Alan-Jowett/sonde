@@ -966,3 +966,88 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 1. Encode a valid BLE envelope, then append 2 extra bytes.
 2. Call `parse_ble_envelope`.
 3. Assert: returns `None` (rejects trailing data).
+
+---
+
+## 10  Diagnostic message codec tests
+
+### T-P110  DIAG_REQUEST round-trip encode/decode
+
+**Validates:** protocol-crate-design.md §12.1, §6.1
+
+**Procedure:**
+1. Construct a `NodeMessage::DiagRequest { diagnostic_type: 0x01 }`.
+2. Encode with `NodeMessage::encode()`.
+3. Decode with `NodeMessage::decode(MSG_DIAG_REQUEST, &cbor)`.
+4. Assert: decoded message equals the original.
+
+---
+
+### T-P111  DIAG_REPLY round-trip encode/decode
+
+**Validates:** protocol-crate-design.md §12.1, §6.2
+
+**Procedure:**
+1. Construct a `GatewayMessage::DiagReply { diagnostic_type: 0x01, rssi_dbm: -55, signal_quality: 0 }`.
+2. Encode with `GatewayMessage::encode()`.
+3. Decode with `GatewayMessage::decode(MSG_DIAG_REPLY, &cbor)`.
+4. Assert: decoded message equals the original.
+
+---
+
+### T-P112  DIAG_REQUEST unknown CBOR keys ignored
+
+**Validates:** protocol-crate-design.md §12.1
+
+**Procedure:**
+1. Manually construct CBOR: `{ 1: 0x01, 99: "extra" }` (valid diagnostic_type plus unknown key 99).
+2. Decode with `NodeMessage::decode(MSG_DIAG_REQUEST, &cbor)`.
+3. Assert: decode succeeds, `diagnostic_type` = 0x01, unknown key ignored.
+
+---
+
+### T-P113  DIAG_REPLY deterministic CBOR encoding
+
+**Validates:** protocol-crate-design.md §12.1
+
+**Procedure:**
+1. Construct `GatewayMessage::DiagReply { diagnostic_type: 0x01, rssi_dbm: -70, signal_quality: 1 }`.
+2. Encode twice.
+3. Assert: both encodings are byte-identical (deterministic encoding per RFC 8949 §4.2).
+
+---
+
+### T-P114  DIAG_RELAY_REQUEST round-trip
+
+**Validates:** protocol-crate-design.md §12.2
+
+**Procedure:**
+1. Call `encode_diag_relay_request(rf_channel=6, payload=&[0x42; 50])`.
+2. Wrap in BLE envelope with type `BLE_DIAG_RELAY_REQUEST`.
+3. Parse the BLE envelope.
+4. Call `decode_diag_relay_request(body)`.
+5. Assert: `rf_channel` = 6, `payload` = `[0x42; 50]`.
+
+---
+
+### T-P115  DIAG_RELAY_REQUEST invalid channel rejected
+
+**Validates:** protocol-crate-design.md §12.2, ND-1100
+
+**Procedure:**
+1. Call `encode_diag_relay_request(rf_channel=14, payload=&[0x42; 50])`.
+2. Assert: returns `Err(EncodeError)` — channel 14 is out of range (valid: 1–13).
+
+---
+
+### T-P116  DIAG_RELAY_RESPONSE round-trip (success and timeout)
+
+**Validates:** protocol-crate-design.md §12.2
+
+**Procedure:**
+1. Encode `DIAG_RELAY_RESPONSE` with `status=0x00` and a non-empty payload.
+2. Decode and assert: `status` = 0x00, payload matches.
+3. Encode `DIAG_RELAY_RESPONSE` with `status=0x01` and empty payload.
+4. Decode and assert: `status` = 0x01, `payload_len` = 0.
+5. Encode `DIAG_RELAY_RESPONSE` with `status=0x02` and empty payload.
+6. Decode and assert: `status` = 0x02, `payload_len` = 0.

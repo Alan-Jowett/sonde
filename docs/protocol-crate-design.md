@@ -57,11 +57,13 @@ pub const MSG_WAKE: u8 = 0x01;
 pub const MSG_GET_CHUNK: u8 = 0x02;
 pub const MSG_PROGRAM_ACK: u8 = 0x03;
 pub const MSG_APP_DATA: u8 = 0x04;
+pub const MSG_DIAG_REQUEST: u8 = 0x06;
 
 // msg_type codes (gateway → node)
 pub const MSG_COMMAND: u8 = 0x81;
 pub const MSG_CHUNK: u8 = 0x82;
 pub const MSG_APP_DATA_REPLY: u8 = 0x83;
+pub const MSG_DIAG_REPLY: u8 = 0x85;
 
 // Command codes
 pub const CMD_NOP: u8 = 0x00;
@@ -85,6 +87,31 @@ pub const KEY_CHUNK_INDEX: u64 = 11;
 pub const KEY_CHUNK_DATA: u64 = 12;
 pub const KEY_STARTING_SEQ: u64 = 13;
 pub const KEY_TIMESTAMP_MS: u64 = 14;
+
+// CBOR integer keys (diagnostic messages — separate keyspace, scoped to msg_type 0x06/0x85)
+pub const DIAG_KEY_DIAGNOSTIC_TYPE: u64 = 1;
+pub const DIAG_KEY_RSSI_DBM: u64 = 2;
+pub const DIAG_KEY_SIGNAL_QUALITY: u64 = 3;
+
+// Diagnostic type codes
+pub const DIAG_TYPE_RSSI: u8 = 0x01;
+
+// Signal quality assessment codes
+pub const SIGNAL_QUALITY_GOOD: u8 = 0;
+pub const SIGNAL_QUALITY_MARGINAL: u8 = 1;
+pub const SIGNAL_QUALITY_BAD: u8 = 2;
+
+// BLE envelope message types (Node Command characteristic — separate from ESP-NOW msg_types)
+pub const BLE_NODE_PROVISION: u8 = 0x01;
+pub const BLE_DIAG_RELAY_REQUEST: u8 = 0x02;
+pub const BLE_NODE_ACK: u8 = 0x81;
+pub const BLE_DIAG_RELAY_RESPONSE: u8 = 0x82;
+pub const BLE_ERROR: u8 = 0xFF;
+
+// DIAG_RELAY_RESPONSE status codes
+pub const DIAG_RELAY_STATUS_OK: u8 = 0x00;
+pub const DIAG_RELAY_STATUS_TIMEOUT: u8 = 0x01;
+pub const DIAG_RELAY_STATUS_CHANNEL_ERROR: u8 = 0x02;
 
 // CBOR integer keys (program image — separate keyspace)
 pub const IMG_KEY_BYTECODE: u64 = 1;
@@ -233,6 +260,9 @@ pub enum NodeMessage {
     AppData {
         blob: Vec<u8>,
     },
+    DiagRequest {
+        diagnostic_type: u8,
+    },
 }
 
 impl NodeMessage {
@@ -278,6 +308,11 @@ pub enum GatewayMessage {
     },
     AppDataReply {
         blob: Vec<u8>,
+    },
+    DiagReply {
+        diagnostic_type: u8,
+        rssi_dbm: i8,
+        signal_quality: u8,
     },
 }
 
@@ -445,3 +480,44 @@ Implements a minimal Type-Length-Value envelope used for BLE GATT messages in th
 
 - `parse_ble_envelope(&[u8]) -> Option<(u8, &[u8])>` — parse a complete envelope, returning `(msg_type, body)`. Rejects truncated or trailing-byte inputs.
 - `encode_ble_envelope(msg_type: u8, body: &[u8]) -> Option<Vec<u8>>` — encode a BLE envelope. Returns `None` if `body` exceeds `u16::MAX`.
+
+---
+
+## 12  Diagnostic message codec
+
+Implements encoding and decoding for `DIAG_REQUEST` (`msg_type` 0x06) and `DIAG_REPLY` (`msg_type` 0x85) messages, and for the BLE `DIAG_RELAY_REQUEST` / `DIAG_RELAY_RESPONSE` envelopes.
+
+> **Requirements:** ND-1100 (BLE diagnostic relay command), GW-1700 (DIAG_REQUEST reception), GW-1704 (DIAG_REPLY construction), PT-1301 (diagnostic request construction), PT-1302 (BLE diagnostic relay).
+
+### 12.1  ESP-NOW diagnostic messages
+
+`DiagRequest` and `DiagReply` are variants in `NodeMessage` and `GatewayMessage` respectively (§6). They use a **separate CBOR keyspace** (keys 1–3, scoped to `msg_type` 0x06/0x85) — the same pattern as `PEER_REQUEST` / `PEER_ACK`.
+
+Encoding and decoding are handled by the existing `NodeMessage::encode/decode` and `GatewayMessage::encode/decode` methods, which dispatch on `msg_type`.
+
+### 12.2  BLE diagnostic relay messages
+
+The BLE envelope for diagnostic relay uses the same `TYPE | LEN | BODY` format as other BLE messages (§11). The body formats are:
+
+**DIAG_RELAY_REQUEST (type 0x02):**
+
+```
+rf_channel: u8      // WiFi channel 1–13
+payload_len: u16 BE // Length of ESP-NOW frame
+payload: [u8]       // Complete DIAG_REQUEST ESP-NOW frame
+```
+
+**DIAG_RELAY_RESPONSE (type 0x82):**
+
+```
+status: u8          // 0x00=ok, 0x01=timeout, 0x02=channel_error
+payload_len: u16 BE // Length of ESP-NOW reply (0 if status ≠ 0x00)
+payload: [u8]       // Raw DIAG_REPLY ESP-NOW frame (if status=0x00)
+```
+
+**Public API:**
+
+- `encode_diag_relay_request(rf_channel: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_REQUEST` BLE envelope. Validates `rf_channel` ∈ 1–13 and `payload.len()` ≤ `MAX_FRAME_SIZE`.
+- `decode_diag_relay_request(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_REQUEST` body, returning `(rf_channel, payload)`.
+- `encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_RESPONSE` BLE envelope.
+- `decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_RESPONSE` body, returning `(status, payload)`.

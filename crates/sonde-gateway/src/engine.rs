@@ -179,7 +179,7 @@ pub struct Gateway {
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
     /// Shared handler router for APP_DATA dispatch and event routing (GW-1407).
     handler_router: Arc<tokio::sync::RwLock<HandlerRouter>>,
-    /// Cached gateway identity for ECDH decryption (lazy-loaded from storage).
+    /// Cached gateway identity metadata for pairing/peer-request handling (lazy-loaded from storage).
     #[allow(dead_code)]
     identity_cache: RwLock<Option<Arc<GatewayIdentity>>>,
 }

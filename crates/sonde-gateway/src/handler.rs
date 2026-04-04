@@ -609,8 +609,30 @@ impl HandlerProcess {
                         "handler did not exit within timeout — forcibly killing"
                     );
                     if let Some(mut child) = self.child.take() {
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
+                        if let Err(e) = child.kill().await {
+                            warn!(
+                                command = %self.config.command,
+                                error = %e,
+                                "failed to forcibly kill handler"
+                            );
+                        }
+                        // Bound the post-kill wait to 2 s to guarantee shutdown completes.
+                        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(e)) => {
+                                error!(
+                                    command = %self.config.command,
+                                    error = %e,
+                                    "failed to wait for handler after forced kill"
+                                );
+                            }
+                            Err(_) => {
+                                error!(
+                                    command = %self.config.command,
+                                    "handler did not exit after forced kill within 2 s"
+                                );
+                            }
+                        }
                     }
                 }
             }

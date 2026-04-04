@@ -464,6 +464,8 @@ pub struct HandlerConfig {
     pub matchers: Vec<ProgramMatcher>,
     pub command: String,
     pub args: Vec<String>,
+    pub reply_timeout: Option<Duration>,
+    pub working_dir: Option<String>,
 }
 ```
 
@@ -498,6 +500,7 @@ Each handler config spawns a handler process (GW-0503):
 
 - Process is started on first message.
 - stdin/stdout communicate via 4-byte big-endian length prefix + CBOR (GW-0502).
+- stderr is captured and forwarded to the gateway log at WARN level (one log entry per line) so that handler startup errors (e.g. missing dependencies, syntax errors) are visible to the operator.
 - If the process stays alive → reuse for subsequent messages.
 - If the process exits with code 0 → respawn on next message.
 - If the process exits with non-zero → log error, no APP_DATA_REPLY to node.
@@ -800,10 +803,13 @@ The gateway logs the complete APP_DATA handler pipeline at INFO level so operato
 | Event | Level | Module | Structured fields | AC |
 |---|---|---|---|---|
 | APP_DATA received | INFO | `engine.rs` | `node_id`, `program_hash`, `len` | AC1 |
-| Handler matched | INFO | `handler.rs` | `program_hash`, `command` | AC2 |
-| Handler invoked | INFO | `handler.rs` | `command` | AC3 |
-| Handler replied | INFO | `handler.rs` | `len` | AC4 |
+| APP_DATA dropped (no program hash) | WARN | `engine.rs` | `node_id` | AC6 |
+| APP_DATA dropped (no handler match) | WARN | `engine.rs` | `node_id`, `program_hash`, `handler_count` | AC6 |
+| Handler matched | INFO | `engine.rs` | `program_hash`, `command` | AC2 |
+| Handler invoked | INFO | `engine.rs` | `command` | AC3 |
+| Handler replied | INFO | `engine.rs` | `len` | AC4 |
 | Handler exited | INFO / ERROR | `handler.rs` | `code` (exit code) | AC5 |
+| Handler stderr line | WARN | `handler.rs` | `handler` (command), line text | AC7 |
 
 The handler-exited event is emitted when `ensure_running()` detects via `try_wait()` that a previously running handler process has terminated. Clean exits (code 0) are logged at INFO; non-zero exits at ERROR.
 
@@ -820,6 +826,8 @@ All protocol errors result in **silent discard** — no error response is sent t
 | Wrong sequence number / no active session | Discard. Log at info level. |
 | Malformed CBOR (post-auth) | Discard. Log at warn level. |
 | Unexpected `msg_type` | Discard. Log at warn level. |
+| APP_DATA with no `current_program_hash` | Discard. Log at warn level. |
+| APP_DATA with no matching handler | Discard. Log at warn level (includes `program_hash` and `handler_count`). |
 | Handler crash mid-request | No APP_DATA_REPLY sent. Log at error level. |
 | Storage failure | Log at error level. Retry or degrade gracefully. |
 
@@ -1291,6 +1299,7 @@ pub struct HandlerRecord {
     pub command: String,
     pub args: Vec<String>,
     pub working_dir: Option<String>,
+    pub reply_timeout_ms: Option<u64>,
 }
 ```
 
@@ -1337,6 +1346,7 @@ message AddHandlerRequest {
     string command = 2;
     repeated string args = 3;
     string working_dir = 4;           // empty string = not set
+    optional uint64 reply_timeout_ms = 5;
 }
 
 message RemoveHandlerRequest {
@@ -1348,6 +1358,7 @@ message HandlerInfo {
     string command = 2;
     repeated string args = 3;
     string working_dir = 4;
+    optional uint64 reply_timeout_ms = 5;
 }
 
 message ListHandlersResponse {
@@ -1366,7 +1377,7 @@ The operations table (§13.2) gains:
 The CLI tool (§13.3) gains:
 
 ```
-sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>]
+sonde-admin handler add <program-hash> <command> [args...] [--working-dir <path>] [--reply-timeout <ms>]
 sonde-admin handler remove <program-hash>
 sonde-admin handler list
 ```
@@ -1376,7 +1387,7 @@ sonde-admin handler list
 The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<tokio::sync::RwLock<HandlerRouter>>`). Since handler routing and reload occur inside async tasks, `tokio::sync::RwLock` is required to avoid blocking the Tokio runtime. When `AddHandler` or `RemoveHandler` succeeds at the storage layer, or when `ImportState` replaces handler records (GW-1404 AC5):
 
 1. The `AdminService` calls `list_handlers()` on the storage trait to get the current handler set.
-2. It converts each `HandlerRecord` to a `HandlerConfig` (§18.2).
+2. It converts each `HandlerRecord` to a `HandlerConfig` (§19.2).
 3. It acquires a write lock on the `HandlerRouter` and calls `reload(new_configs)`.
 4. `HandlerRouter::reload` diffs the old and new config sets:
    - **Added handlers** are inserted into the routing table (process spawned lazily on first message).

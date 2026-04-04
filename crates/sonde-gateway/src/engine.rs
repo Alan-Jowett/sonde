@@ -929,13 +929,33 @@ impl Gateway {
         // The node record was already loaded during frame authentication.
         let program_hash = match &node.current_program_hash {
             Some(hash) => hash.clone(),
-            None => return None,
+            None => {
+                warn!(
+                    node_id = %node.node_id,
+                    "APP_DATA dropped: node has no `current_program_hash` \
+                     (PROGRAM_ACK never received for this node)"
+                );
+                return None;
+            }
         };
 
         // Find the matching handler under the read lock, then release before I/O.
         let (config, process_arc) = {
             let router = self.handler_router.read().await;
-            router.find_handler_cloned(&program_hash)?
+            match router.find_handler_cloned(&program_hash) {
+                Some(result) => result,
+                None => {
+                    let ph_hex: String =
+                        program_hash.iter().map(|b| format!("{b:02x}")).collect();
+                    warn!(
+                        node_id = %node.node_id,
+                        program_hash = %ph_hex,
+                        handler_count = router.handler_count(),
+                        "APP_DATA dropped: no handler matched `program_hash`"
+                    );
+                    return None;
+                }
+            }
         }; // read lock released here
 
         // GW-1308 AC1: log APP_DATA received with node_id, program_hash, len.

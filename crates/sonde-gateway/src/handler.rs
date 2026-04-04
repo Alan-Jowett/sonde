@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ciborium::Value;
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -374,7 +374,7 @@ impl HandlerProcess {
             cmd.args(&self.config.args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .kill_on_drop(true);
             if let Some(ref dir) = self.config.working_dir {
                 cmd.current_dir(dir);
@@ -383,6 +383,20 @@ impl HandlerProcess {
 
             self.stdin = child.stdin.take();
             self.stdout_reader = child.stdout.take().map(BufReader::new);
+
+            // Drain stderr in a background task so handler diagnostics
+            // (e.g. Python tracebacks) appear in the gateway log instead
+            // of being silently discarded.
+            if let Some(stderr) = child.stderr.take() {
+                let cmd_label = self.config.command.clone();
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        warn!(handler = %cmd_label, "{line}");
+                    }
+                });
+            }
+
             self.child = Some(child);
             debug!(command = %self.config.command, "spawned handler process");
         }
@@ -854,85 +868,17 @@ impl HandlerRouter {
         Some((config.clone(), Arc::clone(process)))
     }
 
+    /// Return the number of configured handlers (for diagnostics).
+    pub fn handler_count(&self) -> usize {
+        self.handlers.len()
+    }
+
     /// Clone all handler process references for event broadcasting.
     ///
     /// The returned `Arc`s can be used after releasing the `RwLock` read
     /// guard, avoiding lock contention during handler I/O.
     pub fn clone_all_process_refs(&self) -> Vec<Arc<Mutex<HandlerProcess>>> {
         self.handlers.iter().map(|(_, p)| Arc::clone(p)).collect()
-    }
-
-    /// Route APP_DATA to the matching handler. Returns the reply data blob,
-    /// or `None` if no handler matched, the handler crashed, or the reply
-    /// was empty.
-    pub async fn route_app_data(
-        &self,
-        node_id: &str,
-        program_hash: &[u8],
-        data: &[u8],
-        timestamp: u64,
-        request_id: u64,
-    ) -> Option<Vec<u8>> {
-        let idx = self.find_handler(program_hash)?;
-        let (config, process_mutex) = &self.handlers[idx];
-
-        // GW-1308 AC2: handler matched with program_hash and command.
-        if tracing::enabled!(tracing::Level::INFO) {
-            let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
-            info!(
-                program_hash = %ph_hex,
-                command = %config.command,
-                "handler matched"
-            );
-        }
-
-        let mut process = process_mutex.lock().await;
-
-        // GW-1308 AC3: handler invoked with command.
-        info!(command = %config.command, "handler invoked");
-
-        let msg = HandlerMessage::Data {
-            request_id,
-            node_id: node_id.to_string(),
-            program_hash: program_hash.to_vec(),
-            data: data.to_vec(),
-            timestamp,
-        };
-
-        let reply = process.send_data(&msg).await?;
-        match reply {
-            HandlerMessage::DataReply { data, .. } => {
-                if data.is_empty() {
-                    None
-                } else {
-                    // GW-1308 AC4: handler replied with len.
-                    info!(len = data.len(), "handler replied");
-                    Some(data)
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Broadcast an EVENT to all configured handlers.
-    pub async fn route_event(
-        &self,
-        node_id: &str,
-        event_type: &str,
-        details: BTreeMap<String, Value>,
-        timestamp: u64,
-    ) {
-        let msg = HandlerMessage::Event {
-            node_id: node_id.to_string(),
-            event_type: event_type.to_string(),
-            details,
-            timestamp,
-        };
-
-        for (_, process_mutex) in &self.handlers {
-            let mut process = process_mutex.lock().await;
-            process.send_event(&msg).await;
-        }
     }
 
     /// Replace the handler set with a new configuration (GW-1404).

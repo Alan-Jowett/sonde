@@ -448,8 +448,8 @@ Each job runs:
 2. `cargo build --release -p sonde-bundle`
 3. Upload `target/release/sonde-bundle[.exe]` as a GitHub Actions artifact
 
-The job triggers on changes to `crates/sonde-bundle/**`, `Cargo.lock`, or
-`.github/workflows/ci.yml`.
+This job runs as part of the existing `ci.yml` workflow on every push to
+`main` and on PRs.  The macOS build is skipped on PRs to control runner costs.
 
 ### 9.2  Artifact naming
 
@@ -511,9 +511,13 @@ sonde-app-template/
 
 **Steps:**
 1. Checkout repository
-2. Read `.sonde-version` to determine which sonde CI run to download from
+2. Read `.sonde-version` and resolve to a GitHub Actions run ID:
+   - if it is a decimal run ID, use it directly
+   - if it is a branch name, query the latest successful CI run on that
+     branch and use that run's ID
 3. Download `sonde-bundle-linux-x86_64` artifact from the sonde repo's CI
-   using `gh run download --repo alan-jowett/sonde` (pinned by `.sonde-version`)
+   using `gh run download --repo alan-jowett/sonde <resolved-run-id>`,
+   authenticating with a token that has `actions:read` access
 4. Install clang (via `apt-get install clang` or pre-installed on runner)
 5. `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake`
 6. `cmake --build build`
@@ -522,10 +526,16 @@ sonde-app-template/
 
 ### 10.5  Version pinning
 
-The `.sonde-version` file contains a single line: the sonde repo's CI run ID,
-branch name, or tag (e.g., `main` for latest, or a specific run ID for
-reproducibility).  The CI workflow reads this file to determine which
-`sonde-bundle` binary to download.
+The `.sonde-version` file contains a single line identifying which sonde CI
+run to use for downloading `sonde-bundle`.
+
+Supported values:
+- A GitHub Actions **run ID** (decimal) — used directly with `gh run download`.
+- A **branch name** — the workflow resolves it to the latest successful CI
+  run on that branch before calling `gh run download`.
+
+For reproducible builds, pin a specific run ID rather than a moving branch
+reference such as `main`.
 
 ### 10.6  Header versioning
 

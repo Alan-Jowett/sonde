@@ -125,6 +125,8 @@ jobs:
   # ── sonde-bundle binary distribution (SB-0600, SB-0601) ───────────────────
   sonde-bundle:
     name: Build sonde-bundle (${{ matrix.os }})
+    # Skip macOS on PRs to control runner costs (SB-0601).
+    if: ${{ matrix.os != 'macos-latest' || github.event_name == 'push' }}
     strategy:
       fail-fast: false
       matrix:

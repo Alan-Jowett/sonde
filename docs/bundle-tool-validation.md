@@ -771,11 +771,13 @@ A `test_helpers` module provides:
 1. Clone the template repo locally.
 2. Install clang and sonde-bundle.
 3. Run `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake && cmake --build build`.
-4. Run `sonde-bundle validate .`.
+4. Run `sonde-bundle create .`.
+5. Run `sonde-bundle validate <output>.sondeapp`.
 
 **Expected:**
 - BPF programs compile without errors.
-- `sonde-bundle validate .` exits 0.
+- `sonde-bundle create .` produces a `.sondeapp` archive.
+- `sonde-bundle validate <output>.sondeapp` exits 0.
 
 ---
 

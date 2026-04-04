@@ -374,7 +374,7 @@ artifact.
 **Acceptance criteria:**
 
 1. On push to `main`, the CI workflow runs to completion and produces a `.sondeapp` artifact.
-2. The workflow downloads `sonde-bundle` from the sonde repo using `gh run download --repo alan-jowett/sonde` (public repos grant `actions:read` by default).
+2. The workflow downloads `sonde-bundle` from the sonde repo using `gh run download --repo alan-jowett/sonde`, authenticating with a token that has `actions:read` access to that repository (e.g., a PAT or GitHub App token; the default `GITHUB_TOKEN` is scoped to the current repo only).
 3. BPF programs are compiled with `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake && cmake --build build`.
 4. `sonde-bundle create .` packages the compiled programs and handler into a `.sondeapp`.  The `app.yaml` `path:` entries point to `build/bpf/<name>.o`.
 5. The `.sondeapp` artifact is uploaded and downloadable from the Actions UI.
@@ -406,14 +406,15 @@ The template repository MUST allow the developer to control which version of
 
 **Description:**
 The template repository SHOULD include instructions and tooling for a local
-development loop: compile BPF programs with CMake, then validate the bundle
-with `sonde-bundle validate`.
+development loop: compile BPF programs with CMake, create a `.sondeapp`
+bundle from the project directory, then validate that bundle with
+`sonde-bundle validate`.
 
 **Acceptance criteria:**
 
 1. The README includes a "Local Development" section with step-by-step commands.
 2. `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake && cmake --build build` compiles BPF programs locally.
-3. `sonde-bundle validate .` (or equivalent) validates the bundle directory without creating an archive.
+3. The documented local workflow includes creating a `.sondeapp` archive (e.g., `sonde-bundle create .`) and validating the produced archive with `sonde-bundle validate <output>.sondeapp`.
 4. If `sonde-bundle` is not installed, the README explains how to obtain it (download from CI artifacts or `cargo install`).
 
 ---

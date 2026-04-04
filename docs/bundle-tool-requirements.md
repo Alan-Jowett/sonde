@@ -393,7 +393,7 @@ The template repository MUST allow the developer to control which version of
 
 **Acceptance criteria:**
 
-1. A variable (e.g., `SONDE_VERSION` in the workflow file or a `.sonde-version` file) controls which CI run or release tag to download `sonde-bundle` from.
+1. A variable (e.g., `SONDE_VERSION` in the workflow file or a `.sonde-version` file) controls which CI run to download `sonde-bundle` from.
 2. Changing the variable and pushing triggers a build with the new version.
 3. The README documents how to update the version.
 

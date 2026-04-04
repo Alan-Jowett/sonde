@@ -363,17 +363,18 @@ async fn t1209_peer_request_bypasses_key_hint() {
     // immediately reject based on key_hint miss.
     let payload = vec![0xA0]; // empty CBOR map
     let psk = [0x42u8; 32];
-    let frame = sonde_protocol::encode_frame(
+    let frame = sonde_protocol::encode_frame_aead(
         &header,
         &payload,
         &psk,
-        &sonde_gateway::crypto::RustCryptoHmac,
+        &sonde_gateway::GatewayAead,
+        &sonde_gateway::crypto::RustCryptoSha256,
     )
     .unwrap();
 
     // The gateway should attempt to process this (eventually failing at
     // CBOR parsing or HMAC, but NOT at key-hint lookup).
-    let resp = gateway.process_frame(&frame, vec![]).await;
+    let resp = gateway.process_frame_aead(&frame, vec![]).await;
     // PEER_REQUEST with bad content: silent discard (no response).
     // The important assertion is that this doesn't panic and doesn't
     // produce a response (which would mean it was processed as a normal
@@ -412,18 +413,19 @@ async fn t1220_peer_request_random_nonces() {
     };
     let payload = vec![0xA0];
     let psk = [0x42u8; 32];
-    let frame = sonde_protocol::encode_frame(
+    let frame = sonde_protocol::encode_frame_aead(
         &header,
         &payload,
         &psk,
-        &sonde_gateway::crypto::RustCryptoHmac,
+        &sonde_gateway::GatewayAead,
+        &sonde_gateway::crypto::RustCryptoSha256,
     )
     .unwrap();
 
     // Should not panic; the gateway processes it (and silently discards
     // because the content is invalid, but importantly NOT because the
     // nonce is "wrong").
-    let _ = gateway.process_frame(&frame, vec![]).await;
+    let _ = gateway.process_frame_aead(&frame, vec![]).await;
 }
 
 // ── T-1221: Admin BLE pairing session ──────────────────────────────────────

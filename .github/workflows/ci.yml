@@ -67,14 +67,6 @@ jobs:
       - name: Test
         run: cargo test --workspace ${{ matrix.profile == 'release' && '--release' || '' }}
 
-      - name: Test protocol AES-GCM codec
-        if: matrix.profile == 'debug'
-        run: cargo test -p sonde-protocol --features aes-gcm-codec
-
-      - name: Test E2E AES-GCM codec
-        if: matrix.profile == 'debug'
-        run: cargo test -p sonde-e2e --features aes-gcm-codec
-
       - name: Test gateway (Python handler tests)
         if: matrix.profile == 'debug'
         run: cargo test -p sonde-gateway --features python-tests

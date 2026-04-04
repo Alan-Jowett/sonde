@@ -3,13 +3,10 @@
 
 //! AES-256-GCM `AeadProvider` implementation for the gateway.
 //!
-//! Uses the `aes-gcm` RustCrypto crate. Only compiled when the
-//! `aes-gcm-codec` feature is enabled.
+//! Uses the `aes-gcm` RustCrypto crate.
 
-#[cfg(feature = "aes-gcm-codec")]
 pub use inner::GatewayAead;
 
-#[cfg(feature = "aes-gcm-codec")]
 mod inner {
     use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::{Aes256Gcm, Nonce};
@@ -55,7 +52,7 @@ mod inner {
     }
 }
 
-#[cfg(all(test, feature = "aes-gcm-codec"))]
+#[cfg(test)]
 mod tests {
     use super::GatewayAead;
     use sonde_protocol::{

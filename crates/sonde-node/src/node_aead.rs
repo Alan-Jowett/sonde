@@ -4,7 +4,6 @@
 //! AES-256-GCM `AeadProvider` implementation for the node.
 //!
 //! Uses the `aes-gcm` RustCrypto crate (pure-Rust, `no_std`-compatible).
-//! Only compiled when the `aes-gcm-codec` feature is enabled.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};

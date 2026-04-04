@@ -3,13 +3,9 @@
 
 //! AES-256-GCM end-to-end integration tests.
 //!
-//! These tests mirror the HMAC-based E2E tests but exercise the AEAD frame
-//! path: the node uses `run_wake_cycle_aead` (with `NodeAead`) and the
-//! gateway processes frames via `process_frame_aead` (with `GatewayAead`).
-//!
-//! Only compiled when the `aes-gcm-codec` feature is enabled.
-
-#![cfg(feature = "aes-gcm-codec")]
+//! These tests exercise the AEAD frame path: the node uses
+//! `run_wake_cycle_aead` (with `NodeAead`) and the gateway processes
+//! frames via `process_frame_aead` (with `GatewayAead`).
 
 use sonde_e2e::harness::{E2eTestEnv, NodeProxy, TestSha256};
 use sonde_gateway::storage::Storage;

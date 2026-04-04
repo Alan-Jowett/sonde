@@ -21,9 +21,8 @@ pub mod storage;
 pub mod transport;
 
 pub use admin::AdminService;
-#[cfg(feature = "aes-gcm-codec")]
 pub use aead::GatewayAead;
-pub use crypto::{RustCryptoHmac, RustCryptoSha256};
+pub use crypto::RustCryptoSha256;
 pub use engine::{Gateway, PendingCommand};
 pub use gateway_identity::{GatewayIdentity, IdentityError};
 pub use handler::{

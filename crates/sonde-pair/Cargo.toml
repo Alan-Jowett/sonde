@@ -5,8 +5,6 @@ edition = "2021"
 license = "MIT"
 
 [features]
-default = ["aes-gcm-codec"]
-aes-gcm-codec = []
 btleplug = ["dep:btleplug", "dep:uuid", "dep:tokio", "dep:futures"]
 file-store = ["dep:serde", "dep:serde_json"]
 dpapi = ["dep:windows-sys", "file-store"]
@@ -15,19 +13,14 @@ android = ["dep:jni", "dep:tokio"]
 loopback-ble = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/time"]
 
 [dependencies]
-ed25519-dalek = { version = "2", features = ["zeroize"] }
-curve25519-dalek = { version = "4", features = ["zeroize"] }
-x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }
-hkdf = "0.12"
 aes-gcm = "0.10"
 sha2 = "0.10"
-hmac = "0.12"
 getrandom = { version = "0.4", features = ["std"] }
 zeroize = { version = "1", features = ["derive"] }
 ciborium = "0.2"
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
 thiserror = "2"
-sonde-protocol = { path = "../sonde-protocol", default-features = false, features = ["aes-gcm-codec"] }
+sonde-protocol = { path = "../sonde-protocol", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
@@ -56,6 +49,4 @@ secret-service = { version = "5", features = ["rt-tokio-crypto-rust"], optional 
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 tracing-test = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-ed25519-dalek = { version = "2", features = ["zeroize"] }
-x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }
 tempfile = "3"

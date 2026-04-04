@@ -23,7 +23,7 @@ fn main() {
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
     use log::{info, warn};
 
-    use sonde_node::crypto::{EspRng, SoftwareHmac, SoftwareSha256};
+    use sonde_node::crypto::{EspRng, SoftwareSha256};
     use sonde_node::esp_ble_pairing::run_ble_pairing_mode;
     use sonde_node::esp_hal::{EspBatteryReader, EspClock, EspHal};
     use sonde_node::esp_sleep::EspSleepController;
@@ -148,7 +148,6 @@ fn main() {
     //     will check reg_complete internally via the storage trait.
 
     // --- Node is paired — initialize radio and run wake cycle ---
-    let hmac = SoftwareHmac;
     let sha = SoftwareSha256;
     let aead = sonde_node::node_aead::NodeAead;
     let mut rng = EspRng;
@@ -179,7 +178,6 @@ fn main() {
         &battery,
         &mut interpreter,
         &mut map_storage,
-        &hmac,
         &sha,
         &aead,
     );

@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 use sonde_gateway::admin::pb::gateway_admin_server::GatewayAdmin;
 use sonde_gateway::admin::pb::*;
 use sonde_gateway::admin::AdminService;
-use sonde_gateway::crypto::RustCryptoHmac;
+use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::gateway_identity::GatewayIdentity;
 use sonde_gateway::handler::{HandlerConfig, ProgramMatcher};
@@ -31,9 +31,10 @@ use sonde_gateway::program::ProgramLibrary;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::PeerAddress;
+use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
-    decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
+    decode_frame_aead, encode_frame_aead, open_frame, CommandPayload, FrameHeader, GatewayMessage,
     NodeMessage, MSG_WAKE,
 };
 
@@ -76,7 +77,7 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
@@ -131,9 +132,9 @@ const MINIMAL_BPF: &[u8] = &[
 ];
 
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
-    let decoded = decode_frame(raw).unwrap();
-    assert!(verify_frame(&decoded, psk, &RustCryptoHmac));
-    let msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+    let decoded = decode_frame_aead(raw).unwrap();
+    let plaintext = open_frame(&decoded, psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     (decoded.header, msg)
 }
 
@@ -145,7 +146,7 @@ async fn do_wake(
 ) -> (u64, u64, CommandPayload) {
     let frame = node.build_wake(nonce, 1, program_hash, 3300);
     let resp = gw
-        .process_frame(&frame, node.peer_address())
+        .process_frame_aead(&frame, node.peer_address())
         .await
         .expect("expected COMMAND response");
     let (_hdr, msg) = decode_response(&resp, &node.psk);
@@ -317,7 +318,7 @@ async fn t0705_remove_node_wake_rejected() {
     let gw = h.make_gateway();
     let node = TestNode::new("reset-node", 0x0705, psk);
     let frame = node.build_wake(1, 1, &[0u8; 32], 3300);
-    let resp = gw.process_frame(&frame, node.peer_address()).await;
+    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
     assert!(resp.is_some(), "WAKE must succeed while node is registered");
 
     // Remove the node (simulates gateway side of factory reset).
@@ -330,7 +331,7 @@ async fn t0705_remove_node_wake_rejected() {
 
     // Subsequent WAKE must be silently discarded (unknown node).
     let frame2 = node.build_wake(2, 1, &[0u8; 32], 3300);
-    let resp2 = gw.process_frame(&frame2, node.peer_address()).await;
+    let resp2 = gw.process_frame_aead(&frame2, node.peer_address()).await;
     assert!(
         resp2.is_none(),
         "WAKE from removed node must be silently discarded"
@@ -1439,7 +1440,7 @@ async fn t1005_export_plaintext_key_leakage() {
     let gw_fresh = h_fresh.make_gateway();
     let frame_a = node_a.build_wake(5, 1, &[0u8; 32], 3300);
     let resp_a = gw_fresh
-        .process_frame(&frame_a, node_a.peer_address())
+        .process_frame_aead(&frame_a, node_a.peer_address())
         .await;
     assert!(
         resp_a.is_none(),
@@ -1447,7 +1448,7 @@ async fn t1005_export_plaintext_key_leakage() {
     );
     let frame_b = node_b.build_wake(6, 1, &[0u8; 32], 3300);
     let resp_b = gw_fresh
-        .process_frame(&frame_b, node_b.peer_address())
+        .process_frame_aead(&frame_b, node_b.peer_address())
         .await;
     assert!(
         resp_b.is_none(),

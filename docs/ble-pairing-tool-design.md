@@ -29,7 +29,6 @@ The tool is a Rust-first application following a Tauri-style architecture: all p
 | Protocol crate | `sonde-protocol` (shared) | CBOR encoding, AES-256-GCM, SHA-256, key_hint derivation — reuses existing workspace crate (PT-0103) |
 | BLE library (desktop) | `btleplug` | Cross-platform BLE (Windows WinRT, macOS CoreBluetooth, Linux BlueZ); active maintenance |
 | BLE library (Android) | Android BLE API via JNI | `btleplug` does not support Android; Tauri Mobile provides JNI bridge |
-| Ed25519 | `ed25519-dalek` | Pure Rust, audited, supports Ed25519 → X25519 conversion (PT-1100) |
 | AES-256-GCM | `aes-gcm` | RustCrypto AES-GCM, pure Rust, no OpenSSL dependency — sole frame authentication mechanism (PT-1100) |
 | SHA-256 | `sha2` (via `sonde-protocol::Sha256Provider`) | Reuses protocol crate trait for key_hint derivation (PT-0402) |
 | CSPRNG | `getrandom` | OS-level CSPRNG, no `rand::rng()` dependency (PT-0901) |

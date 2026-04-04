@@ -4,45 +4,32 @@
 //! Bridge harness that wires gateway and node together via in-memory frame
 //! queues for end-to-end integration testing.
 //!
-//! Two transport modes are available:
-//!
-//! - **Direct** (`BridgeTransport`): node calls `Gateway::process_frame`
-//!   synchronously via `block_in_place`. Fast and deterministic.
-//! - **Modem-bridged** (`ModemTestEnv` + `ChannelTransport`): frames flow
-//!   through the real `sonde_modem::bridge::Bridge`, exercising the modem
-//!   serial codec, peer table, and gateway `UsbEspNowTransport`.
+//! All frames are routed through the gateway's `process_frame_aead` path
+//! (AES-256-GCM) via `BridgeTransportAead`.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::handler::{HandlerConfig, HandlerRouter, ProgramMatcher};
-use sonde_gateway::modem::UsbEspNowTransport;
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
-use sonde_gateway::transport::Transport as GatewayTransport;
 use zeroize::Zeroizing;
-
-use sonde_modem::bridge::{Bridge, Radio, SerialPort};
-use sonde_modem::status::ModemCounters;
 
 use sonde_node::bpf_helpers::SondeContext;
 use sonde_node::bpf_runtime::{BpfError, BpfInterpreter, HelperFn};
-use sonde_node::error::{NodeError, NodeResult};
+use sonde_node::error::NodeResult;
 use sonde_node::hal::{BatteryReader, Hal};
 use sonde_node::map_storage::MapStorage;
 use sonde_node::traits::{Clock, PlatformStorage, Rng, Transport as NodeTransport};
-use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
+use sonde_node::wake_cycle::WakeCycleOutcome;
 
-use sonde_protocol::modem::{RecvFrame, MAC_SIZE};
-use sonde_protocol::{HmacProvider, Sha256Provider};
+use sonde_protocol::Sha256Provider;
 
 // ---------------------------------------------------------------------------
 // E2eTestEnv — gateway-side test environment
@@ -130,7 +117,7 @@ impl E2eTestEnv {
 
 /// Statistics captured during a single wake cycle.
 pub struct WakeCycleStats {
-    /// The outcome returned by `run_wake_cycle`.
+    /// The outcome returned by `run_wake_cycle_aead`.
     pub outcome: WakeCycleOutcome,
     /// Number of non-`None` responses the gateway produced.
     pub response_count: usize,
@@ -190,63 +177,12 @@ impl NodeProxy {
         }
     }
 
-    /// Run one full wake cycle, relaying every frame through the real gateway.
-    ///
-    /// Uses `block_in_place` so the synchronous node code can call the async
-    /// gateway inline. `block_in_place` requires a multi-thread tokio runtime.
-    /// All E2E tests must use `#[tokio::test(flavor = "multi_thread")]`.
-    ///
-    /// Returns [`WakeCycleStats`] with the outcome, response count, and
-    /// captured WAKE nonces for test assertions.
-    pub fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
-        let mut interpreter = MockBpfInterpreter::new();
-        self.run_wake_cycle_with(env, &mut interpreter)
-    }
-
-    /// Like [`run_wake_cycle`] but accepts a caller-supplied BPF interpreter.
-    ///
-    /// Use this with [`sonde_node::sonde_bpf_adapter::SondeBpfInterpreter`] when the
-    /// test requires real BPF program execution (e.g. APP_DATA helpers).
-    pub fn run_wake_cycle_with(
-        &mut self,
-        env: &E2eTestEnv,
-        interpreter: &mut impl BpfInterpreter,
-    ) -> WakeCycleStats {
-        let mut hal = MockHal;
-        let clock = MockClock::new();
-        let battery = MockBattery;
-        let hmac = TestHmac;
-        let sha = TestSha256;
-
-        let mut transport = BridgeTransport::new(env.gateway.clone(), self.mac.clone());
-
-        let outcome = run_wake_cycle(
-            &mut transport,
-            &mut self.storage,
-            &mut hal,
-            &mut self.rng,
-            &clock,
-            &battery,
-            interpreter,
-            &mut self.map_storage,
-            &hmac,
-            &sha,
-        );
-        WakeCycleStats {
-            outcome,
-            response_count: transport.response_count(),
-            wake_nonces: transport.wake_nonces().to_vec(),
-            sent_frames: transport.sent_frames().to_vec(),
-        }
-    }
-
     /// Run one AEAD wake cycle, relaying frames through the gateway's
     /// `process_frame_aead` path (AES-256-GCM).
     ///
     /// Uses `block_in_place` internally, so the caller must be running
     /// inside a multi-thread Tokio runtime. All E2E tests that call this
     /// must use `#[tokio::test(flavor = "multi_thread")]`.
-    #[cfg(feature = "aes-gcm-codec")]
     pub fn run_wake_cycle_aead(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
         let mut interpreter = MockBpfInterpreter::new();
         self.run_wake_cycle_aead_inner(env, &mut interpreter, false)
@@ -256,7 +192,6 @@ impl NodeProxy {
     /// interpreter for tests that require real BPF program execution.
     ///
     /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle_aead`]).
-    #[cfg(feature = "aes-gcm-codec")]
     pub fn run_wake_cycle_aead_with(
         &mut self,
         env: &E2eTestEnv,
@@ -272,13 +207,11 @@ impl NodeProxy {
     /// failure and silent discard.
     ///
     /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle_aead`]).
-    #[cfg(feature = "aes-gcm-codec")]
     pub fn run_wake_cycle_aead_tampered(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
         let mut interpreter = MockBpfInterpreter::new();
         self.run_wake_cycle_aead_inner(env, &mut interpreter, true)
     }
 
-    #[cfg(feature = "aes-gcm-codec")]
     fn run_wake_cycle_aead_inner(
         &mut self,
         env: &E2eTestEnv,
@@ -291,7 +224,6 @@ impl NodeProxy {
         let mut hal = MockHal;
         let clock = MockClock::new();
         let battery = MockBattery;
-        let hmac = TestHmac;
         let sha = TestSha256;
         let aead = NodeAead;
 
@@ -310,7 +242,6 @@ impl NodeProxy {
             &battery,
             interpreter,
             &mut self.map_storage,
-            &hmac,
             &sha,
             &aead,
         );
@@ -321,159 +252,14 @@ impl NodeProxy {
             sent_frames: transport.sent_frames().to_vec(),
         }
     }
-
-    /// Run one wake cycle through the real modem bridge.
-    ///
-    /// Frames flow: node → ChannelTransport → mpsc → ChannelRadio →
-    /// Bridge → PipeSerial → duplex → UsbEspNowTransport → Gateway
-    /// and back.
-    ///
-    /// A gateway frame pump runs concurrently via a tokio task.
-    /// The node wake cycle runs via `block_in_place` since it is
-    /// synchronous (uses `mpsc::recv_timeout` internally).
-    pub async fn run_wake_cycle_bridged(
-        &mut self,
-        env: &ModemTestEnv,
-        transport: &mut ChannelTransport,
-    ) -> WakeCycleStats {
-        transport.reset_stats();
-
-        let pump_stop = Arc::new(AtomicBool::new(false));
-        let pump = tokio::spawn(run_gateway_pump(
-            env.gateway.clone(),
-            env.transport.clone(),
-            Arc::clone(&pump_stop),
-        ));
-
-        let mut hal = MockHal;
-        let clock = MockClock::new();
-        let battery = MockBattery;
-        let hmac = TestHmac;
-        let sha = TestSha256;
-        let mut interpreter = MockBpfInterpreter::new();
-
-        let outcome = tokio::task::block_in_place(|| {
-            run_wake_cycle(
-                transport,
-                &mut self.storage,
-                &mut hal,
-                &mut self.rng,
-                &clock,
-                &battery,
-                &mut interpreter,
-                &mut self.map_storage,
-                &hmac,
-                &sha,
-            )
-        });
-
-        pump_stop.store(true, Ordering::Relaxed);
-        pump.await.expect("gateway pump task panicked");
-
-        WakeCycleStats {
-            outcome,
-            response_count: 0, // Not tracked in bridged mode
-            wake_nonces: transport.wake_nonces().to_vec(),
-            sent_frames: transport.sent_frames().to_vec(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
-// BridgeTransport — relays node frames through the gateway
-// ---------------------------------------------------------------------------
-
-/// In-memory frame relay between a node and the gateway.
-///
-/// Note: `block_in_place` requires `#[tokio::test(flavor = "multi_thread")]`.
-struct BridgeTransport {
-    gateway: Arc<Gateway>,
-    peer: Vec<u8>,
-    pending_response: Option<Vec<u8>>,
-    response_count: usize,
-    /// Nonces extracted from outbound WAKE frames.
-    wake_nonces: Vec<u64>,
-    /// `(msg_type, nonce)` for every outbound frame.
-    sent_frames: Vec<(u8, u64)>,
-    rt: tokio::runtime::Handle,
-}
-
-impl BridgeTransport {
-    fn new(gateway: Arc<Gateway>, peer: Vec<u8>) -> Self {
-        Self {
-            gateway,
-            peer,
-            pending_response: None,
-            response_count: 0,
-            wake_nonces: Vec::new(),
-            sent_frames: Vec::new(),
-            rt: tokio::runtime::Handle::try_current()
-                .expect("BridgeTransport must be created inside a Tokio runtime"),
-        }
-    }
-
-    /// Number of non-`None` responses the gateway returned during this cycle.
-    fn response_count(&self) -> usize {
-        self.response_count
-    }
-
-    /// Nonces from WAKE frames sent during this cycle.
-    fn wake_nonces(&self) -> &[u64] {
-        &self.wake_nonces
-    }
-
-    /// `(msg_type, nonce)` for every outbound frame.
-    fn sent_frames(&self) -> &[(u8, u64)] {
-        &self.sent_frames
-    }
-}
-
-impl NodeTransport for BridgeTransport {
-    fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
-        // Capture header metadata from every outbound frame.
-        if frame.len() >= sonde_protocol::HEADER_SIZE {
-            let msg_type = frame[sonde_protocol::OFFSET_MSG_TYPE];
-            let nonce_end = sonde_protocol::OFFSET_NONCE + 8;
-            let nonce = u64::from_be_bytes(
-                frame[sonde_protocol::OFFSET_NONCE..nonce_end]
-                    .try_into()
-                    .unwrap(),
-            );
-            self.sent_frames.push((msg_type, nonce));
-            if msg_type == sonde_protocol::MSG_WAKE {
-                self.wake_nonces.push(nonce);
-            }
-        }
-
-        let gateway = self.gateway.clone();
-        let peer = self.peer.clone();
-        let frame = frame.to_vec();
-        let response =
-            tokio::task::block_in_place(|| self.rt.block_on(gateway.process_frame(&frame, peer)));
-        if response.is_some() {
-            self.response_count += 1;
-        }
-        self.pending_response = response;
-        Ok(())
-    }
-
-    /// Returns the response captured by the preceding `send()` call.
-    /// Timeout is not simulated because `send()` synchronously processes
-    /// the frame through the gateway and captures any response. This is
-    /// correct for the request-response pattern used by the wake cycle
-    /// (send WAKE → recv COMMAND, send GET_CHUNK → recv CHUNK).
-    fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
-        Ok(self.pending_response.take())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// BridgeTransportAead — AEAD variant for AES-256-GCM E2E tests
+// BridgeTransportAead — AEAD frame relay for AES-256-GCM E2E tests
 // ---------------------------------------------------------------------------
 
 /// In-memory frame relay that routes all frames through the gateway's
 /// `process_frame_aead` path (AES-256-GCM), including PEER_REQUEST.
-#[cfg(feature = "aes-gcm-codec")]
 struct BridgeTransportAead {
     gateway: Arc<Gateway>,
     peer: Vec<u8>,
@@ -485,7 +271,6 @@ struct BridgeTransportAead {
     tamper_outgoing: bool,
 }
 
-#[cfg(feature = "aes-gcm-codec")]
 impl BridgeTransportAead {
     fn new(gateway: Arc<Gateway>, peer: Vec<u8>) -> Self {
         Self {
@@ -520,7 +305,6 @@ impl BridgeTransportAead {
     }
 }
 
-#[cfg(feature = "aes-gcm-codec")]
 impl NodeTransport for BridgeTransportAead {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
         if frame.len() >= sonde_protocol::HEADER_SIZE {
@@ -564,546 +348,8 @@ impl NodeTransport for BridgeTransportAead {
 }
 
 // ---------------------------------------------------------------------------
-// ChannelRadio — mpsc-backed Radio trait for modem bridge tests
+// Crypto providers (SHA-256)
 // ---------------------------------------------------------------------------
-
-/// Simulates ESP-NOW radio between a modem bridge and a single node.
-///
-/// Uses `std::sync::mpsc` (not tokio) because `Radio::drain_one` takes
-/// `&self` and `Radio::send` takes `&mut self` — both synchronous.
-struct ChannelRadio {
-    /// Frames sent by the bridge (gateway → node) arrive at the node.
-    to_node: std::sync::mpsc::SyncSender<Vec<u8>>,
-    /// Shared receiver for bridge→node frames, used by reset to drain stale frames.
-    to_node_rx: Arc<Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>,
-    /// Frames sent by the node arrive here for the bridge.
-    from_node: Mutex<std::sync::mpsc::Receiver<Vec<u8>>>,
-    /// Current radio channel.
-    channel: u8,
-    /// Fixed MAC address for the simulated modem.
-    mac: [u8; MAC_SIZE],
-    /// MAC address of the simulated node, used as `peer_mac` in received frames.
-    node_mac: [u8; MAC_SIZE],
-}
-
-impl Radio for ChannelRadio {
-    fn send(&mut self, peer_mac: &[u8; MAC_SIZE], data: &[u8]) -> bool {
-        assert_eq!(
-            peer_mac, &self.node_mac,
-            "ChannelRadio: send to unexpected peer MAC {:02x?}, expected {:02x?}",
-            peer_mac, self.node_mac
-        );
-        use std::sync::mpsc::TrySendError;
-        match self.to_node.try_send(data.to_vec()) {
-            Ok(()) => true,
-            // Node receiver dropped during teardown — return true to
-            // avoid spurious WARN logs from the bridge.
-            Err(TrySendError::Disconnected(_)) => true,
-            // Channel full — fail fast rather than deadlocking the bridge thread.
-            Err(TrySendError::Full(_)) => {
-                panic!("ChannelRadio: bridge→node channel full (cap 64); node is not draining")
-            }
-        }
-    }
-
-    fn drain_one(&self) -> Option<RecvFrame> {
-        let rx = self.from_node.lock().unwrap();
-        match rx.try_recv() {
-            Ok(data) => Some(RecvFrame {
-                peer_mac: self.node_mac,
-                rssi: -40,
-                frame_data: data,
-            }),
-            Err(_) => None,
-        }
-    }
-
-    fn set_channel(&mut self, channel: u8) -> Result<(), &'static str> {
-        if channel == 0 || channel > 14 {
-            return Err("invalid channel");
-        }
-        self.channel = channel;
-        Ok(())
-    }
-
-    fn channel(&self) -> u8 {
-        self.channel
-    }
-
-    fn scan_channels(&mut self) -> Vec<(u8, u8, i8)> {
-        vec![]
-    }
-
-    fn mac_address(&self) -> [u8; MAC_SIZE] {
-        self.mac
-    }
-
-    fn reset_state(&mut self) {
-        self.channel = 1;
-        // Drain node→bridge frames.
-        {
-            let rx = self.from_node.lock().unwrap();
-            while rx.try_recv().is_ok() {}
-        }
-        // Drain bridge→node frames so stale data from a previous cycle
-        // is not delivered after RESET.
-        {
-            let rx = self.to_node_rx.lock().unwrap();
-            while rx.try_recv().is_ok() {}
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ChannelTransport — mpsc-backed node Transport for modem bridge tests
-// ---------------------------------------------------------------------------
-
-/// Node-side transport backed by the same mpsc channels as `ChannelRadio`.
-///
-/// Uses `std::sync::mpsc::recv_timeout()` to implement the synchronous
-/// `sonde_node::traits::Transport::recv(timeout_ms)` contract.
-pub struct ChannelTransport {
-    rx: Arc<Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>,
-    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
-    /// Nonces extracted from outbound WAKE frames.
-    wake_nonces: Vec<u64>,
-    /// `(msg_type, nonce)` for every outbound frame.
-    sent_frames: Vec<(u8, u64)>,
-}
-
-impl ChannelTransport {
-    /// Reset per-cycle tracking counters and drain any stale inbound
-    /// frames so they don't leak into the next wake cycle.
-    pub fn reset_stats(&mut self) {
-        self.wake_nonces.clear();
-        self.sent_frames.clear();
-        let rx = self.rx.lock().unwrap();
-        while rx.try_recv().is_ok() {}
-    }
-
-    /// Nonces from WAKE frames sent during the last cycle.
-    pub fn wake_nonces(&self) -> &[u64] {
-        &self.wake_nonces
-    }
-
-    /// `(msg_type, nonce)` for every outbound frame.
-    pub fn sent_frames(&self) -> &[(u8, u64)] {
-        &self.sent_frames
-    }
-}
-
-impl NodeTransport for ChannelTransport {
-    fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
-        // Capture header metadata (same as BridgeTransport).
-        if frame.len() >= sonde_protocol::HEADER_SIZE {
-            let msg_type = frame[sonde_protocol::OFFSET_MSG_TYPE];
-            let nonce_end = sonde_protocol::OFFSET_NONCE + 8;
-            let nonce = u64::from_be_bytes(
-                frame[sonde_protocol::OFFSET_NONCE..nonce_end]
-                    .try_into()
-                    .unwrap(),
-            );
-            self.sent_frames.push((msg_type, nonce));
-            if msg_type == sonde_protocol::MSG_WAKE {
-                self.wake_nonces.push(nonce);
-            }
-        }
-
-        use std::sync::mpsc::TrySendError;
-        match self.tx.try_send(frame.to_vec()) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(NodeError::Transport(
-                "node→bridge channel full (cap 64); bridge is not draining",
-            )),
-            Err(TrySendError::Disconnected(..)) => {
-                Err(NodeError::Transport("channel disconnected"))
-            }
-        }
-    }
-
-    fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
-        let rx = self.rx.lock().unwrap();
-        match rx.recv_timeout(Duration::from_millis(timeout_ms as u64)) {
-            Ok(data) => Ok(Some(data)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err(NodeError::Transport("channel disconnected"))
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PipeSerial — bridges sync SerialPort to async tokio::io::duplex
-// ---------------------------------------------------------------------------
-
-/// Safety cap on PipeSerial rx_buf to prevent unbounded growth if the
-/// gateway side writes faster than the bridge thread drains.
-const MAX_RX_BUF: usize = 64 * 1024;
-
-/// Adapter that implements the synchronous `SerialPort` trait backed by
-/// shared ring buffers. A background tokio task shuttles bytes between
-/// the duplex stream and these buffers.
-///
-/// The `reconnected` flag from `read()` is always `false` — the bridge
-/// receives its initial `MODEM_READY` trigger from the gateway's RESET
-/// command rather than a simulated USB reconnect event.
-struct PipeSerial {
-    rx_buf: Arc<Mutex<VecDeque<u8>>>,
-    tx_buf: Arc<Mutex<VecDeque<u8>>>,
-    tx_notify: Arc<tokio::sync::Notify>,
-    connected: Arc<AtomicBool>,
-}
-
-impl SerialPort for PipeSerial {
-    fn read(&mut self, buf: &mut [u8]) -> (usize, bool) {
-        let mut rx = self.rx_buf.lock().unwrap();
-        let n = buf.len().min(rx.len());
-        for b in buf.iter_mut().take(n) {
-            *b = rx.pop_front().unwrap();
-        }
-        (n, false)
-    }
-
-    /// Write is bounded by `MAX_TX_BUF` and panics on overflow so tests
-    /// fail loudly instead of silently dropping bridge messages.
-    /// Returns `false` if the duplex has been closed (i.e. `is_connected()`
-    /// is already `false`), so the bridge observes write failure promptly.
-    fn write(&mut self, data: &[u8]) -> bool {
-        if !self.is_connected() {
-            return false;
-        }
-        {
-            let mut tx = self.tx_buf.lock().unwrap();
-            const MAX_TX_BUF: usize = 64 * 1024;
-            assert!(
-                tx.len() + data.len() <= MAX_TX_BUF,
-                "PipeSerial tx_buf exceeded {MAX_TX_BUF} bytes — \
-                 bridge is writing faster than the duplex drains"
-            );
-            tx.extend(data);
-        }
-        self.tx_notify.notify_one();
-        true
-    }
-
-    fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
-    }
-}
-
-/// Create a `PipeSerial` and spawn a background tokio task that shuttles
-/// bytes between the duplex server half and the adapter's ring buffers.
-fn create_pipe_serial(
-    server: tokio::io::DuplexStream,
-    stop: Arc<AtomicBool>,
-) -> (PipeSerial, tokio::task::JoinHandle<()>) {
-    let rx_buf: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::new()));
-    let tx_buf: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::new()));
-    let tx_notify = Arc::new(tokio::sync::Notify::new());
-    let connected = Arc::new(AtomicBool::new(true));
-
-    let pipe = PipeSerial {
-        rx_buf: Arc::clone(&rx_buf),
-        tx_buf: Arc::clone(&tx_buf),
-        tx_notify: Arc::clone(&tx_notify),
-        connected: Arc::clone(&connected),
-    };
-
-    let handle = {
-        let rx_buf = Arc::clone(&rx_buf);
-        let tx_buf = Arc::clone(&tx_buf);
-        let tx_notify = Arc::clone(&tx_notify);
-
-        tokio::spawn(async move {
-            let (mut reader, mut writer) = tokio::io::split(server);
-            let mut read_buf = [0u8; 1024];
-
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                tokio::select! {
-                    result = reader.read(&mut read_buf) => {
-                        match result {
-                            Ok(0) => {
-                                connected.store(false, Ordering::Relaxed);
-                                stop.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                            Ok(n) => {
-                                let mut rx = rx_buf.lock().unwrap();
-                                assert!(
-                                    rx.len() + n <= MAX_RX_BUF,
-                                    "PipeSerial rx_buf exceeded {MAX_RX_BUF} bytes — \
-                                     gateway is writing faster than bridge drains"
-                                );
-                                rx.extend(&read_buf[..n]);
-                            }
-                            Err(e) => {
-                                connected.store(false, Ordering::Relaxed);
-                                stop.store(true, Ordering::Relaxed);
-                                panic!("PipeSerial: duplex read error: {e}");
-                            }
-                        }
-                    }
-                    _ = tx_notify.notified() => {
-                        let data: Vec<u8> = {
-                            let mut tx = tx_buf.lock().unwrap();
-                            tx.drain(..).collect()
-                        };
-                        if !data.is_empty() {
-                            if let Err(e) = writer.write_all(&data).await {
-                                connected.store(false, Ordering::Relaxed);
-                                stop.store(true, Ordering::Relaxed);
-                                panic!("PipeSerial: duplex write error: {e}");
-                            }
-                            if let Err(e) = writer.flush().await {
-                                connected.store(false, Ordering::Relaxed);
-                                stop.store(true, Ordering::Relaxed);
-                                panic!("PipeSerial: duplex flush error: {e}");
-                            }
-                        }
-                    }
-                    // Periodic stop-flag check so the task can shut down
-                    // gracefully without relying on abort().
-                    _ = tokio::time::sleep(Duration::from_millis(50)) => {}
-                }
-            }
-        })
-    };
-
-    (pipe, handle)
-}
-
-// ---------------------------------------------------------------------------
-// ModemTestEnv — modem-in-loop test environment
-// ---------------------------------------------------------------------------
-
-/// Test environment that wires the real modem `Bridge` between gateway
-/// and node using in-memory channels and duplex streams.
-///
-/// ```text
-/// Node ←(mpsc)→ ChannelRadio ←→ Bridge ←(PipeSerial/duplex)→ UsbEspNowTransport ←→ Gateway
-/// ```
-pub struct ModemTestEnv {
-    pub gateway: Arc<Gateway>,
-    pub storage: Arc<SqliteStorage>,
-    pub transport: Arc<UsbEspNowTransport>,
-    pub pending_commands: Option<PendingCommandMap>,
-    stop: Arc<AtomicBool>,
-    bridge_thread: Option<std::thread::JoinHandle<()>>,
-    pipe_task: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl ModemTestEnv {
-    /// Create a modem-in-loop test environment.
-    ///
-    /// Spawns the real `Bridge` in a dedicated thread and connects it to
-    /// `UsbEspNowTransport` via `tokio::io::duplex`. Returns both the
-    /// environment and a `ChannelTransport` for the node to use.
-    pub async fn new(channel: u8) -> (Self, ChannelTransport) {
-        let stop = Arc::new(AtomicBool::new(false));
-
-        // Bounded channels for radio simulation (bridge ↔ node).
-        // Capacity of 64 frames provides backpressure and prevents OOM
-        // if either side stalls.
-        let (bridge_to_node_tx, bridge_to_node_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
-        let (node_to_bridge_tx, node_to_bridge_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
-
-        // Share the bridge→node receiver so both ChannelRadio::reset_state
-        // and ChannelTransport::recv can access it.
-        let to_node_rx = Arc::new(Mutex::new(bridge_to_node_rx));
-
-        let channel_radio = ChannelRadio {
-            to_node: bridge_to_node_tx,
-            to_node_rx: Arc::clone(&to_node_rx),
-            from_node: Mutex::new(node_to_bridge_rx),
-            channel: 1,
-            mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
-            node_mac: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
-        };
-
-        let channel_transport = ChannelTransport {
-            rx: to_node_rx,
-            tx: node_to_bridge_tx,
-            wake_nonces: Vec::new(),
-            sent_frames: Vec::new(),
-        };
-
-        // Duplex stream for serial link (gateway transport ↔ bridge).
-        let (client, server) = tokio::io::duplex(4096);
-
-        // Create PipeSerial adapter with background task.
-        let (pipe_serial, pipe_task) = create_pipe_serial(server, Arc::clone(&stop));
-
-        // Start bridge in a dedicated thread.
-        let bridge_stop = Arc::clone(&stop);
-        let bridge_thread = std::thread::spawn(move || {
-            let counters = ModemCounters::new();
-            let mut bridge = Bridge::new(pipe_serial, channel_radio, counters);
-            while !bridge_stop.load(Ordering::Relaxed) {
-                bridge.poll();
-                // 2ms poll interval — fast enough for E2E test latency
-                // requirements while avoiding tight CPU-burning loops.
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        });
-
-        // Create UsbEspNowTransport — performs startup handshake.
-        // If the handshake fails, signal the bridge thread and pipe task to
-        // stop so they don't leak.
-        let transport = match UsbEspNowTransport::new(client, channel).await {
-            Ok(t) => Arc::new(t),
-            Err(e) => {
-                stop.store(true, Ordering::Relaxed);
-                pipe_task.abort();
-                // Surface bridge thread panics (e.g. channel overflow
-                // assertions) so the real root cause is not hidden behind
-                // the handshake error.
-                if let Err(panic_payload) = bridge_thread.join() {
-                    std::panic::resume_unwind(panic_payload);
-                }
-                panic!("modem startup handshake failed: {e}");
-            }
-        };
-
-        // Create gateway engine.
-        let storage = Arc::new(
-            SqliteStorage::in_memory(Zeroizing::new([0x42u8; 32]))
-                .expect("failed to create in-memory SQLite storage"),
-        );
-        let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
-        let pending_commands: PendingCommandMap = Arc::new(RwLock::new(HashMap::new()));
-        let gateway = Arc::new(Gateway::new_with_pending(
-            storage.clone(),
-            pending_commands.clone(),
-            session_manager,
-        ));
-
-        let env = Self {
-            gateway,
-            storage,
-            transport,
-            pending_commands: Some(pending_commands),
-            stop,
-            bridge_thread: Some(bridge_thread),
-            pipe_task: Some(pipe_task),
-        };
-
-        (env, channel_transport)
-    }
-
-    /// Register a node in the gateway's storage.
-    pub async fn register_node(&self, node_id: &str, key_hint: u16, psk: [u8; 32]) {
-        let node = NodeRecord::new(node_id.into(), key_hint, psk);
-        self.storage.upsert_node(&node).await.unwrap();
-    }
-}
-
-impl ModemTestEnv {
-    /// Gracefully shut down the modem environment, surfacing any panics
-    /// from the pipe shuttle task or bridge thread.
-    ///
-    /// Tests should call this instead of relying on `Drop` so that task
-    /// panics (e.g. from the `assert!` caps or I/O errors) propagate as
-    /// test failures rather than being silently swallowed by `abort()`.
-    pub async fn shutdown(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.pipe_task.take() {
-            // Await (not abort) so panics propagate to the test.
-            match handle.await {
-                Ok(()) => {}
-                Err(e) if e.is_cancelled() => {}
-                Err(e) => std::panic::resume_unwind(e.into_panic()),
-            }
-        }
-        if let Some(handle) = self.bridge_thread.take() {
-            handle.join().expect("bridge thread panicked");
-        }
-    }
-}
-
-impl Drop for ModemTestEnv {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        // Abort the pipe shuttle task — `Drop` cannot `.await` so abort is
-        // the only option here. Tests should call `shutdown().await` first
-        // to surface panics; this is a safety-net for cleanup only.
-        if let Some(handle) = self.pipe_task.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.bridge_thread.take() {
-            if std::thread::panicking() {
-                let _ = handle.join();
-            } else {
-                handle.join().expect("bridge thread panicked");
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Gateway frame pump — drives gateway recv/process/send loop
-// ---------------------------------------------------------------------------
-
-/// Run a gateway frame-processing loop over the modem transport.
-///
-/// Receives frames from the transport, processes them through the gateway
-/// engine, and sends responses back. Runs until `stop` is set.
-async fn run_gateway_pump(
-    gateway: Arc<Gateway>,
-    transport: Arc<UsbEspNowTransport>,
-    stop: Arc<AtomicBool>,
-) {
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        match tokio::time::timeout(
-            Duration::from_millis(50),
-            GatewayTransport::recv(&*transport),
-        )
-        .await
-        {
-            Ok(Ok((frame, peer))) => {
-                if let Some(response) = gateway.process_frame(&frame, peer.clone()).await {
-                    GatewayTransport::send(&*transport, &response, &peer)
-                        .await
-                        .expect("gateway pump: transport send failed");
-                }
-            }
-            Ok(Err(_)) if stop.load(Ordering::Relaxed) => break,
-            Ok(Err(e)) => panic!("gateway pump: transport recv failed: {e:?}"),
-            Err(_) => {} // timeout — keep looping
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Crypto providers (real HMAC-SHA256 / SHA-256)
-// ---------------------------------------------------------------------------
-
-pub struct TestHmac;
-
-impl HmacProvider for TestHmac {
-    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
-        use hmac::Mac;
-        let mut mac =
-            hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key length error");
-        mac.update(data);
-        mac.finalize().into_bytes().into()
-    }
-
-    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-        use hmac::Mac;
-        let mut mac =
-            hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key length error");
-        mac.update(data);
-        mac.verify_slice(expected).is_ok()
-    }
-}
 
 pub struct TestSha256;
 
@@ -1419,7 +665,6 @@ pub async fn simulate_phone_registration(
     rf_channel: u8,
 ) -> (Zeroizing<[u8; 32]>, u16) {
     use sonde_gateway::ble_pairing::{handle_ble_recv, RegistrationWindow};
-    use sonde_pair::crypto::verify_ed25519_signature;
     use sonde_pair::envelope::{build_envelope, parse_envelope, parse_gw_info_response};
     use sonde_pair::rng::{OsRng, RngProvider};
     use sonde_pair::types;
@@ -1454,8 +699,14 @@ pub async fn simulate_phone_registration(
     let mut signed_data = Vec::with_capacity(32 + 16);
     signed_data.extend_from_slice(&challenge);
     signed_data.extend_from_slice(&gw_info.gateway_id);
-    verify_ed25519_signature(&gw_info.gw_public_key, &signed_data, &gw_info.signature)
-        .expect("GW_INFO_RESPONSE Ed25519 signature must be valid");
+    {
+        use ed25519_dalek::{Signature, VerifyingKey};
+        let vk = VerifyingKey::from_bytes(&gw_info.gw_public_key)
+            .expect("invalid Ed25519 public key in GW_INFO_RESPONSE");
+        let sig = Signature::from_bytes(&gw_info.signature);
+        vk.verify_strict(&signed_data, &sig)
+            .expect("GW_INFO_RESPONSE Ed25519 signature must be valid");
+    }
     assert_eq!(
         gw_info.gw_public_key,
         *identity.public_key(),

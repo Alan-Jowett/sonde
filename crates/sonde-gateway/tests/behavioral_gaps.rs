@@ -12,7 +12,7 @@
 //!
 //! Gaps addressed:
 //!   1.  GW-0402 — deterministic CBOR byte-level verification
-//!   2.  GW-0600 — HMAC failure state isolation
+//!   2.  GW-0600 — AEAD failure state isolation
 //!   3.  GW-0705 — factory reset gateway-side behaviour
 //!   4.  GW-0103 — `starting_seq` randomness
 //!   5.  GW-0104 — COMMAND / APP_DATA_REPLY frame size constraint
@@ -39,7 +39,7 @@ use sonde_gateway::admin::pb::{
     RemoveNodeRequest, RemoveProgramRequest, SetScheduleRequest,
 };
 use sonde_gateway::admin::AdminService;
-use sonde_gateway::crypto::{RustCryptoHmac, RustCryptoSha256};
+use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::gateway_identity::GatewayIdentity;
 use sonde_gateway::program::{ProgramLibrary, VerificationProfile};
@@ -47,10 +47,11 @@ use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::PeerAddress;
+use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
-    decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage, MapDef,
-    NodeMessage, ProgramImage, MAX_FRAME_SIZE, MSG_COMMAND, MSG_WAKE,
+    decode_frame_aead, encode_frame_aead, open_frame, CommandPayload, FrameHeader, GatewayMessage,
+    MapDef, NodeMessage, ProgramImage, MAX_FRAME_SIZE, MSG_COMMAND, MSG_WAKE,
 };
 
 // ─── Test helpers ──────────────────────────────────────────────────────
@@ -96,7 +97,7 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
@@ -149,9 +150,9 @@ fn make_cbor_image(bytecode: &[u8]) -> Vec<u8> {
 }
 
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
-    let decoded = decode_frame(raw).unwrap();
-    assert!(verify_frame(&decoded, psk, &RustCryptoHmac));
-    let msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+    let decoded = decode_frame_aead(raw).unwrap();
+    let plaintext = open_frame(&decoded, psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     (decoded.header, msg)
 }
 
@@ -163,7 +164,7 @@ async fn do_wake(
 ) -> (u64, u64, CommandPayload) {
     let frame = node.build_wake(nonce, 1, program_hash, 3300);
     let resp = gw
-        .process_frame(&frame, node.peer_address())
+        .process_frame_aead(&frame, node.peer_address())
         .await
         .expect("expected COMMAND response");
     let (_hdr, msg) = decode_response(&resp, &node.psk);
@@ -570,10 +571,10 @@ fn t0402_deterministic_hash_identity() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  Gap 2 — GW-0600: HMAC failure state isolation
+//  Gap 2 — GW-0600: AEAD failure state isolation
 // ═══════════════════════════════════════════════════════════════════════
 
-/// After HMAC verification failure from a known `key_hint`, the gateway's
+/// After AEAD verification failure from a known `key_hint`, the gateway's
 /// internal state (sessions, registry) must remain unchanged.
 #[tokio::test]
 async fn t0600_hmac_failure_state_unchanged() {
@@ -586,7 +587,7 @@ async fn t0600_hmac_failure_state_unchanged() {
     // Establish a valid session.
     let frame_ok = node.build_wake(1, 1, &[0u8; 32], 3300);
     let resp = gw
-        .process_frame(&frame_ok, node.peer_address())
+        .process_frame_aead(&frame_ok, node.peer_address())
         .await
         .expect("valid WAKE must produce a response");
     let (_, msg) = decode_response(&resp, &node.psk);
@@ -603,13 +604,16 @@ async fn t0600_hmac_failure_state_unchanged() {
         .expect("session must exist");
     let node_before = storage.get_node("node-iso").await.unwrap().unwrap();
 
-    // Send a frame with the correct key_hint but corrupted HMAC.
+    // Send a frame with the correct key_hint but corrupted GCM tag.
     let mut bad_frame = node.build_wake(2, 1, &[0u8; 32], 2900);
     let last = bad_frame.len() - 1;
     bad_frame[last] ^= 0xFF;
 
-    let resp = gw.process_frame(&bad_frame, node.peer_address()).await;
-    assert!(resp.is_none(), "corrupted HMAC must be silently discarded");
+    let resp = gw.process_frame_aead(&bad_frame, node.peer_address()).await;
+    assert!(
+        resp.is_none(),
+        "corrupted AEAD frame must be silently discarded"
+    );
 
     // Verify: session state unchanged (same starting_seq, same state variant).
     let session_after = gw
@@ -619,12 +623,12 @@ async fn t0600_hmac_failure_state_unchanged() {
         .expect("session must still exist");
     assert_eq!(
         session_before.next_expected_seq, session_after.next_expected_seq,
-        "next_expected_seq must not change after HMAC failure"
+        "next_expected_seq must not change after AEAD failure"
     );
     assert_eq!(
         std::mem::discriminant(&session_before.state),
         std::mem::discriminant(&session_after.state),
-        "session state variant must not change after HMAC failure"
+        "session state variant must not change after AEAD failure"
     );
 
     // Verify: registry unchanged (battery_mv, firmware_abi_version not overwritten
@@ -632,11 +636,11 @@ async fn t0600_hmac_failure_state_unchanged() {
     let node_after = storage.get_node("node-iso").await.unwrap().unwrap();
     assert_eq!(
         node_before.last_battery_mv, node_after.last_battery_mv,
-        "battery_mv must not change after HMAC failure"
+        "battery_mv must not change after AEAD failure"
     );
     assert_eq!(
         node_before.firmware_abi_version, node_after.firmware_abi_version,
-        "firmware_abi_version must not change after HMAC failure"
+        "firmware_abi_version must not change after AEAD failure"
     );
 
     // Verify: no new session was created (session count unchanged).
@@ -696,7 +700,7 @@ async fn t0705_factory_reset_wake_discarded() {
 
     // Verify: WAKE from the removed node is silently discarded.
     let frame = node.build_wake(2, 1, &[0u8; 32], 3300);
-    let resp = gw.process_frame(&frame, node.peer_address()).await;
+    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
     assert!(
         resp.is_none(),
         "WAKE from removed node must be silently discarded"
@@ -746,7 +750,7 @@ async fn t0103_starting_seq_not_zero_or_constant() {
 
         let frame = node.build_wake(i, 1, &[0u8; 32], 3300);
         let resp = gw
-            .process_frame(&frame, node.peer_address())
+            .process_frame_aead(&frame, node.peer_address())
             .await
             .expect("expected COMMAND response");
         let (_, msg) = decode_response(&resp, &node.psk);
@@ -794,7 +798,7 @@ async fn t0104_command_frame_size_within_limit() {
     // WAKE with a different hash → triggers UPDATE_PROGRAM (larger COMMAND payload).
     let frame = node.build_wake(1, 1, &[0u8; 32], 3300);
     let resp = gw
-        .process_frame(&frame, node.peer_address())
+        .process_frame_aead(&frame, node.peer_address())
         .await
         .expect("expected COMMAND response");
 
@@ -822,7 +826,10 @@ async fn t0104_all_command_types_within_limit() {
 
     // NOP
     let frame = node.build_wake(1, 1, &[0u8; 32], 3300);
-    let resp = gw.process_frame(&frame, node.peer_address()).await.unwrap();
+    let resp = gw
+        .process_frame_aead(&frame, node.peer_address())
+        .await
+        .unwrap();
     assert!(resp.len() <= MAX_FRAME_SIZE, "NOP frame too large");
 
     // UpdateSchedule
@@ -832,7 +839,10 @@ async fn t0104_all_command_types_within_limit() {
     )
     .await;
     let frame = node.build_wake(2, 1, &[0u8; 32], 3300);
-    let resp = gw.process_frame(&frame, node.peer_address()).await.unwrap();
+    let resp = gw
+        .process_frame_aead(&frame, node.peer_address())
+        .await
+        .unwrap();
     assert!(
         resp.len() <= MAX_FRAME_SIZE,
         "UpdateSchedule frame too large"
@@ -842,7 +852,10 @@ async fn t0104_all_command_types_within_limit() {
     gw.queue_command("node-allcmd", PendingCommand::Reboot)
         .await;
     let frame = node.build_wake(3, 1, &[0u8; 32], 3300);
-    let resp = gw.process_frame(&frame, node.peer_address()).await.unwrap();
+    let resp = gw
+        .process_frame_aead(&frame, node.peer_address())
+        .await
+        .unwrap();
     assert!(resp.len() <= MAX_FRAME_SIZE, "Reboot frame too large");
 }
 
@@ -1161,10 +1174,17 @@ async fn t0504_many_to_one_handler_routing() {
         blob: vec![0x01, 0x02],
     };
     let cbor_a = msg_a.encode().unwrap();
-    let frame_a = encode_frame(&header_a, &cbor_a, &node_a.psk, &RustCryptoHmac).unwrap();
+    let frame_a = encode_frame_aead(
+        &header_a,
+        &cbor_a,
+        &node_a.psk,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap();
     let resp_a = tokio::time::timeout(
         Duration::from_secs(5),
-        gw.process_frame(&frame_a, node_a.peer_address()),
+        gw.process_frame_aead(&frame_a, node_a.peer_address()),
     )
     .await
     .expect("handler did not respond for node A within timeout; routing must be enforced");
@@ -1188,10 +1208,17 @@ async fn t0504_many_to_one_handler_routing() {
         blob: vec![0x03, 0x04],
     };
     let cbor_b = msg_b.encode().unwrap();
-    let frame_b = encode_frame(&header_b, &cbor_b, &node_b.psk, &RustCryptoHmac).unwrap();
+    let frame_b = encode_frame_aead(
+        &header_b,
+        &cbor_b,
+        &node_b.psk,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap();
     let resp_b = tokio::time::timeout(
         Duration::from_secs(5),
-        gw.process_frame(&frame_b, node_b.peer_address()),
+        gw.process_frame_aead(&frame_b, node_b.peer_address()),
     )
     .await
     .expect("handler did not respond for node B within timeout; routing must be enforced");
@@ -1231,7 +1258,7 @@ async fn t0700_registry_entry_all_fields_present() {
     // WAKE to populate telemetry fields.
     let frame = node.build_wake(42, 5, &program_hash, 3700);
     let resp = gw
-        .process_frame(&frame, node.peer_address())
+        .process_frame_aead(&frame, node.peer_address())
         .await
         .expect("expected response");
 

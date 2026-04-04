@@ -407,7 +407,7 @@ impl E2eNode {
 **Preconditions:**
 1. Node registered with PSK.
 2. BPF program calls `send([0xDE, 0xAD])`.
-3. Gateway configured with `aes-gcm-codec` feature (AEAD wake cycle).
+3. Gateway configured with AEAD wake cycle.
 4. Handler configured for the program hash.
 
 **Procedure:**

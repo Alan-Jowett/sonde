@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-use zeroize::Zeroizing;
-
 // TODO: These 0xFE** short UUIDs are provisional placeholders (see ble-pairing-protocol.md §3.1).
 // They MUST be replaced with randomly-generated vendor-specific 128-bit UUIDs before v1.0 release.
 
@@ -44,36 +42,6 @@ pub struct ScannedDevice {
     pub address: [u8; 6],
     pub rssi: i8,
     pub service_uuids: Vec<u128>,
-}
-
-/// Gateway identity established during Phase 1 (TOFU).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GatewayIdentity {
-    pub public_key: [u8; 32],
-    pub gateway_id: [u8; 16],
-}
-
-/// Full result of Phase 1 gateway pairing.
-#[derive(Clone)]
-pub struct PairingArtifacts {
-    pub gateway_identity: GatewayIdentity,
-    pub phone_psk: Zeroizing<[u8; 32]>,
-    pub phone_key_hint: u16,
-    pub rf_channel: u8,
-    /// Operator-supplied phone label (0–64 bytes UTF-8), persisted per PT-0800.
-    pub phone_label: String,
-}
-
-impl std::fmt::Debug for PairingArtifacts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PairingArtifacts")
-            .field("gateway_identity", &self.gateway_identity)
-            .field("phone_key_hint", &self.phone_key_hint)
-            .field("rf_channel", &self.rf_channel)
-            .field("phone_label", &self.phone_label)
-            .field("phone_psk", &"[REDACTED]")
-            .finish()
-    }
 }
 
 /// Result of Phase 2 node provisioning.

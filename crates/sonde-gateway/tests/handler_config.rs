@@ -19,16 +19,17 @@ use zeroize::Zeroizing;
 use sonde_gateway::admin::pb::gateway_admin_server::GatewayAdmin;
 use sonde_gateway::admin::pb::*;
 use sonde_gateway::admin::AdminService;
-use sonde_gateway::crypto::RustCryptoHmac;
+use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::handler::{HandlerConfig, HandlerRouter, ProgramMatcher};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
 use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::{HandlerRecord, InMemoryStorage, Storage};
+use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
-    decode_frame, encode_frame, verify_frame, FrameHeader, GatewayMessage, NodeMessage,
+    decode_frame_aead, encode_frame_aead, open_frame, FrameHeader, GatewayMessage, NodeMessage,
     MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_WAKE,
 };
 
@@ -114,7 +115,7 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     fn build_app_data(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
@@ -127,14 +128,14 @@ impl TestNode {
             blob: blob.to_vec(),
         };
         let cbor = msg.encode().unwrap();
-        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
-    let decoded = decode_frame(raw).unwrap();
-    assert!(verify_frame(&decoded, psk, &RustCryptoHmac));
-    let msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+    let decoded = decode_frame_aead(raw).unwrap();
+    let plaintext = open_frame(&decoded, psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     (decoded.header, msg)
 }
 
@@ -142,7 +143,7 @@ fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) 
 async fn do_wake(gw: &Gateway, node: &TestNode, nonce: u64, program_hash: &[u8]) -> u64 {
     let frame = node.build_wake(nonce, 1, program_hash, 3300);
     let resp = gw
-        .process_frame(&frame, node.peer_address())
+        .process_frame_aead(&frame, node.peer_address())
         .await
         .expect("expected COMMAND response");
     let (_hdr, msg) = decode_response(&resp, &node.psk);
@@ -1116,7 +1117,7 @@ async fn t1403_handler_live_reload_add() {
     // 1. No handler router → APP_DATA produces no reply.
     let seq = do_wake(&gw, &node, 1000, &program_hash).await;
     let resp = gw
-        .process_frame(
+        .process_frame_aead(
             &node.build_app_data(seq, &[0x01, 0x02, 0x03]),
             node.peer_address(),
         )
@@ -1163,7 +1164,7 @@ async fn t1403_handler_live_reload_add() {
     let seq2 = do_wake(&gw, &node, 2000, &program_hash).await;
     let blob = vec![0x01, 0x02, 0x03];
     let resp2 = gw
-        .process_frame(&node.build_app_data(seq2, &blob), node.peer_address())
+        .process_frame_aead(&node.build_app_data(seq2, &blob), node.peer_address())
         .await
         .expect("handler added → APP_DATA_REPLY expected");
 
@@ -1232,7 +1233,7 @@ async fn t1404_handler_live_reload_remove() {
     let seq = do_wake(&gw, &node, 3000, &program_hash).await;
     let blob = vec![0xAA, 0xBB];
     let resp = gw
-        .process_frame(&node.build_app_data(seq, &blob), node.peer_address())
+        .process_frame_aead(&node.build_app_data(seq, &blob), node.peer_address())
         .await
         .expect("catch-all handler → APP_DATA_REPLY expected");
 
@@ -1283,7 +1284,7 @@ async fn t1404_handler_live_reload_remove() {
     gw2.set_handler_router(empty_router).unwrap();
     let seq2 = do_wake(&gw2, &node, 4000, &program_hash).await;
     let resp2 = gw2
-        .process_frame(&node.build_app_data(seq2, &[0xCC]), node.peer_address())
+        .process_frame_aead(&node.build_app_data(seq2, &[0xCC]), node.peer_address())
         .await;
     assert!(resp2.is_none(), "handler removed → no APP_DATA_REPLY");
 }

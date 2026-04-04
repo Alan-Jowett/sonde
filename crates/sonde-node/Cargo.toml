@@ -5,15 +5,11 @@ edition = "2021"
 description = "Sonde node firmware — wake cycle engine, BPF runtime, and platform abstractions"
 
 [features]
-default = ["quiet", "aes-gcm-codec"]
+default = ["quiet"]
 # Enable ESP-IDF platform support (required for firmware builds).
 # Without this feature, only platform-independent modules compile,
 # enabling host-side testing of the wake cycle engine and protocol logic.
 esp = ["dep:esp-idf-hal", "dep:esp-idf-svc", "dep:esp-idf-sys", "dep:esp32-nimble", "dep:embuild"]
-# AES-256-GCM frame codec (Phase 5). Adds AEAD encode/decode paths
-# alongside the existing HMAC-SHA256 codec. The `aes-gcm` crate is
-# pure-Rust and no_std-compatible, so it works on ESP32.
-aes-gcm-codec = ["sonde-protocol/aes-gcm-codec", "dep:aes-gcm"]
 # Default log level policy: strip info!/debug!/trace! at compile time in
 # release builds for minimal overhead and lowest power. Mutually exclusive
 # with `verbose`.
@@ -27,10 +23,9 @@ verbose = ["log/release_max_level_debug"]
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
 ciborium = { version = "0.2", default-features = false }
-hmac = "0.12"
 log = { version = "0.4", features = ["max_level_trace"] }
 sha2 = "0.10"
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"], optional = true }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 
 # ESP-IDF dependencies — only pulled in with the "esp" feature.
 esp-idf-hal = { version = "0.46", optional = true }

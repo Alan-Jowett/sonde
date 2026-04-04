@@ -97,8 +97,12 @@ impl AdminService {
                 *self.handler_configs.write().await = configs.clone();
 
                 // Live-reload the shared HandlerRouter (GW-1404).
+                // Swap in the new config under the write lock, then shut
+                // down removed handlers outside the lock to avoid blocking
+                // APP_DATA routing during the graceful shutdown timeout.
                 if let Some(router) = &self.handler_router {
-                    router.write().await.reload(configs).await;
+                    let removed = router.write().await.reload(configs);
+                    crate::handler::shutdown_removed_handlers(removed).await;
                 }
             }
             Err(e) => {
@@ -954,7 +958,8 @@ impl GatewayAdmin for AdminService {
                         .into_iter()
                         .filter_map(handler_record_to_config)
                         .collect();
-                    router.write().await.reload(cfgs).await;
+                    let removed = router.write().await.reload(cfgs);
+                    crate::handler::shutdown_removed_handlers(removed).await;
                 }
                 Err(e) => {
                     warn!("failed to reload handler router after import: {e}");

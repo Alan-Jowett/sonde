@@ -895,12 +895,10 @@ impl HandlerRouter {
     ///
     /// Diffs the old and new config sets:
     /// - **Added** handlers are inserted (process spawned lazily on first message).
-    /// - **Removed** handlers have their process gracefully terminated (5 s timeout,
-    ///   then forcible kill) before removal.
+    /// - **Removed** handlers are returned for the caller to shut down *after*
+    ///   releasing the write lock, avoiding prolonged lock contention.
     /// - **Unchanged** handlers (same config) retain their existing `HandlerProcess`.
-    pub async fn reload(&mut self, new_configs: Vec<HandlerConfig>) {
-        const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(5);
-
+    pub fn reload(&mut self, new_configs: Vec<HandlerConfig>) -> Vec<(HandlerConfig, Mutex<HandlerProcess>)> {
         // Build the new handler list, reusing existing processes where configs match.
         let mut old_handlers: Vec<Option<(HandlerConfig, Mutex<HandlerProcess>)>> =
             self.handlers.drain(..).map(Some).collect();
@@ -926,15 +924,23 @@ impl HandlerRouter {
             }
         }
 
-        // Gracefully shut down removed handlers (those remaining in old_handlers).
-        for slot in old_handlers.into_iter().flatten() {
-            let (cfg, process_mutex) = slot;
-            info!(command = %cfg.command, "removing handler — initiating graceful shutdown");
-            let mut process = process_mutex.into_inner();
-            process.graceful_shutdown(GRACEFUL_TIMEOUT).await;
-        }
-
         self.handlers = new_handlers;
+
+        // Return removed handlers for the caller to shut down outside the lock.
+        old_handlers.into_iter().flatten().collect()
+    }
+}
+
+/// Gracefully shut down a set of removed handler processes (GW-1404 AC3).
+///
+/// Call this *after* releasing the `HandlerRouter` write lock so that the
+/// shutdown timeout (5 s per handler) does not block APP_DATA routing.
+pub async fn shutdown_removed_handlers(removed: Vec<(HandlerConfig, Mutex<HandlerProcess>)>) {
+    const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(5);
+    for (cfg, process_mutex) in removed {
+        info!(command = %cfg.command, "removing handler — initiating graceful shutdown");
+        let mut process = process_mutex.into_inner();
+        process.graceful_shutdown(GRACEFUL_TIMEOUT).await;
     }
 }
 

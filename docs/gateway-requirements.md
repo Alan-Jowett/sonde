@@ -425,13 +425,14 @@ The gateway MUST communicate with application handlers via **stdin/stdout** usin
 **Source:** gateway-api.md §2.2
 
 **Description:**  
-The gateway MUST manage handler process lifecycles. If a handler exits with code 0 between messages, the gateway respawns it on the next message. If a handler exits with non-zero (or crashes mid-message), the gateway logs the error and does not send an `APP_DATA_REPLY` to the node.
+The gateway MUST manage handler process lifecycles. If a handler exits with code 0 between messages, the gateway respawns it on the next message. If a handler exits with non-zero (or crashes mid-message), the gateway logs the error and does not send an `APP_DATA_REPLY` to the node. The gateway MUST capture the handler's stderr and forward each line to the gateway log at WARN level so that handler startup errors (e.g. missing dependencies, syntax errors) are visible to the operator.
 
 **Acceptance criteria:**
 
 1. A handler that exits with code 0 is respawned when the next message arrives.
 2. A handler that exits with non-zero is logged as an error; the node's `send_recv()` times out.
 3. A long-running handler that stays alive across messages continues to receive messages without respawn.
+4. Lines written to the handler's stderr appear in the gateway log at WARN level, tagged with the handler command.
 
 ---
 
@@ -1539,7 +1540,7 @@ When the gateway encounters an error at a user-facing or operator-visible bounda
 **Source:** Issue #532
 
 **Description:**  
-When the gateway receives an `APP_DATA` message and dispatches it through the handler pipeline, each stage of the pipeline MUST be logged at INFO level with structured fields sufficient for an operator to trace data flow without access to source code. The pipeline stages are: (1) `APP_DATA` reception (with `node_id`, `program_hash`, and payload length), (2) handler match (with `program_hash` and handler `command`), (3) handler invocation (with handler `command`), (4) handler reply (with reply payload length), and (5) handler process exit (with exit code). Non-zero handler exit codes MUST be logged at ERROR level to flag unexpected terminations.
+When the gateway receives an `APP_DATA` message and dispatches it through the handler pipeline, each stage of the pipeline MUST be logged at INFO level with structured fields sufficient for an operator to trace data flow without access to source code. The pipeline stages are: (1) `APP_DATA` reception (with `node_id`, `program_hash`, and payload length), (2) handler match (with `program_hash` and handler `command`), (3) handler invocation (with handler `command`), (4) handler reply (with reply payload length), and (5) handler process exit (with exit code). Non-zero handler exit codes MUST be logged at ERROR level to flag unexpected terminations. When the handler pipeline drops an `APP_DATA` message before reaching a handler (e.g. missing `current_program_hash` or no matching handler), a WARN-level log MUST be emitted with the reason and relevant context (`node_id`, `program_hash` if available, `handler_count`). Handler stderr lines MUST be forwarded to the gateway log at WARN level, tagged with the handler command.
 
 **Acceptance criteria:**
 
@@ -1548,6 +1549,8 @@ When the gateway receives an `APP_DATA` message and dispatches it through the ha
 3. An INFO log is emitted when the matched handler process is invoked, including the handler `command`.
 4. An INFO log is emitted when the handler replies with data, including the reply payload `len`.
 5. A log is emitted when a handler process exits, including the exit `code`. Clean exits (code 0) are logged at INFO; non-zero exits at ERROR.
+6. A WARN log is emitted when `APP_DATA` is dropped before reaching a handler, including `node_id` and the reason (no `current_program_hash`, or no matching handler with `program_hash` and `handler_count`).
+7. Lines written to a handler's stderr appear in the gateway log at WARN level, tagged with the handler `command`.
 
 ---
 

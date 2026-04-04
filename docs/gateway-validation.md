@@ -581,6 +581,19 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0506a  Handler stderr captured in gateway log
+
+**Validates:** GW-0503
+
+**Procedure:**
+1. Configure a handler that writes a diagnostic message to stderr and exits with code 1 (e.g., a Python script with a missing import).
+2. Trigger handler spawn by sending APP_DATA.
+3. Capture tracing output.
+4. Assert: the handler's stderr output appears in the gateway log at WARN level, tagged with the handler command (AC4).
+5. Assert: the handler exit is logged at ERROR level with exit code 1.
+
+---
+
 ### T-0507  Handler routing by program hash
 
 **Validates:** GW-0504
@@ -613,6 +626,19 @@ A configurable stub handler process (or in-process mock) that:
 1. Configure a catch-all handler (ProgramMatcher::Any).
 2. Node with any program hash sends APP_DATA.
 3. Assert: catch-all handler receives the DATA message.
+
+---
+
+### T-0509a  Handler routing — many-to-one
+
+**Validates:** GW-0504
+
+**Procedure:**
+1. Configure handler A for program hashes X and Y (many-to-one mapping).
+2. Node with program X sends APP_DATA.
+3. Assert: handler A receives the DATA message.
+4. Node with program Y sends APP_DATA.
+5. Assert: handler A receives the DATA message (same handler for both hashes).
 
 ---
 
@@ -2219,6 +2245,12 @@ A configurable stub handler process (or in-process mock) that:
 7. Assert: an INFO log with `"handler invoked"` includes the `command` field (AC3).
 8. Assert: an INFO log with `"handler replied"` includes the `len` field (AC4).
 9. Assert: a log with `"handler exited"` includes the `code` field (AC5).
+10. Simulate a node with `current_program_hash = None` sending APP_DATA.
+11. Assert: a WARN log with `"APP_DATA dropped"` includes `node_id` and indicates missing `current_program_hash` (AC6).
+12. Simulate a node whose `current_program_hash` does not match any handler.
+13. Assert: a WARN log with `"APP_DATA dropped"` includes `node_id`, `program_hash`, and `handler_count` (AC6).
+14. Register a handler whose stderr produces output (e.g., a script that writes to stderr on startup).
+15. Assert: the handler's stderr lines appear in the gateway log at WARN level, tagged with the handler command (AC7).
 
 ---
 
@@ -2757,6 +2789,7 @@ A configurable stub handler process (or in-process mock) that:
 | GW-1404 | T-1403, T-1404 |
 | GW-1405 | T-1405, T-1405a |
 | GW-1406 | T-1406, T-1406a |
+| GW-1407 | T-1407a, T-1407b, T-1405b |
 | GW-1500 | T-1500 |
 | GW-1501 | T-1501, T-1503 |
 | GW-1502 | T-1502, T-1503 |

@@ -143,7 +143,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Boot node. Mock gateway does not respond.
-2. Assert: node sends WAKE, retries up to 3 times (100 ms apart).
+2. Assert: node sends WAKE, retries up to 3 times (~600 ms apart: 200 ms response timeout + 400 ms backoff).
 3. Assert: after 3 failures, node sleeps without executing BPF.
 
 ---
@@ -1917,5 +1917,5 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 > **Note:** Spec cases marked *(hardware — validated on target)* require the
 > NimBLE BLE stack or physical peripherals and cannot run in the host-based
 > test suite. T-N702 (response timeout — mock gateway delays
-> \> 50 ms) is host-testable but not yet implemented.
+> \> 200 ms) is host-testable but not yet implemented.
 > T-N919–T-N926, T-N928, T-N930–T-N939: spec procedures added — implementation pending.

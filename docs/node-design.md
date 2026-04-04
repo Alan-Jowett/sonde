@@ -131,7 +131,7 @@ The state machine has five main states plus two alternate boot paths. Starting f
 1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) no PSK or button held → BLE pairing mode, (2) PSK + no `reg_complete` → PEER_REQUEST registration, (3) PSK + `reg_complete` → proceed to step 2.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
 3. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`). AEAD-encrypt with PSK. Transmit via ESP-NOW.
-4. **Await COMMAND**: Wait up to 200 ms. If no response, retry (up to 3 times, 400 ms between). If all retries fail, sleep.
+4. **Await COMMAND**: Wait up to 200 ms for a response. On timeout, back off for 400 ms before retrying, up to 3 attempts total. If all attempts fail, sleep.
 5. **Verify COMMAND**: Decrypt via AES-256-GCM. Verify echoed nonce matches. Decode CBOR. Extract `starting_seq` and `timestamp_ms`.
 6. **Dispatch command**:
    - `NOP` → proceed to BPF execution.
@@ -144,7 +144,7 @@ The state machine has five main states plus two alternate boot paths. Starting f
 
 ### 4.3  Chunked transfer sub-state
 
-The chunked transfer loop iterates over each chunk index from 0 to `chunk_count − 1`. For each chunk: compute the sequence number (`starting_seq + chunk_index`), send `GET_CHUNK` with that sequence number, await the `CHUNK` response (200 ms timeout, up to 3 retries per chunk); if all retries fail, abort and sleep. After collecting all chunks, reassemble the program image, verify its SHA-256 hash against the expected value (if mismatched, discard and sleep), decode the CBOR program image (bytecode and map definitions), resolve `LDDW src=1` instructions to runtime map pointers, install the program (flash for resident programs, RAM for ephemeral), and send `PROGRAM_ACK`.
+The chunked transfer loop iterates over each chunk index from 0 to `chunk_count − 1`. For each chunk: compute the sequence number (`starting_seq + chunk_index`), send `GET_CHUNK` with that sequence number, await the `CHUNK` response (200 ms timeout; on timeout, back off 400 ms before retrying, up to 3 retries per chunk); if all retries fail, abort and sleep. After collecting all chunks, reassemble the program image, verify its SHA-256 hash against the expected value (if mismatched, discard and sleep), decode the CBOR program image (bytecode and map definitions), resolve `LDDW src=1` instructions to runtime map pointers, install the program (flash for resident programs, RAM for ephemeral), and send `PROGRAM_ACK`.
 
 When awaiting the `CHUNK` response, the transport may return stale frames from earlier protocol phases (e.g. duplicate `COMMAND` responses from `WAKE` retries).  If a received frame has wrong `msg_type`, the node MUST discard it and immediately re-read the transport without consuming a retry attempt (see protocol.md §8.1, ND-0701 AC4).
 
@@ -152,7 +152,7 @@ When awaiting the `CHUNK` response, the transport may return stale frames from e
 for chunk_index in 0..chunk_count:
     seq = starting_seq + chunk_index       (GET_CHUNK #0 uses starting_seq)
     send GET_CHUNK { chunk_index } with seq
-    await CHUNK response (200 ms timeout, 3 retries per chunk)
+    await CHUNK response (200 ms timeout, 400 ms backoff, 3 retries per chunk)
         if recv returns wrong msg_type → discard, re-read (not a retry)
     if all retries fail → abort, sleep
     verify echoed seq, AEAD authentication

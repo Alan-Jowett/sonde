@@ -627,12 +627,12 @@ The firmware MUST support configurable I2C bus GPIO pin assignments so that a si
 **Source:** protocol.md §9.1
 
 **Description:**  
-If the node sends `WAKE` and receives no `COMMAND` response within the transport timeout, the node MUST retry up to 3 times with 100 ms delay between attempts. After max retries, the node MUST sleep until the next scheduled wake interval.
+If the node sends `WAKE` and receives no `COMMAND` response within the transport timeout (ND-0702), the node MUST retry up to 3 times with a 400 ms backoff delay after each timeout. On a timeout-only path, successive WAKE transmissions are ~600 ms apart (200 ms response timeout + 400 ms backoff). After max retries, the node MUST sleep until the next scheduled wake interval.
 
 **Acceptance criteria:**
 
 1. The node retries up to 3 times.
-2. The delay between retries is 100 ms.
+2. The backoff delay after each response timeout is 400 ms.
 3. After 3 failures, the node sleeps without executing BPF.
 
 ---
@@ -643,7 +643,7 @@ If the node sends `WAKE` and receives no `COMMAND` response within the transport
 **Source:** protocol.md §9.2
 
 **Description:**  
-If the node sends `GET_CHUNK` and receives no `CHUNK` response, the node MUST retry up to 3 times per chunk with 100 ms delay. After max retries, the node MUST abort the transfer and sleep. On the next wake, the transfer restarts from chunk 0.
+If the node sends `GET_CHUNK` and receives no `CHUNK` response, the node MUST retry up to 3 times per chunk with a 400 ms backoff delay after each response timeout. After max retries, the node MUST abort the transfer and sleep. On the next wake, the transfer restarts from chunk 0.
 
 If the node receives a frame with an unexpected `msg_type` while awaiting a `CHUNK` response (e.g. a stale `COMMAND` from a `WAKE` retry — see protocol.md §8.1), the node MUST discard the frame and immediately re-read the transport **without consuming a retry attempt**. Only timeouts, AES-256-GCM authentication/decryption failures (AEAD open failure), and frames that successfully authenticate/decrypt with the expected `msg_type` but fail subsequent validation (e.g. wrong `chunk_index`, wrong sequence) count as retry attempts.
 
@@ -662,12 +662,12 @@ If the node receives a frame with an unexpected `msg_type` while awaiting a `CHU
 **Source:** protocol.md §9.3
 
 **Description:**  
-The node MUST wait for a response for the transport-appropriate timeout before retrying or moving on. On ESP-NOW with a USB-CDC modem bridge, the response timeout is 50 ms to account for the serial round-trip latency (node → ESP-NOW → modem → USB-CDC → gateway → USB-CDC → modem → ESP-NOW → node). The retry delay between attempts is 100 ms.
+The node MUST wait for a response for the transport-appropriate timeout before retrying or moving on. On ESP-NOW with a USB-CDC modem bridge, the response timeout is 200 ms to account for the serial round-trip latency (node → ESP-NOW → modem → USB-CDC → gateway → USB-CDC → modem → ESP-NOW → node). After the response timeout expires, the node waits a 400 ms backoff delay before the next attempt.
 
 **Acceptance criteria:**
 
-1. On ESP-NOW with a USB-CDC modem bridge, the node uses a response timeout of 50 ms, measured from completion of frame transmission to the point where the node treats the response as lost.
-2. The retry delay between attempts is 100 ms.
+1. On ESP-NOW with a USB-CDC modem bridge, the node uses a response timeout of 200 ms, measured from completion of frame transmission to the point where the node treats the response as lost.
+2. The backoff delay after each response timeout is 400 ms.
 3. The node waits the full configured timeout interval before treating a response as lost or initiating a retry.
 4. For transports other than ESP-NOW, the transport definition MUST specify a numeric response timeout in milliseconds.
 

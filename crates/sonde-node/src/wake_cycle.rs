@@ -24,10 +24,11 @@ use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
 use crate::FIRMWARE_ABI_VERSION;
 
-/// Retry and timing constants (protocol.md §9, node-requirements.md ND-0700/ND-0702).
-const WAKE_MAX_RETRIES: u32 = 3;
-const RETRY_DELAY_MS: u32 = 100;
-const RESPONSE_TIMEOUT_MS: u32 = 50;
+/// Retry and timing constants shared by WAKE/COMMAND and GET_CHUNK exchanges
+/// (protocol.md §9, node-requirements.md ND-0700/ND-0701/ND-0702).
+const MAX_RETRIES: u32 = 3;
+const RETRY_DELAY_MS: u32 = 400;
+const RESPONSE_TIMEOUT_MS: u32 = 200;
 
 /// Default instruction budget for BPF execution.
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;
@@ -202,7 +203,7 @@ pub fn wake_command_exchange<T: Transport, A: AeadProvider, S: Sha256Provider>(
     let frame = encode_frame(&header, &payload_cbor, &identity.psk, aead, sha)
         .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
 
-    for attempt in 0..=WAKE_MAX_RETRIES {
+    for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
             clock.delay_ms(RETRY_DELAY_MS);
         }
@@ -489,7 +490,7 @@ fn get_chunk_with_retry<T: Transport, A: AeadProvider, S: Sha256Provider>(
         .encode()
         .map_err(|_| NodeError::MalformedPayload("GET_CHUNK message encode failed"))?;
 
-    for attempt in 0..=WAKE_MAX_RETRIES {
+    for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
             clock.delay_ms(RETRY_DELAY_MS);
         }
@@ -1008,6 +1009,8 @@ mod tests {
         inbound: VecDeque<Option<Vec<u8>>>,
         /// Frames captured from send()
         outbound: Vec<Vec<u8>>,
+        /// Timeout values passed to recv(), recorded for assertions.
+        recv_timeouts: Vec<u32>,
     }
 
     impl MockTransport {
@@ -1015,6 +1018,7 @@ mod tests {
             Self {
                 inbound: VecDeque::new(),
                 outbound: Vec::new(),
+                recv_timeouts: Vec::new(),
             }
         }
 
@@ -1029,7 +1033,8 @@ mod tests {
             Ok(())
         }
 
-        fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+        fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+            self.recv_timeouts.push(timeout_ms);
             Ok(self.inbound.pop_front().flatten())
         }
     }
@@ -1335,6 +1340,10 @@ mod tests {
             assert_eq!(timestamp_ms, 1000);
             assert_eq!(cmd, CommandPayload::Nop);
 
+            // Verify recv was called with RESPONSE_TIMEOUT_MS (ND-0702)
+            assert_eq!(transport.recv_timeouts.len(), 1);
+            assert_eq!(transport.recv_timeouts[0], RESPONSE_TIMEOUT_MS);
+
             // Verify outbound WAKE frame is AEAD-encoded
             assert_eq!(transport.outbound.len(), 1);
             let decoded = decode_frame(&transport.outbound[0]).unwrap();
@@ -1577,6 +1586,16 @@ mod tests {
             );
 
             assert!(result.is_err(), "should fail after retry exhaustion");
+
+            // Verify all recv calls used RESPONSE_TIMEOUT_MS (ND-0702)
+            assert_eq!(transport.recv_timeouts.len(), 4); // 1 initial + 3 retries
+            assert!(
+                transport
+                    .recv_timeouts
+                    .iter()
+                    .all(|&t| t == RESPONSE_TIMEOUT_MS),
+                "all recv calls should use RESPONSE_TIMEOUT_MS"
+            );
         }
 
         #[test]

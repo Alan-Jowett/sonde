@@ -29,8 +29,9 @@ use crate::sleep::SleepManager;
 use crate::traits::{Clock, Transport};
 
 /// Default response timeout for `send_recv` helper (ms). Matches the protocol
-/// spec (node-requirements.md ND-0702).
-const SEND_RECV_TIMEOUT_MS: u32 = 50;
+/// spec (node-requirements.md ND-0702) and accounts for USB-CDC modem bridge
+/// round-trip latency.
+const SEND_RECV_TIMEOUT_MS: u32 = 200;
 
 /// Maximum buffer length for bus helper operations (I2C/SPI).
 /// Defence-in-depth cap to prevent oversized stack/heap access.
@@ -806,12 +807,15 @@ mod tests {
     struct TestTransport {
         outbound: Vec<Vec<u8>>,
         inbound: std::collections::VecDeque<Option<Vec<u8>>>,
+        /// Timeout values passed to recv(), recorded for assertions.
+        recv_timeouts: Vec<u32>,
     }
     impl TestTransport {
         fn new() -> Self {
             Self {
                 outbound: Vec::new(),
                 inbound: std::collections::VecDeque::new(),
+                recv_timeouts: Vec::new(),
             }
         }
     }
@@ -820,7 +824,8 @@ mod tests {
             self.outbound.push(frame.to_vec());
             Ok(())
         }
-        fn recv(&mut self, _timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+        fn recv(&mut self, timeout_ms: u32) -> NodeResult<Option<Vec<u8>>> {
+            self.recv_timeouts.push(timeout_ms);
             Ok(self.inbound.pop_front().flatten())
         }
     }
@@ -1601,6 +1606,10 @@ mod tests {
                 assert_eq!(result as i64, -1);
             },
         );
+
+        // Verify recv was called with the default SEND_RECV_TIMEOUT_MS (ND-0702)
+        assert_eq!(transport.recv_timeouts.len(), 1);
+        assert_eq!(transport.recv_timeouts[0], SEND_RECV_TIMEOUT_MS);
     }
 
     // -- MapPtrIndex unit tests ---------------------------------------------

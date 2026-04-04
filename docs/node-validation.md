@@ -143,7 +143,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Boot node. Mock gateway does not respond.
-2. Assert: node sends WAKE, retries up to 3 times (100 ms apart).
+2. Assert: node sends WAKE, retries up to 3 times (~600 ms apart: 200 ms response timeout + 400 ms backoff).
 3. Assert: after 3 failures, node sleeps without executing BPF.
 
 ---
@@ -776,7 +776,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Mock gateway does not respond.
 2. Assert: node sends exactly 4 WAKE frames (1 initial + 3 retries).
-3. Assert: ~100 ms between each attempt.
+3. For each unanswered WAKE except the final one, assert the node waits up to 200 ms (`RESPONSE_TIMEOUT_MS`) for a reply, then delays 400 ms (`RETRY_DELAY_MS`) before the next WAKE, giving ~600 ms between successive transmissions on a timeout-only path.
 4. Assert: node sleeps after final retry.
 
 ---
@@ -798,8 +798,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0702
 
 **Procedure:**
-1. Mock gateway delays response by 80 ms (>50 ms timeout).
-2. Assert: node treats it as timeout and retries after 100 ms delay.
+1. Mock gateway delays response by 250 ms (>200 ms timeout).
+2. Assert: node treats it as timeout, waits 400 ms backoff (`RETRY_DELAY_MS`), then retries.
 
 ---
 
@@ -1592,27 +1592,28 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N936  Chunked transfer inter-retry delay ≈ 100 ms
+### T-N936  Chunked transfer retry backoff and cadence
 
 **Validates:** ND-0701
 
 **Procedure:**
 1. Begin a chunked transfer.
 2. Simulate a missing-chunk scenario that triggers retries.
-3. Measure the delay between consecutive retry transmissions.
-4. Assert: the inter-retry delay is approximately 100 ms (±20 ms).
+3. Measure the backoff delay (from response timeout expiry to next `GET_CHUNK` transmission).
+4. Assert: the backoff delay is approximately 400 ms (`RETRY_DELAY_MS`, ±20 ms).
+5. Assert: the total interval between successive `GET_CHUNK` transmissions on a timeout-only path is approximately 600 ms (200 ms response timeout + 400 ms backoff, ±50 ms).
 
 ---
 
-### T-N937  Response timeout boundary at 50 ms
+### T-N937  Response timeout boundary at 200 ms
 
 **Validates:** ND-0702
 
 **Procedure:**
 1. Node sends a request.
-2. Mock gateway responds at 30 ms after the request.
-3. Assert: node accepts the response (under 50 ms timeout).
-4. Repeat: node sends a request; mock gateway responds at 80 ms.
+2. Mock gateway responds at 150 ms after the request.
+3. Assert: node accepts the response (under 200 ms timeout).
+4. Repeat: node sends a request; mock gateway responds at 250 ms.
 5. Assert: node treats the late response as a timeout.
 
 ---
@@ -1916,5 +1917,5 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 > **Note:** Spec cases marked *(hardware — validated on target)* require the
 > NimBLE BLE stack or physical peripherals and cannot run in the host-based
 > test suite. T-N702 (response timeout — mock gateway delays
-> \> 50 ms) is host-testable but not yet implemented.
+> \> 200 ms) is host-testable but not yet implemented.
 > T-N919–T-N926, T-N928, T-N930–T-N939: spec procedures added — implementation pending.

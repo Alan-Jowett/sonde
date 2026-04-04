@@ -130,6 +130,9 @@ jobs:
           - os: macos-14
             artifact: sonde-bundle-macos-aarch64
             binary: target/release/sonde-bundle
+        # Skip macOS on PRs to control runner costs (SB-0601).
+        exclude:
+          - os: ${{ github.event_name == 'pull_request' && 'macos-14' || 'skip' }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

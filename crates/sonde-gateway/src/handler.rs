@@ -939,9 +939,15 @@ impl HandlerRouter {
     ///
     /// Diffs the old and new config sets:
     /// - **Added** handlers are inserted (process spawned lazily on first message).
-    /// - **Removed** handlers are returned for the caller to shut down *after*
-    ///   releasing the write lock, avoiding prolonged lock contention.
+    /// - **Removed** handlers are removed from routing when `self.handlers` is
+    ///   replaced, then returned for the caller to shut down *after* releasing
+    ///   the write lock to avoid prolonged lock contention.
     /// - **Unchanged** handlers (same config) retain their existing `HandlerProcess`.
+    ///
+    /// This method updates routing immediately; removed handlers stop
+    /// receiving new requests as soon as `reload` returns, and their
+    /// processes are terminated afterwards by the caller via
+    /// [`shutdown_removed_handlers`].
     pub fn reload(
         &mut self,
         new_configs: Vec<HandlerConfig>,

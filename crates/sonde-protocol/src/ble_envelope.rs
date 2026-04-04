@@ -145,6 +145,11 @@ pub fn decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeErro
     if body.len() > 3 + payload_len {
         return Err(DecodeError::TooLong);
     }
+    if status != crate::DIAG_RELAY_STATUS_OK && payload_len != 0 {
+        return Err(DecodeError::CborError(
+            "non-OK DIAG_RELAY_RESPONSE must have empty payload".into(),
+        ));
+    }
     Ok((status, &body[3..3 + payload_len]))
 }
 

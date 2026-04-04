@@ -52,8 +52,14 @@ impl TestEnv {
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
         let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let mut gateway =
-            Gateway::new_with_pending(storage.clone(), pending_commands, session_manager);
+        let mut gateway = Gateway::new_with_pending(
+            storage.clone(),
+            pending_commands,
+            session_manager,
+            Arc::new(RwLock::new(sonde_gateway::handler::HandlerRouter::new(
+                Vec::new(),
+            ))),
+        );
         gateway.set_rssi_thresholds(good, bad);
         Self { gateway }
     }
@@ -200,7 +206,7 @@ async fn diag_request_no_rssi_sentinel() {
             ..
         } => {
             assert_eq!(rssi_dbm, 0);
-            assert_eq!(signal_quality, 255);
+            assert_eq!(signal_quality, 2);
         }
         other => panic!("expected DiagReply, got {:?}", other),
     }
@@ -236,7 +242,14 @@ async fn diag_request_revoked_psk_discarded() {
     let sm = Arc::new(SessionManager::new(Duration::from_secs(30)));
     let pc: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
-    let gw = Gateway::new_with_pending(storage, pc, sm);
+    let gw = Gateway::new_with_pending(
+        storage,
+        pc,
+        sm,
+        Arc::new(RwLock::new(sonde_gateway::handler::HandlerRouter::new(
+            Vec::new(),
+        ))),
+    );
     let frame = build_diag_request(&TEST_PHONE_PSK);
     assert!(gw
         .process_frame_with_rssi(&frame, peer(), Some(-50))

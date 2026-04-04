@@ -258,9 +258,10 @@ impl Gateway {
             self.rssi_good_threshold = good;
             self.rssi_bad_threshold = bad;
         } else {
-            warn!(
+            tracing::error!(
                 good,
-                bad, "invalid RSSI thresholds (good must be > bad), using defaults"
+                bad,
+                "invalid RSSI thresholds (good must be > bad), using defaults (GW-1705)"
             );
         }
     }
@@ -318,7 +319,7 @@ impl Gateway {
 
         // DIAG_REQUEST: key_hint identifies a phone PSK (GW-1700).
         if decoded.header.msg_type == MSG_DIAG_REQUEST {
-            return self.handle_diag_request(&decoded, rssi).await;
+            return self.handle_diag_request(&decoded, rssi, &peer).await;
         }
 
         let key_hint = decoded.header.key_hint;
@@ -550,6 +551,7 @@ impl Gateway {
         &self,
         decoded: &sonde_protocol::DecodedFrame<'_>,
         rssi: Option<i8>,
+        peer: &PeerAddress,
     ) -> Option<Vec<u8>> {
         use crate::aead::GatewayAead;
 
@@ -564,7 +566,7 @@ impl Gateway {
             .ok()?;
 
         // Step 2: Decrypt with each non-revoked candidate.
-        let mut matched_psk: Option<[u8; 32]> = None;
+        let mut matched_phone: Option<&crate::phone_trust::PhonePskRecord> = None;
         let mut payload: Option<Vec<u8>> = None;
 
         for phone in &phone_candidates {
@@ -572,24 +574,30 @@ impl Gateway {
                 continue;
             }
             if let Ok(pt) = open_frame(decoded, &phone.psk, &aead, &self.crypto_sha) {
-                matched_psk = Some(*phone.psk);
+                matched_phone = Some(phone);
                 payload = Some(pt);
                 break;
             }
         }
-        let phone_psk = matched_psk?;
+        let matched_phone = matched_phone?;
         let cbor_payload = payload?;
 
         // Step 3: Decode DIAG_REQUEST CBOR (GW-1700).
         let msg = NodeMessage::decode(MSG_DIAG_REQUEST, &cbor_payload).ok()?;
-        let _diagnostic_type = match msg {
+        let diagnostic_type = match msg {
             NodeMessage::DiagRequest { diagnostic_type } => diagnostic_type,
             _ => return None,
         };
 
+        if diagnostic_type != sonde_protocol::DIAG_TYPE_RSSI {
+            warn!(diagnostic_type, peer = ?peer, "unknown diagnostic_type in DIAG_REQUEST, ignoring");
+            return None;
+        }
+
         info!(
             key_hint,
             rssi = rssi.unwrap_or(0),
+            peer = ?peer,
             "DIAG_REQUEST received (GW-1706)"
         );
 
@@ -607,13 +615,13 @@ impl Gateway {
             }
             None => {
                 warn!("RSSI unavailable for DIAG_REQUEST, using sentinel (GW-1702)");
-                (0i8, 255u8) // sentinel: unknown
+                (0i8, sonde_protocol::SIGNAL_QUALITY_BAD)
             }
         };
 
         // Step 5: Build DIAG_REPLY (GW-1704).
         let reply = GatewayMessage::DiagReply {
-            diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
+            diagnostic_type,
             rssi_dbm,
             signal_quality,
         };
@@ -626,9 +634,9 @@ impl Gateway {
             nonce: decoded.header.nonce,
         };
 
-        let frame = self.encode_response(&reply_header, &reply_cbor, &phone_psk)?;
+        let frame = self.encode_response(&reply_header, &reply_cbor, &matched_phone.psk)?;
 
-        info!(rssi_dbm, signal_quality, "DIAG_REPLY sent (GW-1706)");
+        info!(rssi_dbm, signal_quality, peer = ?peer, "DIAG_REPLY sent (GW-1706)");
 
         Some(frame)
     }

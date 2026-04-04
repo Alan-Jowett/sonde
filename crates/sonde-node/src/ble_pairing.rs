@@ -416,17 +416,44 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
             continue;
         }
 
-        // Listen for DIAG_REPLY (msg_type 0x85 at header byte offset 2).
-        match transport.recv(DIAG_LISTEN_TIMEOUT_MS) {
-            Ok(Some(raw)) => {
+        // Listen for DIAG_REPLY (msg_type 0x85 at header byte offset 2),
+        // ignoring other msg_types until the per-attempt listen window expires.
+        #[cfg(feature = "esp")]
+        {
+            let mut remaining_ms = DIAG_LISTEN_TIMEOUT_MS;
+            loop {
+                if remaining_ms == 0 {
+                    break;
+                }
+                let before = std::time::Instant::now();
+                match transport.recv(remaining_ms) {
+                    Ok(Some(raw)) => {
+                        if raw.len() >= 3
+                            && raw[sonde_protocol::OFFSET_MSG_TYPE]
+                                == sonde_protocol::MSG_DIAG_REPLY
+                        {
+                            return encode_diag_relay_response(
+                                sonde_protocol::DIAG_RELAY_STATUS_OK,
+                                &raw,
+                            );
+                        }
+                        let elapsed = before.elapsed().as_millis() as u32;
+                        remaining_ms = remaining_ms.saturating_sub(elapsed.max(1));
+                    }
+                    _ => break,
+                }
+            }
+        }
+        #[cfg(not(feature = "esp"))]
+        {
+            // In test builds, recv returns immediately; single attempt per retry.
+            if let Ok(Some(raw)) = transport.recv(DIAG_LISTEN_TIMEOUT_MS) {
                 if raw.len() >= 3
                     && raw[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY
                 {
                     return encode_diag_relay_response(sonde_protocol::DIAG_RELAY_STATUS_OK, &raw);
                 }
-                // Wrong msg_type — discard and continue listening
             }
-            _ => continue,
         }
     }
 

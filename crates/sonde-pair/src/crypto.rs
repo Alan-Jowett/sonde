@@ -220,6 +220,12 @@ pub fn decrypt_diag_reply(
     let decoded = sonde_protocol::decode_frame(raw_frame)
         .map_err(|_| PairingError::DiagnosticFailed("malformed DIAG_REPLY frame".into()))?;
 
+    if decoded.header.msg_type != sonde_protocol::MSG_DIAG_REPLY {
+        return Err(PairingError::DiagnosticFailed(
+            "expected MSG_DIAG_REPLY msg_type".into(),
+        ));
+    }
+
     if decoded.header.nonce != expected_nonce {
         return Err(PairingError::DiagnosticFailed(
             "DIAG_REPLY nonce mismatch".into(),

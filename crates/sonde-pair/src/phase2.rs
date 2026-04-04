@@ -26,13 +26,13 @@ fn msg_type_name(t: u8) -> &'static str {
 ///
 /// The phone generates the node PSK, builds a PairingRequest CBOR, encrypts
 /// it with `phone_psk` via AES-256-GCM, and wraps it in a complete ESP-NOW
-/// PEER_REQUEST frame using [`crypto::encrypt_pairing_request_aead`].
+/// PEER_REQUEST frame using [`crypto::encrypt_pairing_request`].
 ///
 /// The node stores the frame verbatim and relays it to the gateway on its
 /// next wake cycle.
-pub async fn provision_node_aead(
+pub async fn provision_node(
     transport: &mut dyn BleTransport,
-    artifacts: &crate::phase1::PairingArtifactsAead,
+    artifacts: &crate::phase1::PairingArtifacts,
     rng: &dyn RngProvider,
     device_address: &[u8; 6],
     node_id: &str,
@@ -61,7 +61,7 @@ pub async fn provision_node_aead(
         encode_pairing_request(node_id, &node_psk, artifacts.rf_channel, sensors, timestamp)?;
 
     // Step 5: Encrypt with phone_psk and wrap in ESP-NOW AEAD PEER_REQUEST frame.
-    let encrypted_frame = crypto::encrypt_pairing_request_aead(&artifacts.phone_psk, &cbor)?;
+    let encrypted_frame = crypto::encrypt_pairing_request(&artifacts.phone_psk, &cbor)?;
 
     // Step 6: Connect to node
     debug!(address = ?device_address, "connecting to node (AEAD provision)");
@@ -79,7 +79,7 @@ pub async fn provision_node_aead(
 
     // Step 7: Build NODE_PROVISION payload (AEAD format per spec §6.6):
     // node_key_hint(2) || node_psk(32) || rf_channel(1) || payload_len(2) || encrypted_payload
-    let result = do_provision_node_aead(
+    let result = do_provision_node(
         transport,
         node_key_hint,
         &node_psk,
@@ -93,7 +93,7 @@ pub async fn provision_node_aead(
 }
 
 /// Inner implementation for AEAD node provisioning.
-async fn do_provision_node_aead(
+async fn do_provision_node(
     transport: &mut dyn BleTransport,
     node_key_hint: u16,
     node_psk: &[u8; 32],
@@ -195,10 +195,10 @@ mod tests {
     use crate::transport::MockBleTransport;
 
     #[tokio::test]
-    async fn provision_node_aead_happy_path() {
-        use crate::phase1::PairingArtifactsAead;
+    async fn provision_node_happy_path() {
+        use crate::phase1::PairingArtifacts;
 
-        let artifacts = PairingArtifactsAead {
+        let artifacts = PairingArtifacts {
             phone_psk: Zeroizing::new([0x55u8; 32]),
             phone_key_hint: compute_key_hint(&[0x55u8; 32]),
             rf_channel: 6,
@@ -217,7 +217,7 @@ mod tests {
         let mut transport = MockBleTransport::new(247);
         transport.queue_response(Ok(ack_envelope));
 
-        let result = provision_node_aead(
+        let result = provision_node(
             &mut transport,
             &artifacts,
             &rng,
@@ -227,10 +227,7 @@ mod tests {
         )
         .await;
 
-        assert!(
-            result.is_ok(),
-            "provision_node_aead should succeed: {result:?}"
-        );
+        assert!(result.is_ok(), "provision_node should succeed: {result:?}");
         assert_eq!(result.unwrap().status, NodeAckStatus::Success);
 
         // Verify NODE_PROVISION was written
@@ -241,10 +238,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_node_aead_mtu_too_low() {
-        use crate::phase1::PairingArtifactsAead;
+    async fn provision_node_mtu_too_low() {
+        use crate::phase1::PairingArtifacts;
 
-        let artifacts = PairingArtifactsAead {
+        let artifacts = PairingArtifacts {
             phone_psk: Zeroizing::new([0x55u8; 32]),
             phone_key_hint: compute_key_hint(&[0x55u8; 32]),
             rf_channel: 6,
@@ -254,7 +251,7 @@ mod tests {
         let rng = MockRng::new([0x42u8; 32]);
         let mut transport = MockBleTransport::new(100); // below BLE_MTU_MIN
 
-        let result = provision_node_aead(
+        let result = provision_node(
             &mut transport,
             &artifacts,
             &rng,
@@ -275,10 +272,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provision_node_aead_invalid_node_id() {
-        use crate::phase1::PairingArtifactsAead;
+    async fn provision_node_invalid_node_id() {
+        use crate::phase1::PairingArtifacts;
 
-        let artifacts = PairingArtifactsAead {
+        let artifacts = PairingArtifacts {
             phone_psk: Zeroizing::new([0x55u8; 32]),
             phone_key_hint: compute_key_hint(&[0x55u8; 32]),
             rf_channel: 6,
@@ -288,7 +285,7 @@ mod tests {
         let rng = MockRng::new([0x42u8; 32]);
         let mut transport = MockBleTransport::new(247);
 
-        let result = provision_node_aead(
+        let result = provision_node(
             &mut transport,
             &artifacts,
             &rng,

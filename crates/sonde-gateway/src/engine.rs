@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use sonde_protocol::{
-    decode_frame_aead, encode_frame_aead, open_frame, CommandPayload, FrameHeader, GatewayMessage,
+    decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
     NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK,
     MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_STATUS,
     PEER_REQ_KEY_PAYLOAD,
@@ -273,21 +273,21 @@ impl Gateway {
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
     ///
-    /// This is the AEAD counterpart of [`process_frame`]. It decodes the
+    /// Decodes the
     /// frame header, looks up candidate PSKs by `key_hint`, then tries
     /// each candidate with [`open_frame`] (AES-256-GCM decrypt + auth).
     ///
     /// For `PEER_REQUEST` frames, the `key_hint` identifies a phone PSK
     /// (not a node PSK).  The outer frame is decrypted with `phone_psk`,
     /// and the inner payload is also decrypted with `phone_psk`.
-    pub async fn process_frame_aead(&self, raw: &[u8], peer: PeerAddress) -> Option<Vec<u8>> {
+    pub async fn process_frame(&self, raw: &[u8], peer: PeerAddress) -> Option<Vec<u8>> {
         use crate::aead::GatewayAead;
 
-        let decoded = decode_frame_aead(raw).ok()?;
+        let decoded = decode_frame(raw).ok()?;
 
         // PEER_REQUEST: key_hint identifies a phone PSK, not a node.
         if decoded.header.msg_type == MSG_PEER_REQUEST {
-            return self.handle_peer_request_aead(&decoded).await;
+            return self.handle_peer_request(&decoded).await;
         }
 
         let key_hint = decoded.header.key_hint;
@@ -315,11 +315,11 @@ impl Gateway {
 
         match decoded.header.msg_type {
             MSG_WAKE => {
-                self.handle_wake_aead(&node, &decoded.header, &payload, peer)
+                self.handle_wake(&node, &decoded.header, &payload, peer)
                     .await
             }
             MSG_GET_CHUNK | MSG_PROGRAM_ACK | MSG_APP_DATA => {
-                self.handle_post_wake_aead(&node, &decoded.header, &payload)
+                self.handle_post_wake(&node, &decoded.header, &payload)
                     .await
             }
             _ => None,
@@ -327,14 +327,14 @@ impl Gateway {
     }
 
     /// Encode a response frame using AES-256-GCM.
-    fn encode_response_aead(
+    fn encode_response(
         &self,
         header: &FrameHeader,
         cbor: &[u8],
         psk: &[u8; 32],
     ) -> Option<Vec<u8>> {
         use crate::aead::GatewayAead;
-        encode_frame_aead(header, cbor, psk, &GatewayAead, &self.crypto_sha).ok()
+        encode_frame(header, cbor, psk, &GatewayAead, &self.crypto_sha).ok()
     }
     #[allow(dead_code)]
     async fn get_identity(&self) -> Option<Arc<GatewayIdentity>> {
@@ -363,9 +363,9 @@ impl Gateway {
     /// 4. Decrypts the inner payload with `phone_psk` (AAD = `"sonde-pairing-v2"`).
     /// 5. Parses the PairingRequest CBOR and registers the node.
     /// 6. Sends PEER_ACK encrypted with `node_psk`.
-    async fn handle_peer_request_aead(
+    async fn handle_peer_request(
         &self,
-        decoded: &sonde_protocol::DecodedFrameAead<'_>,
+        decoded: &sonde_protocol::DecodedFrame<'_>,
     ) -> Option<Vec<u8>> {
         use aes_gcm::aead::{Aead, KeyInit};
         use aes_gcm::{Aes256Gcm, Nonce};
@@ -497,7 +497,7 @@ impl Gateway {
             nonce: decoded.header.nonce,
         };
 
-        let frame = encode_frame_aead(
+        let frame = encode_frame(
             &ack_header,
             &ack_cbor_buf,
             &record.psk,
@@ -728,8 +728,8 @@ impl Gateway {
         Some((response_header, response_cbor))
     }
 
-    /// AEAD variant of [`handle_wake_aead`] — same business logic, AES-256-GCM encoding.
-    async fn handle_wake_aead(
+    /// Handle a WAKE frame — business logic + AES-256-GCM response encoding.
+    async fn handle_wake(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
@@ -738,11 +738,11 @@ impl Gateway {
     ) -> Option<Vec<u8>> {
         let (response_header, response_cbor) =
             self.handle_wake_core(node, header, payload, peer).await?;
-        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
+        self.encode_response(&response_header, &response_cbor, &node.psk)
     }
 
-    /// AEAD variant of [`handle_post_wake_aead`] — same dispatch, AES-256-GCM encoding.
-    async fn handle_post_wake_aead(
+    /// Handle a post-WAKE message — dispatch + AES-256-GCM encoding.
+    async fn handle_post_wake(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
@@ -769,19 +769,19 @@ impl Gateway {
 
         match msg {
             NodeMessage::GetChunk { chunk_index } => {
-                self.handle_get_chunk_aead(node, header, chunk_index).await
+                self.handle_get_chunk(node, header, chunk_index).await
             }
             NodeMessage::ProgramAck { program_hash } => {
                 self.handle_program_ack(node, program_hash).await;
                 None
             }
-            NodeMessage::AppData { blob } => self.handle_app_data_aead(node, header, blob).await,
+            NodeMessage::AppData { blob } => self.handle_app_data(node, header, blob).await,
             _ => None,
         }
     }
 
-    /// AEAD variant of [`handle_get_chunk_aead`] — AES-256-GCM response encoding.
-    async fn handle_get_chunk_aead(
+    /// Handle a GET_CHUNK request — AES-256-GCM response encoding.
+    async fn handle_get_chunk(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
@@ -790,11 +790,11 @@ impl Gateway {
         let (response_header, response_cbor) = self
             .handle_get_chunk_core(node, header, chunk_index)
             .await?;
-        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
+        self.encode_response(&response_header, &response_cbor, &node.psk)
     }
 
-    /// AEAD variant of [`handle_app_data_aead`] — AES-256-GCM response encoding.
-    async fn handle_app_data_aead(
+    /// Handle an APP_DATA message — AES-256-GCM response encoding.
+    async fn handle_app_data(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
@@ -802,7 +802,7 @@ impl Gateway {
     ) -> Option<Vec<u8>> {
         let (response_header, response_cbor) =
             self.handle_app_data_core(node, header, blob).await?;
-        self.encode_response_aead(&response_header, &response_cbor, &node.psk)
+        self.encode_response(&response_header, &response_cbor, &node.psk)
     }
 
     /// Shared GET_CHUNK business logic: look up session/program, serve chunk.

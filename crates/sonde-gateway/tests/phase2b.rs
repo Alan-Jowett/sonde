@@ -14,7 +14,7 @@ use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::PeerAddress;
 
 use sonde_protocol::{
-    decode_frame_aead, encode_frame_aead, open_frame, CommandPayload, FrameHeader, GatewayMessage,
+    decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
     NodeMessage, MAX_FRAME_SIZE, MSG_APP_DATA, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK,
     MSG_PROGRAM_ACK, MSG_WAKE,
 };
@@ -67,7 +67,7 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     /// Build a GET_CHUNK frame with the given sequence number.
@@ -79,7 +79,7 @@ impl TestNode {
         };
         let msg = NodeMessage::GetChunk { chunk_index };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     /// Build a PROGRAM_ACK frame with the given sequence number.
@@ -93,7 +93,7 @@ impl TestNode {
             program_hash: program_hash.to_vec(),
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     /// Build an APP_DATA frame with the given sequence number.
@@ -108,7 +108,7 @@ impl TestNode {
             blob: blob.to_vec(),
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
@@ -165,7 +165,7 @@ async fn store_test_program_with_abi(
 
 /// Decode a gateway response frame and return the GatewayMessage.
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
-    let decoded = decode_frame_aead(raw).unwrap();
+    let decoded = decode_frame(raw).unwrap();
     let plaintext = open_frame(&decoded, psk, &GatewayAead, &RustCryptoSha256).unwrap();
     let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     (decoded.header, msg)
@@ -182,7 +182,7 @@ async fn do_wake_with_abi(
 ) -> (u64, u64, CommandPayload) {
     let frame = node.build_wake(nonce, firmware_abi_version, program_hash, 3300);
     let resp = gw
-        .process_frame_aead(&frame, node.peer_address())
+        .process_frame(&frame, node.peer_address())
         .await
         .expect("expected COMMAND response");
     let (_hdr, msg) = decode_response(&resp, &node.psk);
@@ -222,11 +222,11 @@ async fn t0101_valid_cbor_encoding() {
 
     let frame = node.build_wake(42, 1, &[0u8; 32], 3300);
     let resp = gw
-        .process_frame_aead(&frame, node.peer_address())
+        .process_frame(&frame, node.peer_address())
         .await
         .expect("expected response");
 
-    let decoded = decode_frame_aead(&resp).unwrap();
+    let decoded = decode_frame(&resp).unwrap();
     let plaintext = open_frame(&decoded, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
     // Payload must be valid CBOR decodable as a GatewayMessage
     let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext);
@@ -249,10 +249,9 @@ async fn t0102_malformed_cbor_tolerance() {
         nonce: 99,
     };
     let garbage = &[0xFF, 0xFE, 0xFD, 0xFC, 0xFB];
-    let frame =
-        encode_frame_aead(&header, garbage, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let frame = encode_frame(&header, garbage, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
 
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_none(), "garbage CBOR must be silently discarded");
 }
 
@@ -270,7 +269,7 @@ async fn t0103_wake_reception_and_field_extraction() {
 
     let frame = node.build_wake(100, 1, &program_hash, 3300);
     let resp = gw
-        .process_frame_aead(&frame, node.peer_address())
+        .process_frame(&frame, node.peer_address())
         .await
         .expect("expected COMMAND response");
 
@@ -317,7 +316,7 @@ async fn t0104_wake_missing_fields_rejected() {
         msg_type: MSG_WAKE,
         nonce: 200,
     };
-    let frame = encode_frame_aead(
+    let frame = encode_frame(
         &header,
         &cbor_buf,
         &node.psk,
@@ -326,7 +325,7 @@ async fn t0104_wake_missing_fields_rejected() {
     )
     .unwrap();
 
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_none(), "WAKE with missing fields must be discarded");
 }
 
@@ -342,7 +341,7 @@ async fn t0105_command_response_structure() {
     let wake_nonce = 12345u64;
     let frame = node.build_wake(wake_nonce, 1, &[0u8; 32], 3300);
     let resp = gw
-        .process_frame_aead(&frame, node.peer_address())
+        .process_frame(&frame, node.peer_address())
         .await
         .expect("expected COMMAND response");
 
@@ -402,7 +401,7 @@ async fn t0106_frame_size_constraint() {
         let seq = starting_seq.wrapping_add(i as u64);
         let chunk_frame = node.build_get_chunk(seq, i);
         let resp = gw
-            .process_frame_aead(&chunk_frame, node.peer_address())
+            .process_frame(&chunk_frame, node.peer_address())
             .await
             .expect("expected CHUNK response");
         assert!(
@@ -727,7 +726,7 @@ async fn t0300_complete_chunked_transfer() {
         let seq = starting_seq.wrapping_add(i as u64);
         let chunk_frame = node.build_get_chunk(seq, i);
         let resp = gw
-            .process_frame_aead(&chunk_frame, node.peer_address())
+            .process_frame(&chunk_frame, node.peer_address())
             .await
             .expect("expected CHUNK response");
 
@@ -787,7 +786,7 @@ async fn t0301_transfer_resumption() {
     // Request chunks 0 and 1
     let chunk0_frame = node.build_get_chunk(seq1, 0);
     let resp0 = gw
-        .process_frame_aead(&chunk0_frame, node.peer_address())
+        .process_frame(&chunk0_frame, node.peer_address())
         .await
         .expect("chunk 0");
     let (_, c0) = decode_response(&resp0, &node.psk);
@@ -807,7 +806,7 @@ async fn t0301_transfer_resumption() {
     // Request chunk 0 again from the new session
     let chunk0_frame2 = node.build_get_chunk(seq2, 0);
     let resp0_2 = gw
-        .process_frame_aead(&chunk0_frame2, node.peer_address())
+        .process_frame(&chunk0_frame2, node.peer_address())
         .await
         .expect("chunk 0 re-request");
     let (_, c0_2) = decode_response(&resp0_2, &node.psk);
@@ -846,13 +845,13 @@ async fn t0302_program_ack_updates_registry() {
     for i in 0..chunk_count {
         let seq = starting_seq.wrapping_add(i as u64);
         let f = node.build_get_chunk(seq, i);
-        let _ = gw.process_frame_aead(&f, node.peer_address()).await;
+        let _ = gw.process_frame(&f, node.peer_address()).await;
     }
 
     // Send PROGRAM_ACK
     let ack_seq = starting_seq.wrapping_add(chunk_count as u64);
     let ack_frame = node.build_program_ack(ack_seq, &assigned_hash);
-    let ack_resp = gw.process_frame_aead(&ack_frame, node.peer_address()).await;
+    let ack_resp = gw.process_frame(&ack_frame, node.peer_address()).await;
     assert!(
         ack_resp.is_none(),
         "PROGRAM_ACK should not produce a response frame"
@@ -881,7 +880,7 @@ async fn t0302_program_ack_updates_registry() {
 
 /// T-0600: Valid AEAD frame accepted.
 #[tokio::test]
-async fn t0600_valid_aead_accepted() {
+async fn t0600_valid_accepted() {
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway(storage.clone());
 
@@ -889,13 +888,13 @@ async fn t0600_valid_aead_accepted() {
     storage.upsert_node(&node.to_record()).await.unwrap();
 
     let frame = node.build_wake(1, 1, &[0u8; 32], 3300);
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_some(), "valid AEAD frame must be accepted");
 }
 
 /// T-0601: Invalid AEAD frame rejected (flipped bit).
 #[tokio::test]
-async fn t0601_invalid_aead_rejected() {
+async fn t0601_invalid_rejected() {
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway(storage.clone());
 
@@ -907,7 +906,7 @@ async fn t0601_invalid_aead_rejected() {
     let last = frame.len() - 1;
     frame[last] ^= 0x01;
 
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_none(), "flipped GCM tag bit must be rejected");
 }
 
@@ -933,10 +932,9 @@ async fn t0602_wrong_key_rejected() {
         battery_mv: 3300,
     };
     let cbor = msg.encode().unwrap();
-    let frame =
-        encode_frame_aead(&header, &cbor, &wrong_psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let frame = encode_frame(&header, &cbor, &wrong_psk, &GatewayAead, &RustCryptoSha256).unwrap();
 
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_none(), "wrong PSK must be rejected");
 }
 
@@ -956,7 +954,7 @@ async fn t0603_key_hint_collision() {
     // Send WAKE from node A — gateway must try both PSKs and find A's
     let frame_a = node_a.build_wake(1, 1, &[0u8; 32], 3300);
     let resp_a = gw
-        .process_frame_aead(&frame_a, node_a.peer_address())
+        .process_frame(&frame_a, node_a.peer_address())
         .await
         .expect("node A must be authenticated despite key_hint collision");
 
@@ -971,7 +969,7 @@ async fn t0603_key_hint_collision() {
     // Send WAKE from node B — also must succeed
     let frame_b = node_b.build_wake(2, 1, &[0u8; 32], 3200);
     let resp_b = gw
-        .process_frame_aead(&frame_b, node_b.peer_address())
+        .process_frame(&frame_b, node_b.peer_address())
         .await
         .expect("node B must also be authenticated");
     let (_, msg_b) = decode_response(&resp_b, &node_b.psk);
@@ -991,7 +989,7 @@ async fn t0609_unknown_node_silent_discard() {
     let unknown = TestNode::new("unknown", 0xFFFF, [0x99; 32]);
     let frame = unknown.build_wake(1, 1, &[0u8; 32], 3000);
 
-    let resp = gw.process_frame_aead(&frame, unknown.peer_address()).await;
+    let resp = gw.process_frame(&frame, unknown.peer_address()).await;
     assert!(resp.is_none(), "unknown node must be silently discarded");
 
     // Verify no state changed (no sessions created)
@@ -1176,7 +1174,7 @@ async fn t0607a_wake_retry_preserves_chunked_transfer_end_to_end() {
         let seq = seq2.wrapping_add(i as u64);
         let chunk_frame = node.build_get_chunk(seq, i);
         let resp = gw
-            .process_frame_aead(&chunk_frame, node.peer_address())
+            .process_frame(&chunk_frame, node.peer_address())
             .await
             .unwrap_or_else(|| panic!("chunk {} must succeed after WAKE retry reuse", i));
         let (_, msg) = decode_response(&resp, &node.psk);

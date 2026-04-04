@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Integration tests for the AES-256-GCM `process_frame_aead` engine path.
+//! Integration tests for the AES-256-GCM `process_frame` engine path.
 //!
 //! These tests mirror the HMAC engine tests (phase2b) but exercise the AEAD
 //! codec.
@@ -17,9 +17,9 @@ use sonde_gateway::transport::PeerAddress;
 use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
-    decode_frame_aead, encode_frame_aead, open_frame, FrameHeader, GatewayMessage, NodeMessage,
-    MSG_APP_DATA, MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE,
-    PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
+    decode_frame, encode_frame, open_frame, FrameHeader, GatewayMessage, NodeMessage, MSG_APP_DATA,
+    MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_STATUS,
+    PEER_REQ_KEY_PAYLOAD,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ impl TestNode {
         self.node_id.as_bytes().to_vec()
     }
 
-    fn build_wake_aead(
+    fn build_wake(
         &self,
         nonce: u64,
         firmware_abi_version: u32,
@@ -65,11 +65,11 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     #[allow(dead_code)]
-    fn build_get_chunk_aead(&self, seq: u64, chunk_index: u32) -> Vec<u8> {
+    fn build_get_chunk(&self, seq: u64, chunk_index: u32) -> Vec<u8> {
         let header = FrameHeader {
             key_hint: self.key_hint,
             msg_type: MSG_GET_CHUNK,
@@ -77,11 +77,11 @@ impl TestNode {
         };
         let msg = NodeMessage::GetChunk { chunk_index };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     #[allow(dead_code)]
-    fn build_program_ack_aead(&self, seq: u64, program_hash: &[u8]) -> Vec<u8> {
+    fn build_program_ack(&self, seq: u64, program_hash: &[u8]) -> Vec<u8> {
         let header = FrameHeader {
             key_hint: self.key_hint,
             msg_type: MSG_PROGRAM_ACK,
@@ -91,10 +91,10 @@ impl TestNode {
             program_hash: program_hash.to_vec(),
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
-    fn build_app_data_aead(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
+    fn build_app_data(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
         let header = FrameHeader {
             key_hint: self.key_hint,
             msg_type: MSG_APP_DATA,
@@ -104,7 +104,7 @@ impl TestNode {
             blob: blob.to_vec(),
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
@@ -124,14 +124,14 @@ async fn aead_wake_round_trip() {
     let node = TestNode::new("node-aead-01", 0x0001, [0xBBu8; 32]);
     storage.upsert_node(&node.to_record()).await.unwrap();
 
-    let frame = node.build_wake_aead(42, 1, &[0u8; 32], 3300);
+    let frame = node.build_wake(42, 1, &[0u8; 32], 3300);
     let resp = gw
-        .process_frame_aead(&frame, node.peer_address())
+        .process_frame(&frame, node.peer_address())
         .await
         .expect("AEAD WAKE must produce a COMMAND response");
 
     // The response must be a valid AEAD frame decodable with the node's PSK.
-    let decoded = decode_frame_aead(&resp).expect("response must decode as AEAD frame");
+    let decoded = decode_frame(&resp).expect("response must decode as AEAD frame");
     let plaintext = open_frame(&decoded, &node.psk, &GatewayAead, &RustCryptoSha256)
         .expect("open must succeed with correct PSK");
 
@@ -154,9 +154,9 @@ async fn aead_wrong_psk_discarded() {
 
     // Build a WAKE frame using the wrong PSK.
     let imposter = TestNode::new("node-aead-wrong", 0x0002, wrong_psk);
-    let frame = imposter.build_wake_aead(10, 1, &[0u8; 32], 3000);
+    let frame = imposter.build_wake(10, 1, &[0u8; 32], 3000);
 
-    let resp = gw.process_frame_aead(&frame, b"imposter".to_vec()).await;
+    let resp = gw.process_frame(&frame, b"imposter".to_vec()).await;
     assert!(resp.is_none(), "wrong-PSK frame must be silently discarded");
 }
 
@@ -170,13 +170,13 @@ async fn aead_tampered_frame_discarded() {
     let node = TestNode::new("node-aead-tamper", 0x0003, [0xEEu8; 32]);
     storage.upsert_node(&node.to_record()).await.unwrap();
 
-    let mut frame = node.build_wake_aead(99, 1, &[0u8; 32], 3300);
+    let mut frame = node.build_wake(99, 1, &[0u8; 32], 3300);
     // Flip a bit in the ciphertext region (past the 11-byte header).
     if frame.len() > 12 {
         frame[12] ^= 0x01;
     }
 
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_none(), "tampered frame must be silently discarded");
 }
 
@@ -199,10 +199,9 @@ async fn aead_peer_request_no_phone_psk_discarded() {
         nonce: 1,
     };
     let payload = vec![0xA0]; // minimal CBOR map
-    let frame =
-        encode_frame_aead(&header, &payload, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let frame = encode_frame(&header, &payload, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
 
-    let resp = gw.process_frame_aead(&frame, b"phone".to_vec()).await;
+    let resp = gw.process_frame(&frame, b"phone".to_vec()).await;
     assert!(
         resp.is_none(),
         "PEER_REQUEST with no matching phone PSK must be discarded"
@@ -217,9 +216,9 @@ async fn aead_unknown_key_hint_discarded() {
     // Don't register any node.
 
     let node = TestNode::new("ghost", 0xFFFF, [0x11u8; 32]);
-    let frame = node.build_wake_aead(1, 1, &[0u8; 32], 3000);
+    let frame = node.build_wake(1, 1, &[0u8; 32], 3000);
 
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(
         resp.is_none(),
         "unknown key_hint must be silently discarded"
@@ -326,7 +325,7 @@ async fn aead_peer_request_happy_path() {
         msg_type: MSG_PEER_REQUEST,
         nonce: frame_nonce,
     };
-    let frame = encode_frame_aead(
+    let frame = encode_frame(
         &outer_header,
         &outer_cbor_bytes,
         &phone_psk,
@@ -337,12 +336,12 @@ async fn aead_peer_request_happy_path() {
 
     // --- Send to gateway ---
     let resp = gw
-        .process_frame_aead(&frame, b"phone-peer".to_vec())
+        .process_frame(&frame, b"phone-peer".to_vec())
         .await
         .expect("AEAD PEER_REQUEST must produce a PEER_ACK");
 
     // --- Verify response is a PEER_ACK decryptable with node_psk ---
-    let decoded = decode_frame_aead(&resp).expect("response must decode as AEAD frame");
+    let decoded = decode_frame(&resp).expect("response must decode as AEAD frame");
     assert_eq!(
         decoded.header.msg_type, MSG_PEER_ACK,
         "response must be PEER_ACK"
@@ -382,12 +381,12 @@ async fn aead_peer_request_happy_path() {
 
 /// Helper: do WAKE handshake and extract starting_seq from COMMAND response.
 async fn wake_and_get_seq(gw: &Gateway, node: &TestNode, nonce: u64, program_hash: &[u8]) -> u64 {
-    let frame = node.build_wake_aead(nonce, 1, program_hash, 3300);
+    let frame = node.build_wake(nonce, 1, program_hash, 3300);
     let resp = gw
-        .process_frame_aead(&frame, node.peer_address())
+        .process_frame(&frame, node.peer_address())
         .await
         .expect("WAKE must produce COMMAND");
-    let decoded = decode_frame_aead(&resp).unwrap();
+    let decoded = decode_frame(&resp).unwrap();
     let plaintext = open_frame(&decoded, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
     let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     match msg {
@@ -405,7 +404,7 @@ async fn wake_and_get_seq(gw: &Gateway, node: &TestNode, nonce: u64, program_has
 /// configured) — see T-E2E-032 / T-E2E-051 for the full end-to-end
 /// handler delivery path.
 #[tokio::test]
-async fn t0503a_app_data_valid_aead_accepted() {
+async fn t0503a_app_data_valid_accepted() {
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway(storage.clone());
 
@@ -423,8 +422,8 @@ async fn t0503a_app_data_valid_aead_accepted() {
     let expected_before = session_before.unwrap().next_expected_seq;
 
     // Send APP_DATA with valid AEAD.
-    let frame = node.build_app_data_aead(seq, &[0xDE, 0xAD]);
-    let _resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let frame = node.build_app_data(seq, &[0xDE, 0xAD]);
+    let _resp = gw.process_frame(&frame, node.peer_address()).await;
 
     // Assert the session sequence advanced — proves the frame was authenticated
     // and processed (not silently discarded).
@@ -452,12 +451,12 @@ async fn t0503b_app_data_invalid_gcm_tag_rejected() {
     let seq = wake_and_get_seq(&gw, &node, 2000, &program_hash).await;
 
     // Build valid APP_DATA then corrupt GCM tag.
-    let mut frame = node.build_app_data_aead(seq, &[0xBE, 0xEF]);
+    let mut frame = node.build_app_data(seq, &[0xBE, 0xEF]);
     // Flip a bit in the GCM tag (last 16 bytes).
     let tag_offset = frame.len() - 1;
     frame[tag_offset] ^= 0x01;
 
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(
         resp.is_none(),
         "APP_DATA with corrupted GCM tag must be silently discarded"

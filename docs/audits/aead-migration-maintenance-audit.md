@@ -210,7 +210,7 @@ After removing ~15 000 lines of HMAC/ECDH code across PRs #624–#629, do any ar
 | **Category** | D11 (test-to-validation traceability) |
 | **Location** | `docs/node-validation.md` lines 1843–1845, 1913 |
 | **Description** | The "Implementing Tests" traceability table references test functions that no longer exist: `t_e2e_002_hmac_round_trip`, `test_invalid_hmac_discarded`, `test_outbound_frame_format`, `t_e2e_003_wrong_psk_rejected` (no such e2e test name), `t_e2e_040_unknown_node`, `t_e2e_053_bridged_wrong_psk`, `t_n941_exchange_peer_ack_corrupted_hmac_discarded`, `peer_ack_tampered_hmac`. None of these function names appear in the current codebase. |
-| **Evidence** | `grep -rn "t_e2e_002_hmac\|test_invalid_hmac\|test_outbound_frame_format\|peer_ack_tampered_hmac" crates/` → 0 hits. The AEAD E2E tests use `t_e2e_050_aead_nop_wake_cycle`, `t_e2e_052_aead_wrong_psk_rejected`, etc. Node tests use `wake_command_exchange_aead_round_trip`, `verify_peer_ack_aead_valid`, etc. |
+| **Evidence** | `grep -rn "t_e2e_002_hmac\|test_invalid_hmac\|test_outbound_frame_format\|peer_ack_tampered_hmac" crates/` → 0 hits. The AEAD E2E tests use `t_e2e_050_nop_wake_cycle`, `t_e2e_052_wrong_psk_rejected`, etc. Node tests use `wake_command_exchange_round_trip`, `verify_peer_ack_valid`, etc. |
 | **Root Cause** | Test functions were renamed during AEAD migration but the validation traceability table was not updated. |
 | **Impact** | The traceability table reports false coverage — it claims tests exist that don't. This makes gap analysis unreliable. |
 | **Confidence** | Certain |
@@ -273,8 +273,8 @@ After removing ~15 000 lines of HMAC/ECDH code across PRs #624–#629, do any ar
 | **Severity** | Low |
 | **Category** | D6 (design consistency) |
 | **Location** | `docs/protocol-crate-design.md` lines 148, 174 |
-| **Description** | The design document shows function signatures `pub fn encode_frame(...)` and `pub fn decode_frame(...)`. The actual functions in code are `encode_frame_aead` and `decode_frame_aead`. However, the design doc describes AES-256-GCM semantics correctly (lines 152–159, 171–181), suggesting it was partially updated but the function names were not changed to match the `_aead` suffix in the implementation. |
-| **Evidence** | `protocol-crate-design.md:148` — `pub fn encode_frame(`. Code: `crates/sonde-protocol/src/aead_codec.rs:60` — `pub fn encode_frame_aead(`. |
+| **Description** | The design document shows function signatures `pub fn encode_frame(...)` and `pub fn decode_frame(...)`. The actual functions in code are `encode_frame` and `decode_frame`. However, the design doc describes AES-256-GCM semantics correctly (lines 152–159, 171–181), suggesting it was partially updated but the function names were not changed to match the `_aead` suffix in the implementation. |
+| **Evidence** | `protocol-crate-design.md:148` — `pub fn encode_frame(`. Code: `crates/sonde-protocol/src/aead_codec.rs:60` — `pub fn encode_frame(`. |
 | **Root Cause** | The design doc describes the target API (without `_aead` suffix, as the eventual name post-migration). The code uses `_aead` suffix during the transition period. This is an intentional naming divergence, but creates traceability confusion. |
 | **Impact** | Low — the protocol-crate-validation.md references `encode_frame()` / `decode_frame()` / `open_frame()` consistently with the design, so internal consistency is maintained. The code diverges. |
 | **Confidence** | High |
@@ -306,7 +306,7 @@ After removing ~15 000 lines of HMAC/ECDH code across PRs #624–#629, do any ar
 | **Category** | D5 (cross-document consistency) |
 | **Location** | `docs/audits/round2/gateway-code-compliance.md` line 524 |
 | **Description** | The GW-0603 compliance row says "43-byte overhead (11 header + 32 HMAC)". Post-AEAD, the overhead is 27 bytes (11 header + 16 GCM tag). The requirement itself was updated in `gateway-requirements.md`, but the audit table was not. |
-| **Evidence** | Line 524: `"sonde_protocol — 43-byte overhead (11 header + 32 HMAC)"`. Actual: `MIN_FRAME_SIZE_AEAD = HEADER_SIZE + AEAD_TAG_SIZE = 11 + 16 = 27`. |
+| **Evidence** | Line 524: `"sonde_protocol — 43-byte overhead (11 header + 32 HMAC)"`. Actual: `MIN_FRAME_SIZE = HEADER_SIZE + AEAD_TAG_SIZE = 11 + 16 = 27`. |
 | **Root Cause** | Same as F-007. |
 | **Impact** | Misleading overhead calculation could affect future capacity planning. |
 | **Confidence** | Certain |
@@ -345,7 +345,7 @@ All 16 findings share a common root cause: **the AEAD migration PRs (#624–#629
 |----|---------|--------|--------|
 | R-07 | F-007–F-009, F-013, F-016 | Add "⚠️ Pre-AEAD migration snapshot" banner to all round-1 and round-2 audit docs | Small |
 | R-08 | F-005 | Test removing direct `hmac` dep; remove if `pbkdf2_hmac` still compiles | Trivial |
-| R-09 | F-014 | Rename `encode_frame_aead`/`decode_frame_aead`/`open_frame_aead` → drop `_aead` suffix now that HMAC codec is fully removed | Medium |
+| R-09 | F-014 | Rename `encode_frame`/`decode_frame`/`open_frame` → drop `_aead` suffix now that HMAC codec is fully removed | Medium |
 
 ### Follow-up issue (Phase 2 cleanup)
 
@@ -368,7 +368,7 @@ All 16 findings share a common root cause: **the AEAD migration PRs (#624–#629
 
 1. **Should `GatewayIdentity` be removed now or deferred?** The BLE pairing protocol still uses `REQUEST_GW_INFO`/`GW_INFO_RESPONSE` in the E2E tests even though the protocol doc marks them RETIRED. Is there a production deployment that still relies on Phase 1a? If not, removal should be prioritized.
 
-2. **Should `_aead` function suffixes be dropped?** The design doc uses `encode_frame`/`decode_frame` (no suffix) and the code uses `encode_frame_aead`/`decode_frame_aead`. With HMAC codec fully deleted, there's no ambiguity — the `_aead` suffix is redundant. But renaming touches every call site. Is this worth the churn?
+2. **Should `_aead` function suffixes be dropped?** The design doc uses `encode_frame`/`decode_frame` (no suffix) and the code uses `encode_frame`/`decode_frame`. With HMAC codec fully deleted, there's no ambiguity — the `_aead` suffix is redundant. But renaming touches every call site. Is this worth the churn?
 
 3. **Is the `hmac` crate still needed as a direct dep for `pbkdf2_hmac`?** The `pbkdf2` crate may or may not re-export `hmac`. This needs a compile test.
 

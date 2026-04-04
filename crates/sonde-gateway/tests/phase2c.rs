@@ -17,7 +17,7 @@ use sonde_gateway::transport::PeerAddress;
 use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
-    decode_frame_aead, encode_frame_aead, open_frame, CommandPayload, FrameHeader, GatewayMessage,
+    decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
     NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_WAKE,
 };
 
@@ -64,7 +64,7 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     fn build_app_data(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
@@ -77,12 +77,12 @@ impl TestNode {
             blob: blob.to_vec(),
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
-    let decoded = decode_frame_aead(raw).unwrap();
+    let decoded = decode_frame(raw).unwrap();
     let plaintext = open_frame(&decoded, psk, &GatewayAead, &RustCryptoSha256).unwrap();
     let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     (decoded.header, msg)
@@ -97,7 +97,7 @@ async fn do_wake(
 ) -> (u64, u64, CommandPayload) {
     let frame = node.build_wake(nonce, 1, program_hash, 3300);
     let resp = gw
-        .process_frame_aead(&frame, node.peer_address())
+        .process_frame(&frame, node.peer_address())
         .await
         .expect("expected COMMAND response");
     let (_hdr, msg) = decode_response(&resp, &node.psk);
@@ -1284,7 +1284,7 @@ async fn t0500_app_data_echo_forwarding() {
     let blob = vec![0x01, 0x02, 0x03];
     let app_frame = node.build_app_data(starting_seq, &blob);
     let resp = gw
-        .process_frame_aead(&app_frame, node.peer_address())
+        .process_frame(&app_frame, node.peer_address())
         .await
         .expect("expected APP_DATA_REPLY");
 
@@ -1323,7 +1323,7 @@ async fn t0501_app_data_reply_fixed_data() {
 
     let app_frame = node.build_app_data(starting_seq, &[0xFF]);
     let resp = gw
-        .process_frame_aead(&app_frame, node.peer_address())
+        .process_frame(&app_frame, node.peer_address())
         .await
         .expect("expected APP_DATA_REPLY");
 
@@ -1359,7 +1359,7 @@ async fn t0502_empty_reply_suppressed() {
     let (starting_seq, _, _) = do_wake(&gw, &node, 3000, &program_hash).await;
 
     let app_frame = node.build_app_data(starting_seq, &[0x01]);
-    let resp = gw.process_frame_aead(&app_frame, node.peer_address()).await;
+    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
     assert!(
         resp.is_none(),
         "empty handler reply must produce no response"
@@ -1393,7 +1393,7 @@ async fn t0503_multiple_app_data_per_wake() {
         let blob = vec![(i + 1) as u8; 4];
         let app_frame = node.build_app_data(seq, &blob);
         let resp = gw
-            .process_frame_aead(&app_frame, node.peer_address())
+            .process_frame(&app_frame, node.peer_address())
             .await
             .unwrap_or_else(|| panic!("expected reply for APP_DATA #{i}"));
 
@@ -1439,7 +1439,7 @@ async fn t0504_handler_transport_framing() {
     let blob = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
     let app_frame = node.build_app_data(starting_seq, &blob);
     let resp = gw
-        .process_frame_aead(&app_frame, node.peer_address())
+        .process_frame(&app_frame, node.peer_address())
         .await
         .expect("expected APP_DATA_REPLY");
 
@@ -1479,7 +1479,7 @@ async fn t0505_handler_respawn_on_clean_exit() {
     let blob1 = vec![0x01];
     let app1 = node.build_app_data(starting_seq, &blob1);
     let resp1 = gw
-        .process_frame_aead(&app1, node.peer_address())
+        .process_frame(&app1, node.peer_address())
         .await
         .expect("first APP_DATA must get reply");
     let (_, msg1) = decode_response(&resp1, &node.psk);
@@ -1495,7 +1495,7 @@ async fn t0505_handler_respawn_on_clean_exit() {
     let blob2 = vec![0x02];
     let app2 = node.build_app_data(starting_seq + 1, &blob2);
     let resp2 = gw
-        .process_frame_aead(&app2, node.peer_address())
+        .process_frame(&app2, node.peer_address())
         .await
         .expect("second APP_DATA must get reply (handler respawned)");
     let (_, msg2) = decode_response(&resp2, &node.psk);
@@ -1528,7 +1528,7 @@ async fn t0506_handler_crash_no_reply() {
     let (starting_seq, _, _) = do_wake(&gw, &node, 7000, &program_hash).await;
 
     let app_frame = node.build_app_data(starting_seq, &[0x01]);
-    let resp = gw.process_frame_aead(&app_frame, node.peer_address()).await;
+    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
     assert!(
         resp.is_none(),
         "crashed handler must not produce a response"
@@ -1563,7 +1563,7 @@ async fn t0507_routing_by_program_hash() {
     let blob_a = vec![0xDE, 0xAD];
     let app_a = node_a.build_app_data(seq_a, &blob_a);
     let resp_a = gw
-        .process_frame_aead(&app_a, node_a.peer_address())
+        .process_frame(&app_a, node_a.peer_address())
         .await
         .expect("node A must get echo reply");
     let (_, msg_a) = decode_response(&resp_a, &node_a.psk);
@@ -1581,7 +1581,7 @@ async fn t0507_routing_by_program_hash() {
 
     let app_b = node_b.build_app_data(seq_b, &[0xFF]);
     let resp_b = gw
-        .process_frame_aead(&app_b, node_b.peer_address())
+        .process_frame(&app_b, node_b.peer_address())
         .await
         .expect("node B must get fixed reply");
     let (_, msg_b) = decode_response(&resp_b, &node_b.psk);
@@ -1623,7 +1623,7 @@ async fn t0508_no_handler_match_no_reply() {
     let (starting_seq, _, _) = do_wake(&gw, &node, 10000, &node_hash).await;
 
     let app_frame = node.build_app_data(starting_seq, &[0x01]);
-    let resp = gw.process_frame_aead(&app_frame, node.peer_address()).await;
+    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
     assert!(resp.is_none(), "no matching handler must produce no reply");
 }
 
@@ -1652,7 +1652,7 @@ async fn t0509_catch_all_handler() {
     let blob = vec![0xCA, 0xFE];
     let app_frame = node.build_app_data(starting_seq, &blob);
     let resp = gw
-        .process_frame_aead(&app_frame, node.peer_address())
+        .process_frame(&app_frame, node.peer_address())
         .await
         .expect("catch-all handler must produce reply");
 
@@ -1694,7 +1694,7 @@ async fn t0510_request_id_correlation() {
         let blob = vec![(0x10 + i) as u8];
         let app_frame = node.build_app_data(seq, &blob);
         let resp = gw
-            .process_frame_aead(&app_frame, node.peer_address())
+            .process_frame(&app_frame, node.peer_address())
             .await
             .expect("expected reply");
 
@@ -1729,7 +1729,7 @@ async fn t0511_request_id_mismatch_discarded() {
     let (starting_seq, _, _) = do_wake(&gw, &node, 13000, &program_hash).await;
 
     let app_frame = node.build_app_data(starting_seq, &[0x01]);
-    let resp = gw.process_frame_aead(&app_frame, node.peer_address()).await;
+    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
     assert!(resp.is_none(), "mismatched request_id must suppress reply");
 }
 
@@ -1764,7 +1764,7 @@ async fn t0512_handler_no_crash_on_wake() {
     let blob = vec![0x01];
     let app_frame = node.build_app_data(starting_seq, &blob);
     let resp = gw
-        .process_frame_aead(&app_frame, node.peer_address())
+        .process_frame(&app_frame, node.peer_address())
         .await
         .expect("post-WAKE APP_DATA must still work");
     let (_hdr, msg) = decode_response(&resp, &node.psk);
@@ -1796,7 +1796,7 @@ async fn t0513_log_messages_no_crash() {
     let blob = vec![0xBE, 0xEF];
     let app_frame = node.build_app_data(starting_seq, &blob);
     let resp = gw
-        .process_frame_aead(&app_frame, node.peer_address())
+        .process_frame(&app_frame, node.peer_address())
         .await
         .expect("handler with LOG then DATA_REPLY must produce reply");
 
@@ -1843,7 +1843,7 @@ async fn t0503b_handler_persistence_across_messages() {
         let blob = vec![0xAA];
         let app_frame = node.build_app_data(seq, &blob);
         let resp = gw
-            .process_frame_aead(&app_frame, node.peer_address())
+            .process_frame(&app_frame, node.peer_address())
             .await
             .unwrap_or_else(|| panic!("expected reply for APP_DATA #{i}"));
 
@@ -1894,7 +1894,7 @@ async fn t0503c_handler_reply_timeout() {
     let app_frame = node.build_app_data(starting_seq, &blob);
     let peer = node.peer_address();
 
-    let resp = gw.process_frame_aead(&app_frame, peer).await;
+    let resp = gw.process_frame(&app_frame, peer).await;
 
     assert!(
         resp.is_none(),
@@ -1918,7 +1918,7 @@ async fn t05xx_no_handler_backward_compat() {
     let (starting_seq, _, _) = do_wake(&gw, &node, 99000, &program_hash).await;
 
     let app_frame = node.build_app_data(starting_seq, &[0x01, 0x02]);
-    let resp = gw.process_frame_aead(&app_frame, node.peer_address()).await;
+    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
     assert!(
         resp.is_none(),
         "gateway without handler must silently accept APP_DATA"
@@ -2097,7 +2097,7 @@ async fn gw0503_ac3_persistent_handler_stays_alive() {
         let blob = vec![(i + 1) as u8; 2];
         let app_frame = node.build_app_data(seq, &blob);
         let resp = gw
-            .process_frame_aead(&app_frame, node.peer_address())
+            .process_frame(&app_frame, node.peer_address())
             .await
             .unwrap_or_else(|| panic!("expected reply for APP_DATA #{i}"));
 
@@ -2149,7 +2149,7 @@ async fn gw0501_sequence_number_correctness() {
         let blob = vec![(0x40 + i) as u8; 3];
         let app_frame = node.build_app_data(seq, &blob);
         let resp = gw
-            .process_frame_aead(&app_frame, node.peer_address())
+            .process_frame(&app_frame, node.peer_address())
             .await
             .unwrap_or_else(|| panic!("expected reply for APP_DATA #{i}"));
 
@@ -2204,7 +2204,7 @@ async fn gw0504_many_to_one_routing() {
     let blob_x = vec![0xAA, 0xBB];
     let app_x = node_x.build_app_data(seq_x, &blob_x);
     let resp_x = gw
-        .process_frame_aead(&app_x, node_x.peer_address())
+        .process_frame(&app_x, node_x.peer_address())
         .await
         .expect("node X must get reply from shared handler");
     let (_, msg_x) = decode_response(&resp_x, &node_x.psk);
@@ -2223,7 +2223,7 @@ async fn gw0504_many_to_one_routing() {
     let blob_y = vec![0xCC, 0xDD];
     let app_y = node_y.build_app_data(seq_y, &blob_y);
     let resp_y = gw
-        .process_frame_aead(&app_y, node_y.peer_address())
+        .process_frame(&app_y, node_y.peer_address())
         .await
         .expect("node Y must get reply from shared handler");
     let (_, msg_y) = decode_response(&resp_y, &node_y.psk);

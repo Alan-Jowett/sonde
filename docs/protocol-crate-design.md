@@ -43,9 +43,9 @@ The crate is `#![no_std]` by default, with `alloc` for heap types (`Vec<u8>`). B
 // Frame structure
 pub const HEADER_SIZE: usize = 11;
 pub const AEAD_TAG_SIZE: usize = 16;
-pub const MIN_FRAME_SIZE_AEAD: usize = HEADER_SIZE + AEAD_TAG_SIZE; // 27
+pub const MIN_FRAME_SIZE: usize = HEADER_SIZE + AEAD_TAG_SIZE; // 27
 pub const MAX_FRAME_SIZE: usize = 250;  // ESP-NOW reference
-pub const MAX_PAYLOAD_SIZE_AEAD: usize = MAX_FRAME_SIZE - HEADER_SIZE - AEAD_TAG_SIZE; // 223
+pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE - AEAD_TAG_SIZE; // 223
 
 // Header offsets
 pub const OFFSET_KEY_HINT: usize = 0;

@@ -4,8 +4,8 @@
 //! AES-256-GCM end-to-end integration tests.
 //!
 //! These tests exercise the AEAD frame path: the node uses
-//! `run_wake_cycle_aead` (with `NodeAead`) and the gateway processes
-//! frames via `process_frame_aead` (with `GatewayAead`).
+//! `run_wake_cycle` (with `NodeAead`) and the gateway processes
+//! frames via `process_frame` (with `GatewayAead`).
 
 use sonde_e2e::harness::{E2eTestEnv, NodeProxy, TestSha256};
 use sonde_gateway::storage::Storage;
@@ -74,13 +74,13 @@ fn make_program_from_bytecode(bytecode: &[u8]) -> (ProgramRecord, Vec<u8>) {
 ///   compatible AES-256-GCM frames.
 /// - Gateway updates node telemetry after a successful AEAD exchange.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_050_aead_nop_wake_cycle() {
+async fn t_e2e_050_nop_wake_cycle() {
     let env = E2eTestEnv::new();
     let psk = [0x50; 32];
     env.register_node("aead-nop", 1, psk).await;
 
     let mut node = NodeProxy::new(1, psk);
-    let stats = node.run_wake_cycle_aead(&env);
+    let stats = node.run_wake_cycle(&env);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 
@@ -106,18 +106,18 @@ async fn t_e2e_050_aead_nop_wake_cycle() {
 /// persistent storage and monotonic RNG state work correctly across
 /// multiple AES-256-GCM exchanges.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_050b_aead_consecutive_wake_cycles() {
+async fn t_e2e_050b_consecutive_wake_cycles() {
     let env = E2eTestEnv::new();
     let psk = [0x55; 32];
     env.register_node("aead-multi", 1, psk).await;
 
     let mut node = NodeProxy::new(1, psk);
 
-    let stats1 = node.run_wake_cycle_aead(&env);
+    let stats1 = node.run_wake_cycle(&env);
     assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats1.response_count > 0);
 
-    let stats2 = node.run_wake_cycle_aead(&env);
+    let stats2 = node.run_wake_cycle(&env);
     assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert!(stats2.response_count > 0);
 
@@ -139,7 +139,7 @@ async fn t_e2e_050b_aead_consecutive_wake_cycles() {
 /// dispatch sends APP_DATA via the HMAC codec (this is the current design —
 /// BPF helpers have not yet been migrated to AEAD).
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_051_aead_app_data_fire_and_forget() {
+async fn t_e2e_051_app_data_fire_and_forget() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
     let env = E2eTestEnv::new();
@@ -155,7 +155,7 @@ async fn t_e2e_051_aead_app_data_fire_and_forget() {
 
     let mut node = NodeProxy::new(1, psk);
     let mut interpreter = SondeBpfInterpreter::new();
-    let stats = node.run_wake_cycle_aead_with(&env, &mut interpreter);
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
 
@@ -176,13 +176,13 @@ async fn t_e2e_051_aead_app_data_fire_and_forget() {
 /// cannot decrypt the AEAD frame and silently discards it. The node
 /// exhausts its retries and sleeps.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_052_aead_wrong_psk_rejected() {
+async fn t_e2e_052_wrong_psk_rejected() {
     let env = E2eTestEnv::new();
     env.register_node("aead-wrong", 1, [0xAA; 32]).await;
 
     // Node has a different PSK.
     let mut node = NodeProxy::new(1, [0xBB; 32]);
-    let stats = node.run_wake_cycle_aead(&env);
+    let stats = node.run_wake_cycle(&env);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert_eq!(
@@ -208,13 +208,13 @@ async fn t_e2e_052_aead_wrong_psk_rejected() {
 /// The gateway silently discards the corrupted frame and the node receives
 /// no response, eventually exhausting retries.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_053_aead_tampered_frame_discarded() {
+async fn t_e2e_053_tampered_frame_discarded() {
     let env = E2eTestEnv::new();
     let psk = [0x53; 32];
     env.register_node("aead-tamper", 1, psk).await;
 
     let mut node = NodeProxy::new(1, psk);
-    let stats = node.run_wake_cycle_aead_tampered(&env);
+    let stats = node.run_wake_cycle_tampered(&env);
 
     assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
     assert_eq!(

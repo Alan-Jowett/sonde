@@ -349,7 +349,7 @@ async fn t1108_e2e_wake_cycle_over_pty() {
     use sonde_gateway::storage::{InMemoryStorage, Storage};
     use sonde_gateway::GatewayAead;
     use sonde_protocol::{
-        decode_frame_aead, encode_frame_aead, open_frame, FrameHeader, GatewayMessage, NodeMessage,
+        decode_frame, encode_frame, open_frame, FrameHeader, GatewayMessage, NodeMessage,
         Sha256Provider, MSG_COMMAND, MSG_WAKE,
     };
 
@@ -377,8 +377,7 @@ async fn t1108_e2e_wake_cycle_over_pty() {
         battery_mv: 3300,
     };
     let cbor = wake_msg.encode().unwrap();
-    let wake_frame =
-        encode_frame_aead(&header, &cbor, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let wake_frame = encode_frame(&header, &cbor, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
 
     // Inject RECV_FRAME carrying the WAKE.
     let recv = ModemMessage::RecvFrame(RecvFrame {
@@ -395,7 +394,7 @@ async fn t1108_e2e_wake_cycle_over_pty() {
     let (frame_data, peer) = transport.recv().await.unwrap();
 
     // Process through gateway.
-    let response = gateway.process_frame_aead(&frame_data, peer).await;
+    let response = gateway.process_frame(&frame_data, peer).await;
     assert!(response.is_some(), "gateway must respond to WAKE");
 
     // Send response back through transport.
@@ -412,7 +411,7 @@ async fn t1108_e2e_wake_cycle_over_pty() {
     match msg {
         ModemMessage::SendFrame(sf) => {
             // Decode the COMMAND response.
-            let decoded = decode_frame_aead(&sf.frame_data).unwrap();
+            let decoded = decode_frame(&sf.frame_data).unwrap();
             assert_eq!(decoded.header.msg_type, MSG_COMMAND);
             let plaintext = open_frame(&decoded, &psk, &GatewayAead, &RustCryptoSha256).unwrap();
             let gw_msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();

@@ -8,8 +8,8 @@ pub const MAX_FRAME_SIZE: usize = 250; // ESP-NOW reference
 // AES-256-GCM constants
 pub const AEAD_TAG_SIZE: usize = 16;
 pub const GCM_NONCE_SIZE: usize = 12;
-pub const MIN_FRAME_SIZE_AEAD: usize = HEADER_SIZE + AEAD_TAG_SIZE; // 27
-pub const MAX_PAYLOAD_SIZE_AEAD: usize = MAX_FRAME_SIZE - HEADER_SIZE - AEAD_TAG_SIZE; // 223
+pub const MIN_FRAME_SIZE: usize = HEADER_SIZE + AEAD_TAG_SIZE; // 27
+pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE - AEAD_TAG_SIZE; // 223
 
 // Header offsets
 pub const OFFSET_KEY_HINT: usize = 0;

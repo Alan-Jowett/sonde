@@ -613,10 +613,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Install a program that calls `send([0xAA, 0xBB])`.
-2. Run wake cycle with AEAD providers installed (via `install_aead`).
+2. Run wake cycle with AEAD providers installed (via `install`).
 3. Capture the outbound APP_DATA frame from the transport.
 4. Assert: the frame has the AEAD wire format (11B header + ciphertext + 16B GCM tag), NOT the legacy format (11B header + plaintext + 32B tag).
-5. Assert: `decode_frame_aead()` + `open_frame()` successfully decrypts the frame using the node's PSK.
+5. Assert: `decode_frame()` + `open_frame()` successfully decrypts the frame using the node's PSK.
 6. Assert: the decrypted CBOR contains AppData with blob `[0xAA, 0xBB]`.
 
 ---
@@ -1840,9 +1840,9 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N207 | `test_unknown_command_treated_as_nop` | wake_cycle.rs |
 | T-N208 | `test_set_next_wake_shorter`, `test_set_next_wake_equal` *(partial — unit tests cover SleepManager clamping logic; the full e2e set_next_wake → base-interval-restore cycle is not yet tested)* | sleep.rs |
 | T-N209 | `test_set_next_wake_longer_clamped` | sleep.rs |
-| T-N300 | `wake_command_exchange_aead_round_trip`, `t_e2e_050_aead_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
-| T-N301 | `t_e2e_052_aead_wrong_psk_rejected`, `t_e2e_053_aead_tampered_frame_discarded` | aead_e2e_tests.rs |
-| T-N302 | `wake_command_exchange_aead_round_trip`, `t_e2e_050_aead_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
+| T-N300 | `wake_command_exchange_round_trip`, `t_e2e_050_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
+| T-N301 | `t_e2e_052_wrong_psk_rejected`, `t_e2e_053_tampered_frame_discarded` | aead_e2e_tests.rs |
+| T-N302 | `wake_command_exchange_round_trip`, `t_e2e_050_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
 | T-N303 | `test_wrong_nonce_discarded`, `test_send_recv_app_data_wrong_nonce` | wake_cycle.rs |
 | T-N304 | `test_wrong_seq_on_chunk_discarded` | wake_cycle.rs |
 | T-N305 | `test_sequence_increment_correctness`, `t_e2e_041_sequence_numbers` | wake_cycle.rs, e2e_tests.rs |
@@ -1910,7 +1910,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N927 | `t_n927_rng_health_check_failure_aborts` | wake_cycle.rs |
 | T-N929 | `t_n929_write_to_read_only_context_silently_ignored` | sonde_bpf_adapter.rs |
 | T-N940 | `t_n940_payload_len_exceeds_remaining_data`, `t_n940_payload_len_max_u16_rejected` | ble_pairing.rs |
-| T-N941 | `verify_peer_ack_aead_valid`, `verify_peer_ack_aead_wrong_nonce`, `verify_peer_ack_aead_wrong_key` | peer_request.rs |
+| T-N941 | `verify_peer_ack_valid`, `verify_peer_ack_wrong_nonce`, `verify_peer_ack_wrong_key` | peer_request.rs |
 | T-N1016 | *(hardware — validated on target: GPIO state after sleep preparation)* | — |
 
 > **Note:** Spec cases marked *(hardware — validated on target)* require the

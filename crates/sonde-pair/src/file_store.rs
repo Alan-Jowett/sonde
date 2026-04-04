@@ -47,7 +47,7 @@ pub trait PskProtector: Send + Sync {
 
     /// Remove any externally stored protected material.
     ///
-    /// Called by [`FilePairingStore::clear_aead`] after deleting the JSON file.
+    /// Called by [`FilePairingStore::clear`] after deleting the JSON file.
     /// The default implementation is a no-op, suitable for backends that
     /// store protected data inline (e.g., DPAPI blobs in the JSON file).
     fn clear_protected(&self) -> Result<(), PairingError> {
@@ -81,7 +81,7 @@ pub fn default_protector() -> Option<Box<dyn PskProtector>> {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize)]
-struct StoredAeadArtifacts {
+struct StoredArtifacts {
     phone_psk: String,
     phone_key_hint: u16,
     rf_channel: u8,
@@ -135,16 +135,16 @@ impl FilePairingStore {
     }
 
     /// Save AEAD pairing artifacts to a companion file (`pairing-aead.json`).
-    pub fn save_artifacts_aead(
+    pub fn save_artifacts(
         &self,
-        artifacts: &crate::phase1::PairingArtifactsAead,
+        artifacts: &crate::phase1::PairingArtifacts,
     ) -> Result<(), PairingError> {
         let aead_path = self.aead_path();
         if let Some(parent) = aead_path.parent() {
             fs::create_dir_all(parent).map_err(|e| PairingError::StoreSaveFailed(e.to_string()))?;
         }
 
-        let stored = StoredAeadArtifacts {
+        let stored = StoredArtifacts {
             phone_psk: to_hex(&*artifacts.phone_psk),
             phone_key_hint: artifacts.phone_key_hint,
             rf_channel: artifacts.rf_channel,
@@ -168,9 +168,7 @@ impl FilePairingStore {
     }
 
     /// Load AEAD pairing artifacts from the companion file.
-    pub fn load_artifacts_aead(
-        &self,
-    ) -> Result<Option<crate::phase1::PairingArtifactsAead>, PairingError> {
+    pub fn load_artifacts(&self) -> Result<Option<crate::phase1::PairingArtifacts>, PairingError> {
         let aead_path = self.aead_path();
         let bytes = match fs::read(&aead_path) {
             Ok(b) => b,
@@ -178,7 +176,7 @@ impl FilePairingStore {
             Err(e) => return Err(PairingError::StoreLoadFailed(e.to_string())),
         };
 
-        let stored: StoredAeadArtifacts = serde_json::from_slice(&bytes).map_err(|e| {
+        let stored: StoredArtifacts = serde_json::from_slice(&bytes).map_err(|e| {
             PairingError::StoreCorrupted(format!("{e}: delete or fix {}", aead_path.display()))
         })?;
 
@@ -195,7 +193,7 @@ impl FilePairingStore {
             ));
         }
 
-        Ok(Some(crate::phase1::PairingArtifactsAead {
+        Ok(Some(crate::phase1::PairingArtifacts {
             phone_psk: psk,
             phone_key_hint: expected_hint,
             rf_channel: stored.rf_channel,
@@ -204,7 +202,7 @@ impl FilePairingStore {
     }
 
     /// Clear AEAD artifacts file (`pairing-aead.json`).
-    pub fn clear_aead(&self) -> Result<(), PairingError> {
+    pub fn clear(&self) -> Result<(), PairingError> {
         let aead_path = self.aead_path();
         // Also remove any leftover temp file from a crashed save.
         let tmp_path = aead_path.with_extension("tmp");
@@ -279,13 +277,13 @@ fn default_path() -> Result<PathBuf, PairingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::phase1::PairingArtifactsAead;
+    use crate::phase1::PairingArtifacts;
     use crate::validation::compute_key_hint;
     use tempfile::TempDir;
 
-    fn test_aead_artifacts() -> PairingArtifactsAead {
+    fn test_artifacts() -> PairingArtifacts {
         let psk = [0x42u8; 32];
-        PairingArtifactsAead {
+        PairingArtifacts {
             phone_psk: Zeroizing::new(psk),
             phone_key_hint: compute_key_hint(&psk),
             rf_channel: 6,
@@ -302,11 +300,11 @@ mod tests {
     #[test]
     fn aead_save_and_load_round_trip() {
         let (store, _dir) = temp_store();
-        let artifacts = test_aead_artifacts();
-        store.save_artifacts_aead(&artifacts).unwrap();
+        let artifacts = test_artifacts();
+        store.save_artifacts(&artifacts).unwrap();
 
         let loaded = store
-            .load_artifacts_aead()
+            .load_artifacts()
             .unwrap()
             .expect("should have artifacts");
         assert_eq!(*loaded.phone_psk, *artifacts.phone_psk);
@@ -318,24 +316,24 @@ mod tests {
     #[test]
     fn aead_load_missing_file_returns_none() {
         let (store, _dir) = temp_store();
-        assert!(store.load_artifacts_aead().unwrap().is_none());
+        assert!(store.load_artifacts().unwrap().is_none());
     }
 
     #[test]
     fn aead_clear_removes_file() {
         let (store, _dir) = temp_store();
-        store.save_artifacts_aead(&test_aead_artifacts()).unwrap();
+        store.save_artifacts(&test_artifacts()).unwrap();
         assert!(store.aead_path().exists());
 
-        store.clear_aead().unwrap();
+        store.clear().unwrap();
         assert!(!store.aead_path().exists());
-        assert!(store.load_artifacts_aead().unwrap().is_none());
+        assert!(store.load_artifacts().unwrap().is_none());
     }
 
     #[test]
     fn aead_clear_missing_file_is_ok() {
         let (store, _dir) = temp_store();
-        store.clear_aead().unwrap();
+        store.clear().unwrap();
     }
 
     #[test]

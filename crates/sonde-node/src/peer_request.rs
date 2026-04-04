@@ -49,8 +49,8 @@ const PEER_ACK_STATUS_OK: u64 = 0;
 /// provisioning.  This function validates the stored blob is a
 /// decodable AEAD frame with `msg_type == MSG_PEER_REQUEST` and returns
 /// it as-is for transmission.
-pub fn build_peer_request_frame_aead(complete_frame: &[u8]) -> NodeResult<Vec<u8>> {
-    let decoded = sonde_protocol::decode_frame_aead(complete_frame)
+pub fn build_peer_request_frame(complete_frame: &[u8]) -> NodeResult<Vec<u8>> {
+    let decoded = sonde_protocol::decode_frame(complete_frame)
         .map_err(|_| NodeError::MalformedPayload("PEER_REQUEST frame is not a valid AEAD frame"))?;
 
     if decoded.header.msg_type != MSG_PEER_REQUEST {
@@ -67,14 +67,14 @@ pub fn build_peer_request_frame_aead(complete_frame: &[u8]) -> NodeResult<Vec<u8
 /// `ble-pairing-protocol.md` §7.2, the `registration_proof` field is
 /// retired under AES-256-GCM: successful AEAD open with `node_psk`
 /// constitutes proof that the gateway holds the node's PSK.
-pub fn verify_peer_ack_aead<A: sonde_protocol::AeadProvider, S: sonde_protocol::Sha256Provider>(
+pub fn verify_peer_ack<A: sonde_protocol::AeadProvider, S: sonde_protocol::Sha256Provider>(
     raw: &[u8],
     identity: &NodeIdentity,
     expected_nonce: u64,
     aead: &A,
     sha: &S,
 ) -> NodeResult<()> {
-    let decoded = sonde_protocol::decode_frame_aead(raw)
+    let decoded = sonde_protocol::decode_frame(raw)
         .map_err(|_| NodeError::MalformedPayload("PEER_ACK decode failed"))?;
 
     let header = decoded.header.clone();
@@ -126,7 +126,7 @@ pub fn verify_peer_ack_aead<A: sonde_protocol::AeadProvider, S: sonde_protocol::
 /// (built by the phone during BLE provisioning).  The node transmits
 /// it verbatim and waits for a PEER_ACK encrypted with `node_psk`.
 #[allow(clippy::too_many_arguments)]
-pub fn peer_request_exchange_aead<
+pub fn peer_request_exchange<
     T: Transport,
     S: PlatformStorage,
     A: sonde_protocol::AeadProvider,
@@ -140,10 +140,10 @@ pub fn peer_request_exchange_aead<
     aead: &A,
     sha: &H,
 ) -> NodeResult<bool> {
-    let frame = build_peer_request_frame_aead(complete_frame)?;
+    let frame = build_peer_request_frame(complete_frame)?;
 
-    // Extract nonce via decode (already validated by build_peer_request_frame_aead).
-    let decoded = sonde_protocol::decode_frame_aead(&frame)
+    // Extract nonce via decode (already validated by build_peer_request_frame).
+    let decoded = sonde_protocol::decode_frame(&frame)
         .map_err(|_| NodeError::MalformedPayload("cannot decode validated frame"))?;
     let nonce = decoded.header.nonce;
 
@@ -161,7 +161,7 @@ pub fn peer_request_exchange_aead<
         let recv_timeout = remaining.min(500);
 
         if let Some(raw) = transport.recv(recv_timeout)? {
-            if verify_peer_ack_aead(&raw, identity, nonce, aead, sha).is_ok() {
+            if verify_peer_ack(&raw, identity, nonce, aead, sha).is_ok() {
                 storage.write_reg_complete(true)?;
                 log::info!("PEER_ACK received — registration complete (ND-1005)");
                 return Ok(true);
@@ -341,7 +341,7 @@ mod tests {
     mod aead_tests {
         use super::*;
         use crate::node_aead::NodeAead;
-        use sonde_protocol::{decode_frame_aead, Sha256Provider};
+        use sonde_protocol::{decode_frame, Sha256Provider};
 
         struct TestSha256;
         impl Sha256Provider for TestSha256 {
@@ -376,43 +376,43 @@ mod tests {
                 nonce,
             };
 
-            sonde_protocol::encode_frame_aead(&header, &cbor_buf, phone_psk, &aead, &sha).unwrap()
+            sonde_protocol::encode_frame(&header, &cbor_buf, phone_psk, &aead, &sha).unwrap()
         }
 
         #[test]
-        fn build_peer_request_frame_aead_validates_and_returns() {
+        fn build_peer_request_frame_validates_and_returns() {
             let phone_psk = [0x42u8; 32];
             let inner_payload = vec![0xAAu8; 100];
 
             let frame = build_phone_peer_request_frame(&phone_psk, &inner_payload, 12345);
-            let result = build_peer_request_frame_aead(&frame)
+            let result = build_peer_request_frame(&frame)
                 .expect("AEAD PEER_REQUEST frame validation should succeed");
 
             // Must return the frame unchanged
             assert_eq!(result, frame);
 
             // Verify it's a valid AEAD frame
-            let decoded = decode_frame_aead(&result).unwrap();
+            let decoded = decode_frame(&result).unwrap();
             assert_eq!(decoded.header.msg_type, MSG_PEER_REQUEST);
             assert_eq!(decoded.header.nonce, 12345);
         }
 
         #[test]
-        fn build_peer_request_frame_aead_rejects_too_short() {
-            let too_short = vec![0u8; sonde_protocol::MIN_FRAME_SIZE_AEAD - 1];
-            let result = build_peer_request_frame_aead(&too_short);
+        fn build_peer_request_frame_rejects_too_short() {
+            let too_short = vec![0u8; sonde_protocol::MIN_FRAME_SIZE - 1];
+            let result = build_peer_request_frame(&too_short);
             assert!(result.is_err());
         }
 
         #[test]
-        fn build_peer_request_frame_aead_rejects_oversized() {
+        fn build_peer_request_frame_rejects_oversized() {
             let oversized = vec![0xBBu8; sonde_protocol::MAX_FRAME_SIZE + 1];
-            let result = build_peer_request_frame_aead(&oversized);
+            let result = build_peer_request_frame(&oversized);
             assert!(result.is_err());
         }
 
         #[test]
-        fn build_peer_request_frame_aead_accepts_max_size() {
+        fn build_peer_request_frame_accepts_max_size() {
             // Build a frame of exactly MAX_FRAME_SIZE with a valid header
             // (msg_type = MSG_PEER_REQUEST).
             let mut exact = vec![0xCCu8; sonde_protocol::MAX_FRAME_SIZE];
@@ -423,12 +423,12 @@ mod tests {
             };
             let header_bytes = header.to_bytes();
             exact[..header_bytes.len()].copy_from_slice(&header_bytes);
-            let result = build_peer_request_frame_aead(&exact);
+            let result = build_peer_request_frame(&exact);
             assert!(result.is_ok(), "MAX_FRAME_SIZE must succeed");
         }
 
         #[test]
-        fn build_peer_request_frame_aead_rejects_wrong_msg_type() {
+        fn build_peer_request_frame_rejects_wrong_msg_type() {
             let phone_psk = [0x42u8; 32];
             let sha = TestSha256;
             let aead = NodeAead;
@@ -447,9 +447,8 @@ mod tests {
             ciborium::into_writer(&cbor_map, &mut cbor_buf).unwrap();
 
             let frame =
-                sonde_protocol::encode_frame_aead(&header, &cbor_buf, &phone_psk, &aead, &sha)
-                    .unwrap();
-            let result = build_peer_request_frame_aead(&frame);
+                sonde_protocol::encode_frame(&header, &cbor_buf, &phone_psk, &aead, &sha).unwrap();
+            let result = build_peer_request_frame(&frame);
             assert!(result.is_err(), "wrong msg_type must be rejected");
         }
 
@@ -460,7 +459,7 @@ mod tests {
         /// Per `ble-pairing-protocol.md` §7.2, PEER_ACK payload is
         /// `{ 1: status }` — the `registration_proof` field is retired
         /// under AES-256-GCM.
-        fn build_peer_ack_aead(
+        fn build_peer_ack(
             identity: &NodeIdentity,
             nonce: u64,
             aead: &NodeAead,
@@ -479,10 +478,10 @@ mod tests {
                 nonce,
             };
 
-            sonde_protocol::encode_frame_aead(&header, &cbor_buf, &identity.psk, aead, sha).unwrap()
+            sonde_protocol::encode_frame(&header, &cbor_buf, &identity.psk, aead, sha).unwrap()
         }
 
-        fn test_identity_aead() -> NodeIdentity {
+        fn test_identity() -> NodeIdentity {
             let psk = [0x42u8; 32];
             let sha = TestSha256;
             NodeIdentity {
@@ -492,27 +491,27 @@ mod tests {
         }
 
         #[test]
-        fn verify_peer_ack_aead_valid() {
+        fn verify_peer_ack_valid() {
             let sha = TestSha256;
             let aead = NodeAead;
-            let identity = test_identity_aead();
+            let identity = test_identity();
             let nonce: u64 = 0xAABBCCDDEEFF0011;
 
-            let ack_frame = build_peer_ack_aead(&identity, nonce, &aead, &sha);
-            let result = verify_peer_ack_aead(&ack_frame, &identity, nonce, &aead, &sha);
+            let ack_frame = build_peer_ack(&identity, nonce, &aead, &sha);
+            let result = verify_peer_ack(&ack_frame, &identity, nonce, &aead, &sha);
             assert!(result.is_ok());
         }
 
         #[test]
-        fn verify_peer_ack_aead_wrong_nonce() {
+        fn verify_peer_ack_wrong_nonce() {
             let sha = TestSha256;
             let aead = NodeAead;
-            let identity = test_identity_aead();
+            let identity = test_identity();
             let request_nonce: u64 = 0xAABBCCDDEEFF0011;
             let wrong_nonce: u64 = 0x1111111111111111;
 
-            let ack_frame = build_peer_ack_aead(&identity, wrong_nonce, &aead, &sha);
-            let result = verify_peer_ack_aead(&ack_frame, &identity, request_nonce, &aead, &sha);
+            let ack_frame = build_peer_ack(&identity, wrong_nonce, &aead, &sha);
+            let result = verify_peer_ack(&ack_frame, &identity, request_nonce, &aead, &sha);
             assert!(result.is_err());
         }
 
@@ -520,28 +519,28 @@ mod tests {
         /// AEAD decryption with `node_psk` is sufficient.  This test
         /// verifies that decryption with a wrong key is rejected.
         #[test]
-        fn verify_peer_ack_aead_wrong_key() {
+        fn verify_peer_ack_wrong_key() {
             let sha = TestSha256;
             let aead = NodeAead;
-            let identity = test_identity_aead();
+            let identity = test_identity();
             let nonce: u64 = 0x42;
 
-            let ack_frame = build_peer_ack_aead(&identity, nonce, &aead, &sha);
+            let ack_frame = build_peer_ack(&identity, nonce, &aead, &sha);
 
             // Verify with a different PSK — decryption must fail
             let wrong_identity = NodeIdentity {
                 key_hint: identity.key_hint,
                 psk: [0x99u8; 32],
             };
-            let result = verify_peer_ack_aead(&ack_frame, &wrong_identity, nonce, &aead, &sha);
+            let result = verify_peer_ack(&ack_frame, &wrong_identity, nonce, &aead, &sha);
             assert!(result.is_err());
         }
 
         #[test]
-        fn peer_request_exchange_aead_sets_reg_complete() {
+        fn peer_request_exchange_sets_reg_complete() {
             let sha = TestSha256;
             let aead = NodeAead;
-            let identity = test_identity_aead();
+            let identity = test_identity();
             let phone_psk = [0x55u8; 32];
             let nonce: u64 = 0x1122334455667788;
 
@@ -550,14 +549,14 @@ mod tests {
             let complete_frame = build_phone_peer_request_frame(&phone_psk, &inner_payload, nonce);
 
             // Build PEER_ACK with the nonce from the frame.
-            let ack = build_peer_ack_aead(&identity, nonce, &aead, &sha);
+            let ack = build_peer_ack(&identity, nonce, &aead, &sha);
             let mut transport = MockTransport::with_responses(vec![Some(ack)]);
             let mut storage =
                 MockStorage::with_identity(identity.key_hint, identity.psk, complete_frame.clone());
 
             assert!(!storage.reg_complete);
 
-            let result = peer_request_exchange_aead(
+            let result = peer_request_exchange(
                 &mut transport,
                 &mut storage,
                 &identity,
@@ -574,10 +573,10 @@ mod tests {
         }
 
         #[test]
-        fn peer_request_exchange_aead_timeout() {
+        fn peer_request_exchange_timeout() {
             let sha = TestSha256;
             let aead = NodeAead;
-            let identity = test_identity_aead();
+            let identity = test_identity();
             let phone_psk = [0x55u8; 32];
 
             let complete_frame = build_phone_peer_request_frame(&phone_psk, &[0xDE, 0xAD], 0x42);
@@ -586,7 +585,7 @@ mod tests {
             let mut storage =
                 MockStorage::with_identity(identity.key_hint, identity.psk, complete_frame.clone());
 
-            let result = peer_request_exchange_aead(
+            let result = peer_request_exchange(
                 &mut transport,
                 &mut storage,
                 &identity,

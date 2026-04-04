@@ -55,7 +55,7 @@ impl AeadProvider for NodeAead {
 mod tests {
     use super::*;
     use sonde_protocol::{
-        decode_frame_aead, encode_frame_aead, open_frame, AeadProvider, FrameHeader, MSG_WAKE,
+        decode_frame, encode_frame, open_frame, AeadProvider, FrameHeader, MSG_WAKE,
     };
 
     use crate::crypto::SoftwareSha256;
@@ -73,10 +73,10 @@ mod tests {
         };
         let payload = vec![0xA1, 0x01, 0x02];
 
-        let raw = encode_frame_aead(&header, &payload, &psk, &aead, &sha)
-            .expect("encoding should succeed");
+        let raw =
+            encode_frame(&header, &payload, &psk, &aead, &sha).expect("encoding should succeed");
 
-        let decoded = decode_frame_aead(&raw).expect("decoding should succeed");
+        let decoded = decode_frame(&raw).expect("decoding should succeed");
         assert_eq!(decoded.header.key_hint, 1);
         assert_eq!(decoded.header.msg_type, MSG_WAKE);
         assert_eq!(decoded.header.nonce, 100);
@@ -99,10 +99,10 @@ mod tests {
         };
         let payload = vec![0xA0];
 
-        let raw = encode_frame_aead(&header, &payload, &psk, &aead, &sha)
-            .expect("encoding should succeed");
+        let raw =
+            encode_frame(&header, &payload, &psk, &aead, &sha).expect("encoding should succeed");
 
-        let decoded = decode_frame_aead(&raw).expect("decoding should succeed");
+        let decoded = decode_frame(&raw).expect("decoding should succeed");
 
         let result = open_frame(&decoded, &wrong_psk, &aead, &sha);
         assert!(
@@ -150,10 +150,10 @@ mod tests {
             nonce: 0,
         };
 
-        let raw = encode_frame_aead(&header, &[], &psk, &aead, &sha)
+        let raw = encode_frame(&header, &[], &psk, &aead, &sha)
             .expect("encoding empty payload should succeed");
 
-        let decoded = decode_frame_aead(&raw).expect("decoding should succeed");
+        let decoded = decode_frame(&raw).expect("decoding should succeed");
         let plaintext = open_frame(&decoded, &psk, &aead, &sha).expect("open should succeed");
         assert!(plaintext.is_empty());
     }

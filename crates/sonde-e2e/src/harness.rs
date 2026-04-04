@@ -4,8 +4,8 @@
 //! Bridge harness that wires gateway and node together via in-memory frame
 //! queues for end-to-end integration testing.
 //!
-//! All frames are routed through the gateway's `process_frame_aead` path
-//! (AES-256-GCM) via `BridgeTransportAead`.
+//! All frames are routed through the gateway's `process_frame` path
+//! (AES-256-GCM) via `BridgeTransport`.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -117,7 +117,7 @@ impl E2eTestEnv {
 
 /// Statistics captured during a single wake cycle.
 pub struct WakeCycleStats {
-    /// The outcome returned by `run_wake_cycle_aead`.
+    /// The outcome returned by `run_wake_cycle`.
     pub outcome: WakeCycleOutcome,
     /// Number of non-`None` responses the gateway produced.
     pub response_count: usize,
@@ -178,26 +178,26 @@ impl NodeProxy {
     }
 
     /// Run one AEAD wake cycle, relaying frames through the gateway's
-    /// `process_frame_aead` path (AES-256-GCM).
+    /// `process_frame` path (AES-256-GCM).
     ///
     /// Uses `block_in_place` internally, so the caller must be running
     /// inside a multi-thread Tokio runtime. All E2E tests that call this
     /// must use `#[tokio::test(flavor = "multi_thread")]`.
-    pub fn run_wake_cycle_aead(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
+    pub fn run_wake_cycle(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
         let mut interpreter = MockBpfInterpreter::new();
-        self.run_wake_cycle_aead_inner(env, &mut interpreter, false)
+        self.run_wake_cycle_inner(env, &mut interpreter, false)
     }
 
-    /// Like [`run_wake_cycle_aead`] but accepts a caller-supplied BPF
+    /// Like [`run_wake_cycle`] but accepts a caller-supplied BPF
     /// interpreter for tests that require real BPF program execution.
     ///
-    /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle_aead`]).
-    pub fn run_wake_cycle_aead_with(
+    /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle`]).
+    pub fn run_wake_cycle_with(
         &mut self,
         env: &E2eTestEnv,
         interpreter: &mut impl BpfInterpreter,
     ) -> WakeCycleStats {
-        self.run_wake_cycle_aead_inner(env, interpreter, false)
+        self.run_wake_cycle_inner(env, interpreter, false)
     }
 
     /// Run one AEAD wake cycle with outgoing frame tampering.
@@ -206,20 +206,20 @@ impl NodeProxy {
     /// frame before forwarding to the gateway, causing GCM authentication
     /// failure and silent discard.
     ///
-    /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle_aead`]).
-    pub fn run_wake_cycle_aead_tampered(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
+    /// Requires a multi-thread Tokio runtime (see [`run_wake_cycle`]).
+    pub fn run_wake_cycle_tampered(&mut self, env: &E2eTestEnv) -> WakeCycleStats {
         let mut interpreter = MockBpfInterpreter::new();
-        self.run_wake_cycle_aead_inner(env, &mut interpreter, true)
+        self.run_wake_cycle_inner(env, &mut interpreter, true)
     }
 
-    fn run_wake_cycle_aead_inner(
+    fn run_wake_cycle_inner(
         &mut self,
         env: &E2eTestEnv,
         interpreter: &mut impl BpfInterpreter,
         tamper: bool,
     ) -> WakeCycleStats {
         use sonde_node::node_aead::NodeAead;
-        use sonde_node::wake_cycle::run_wake_cycle_aead;
+        use sonde_node::wake_cycle::run_wake_cycle;
 
         let mut hal = MockHal;
         let clock = MockClock::new();
@@ -228,12 +228,12 @@ impl NodeProxy {
         let aead = NodeAead;
 
         let mut transport = if tamper {
-            BridgeTransportAead::new_tampered(env.gateway.clone(), self.mac.clone())
+            BridgeTransport::new_tampered(env.gateway.clone(), self.mac.clone())
         } else {
-            BridgeTransportAead::new(env.gateway.clone(), self.mac.clone())
+            BridgeTransport::new(env.gateway.clone(), self.mac.clone())
         };
 
-        let outcome = run_wake_cycle_aead(
+        let outcome = run_wake_cycle(
             &mut transport,
             &mut self.storage,
             &mut hal,
@@ -255,12 +255,12 @@ impl NodeProxy {
 }
 
 // ---------------------------------------------------------------------------
-// BridgeTransportAead — AEAD frame relay for AES-256-GCM E2E tests
+// BridgeTransport — AEAD frame relay for AES-256-GCM E2E tests
 // ---------------------------------------------------------------------------
 
 /// In-memory frame relay that routes all frames through the gateway's
-/// `process_frame_aead` path (AES-256-GCM), including PEER_REQUEST.
-struct BridgeTransportAead {
+/// `process_frame` path (AES-256-GCM), including PEER_REQUEST.
+struct BridgeTransport {
     gateway: Arc<Gateway>,
     peer: Vec<u8>,
     pending_response: Option<Vec<u8>>,
@@ -271,7 +271,7 @@ struct BridgeTransportAead {
     tamper_outgoing: bool,
 }
 
-impl BridgeTransportAead {
+impl BridgeTransport {
     fn new(gateway: Arc<Gateway>, peer: Vec<u8>) -> Self {
         Self {
             gateway,
@@ -281,7 +281,7 @@ impl BridgeTransportAead {
             wake_nonces: Vec::new(),
             sent_frames: Vec::new(),
             rt: tokio::runtime::Handle::try_current()
-                .expect("BridgeTransportAead must be created inside a Tokio runtime"),
+                .expect("BridgeTransport must be created inside a Tokio runtime"),
             tamper_outgoing: false,
         }
     }
@@ -305,7 +305,7 @@ impl BridgeTransportAead {
     }
 }
 
-impl NodeTransport for BridgeTransportAead {
+impl NodeTransport for BridgeTransport {
     fn send(&mut self, frame: &[u8]) -> NodeResult<()> {
         if frame.len() >= sonde_protocol::HEADER_SIZE {
             let msg_type = frame[sonde_protocol::OFFSET_MSG_TYPE];
@@ -331,8 +331,7 @@ impl NodeTransport for BridgeTransportAead {
             frame_vec[sonde_protocol::HEADER_SIZE] ^= 0x01;
         }
         let response = tokio::task::block_in_place(|| {
-            self.rt
-                .block_on(gateway.process_frame_aead(&frame_vec, peer))
+            self.rt.block_on(gateway.process_frame(&frame_vec, peer))
         });
 
         if response.is_some() {
@@ -752,7 +751,7 @@ pub async fn simulate_phone_registration(
 
 /// Build the complete ESP-NOW PEER_REQUEST frame for NODE_PROVISION.
 ///
-/// Uses `encrypt_pairing_request_aead` to build a frame the node relays
+/// Uses `encrypt_pairing_request` to build a frame the node relays
 /// verbatim during the PEER_REQUEST exchange.
 #[allow(clippy::too_many_arguments)]
 pub fn build_encrypted_payload(
@@ -800,11 +799,10 @@ pub fn build_encrypted_payload_with_timestamp(
     timestamp: i64,
 ) -> Vec<u8> {
     use sonde_pair::cbor::encode_pairing_request;
-    use sonde_pair::crypto::encrypt_pairing_request_aead;
+    use sonde_pair::crypto::encrypt_pairing_request;
 
     let cbor = encode_pairing_request(node_id, node_psk, rf_channel, sensors, timestamp).unwrap();
-    encrypt_pairing_request_aead(phone_psk, &cbor)
-        .expect("encrypt_pairing_request_aead must succeed in test")
+    encrypt_pairing_request(phone_psk, &cbor).expect("encrypt_pairing_request must succeed in test")
 }
 
 // ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ struct AppState {
     phase: Arc<Mutex<String>>,
     logs: Arc<Mutex<Vec<String>>>,
     /// Phase 1 AEAD artifacts, held in memory for Phase 2 provisioning.
-    pairing_artifacts: Mutex<Option<Arc<phase1::PairingArtifactsAead>>>,
+    pairing_artifacts: Mutex<Option<Arc<phase1::PairingArtifacts>>>,
 }
 
 /// Reports Phase 1 sub-phase transitions to the UI via the shared `phase` mutex.
@@ -218,14 +218,8 @@ async fn pair_gateway(
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = BtleplugTransport::new().await?;
             let rng = OsRng;
-            phase1::pair_with_gateway_aead(
-                &mut transport,
-                &rng,
-                &addr,
-                &phone_label,
-                Some(&progress),
-            )
-            .await
+            phase1::pair_with_gateway(&mut transport, &rng, &addr, &phone_label, Some(&progress))
+                .await
         })
     })
     .await
@@ -236,7 +230,7 @@ async fn pair_gateway(
             // Persist to file store so provisioning works across app restarts.
             let store = FilePairingStore::new().map_err(|e| e.to_string())?;
             store
-                .save_artifacts_aead(&artifacts)
+                .save_artifacts(&artifacts)
                 .map_err(|e| e.to_string())?;
             *state.pairing_artifacts.lock().unwrap() = Some(Arc::new(artifacts));
             *state.phase.lock().unwrap() = "Complete".into();
@@ -272,7 +266,7 @@ async fn provision_node(
         let mut guard = state.pairing_artifacts.lock().unwrap();
         if guard.is_none() {
             let store = FilePairingStore::new().map_err(|e| e.to_string())?;
-            match store.load_artifacts_aead() {
+            match store.load_artifacts() {
                 Ok(Some(loaded)) => {
                     *guard = Some(Arc::new(loaded));
                 }
@@ -291,8 +285,7 @@ async fn provision_node(
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = BtleplugTransport::new().await?;
             let rng = OsRng;
-            phase2::provision_node_aead(&mut transport, &artifacts, &rng, &addr, &node_id, &[])
-                .await
+            phase2::provision_node(&mut transport, &artifacts, &rng, &addr, &node_id, &[]).await
         })
     })
     .await
@@ -317,7 +310,7 @@ fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus
     let mut paired = state.pairing_artifacts.lock().unwrap().is_some();
     if !paired {
         let store = FilePairingStore::new().map_err(|e| e.to_string())?;
-        match store.load_artifacts_aead() {
+        match store.load_artifacts() {
             Ok(Some(_)) => paired = true,
             Ok(None) => {}
             Err(e) => return Err(format!("failed to check pairing status: {e}")),
@@ -334,7 +327,7 @@ fn get_pairing_status(state: tauri::State<'_, AppState>) -> Result<PairingStatus
 fn clear_pairing(state: tauri::State<'_, AppState>) -> Result<(), String> {
     *state.pairing_artifacts.lock().unwrap() = None;
     let store = FilePairingStore::new().map_err(|e| e.to_string())?;
-    store.clear_aead().map_err(|e| e.to_string())?;
+    store.clear().map_err(|e| e.to_string())?;
     *state.phase.lock().unwrap() = "Idle".into();
     Ok(())
 }
@@ -439,14 +432,8 @@ async fn pair_gateway(
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = AndroidBleTransport::from_cached_vm()?;
             let rng = OsRng;
-            phase1::pair_with_gateway_aead(
-                &mut transport,
-                &rng,
-                &addr,
-                &phone_label,
-                Some(&progress),
-            )
-            .await
+            phase1::pair_with_gateway(&mut transport, &rng, &addr, &phone_label, Some(&progress))
+                .await
         })
     })
     .await
@@ -496,8 +483,7 @@ async fn provision_node(
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = AndroidBleTransport::from_cached_vm()?;
             let rng = OsRng;
-            phase2::provision_node_aead(&mut transport, &artifacts, &rng, &addr, &node_id, &[])
-                .await
+            phase2::provision_node(&mut transport, &artifacts, &rng, &addr, &node_id, &[]).await
         })
     })
     .await

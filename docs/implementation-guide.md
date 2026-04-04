@@ -30,7 +30,7 @@ sonde/
 │   │       ├── lib.rs
 │   │       ├── constants.rs      # msg_type codes, CBOR keys, frame sizes
 │   │       ├── header.rs         # FrameHeader (de)serialization
-│   │       ├── aead_codec.rs      # encode_frame_aead, decode_frame_aead, open_frame
+│   │       ├── aead_codec.rs      # encode_frame, decode_frame, open_frame
 │   │       ├── messages.rs       # NodeMessage, GatewayMessage enums
 │   │       ├── program_image.rs  # ProgramImage, MapDef, deterministic encoding
 │   │       ├── chunk.rs          # chunk_count, get_chunk
@@ -185,7 +185,7 @@ sonde-protocol  (no_std + alloc, no platform deps)
 | 1.2 | `error.rs` | `EncodeError`, `DecodeError` enums | Compile check |
 | 1.3 | `traits.rs` | `AeadProvider`, `Sha256Provider` traits | Compile check |
 | 1.4 | `header.rs` | `FrameHeader` with `to_bytes`/`from_bytes` | T-P001 to T-P004 |
-| 1.5 | `aead_codec.rs — `encode_frame_aead`, `decode_frame_aead`, `open_frame`` | T-P010 to T-P019 |
+| 1.5 | `aead_codec.rs — `encode_frame`, `decode_frame`, `open_frame`` | T-P010 to T-P019 |
 | 1.6 | `messages.rs` | `NodeMessage`, `GatewayMessage` with CBOR encode/decode | T-P020 to T-P032 |
 | 1.7 | `program_image.rs` | `ProgramImage`, `MapDef`, deterministic encoding, `program_hash` | T-P040 to T-P046 |
 | 1.8 | `chunk.rs` | `chunk_count`, `get_chunk` | T-P050 to T-P053 |

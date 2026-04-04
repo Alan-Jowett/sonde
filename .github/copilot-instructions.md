@@ -57,7 +57,7 @@ espflash write-bin -p PORT 0x0 ./firmware-modem/flash_image.bin  # flash modem
 
 Sonde is a programmable sensor node platform. Nodes run BPF programs distributed by a gateway over ESP-NOW radio. The workspace contains the following crates:
 
-- **`sonde-protocol`** — Shared `no_std` protocol crate. Frame codec, CBOR messages, program image format. Used by all other crates. No platform dependencies; all crypto is injected via `HmacProvider`/`Sha256Provider` traits.
+- **`sonde-protocol`** — Shared `no_std` protocol crate. Frame codec, CBOR messages, program image format. Used by all other crates. No platform dependencies; all crypto is injected via `AeadProvider`/`Sha256Provider` traits.
 - **`sonde-gateway`** — Async gateway service (tokio). Authenticates nodes, manages sessions, distributes BPF programs, routes app data to handler processes via stdin/stdout. Admin interface via local gRPC.
 - **`sonde-node`** — ESP32-C3/S3 firmware (Rust + ESP-IDF). Cyclic state machine: wake → WAKE/COMMAND → BPF execution → sleep. BPF interpreter behind a `BpfInterpreter` trait.
 - **`sonde-modem`** — ESP32-S3 USB-CDC modem firmware. Bridges ESP-NOW radio and BLE GATT to the gateway over serial. Hosts the Gateway Pairing Service for BLE-based node provisioning.
@@ -72,10 +72,10 @@ The implementation order is: protocol → gateway → node → admin. See `docs/
 
 - **SPDX headers** on all `.rs` files: `// SPDX-License-Identifier: MIT` + `// Copyright (c) 2026 sonde contributors`
 - **Use backticks** (not backslash-escaped quotes) to wrap identifiers in PR descriptions and commit messages.
-- **Protocol wire format** uses a fixed 11-byte binary header (`key_hint` 2B BE + `msg_type` 1B + `nonce` 8B BE) + CBOR payload + 32-byte HMAC-SHA256. The `nonce` field carries a random nonce for WAKE, and a gateway-assigned sequence number for all post-WAKE messages.
+- **Protocol wire format** uses a fixed 11-byte binary header (`key_hint` 2B BE + `msg_type` 1B + `nonce` 8B BE) + AES-256-GCM ciphertext + 16-byte GCM tag. The 11-byte header is used as AAD. The `nonce` field carries a random nonce for WAKE, and a gateway-assigned sequence number for all post-WAKE messages.
 - **CBOR maps use integer keys** (not strings) for compactness. Protocol message keys and program image keys are separate keyspaces — both start at 1 but are unrelated.
 - **Program images** are CBOR-encoded (bytecode + map definitions), not raw ELF. The gateway extracts from ELF at ingestion time. `program_hash` = SHA-256 of the CBOR image. Deterministic CBOR encoding (RFC 8949 §4.2) is required.
-- **Platform-specific behavior** is always injected via traits (`HmacProvider`, `Sha256Provider`, `Transport`, `Storage`, `BpfInterpreter`), never hard-coded.
+- **Platform-specific behavior** is always injected via traits (`AeadProvider`, `Sha256Provider`, `Transport`, `Storage`, `BpfInterpreter`), never hard-coded.
 - **Error handling on the radio protocol** is silent discard — no error responses are ever sent. This is a security design decision.
 
 ## Code quality guidelines

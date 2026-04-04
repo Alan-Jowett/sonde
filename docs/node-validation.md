@@ -1840,9 +1840,9 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N207 | `test_unknown_command_treated_as_nop` | wake_cycle.rs |
 | T-N208 | `test_set_next_wake_shorter`, `test_set_next_wake_equal` *(partial — unit tests cover SleepManager clamping logic; the full e2e set_next_wake → base-interval-restore cycle is not yet tested)* | sleep.rs |
 | T-N209 | `test_set_next_wake_longer_clamped` | sleep.rs |
-| T-N300 | `test_outbound_frame_format`, `t_e2e_002_hmac_round_trip` | wake_cycle.rs, e2e_tests.rs |
-| T-N301 | `test_invalid_hmac_discarded`, `t_e2e_003_wrong_psk_rejected`, `t_e2e_040_unknown_node`, `t_e2e_053_bridged_wrong_psk` | wake_cycle.rs, e2e_tests.rs |
-| T-N302 | `test_outbound_frame_format`, `t_e2e_002_hmac_round_trip` | wake_cycle.rs, e2e_tests.rs |
+| T-N300 | `wake_command_exchange_aead_round_trip`, `t_e2e_050_aead_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
+| T-N301 | `t_e2e_052_aead_wrong_psk_rejected`, `t_e2e_053_aead_tampered_frame_discarded` | aead_e2e_tests.rs |
+| T-N302 | `wake_command_exchange_aead_round_trip`, `t_e2e_050_aead_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
 | T-N303 | `test_wrong_nonce_discarded`, `test_send_recv_app_data_wrong_nonce` | wake_cycle.rs |
 | T-N304 | `test_wrong_seq_on_chunk_discarded` | wake_cycle.rs |
 | T-N305 | `test_sequence_increment_correctness`, `t_e2e_041_sequence_numbers` | wake_cycle.rs, e2e_tests.rs |
@@ -1910,7 +1910,7 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N927 | `t_n927_rng_health_check_failure_aborts` | wake_cycle.rs |
 | T-N929 | `t_n929_write_to_read_only_context_silently_ignored` | sonde_bpf_adapter.rs |
 | T-N940 | `t_n940_payload_len_exceeds_remaining_data`, `t_n940_payload_len_max_u16_rejected` | ble_pairing.rs |
-| T-N941 | `t_n941_exchange_peer_ack_corrupted_hmac_discarded`, `peer_ack_tampered_hmac` | peer_request.rs |
+| T-N941 | `verify_peer_ack_aead_valid`, `verify_peer_ack_aead_wrong_nonce`, `verify_peer_ack_aead_wrong_key` | peer_request.rs |
 | T-N1016 | *(hardware — validated on target: GPIO state after sleep preparation)* | — |
 
 > **Note:** Spec cases marked *(hardware — validated on target)* require the

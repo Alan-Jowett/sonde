@@ -436,7 +436,6 @@ fn send_program_ack<T: Transport, A: AeadProvider, S: Sha256Provider>(
     Ok(())
 }
 
-///
 fn verify_and_decode_chunk<A: AeadProvider, S: Sha256Provider>(
     raw: &[u8],
     identity: &NodeIdentity,
@@ -475,7 +474,6 @@ fn verify_and_decode_chunk<A: AeadProvider, S: Sha256Provider>(
     }
 }
 
-///
 #[allow(clippy::too_many_arguments)]
 fn get_chunk_with_retry<T: Transport, A: AeadProvider, S: Sha256Provider>(
     transport: &mut T,

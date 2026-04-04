@@ -160,11 +160,11 @@ fn with_ctx<R>(f: impl FnOnce(&mut DispatchContext) -> R) -> Option<R> {
 /// # Safety
 ///
 /// All pointers must remain valid until [`clear`] is called.
-/// The caller (`run_wake_cycle_aead`) guarantees this by holding
+/// The caller (`run_wake_cycle`) guarantees this by holding
 /// ownership of every referenced object on its stack.
 /// `aead` and `sha` must also remain valid.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn install_aead(
+pub unsafe fn install(
     hal: *mut dyn Hal,
     transport: *mut dyn Transport,
     map_storage: *mut MapStorage,
@@ -455,7 +455,7 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     let result = with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
-        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
             return (-1i64) as u64;
         }
 
@@ -468,7 +468,7 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
             let (aead_ptr, sha_ptr) = ctx.aead;
             let aead = &*aead_ptr;
             let sha = &*sha_ptr;
-            match crate::wake_cycle::send_app_data_aead(transport, identity, seq, blob, aead, sha) {
+            match crate::wake_cycle::send_app_data(transport, identity, seq, blob, aead, sha) {
                 Ok(()) => 0,
                 Err(_) => (-1i64) as u64,
             }
@@ -489,7 +489,7 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
         let reply_ptr = r3 as *mut u8;
         let reply_cap = r4 as usize;
         if blob_ptr.is_null()
-            || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD
+            || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE
             || reply_ptr.is_null()
             || reply_cap == 0
         {
@@ -512,7 +512,7 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
             let (aead_ptr, sha_ptr) = ctx.aead;
             let aead = &*aead_ptr;
             let sha = &*sha_ptr;
-            let send_result = crate::wake_cycle::send_recv_app_data_aead(
+            let send_result = crate::wake_cycle::send_recv_app_data(
                 transport, identity, seq, blob, timeout_ms, clock, aead, sha,
             );
 
@@ -853,7 +853,7 @@ mod tests {
         let aead = crate::node_aead::NodeAead;
         let sha = crate::crypto::SoftwareSha256;
         unsafe {
-            install_aead(
+            install(
                 hal as *mut TestHal as *mut dyn Hal,
                 transport as *mut TestTransport as *mut dyn Transport,
                 map_storage as *mut MapStorage,
@@ -1226,7 +1226,7 @@ mod tests {
         let aead = crate::node_aead::NodeAead;
         let sha = crate::crypto::SoftwareSha256;
         unsafe {
-            install_aead(
+            install(
                 &mut hal as *mut TestHal as *mut dyn Hal,
                 &mut transport as *mut TestTransport as *mut dyn Transport,
                 &mut maps as *mut MapStorage,
@@ -1310,7 +1310,7 @@ mod tests {
         let aead = crate::node_aead::NodeAead;
         let sha_prov = crate::crypto::SoftwareSha256;
         unsafe {
-            install_aead(
+            install(
                 &mut hal as *mut TestHal as *mut dyn Hal,
                 &mut transport as *mut TestTransport as *mut dyn Transport,
                 &mut maps as *mut MapStorage,
@@ -1458,7 +1458,7 @@ mod tests {
     #[test]
     fn test_helper_send() {
         // T-N604: send() produces an APP_DATA frame on the transport.
-        use sonde_protocol::{decode_frame_aead, open_frame};
+        use sonde_protocol::{decode_frame, open_frame};
 
         let mut hal = TestHal::new();
         let mut transport = TestTransport::new();
@@ -1493,7 +1493,7 @@ mod tests {
         assert_eq!(transport.outbound.len(), 1);
 
         // Decode and verify it's a valid AEAD APP_DATA frame
-        let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+        let decoded = decode_frame(&transport.outbound[0]).unwrap();
         assert_eq!(decoded.header.msg_type, MSG_APP_DATA);
         let plaintext =
             open_frame(&decoded, &identity.psk, &aead, &sha).expect("AEAD decrypt should succeed");
@@ -1507,7 +1507,7 @@ mod tests {
     #[test]
     fn test_helper_send_recv() {
         // T-N605: send_recv sends APP_DATA and receives APP_DATA_REPLY.
-        use sonde_protocol::{encode_frame_aead, FrameHeader, GatewayMessage, MSG_APP_DATA_REPLY};
+        use sonde_protocol::{encode_frame, FrameHeader, GatewayMessage, MSG_APP_DATA_REPLY};
 
         let mut hal = TestHal::new();
         let mut transport = TestTransport::new();
@@ -1527,7 +1527,7 @@ mod tests {
             nonce: 100, // must match the seq we'll send with
         };
         let reply_frame =
-            encode_frame_aead(&reply_header, &reply_cbor, &identity.psk, &aead, &sha).unwrap();
+            encode_frame(&reply_header, &reply_cbor, &identity.psk, &aead, &sha).unwrap();
         transport.inbound.push_back(Some(reply_frame));
 
         let mut maps = MapStorage::new(4096);
@@ -2223,159 +2223,5 @@ mod tests {
             "non-I/O helpers must not emit DEBUG 'bpf helper' logs, got: {:?}",
             records
         );
-    }
-
-    // -- AEAD-path tests ------------------------------------
-
-    #[allow(clippy::too_many_arguments)]
-    fn with_test_context_aead<F, R>(
-        hal: &mut TestHal,
-        transport: &mut TestTransport,
-        map_storage: &mut MapStorage,
-        sleep_mgr: &mut SleepManager,
-        clock: &TestClock,
-        identity: &NodeIdentity,
-        seq: &mut u64,
-        program_class: ProgramClass,
-        trace_log: &mut Vec<String>,
-        aead: &(dyn sonde_protocol::AeadProvider + 'static),
-        sha: &(dyn sonde_protocol::Sha256Provider + 'static),
-        f: F,
-    ) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        unsafe {
-            install_aead(
-                hal as *mut TestHal as *mut dyn Hal,
-                transport as *mut TestTransport as *mut dyn Transport,
-                map_storage as *mut MapStorage,
-                sleep_mgr as *mut SleepManager,
-                clock as *const TestClock as *const dyn Clock,
-                identity as *const NodeIdentity,
-                seq as *mut u64,
-                program_class,
-                trace_log as *mut Vec<String>,
-                1_710_000_000_000,
-                100,
-                3300,
-                aead,
-                sha,
-            );
-        }
-        let _guard = DispatchGuard;
-        f()
-    }
-
-    #[test]
-    fn test_helper_send_aead() {
-        use sonde_protocol::{decode_frame_aead, open_frame};
-
-        let mut hal = TestHal::new();
-        let mut transport = TestTransport::new();
-        let mut maps = MapStorage::new(4096);
-        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
-        let clock = TestClock(0);
-        let identity = default_identity();
-        let mut seq = 100u64;
-        let mut trace = Vec::new();
-        let blob: Vec<u8> = vec![0xAA, 0xBB];
-
-        let aead = crate::node_aead::NodeAead;
-        let sha = crate::crypto::SoftwareSha256;
-
-        with_test_context_aead(
-            &mut hal,
-            &mut transport,
-            &mut maps,
-            &mut sleep,
-            &clock,
-            &identity,
-            &mut seq,
-            ProgramClass::Resident,
-            &mut trace,
-            &aead,
-            &sha,
-            || {
-                let result = helper_send(blob.as_ptr() as u64, blob.len() as u64, 0, 0, 0);
-                assert_eq!(result, 0, "helper_send should succeed");
-            },
-        );
-
-        assert_eq!(seq, 101, "sequence should advance");
-        assert_eq!(transport.outbound.len(), 1);
-
-        // Verify the frame is AEAD-authenticated (not HMAC)
-        let frame = &transport.outbound[0];
-        let decoded = decode_frame_aead(frame).expect("should be valid AEAD frame");
-        assert_eq!(decoded.header.msg_type, MSG_APP_DATA);
-        let plaintext =
-            open_frame(&decoded, &identity.psk, &aead, &sha).expect("AEAD decrypt should succeed");
-        let msg = NodeMessage::decode(MSG_APP_DATA, &plaintext).unwrap();
-        match msg {
-            NodeMessage::AppData { blob: received } => assert_eq!(received, vec![0xAA, 0xBB]),
-            _ => panic!("expected AppData"),
-        }
-    }
-
-    #[test]
-    fn test_helper_send_recv_aead() {
-        use sonde_protocol::{encode_frame_aead, FrameHeader, GatewayMessage, MSG_APP_DATA_REPLY};
-
-        let mut hal = TestHal::new();
-        let mut transport = TestTransport::new();
-        let mut maps = MapStorage::new(4096);
-        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
-        let clock = TestClock(0);
-        let identity = default_identity();
-        let mut seq = 100u64;
-        let mut trace = Vec::new();
-
-        let aead = crate::node_aead::NodeAead;
-        let sha = crate::crypto::SoftwareSha256;
-
-        // Pre-queue an AEAD APP_DATA_REPLY for the transport to return.
-        let reply_msg = GatewayMessage::AppDataReply {
-            blob: vec![0xCC, 0xDD],
-        };
-        let reply_cbor = reply_msg.encode().unwrap();
-        let reply_header = FrameHeader {
-            key_hint: identity.key_hint,
-            msg_type: MSG_APP_DATA_REPLY,
-            nonce: 100, // must match the seq used for the outbound APP_DATA
-        };
-        let reply_frame =
-            encode_frame_aead(&reply_header, &reply_cbor, &identity.psk, &aead, &sha).unwrap();
-        transport.inbound.push_back(Some(reply_frame));
-
-        let blob: Vec<u8> = vec![0xAA, 0xBB];
-        let mut reply_buf = [0u8; 64];
-
-        with_test_context_aead(
-            &mut hal,
-            &mut transport,
-            &mut maps,
-            &mut sleep,
-            &clock,
-            &identity,
-            &mut seq,
-            ProgramClass::Resident,
-            &mut trace,
-            &aead,
-            &sha,
-            || {
-                let result = helper_send_recv(
-                    blob.as_ptr() as u64,
-                    blob.len() as u64,
-                    reply_buf.as_mut_ptr() as u64,
-                    reply_buf.len() as u64,
-                    1000,
-                );
-                assert_eq!(result, 2, "should return 2 bytes of reply");
-            },
-        );
-
-        assert_eq!(seq, 101);
-        assert_eq!(&reply_buf[..2], &[0xCC, 0xDD]);
     }
 }

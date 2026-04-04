@@ -16,9 +16,7 @@ pub mod modem;
 pub mod program_image;
 pub mod traits;
 
-pub use aead_codec::{
-    build_gcm_nonce, decode_frame_aead, encode_frame_aead, open_frame, DecodedFrameAead,
-};
+pub use aead_codec::{build_gcm_nonce, decode_frame, encode_frame, open_frame, DecodedFrame};
 pub use ble_envelope::{encode_ble_envelope, parse_ble_envelope};
 pub use chunk::{chunk_count, get_chunk};
 pub use constants::*;

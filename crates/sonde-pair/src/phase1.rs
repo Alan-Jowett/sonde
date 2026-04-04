@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 
 /// Callback for reporting Phase 1 sub-phase progress (PT-0701).
 ///
-/// ## AEAD flow (`pair_with_gateway_aead`)
+/// ## AEAD flow (`pair_with_gateway`)
 ///
 /// Transitions through these sub-phases in order:
 /// - `"Connecting"` — BLE connection and MTU negotiation
@@ -34,13 +34,13 @@ pub trait PairingProgress: Send + Sync {
 /// REGISTER_PHONE body: `phone_psk(32) ‖ label_len(1) ‖ label(0–64)`
 ///
 /// PHONE_REGISTERED body: `status(1) ‖ rf_channel(1) ‖ phone_key_hint(2 BE)`
-pub async fn pair_with_gateway_aead(
+pub async fn pair_with_gateway(
     transport: &mut dyn BleTransport,
     rng: &dyn RngProvider,
     device_address: &[u8; 6],
     phone_label: &str,
     progress: Option<&dyn PairingProgress>,
-) -> Result<PairingArtifactsAead, PairingError> {
+) -> Result<PairingArtifacts, PairingError> {
     if phone_label.len() > 64 {
         return Err(PairingError::InvalidPhoneLabel(format!(
             "phone label must be at most 64 bytes, got {}",
@@ -65,19 +65,19 @@ pub async fn pair_with_gateway_aead(
 
     enforce_lesc(transport).await?;
 
-    let result = do_pair_with_gateway_aead(transport, rng, phone_label, progress).await;
+    let result = do_pair_with_gateway(transport, rng, phone_label, progress).await;
 
     transport.disconnect().await.ok();
     result
 }
 
 /// Inner implementation for the AEAD Phase 1 flow.
-async fn do_pair_with_gateway_aead(
+async fn do_pair_with_gateway(
     transport: &mut dyn BleTransport,
     rng: &dyn RngProvider,
     phone_label: &str,
     progress: Option<&dyn PairingProgress>,
-) -> Result<PairingArtifactsAead, PairingError> {
+) -> Result<PairingArtifacts, PairingError> {
     // Step 2: Generate phone PSK
     if let Some(cb) = progress {
         cb.on_phase("Registering");
@@ -170,7 +170,7 @@ async fn do_pair_with_gateway_aead(
         return Err(PairingError::InvalidKeyHint);
     }
 
-    let artifacts = PairingArtifactsAead {
+    let artifacts = PairingArtifacts {
         phone_psk,
         phone_key_hint,
         rf_channel,
@@ -189,16 +189,16 @@ async fn do_pair_with_gateway_aead(
 ///
 /// Gateway authority derives solely from possession of the phone PSK.
 #[derive(Clone)]
-pub struct PairingArtifactsAead {
+pub struct PairingArtifacts {
     pub phone_psk: Zeroizing<[u8; 32]>,
     pub phone_key_hint: u16,
     pub rf_channel: u8,
     pub phone_label: String,
 }
 
-impl std::fmt::Debug for PairingArtifactsAead {
+impl std::fmt::Debug for PairingArtifacts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PairingArtifactsAead")
+        f.debug_struct("PairingArtifacts")
             .field("phone_key_hint", &self.phone_key_hint)
             .field("rf_channel", &self.rf_channel)
             .field("phone_label", &self.phone_label)
@@ -218,7 +218,7 @@ mod aead_phase1_tests {
     /// Build a mock PHONE_REGISTERED (AEAD) response.
     ///
     /// Wire format: `status(1) ‖ rf_channel(1) ‖ phone_key_hint(2 BE)`
-    fn build_phone_registered_aead(status: u8, rf_channel: u8, phone_psk: &[u8; 32]) -> Vec<u8> {
+    fn build_phone_registered(status: u8, rf_channel: u8, phone_psk: &[u8; 32]) -> Vec<u8> {
         let phone_key_hint = compute_key_hint(phone_psk);
         let mut body = Vec::with_capacity(4);
         body.push(status);
@@ -241,17 +241,12 @@ mod aead_phase1_tests {
             let rf_channel = 6u8;
 
             let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(build_phone_registered_aead(
-                0x00,
-                rf_channel,
-                &predicted_psk,
-            )));
+            transport.queue_response(Ok(build_phone_registered(0x00, rf_channel, &predicted_psk)));
 
             let device_addr = [0xAA; 6];
 
             let result =
-                pair_with_gateway_aead(&mut transport, &rng, &device_addr, "test-phone", None)
-                    .await;
+                pair_with_gateway(&mut transport, &rng, &device_addr, "test-phone", None).await;
             let artifacts = result.unwrap();
 
             assert_eq!(*artifacts.phone_psk, predicted_psk);
@@ -273,7 +268,7 @@ mod aead_phase1_tests {
             let mut transport = MockBleTransport::new(247);
             transport.queue_response(Ok(build_envelope(MSG_ERROR, &[0x02]).unwrap()));
 
-            let result = pair_with_gateway_aead(&mut transport, &rng, &[0xAA; 6], "", None).await;
+            let result = pair_with_gateway(&mut transport, &rng, &[0xAA; 6], "", None).await;
             assert!(matches!(
                 result,
                 Err(PairingError::RegistrationWindowClosed)
@@ -295,9 +290,9 @@ mod aead_phase1_tests {
             let label = "my-phone";
 
             let mut transport = MockBleTransport::new(247);
-            transport.queue_response(Ok(build_phone_registered_aead(0x00, 6, &predicted_psk)));
+            transport.queue_response(Ok(build_phone_registered(0x00, 6, &predicted_psk)));
 
-            pair_with_gateway_aead(&mut transport, &rng, &[0xAA; 6], label, None)
+            pair_with_gateway(&mut transport, &rng, &[0xAA; 6], label, None)
                 .await
                 .unwrap();
 
@@ -315,10 +310,10 @@ mod aead_phase1_tests {
         });
     }
 
-    /// AEAD Phase 1: `PairingArtifactsAead` Debug redacts PSK.
+    /// AEAD Phase 1: `PairingArtifacts` Debug redacts PSK.
     #[test]
     fn aead_artifacts_debug_redacts_psk() {
-        let artifacts = PairingArtifactsAead {
+        let artifacts = PairingArtifacts {
             phone_psk: Zeroizing::new([0x42u8; 32]),
             phone_key_hint: 0x1234,
             rf_channel: 6,

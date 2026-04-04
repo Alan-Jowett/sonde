@@ -18,7 +18,7 @@ use crate::error::{NodeError, NodeResult};
 use crate::hal::{BatteryReader, Hal};
 use crate::key_store::NodeIdentity;
 use crate::map_storage::MapStorage;
-use crate::peer_request::peer_request_exchange_aead;
+use crate::peer_request::peer_request_exchange;
 use crate::program_store::{LoadedProgram, ProgramStore};
 use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
@@ -151,30 +151,30 @@ fn decode_command_as_nop(payload: &[u8]) -> NodeResult<(u64, u64, CommandPayload
     Ok((starting_seq, timestamp_ms, CommandPayload::Nop))
 }
 
-use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame, AeadProvider};
+use sonde_protocol::{decode_frame, encode_frame, open_frame, AeadProvider};
 
 /// Decode and authenticate a raw frame using AES-256-GCM.
 ///
 /// Returns `(header, plaintext_payload)` on success.
-fn decode_verify_frame_aead<A: AeadProvider + ?Sized, S: Sha256Provider + ?Sized>(
+fn decode_verify_frame<A: AeadProvider + ?Sized, S: Sha256Provider + ?Sized>(
     raw: &[u8],
     psk: &[u8; 32],
     aead: &A,
     sha: &S,
 ) -> NodeResult<(FrameHeader, Vec<u8>)> {
     let decoded =
-        decode_frame_aead(raw).map_err(|_| NodeError::MalformedPayload("frame decode failed"))?;
+        decode_frame(raw).map_err(|_| NodeError::MalformedPayload("frame decode failed"))?;
     let header = decoded.header.clone();
     let payload = open_frame(&decoded, psk, aead, sha).map_err(|_| NodeError::AuthFailure)?;
     Ok((header, payload))
 }
 
-/// AES-GCM variant of [`wake_command_exchange`].
+/// Authenticate and decode WAKE → COMMAND exchange.
 ///
 /// Encodes the WAKE frame with AES-256-GCM and decodes the COMMAND
 /// response using AEAD authentication instead of HMAC-SHA256.
 #[allow(clippy::too_many_arguments)]
-pub fn wake_command_exchange_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+pub fn wake_command_exchange<T: Transport, A: AeadProvider, S: Sha256Provider>(
     transport: &mut T,
     identity: &NodeIdentity,
     wake_nonce: u64,
@@ -199,7 +199,7 @@ pub fn wake_command_exchange_aead<T: Transport, A: AeadProvider, S: Sha256Provid
         nonce: wake_nonce,
     };
 
-    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, aead, sha)
         .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
 
     for attempt in 0..=WAKE_MAX_RETRIES {
@@ -217,8 +217,7 @@ pub fn wake_command_exchange_aead<T: Transport, A: AeadProvider, S: Sha256Provid
 
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
             Some(raw_response) => {
-                match verify_and_decode_command_aead(&raw_response, identity, wake_nonce, aead, sha)
-                {
+                match verify_and_decode_command(&raw_response, identity, wake_nonce, aead, sha) {
                     Ok(result) => return Ok(result),
                     Err(e) => {
                         log::warn!("COMMAND verification failed: {} (ND-1009)", e);
@@ -233,15 +232,15 @@ pub fn wake_command_exchange_aead<T: Transport, A: AeadProvider, S: Sha256Provid
     Err(NodeError::WakeRetriesExhausted)
 }
 
-/// AES-GCM variant of [`verify_and_decode_command`].
-fn verify_and_decode_command_aead<A: AeadProvider, S: Sha256Provider>(
+/// Verify and decode a COMMAND frame.
+fn verify_and_decode_command<A: AeadProvider, S: Sha256Provider>(
     raw: &[u8],
     identity: &NodeIdentity,
     expected_nonce: u64,
     aead: &A,
     sha: &S,
 ) -> NodeResult<(u64, u64, CommandPayload)> {
-    let (header, payload) = decode_verify_frame_aead(raw, &identity.psk, aead, sha)?;
+    let (header, payload) = decode_verify_frame(raw, &identity.psk, aead, sha)?;
 
     if header.msg_type != MSG_COMMAND {
         return Err(NodeError::UnexpectedMsgType(header.msg_type));
@@ -269,8 +268,8 @@ fn verify_and_decode_command_aead<A: AeadProvider, S: Sha256Provider>(
     }
 }
 
-/// AES-GCM variant of [`send_app_data`].
-pub fn send_app_data_aead<
+/// Send APP_DATA frame.
+pub fn send_app_data<
     T: Transport + ?Sized,
     A: AeadProvider + ?Sized,
     S: Sha256Provider + ?Sized,
@@ -282,7 +281,7 @@ pub fn send_app_data_aead<
     aead: &A,
     sha: &S,
 ) -> NodeResult<()> {
-    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
         return Err(NodeError::MalformedPayload(
             "APP_DATA blob exceeds frame payload budget",
         ));
@@ -297,7 +296,7 @@ pub fn send_app_data_aead<
         .encode()
         .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed"))?;
 
-    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
         return Err(NodeError::MalformedPayload(
             "APP_DATA payload exceeds frame payload budget",
         ));
@@ -309,7 +308,7 @@ pub fn send_app_data_aead<
         nonce: seq,
     };
 
-    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, aead, sha)
         .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
 
     transport.send(&frame)?;
@@ -317,9 +316,9 @@ pub fn send_app_data_aead<
     Ok(())
 }
 
-/// AES-GCM variant of [`send_recv_app_data`].
+/// Send APP_DATA and wait for reply.
 #[allow(clippy::too_many_arguments)]
-pub fn send_recv_app_data_aead<
+pub fn send_recv_app_data<
     T: Transport + ?Sized,
     C: Clock + ?Sized,
     A: AeadProvider + ?Sized,
@@ -334,7 +333,7 @@ pub fn send_recv_app_data_aead<
     aead: &A,
     sha: &S,
 ) -> NodeResult<Vec<u8>> {
-    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+    if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
         return Err(NodeError::MalformedPayload(
             "APP_DATA blob exceeds frame payload budget",
         ));
@@ -349,7 +348,7 @@ pub fn send_recv_app_data_aead<
         .encode()
         .map_err(|_| NodeError::MalformedPayload("APP_DATA message encode failed"))?;
 
-    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
+    if payload_cbor.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
         return Err(NodeError::MalformedPayload(
             "APP_DATA payload exceeds frame payload budget",
         ));
@@ -361,7 +360,7 @@ pub fn send_recv_app_data_aead<
         nonce: seq,
     };
 
-    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, aead, sha)
         .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
 
     transport.send(&frame)?;
@@ -377,7 +376,7 @@ pub fn send_recv_app_data_aead<
         match transport.recv(remaining)? {
             Some(raw_response) => {
                 let (hdr, payload) =
-                    match decode_verify_frame_aead(&raw_response, &identity.psk, aead, sha) {
+                    match decode_verify_frame(&raw_response, &identity.psk, aead, sha) {
                         Ok(result) => result,
                         Err(_) => continue,
                     };
@@ -405,8 +404,8 @@ pub fn send_recv_app_data_aead<
     }
 }
 
-/// AES-GCM variant of [`send_program_ack`].
-fn send_program_ack_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+/// Send PROGRAM_ACK frame.
+fn send_program_ack<T: Transport, A: AeadProvider, S: Sha256Provider>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
@@ -429,7 +428,7 @@ fn send_program_ack_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
         nonce: seq,
     };
 
-    let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+    let frame = encode_frame(&header, &payload_cbor, &identity.psk, aead, sha)
         .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
 
     transport.send(&frame)?;
@@ -437,8 +436,8 @@ fn send_program_ack_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
     Ok(())
 }
 
-/// AES-GCM variant of [`verify_and_decode_chunk`].
-fn verify_and_decode_chunk_aead<A: AeadProvider, S: Sha256Provider>(
+///
+fn verify_and_decode_chunk<A: AeadProvider, S: Sha256Provider>(
     raw: &[u8],
     identity: &NodeIdentity,
     expected_seq: u64,
@@ -446,7 +445,7 @@ fn verify_and_decode_chunk_aead<A: AeadProvider, S: Sha256Provider>(
     aead: &A,
     sha: &S,
 ) -> NodeResult<Vec<u8>> {
-    let (header, payload) = decode_verify_frame_aead(raw, &identity.psk, aead, sha)?;
+    let (header, payload) = decode_verify_frame(raw, &identity.psk, aead, sha)?;
 
     if header.msg_type != MSG_CHUNK {
         return Err(NodeError::UnexpectedMsgType(header.msg_type));
@@ -476,9 +475,9 @@ fn verify_and_decode_chunk_aead<A: AeadProvider, S: Sha256Provider>(
     }
 }
 
-/// AES-GCM variant of [`get_chunk_with_retry`].
+///
 #[allow(clippy::too_many_arguments)]
-fn get_chunk_with_retry_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+fn get_chunk_with_retry<T: Transport, A: AeadProvider, S: Sha256Provider>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
@@ -505,7 +504,7 @@ fn get_chunk_with_retry_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
             nonce: attempt_seq,
         };
 
-        let frame = encode_frame_aead(&header, &payload_cbor, &identity.psk, aead, sha)
+        let frame = encode_frame(&header, &payload_cbor, &identity.psk, aead, sha)
             .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
 
         transport.send(&frame)?;
@@ -518,7 +517,7 @@ fn get_chunk_with_retry_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
 
         match transport.recv(RESPONSE_TIMEOUT_MS)? {
             Some(raw_response) => {
-                match verify_and_decode_chunk_aead(
+                match verify_and_decode_chunk(
                     &raw_response,
                     identity,
                     attempt_seq,
@@ -544,9 +543,9 @@ fn get_chunk_with_retry_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
     Err(NodeError::ChunkTransferFailed { chunk_index })
 }
 
-/// AES-GCM variant of [`chunked_transfer`].
+/// Chunked program transfer.
 #[allow(clippy::too_many_arguments)]
-pub fn chunked_transfer_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
+pub fn chunked_transfer<T: Transport, A: AeadProvider, S: Sha256Provider>(
     transport: &mut T,
     identity: &NodeIdentity,
     current_seq: &mut u64,
@@ -582,7 +581,7 @@ pub fn chunked_transfer_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
 
     for ci in 0..chunk_count {
         let chunk_data =
-            get_chunk_with_retry_aead(transport, identity, current_seq, ci, clock, aead, sha)?;
+            get_chunk_with_retry(transport, identity, current_seq, ci, clock, aead, sha)?;
 
         if chunk_data.len() > chunk_size_usize {
             return Err(NodeError::MalformedPayload(
@@ -615,7 +614,7 @@ pub fn chunked_transfer_aead<T: Transport, A: AeadProvider, S: Sha256Provider>(
 /// `send()` / `send_recv()` helpers also produce AEAD-authenticated
 /// APP_DATA frames.
 #[allow(clippy::too_many_arguments)]
-pub fn run_wake_cycle_aead<T, S, I, A, H>(
+pub fn run_wake_cycle<T, S, I, A, H>(
     transport: &mut T,
     storage: &mut S,
     hal: &mut (dyn Hal + 'static),
@@ -673,7 +672,7 @@ where
     // phone — the node transmits it verbatim.
     if !storage.read_reg_complete() {
         if let Some(encrypted_payload) = storage.read_peer_payload() {
-            match peer_request_exchange_aead(
+            match peer_request_exchange(
                 transport,
                 storage,
                 &identity,
@@ -711,7 +710,7 @@ where
     let battery_mv = battery.battery_mv();
 
     // 6. Send WAKE, await COMMAND (with retries) via AEAD
-    let command_result = wake_command_exchange_aead(
+    let command_result = wake_command_exchange(
         transport,
         &identity,
         wake_nonce,
@@ -813,7 +812,7 @@ where
             };
 
             // Chunked transfer via AEAD
-            let transfer_result = chunked_transfer_aead(
+            let transfer_result = chunked_transfer(
                 transport,
                 &identity,
                 &mut current_seq,
@@ -845,7 +844,7 @@ where
                     match install_result {
                         Ok(program) => {
                             // PROGRAM_ACK via AEAD
-                            if send_program_ack_aead(
+                            if send_program_ack(
                                 transport,
                                 &identity,
                                 &mut current_seq,
@@ -925,7 +924,7 @@ where
         // SAFETY: all referenced objects are alive on this stack frame
         // and will not be moved until `_guard` is dropped below.
         unsafe {
-            crate::bpf_dispatch::install_aead(
+            crate::bpf_dispatch::install(
                 hal as *mut dyn crate::hal::Hal,
                 transport as *mut T as *mut dyn crate::traits::Transport,
                 map_storage as *mut MapStorage,
@@ -1278,14 +1277,14 @@ mod tests {
     mod aead_tests {
         use super::*;
         use crate::node_aead::NodeAead;
-        use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame};
+        use sonde_protocol::{decode_frame, encode_frame, open_frame};
 
         /// Encode a COMMAND response using AES-GCM for test fixtures.
-        fn make_command_aead(psk: &[u8; 32], nonce: u64, payload: &CommandPayload) -> Vec<u8> {
-            make_command_aead_with_seq(psk, nonce, 1, 1000, payload)
+        fn make_command(psk: &[u8; 32], nonce: u64, payload: &CommandPayload) -> Vec<u8> {
+            make_command_with_seq(psk, nonce, 1, 1000, payload)
         }
 
-        fn make_command_aead_with_seq(
+        fn make_command_with_seq(
             psk: &[u8; 32],
             nonce: u64,
             starting_seq: u64,
@@ -1305,11 +1304,11 @@ mod tests {
                 msg_type: MSG_COMMAND,
                 nonce,
             };
-            encode_frame_aead(&header, &payload_cbor, psk, &aead, &sha).unwrap()
+            encode_frame(&header, &payload_cbor, psk, &aead, &sha).unwrap()
         }
 
         #[test]
-        fn wake_command_exchange_aead_round_trip() {
+        fn wake_command_exchange_round_trip() {
             let psk = [0x42u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1318,10 +1317,10 @@ mod tests {
             let clock = MockClock;
             let mut transport = MockTransport::new();
 
-            let command_frame = make_command_aead(&psk, 42, &CommandPayload::Nop);
+            let command_frame = make_command(&psk, 42, &CommandPayload::Nop);
             transport.queue_response(Some(command_frame));
 
-            let result = wake_command_exchange_aead(
+            let result = wake_command_exchange(
                 &mut transport,
                 &identity,
                 42,
@@ -1340,14 +1339,14 @@ mod tests {
 
             // Verify outbound WAKE frame is AEAD-encoded
             assert_eq!(transport.outbound.len(), 1);
-            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            let decoded = decode_frame(&transport.outbound[0]).unwrap();
             assert_eq!(decoded.header.msg_type, MSG_WAKE);
             let wake_payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
             assert!(!wake_payload.is_empty());
         }
 
         #[test]
-        fn send_app_data_aead_round_trip() {
+        fn send_app_data_round_trip() {
             let psk = [0x42u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1357,21 +1356,21 @@ mod tests {
             let mut seq = 0u64;
 
             let blob = b"hello";
-            let result = send_app_data_aead(&mut transport, &identity, &mut seq, blob, &aead, &sha);
+            let result = send_app_data(&mut transport, &identity, &mut seq, blob, &aead, &sha);
 
             assert!(result.is_ok());
             assert_eq!(seq, 1);
             assert_eq!(transport.outbound.len(), 1);
 
             // Verify the outbound frame decrypts correctly
-            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            let decoded = decode_frame(&transport.outbound[0]).unwrap();
             assert_eq!(decoded.header.msg_type, MSG_APP_DATA);
             let payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
             assert!(!payload.is_empty());
         }
 
         #[test]
-        fn send_recv_app_data_aead_round_trip() {
+        fn send_recv_app_data_round_trip() {
             let psk = [0x42u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1391,11 +1390,10 @@ mod tests {
                 msg_type: MSG_APP_DATA_REPLY,
                 nonce: 0, // echoes the seq we'll send
             };
-            let reply_frame =
-                encode_frame_aead(&reply_header, &reply_cbor, &psk, &aead, &sha).unwrap();
+            let reply_frame = encode_frame(&reply_header, &reply_cbor, &psk, &aead, &sha).unwrap();
             transport.queue_response(Some(reply_frame));
 
-            let result = send_recv_app_data_aead(
+            let result = send_recv_app_data(
                 &mut transport,
                 &identity,
                 &mut seq,
@@ -1412,7 +1410,7 @@ mod tests {
         }
 
         #[test]
-        fn wrong_key_aead_fails() {
+        fn wrong_key_fails() {
             let psk = [0x42u8; 32];
             let wrong_psk = [0x99u8; 32];
             let sha = crate::crypto::SoftwareSha256;
@@ -1426,13 +1424,13 @@ mod tests {
             let mut transport = MockTransport::new();
 
             // Encode with correct PSK, but identity uses wrong PSK
-            let command_frame = make_command_aead(&psk, 42, &CommandPayload::Nop);
+            let command_frame = make_command(&psk, 42, &CommandPayload::Nop);
             transport.queue_response(Some(command_frame.clone()));
             transport.queue_response(Some(command_frame.clone()));
             transport.queue_response(Some(command_frame.clone()));
             transport.queue_response(Some(command_frame));
 
-            let result = wake_command_exchange_aead(
+            let result = wake_command_exchange(
                 &mut transport,
                 &identity,
                 42,
@@ -1450,7 +1448,7 @@ mod tests {
         }
 
         #[test]
-        fn send_program_ack_aead_succeeds() {
+        fn send_program_ack_succeeds() {
             let psk = [0x42u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1459,7 +1457,7 @@ mod tests {
             let mut transport = MockTransport::new();
             let mut seq = 5u64;
 
-            let result = send_program_ack_aead(
+            let result = send_program_ack(
                 &mut transport,
                 &identity,
                 &mut seq,
@@ -1472,7 +1470,7 @@ mod tests {
             assert_eq!(seq, 6);
             assert_eq!(transport.outbound.len(), 1);
 
-            let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
+            let decoded = decode_frame(&transport.outbound[0]).unwrap();
             assert_eq!(decoded.header.msg_type, MSG_PROGRAM_ACK);
             assert_eq!(decoded.header.nonce, 5);
         }
@@ -1480,7 +1478,7 @@ mod tests {
         // --- AEAD chunked transfer tests ---
 
         /// Build a CHUNK response frame using AEAD encryption.
-        fn build_chunk_response_aead(
+        fn build_chunk_response(
             psk: &[u8; 32],
             echo_seq: u64,
             chunk_index: u32,
@@ -1498,11 +1496,11 @@ mod tests {
                 msg_type: MSG_CHUNK,
                 nonce: echo_seq,
             };
-            encode_frame_aead(&header, &payload_cbor, psk, &aead, &sha).unwrap()
+            encode_frame(&header, &payload_cbor, psk, &aead, &sha).unwrap()
         }
 
         #[test]
-        fn chunked_transfer_aead_success() {
+        fn chunked_transfer_success() {
             let psk = [0x22u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1530,11 +1528,11 @@ mod tests {
                     .unwrap()
                     .to_vec();
                 let seq = starting_seq + i as u64;
-                let chunk_frame = build_chunk_response_aead(&psk, seq, i, &chunk_data);
+                let chunk_frame = build_chunk_response(&psk, seq, i, &chunk_data);
                 transport.queue_response(Some(chunk_frame));
             }
 
-            let result = chunked_transfer_aead(
+            let result = chunked_transfer(
                 &mut transport,
                 &identity,
                 &mut current_seq,
@@ -1552,7 +1550,7 @@ mod tests {
         }
 
         #[test]
-        fn chunked_transfer_aead_retry_exhausted() {
+        fn chunked_transfer_retry_exhausted() {
             let psk = [0x33u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1567,7 +1565,7 @@ mod tests {
                 transport.queue_response(None);
             }
 
-            let result = chunked_transfer_aead(
+            let result = chunked_transfer(
                 &mut transport,
                 &identity,
                 &mut current_seq,
@@ -1584,7 +1582,7 @@ mod tests {
         }
 
         #[test]
-        fn chunked_transfer_aead_wrong_chunk_index() {
+        fn chunked_transfer_wrong_chunk_index() {
             let psk = [0x44u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1595,13 +1593,13 @@ mod tests {
             let mut current_seq = 200u64;
 
             // Respond with wrong chunk index (5 instead of 0), then timeouts
-            let bad_chunk = build_chunk_response_aead(&psk, current_seq, 5, &[0u8; 10]);
+            let bad_chunk = build_chunk_response(&psk, current_seq, 5, &[0u8; 10]);
             transport.queue_response(Some(bad_chunk));
             transport.queue_response(None);
             transport.queue_response(None);
             transport.queue_response(None);
 
-            let result = chunked_transfer_aead(
+            let result = chunked_transfer(
                 &mut transport,
                 &identity,
                 &mut current_seq,
@@ -1620,16 +1618,16 @@ mod tests {
             );
         }
 
-        // --- AEAD end-to-end run_wake_cycle_aead tests ---
+        // --- end-to-end run_wake_cycle tests ---
 
         #[test]
-        fn run_wake_cycle_aead_nop() {
+        fn run_wake_cycle_nop() {
             let psk = [0x42u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
             let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
 
-            let command_frame = make_command_aead(&psk, 1, &CommandPayload::Nop);
+            let command_frame = make_command(&psk, 1, &CommandPayload::Nop);
             let mut transport = MockTransport::new();
             transport.queue_response(Some(command_frame));
 
@@ -1640,7 +1638,7 @@ mod tests {
             let mut interp = MockBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
-            let outcome = run_wake_cycle_aead(
+            let outcome = run_wake_cycle(
                 &mut transport,
                 &mut storage,
                 &mut hal,
@@ -1659,7 +1657,7 @@ mod tests {
         }
 
         #[test]
-        fn run_wake_cycle_aead_update_program() {
+        fn run_wake_cycle_update_program() {
             let psk = [0x22u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1679,7 +1677,7 @@ mod tests {
 
             let starting_seq = 5000u64;
 
-            let command_frame = make_command_aead_with_seq(
+            let command_frame = make_command_with_seq(
                 &psk,
                 1, // echoes WAKE nonce (MockRng returns 1)
                 starting_seq,
@@ -1699,7 +1697,7 @@ mod tests {
                     .unwrap()
                     .to_vec();
                 let seq = starting_seq + i as u64;
-                let chunk_frame = build_chunk_response_aead(&psk, seq, i, &chunk_data);
+                let chunk_frame = build_chunk_response(&psk, seq, i, &chunk_data);
                 transport.queue_response(Some(chunk_frame));
             }
 
@@ -1710,7 +1708,7 @@ mod tests {
             let mut interp = MockBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
-            let outcome = run_wake_cycle_aead(
+            let outcome = run_wake_cycle(
                 &mut transport,
                 &mut storage,
                 &mut hal,
@@ -1733,7 +1731,7 @@ mod tests {
         }
 
         #[test]
-        fn run_wake_cycle_aead_wrong_msg_type_discarded() {
+        fn run_wake_cycle_wrong_msg_type_discarded() {
             let psk = [0x42u8; 32];
             let sha = crate::crypto::SoftwareSha256;
             let aead = NodeAead;
@@ -1750,7 +1748,7 @@ mod tests {
                 msg_type: MSG_CHUNK, // wrong type for COMMAND phase
                 nonce: 1,
             };
-            let wrong_frame = encode_frame_aead(&header, &wrong_cbor, &psk, &aead, &sha).unwrap();
+            let wrong_frame = encode_frame(&header, &wrong_cbor, &psk, &aead, &sha).unwrap();
 
             let mut transport = MockTransport::new();
             // All responses are wrong → retries exhausted → sleep
@@ -1766,7 +1764,7 @@ mod tests {
             let mut interp = MockBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
 
-            let outcome = run_wake_cycle_aead(
+            let outcome = run_wake_cycle(
                 &mut transport,
                 &mut storage,
                 &mut hal,

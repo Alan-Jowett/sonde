@@ -219,7 +219,7 @@ pub async fn handle_ble_recv(
     match msg_type {
         BLE_MSG_REQUEST_GW_INFO => handle_request_gw_info(body, identity),
         BLE_MSG_REGISTER_PHONE => {
-            handle_register_phone_aead(body, storage, window, rf_channel, controller).await
+            handle_register_phone(body, storage, window, rf_channel, controller).await
         }
         _ => {
             debug!(msg_type, "ignoring unknown BLE message type");
@@ -264,14 +264,14 @@ fn handle_request_gw_info(body: &[u8], identity: &GatewayIdentity) -> Option<Vec
 }
 
 // ---------------------------------------------------------------------------
-// REGISTER_PHONE — AEAD variant (simplified, phone generates PSK)
+// REGISTER_PHONE — phone generates PSK
 // ---------------------------------------------------------------------------
 
 /// Handle REGISTER_PHONE (AEAD): phone sends its PSK, gateway stores it.
 ///
 /// REGISTER_PHONE body: phone_psk(32) + label_len(1) + label(label_len).
 /// PHONE_REGISTERED body: status(1) + rf_channel(1) + phone_key_hint(2 BE).
-async fn handle_register_phone_aead(
+async fn handle_register_phone(
     body: &[u8],
     storage: &Arc<dyn Storage>,
     window: &mut RegistrationWindow,

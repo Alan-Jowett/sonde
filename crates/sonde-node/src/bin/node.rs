@@ -33,7 +33,7 @@ fn main() {
     use sonde_node::map_storage::{MapStorage, MAP_BUDGET};
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
     use sonde_node::traits::{PlatformStorage, SleepController};
-    use sonde_node::wake_cycle::{run_wake_cycle_aead, WakeCycleOutcome};
+    use sonde_node::wake_cycle::{run_wake_cycle, WakeCycleOutcome};
 
     // Link ESP-IDF patches and initialize logging.
     esp_idf_svc::sys::link_patches();
@@ -169,7 +169,7 @@ fn main() {
 
     info!("sonde-node ready");
 
-    let outcome = run_wake_cycle_aead(
+    let outcome = run_wake_cycle(
         &mut transport,
         &mut storage,
         &mut hal,

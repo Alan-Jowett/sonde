@@ -104,7 +104,7 @@ impl sonde_protocol::AeadProvider for PairAead {
 ///    AES-256-GCM encryption with `phone_psk`).
 ///
 /// The returned blob is what the node stores and forwards verbatim.
-pub fn encrypt_pairing_request_aead(
+pub fn encrypt_pairing_request(
     phone_psk: &[u8; 32],
     pairing_request_cbor: &[u8],
 ) -> Result<Vec<u8>, PairingError> {
@@ -147,7 +147,7 @@ pub fn encrypt_pairing_request_aead(
         nonce: frame_nonce,
     };
 
-    sonde_protocol::encode_frame_aead(&header, &cbor_buf, phone_psk, &aead, &sha)
+    sonde_protocol::encode_frame(&header, &cbor_buf, phone_psk, &aead, &sha)
         .map_err(|_| PairingError::EncryptionFailed("frame encode failed".into()))
 }
 
@@ -158,7 +158,7 @@ pub fn encrypt_pairing_request_aead(
 /// authentication fails.
 ///
 /// The AAD is fixed to `"sonde-pairing-v2"` for domain separation.
-pub fn decrypt_pairing_request_aead(
+pub fn decrypt_pairing_request(
     phone_psk: &[u8; 32],
     encrypted_payload: &[u8],
 ) -> Option<Zeroizing<Vec<u8>>> {
@@ -239,7 +239,7 @@ mod aead_tests {
     fn open_frame_and_extract_inner(phone_psk: &[u8; 32], frame: &[u8]) -> Vec<u8> {
         let sha = PairSha256;
         let aead = PairAead;
-        let decoded = sonde_protocol::decode_frame_aead(frame).expect("decode_frame_aead failed");
+        let decoded = sonde_protocol::decode_frame(frame).expect("decode_frame failed");
         let cbor_payload = sonde_protocol::open_frame(&decoded, phone_psk, &aead, &sha)
             .expect("open_frame failed");
         let cbor: ciborium::Value =
@@ -253,18 +253,18 @@ mod aead_tests {
 
     /// Round-trip: encrypt then decrypt must recover the original plaintext.
     #[test]
-    fn pairing_request_aead_round_trip() {
+    fn pairing_request_round_trip() {
         let psk = [0x42u8; 32];
         let plaintext = b"pairing request CBOR data for node-42";
 
-        let frame = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        let frame = encrypt_pairing_request(&psk, plaintext).unwrap();
 
         // Verify it's a valid AEAD frame with PEER_REQUEST msg_type.
-        let decoded = sonde_protocol::decode_frame_aead(&frame).unwrap();
+        let decoded = sonde_protocol::decode_frame(&frame).unwrap();
         assert_eq!(decoded.header.msg_type, sonde_protocol::MSG_PEER_REQUEST);
 
         let inner = open_frame_and_extract_inner(&psk, &frame);
-        let decrypted = decrypt_pairing_request_aead(&psk, &inner);
+        let decrypted = decrypt_pairing_request(&psk, &inner);
         assert_eq!(
             decrypted.as_ref().map(|z| z.as_slice()),
             Some(plaintext.as_slice())
@@ -273,16 +273,16 @@ mod aead_tests {
 
     /// Wrong PSK must fail outer-frame decryption.
     #[test]
-    fn pairing_request_aead_wrong_psk_fails() {
+    fn pairing_request_wrong_psk_fails() {
         let psk = [0x42u8; 32];
         let wrong_psk = [0x43u8; 32];
         let plaintext = b"secret pairing request";
 
-        let frame = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        let frame = encrypt_pairing_request(&psk, plaintext).unwrap();
 
         let sha = PairSha256;
         let aead = PairAead;
-        let decoded = sonde_protocol::decode_frame_aead(&frame).unwrap();
+        let decoded = sonde_protocol::decode_frame(&frame).unwrap();
         assert!(
             sonde_protocol::open_frame(&decoded, &wrong_psk, &aead, &sha).is_err(),
             "wrong PSK must fail outer-frame decryption"
@@ -291,18 +291,18 @@ mod aead_tests {
 
     /// Tampered frame must fail authentication.
     #[test]
-    fn pairing_request_aead_tampered_payload_fails() {
+    fn pairing_request_tampered_payload_fails() {
         let psk = [0x42u8; 32];
         let plaintext = b"original pairing request";
 
-        let mut frame = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        let mut frame = encrypt_pairing_request(&psk, plaintext).unwrap();
         // Flip a byte in the ciphertext (after the 11-byte header)
         let flip_idx = sonde_protocol::HEADER_SIZE + 1;
         frame[flip_idx] ^= 0xFF;
 
         let sha = PairSha256;
         let aead = PairAead;
-        let decoded = sonde_protocol::decode_frame_aead(&frame).unwrap();
+        let decoded = sonde_protocol::decode_frame(&frame).unwrap();
         assert!(
             sonde_protocol::open_frame(&decoded, &psk, &aead, &sha).is_err(),
             "tampered ciphertext must fail authentication"
@@ -311,11 +311,11 @@ mod aead_tests {
 
     /// AAD binding: decrypting the inner payload with a different AAD must fail.
     #[test]
-    fn pairing_request_aead_wrong_aad_fails() {
+    fn pairing_request_wrong_aad_fails() {
         let psk = [0x42u8; 32];
         let plaintext = b"aad-bound payload";
 
-        let frame = encrypt_pairing_request_aead(&psk, plaintext).unwrap();
+        let frame = encrypt_pairing_request(&psk, plaintext).unwrap();
         let inner = open_frame_and_extract_inner(&psk, &frame);
 
         // Extract nonce and ciphertext_and_tag from inner payload
@@ -337,27 +337,27 @@ mod aead_tests {
 
     /// Payload too short (less than nonce + tag) must return None.
     #[test]
-    fn pairing_request_aead_short_payload_returns_none() {
+    fn pairing_request_short_payload_returns_none() {
         let psk = [0x42u8; 32];
         // 27 bytes < 12 nonce + 16 tag = 28 minimum
         let short = [0u8; 27];
-        assert!(decrypt_pairing_request_aead(&psk, &short).is_none());
+        assert!(decrypt_pairing_request(&psk, &short).is_none());
     }
 
     /// Empty plaintext round-trip: encrypt then decrypt an empty buffer.
     #[test]
-    fn pairing_request_aead_empty_plaintext_round_trip() {
+    fn pairing_request_empty_plaintext_round_trip() {
         let psk = [0x42u8; 32];
-        let frame = encrypt_pairing_request_aead(&psk, b"").unwrap();
+        let frame = encrypt_pairing_request(&psk, b"").unwrap();
 
         // Verify it's a valid frame
-        let decoded = sonde_protocol::decode_frame_aead(&frame).unwrap();
+        let decoded = sonde_protocol::decode_frame(&frame).unwrap();
         assert_eq!(decoded.header.msg_type, sonde_protocol::MSG_PEER_REQUEST);
 
         let inner = open_frame_and_extract_inner(&psk, &frame);
         // inner = nonce(12) + tag(16) = 28 bytes, no ciphertext
         assert_eq!(inner.len(), GCM_NONCE_LEN + GCM_TAG_LEN);
-        let decrypted = decrypt_pairing_request_aead(&psk, &inner);
+        let decrypted = decrypt_pairing_request(&psk, &inner);
         assert_eq!(
             decrypted.as_ref().map(|z| z.as_slice()),
             Some([].as_slice())
@@ -366,8 +366,8 @@ mod aead_tests {
 
     /// Empty payload must return None.
     #[test]
-    fn pairing_request_aead_empty_payload_returns_none() {
+    fn pairing_request_empty_payload_returns_none() {
         let psk = [0x42u8; 32];
-        assert!(decrypt_pairing_request_aead(&psk, &[]).is_none());
+        assert!(decrypt_pairing_request(&psk, &[]).is_none());
     }
 }

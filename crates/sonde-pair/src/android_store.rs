@@ -158,9 +158,9 @@ impl AndroidPairingStore {
     }
 
     /// Save AEAD pairing artifacts to encrypted SharedPreferences.
-    pub fn save_artifacts_aead(
+    pub fn save_artifacts(
         &mut self,
-        artifacts: &crate::phase1::PairingArtifactsAead,
+        artifacts: &crate::phase1::PairingArtifacts,
     ) -> Result<(), PairingError> {
         self.vm.attach_current_thread(|env| {
             let store = self.store.as_obj();
@@ -181,9 +181,7 @@ impl AndroidPairingStore {
     }
 
     /// Load AEAD pairing artifacts from encrypted SharedPreferences.
-    pub fn load_artifacts_aead(
-        &self,
-    ) -> Result<Option<crate::phase1::PairingArtifactsAead>, PairingError> {
+    pub fn load_artifacts(&self) -> Result<Option<crate::phase1::PairingArtifacts>, PairingError> {
         self.vm
             .attach_current_thread(|env| {
                 let store = self.store.as_obj();
@@ -206,7 +204,7 @@ impl AndroidPairingStore {
                     PairingError::StoreLoadFailed("phone_psk: expected 32 bytes".into())
                 })?;
 
-                Ok(Some(crate::phase1::PairingArtifactsAead {
+                Ok(Some(crate::phase1::PairingArtifacts {
                     phone_psk: Zeroizing::new(psk),
                     phone_key_hint: phone_key_hint as u16,
                     rf_channel: rf_channel as u8,

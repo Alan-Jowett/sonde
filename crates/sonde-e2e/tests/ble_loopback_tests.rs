@@ -47,7 +47,7 @@ async fn phase1_loopback_happy_path() {
     assert_eq!(devices[0].name, "Sonde-GW-Loopback");
 
     // Phase 1: pair with the fake gateway (AEAD)
-    let artifacts = phase1::pair_with_gateway_aead(
+    let artifacts = phase1::pair_with_gateway(
         &mut transport,
         &rng,
         &device_addr,
@@ -79,14 +79,13 @@ async fn phase1_loopback_re_pair() {
     let device_addr = [0x10, 0x0B, 0xAC, 0x00, 0x00, 0x01];
 
     // First pairing
-    let first =
-        phase1::pair_with_gateway_aead(&mut transport, &rng, &device_addr, "first-phone", None)
-            .await
-            .expect("first pairing should succeed");
+    let first = phase1::pair_with_gateway(&mut transport, &rng, &device_addr, "first-phone", None)
+        .await
+        .expect("first pairing should succeed");
 
     // Second pairing — new PSK generated each time
     let second =
-        phase1::pair_with_gateway_aead(&mut transport, &rng, &device_addr, "second-phone", None)
+        phase1::pair_with_gateway(&mut transport, &rng, &device_addr, "second-phone", None)
             .await
             .expect("re-pairing should succeed");
 
@@ -104,7 +103,7 @@ async fn phase1_loopback_empty_label() {
     let rng = OsRng;
     let device_addr = [0x10, 0x0B, 0xAC, 0x00, 0x00, 0x01];
 
-    let artifacts = phase1::pair_with_gateway_aead(&mut transport, &rng, &device_addr, "", None)
+    let artifacts = phase1::pair_with_gateway(&mut transport, &rng, &device_addr, "", None)
         .await
         .expect("pairing with empty label should succeed");
 

@@ -33,7 +33,7 @@ use sonde_gateway::GatewayAead;
 #[cfg(debug_assertions)]
 use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, RecvFrame};
 use sonde_protocol::{
-    encode_frame_aead, FrameHeader, GatewayMessage, NodeMessage, Sha256Provider, MSG_APP_DATA,
+    encode_frame, FrameHeader, GatewayMessage, NodeMessage, Sha256Provider, MSG_APP_DATA,
     MSG_PEER_REQUEST, MSG_WAKE, PEER_REQ_KEY_PAYLOAD,
 };
 
@@ -114,7 +114,7 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     fn build_app_data(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
@@ -127,7 +127,7 @@ impl TestNode {
             blob: blob.to_vec(),
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
@@ -217,7 +217,7 @@ fn build_peer_request(
         nonce: 0x1234567890ABCDEF,
     };
 
-    encode_frame_aead(
+    encode_frame(
         &header,
         &outer_buf,
         phone_psk,
@@ -244,7 +244,7 @@ async fn t1300_wake_lifecycle_logging() {
     storage.upsert_node(&record).await.unwrap();
 
     let frame = node.build_wake(100, 1, &program_hash, 3300);
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_some(), "expected COMMAND response");
 
     // GW-1300 AC3: WAKE received with node_id, seq, battery_mv.
@@ -326,7 +326,7 @@ async fn t1302_peer_request_logging() {
     );
     let peer: PeerAddress = b"peer-addr".to_vec();
 
-    let resp = gw.process_frame_aead(&frame, peer).await;
+    let resp = gw.process_frame(&frame, peer).await;
     assert!(resp.is_some(), "expected PEER_ACK response");
 
     // GW-1300 AC1: PEER_REQUEST processed with result "registered" and key_hint.
@@ -660,7 +660,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
 
     // WAKE to establish session.
     let frame = node.build_wake(5000, 1, &program_hash, 3300);
-    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(resp.is_some(), "expected COMMAND response");
 
     let (_hdr, msg) = decode_command(&resp.unwrap(), &node.psk);
@@ -673,7 +673,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
     let blob = vec![0x01, 0x02, 0x03];
     let app_frame = node.build_app_data(starting_seq, &blob);
     let resp = gw
-        .process_frame_aead(&app_frame, node.peer_address())
+        .process_frame(&app_frame, node.peer_address())
         .await
         .expect("expected APP_DATA_REPLY");
 
@@ -685,9 +685,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         let app_frame2 = node.build_app_data(starting_seq + 1, &blob);
-        let _ = gw
-            .process_frame_aead(&app_frame2, node.peer_address())
-            .await;
+        let _ = gw.process_frame(&app_frame2, node.peer_address()).await;
         if logs_contain("handler exited") {
             break;
         }
@@ -754,7 +752,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
     );
 
     // Verify the reply was correct.
-    let decoded = sonde_protocol::decode_frame_aead(&resp).unwrap();
+    let decoded = sonde_protocol::decode_frame(&resp).unwrap();
     let plaintext =
         sonde_protocol::open_frame(&decoded, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
     let reply_msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
@@ -767,7 +765,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
 }
 
 fn decode_command(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
-    let decoded = sonde_protocol::decode_frame_aead(raw).unwrap();
+    let decoded = sonde_protocol::decode_frame(raw).unwrap();
     let plaintext =
         sonde_protocol::open_frame(&decoded, psk, &GatewayAead, &RustCryptoSha256).unwrap();
     let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();

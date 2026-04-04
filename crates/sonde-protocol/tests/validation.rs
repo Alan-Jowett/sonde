@@ -1904,8 +1904,8 @@ mod aead_tests {
         let payload = vec![0xA1, 0x01, 0x02];
         let psk = [0x42u8; 32];
 
-        let raw = encode_frame_aead(&hdr, &payload, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
-        let decoded = decode_frame_aead(&raw).unwrap();
+        let raw = encode_frame(&hdr, &payload, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let decoded = decode_frame(&raw).unwrap();
         assert_eq!(decoded.header.key_hint, 1);
         assert_eq!(decoded.header.msg_type, MSG_WAKE);
         assert_eq!(decoded.header.nonce, 42);
@@ -1923,8 +1923,8 @@ mod aead_tests {
         };
         let psk_a = [0x42u8; 32];
         let psk_b = [0x24u8; 32];
-        let raw = encode_frame_aead(&hdr, &[0xA0], &psk_a, &SoftwareAead, &SoftwareSha256).unwrap();
-        let decoded = decode_frame_aead(&raw).unwrap();
+        let raw = encode_frame(&hdr, &[0xA0], &psk_a, &SoftwareAead, &SoftwareSha256).unwrap();
+        let decoded = decode_frame(&raw).unwrap();
         let result = open_frame(&decoded, &psk_b, &SoftwareAead, &SoftwareSha256);
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
@@ -1937,7 +1937,7 @@ mod aead_tests {
             nonce: 1,
         };
         let psk = [0x42u8; 32];
-        let mut raw = encode_frame_aead(
+        let mut raw = encode_frame(
             &hdr,
             &[0xA1, 0x01, 0x02],
             &psk,
@@ -1947,7 +1947,7 @@ mod aead_tests {
         .unwrap();
         // Flip one bit in the ciphertext portion (byte right after header).
         raw[HEADER_SIZE] ^= 0x01;
-        let decoded = decode_frame_aead(&raw).unwrap();
+        let decoded = decode_frame(&raw).unwrap();
         let result = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
@@ -1960,11 +1960,10 @@ mod aead_tests {
             nonce: 1,
         };
         let psk = [0x42u8; 32];
-        let mut raw =
-            encode_frame_aead(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let mut raw = encode_frame(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256).unwrap();
         // Flip one bit in the header (msg_type byte) — header is AAD.
         raw[2] ^= 0x01;
-        let decoded = decode_frame_aead(&raw).unwrap();
+        let decoded = decode_frame(&raw).unwrap();
         let result = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
@@ -1977,12 +1976,11 @@ mod aead_tests {
             nonce: 1,
         };
         let psk = [0x42u8; 32];
-        let mut raw =
-            encode_frame_aead(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let mut raw = encode_frame(&hdr, &[0xA0], &psk, &SoftwareAead, &SoftwareSha256).unwrap();
         // Flip one bit in the GCM tag (last byte).
         let last = raw.len() - 1;
         raw[last] ^= 0x01;
-        let decoded = decode_frame_aead(&raw).unwrap();
+        let decoded = decode_frame(&raw).unwrap();
         let result = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256);
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
@@ -2007,8 +2005,8 @@ mod aead_tests {
 
     #[test]
     fn aead_payload_capacity() {
-        assert_eq!(MAX_PAYLOAD_SIZE_AEAD, 223);
+        assert_eq!(MAX_PAYLOAD_SIZE, 223);
         assert_eq!(AEAD_TAG_SIZE, 16);
-        assert_eq!(MIN_FRAME_SIZE_AEAD, HEADER_SIZE + AEAD_TAG_SIZE);
+        assert_eq!(MIN_FRAME_SIZE, HEADER_SIZE + AEAD_TAG_SIZE);
     }
 }

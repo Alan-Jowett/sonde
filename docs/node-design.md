@@ -175,7 +175,7 @@ The protocol codec is provided by the shared `sonde-protocol` crate (see § Shar
 
 ### 5.1  Frame construction
 
-Uses `sonde_protocol::encode_frame_aead()` with a constructed `FrameHeader`, the node's PSK, and the node's AEAD and SHA-256 implementations:
+Uses `sonde_protocol::encode_frame()` with a constructed `FrameHeader`, the node's PSK, and the node's AEAD and SHA-256 implementations:
 
 ```rust
 let header = sonde_protocol::FrameHeader {
@@ -183,7 +183,7 @@ let header = sonde_protocol::FrameHeader {
     msg_type,
     nonce: nonce_or_seq,
 };
-let frame = sonde_protocol::encode_frame_aead(
+let frame = sonde_protocol::encode_frame(
     &header, &payload_cbor, psk, &aead_impl, &sha_impl,
 );
 ```
@@ -192,7 +192,7 @@ The hardware AES-GCM implementation wraps the ESP-IDF AES peripheral behind the 
 
 ### 5.2  Frame verification (inbound)
 
-Uses `sonde_protocol::decode_frame_aead()` and `sonde_protocol::open_frame()`:
+Uses `sonde_protocol::decode_frame()` and `sonde_protocol::open_frame()`:
 
 1. Attempt AES-256-GCM authenticated decryption using the node's PSK.
 2. If decryption fails (authentication tag mismatch) → discard.
@@ -670,7 +670,7 @@ The `sonde-protocol` crate is a `no_std`-compatible Rust library shared between 
 | Component | Description |
 |---|---|
 | **Constants** | `msg_type` codes, command codes, CBOR key numbers, frame sizes, AEAD tag size |
-| **Frame codec** | `encode_frame_aead()`, `decode_frame_aead()`, `open_frame()`, header parsing at fixed offsets |
+| **Frame codec** | `encode_frame()`, `decode_frame()`, `open_frame()`, header parsing at fixed offsets |
 | **CBOR messages** | `NodeMessage` and `GatewayMessage` enums with typed fields; CBOR encode/decode using integer keys |
 | **Program image** | `ProgramImage` and `MapDef` structs; CBOR deterministic encode/decode |
 | **AEAD trait** | `AeadProvider` trait — platform provides the implementation |

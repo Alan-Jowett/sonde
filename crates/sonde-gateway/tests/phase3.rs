@@ -20,7 +20,7 @@ use sonde_gateway::transport::PeerAddress;
 use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
-    decode_frame_aead, encode_frame_aead, open_frame, CommandPayload, FrameHeader, GatewayMessage,
+    decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
     NodeMessage, MSG_COMMAND, MSG_WAKE,
 };
 
@@ -61,7 +61,7 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
@@ -70,7 +70,7 @@ fn make_gateway(storage: Arc<InMemoryStorage>) -> Gateway {
 }
 
 fn decode_response(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
-    let decoded = decode_frame_aead(raw).unwrap();
+    let decoded = decode_frame(raw).unwrap();
     let plaintext = open_frame(&decoded, psk, &GatewayAead, &RustCryptoSha256).unwrap();
     let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     (decoded.header, msg)
@@ -219,7 +219,7 @@ async fn t0608_frame_overhead_budget() {
 
     let wake_frame = node.build_wake(42, 1, &[0u8; 32], 3300);
     let response = gateway
-        .process_frame_aead(&wake_frame, node.peer_address())
+        .process_frame(&wake_frame, node.peer_address())
         .await;
     assert!(response.is_some(), "gateway must respond to WAKE");
 
@@ -227,7 +227,7 @@ async fn t0608_frame_overhead_budget() {
     // Minimum frame: 11 header + at least 1 byte ciphertext + 16 GCM tag = 28
     assert!(raw.len() >= 28, "frame too short: {} bytes", raw.len());
 
-    let decoded = decode_frame_aead(&raw).unwrap();
+    let decoded = decode_frame(&raw).unwrap();
     assert_eq!(decoded.header.msg_type, MSG_COMMAND);
     // Open to verify it's valid
     let _plaintext = open_frame(&decoded, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
@@ -270,7 +270,7 @@ async fn t0701_stale_program_detection() {
     // WAKE with hash_A → should be NOP (program matches).
     let wake = node.build_wake(1, 1, &hash_a, 3300);
     let resp = gateway
-        .process_frame_aead(&wake, node.peer_address())
+        .process_frame(&wake, node.peer_address())
         .await
         .unwrap();
     let (_, msg) = decode_response(&resp, &node.psk);
@@ -292,7 +292,7 @@ async fn t0701_stale_program_detection() {
     // WAKE again with hash_A → should get UPDATE_PROGRAM for B.
     let wake = node.build_wake(2, 1, &hash_a, 3300);
     let resp = gateway
-        .process_frame_aead(&wake, node.peer_address())
+        .process_frame(&wake, node.peer_address())
         .await
         .unwrap();
     let (_, msg) = decode_response(&resp, &node.psk);
@@ -323,9 +323,7 @@ async fn t1000_gateway_failover() {
 
     // Complete a WAKE on gateway A.
     let wake = node.build_wake(1, 1, &[0u8; 32], 3300);
-    let resp_a = gateway_a
-        .process_frame_aead(&wake, node.peer_address())
-        .await;
+    let resp_a = gateway_a.process_frame(&wake, node.peer_address()).await;
     assert!(resp_a.is_some(), "gateway A must respond");
 
     // Export state from A.
@@ -349,9 +347,7 @@ async fn t1000_gateway_failover() {
 
     // WAKE from the same node on B.
     let wake = node.build_wake(10, 1, &[0u8; 32], 3300);
-    let resp_b = gateway_b
-        .process_frame_aead(&wake, node.peer_address())
-        .await;
+    let resp_b = gateway_b.process_frame(&wake, node.peer_address()).await;
     assert!(resp_b.is_some(), "gateway B must respond after import");
 
     // B recognizes the node.
@@ -460,7 +456,7 @@ async fn t1003_concurrent_node_handling() {
         let psk = node.psk;
         let peer = node.peer_address();
         handles.push(tokio::spawn(async move {
-            let resp = gw.process_frame_aead(&wake, peer).await;
+            let resp = gw.process_frame(&wake, peer).await;
             (i, resp, psk)
         }));
     }
@@ -470,7 +466,7 @@ async fn t1003_concurrent_node_handling() {
         let (i, resp, psk) = handle.await.unwrap();
         assert!(resp.is_some(), "node {i} must receive a response");
         let raw = resp.unwrap();
-        let decoded = decode_frame_aead(&raw).unwrap();
+        let decoded = decode_frame(&raw).unwrap();
         assert!(
             open_frame(&decoded, &psk, &GatewayAead, &RustCryptoSha256).is_ok(),
             "node {i} response must be authenticated with its own PSK"

@@ -24,7 +24,7 @@ use sonde_gateway::transport::PeerAddress;
 
 use sonde_gateway::GatewayAead;
 use sonde_protocol::{
-    decode_frame_aead, encode_frame_aead, open_frame, FrameHeader, Sha256Provider, MSG_PEER_ACK,
+    decode_frame, encode_frame, open_frame, FrameHeader, Sha256Provider, MSG_PEER_ACK,
     MSG_PEER_REQUEST, PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
 };
 
@@ -184,7 +184,7 @@ fn build_peer_request_detailed(
         nonce,
     };
 
-    encode_frame_aead(
+    encode_frame(
         &header,
         &outer_buf,
         phone_psk,
@@ -244,14 +244,14 @@ async fn peer_request_happy_path() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_some(),
         "valid PEER_REQUEST must produce a response"
     );
 
     let raw = response.unwrap();
-    let decoded = decode_frame_aead(&raw).unwrap();
+    let decoded = decode_frame(&raw).unwrap();
     let plaintext = open_frame(&decoded, &TEST_NODE_PSK, &GatewayAead, &RustCryptoSha256).unwrap();
     assert_eq!(decoded.header.msg_type, MSG_PEER_ACK);
 
@@ -308,7 +308,7 @@ async fn peer_request_with_sensors() {
         Some(sensors),
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_some());
 
     let node = env.storage.get_node("node-sensors").await.unwrap().unwrap();
@@ -343,7 +343,7 @@ async fn peer_request_invalid_sensor_type() {
         Some(sensors),
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "invalid sensor_type must cause silent discard"
@@ -370,7 +370,7 @@ async fn peer_request_bad_gcm_tag() {
         frame[20] ^= 0xFF;
     }
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "tampered frame must be silently discarded"
@@ -395,7 +395,7 @@ async fn peer_request_revoked_phone() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "revoked phone must cause silent discard"
@@ -418,7 +418,7 @@ async fn peer_request_bad_phone_hmac() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "wrong phone HMAC must cause silent discard"
@@ -452,7 +452,7 @@ async fn peer_request_bad_frame_hmac() {
 
     // Encrypt the outer frame with a DIFFERENT PSK than the registered phone_psk.
     let wrong_psk = [0xEE; 32];
-    let frame = encode_frame_aead(
+    let frame = encode_frame(
         &header,
         &outer_buf,
         &wrong_psk,
@@ -461,7 +461,7 @@ async fn peer_request_bad_frame_hmac() {
     )
     .unwrap();
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "bad outer frame AEAD must cause silent discard"
@@ -484,7 +484,7 @@ async fn peer_request_timestamp_drift_past() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "old timestamp must cause silent discard"
@@ -507,7 +507,7 @@ async fn peer_request_timestamp_drift_future() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "future timestamp must cause silent discard"
@@ -529,7 +529,7 @@ async fn peer_request_duplicate_node_id() {
         None,
         None,
     );
-    let response1 = env.gateway.process_frame_aead(&frame1, peer()).await;
+    let response1 = env.gateway.process_frame(&frame1, peer()).await;
     assert!(response1.is_some(), "first registration must succeed");
 
     // Second registration with same node_id and matching PSK must still
@@ -543,7 +543,7 @@ async fn peer_request_duplicate_node_id() {
         None,
         None,
     );
-    let response2 = env.gateway.process_frame_aead(&frame2, peer()).await;
+    let response2 = env.gateway.process_frame(&frame2, peer()).await;
     assert!(
         response2.is_some(),
         "duplicate node_id with matching PSK must return PEER_ACK"
@@ -583,7 +583,7 @@ async fn peer_request_key_hint_mismatch() {
         nonce: 0x5678,
     };
 
-    let frame = encode_frame_aead(
+    let frame = encode_frame(
         &header,
         &outer_buf,
         &TEST_PHONE_PSK,
@@ -592,7 +592,7 @@ async fn peer_request_key_hint_mismatch() {
     )
     .unwrap();
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "key_hint mismatch must cause silent discard"
@@ -614,7 +614,7 @@ async fn peer_request_rf_channel_zero() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_none(), "rf_channel=0 must cause silent discard");
 }
 
@@ -633,7 +633,7 @@ async fn peer_request_rf_channel_14() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "rf_channel=14 must cause silent discard"
@@ -655,7 +655,7 @@ async fn peer_request_rf_channel_13_ok() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_some(), "rf_channel=13 must be accepted");
 
     let node = env.storage.get_node("node-rf13").await.unwrap().unwrap();
@@ -677,7 +677,7 @@ async fn peer_request_rf_channel_1_ok() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_some(), "rf_channel=1 must be accepted");
 }
 
@@ -703,7 +703,7 @@ async fn peer_request_node_id_30_ok() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_some(), "30-byte node_id must be accepted");
 }
 
@@ -722,7 +722,7 @@ async fn peer_request_empty_node_id() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "empty node_id must cause silent discard"
@@ -745,7 +745,7 @@ async fn peer_request_timestamp_boundary_ok() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_some(), "timestamp at +86400s must be accepted");
 }
 
@@ -766,7 +766,7 @@ async fn peer_request_timestamp_boundary_plus1_rejected() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_none(), "timestamp at +86410s must be rejected");
 }
 
@@ -796,14 +796,14 @@ async fn t_1210_peer_request_decryption_happy_path() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_some(),
         "correctly encrypted PEER_REQUEST must produce a PEER_ACK"
     );
 
     let raw = response.unwrap();
-    let decoded = decode_frame_aead(&raw).unwrap();
+    let decoded = decode_frame(&raw).unwrap();
     assert_eq!(decoded.header.msg_type, MSG_PEER_ACK);
 }
 
@@ -831,7 +831,7 @@ async fn t_1211_peer_request_bad_gcm_tag() {
         frame[20] ^= 0xFF;
     }
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "bad GCM tag must cause silent discard (no response)"
@@ -887,7 +887,7 @@ async fn t_1212_phone_hmac_multiple_candidates() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_some(),
         "gateway must try both candidates and accept the matching one"
@@ -921,7 +921,7 @@ async fn t_1213_phone_hmac_revoked_psk() {
         None,
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(
         response.is_none(),
         "revoked phone PSK must cause silent discard"
@@ -959,7 +959,7 @@ async fn t_1214_frame_hmac_verification() {
 
     // Encrypt outer frame with a DIFFERENT PSK than the registered phone_psk.
     let wrong_psk = [0xEEu8; 32];
-    let bad_frame = encode_frame_aead(
+    let bad_frame = encode_frame(
         &header,
         &outer_buf,
         &wrong_psk,
@@ -968,14 +968,14 @@ async fn t_1214_frame_hmac_verification() {
     )
     .unwrap();
 
-    let response = env.gateway.process_frame_aead(&bad_frame, peer()).await;
+    let response = env.gateway.process_frame(&bad_frame, peer()).await;
     assert!(
         response.is_none(),
         "outer frame encrypted with wrong PSK must cause silent discard"
     );
 
     // Now submit a valid outer frame AEAD for the same payload.
-    let good_frame = encode_frame_aead(
+    let good_frame = encode_frame(
         &header,
         &outer_buf,
         &TEST_PHONE_PSK,
@@ -983,7 +983,7 @@ async fn t_1214_frame_hmac_verification() {
         &RustCryptoSha256,
     )
     .unwrap();
-    let response = env.gateway.process_frame_aead(&good_frame, peer()).await;
+    let response = env.gateway.process_frame(&good_frame, peer()).await;
     assert!(
         response.is_some(),
         "valid outer frame AEAD must allow processing to continue"
@@ -1013,10 +1013,7 @@ async fn t_1215_timestamp_range_enforcement() {
         None,
     );
     assert!(
-        env.gateway
-            .process_frame_aead(&frame, peer())
-            .await
-            .is_none(),
+        env.gateway.process_frame(&frame, peer()).await.is_none(),
         "timestamp 90000s in the past must be rejected"
     );
 
@@ -1032,10 +1029,7 @@ async fn t_1215_timestamp_range_enforcement() {
         None,
     );
     assert!(
-        env.gateway
-            .process_frame_aead(&frame, peer())
-            .await
-            .is_none(),
+        env.gateway.process_frame(&frame, peer()).await.is_none(),
         "timestamp 90000s in the future must be rejected"
     );
 
@@ -1050,10 +1044,7 @@ async fn t_1215_timestamp_range_enforcement() {
         None,
     );
     assert!(
-        env.gateway
-            .process_frame_aead(&frame, peer())
-            .await
-            .is_some(),
+        env.gateway.process_frame(&frame, peer()).await.is_some(),
         "current timestamp must be accepted"
     );
 }
@@ -1078,10 +1069,7 @@ async fn t_1216_duplicate_node_id_rejected() {
         None,
     );
     assert!(
-        env.gateway
-            .process_frame_aead(&frame1, peer())
-            .await
-            .is_some(),
+        env.gateway.process_frame(&frame1, peer()).await.is_some(),
         "first registration must succeed"
     );
 
@@ -1096,10 +1084,7 @@ async fn t_1216_duplicate_node_id_rejected() {
         None,
     );
     assert!(
-        env.gateway
-            .process_frame_aead(&frame2, peer())
-            .await
-            .is_some(),
+        env.gateway.process_frame(&frame2, peer()).await.is_some(),
         "duplicate node_id with matching PSK must return PEER_ACK"
     );
 }
@@ -1135,7 +1120,7 @@ async fn t_1217_key_hint_mismatch_rejected() {
         nonce: 0xBBBB,
     };
 
-    let frame = encode_frame_aead(
+    let frame = encode_frame(
         &header,
         &outer_buf,
         &TEST_PHONE_PSK,
@@ -1144,10 +1129,7 @@ async fn t_1217_key_hint_mismatch_rejected() {
     )
     .unwrap();
     assert!(
-        env.gateway
-            .process_frame_aead(&frame, peer())
-            .await
-            .is_none(),
+        env.gateway.process_frame(&frame, peer()).await.is_none(),
         "key_hint mismatch must cause silent discard"
     );
 }
@@ -1184,7 +1166,7 @@ async fn t_1218_node_registration_stores_fields() {
         Some(sensors),
     );
 
-    let response = env.gateway.process_frame_aead(&frame, peer()).await;
+    let response = env.gateway.process_frame(&frame, peer()).await;
     assert!(response.is_some(), "PEER_REQUEST must succeed");
 
     let node = env
@@ -1238,12 +1220,12 @@ async fn t_1219_peer_ack_happy_path() {
 
     let response = env
         .gateway
-        .process_frame_aead(&frame, peer())
+        .process_frame(&frame, peer())
         .await
         .expect("valid PEER_REQUEST must produce PEER_ACK");
 
     // Decode and verify the PEER_ACK frame.
-    let decoded = decode_frame_aead(&response).unwrap();
+    let decoded = decode_frame(&response).unwrap();
     assert_eq!(decoded.header.msg_type, MSG_PEER_ACK);
 
     // 3. Nonce must echo the request nonce.

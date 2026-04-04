@@ -53,16 +53,21 @@ pub fn encode_ble_envelope(msg_type: u8, body: &[u8]) -> Option<Vec<u8>> {
 /// Encode a DIAG_RELAY_REQUEST BLE body.
 ///
 /// Body format: `rf_channel (1B) | payload_len (2B BE) | payload`.
-/// Returns `Err` if `rf_channel` is outside 1–13 or `payload` exceeds
-/// `MAX_FRAME_SIZE`.
+/// Returns `Err` if `rf_channel` is outside 1–13, `payload` is empty,
+/// or `payload` exceeds `MAX_FRAME_SIZE`.
 pub fn encode_diag_relay_request(rf_channel: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError> {
     if !(1..=13).contains(&rf_channel) {
         return Err(EncodeError::CborError(alloc::format!(
-            "rf_channel {} out of range 1-13",
+            "invalid DIAG_RELAY_REQUEST parameter: rf_channel {} out of range 1-13",
             rf_channel
         )));
     }
-    if payload.is_empty() || payload.len() > MAX_FRAME_SIZE {
+    if payload.is_empty() {
+        return Err(EncodeError::CborError(
+            "invalid DIAG_RELAY_REQUEST parameter: payload must not be empty".into(),
+        ));
+    }
+    if payload.len() > MAX_FRAME_SIZE {
         return Err(EncodeError::FrameTooLarge);
     }
     let payload_len = payload.len() as u16;
@@ -75,23 +80,47 @@ pub fn encode_diag_relay_request(rf_channel: u8, payload: &[u8]) -> Result<Vec<u
 
 /// Decode a DIAG_RELAY_REQUEST BLE body.
 ///
-/// Returns `(rf_channel, payload)` on success.
+/// Returns `(rf_channel, payload)` on success. Rejects truncated bodies,
+/// bodies with trailing bytes, out-of-range channels, empty payloads,
+/// and oversized payloads.
 pub fn decode_diag_relay_request(body: &[u8]) -> Result<(u8, &[u8]), DecodeError> {
     if body.len() < 3 {
         return Err(DecodeError::TooShort);
     }
     let rf_channel = body[0];
+    if !(1..=13).contains(&rf_channel) {
+        return Err(DecodeError::CborError(alloc::format!(
+            "rf_channel {} out of range 1-13",
+            rf_channel
+        )));
+    }
     let payload_len = u16::from_be_bytes([body[1], body[2]]) as usize;
-    if body.len() != 3 + payload_len {
+    if payload_len == 0 || payload_len > MAX_FRAME_SIZE {
+        return Err(DecodeError::CborError(alloc::format!(
+            "payload_len {} out of range 1-{}",
+            payload_len,
+            MAX_FRAME_SIZE
+        )));
+    }
+    if body.len() < 3 + payload_len {
         return Err(DecodeError::TooShort);
     }
-    Ok((rf_channel, &body[3..]))
+    if body.len() > 3 + payload_len {
+        return Err(DecodeError::TooLong);
+    }
+    Ok((rf_channel, &body[3..3 + payload_len]))
 }
 
 /// Encode a DIAG_RELAY_RESPONSE BLE body.
 ///
 /// Body format: `status (1B) | payload_len (2B BE) | payload`.
+/// When `status` ≠ `DIAG_RELAY_STATUS_OK`, `payload` must be empty.
 pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError> {
+    if status != crate::constants::DIAG_RELAY_STATUS_OK && !payload.is_empty() {
+        return Err(EncodeError::CborError(
+            "DIAG_RELAY_RESPONSE: payload must be empty for non-OK status".into(),
+        ));
+    }
     let payload_len = payload.len() as u16;
     let mut body = Vec::with_capacity(3 + payload.len());
     body.push(status);
@@ -102,17 +131,21 @@ pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>,
 
 /// Decode a DIAG_RELAY_RESPONSE BLE body.
 ///
-/// Returns `(status, payload)` on success.
+/// Returns `(status, payload)` on success. Rejects truncated bodies
+/// and bodies with trailing bytes.
 pub fn decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeError> {
     if body.len() < 3 {
         return Err(DecodeError::TooShort);
     }
     let status = body[0];
     let payload_len = u16::from_be_bytes([body[1], body[2]]) as usize;
-    if body.len() != 3 + payload_len {
+    if body.len() < 3 + payload_len {
         return Err(DecodeError::TooShort);
     }
-    Ok((status, &body[3..]))
+    if body.len() > 3 + payload_len {
+        return Err(DecodeError::TooLong);
+    }
+    Ok((status, &body[3..3 + payload_len]))
 }
 
 #[cfg(test)]
@@ -205,5 +238,41 @@ mod tests {
     #[test]
     fn diag_relay_request_empty_payload_rejected() {
         assert!(encode_diag_relay_request(6, &[]).is_err());
+    }
+
+    #[test]
+    fn diag_relay_request_decode_out_of_range_channel() {
+        let body = [14, 0, 1, 0xAA]; // rf_channel=14
+        assert!(decode_diag_relay_request(&body).is_err());
+    }
+
+    #[test]
+    fn diag_relay_request_decode_zero_payload_len() {
+        let body = [6, 0, 0]; // payload_len=0
+        assert!(decode_diag_relay_request(&body).is_err());
+    }
+
+    #[test]
+    fn diag_relay_request_decode_trailing_bytes() {
+        let body = [6, 0, 1, 0xAA, 0xBB]; // payload_len=1 but 2 data bytes
+        assert!(decode_diag_relay_request(&body).is_err());
+    }
+
+    #[test]
+    fn diag_relay_request_decode_truncated() {
+        let body = [6, 0, 5, 0xAA, 0xBB]; // payload_len=5 but only 2 data bytes
+        assert!(decode_diag_relay_request(&body).is_err());
+    }
+
+    #[test]
+    fn diag_relay_response_non_ok_with_payload_rejected() {
+        assert!(encode_diag_relay_response(0x01, &[0xAA]).is_err());
+        assert!(encode_diag_relay_response(0x02, &[0xBB]).is_err());
+    }
+
+    #[test]
+    fn diag_relay_response_decode_trailing_bytes() {
+        let body = [0x00, 0, 1, 0xAA, 0xBB]; // payload_len=1 but 2 data bytes
+        assert!(decode_diag_relay_response(&body).is_err());
     }
 }

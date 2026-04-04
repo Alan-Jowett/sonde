@@ -92,10 +92,17 @@ fn decode_diag_reply(raw: &[u8], phone_psk: &[u8; 32]) -> GatewayMessage {
 async fn diag_request_good_rssi() {
     let env = TestEnv::new().await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), Some(-50)).await;
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), Some(-50))
+        .await;
     assert!(response.is_some());
     match decode_diag_reply(&response.unwrap(), &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply { signal_quality, rssi_dbm, .. } => {
+        GatewayMessage::DiagReply {
+            signal_quality,
+            rssi_dbm,
+            ..
+        } => {
             assert_eq!(signal_quality, 0);
             assert_eq!(rssi_dbm, -50);
         }
@@ -107,9 +114,17 @@ async fn diag_request_good_rssi() {
 async fn diag_request_marginal_rssi() {
     let env = TestEnv::new().await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), Some(-65)).await.unwrap();
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), Some(-65))
+        .await
+        .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply { signal_quality, rssi_dbm, .. } => {
+        GatewayMessage::DiagReply {
+            signal_quality,
+            rssi_dbm,
+            ..
+        } => {
             assert_eq!(signal_quality, 1);
             assert_eq!(rssi_dbm, -65);
         }
@@ -121,9 +136,17 @@ async fn diag_request_marginal_rssi() {
 async fn diag_request_bad_rssi() {
     let env = TestEnv::new().await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), Some(-80)).await.unwrap();
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), Some(-80))
+        .await
+        .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply { signal_quality, rssi_dbm, .. } => {
+        GatewayMessage::DiagReply {
+            signal_quality,
+            rssi_dbm,
+            ..
+        } => {
             assert_eq!(signal_quality, 2);
             assert_eq!(rssi_dbm, -80);
         }
@@ -135,7 +158,11 @@ async fn diag_request_bad_rssi() {
 async fn diag_request_at_good_boundary() {
     let env = TestEnv::with_thresholds(-60, -75).await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), Some(-60)).await.unwrap();
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), Some(-60))
+        .await
+        .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
         GatewayMessage::DiagReply { signal_quality, .. } => assert_eq!(signal_quality, 0),
         other => panic!("expected DiagReply, got {:?}", other),
@@ -146,7 +173,11 @@ async fn diag_request_at_good_boundary() {
 async fn diag_request_below_bad_boundary() {
     let env = TestEnv::with_thresholds(-60, -75).await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), Some(-76)).await.unwrap();
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), Some(-76))
+        .await
+        .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
         GatewayMessage::DiagReply { signal_quality, .. } => assert_eq!(signal_quality, 2),
         other => panic!("expected DiagReply, got {:?}", other),
@@ -157,9 +188,17 @@ async fn diag_request_below_bad_boundary() {
 async fn diag_request_no_rssi_sentinel() {
     let env = TestEnv::new().await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), None).await.unwrap();
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), None)
+        .await
+        .unwrap();
     match decode_diag_reply(&response, &TEST_PHONE_PSK) {
-        GatewayMessage::DiagReply { signal_quality, rssi_dbm, .. } => {
+        GatewayMessage::DiagReply {
+            signal_quality,
+            rssi_dbm,
+            ..
+        } => {
             assert_eq!(rssi_dbm, 0);
             assert_eq!(signal_quality, 255);
         }
@@ -171,7 +210,10 @@ async fn diag_request_no_rssi_sentinel() {
 async fn diag_request_wrong_psk_discarded() {
     let env = TestEnv::new().await;
     let frame = build_diag_request(&[0xBBu8; 32]);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), Some(-50)).await;
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), Some(-50))
+        .await;
     assert!(response.is_none());
 }
 
@@ -181,25 +223,36 @@ async fn diag_request_revoked_psk_discarded() {
     let hash = RustCryptoSha256.hash(&TEST_PHONE_PSK);
     let hint = u16::from_be_bytes([hash[30], hash[31]]);
     let record = PhonePskRecord {
-        phone_id: 0, phone_key_hint: hint,
-        psk: Zeroizing::new(TEST_PHONE_PSK), label: "test".into(),
-        issued_at: std::time::SystemTime::now(), status: PhonePskStatus::Active,
+        phone_id: 0,
+        phone_key_hint: hint,
+        psk: Zeroizing::new(TEST_PHONE_PSK),
+        label: "test".into(),
+        issued_at: std::time::SystemTime::now(),
+        status: PhonePskStatus::Active,
     };
     let id = storage.store_phone_psk(&record).await.unwrap();
     storage.revoke_phone_psk(id).await.unwrap();
 
     let sm = Arc::new(SessionManager::new(Duration::from_secs(30)));
-    let pc: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> = Arc::new(RwLock::new(HashMap::new()));
+    let pc: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
     let gw = Gateway::new_with_pending(storage, pc, sm);
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    assert!(gw.process_frame_with_rssi(&frame, peer(), Some(-50)).await.is_none());
+    assert!(gw
+        .process_frame_with_rssi(&frame, peer(), Some(-50))
+        .await
+        .is_none());
 }
 
 #[tokio::test]
 async fn diag_reply_echoes_nonce() {
     let env = TestEnv::new().await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), Some(-50)).await.unwrap();
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), Some(-50))
+        .await
+        .unwrap();
     let decoded = decode_frame(&response).unwrap();
     assert_eq!(decoded.header.nonce, 0xDEADBEEF);
 }
@@ -208,7 +261,11 @@ async fn diag_reply_echoes_nonce() {
 async fn diag_reply_uses_phone_key_hint() {
     let env = TestEnv::new().await;
     let frame = build_diag_request(&TEST_PHONE_PSK);
-    let response = env.gateway.process_frame_with_rssi(&frame, peer(), Some(-50)).await.unwrap();
+    let response = env
+        .gateway
+        .process_frame_with_rssi(&frame, peer(), Some(-50))
+        .await
+        .unwrap();
     let decoded = decode_frame(&response).unwrap();
     assert_eq!(decoded.header.key_hint, compute_key_hint(&TEST_PHONE_PSK));
     assert!(open_frame(&decoded, &TEST_PHONE_PSK, &GatewayAead, &RustCryptoSha256).is_ok());

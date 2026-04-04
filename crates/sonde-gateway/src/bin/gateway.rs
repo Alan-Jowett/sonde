@@ -521,11 +521,7 @@ async fn run_gateway(
                 match transport_ref.recv_with_rssi().await {
                     Ok((raw_frame, peer_addr, rssi)) => {
                         if let Some(response) = gateway_ref
-                            .process_frame_with_rssi(
-                                &raw_frame,
-                                peer_addr.clone(),
-                                Some(rssi),
-                            )
+                            .process_frame_with_rssi(&raw_frame, peer_addr.clone(), Some(rssi))
                             .await
                         {
                             if let Err(e) = transport_ref.send(&response, &peer_addr).await {

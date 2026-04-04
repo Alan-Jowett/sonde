@@ -178,9 +178,7 @@ pub fn decrypt_pairing_request(
 /// Build a DIAG_REQUEST ESP-NOW frame authenticated with phone_psk.
 ///
 /// Returns `(frame_bytes, nonce)`. The nonce is needed to verify the reply.
-pub fn build_diag_request_frame(
-    phone_psk: &[u8; 32],
-) -> Result<(Vec<u8>, u64), PairingError> {
+pub fn build_diag_request_frame(phone_psk: &[u8; 32]) -> Result<(Vec<u8>, u64), PairingError> {
     let sha = PairSha256;
     let aead = PairAead;
 
@@ -232,9 +230,7 @@ pub fn decrypt_diag_reply(
         .map_err(|_| PairingError::EncryptionFailed("DIAG_REPLY decryption failed".into()))?;
 
     let msg = sonde_protocol::GatewayMessage::decode(sonde_protocol::MSG_DIAG_REPLY, &payload)
-        .map_err(|e| {
-            PairingError::DiagnosticFailed(format!("DIAG_REPLY CBOR decode: {}", e))
-        })?;
+        .map_err(|e| PairingError::DiagnosticFailed(format!("DIAG_REPLY CBOR decode: {}", e)))?;
 
     match msg {
         sonde_protocol::GatewayMessage::DiagReply {

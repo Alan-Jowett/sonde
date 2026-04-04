@@ -400,8 +400,10 @@ Signal quality thresholds are configurable on the gateway (see `gateway-requirem
 | Assessment | RSSI range | Guidance |
 |---|---|---|
 | `0` (good) | ≥ −60 dBm | Reliable link. Proceed with provisioning. |
-| `1` (marginal) | −60 to −75 dBm | May work but consider repositioning. |
+| `1` (marginal) | < −60 dBm and ≥ −75 dBm | May work but consider repositioning. |
 | `2` (bad) | < −75 dBm | Unreliable link. Reposition node before provisioning. |
+
+The boundaries are inclusive: `−60 dBm` is good, `−75 dBm` is marginal.
 
 ---
 
@@ -584,7 +586,7 @@ The frame transmitted on the wire is: `header ‖ ciphertext ‖ tag[16]`.
 2. Look up candidate PSK(s) by `key_hint`. For `PEER_REQUEST` (`msg_type` 0x05) and `DIAG_REQUEST` (`msg_type` 0x06), look up phone PSKs; for all other message types look up node PSKs. If no candidates → silently discard.
 3. For each candidate PSK, construct the GCM nonce and attempt AES-256-GCM-Open; if any decryption succeeds, accept and bind the frame to that key. If none succeed → silently discard.
 4. For `WAKE` messages: accept; create an active session for this node (replacing any previous session). For `DIAG_REQUEST` messages: accept without session validation (the node is pre-provisioning and has no session; the `nonce` is a random value used only for request-reply binding). For post-WAKE messages: verify the node has an active session and the sequence number in the `nonce` header field matches the expected next value. If no active session or wrong sequence → silently discard.
-5. Advance the session's expected sequence number.
+5. For accepted post-WAKE messages only, advance the session's expected sequence number. `WAKE` and `DIAG_REQUEST` do not create or advance session state.
 6. Decode CBOR payload from the decrypted plaintext. If malformed → log, discard.
 7. Process message.
 

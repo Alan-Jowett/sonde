@@ -146,9 +146,7 @@ fn get_u8(fields: &[(u64, Value)], key: u64) -> Result<u8, DecodeError> {
 
 fn get_i8(fields: &[(u64, Value)], key: u64) -> Result<i8, DecodeError> {
     let val = get_field(fields, key)?;
-    let i = val
-        .as_integer()
-        .ok_or(DecodeError::InvalidFieldType(key))?;
+    let i = val.as_integer().ok_or(DecodeError::InvalidFieldType(key))?;
     let v: i64 = i
         .try_into()
         .map_err(|_| DecodeError::InvalidFieldType(key))?;

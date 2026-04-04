@@ -517,7 +517,7 @@ payload: [u8]       // Raw DIAG_REPLY ESP-NOW frame (if status=0x00)
 
 **Public API:**
 
-- `encode_diag_relay_request(rf_channel: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_REQUEST` BLE envelope. Validates `rf_channel` ∈ 1–13 and `payload.len()` ≤ `MAX_FRAME_SIZE`.
-- `decode_diag_relay_request(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_REQUEST` body, returning `(rf_channel, payload)`.
-- `encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_RESPONSE` BLE envelope.
-- `decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_RESPONSE` body, returning `(status, payload)`.
+- `encode_diag_relay_request(rf_channel: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_REQUEST` body. Validates `rf_channel` ∈ 1–13 and `payload.len()` ≤ `MAX_FRAME_SIZE`. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE `TYPE | LEN | BODY` message.
+- `decode_diag_relay_request(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_REQUEST` body, returning `(rf_channel, payload)`. Validates channel range, payload size, and rejects trailing bytes.
+- `encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError>` — encode a `DIAG_RELAY_RESPONSE` body. Enforces payload must be empty for non-OK status. Wrap the returned body with `encode_ble_envelope(...)` to produce the full BLE message.
+- `decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeError>` — decode a `DIAG_RELAY_RESPONSE` body, returning `(status, payload)`. Rejects truncated and trailing-byte inputs.

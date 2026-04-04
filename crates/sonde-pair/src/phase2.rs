@@ -256,9 +256,8 @@ pub async fn check_rssi(
         crate::crypto::build_diag_request_frame(&artifacts.phone_psk)?;
 
     // 2. Wrap in DIAG_RELAY_REQUEST BLE envelope (PT-1302).
-    let relay_body =
-        sonde_protocol::encode_diag_relay_request(artifacts.rf_channel, &diag_frame)
-            .map_err(|e| PairingError::DiagnosticFailed(format!("relay encode: {}", e)))?;
+    let relay_body = sonde_protocol::encode_diag_relay_request(artifacts.rf_channel, &diag_frame)
+        .map_err(|e| PairingError::DiagnosticFailed(format!("relay encode: {}", e)))?;
     let envelope =
         sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_REQUEST, &relay_body)
             .ok_or_else(|| PairingError::DiagnosticFailed("BLE envelope too large".into()))?;

@@ -628,10 +628,7 @@ impl Gateway {
 
         let frame = self.encode_response(&reply_header, &reply_cbor, &phone_psk)?;
 
-        info!(
-            rssi_dbm,
-            signal_quality, "DIAG_REPLY sent (GW-1706)"
-        );
+        info!(rssi_dbm, signal_quality, "DIAG_REPLY sent (GW-1706)");
 
         Some(frame)
     }

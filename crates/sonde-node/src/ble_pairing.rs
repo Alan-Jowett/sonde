@@ -385,8 +385,7 @@ fn encode_diag_relay_status(status: u8) -> Vec<u8> {
 
 /// Encode a DIAG_RELAY_RESPONSE BLE envelope.
 pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Vec<u8> {
-    let body =
-        sonde_protocol::encode_diag_relay_response(status, payload).expect("response fits");
+    let body = sonde_protocol::encode_diag_relay_response(status, payload).expect("response fits");
     encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESPONSE, &body)
         .expect("response envelope fits")
 }
@@ -420,11 +419,10 @@ pub fn do_diag_relay<T: crate::traits::Transport>(
         // Listen for DIAG_REPLY (msg_type 0x85 at header byte offset 2).
         match transport.recv(DIAG_LISTEN_TIMEOUT_MS) {
             Ok(Some(raw)) => {
-                if raw.len() >= 3 && raw[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY {
-                    return encode_diag_relay_response(
-                        sonde_protocol::DIAG_RELAY_STATUS_OK,
-                        &raw,
-                    );
+                if raw.len() >= 3
+                    && raw[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY
+                {
+                    return encode_diag_relay_response(sonde_protocol::DIAG_RELAY_STATUS_OK, &raw);
                 }
                 // Wrong msg_type — discard and continue listening
             }

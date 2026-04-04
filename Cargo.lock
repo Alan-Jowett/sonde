@@ -5298,10 +5298,9 @@ name = "sonde-e2e"
 version = "0.3.0"
 dependencies = [
  "ciborium",
- "hmac",
+ "ed25519-dalek",
  "sha2",
  "sonde-gateway",
- "sonde-modem",
  "sonde-node",
  "sonde-pair",
  "sonde-protocol",
@@ -5380,7 +5379,6 @@ dependencies = [
  "esp-idf-svc",
  "esp-idf-sys",
  "esp32-nimble",
- "hmac",
  "log",
  "sha2",
  "sonde-bpf",
@@ -5394,12 +5392,8 @@ dependencies = [
  "aes-gcm",
  "btleplug",
  "ciborium",
- "curve25519-dalek",
- "ed25519-dalek",
  "futures",
  "getrandom 0.4.2",
- "hkdf",
- "hmac",
  "jni 0.22.4",
  "secret-service",
  "serde",
@@ -5414,7 +5408,6 @@ dependencies = [
  "tracing-test",
  "uuid",
  "windows-sys 0.61.2",
- "x25519-dalek",
  "zeroize",
 ]
 
@@ -5438,7 +5431,6 @@ version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "ciborium",
- "hmac",
  "sha2",
 ]
 

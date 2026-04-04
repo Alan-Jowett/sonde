@@ -19,7 +19,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
-use sonde_gateway::crypto::RustCryptoHmac;
+use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::gateway_identity::GatewayIdentity;
 use sonde_gateway::phone_trust::{PhonePskRecord, PhonePskStatus};
@@ -29,18 +29,16 @@ use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::{PeerAddress, Transport};
 
+use sonde_gateway::GatewayAead;
 #[cfg(debug_assertions)]
 use sonde_protocol::modem::{encode_modem_frame, FrameDecoder, ModemMessage, RecvFrame};
 use sonde_protocol::{
-    encode_frame, FrameHeader, GatewayMessage, HmacProvider, NodeMessage, Sha256Provider,
-    MSG_APP_DATA, MSG_PEER_REQUEST, MSG_WAKE, PEER_REQ_KEY_PAYLOAD,
+    encode_frame_aead, FrameHeader, GatewayMessage, NodeMessage, Sha256Provider, MSG_APP_DATA,
+    MSG_PEER_REQUEST, MSG_WAKE, PEER_REQ_KEY_PAYLOAD,
 };
 
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce as GcmNonce};
-use hkdf::Hkdf;
-use sha2::Sha256;
-use x25519_dalek::PublicKey as X25519PublicKey;
 
 use tracing_test::traced_test;
 
@@ -116,7 +114,7 @@ impl TestNode {
             battery_mv,
         };
         let cbor = msg.encode().unwrap();
-        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
     fn build_app_data(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
@@ -129,27 +127,19 @@ impl TestNode {
             blob: blob.to_vec(),
         };
         let cbor = msg.encode().unwrap();
-        encode_frame(&header, &cbor, &self.psk, &RustCryptoHmac).unwrap()
+        encode_frame_aead(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 }
 
 // ── PEER_REQUEST helpers (adapted from peer_request.rs) ────────────────
 
-fn ecdh_encrypt(identity: &GatewayIdentity, plaintext: &[u8]) -> Vec<u8> {
-    let mut eph_scalar = [0u8; 32];
-    getrandom::fill(&mut eph_scalar).unwrap();
-    let eph_secret = x25519_dalek::StaticSecret::from(eph_scalar);
-    let eph_public = X25519PublicKey::from(&eph_secret);
+/// Encrypt PairingRequest CBOR with phone_psk using AES-256-GCM.
+/// Returns: inner_nonce(12) ‖ ciphertext ‖ tag(16)
+/// AAD = "sonde-pairing-v2"
+fn encrypt_inner_payload(pairing_cbor: &[u8], phone_psk: &[u8; 32]) -> Vec<u8> {
+    const PAIRING_AAD: &[u8] = b"sonde-pairing-v2";
 
-    let (_, gw_x25519_public) = identity.to_x25519().unwrap();
-    let shared_secret = eph_secret.diffie_hellman(&gw_x25519_public);
-
-    let gateway_id = identity.gateway_id();
-    let hkdf = Hkdf::<Sha256>::new(Some(gateway_id), shared_secret.as_bytes());
-    let mut aes_key = [0u8; 32];
-    hkdf.expand(b"sonde-node-pair-v1", &mut aes_key).unwrap();
-
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
+    let cipher = Aes256Gcm::new_from_slice(phone_psk).unwrap();
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes).unwrap();
     let nonce = GcmNonce::from_slice(&nonce_bytes);
@@ -157,28 +147,28 @@ fn ecdh_encrypt(identity: &GatewayIdentity, plaintext: &[u8]) -> Vec<u8> {
     let ciphertext = cipher
         .encrypt(
             nonce,
-            aes_gcm::aead::Payload {
-                msg: plaintext,
-                aad: gateway_id,
+            Payload {
+                msg: pairing_cbor,
+                aad: PAIRING_AAD,
             },
         )
         .unwrap();
 
-    let mut out = Vec::new();
-    out.extend_from_slice(eph_public.as_bytes());
+    let mut out = Vec::with_capacity(12 + ciphertext.len());
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ciphertext);
     out
 }
 
 fn build_peer_request(
-    identity: &GatewayIdentity,
+    _identity: &GatewayIdentity,
     node_id: &str,
     node_psk: &[u8; 32],
     rf_channel: u8,
     phone_psk: &[u8; 32],
 ) -> Vec<u8> {
     let node_key_hint = compute_key_hint(node_psk);
+    let phone_key_hint = compute_key_hint(phone_psk);
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -210,20 +200,8 @@ fn build_peer_request(
     let mut cbor_bytes = Vec::new();
     ciborium::into_writer(&cbor, &mut cbor_bytes).unwrap();
 
-    // Authenticated request: phone_key_hint(2) + inner_cbor + HMAC(phone_psk, inner_cbor).
-    let crypto_sha = sonde_gateway::crypto::RustCryptoSha256;
-    let phone_hash = crypto_sha.hash(phone_psk);
-    let phone_key_hint_bytes = u16::from_be_bytes([phone_hash[30], phone_hash[31]]);
-
-    let hmac = RustCryptoHmac;
-    let phone_hmac = hmac.compute(phone_psk, &cbor_bytes);
-
-    let mut authenticated = Vec::new();
-    authenticated.extend_from_slice(&phone_key_hint_bytes.to_be_bytes());
-    authenticated.extend_from_slice(&cbor_bytes);
-    authenticated.extend_from_slice(&phone_hmac);
-
-    let encrypted_payload = ecdh_encrypt(identity, &authenticated);
+    // Encrypt inner payload with phone_psk.
+    let encrypted_payload = encrypt_inner_payload(&cbor_bytes, phone_psk);
 
     // Outer CBOR: { 1: encrypted_payload }
     let outer = ciborium::Value::Map(vec![(
@@ -234,12 +212,19 @@ fn build_peer_request(
     ciborium::into_writer(&outer, &mut outer_buf).unwrap();
 
     let header = FrameHeader {
-        key_hint: node_key_hint,
+        key_hint: phone_key_hint,
         msg_type: MSG_PEER_REQUEST,
         nonce: 0x1234567890ABCDEF,
     };
 
-    encode_frame(&header, &outer_buf, node_psk, &RustCryptoHmac).unwrap()
+    encode_frame_aead(
+        &header,
+        &outer_buf,
+        phone_psk,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap()
 }
 
 // ── T-1300  WAKE lifecycle logging ─────────────────────────────────────
@@ -259,7 +244,7 @@ async fn t1300_wake_lifecycle_logging() {
     storage.upsert_node(&record).await.unwrap();
 
     let frame = node.build_wake(100, 1, &program_hash, 3300);
-    let resp = gw.process_frame(&frame, node.peer_address()).await;
+    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
     assert!(resp.is_some(), "expected COMMAND response");
 
     // GW-1300 AC3: WAKE received with node_id, seq, battery_mv.
@@ -341,11 +326,11 @@ async fn t1302_peer_request_logging() {
     );
     let peer: PeerAddress = b"peer-addr".to_vec();
 
-    let resp = gw.process_frame(&frame, peer).await;
+    let resp = gw.process_frame_aead(&frame, peer).await;
     assert!(resp.is_some(), "expected PEER_ACK response");
 
     // GW-1300 AC1: PEER_REQUEST processed with result "registered" and key_hint.
-    assert!(logs_contain("PEER_REQUEST processed"));
+    assert!(logs_contain("PEER_REQUEST (AEAD) processed"));
     assert!(logs_contain(r#"result="registered""#));
     assert!(logs_contain("node_id=node-peer-log"));
     let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
@@ -353,7 +338,7 @@ async fn t1302_peer_request_logging() {
     assert!(logs_contain(&expected_key_hint_field));
 
     // GW-1300 AC2: PEER_ACK frame encoded with node_id.
-    assert!(logs_contain("PEER_ACK frame encoded"));
+    assert!(logs_contain("PEER_ACK (AEAD) frame encoded"));
     assert!(logs_contain("node_id=node-peer-log"));
 }
 
@@ -675,7 +660,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
 
     // WAKE to establish session.
     let frame = node.build_wake(5000, 1, &program_hash, 3300);
-    let resp = gw.process_frame(&frame, node.peer_address()).await;
+    let resp = gw.process_frame_aead(&frame, node.peer_address()).await;
     assert!(resp.is_some(), "expected COMMAND response");
 
     let (_hdr, msg) = decode_command(&resp.unwrap(), &node.psk);
@@ -688,7 +673,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
     let blob = vec![0x01, 0x02, 0x03];
     let app_frame = node.build_app_data(starting_seq, &blob);
     let resp = gw
-        .process_frame(&app_frame, node.peer_address())
+        .process_frame_aead(&app_frame, node.peer_address())
         .await
         .expect("expected APP_DATA_REPLY");
 
@@ -700,7 +685,9 @@ async fn t1308_app_data_handler_pipeline_logging() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         let app_frame2 = node.build_app_data(starting_seq + 1, &blob);
-        let _ = gw.process_frame(&app_frame2, node.peer_address()).await;
+        let _ = gw
+            .process_frame_aead(&app_frame2, node.peer_address())
+            .await;
         if logs_contain("handler exited") {
             break;
         }
@@ -767,13 +754,10 @@ async fn t1308_app_data_handler_pipeline_logging() {
     );
 
     // Verify the reply was correct.
-    let decoded = sonde_protocol::decode_frame(&resp).unwrap();
-    assert!(sonde_protocol::verify_frame(
-        &decoded,
-        &node.psk,
-        &RustCryptoHmac
-    ));
-    let reply_msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+    let decoded = sonde_protocol::decode_frame_aead(&resp).unwrap();
+    let plaintext =
+        sonde_protocol::open_frame(&decoded, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let reply_msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     match reply_msg {
         GatewayMessage::AppDataReply { blob: reply_blob } => {
             assert_eq!(reply_blob, blob);
@@ -783,8 +767,9 @@ async fn t1308_app_data_handler_pipeline_logging() {
 }
 
 fn decode_command(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
-    let decoded = sonde_protocol::decode_frame(raw).unwrap();
-    assert!(sonde_protocol::verify_frame(&decoded, psk, &RustCryptoHmac));
-    let msg = GatewayMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+    let decoded = sonde_protocol::decode_frame_aead(raw).unwrap();
+    let plaintext =
+        sonde_protocol::open_frame(&decoded, psk, &GatewayAead, &RustCryptoSha256).unwrap();
+    let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     (decoded.header, msg)
 }

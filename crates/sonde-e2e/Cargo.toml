@@ -8,23 +8,16 @@ description = "End-to-end integration tests for the sonde platform"
 sonde-protocol = { path = "../sonde-protocol" }
 sonde-gateway = { path = "../sonde-gateway" }
 sonde-node = { path = "../sonde-node" }
-sonde-modem = { path = "../sonde-modem" }
 sonde-pair = { path = "../sonde-pair", features = ["loopback-ble"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-util = "0.7"
-hmac = "0.12"
+ed25519-dalek = "2"
 sha2 = "0.10"
 zeroize = "1.8.2"
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_info"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
-default = ["aes-gcm-codec"]
-aes-gcm-codec = [
-    "sonde-protocol/aes-gcm-codec",
-    "sonde-gateway/aes-gcm-codec",
-    "sonde-node/aes-gcm-codec",
-]
 
 [dev-dependencies]
 ciborium = "0.2"

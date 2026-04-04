@@ -44,14 +44,13 @@ mod core_feature_independence_tests {
     use crate::envelope::{build_envelope, parse_envelope};
     use crate::error::PairingError;
     use crate::rng::{MockRng, RngProvider};
-    use crate::store::{MemoryPairingStore, PairingStore};
     use crate::transport::MockBleTransport;
     use crate::types::*;
     use crate::validation::{compute_key_hint, validate_node_id, validate_rf_channel};
 
     /// Validates: PT-1004
     ///
-    /// The core pairing types, store, transport trait, envelope codec,
+    /// The core pairing types, transport trait, envelope codec,
     /// crypto, validation, and mock implementations must all be usable
     /// without enabling any platform feature flags.
     #[test]
@@ -63,22 +62,6 @@ mod core_feature_independence_tests {
             rssi: -50,
             service_uuids: vec![GATEWAY_SERVICE_UUID],
         };
-        let identity = GatewayIdentity {
-            public_key: [0x42u8; 32],
-            gateway_id: [0x01u8; 16],
-        };
-        let _artifacts = PairingArtifacts {
-            gateway_identity: identity.clone(),
-            phone_psk: zeroize::Zeroizing::new([0x42u8; 32]),
-            phone_key_hint: 0x1234,
-            rf_channel: 6,
-            phone_label: "test".into(),
-        };
-
-        // Store trait (MemoryPairingStore)
-        let mut store = MemoryPairingStore::new();
-        store.save_gateway_identity(&identity).unwrap();
-        assert!(store.load_gateway_identity().unwrap().is_some());
 
         // Transport trait (MockBleTransport)
         let _transport = MockBleTransport::new(247);
@@ -100,10 +83,10 @@ mod core_feature_independence_tests {
         rng.fill_bytes(&mut buf).unwrap();
 
         // Crypto
-        let hmac = crypto::hmac_sha256(&[0x42u8; 32], b"test");
-        assert_eq!(hmac.len(), 32);
+        let hash = crypto::sha256(b"test");
+        assert_eq!(hash.len(), 32);
 
         // Error types
-        let _err = PairingError::NotPaired;
+        let _err = PairingError::DecryptionFailed;
     }
 }

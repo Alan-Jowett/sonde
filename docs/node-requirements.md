@@ -920,7 +920,7 @@ After transmitting a PEER_REQUEST the node MUST listen for a PEER_ACK for at lea
 **Source:** ble-pairing-protocol.md §7.2
 
 **Description:**  
-The node MUST verify the PEER_ACK frame by attempting AES-256-GCM-Open using `node_psk`, and verify that the nonce matches the nonce sent in the corresponding PEER_REQUEST. Successful decryption constitutes proof that the gateway holds `node_psk` (replacing the former `registration_proof` HMAC).
+The node MUST verify the PEER_ACK frame by attempting AES-256-GCM-Open using `node_psk`, and verify that the nonce matches the nonce sent in the corresponding PEER_REQUEST. Successful decryption constitutes proof that the gateway holds `node_psk`.
 
 **Acceptance criteria:**
 

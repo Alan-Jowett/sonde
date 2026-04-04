@@ -13,7 +13,7 @@
 
 The BLE pairing tool is a cross-platform application that provisions Sonde nodes over Bluetooth Low Energy.  It implements two protocol phases:
 
-1. **Phase 1 — Gateway pairing** (one-time): the tool connects to a gateway's BLE service, authenticates it via Ed25519 challenge–response, registers as a pairing agent, and receives a phone PSK via ECDH-encrypted channel.
+1. **Phase 1 — Gateway pairing** (one-time): the tool connects to a gateway's BLE service, authenticates via BLE LESC, registers as a pairing agent, and receives a phone PSK over the secure BLE link.
 2. **Phase 2 — Node provisioning** (per node): the tool generates a node PSK, constructs an encrypted pairing payload, and writes it to a node's BLE service.  The node stores the payload and relays it to the gateway over ESP-NOW on next boot.
 
 The tool is a Rust-first application following a Tauri-style architecture: all protocol logic, cryptography, and persistence live in a shared Rust crate (`sonde-pair`), with a thin UI shell invoking Rust commands.  The core crate has no platform dependencies and is testable with mocked BLE transport and storage (PT-0101, PT-0102, PT-0104).
@@ -26,14 +26,10 @@ The tool is a Rust-first application following a Tauri-style architecture: all p
 |---|---|---|
 | Language | Rust | Memory safety, strong typing, zeroize support for key material, consistent with rest of Sonde |
 | UI framework | Tauri v2 | Cross-platform desktop + mobile, Rust backend, WebView frontend, Android support via Tauri Mobile |
-| Protocol crate | `sonde-protocol` (shared) | CBOR encoding, HMAC, SHA-256, key_hint derivation — reuses existing workspace crate (PT-0103) |
+| Protocol crate | `sonde-protocol` (shared) | CBOR encoding, AES-256-GCM, SHA-256, key_hint derivation — reuses existing workspace crate (PT-0103) |
 | BLE library (desktop) | `btleplug` | Cross-platform BLE (Windows WinRT, macOS CoreBluetooth, Linux BlueZ); active maintenance |
 | BLE library (Android) | Android BLE API via JNI | `btleplug` does not support Android; Tauri Mobile provides JNI bridge |
-| Ed25519 | `ed25519-dalek` | Pure Rust, audited, supports Ed25519 → X25519 conversion (PT-1100) |
-| X25519 ECDH | `x25519-dalek` | Companion to `ed25519-dalek`, constant-time, zeroize support |
-| HKDF | `hkdf` + `sha2` | RustCrypto HKDF-SHA256 implementation (PT-1101) |
-| AES-256-GCM | `aes-gcm` | RustCrypto AES-GCM, pure Rust, no OpenSSL dependency (PT-1100) |
-| HMAC-SHA256 | `hmac` + `sha2` (via `sonde-protocol::HmacProvider`) | Reuses protocol crate trait (PT-0404) |
+| AES-256-GCM | `aes-gcm` | RustCrypto AES-GCM, pure Rust, no OpenSSL dependency — sole frame authentication mechanism (PT-1100) |
 | SHA-256 | `sha2` (via `sonde-protocol::Sha256Provider`) | Reuses protocol crate trait for key_hint derivation (PT-0402) |
 | CSPRNG | `getrandom` | OS-level CSPRNG, no `rand::rng()` dependency (PT-0901) |
 | Key zeroing | `zeroize` | Wraps ephemeral keys, shared secrets, derived AES keys in `Zeroizing<[u8; N]>` (PT-0304, PT-0408) |
@@ -58,7 +54,7 @@ crates/sonde-pair/
     ├── discovery.rs            # BLE scan logic, device filtering, scan lifecycle
     ├── phase1.rs               # Phase 1 state machine (gateway pairing)
     ├── phase2.rs               # Phase 2 state machine (node provisioning)
-    ├── crypto.rs               # Ed25519 verification, X25519 ECDH, HKDF, AES-GCM, HMAC
+    ├── crypto.rs               # Ed25519 verification, AES-GCM, SHA-256
     ├── envelope.rs             # BLE message envelope (TYPE + LEN + BODY) encode/decode
     ├── cbor.rs                 # PairingRequest CBOR construction (deterministic encoding)
     ├── validation.rs           # Input validation (node_id, rf_channel, label, payload size)
@@ -71,7 +67,7 @@ crates/sonde-pair/
 
 | Dependency | Allowed |
 |---|---|
-| `sonde-protocol` | ✅ CBOR, HMAC, SHA-256, key_hint, constants |
+| `sonde-protocol` | ✅ CBOR, AES-256-GCM, SHA-256, key_hint, constants |
 | `sonde-gateway` | ❌ No gateway dependency (PT-0103) |
 | `sonde-node` | ❌ No node dependency (PT-0103) |
 | `sonde-modem` | ❌ No modem dependency (PT-0103) |
@@ -84,11 +80,8 @@ crates/sonde-pair/
 [dependencies]
 sonde-protocol = { path = "../sonde-protocol" }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-hkdf = "0.12"
 sha2 = "0.10"
 aes-gcm = "0.10"
-hmac = "0.12"
 getrandom = "0.3"
 zeroize = { version = "1", features = ["derive"] }
 ciborium = "0.2"
@@ -201,7 +194,7 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 │ 2. Generate node_psk (CSPRNG)│
 │ 3. Derive node_key_hint     │
 │ 4. Build PairingRequest CBOR│
-│ 5. HMAC with phone_psk      │
+│ 5. Encrypt with phone_psk   │
 │ 6. Encrypt with gw_public_key│
 │ 7. Check payload ≤ 202 bytes│──── too large ──► Error (before BLE)
 │ 8. Assemble NODE_PROVISION   │
@@ -405,40 +398,11 @@ pub fn ed25519_to_x25519_public(
 
 Uses `curve25519_dalek::edwards::CompressedEdwardsY` → `to_montgomery()` conversion.  After conversion, checks that the resulting X25519 public key is not a low-order point (all-zero or small-order Curve25519 points).  Returns `PairingError::InvalidGatewayPublicKey` on failure.
 
-### 6.3  X25519 ECDH key agreement
+### 6.3  AES-256-GCM encryption/decryption — RETIRED (§6.3 renumbered)
 
-Used in both Phase 1 and Phase 2 (PT-1100).
+> **RETIRED (issue #628).** X25519 ECDH key agreement and HKDF key derivation are no longer used. AES-256-GCM with pre-shared keys (PSK-direct) replaces all asymmetric cryptography in the pairing flow.
 
-```rust
-/// Generate an ephemeral X25519 keypair and perform ECDH.
-/// Returns (ephemeral_public_key, shared_secret).
-/// The shared_secret is wrapped in Zeroizing.
-pub fn ecdh_ephemeral(
-    peer_public: &x25519_dalek::PublicKey,
-    rng: &dyn RngProvider,
-) -> Result<([u8; 32], Zeroizing<[u8; 32]>), PairingError>
-```
-
-### 6.4  HKDF-SHA256 key derivation
-
-Derives AES-256-GCM keys from ECDH shared secrets (PT-1101).
-
-```rust
-/// Derive a 32-byte AES key from ECDH shared secret via HKDF-SHA256.
-/// Returns the key wrapped in Zeroizing.
-pub fn derive_aes_key(
-    shared_secret: &[u8; 32],
-    gateway_id: &[u8; 16],
-    info: &[u8],
-) -> Zeroizing<[u8; 32]>
-```
-
-| Phase | HKDF salt | HKDF info | Source |
-|-------|-----------|-----------|--------|
-| Phase 1 (decrypt `PHONE_REGISTERED`) | `gateway_id` (16 bytes) | `b"sonde-phone-reg-v1"` | [ble-pairing-protocol.md §5.5](ble-pairing-protocol.md) |
-| Phase 2 (encrypt pairing payload) | `gateway_id` (16 bytes) | `b"sonde-node-pair-v1"` | [ble-pairing-protocol.md §6.4](ble-pairing-protocol.md) |
-
-### 6.5  AES-256-GCM encryption/decryption
+### 6.4  AES-256-GCM encryption/decryption
 
 Used for Phase 1 (decrypt `PHONE_REGISTERED`) and Phase 2 (encrypt pairing payload) (PT-1102).
 
@@ -463,20 +427,7 @@ pub fn aes_gcm_encrypt(
 ) -> Result<([u8; 12], Vec<u8>), PairingError>
 ```
 
-### 6.6  HMAC-SHA256 authentication (Phase 2)
-
-Authenticates PairingRequest CBOR with the phone PSK (PT-0404).  Uses `sonde_protocol::HmacProvider` with a software implementation.
-
-```rust
-/// Compute HMAC-SHA256(phone_psk, cbor_bytes).
-/// Returns the 32-byte HMAC tag.
-pub fn compute_phone_hmac(
-    phone_psk: &[u8; 32],
-    cbor_bytes: &[u8],
-) -> [u8; 32]
-```
-
-### 6.7  SHA-256 key_hint derivation
+### 6.5  SHA-256 key_hint derivation
 
 Derives `key_hint` from a PSK (PT-0402).  Uses `sonde_protocol::Sha256Provider` with a software implementation.
 
@@ -493,11 +444,8 @@ All intermediate cryptographic material is explicitly zeroed after use:
 
 | Material | Lifetime | Zeroed when |
 |---|---|---|
-| Ephemeral X25519 private key | Phase 1: `REGISTER_PHONE` → decrypt complete; Phase 2: encrypt complete | Immediately after ECDH shared secret is derived |
-| ECDH shared secret | Derived → HKDF complete | Immediately after AES key is derived |
-| Derived AES key | HKDF output → encrypt/decrypt complete | Immediately after AES-GCM operation completes |
 | Node PSK (Phase 2) | Generated → `NODE_PROVISION` written | After `NODE_ACK(0x00)` received |
-| Phone PSK (Phase 1) | Decrypted from `PHONE_REGISTERED` → persisted | After write to PairingStore completes |
+| Phone PSK (Phase 1) | Received over BLE LESC → persisted | After write to PairingStore completes |
 
 All values above are wrapped in `Zeroizing<[u8; N]>` to ensure zeroing on drop even in error paths.
 
@@ -866,11 +814,10 @@ Cryptographic operations and CBOR construction — testable with known test vect
 | Step | Module | What to build | Test with |
 |---|---|---|---|
 | P2.1 | `crypto.rs` (signature) | `verify_gateway_signature()`, `ed25519_to_x25519_public()` | T-PT-202, T-PT-203, T-PT-309 |
-| P2.2 | `crypto.rs` (ECDH) | `ecdh_ephemeral()`, `derive_aes_key()` | T-PT-900, T-PT-901 |
-| P2.3 | `crypto.rs` (AES-GCM) | `aes_gcm_encrypt()`, `aes_gcm_decrypt()`, `compute_phone_hmac()`, `derive_key_hint()` | T-PT-307, T-PT-308, T-PT-902, T-PT-303 |
-| P2.4 | `cbor.rs` | `PairingRequest` CBOR construction with deterministic encoding (RFC 8949 §4.2) | T-PT-304, T-PT-903 |
+| P2.2 | `crypto.rs` (AES-GCM) | `aes_gcm_encrypt()`, `aes_gcm_decrypt()`, `derive_key_hint()` | T-PT-307, T-PT-308, T-PT-902, T-PT-303 |
+| P2.3 | `cbor.rs` | `PairingRequest` CBOR construction with deterministic encoding (RFC 8949 §4.2) | T-PT-304, T-PT-903 |
 
-**Exit criteria (P2):** All cryptographic operations pass known test vectors.  CBOR encoding is deterministic and matches precomputed reference vectors.  HKDF parameters are correct for both phases.  AES-GCM AAD is verified.
+**Exit criteria (P2):** All cryptographic operations pass known test vectors.  CBOR encoding is deterministic and matches precomputed reference vectors.  AES-GCM AAD is verified.
 
 ### Phase P3: Protocol state machines (steps P3.1–P3.4)
 
@@ -938,7 +885,7 @@ For in-process log capture (e.g., displaying logs in the Tauri UI or capturing i
 | `warn!` | Recoverable issues requiring operator attention | Already-paired gateway overwrite (PT-0601) |
 | `info!` | High-level milestones | Phase transitions, pairing complete, signature verified |
 | `debug!` | Operational detail visible in verbose mode | Scan start/stop, device discovered, MTU negotiated, LESC method |
-| `trace!` | Protocol-level detail for deep debugging | GATT writes, CBOR field counts, ECDH steps, CBOR encoding |
+| `trace!` | Protocol-level detail for deep debugging | GATT writes, CBOR field counts, AES-GCM operations, CBOR encoding |
 
 ### 14.3  Structured fields
 

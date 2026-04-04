@@ -19,8 +19,6 @@
 
 use std::cell::RefCell;
 
-use sonde_protocol::HmacProvider;
-#[cfg(feature = "aes-gcm-codec")]
 use sonde_protocol::{AeadProvider, Sha256Provider};
 
 use crate::bpf_helpers::ProgramClass;
@@ -123,10 +121,6 @@ struct DispatchContext {
     map_storage: *mut MapStorage,
     sleep_mgr: *mut SleepManager,
     clock: *const dyn Clock,
-    /// HMAC provider — used for APP_DATA framing when `aes-gcm-codec` is disabled.
-    /// Retained (but unused) when AEAD is active so the HMAC wake cycle still compiles.
-    #[cfg_attr(feature = "aes-gcm-codec", allow(dead_code))]
-    hmac: *const dyn HmacProvider,
     identity: *const NodeIdentity,
     current_seq: *mut u64,
     program_class: ProgramClass,
@@ -137,9 +131,7 @@ struct DispatchContext {
     /// Relocated map pointer → index mapping (linear scan, bounded by MAX_MAPS).
     map_ptr_index: MapPtrIndex,
     /// AEAD + SHA providers for AES-256-GCM frame encoding.
-    /// `None` when running under the HMAC-only wake cycle (no AEAD providers installed).
-    #[cfg(feature = "aes-gcm-codec")]
-    aead: Option<(*const dyn AeadProvider, *const dyn Sha256Provider)>,
+    aead: (*const dyn AeadProvider, *const dyn Sha256Provider),
 }
 
 thread_local! {
@@ -163,54 +155,14 @@ fn with_ctx<R>(f: impl FnOnce(&mut DispatchContext) -> R) -> Option<R> {
 // Lifecycle (called by run_wake_cycle)
 // ---------------------------------------------------------------------------
 
-/// Install the dispatch context for the current thread.
-///
-/// # Safety
-///
-/// All pointers must remain valid until [`clear`] is called.
-/// The caller (`run_wake_cycle`) guarantees this by holding ownership
-/// of every referenced object on its stack.
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn install(
-    hal: *mut dyn Hal,
-    transport: *mut dyn Transport,
-    map_storage: *mut MapStorage,
-    sleep_mgr: *mut SleepManager,
-    clock: *const dyn Clock,
-    hmac: *const dyn HmacProvider,
-    identity: *const NodeIdentity,
-    current_seq: *mut u64,
-    program_class: ProgramClass,
-    trace_log: *mut Vec<String>,
-    gateway_timestamp_ms: u64,
-    command_received_at_ms: u64,
-    battery_mv: u32,
-) {
-    install_core(
-        hal,
-        transport,
-        map_storage,
-        sleep_mgr,
-        clock,
-        hmac,
-        identity,
-        current_seq,
-        program_class,
-        trace_log,
-        gateway_timestamp_ms,
-        command_received_at_ms,
-        battery_mv,
-        #[cfg(feature = "aes-gcm-codec")]
-        None,
-    );
-}
-
 /// Install with AEAD providers for AES-256-GCM frame encoding.
 ///
 /// # Safety
 ///
-/// Same contract as [`install`], plus `aead` and `sha` must remain valid.
-#[cfg(feature = "aes-gcm-codec")]
+/// All pointers must remain valid until [`clear`] is called.
+/// The caller (`run_wake_cycle_aead`) guarantees this by holding
+/// ownership of every referenced object on its stack.
+/// `aead` and `sha` must also remain valid.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn install_aead(
     hal: *mut dyn Hal,
@@ -218,7 +170,6 @@ pub unsafe fn install_aead(
     map_storage: *mut MapStorage,
     sleep_mgr: *mut SleepManager,
     clock: *const dyn Clock,
-    hmac: *const dyn HmacProvider,
     identity: *const NodeIdentity,
     current_seq: *mut u64,
     program_class: ProgramClass,
@@ -235,7 +186,6 @@ pub unsafe fn install_aead(
         map_storage,
         sleep_mgr,
         clock,
-        hmac,
         identity,
         current_seq,
         program_class,
@@ -243,7 +193,8 @@ pub unsafe fn install_aead(
         gateway_timestamp_ms,
         command_received_at_ms,
         battery_mv,
-        Some((aead, sha)),
+        aead,
+        sha,
     );
 }
 
@@ -254,7 +205,6 @@ unsafe fn install_core(
     map_storage: *mut MapStorage,
     sleep_mgr: *mut SleepManager,
     clock: *const dyn Clock,
-    hmac: *const dyn HmacProvider,
     identity: *const NodeIdentity,
     current_seq: *mut u64,
     program_class: ProgramClass,
@@ -262,10 +212,8 @@ unsafe fn install_core(
     gateway_timestamp_ms: u64,
     command_received_at_ms: u64,
     battery_mv: u32,
-    #[cfg(feature = "aes-gcm-codec")] aead_sha: Option<(
-        *const dyn AeadProvider,
-        *const dyn Sha256Provider,
-    )>,
+    aead: *const dyn AeadProvider,
+    sha: *const dyn Sha256Provider,
 ) {
     CTX.with(|cell| {
         let mut borrow = cell.borrow_mut();
@@ -313,7 +261,6 @@ unsafe fn install_core(
             map_storage,
             sleep_mgr,
             clock,
-            hmac,
             identity,
             current_seq,
             program_class,
@@ -322,8 +269,7 @@ unsafe fn install_core(
             command_received_at_ms,
             battery_mv,
             map_ptr_index,
-            #[cfg(feature = "aes-gcm-codec")]
-            aead: aead_sha,
+            aead: (aead, sha),
         });
     });
 }
@@ -509,15 +455,7 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     let result = with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
-        #[cfg(feature = "aes-gcm-codec")]
-        let max_payload = if ctx.aead.is_some() {
-            sonde_protocol::MAX_PAYLOAD_SIZE_AEAD
-        } else {
-            sonde_protocol::MAX_PAYLOAD_SIZE
-        };
-        #[cfg(not(feature = "aes-gcm-codec"))]
-        let max_payload = sonde_protocol::MAX_PAYLOAD_SIZE;
-        if blob_ptr.is_null() || blob_len > max_payload {
+        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD {
             return (-1i64) as u64;
         }
 
@@ -527,32 +465,12 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
             let transport = &mut *ctx.transport;
             let seq = &mut *ctx.current_seq;
 
-            #[cfg(feature = "aes-gcm-codec")]
-            {
-                if let Some((aead_ptr, sha_ptr)) = ctx.aead {
-                    let aead = &*aead_ptr;
-                    let sha = &*sha_ptr;
-                    match crate::wake_cycle::send_app_data_aead(
-                        transport, identity, seq, blob, aead, sha,
-                    ) {
-                        Ok(()) => 0,
-                        Err(_) => (-1i64) as u64,
-                    }
-                } else {
-                    let hmac = &*ctx.hmac;
-                    match crate::wake_cycle::send_app_data(transport, identity, seq, blob, hmac) {
-                        Ok(()) => 0,
-                        Err(_) => (-1i64) as u64,
-                    }
-                }
-            }
-            #[cfg(not(feature = "aes-gcm-codec"))]
-            {
-                let hmac = &*ctx.hmac;
-                match crate::wake_cycle::send_app_data(transport, identity, seq, blob, hmac) {
-                    Ok(()) => 0,
-                    Err(_) => (-1i64) as u64,
-                }
+            let (aead_ptr, sha_ptr) = ctx.aead;
+            let aead = &*aead_ptr;
+            let sha = &*sha_ptr;
+            match crate::wake_cycle::send_app_data_aead(transport, identity, seq, blob, aead, sha) {
+                Ok(()) => 0,
+                Err(_) => (-1i64) as u64,
             }
         }
     })
@@ -570,15 +488,11 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
         let blob_len = r2 as usize;
         let reply_ptr = r3 as *mut u8;
         let reply_cap = r4 as usize;
-        #[cfg(feature = "aes-gcm-codec")]
-        let max_payload = if ctx.aead.is_some() {
-            sonde_protocol::MAX_PAYLOAD_SIZE_AEAD
-        } else {
-            sonde_protocol::MAX_PAYLOAD_SIZE
-        };
-        #[cfg(not(feature = "aes-gcm-codec"))]
-        let max_payload = sonde_protocol::MAX_PAYLOAD_SIZE;
-        if blob_ptr.is_null() || blob_len > max_payload || reply_ptr.is_null() || reply_cap == 0 {
+        if blob_ptr.is_null()
+            || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE_AEAD
+            || reply_ptr.is_null()
+            || reply_cap == 0
+        {
             return (-1i64) as u64;
         }
 
@@ -595,26 +509,12 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
             let clock = &*ctx.clock;
             let seq = &mut *ctx.current_seq;
 
-            #[cfg(feature = "aes-gcm-codec")]
-            let send_result = if let Some((aead_ptr, sha_ptr)) = ctx.aead {
-                let aead = &*aead_ptr;
-                let sha = &*sha_ptr;
-                crate::wake_cycle::send_recv_app_data_aead(
-                    transport, identity, seq, blob, timeout_ms, clock, aead, sha,
-                )
-            } else {
-                let hmac = &*ctx.hmac;
-                crate::wake_cycle::send_recv_app_data(
-                    transport, identity, seq, blob, timeout_ms, clock, hmac,
-                )
-            };
-            #[cfg(not(feature = "aes-gcm-codec"))]
-            let send_result = {
-                let hmac = &*ctx.hmac;
-                crate::wake_cycle::send_recv_app_data(
-                    transport, identity, seq, blob, timeout_ms, clock, hmac,
-                )
-            };
+            let (aead_ptr, sha_ptr) = ctx.aead;
+            let aead = &*aead_ptr;
+            let sha = &*sha_ptr;
+            let send_result = crate::wake_cycle::send_recv_app_data_aead(
+                transport, identity, seq, blob, timeout_ms, clock, aead, sha,
+            );
 
             match send_result {
                 Ok(reply_blob) => {
@@ -826,10 +726,7 @@ mod tests {
     use crate::map_storage::MapStorage;
     use crate::sleep::{SleepManager, WakeReason};
     use crate::traits::{Clock, Transport};
-    use sonde_protocol::{
-        decode_frame, encode_frame, verify_frame, FrameHeader, GatewayMessage, HmacProvider,
-        MapDef, NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY,
-    };
+    use sonde_protocol::{MapDef, NodeMessage, MSG_APP_DATA};
 
     // -- Test mocks ---------------------------------------------------------
 
@@ -936,19 +833,6 @@ mod tests {
         fn delay_ms(&self, _ms: u32) {}
     }
 
-    struct TestHmac;
-    impl HmacProvider for TestHmac {
-        fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
-            use hmac::Mac;
-            let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key");
-            mac.update(data);
-            mac.finalize().into_bytes().into()
-        }
-        fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-            self.compute(key, data) == *expected
-        }
-    }
-
     /// Install the dispatch context for the test, run `f`, then clear.
     #[allow(clippy::too_many_arguments)]
     fn with_test_context<F, R>(
@@ -957,7 +841,6 @@ mod tests {
         map_storage: &mut MapStorage,
         sleep_mgr: &mut SleepManager,
         clock: &TestClock,
-        hmac: &TestHmac,
         identity: &NodeIdentity,
         seq: &mut u64,
         program_class: ProgramClass,
@@ -967,14 +850,15 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
+        let aead = crate::node_aead::NodeAead;
+        let sha = crate::crypto::SoftwareSha256;
         unsafe {
-            install(
+            install_aead(
                 hal as *mut TestHal as *mut dyn Hal,
                 transport as *mut TestTransport as *mut dyn Transport,
                 map_storage as *mut MapStorage,
                 sleep_mgr as *mut SleepManager,
                 clock as *const TestClock as *const dyn Clock,
-                hmac as *const TestHmac as *const dyn HmacProvider,
                 identity as *const NodeIdentity,
                 seq as *mut u64,
                 program_class,
@@ -982,6 +866,8 @@ mod tests {
                 1_710_000_000_000,
                 100,
                 3300,
+                &aead,
+                &sha,
             );
         }
         let _guard = DispatchGuard;
@@ -1005,7 +891,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(1000);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1016,7 +901,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1039,7 +923,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1051,7 +934,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1080,7 +962,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1092,7 +973,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1113,7 +993,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1126,7 +1005,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1165,7 +1043,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1178,7 +1055,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1208,7 +1084,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1219,7 +1094,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1247,7 +1121,6 @@ mod tests {
         let map_ptr = maps.map_pointers()[0];
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1258,7 +1131,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1303,7 +1175,6 @@ mod tests {
         let map_ptr = maps.map_pointers()[0];
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1314,7 +1185,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Ephemeral, // ← ephemeral
@@ -1346,7 +1216,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(200);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1354,14 +1223,15 @@ mod tests {
         // Override defaults: gateway_timestamp_ms=1_710_000_000_000,
         // command_received_at_ms=100, battery_mv=3300
         // Expected get_time: 1_710_000_000_000 + (200 - 100) = 1_710_000_000_100
+        let aead = crate::node_aead::NodeAead;
+        let sha = crate::crypto::SoftwareSha256;
         unsafe {
-            install(
+            install_aead(
                 &mut hal as *mut TestHal as *mut dyn Hal,
                 &mut transport as *mut TestTransport as *mut dyn Transport,
                 &mut maps as *mut MapStorage,
                 &mut sleep as *mut SleepManager,
                 &clock as *const TestClock as *const dyn Clock,
-                &hmac as *const TestHmac as *const dyn HmacProvider,
                 &identity as *const NodeIdentity,
                 &mut seq as *mut u64,
                 ProgramClass::Resident,
@@ -1369,6 +1239,8 @@ mod tests {
                 1_710_000_000_000,
                 100,
                 3300,
+                &aead,
+                &sha,
             );
         }
         let _guard = DispatchGuard;
@@ -1384,7 +1256,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1395,7 +1266,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1433,19 +1303,19 @@ mod tests {
         let clock = TrackingClock {
             delay_calls: Cell::new(0),
         };
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
 
+        let aead = crate::node_aead::NodeAead;
+        let sha_prov = crate::crypto::SoftwareSha256;
         unsafe {
-            install(
+            install_aead(
                 &mut hal as *mut TestHal as *mut dyn Hal,
                 &mut transport as *mut TestTransport as *mut dyn Transport,
                 &mut maps as *mut MapStorage,
                 &mut sleep as *mut SleepManager,
                 &clock as *const TrackingClock as *const dyn Clock,
-                &hmac as *const TestHmac as *const dyn HmacProvider,
                 &identity as *const NodeIdentity,
                 &mut seq as *mut u64,
                 ProgramClass::Resident,
@@ -1453,6 +1323,8 @@ mod tests {
                 1_710_000_000_000,
                 100,
                 3300,
+                &aead,
+                &sha_prov,
             );
         }
         let _guard = DispatchGuard;
@@ -1499,7 +1371,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(300, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1510,7 +1381,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1531,7 +1401,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(300, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1542,7 +1411,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Ephemeral,
@@ -1563,7 +1431,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1574,7 +1441,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1592,16 +1458,20 @@ mod tests {
     #[test]
     fn test_helper_send() {
         // T-N604: send() produces an APP_DATA frame on the transport.
+        use sonde_protocol::{decode_frame_aead, open_frame};
+
         let mut hal = TestHal::new();
         let mut transport = TestTransport::new();
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 100u64;
         let mut trace = Vec::new();
         let blob: Vec<u8> = vec![0xAA, 0xBB];
+
+        let aead = crate::node_aead::NodeAead;
+        let sha = crate::crypto::SoftwareSha256;
 
         with_test_context(
             &mut hal,
@@ -1609,7 +1479,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1623,11 +1492,12 @@ mod tests {
         assert_eq!(seq, 101);
         assert_eq!(transport.outbound.len(), 1);
 
-        // Decode and verify it's a valid APP_DATA frame
-        let decoded = decode_frame(&transport.outbound[0]).unwrap();
-        assert!(verify_frame(&decoded, &identity.psk, &TestHmac));
+        // Decode and verify it's a valid AEAD APP_DATA frame
+        let decoded = decode_frame_aead(&transport.outbound[0]).unwrap();
         assert_eq!(decoded.header.msg_type, MSG_APP_DATA);
-        let msg = NodeMessage::decode(decoded.header.msg_type, &decoded.payload).unwrap();
+        let plaintext =
+            open_frame(&decoded, &identity.psk, &aead, &sha).expect("AEAD decrypt should succeed");
+        let msg = NodeMessage::decode(MSG_APP_DATA, &plaintext).unwrap();
         match msg {
             NodeMessage::AppData { blob: received } => assert_eq!(received, vec![0xAA, 0xBB]),
             _ => panic!("expected AppData"),
@@ -1637,10 +1507,15 @@ mod tests {
     #[test]
     fn test_helper_send_recv() {
         // T-N605: send_recv sends APP_DATA and receives APP_DATA_REPLY.
+        use sonde_protocol::{encode_frame_aead, FrameHeader, GatewayMessage, MSG_APP_DATA_REPLY};
+
         let mut hal = TestHal::new();
         let mut transport = TestTransport::new();
 
-        // Pre-queue a valid reply
+        let aead = crate::node_aead::NodeAead;
+        let sha = crate::crypto::SoftwareSha256;
+
+        // Pre-queue a valid AEAD reply
         let identity = default_identity();
         let reply_msg = GatewayMessage::AppDataReply {
             blob: vec![0xCC, 0xDD],
@@ -1652,13 +1527,12 @@ mod tests {
             nonce: 100, // must match the seq we'll send with
         };
         let reply_frame =
-            encode_frame(&reply_header, &reply_cbor, &identity.psk, &TestHmac).unwrap();
+            encode_frame_aead(&reply_header, &reply_cbor, &identity.psk, &aead, &sha).unwrap();
         transport.inbound.push_back(Some(reply_frame));
 
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let mut seq = 100u64;
         let mut trace = Vec::new();
         let blob = [0x01, 0x02];
@@ -1670,7 +1544,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1701,7 +1574,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 50u64;
         let mut trace = Vec::new();
@@ -1714,7 +1586,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1794,7 +1665,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1806,7 +1676,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Ephemeral, // ← ephemeral
@@ -1849,7 +1718,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1862,7 +1730,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Ephemeral,
@@ -1895,7 +1762,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1906,7 +1772,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1947,7 +1812,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1958,7 +1822,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -1980,7 +1843,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -1991,7 +1853,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -2016,7 +1877,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -2033,7 +1893,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Ephemeral, // ← ephemeral context
@@ -2110,7 +1969,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Ephemeral,
@@ -2142,7 +2000,6 @@ mod tests {
         let map_ptr = maps.map_pointers()[0];
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -2153,7 +2010,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -2190,7 +2046,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(300, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -2201,7 +2056,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -2243,7 +2097,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -2255,7 +2108,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -2297,7 +2149,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -2308,7 +2159,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -2342,7 +2192,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(1_000);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
@@ -2353,7 +2202,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -2377,9 +2225,8 @@ mod tests {
         );
     }
 
-    // -- AEAD-path tests (feature-gated) ------------------------------------
+    // -- AEAD-path tests ------------------------------------
 
-    #[cfg(feature = "aes-gcm-codec")]
     #[allow(clippy::too_many_arguments)]
     fn with_test_context_aead<F, R>(
         hal: &mut TestHal,
@@ -2387,7 +2234,6 @@ mod tests {
         map_storage: &mut MapStorage,
         sleep_mgr: &mut SleepManager,
         clock: &TestClock,
-        hmac: &TestHmac,
         identity: &NodeIdentity,
         seq: &mut u64,
         program_class: ProgramClass,
@@ -2406,7 +2252,6 @@ mod tests {
                 map_storage as *mut MapStorage,
                 sleep_mgr as *mut SleepManager,
                 clock as *const TestClock as *const dyn Clock,
-                hmac as *const TestHmac as *const dyn HmacProvider,
                 identity as *const NodeIdentity,
                 seq as *mut u64,
                 program_class,
@@ -2423,7 +2268,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "aes-gcm-codec")]
     fn test_helper_send_aead() {
         use sonde_protocol::{decode_frame_aead, open_frame};
 
@@ -2432,7 +2276,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 100u64;
         let mut trace = Vec::new();
@@ -2447,7 +2290,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,
@@ -2477,7 +2319,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "aes-gcm-codec")]
     fn test_helper_send_recv_aead() {
         use sonde_protocol::{encode_frame_aead, FrameHeader, GatewayMessage, MSG_APP_DATA_REPLY};
 
@@ -2486,7 +2327,6 @@ mod tests {
         let mut maps = MapStorage::new(4096);
         let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
         let clock = TestClock(0);
-        let hmac = TestHmac;
         let identity = default_identity();
         let mut seq = 100u64;
         let mut trace = Vec::new();
@@ -2517,7 +2357,6 @@ mod tests {
             &mut maps,
             &mut sleep,
             &clock,
-            &hmac,
             &identity,
             &mut seq,
             ProgramClass::Resident,

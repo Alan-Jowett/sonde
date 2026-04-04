@@ -51,7 +51,7 @@ This document answers the most common “why didn’t you just use X?” questio
     *   Device identity
     *   Trust bootstrap
 
-**Bottom line:** OSCORE is useful *after* onboarding. Our problem is onboarding. And even post‑onboarding, OSCORE assumes CoAP semantics (request/response with tokens and options) that do not map onto our fire‑and‑forget ESP‑NOW frame model. Our post‑pairing protocol is intentionally integrity‑only (HMAC, no encryption) because sensor telemetry is not confidential — see [security.md §1.3](security.md#13--out-of-scope-threats) for the explicit confidentiality non‑goal.
+**Bottom line:** OSCORE is useful *after* onboarding. Our problem is onboarding. And even post‑onboarding, OSCORE assumes CoAP semantics (request/response with tokens and options) that do not map onto our fire‑and‑forget ESP‑NOW frame model. Our post‑pairing protocol uses AES‑256‑GCM AEAD for both authentication and encryption — see [security.md §1.3](security.md#13--out-of-scope-threats) for the explicit threat model.
 
 ---
 
@@ -175,7 +175,7 @@ It does **not** prove:
 
 ---
 
-## Why not **COSE** (RFC 9052) instead of raw HMAC?
+## Why not **COSE** (RFC 9052) instead of raw AES‑256‑GCM?
 
 **Short answer:** COSE adds structure we don't need, at a cost we can't afford.
 
@@ -185,14 +185,14 @@ It does **not** prove:
 *   Self‑describing: carries algorithm identifiers, key hints, and headers
 *   Designed for interoperability across vendors
 
-**Why we use raw HMAC‑SHA‑256 instead**
+**Why we use raw AES‑256‑GCM instead**
 
-*   Our frame budget is **250 bytes** (ESP‑NOW). After the 11‑byte header and 32‑byte HMAC, we have 207 bytes for payload. A `COSE_Mac0` wrapper adds ~10–15 bytes of CBOR structure (protected headers, unprotected headers, payload wrapping) that directly reduce usable payload.
-*   We have **exactly one algorithm** (HMAC‑SHA‑256) and **exactly one key‑hint scheme** (`key_hint` in the binary header). COSE's self‑describing flexibility is overhead with no benefit.
+*   Our frame budget is **250 bytes** (ESP‑NOW). After the 11‑byte header and 16‑byte AEAD tag, we have 223 bytes for payload. A `COSE_Encrypt0` wrapper adds ~10–15 bytes of CBOR structure (protected headers, unprotected headers, payload wrapping) that directly reduce usable payload.
+*   We have **exactly one algorithm** (AES‑256‑GCM) and **exactly one key‑hint scheme** (`key_hint` in the binary header). COSE's self‑describing flexibility is overhead with no benefit.
 *   The system is **closed** — nodes and gateway are both Sonde software. There is no third‑party interoperability requirement.
 *   Every byte matters on a battery‑powered device transmitting at 1 Mbps with a duty‑cycle budget.
 
-**Bottom line:** COSE is the right choice for multi‑vendor ecosystems. For a closed, single‑algorithm, frame‑constrained system, raw HMAC is smaller, simpler, and equally secure.
+**Bottom line:** COSE is the right choice for multi‑vendor ecosystems. For a closed, single‑algorithm, frame‑constrained system, raw AES‑256‑GCM is smaller, simpler, and equally secure.
 
 ---
 
@@ -227,7 +227,7 @@ We use a **system‑level onboarding protocol** with explicit trust boundaries:
 *   **BLE is treated as an untrusted transport**
 *   **All real trust decisions happen at the gateway**
 
-This is a **composition** of well‑understood primitives (ECDH, AEAD, HMAC, CBOR), not a reinvention of cryptography. The threat model and security assumptions are documented explicitly in [security.md](security.md), including what is *not* protected (confidentiality of telemetry, physical jamming, gateway compromise). This is not a substitute for formal analysis, but it is an honest and auditable starting point.
+This is a **composition** of well‑understood primitives (AEAD, CBOR), not a reinvention of cryptography. The threat model and security assumptions are documented explicitly in [security.md](security.md), including what is *not* protected (physical jamming, gateway compromise). This is not a substitute for formal analysis, but it is an honest and auditable starting point.
 
 ---
 
@@ -267,11 +267,11 @@ So we built one — carefully.
 
 ## When would we adopt IETF standards?
 
-We are not opposed to IETF protocols — we actively use CBOR (RFC 8949) and HMAC‑SHA‑256 (RFC 2104). The question is always whether the standard solves *our* problem or an adjacent one.
+We are not opposed to IETF protocols — we actively use CBOR (RFC 8949) and AES‑256‑GCM (NIST SP 800‑38D). The question is always whether the standard solves *our* problem or an adjacent one.
 
 Realistic adoption paths:
 
-*   **EDHOC** — If a future version supports non‑IP transports and human‑mediated pairing, EDHOC could replace the ECDH key agreement inside our BLE pairing flow. We would still need the surrounding orchestration.
+*   **EDHOC** — If a future version supports non‑IP transports and human‑mediated pairing, EDHOC could replace the key agreement inside our BLE pairing flow. We would still need the surrounding orchestration.
 *   **OSCORE** — If the post‑pairing protocol ever needs confidentiality (e.g., actuator commands), OSCORE or a COSE‑based AEAD envelope would be a natural fit.
 *   **COSE** — If the system opens to third‑party devices or multi‑vendor interoperability, self‑describing security envelopes become worth the overhead.
 *   **SUIT** — If program images grow significantly or require rollback/multi‑slot management, SUIT manifests would be appropriate.
@@ -295,4 +295,4 @@ Realistic adoption paths:
 | SUIT | RFC 9019, RFC 9124 | SUIT |
 | CBOR | RFC 8949 | CBOR |
 | CoAP over GATT | draft‑amsuess‑core‑coap‑over‑gatt | CoRE |
-| HMAC | RFC 2104 | — |
+| AES‑256‑GCM | NIST SP 800‑38D | — |

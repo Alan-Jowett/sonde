@@ -68,7 +68,7 @@ The gateway is composed of ten functional modules grouped in two tiers. The uppe
 | Module | Responsibility | Requirements covered |
 |---|---|---|
 | **Transport** | Send/receive raw frames | GW-0100, GW-0104, GW-1100 |
-| **Protocol Codec** | Serialize/deserialize frames (header, CBOR, HMAC) | GW-0101, GW-0102, GW-0103, GW-0600, GW-0603 |
+| **Protocol Codec** | Serialize/deserialize frames (header, CBOR, AES-256-GCM AEAD) | GW-0101, GW-0102, GW-0103, GW-0600, GW-0603 |
 | **Session Manager** | Per-node session lifecycle, sequence tracking, command dispatch | GW-0200–0204, GW-0602, GW-1002, GW-1003 |
 | **Node Registry** | PSK lookup, node metadata, battery/ABI tracking | GW-0601, GW-0700, GW-0701, GW-0702, GW-0703 |
 | **Program Library** | Program storage, verification, chunking, hash identity | GW-0300–0302, GW-0400–0403, GW-1004 |
@@ -89,7 +89,7 @@ pub type PeerAddress = Vec<u8>;
 #[async_trait]
 pub trait Transport: Send + Sync {
     /// Receive the next inbound frame (blocking until available).
-    /// Returns the raw bytes (header + payload + HMAC) and the
+    /// Returns the raw bytes (AEAD-encrypted frame) and the
     /// sender's transport-layer address.
     async fn recv(&self) -> Result<(Vec<u8>, PeerAddress), TransportError>;
 
@@ -98,7 +98,7 @@ pub trait Transport: Send + Sync {
 }
 ```
 
-The transport returns the sender's address alongside the frame. After the protocol layer authenticates the frame (using `key_hint` → candidate PSK lookup → HMAC verification) and identifies the node, the session manager stores the peer address in the session. Responses are sent to the address from the session.
+The transport returns the sender's address alongside the frame. After the protocol layer authenticates the frame (using `key_hint` → candidate PSK lookup → AES-256-GCM decryption) and identifies the node, the session manager stores the peer address in the session. Responses are sent to the address from the session.
 
 The peer address is **session-scoped** — it is never persisted. Each WAKE re-establishes the address. This is correct because:
 - A node's MAC address may change (hardware replacement after factory reset + re-pair).
@@ -342,7 +342,7 @@ pub struct NodeRecord {
 pub fn lookup_by_key_hint(&self, key_hint: u16) -> Vec<&NodeRecord>
 ```
 
-Returns all nodes matching the `key_hint`. The caller tries HMAC verification with each candidate's PSK (GW-0601).
+Returns all nodes matching the `key_hint`. The caller tries AES-256-GCM decryption with each candidate's PSK (GW-0601).
 
 ### 7.3  Node registration
 
@@ -704,7 +704,7 @@ The gateway uses the `tracing` crate for structured, levelled logging. All log e
 | Level | Usage |
 |---|---|
 | `ERROR` | Unrecoverable failures: handler crash, storage write failure, serial disconnect |
-| `WARN` | Recoverable anomalies: malformed CBOR, HMAC mismatch, ABI mismatch, modem tx failures |
+| `WARN` | Recoverable anomalies: malformed CBOR, AEAD authentication failure, ABI mismatch, modem tx failures |
 | `INFO` | Operator-relevant lifecycle events: node WAKE, COMMAND selected, session create/expire, PEER_REQUEST processed, PEER_ACK frame encoded, modem transport state transitions |
 | `DEBUG` | Developer diagnostics: individual modem frames (send/recv), channel-full drops, health polls |
 
@@ -789,7 +789,7 @@ When the gateway encounters an error at a user-facing or operator-visible bounda
 | State export/import | `export_state` / `import_state` | operation name, variant-specific guidance (empty passphrase, decryption failure, corrupt bundle) |
 | Ephemeral dispatch | `QueueEphemeral` | `program_hash`, verification profile |
 
-Errors that cross the gRPC boundary use `tonic::Status` with the diagnostic message in the status detail string. Errors that are internal (e.g., HMAC verification failures on the radio protocol) are logged but never sent to the node — the silent-discard policy (§12) still applies to the radio interface.
+Errors that cross the gRPC boundary use `tonic::Status` with the diagnostic message in the status detail string. Errors that are internal (e.g., AEAD decryption failures on the radio protocol) are logged but never sent to the node — the silent-discard policy (§12) still applies to the radio interface.
 
 ### 11A.6  Handler pipeline logging (GW-1308)
 
@@ -814,7 +814,7 @@ All protocol errors result in **silent discard** — no error response is sent t
 | Error | Behavior |
 |---|---|
 | No key matches `key_hint` | Discard. Log at debug level. |
-| HMAC verification failure | Discard. Log at debug level. |
+| AEAD authentication failure | Discard. Log at debug level. |
 | Wrong sequence number / no active session | Discard. Log at info level. |
 | Malformed CBOR (post-auth) | Discard. Log at warn level. |
 | Unexpected `msg_type` | Discard. Log at warn level. |
@@ -1074,7 +1074,7 @@ The modem hosts the Gateway Pairing Service GATT service (UUID `0000FE60-…`) a
 
 The registration window is opened by a physical button hold (≥ 2 s) or by the admin API `OpenBlePairing` RPC. Opening sends `BLE_ENABLE` to the modem; closing (explicit or auto-close after a configurable duration, default 120 s) sends `BLE_DISABLE` (GW-1207, GW-1208). `REGISTER_PHONE` commands received while the window is closed are rejected with `ERROR(0x02)` (GW-1207).
 
-When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: receives a phone-generated 256-bit PSK from the phone; derives `phone_key_hint` = `u16::from_be_bytes(SHA-256(psk)[30..32])` (big-endian u16 from the last two bytes of the hash); stores the PSK with its label, issuance timestamp, and active status; and responds with a plaintext `PHONE_REGISTERED` indication containing `status`, `rf_channel`, and `phone_key_hint` via `BLE_INDICATE` (GW-1209). No ECDH, HKDF, or AES-GCM encryption of the BLE response is needed — the BLE LESC link provides confidentiality. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from AES-GCM decryption (GW-1210).
+When the window is open and a `REGISTER_PHONE` command arrives (BLE command `0x02`), the gateway: receives a phone-generated 256-bit PSK from the phone; derives `phone_key_hint` = `u16::from_be_bytes(SHA-256(psk)[30..32])` (big-endian u16 from the last two bytes of the hash); stores the PSK with its label, issuance timestamp, and active status; and responds with a plaintext `PHONE_REGISTERED` indication containing `status`, `rf_channel`, and `phone_key_hint` via `BLE_INDICATE` (GW-1209). No additional encryption of the BLE response is needed — the BLE LESC link provides confidentiality. Operators can revoke phone PSKs through the admin API; revoked PSKs are excluded from AES-256-GCM decryption (GW-1210).
 
 ### 17.5  `PEER_REQUEST` processing
 

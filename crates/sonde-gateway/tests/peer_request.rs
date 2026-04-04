@@ -3,8 +3,8 @@
 
 //! Integration tests for the PEER_REQUEST processing pipeline (GW-1211–GW-1221).
 //!
-//! Tests cover: happy path, bad GCM tag, revoked phone, bad phone HMAC,
-//! bad frame HMAC, timestamp drift, duplicate node_id, key_hint mismatch,
+//! Tests cover: happy path, bad GCM tag, revoked phone, wrong phone PSK,
+//! bad outer frame AEAD, timestamp drift, duplicate node_id, key_hint mismatch,
 //! rf_channel out of range, and node_id length violations.
 
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
-use sonde_gateway::crypto::RustCryptoHmac;
+use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::gateway_identity::GatewayIdentity;
 use sonde_gateway::phone_trust::{PhonePskRecord, PhonePskStatus};
@@ -22,16 +22,14 @@ use sonde_gateway::session::SessionManager;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::PeerAddress;
 
+use sonde_gateway::GatewayAead;
 use sonde_protocol::{
-    decode_frame, encode_frame, verify_frame, FrameHeader, HmacProvider, Sha256Provider,
-    MSG_PEER_ACK, MSG_PEER_REQUEST, PEER_ACK_KEY_PROOF, PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
+    decode_frame_aead, encode_frame_aead, open_frame, FrameHeader, Sha256Provider, MSG_PEER_ACK,
+    MSG_PEER_REQUEST, PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
 };
 
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce as GcmNonce};
-use hkdf::Hkdf;
-use sha2::Sha256;
-use x25519_dalek::PublicKey as X25519PublicKey;
 
 // ── Test infrastructure ────────────────────────────────────────────────
 
@@ -117,39 +115,13 @@ fn build_pairing_cbor(
     buf
 }
 
-/// Build authenticated_request: phone_key_hint(2) + cbor_bytes + phone_hmac(32).
-fn build_authenticated_request(cbor_bytes: &[u8], phone_psk: &[u8; 32]) -> Vec<u8> {
-    let crypto_sha = sonde_gateway::RustCryptoSha256;
-    let phone_hash = crypto_sha.hash(phone_psk);
-    let phone_key_hint = u16::from_be_bytes([phone_hash[30], phone_hash[31]]);
+/// Encrypt PairingRequest CBOR with phone_psk using AES-256-GCM.
+/// Returns: inner_nonce(12) ‖ ciphertext ‖ tag(16)
+/// AAD = "sonde-pairing-v2"
+fn encrypt_inner_payload(pairing_cbor: &[u8], phone_psk: &[u8; 32]) -> Vec<u8> {
+    const PAIRING_AAD: &[u8] = b"sonde-pairing-v2";
 
-    let hmac = RustCryptoHmac;
-    let phone_hmac = hmac.compute(phone_psk, cbor_bytes);
-
-    let mut out = Vec::new();
-    out.extend_from_slice(&phone_key_hint.to_be_bytes());
-    out.extend_from_slice(cbor_bytes);
-    out.extend_from_slice(&phone_hmac);
-    out
-}
-
-/// ECDH encrypt a payload for the gateway.
-/// Returns: eph_public(32) + gcm_nonce(12) + ciphertext(N+16)
-fn ecdh_encrypt(identity: &GatewayIdentity, plaintext: &[u8]) -> Vec<u8> {
-    let mut eph_scalar = [0u8; 32];
-    getrandom::fill(&mut eph_scalar).unwrap();
-    let eph_secret = x25519_dalek::StaticSecret::from(eph_scalar);
-    let eph_public = X25519PublicKey::from(&eph_secret);
-
-    let (_, gw_x25519_public) = identity.to_x25519().unwrap();
-    let shared_secret = eph_secret.diffie_hellman(&gw_x25519_public);
-
-    let gateway_id = identity.gateway_id();
-    let hkdf = Hkdf::<Sha256>::new(Some(gateway_id), shared_secret.as_bytes());
-    let mut aes_key = [0u8; 32];
-    hkdf.expand(b"sonde-node-pair-v1", &mut aes_key).unwrap();
-
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
+    let cipher = Aes256Gcm::new_from_slice(phone_psk).unwrap();
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes).unwrap();
     let nonce = GcmNonce::from_slice(&nonce_bytes);
@@ -157,25 +129,27 @@ fn ecdh_encrypt(identity: &GatewayIdentity, plaintext: &[u8]) -> Vec<u8> {
     let ciphertext = cipher
         .encrypt(
             nonce,
-            aes_gcm::aead::Payload {
-                msg: plaintext,
-                aad: gateway_id,
+            Payload {
+                msg: pairing_cbor,
+                aad: PAIRING_AAD,
             },
         )
         .unwrap();
 
-    let mut out = Vec::new();
-    out.extend_from_slice(eph_public.as_bytes());
+    let mut out = Vec::with_capacity(12 + ciphertext.len());
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ciphertext);
     out
 }
 
-/// Build a complete PEER_REQUEST frame, also returning the encrypted_payload
-/// and the nonce used in the header (needed for T-1219 verification).
+/// Build a complete PEER_REQUEST frame using the AEAD protocol format.
+///
+/// The outer frame is encrypted with `phone_psk` (key_hint = phone_key_hint).
+/// The CBOR payload is `{ 1: encrypted_payload }` where `encrypted_payload`
+/// = inner_nonce(12) ‖ AES-256-GCM(phone_psk, PairingRequestCBOR, AAD).
 #[allow(clippy::too_many_arguments)]
 fn build_peer_request_detailed(
-    identity: &GatewayIdentity,
+    _identity: &GatewayIdentity,
     node_id: &str,
     node_psk: &[u8; 32],
     rf_channel: u8,
@@ -183,8 +157,9 @@ fn build_peer_request_detailed(
     timestamp: Option<u64>,
     sensors: Option<Vec<ciborium::Value>>,
     nonce: u64,
-) -> (Vec<u8>, Vec<u8>) {
+) -> Vec<u8> {
     let node_key_hint = compute_key_hint(node_psk);
+    let phone_key_hint = compute_key_hint(phone_psk);
     let ts = timestamp.unwrap_or_else(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -193,25 +168,30 @@ fn build_peer_request_detailed(
     });
 
     let cbor_bytes = build_pairing_cbor(node_id, node_key_hint, node_psk, rf_channel, ts, sensors);
-    let authenticated_request = build_authenticated_request(&cbor_bytes, phone_psk);
-    let encrypted_payload = ecdh_encrypt(identity, &authenticated_request);
+    let encrypted_payload = encrypt_inner_payload(&cbor_bytes, phone_psk);
 
     // Build outer CBOR: { 1: encrypted_payload }
     let outer = ciborium::Value::Map(vec![(
         ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
-        ciborium::Value::Bytes(encrypted_payload.clone()),
+        ciborium::Value::Bytes(encrypted_payload),
     )]);
     let mut outer_buf = Vec::new();
     ciborium::into_writer(&outer, &mut outer_buf).unwrap();
 
     let header = FrameHeader {
-        key_hint: node_key_hint,
+        key_hint: phone_key_hint,
         msg_type: MSG_PEER_REQUEST,
         nonce,
     };
 
-    let frame = encode_frame(&header, &outer_buf, node_psk, &RustCryptoHmac).unwrap();
-    (frame, encrypted_payload)
+    encode_frame_aead(
+        &header,
+        &outer_buf,
+        phone_psk,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap()
 }
 
 /// Build a complete PEER_REQUEST frame.
@@ -234,7 +214,6 @@ fn build_peer_request(
         sensors,
         0x1234567890ABCDEF,
     )
-    .0
 }
 
 fn current_timestamp() -> u64 {
@@ -265,41 +244,28 @@ async fn peer_request_happy_path() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_some(),
         "valid PEER_REQUEST must produce a response"
     );
 
     let raw = response.unwrap();
-    let decoded = decode_frame(&raw).unwrap();
+    let decoded = decode_frame_aead(&raw).unwrap();
+    let plaintext = open_frame(&decoded, &TEST_NODE_PSK, &GatewayAead, &RustCryptoSha256).unwrap();
     assert_eq!(decoded.header.msg_type, MSG_PEER_ACK);
-    assert!(verify_frame(&decoded, &TEST_NODE_PSK, &RustCryptoHmac));
 
-    // Parse PEER_ACK CBOR
-    let ack: ciborium::Value = ciborium::from_reader(&decoded.payload[..]).unwrap();
+    // Parse PEER_ACK CBOR: { 1: status(0) }
+    let ack: ciborium::Value = ciborium::from_reader(&plaintext[..]).unwrap();
     let map = ack.as_map().unwrap();
     let mut status: Option<u64> = None;
-    let mut proof: Option<Vec<u8>> = None;
     for (k, v) in map {
         let key = k.as_integer().and_then(|i| u64::try_from(i).ok()).unwrap();
-        match key {
-            k if k == PEER_ACK_KEY_STATUS => {
-                status = v.as_integer().and_then(|i| u64::try_from(i).ok());
-            }
-            k if k == PEER_ACK_KEY_PROOF => {
-                proof = v.as_bytes().map(|b| b.to_vec());
-            }
-            _ => {}
+        if key == PEER_ACK_KEY_STATUS {
+            status = v.as_integer().and_then(|i| u64::try_from(i).ok());
         }
     }
     assert_eq!(status, Some(0), "PEER_ACK status must be 0 (success)");
-    assert!(proof.is_some(), "PEER_ACK must contain registration_proof");
-    assert_eq!(
-        proof.unwrap().len(),
-        32,
-        "registration_proof must be 32 bytes"
-    );
 
     // Verify node was registered.
     let node = env.storage.get_node("node-test-1").await.unwrap();
@@ -342,7 +308,7 @@ async fn peer_request_with_sensors() {
         Some(sensors),
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(response.is_some());
 
     let node = env.storage.get_node("node-sensors").await.unwrap().unwrap();
@@ -377,7 +343,7 @@ async fn peer_request_invalid_sensor_type() {
         Some(sensors),
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "invalid sensor_type must cause silent discard"
@@ -404,7 +370,7 @@ async fn peer_request_bad_gcm_tag() {
         frame[20] ^= 0xFF;
     }
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "tampered frame must be silently discarded"
@@ -429,14 +395,14 @@ async fn peer_request_revoked_phone() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "revoked phone must cause silent discard"
     );
 }
 
-/// GW-1213: Wrong phone HMAC → silent discard.
+/// GW-1213: Wrong phone PSK → silent discard (outer AEAD decryption fails).
 #[tokio::test]
 async fn peer_request_bad_phone_hmac() {
     let env = TestEnv::new().await;
@@ -452,24 +418,24 @@ async fn peer_request_bad_phone_hmac() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "wrong phone HMAC must cause silent discard"
     );
 }
 
-/// GW-1214: Bad frame HMAC (wrong node PSK in frame) → silent discard.
+/// GW-1214: Outer frame encrypted with wrong PSK → silent discard.
 #[tokio::test]
 async fn peer_request_bad_frame_hmac() {
     let env = TestEnv::new().await;
 
     let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
+    let phone_key_hint = compute_key_hint(&TEST_PHONE_PSK);
     let ts = current_timestamp();
     let cbor_bytes =
         build_pairing_cbor("node-bad-hmac", node_key_hint, &TEST_NODE_PSK, 7, ts, None);
-    let authenticated_request = build_authenticated_request(&cbor_bytes, &TEST_PHONE_PSK);
-    let encrypted_payload = ecdh_encrypt(&env.identity, &authenticated_request);
+    let encrypted_payload = encrypt_inner_payload(&cbor_bytes, &TEST_PHONE_PSK);
 
     let outer = ciborium::Value::Map(vec![(
         ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
@@ -479,19 +445,26 @@ async fn peer_request_bad_frame_hmac() {
     ciborium::into_writer(&outer, &mut outer_buf).unwrap();
 
     let header = FrameHeader {
-        key_hint: node_key_hint,
+        key_hint: phone_key_hint,
         msg_type: MSG_PEER_REQUEST,
         nonce: 0x1234,
     };
 
-    // Sign with a DIFFERENT PSK than what's in the pairing request.
+    // Encrypt the outer frame with a DIFFERENT PSK than the registered phone_psk.
     let wrong_psk = [0xEE; 32];
-    let frame = encode_frame(&header, &outer_buf, &wrong_psk, &RustCryptoHmac).unwrap();
+    let frame = encode_frame_aead(
+        &header,
+        &outer_buf,
+        &wrong_psk,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap();
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
-        "bad frame HMAC must cause silent discard"
+        "bad outer frame AEAD must cause silent discard"
     );
 }
 
@@ -511,7 +484,7 @@ async fn peer_request_timestamp_drift_past() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "old timestamp must cause silent discard"
@@ -534,7 +507,7 @@ async fn peer_request_timestamp_drift_future() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "future timestamp must cause silent discard"
@@ -556,7 +529,7 @@ async fn peer_request_duplicate_node_id() {
         None,
         None,
     );
-    let response1 = env.gateway.process_frame(&frame1, peer()).await;
+    let response1 = env.gateway.process_frame_aead(&frame1, peer()).await;
     assert!(response1.is_some(), "first registration must succeed");
 
     // Second registration with same node_id and matching PSK must still
@@ -570,7 +543,7 @@ async fn peer_request_duplicate_node_id() {
         None,
         None,
     );
-    let response2 = env.gateway.process_frame(&frame2, peer()).await;
+    let response2 = env.gateway.process_frame_aead(&frame2, peer()).await;
     assert!(
         response2.is_some(),
         "duplicate node_id with matching PSK must return PEER_ACK"
@@ -583,6 +556,7 @@ async fn peer_request_key_hint_mismatch() {
     let env = TestEnv::new().await;
 
     let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
+    let phone_key_hint = compute_key_hint(&TEST_PHONE_PSK);
     let ts = current_timestamp();
     let cbor_bytes = build_pairing_cbor(
         "node-kh-mismatch",
@@ -592,8 +566,7 @@ async fn peer_request_key_hint_mismatch() {
         ts,
         None,
     );
-    let authenticated_request = build_authenticated_request(&cbor_bytes, &TEST_PHONE_PSK);
-    let encrypted_payload = ecdh_encrypt(&env.identity, &authenticated_request);
+    let encrypted_payload = encrypt_inner_payload(&cbor_bytes, &TEST_PHONE_PSK);
 
     let outer = ciborium::Value::Map(vec![(
         ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
@@ -602,17 +575,24 @@ async fn peer_request_key_hint_mismatch() {
     let mut outer_buf = Vec::new();
     ciborium::into_writer(&outer, &mut outer_buf).unwrap();
 
-    // Use a DIFFERENT key_hint in the frame header.
-    let wrong_key_hint = node_key_hint.wrapping_add(1);
+    // Use a DIFFERENT key_hint in the frame header (not matching phone_key_hint).
+    let wrong_key_hint = phone_key_hint.wrapping_add(1);
     let header = FrameHeader {
         key_hint: wrong_key_hint,
         msg_type: MSG_PEER_REQUEST,
         nonce: 0x5678,
     };
 
-    let frame = encode_frame(&header, &outer_buf, &TEST_NODE_PSK, &RustCryptoHmac).unwrap();
+    let frame = encode_frame_aead(
+        &header,
+        &outer_buf,
+        &TEST_PHONE_PSK,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap();
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "key_hint mismatch must cause silent discard"
@@ -634,7 +614,7 @@ async fn peer_request_rf_channel_zero() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(response.is_none(), "rf_channel=0 must cause silent discard");
 }
 
@@ -653,7 +633,7 @@ async fn peer_request_rf_channel_14() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "rf_channel=14 must cause silent discard"
@@ -675,7 +655,7 @@ async fn peer_request_rf_channel_13_ok() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(response.is_some(), "rf_channel=13 must be accepted");
 
     let node = env.storage.get_node("node-rf13").await.unwrap().unwrap();
@@ -697,7 +677,7 @@ async fn peer_request_rf_channel_1_ok() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(response.is_some(), "rf_channel=1 must be accepted");
 }
 
@@ -723,7 +703,7 @@ async fn peer_request_node_id_30_ok() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(response.is_some(), "30-byte node_id must be accepted");
 }
 
@@ -742,7 +722,7 @@ async fn peer_request_empty_node_id() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "empty node_id must cause silent discard"
@@ -765,7 +745,7 @@ async fn peer_request_timestamp_boundary_ok() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(response.is_some(), "timestamp at +86400s must be accepted");
 }
 
@@ -786,7 +766,7 @@ async fn peer_request_timestamp_boundary_plus1_rejected() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(response.is_none(), "timestamp at +86410s must be rejected");
 }
 
@@ -816,14 +796,14 @@ async fn t_1210_peer_request_decryption_happy_path() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_some(),
         "correctly encrypted PEER_REQUEST must produce a PEER_ACK"
     );
 
     let raw = response.unwrap();
-    let decoded = decode_frame(&raw).unwrap();
+    let decoded = decode_frame_aead(&raw).unwrap();
     assert_eq!(decoded.header.msg_type, MSG_PEER_ACK);
 }
 
@@ -851,7 +831,7 @@ async fn t_1211_peer_request_bad_gcm_tag() {
         frame[20] ^= 0xFF;
     }
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "bad GCM tag must cause silent discard (no response)"
@@ -907,7 +887,7 @@ async fn t_1212_phone_hmac_multiple_candidates() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_some(),
         "gateway must try both candidates and accept the matching one"
@@ -941,7 +921,7 @@ async fn t_1213_phone_hmac_revoked_psk() {
         None,
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(
         response.is_none(),
         "revoked phone PSK must cause silent discard"
@@ -950,19 +930,19 @@ async fn t_1213_phone_hmac_revoked_psk() {
 
 // -- T-1214: PEER_REQUEST frame HMAC verification --
 
-/// T-1214  PEER_REQUEST frame HMAC verification (GW-1214).
+/// T-1214  PEER_REQUEST outer frame AEAD verification (GW-1214).
 ///
-/// 1. Valid frame HMAC: processing continues (implicit in happy path).
-/// 2. Corrupted frame HMAC: silent discard.
+/// 1. Valid outer frame AEAD: processing continues (implicit in happy path).
+/// 2. Outer frame encrypted with wrong PSK: silent discard.
 #[tokio::test]
 async fn t_1214_frame_hmac_verification() {
     let env = TestEnv::new().await;
 
     let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
+    let phone_key_hint = compute_key_hint(&TEST_PHONE_PSK);
     let ts = current_timestamp();
     let cbor_bytes = build_pairing_cbor("node-t1214", node_key_hint, &TEST_NODE_PSK, 7, ts, None);
-    let authenticated_request = build_authenticated_request(&cbor_bytes, &TEST_PHONE_PSK);
-    let encrypted_payload = ecdh_encrypt(&env.identity, &authenticated_request);
+    let encrypted_payload = encrypt_inner_payload(&cbor_bytes, &TEST_PHONE_PSK);
 
     let outer = ciborium::Value::Map(vec![(
         ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
@@ -972,27 +952,41 @@ async fn t_1214_frame_hmac_verification() {
     ciborium::into_writer(&outer, &mut outer_buf).unwrap();
 
     let header = FrameHeader {
-        key_hint: node_key_hint,
+        key_hint: phone_key_hint,
         msg_type: MSG_PEER_REQUEST,
         nonce: 0xAAAA,
     };
 
-    // Sign with a DIFFERENT PSK than the node_psk in the pairing payload.
+    // Encrypt outer frame with a DIFFERENT PSK than the registered phone_psk.
     let wrong_psk = [0xEEu8; 32];
-    let bad_frame = encode_frame(&header, &outer_buf, &wrong_psk, &RustCryptoHmac).unwrap();
+    let bad_frame = encode_frame_aead(
+        &header,
+        &outer_buf,
+        &wrong_psk,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap();
 
-    let response = env.gateway.process_frame(&bad_frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&bad_frame, peer()).await;
     assert!(
         response.is_none(),
-        "corrupted frame HMAC must cause silent discard"
+        "outer frame encrypted with wrong PSK must cause silent discard"
     );
 
-    // Now submit a valid frame HMAC for the same payload.
-    let good_frame = encode_frame(&header, &outer_buf, &TEST_NODE_PSK, &RustCryptoHmac).unwrap();
-    let response = env.gateway.process_frame(&good_frame, peer()).await;
+    // Now submit a valid outer frame AEAD for the same payload.
+    let good_frame = encode_frame_aead(
+        &header,
+        &outer_buf,
+        &TEST_PHONE_PSK,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap();
+    let response = env.gateway.process_frame_aead(&good_frame, peer()).await;
     assert!(
         response.is_some(),
-        "valid frame HMAC must allow processing to continue"
+        "valid outer frame AEAD must allow processing to continue"
     );
 }
 
@@ -1019,7 +1013,10 @@ async fn t_1215_timestamp_range_enforcement() {
         None,
     );
     assert!(
-        env.gateway.process_frame(&frame, peer()).await.is_none(),
+        env.gateway
+            .process_frame_aead(&frame, peer())
+            .await
+            .is_none(),
         "timestamp 90000s in the past must be rejected"
     );
 
@@ -1035,7 +1032,10 @@ async fn t_1215_timestamp_range_enforcement() {
         None,
     );
     assert!(
-        env.gateway.process_frame(&frame, peer()).await.is_none(),
+        env.gateway
+            .process_frame_aead(&frame, peer())
+            .await
+            .is_none(),
         "timestamp 90000s in the future must be rejected"
     );
 
@@ -1050,7 +1050,10 @@ async fn t_1215_timestamp_range_enforcement() {
         None,
     );
     assert!(
-        env.gateway.process_frame(&frame, peer()).await.is_some(),
+        env.gateway
+            .process_frame_aead(&frame, peer())
+            .await
+            .is_some(),
         "current timestamp must be accepted"
     );
 }
@@ -1075,7 +1078,10 @@ async fn t_1216_duplicate_node_id_rejected() {
         None,
     );
     assert!(
-        env.gateway.process_frame(&frame1, peer()).await.is_some(),
+        env.gateway
+            .process_frame_aead(&frame1, peer())
+            .await
+            .is_some(),
         "first registration must succeed"
     );
 
@@ -1090,7 +1096,10 @@ async fn t_1216_duplicate_node_id_rejected() {
         None,
     );
     assert!(
-        env.gateway.process_frame(&frame2, peer()).await.is_some(),
+        env.gateway
+            .process_frame_aead(&frame2, peer())
+            .await
+            .is_some(),
         "duplicate node_id with matching PSK must return PEER_ACK"
     );
 }
@@ -1100,16 +1109,16 @@ async fn t_1216_duplicate_node_id_rejected() {
 /// T-1217  Key hint mismatch rejected (GW-1217).
 ///
 /// Build a frame where the header `key_hint` differs from the
-/// `node_key_hint` in the CBOR payload.  Assert silent discard.
+/// phone_key_hint.  Assert silent discard.
 #[tokio::test]
 async fn t_1217_key_hint_mismatch_rejected() {
     let env = TestEnv::new().await;
 
     let node_key_hint = compute_key_hint(&TEST_NODE_PSK);
+    let phone_key_hint = compute_key_hint(&TEST_PHONE_PSK);
     let ts = current_timestamp();
     let cbor_bytes = build_pairing_cbor("node-t1217", node_key_hint, &TEST_NODE_PSK, 7, ts, None);
-    let authenticated_request = build_authenticated_request(&cbor_bytes, &TEST_PHONE_PSK);
-    let encrypted_payload = ecdh_encrypt(&env.identity, &authenticated_request);
+    let encrypted_payload = encrypt_inner_payload(&cbor_bytes, &TEST_PHONE_PSK);
 
     let outer = ciborium::Value::Map(vec![(
         ciborium::Value::Integer(PEER_REQ_KEY_PAYLOAD.into()),
@@ -1119,16 +1128,26 @@ async fn t_1217_key_hint_mismatch_rejected() {
     ciborium::into_writer(&outer, &mut outer_buf).unwrap();
 
     // Use DIFFERENT key_hint in the frame header.
-    let wrong_key_hint = node_key_hint.wrapping_add(1);
+    let wrong_key_hint = phone_key_hint.wrapping_add(1);
     let header = FrameHeader {
         key_hint: wrong_key_hint,
         msg_type: MSG_PEER_REQUEST,
         nonce: 0xBBBB,
     };
 
-    let frame = encode_frame(&header, &outer_buf, &TEST_NODE_PSK, &RustCryptoHmac).unwrap();
+    let frame = encode_frame_aead(
+        &header,
+        &outer_buf,
+        &TEST_PHONE_PSK,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap();
     assert!(
-        env.gateway.process_frame(&frame, peer()).await.is_none(),
+        env.gateway
+            .process_frame_aead(&frame, peer())
+            .await
+            .is_none(),
         "key_hint mismatch must cause silent discard"
     );
 }
@@ -1165,7 +1184,7 @@ async fn t_1218_node_registration_stores_fields() {
         Some(sensors),
     );
 
-    let response = env.gateway.process_frame(&frame, peer()).await;
+    let response = env.gateway.process_frame_aead(&frame, peer()).await;
     assert!(response.is_some(), "PEER_REQUEST must succeed");
 
     let node = env
@@ -1198,16 +1217,15 @@ async fn t_1218_node_registration_stores_fields() {
 /// T-1219  PEER_ACK happy path (GW-1219).
 ///
 /// Submit a valid PEER_REQUEST and verify the PEER_ACK:
-/// 1. CBOR = {1: 0, 2: registration_proof}
-/// 2. registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)
-/// 3. Frame HMAC is valid under node_psk.
-/// 4. Nonce in PEER_ACK header matches the PEER_REQUEST nonce.
+/// 1. CBOR = {1: 0} (status only, no registration_proof in AEAD format)
+/// 2. Frame AEAD is valid under node_psk.
+/// 3. Nonce in PEER_ACK header matches the PEER_REQUEST nonce.
 #[tokio::test]
 async fn t_1219_peer_ack_happy_path() {
     let env = TestEnv::new().await;
 
     let request_nonce: u64 = 0xCAFE_BABE_DEAD_BEEF;
-    let (frame, encrypted_payload) = build_peer_request_detailed(
+    let frame = build_peer_request_detailed(
         &env.identity,
         "node-t1219",
         &TEST_NODE_PSK,
@@ -1220,56 +1238,37 @@ async fn t_1219_peer_ack_happy_path() {
 
     let response = env
         .gateway
-        .process_frame(&frame, peer())
+        .process_frame_aead(&frame, peer())
         .await
         .expect("valid PEER_REQUEST must produce PEER_ACK");
 
     // Decode and verify the PEER_ACK frame.
-    let decoded = decode_frame(&response).unwrap();
+    let decoded = decode_frame_aead(&response).unwrap();
     assert_eq!(decoded.header.msg_type, MSG_PEER_ACK);
 
-    // 4. Nonce must echo the request nonce.
+    // 3. Nonce must echo the request nonce.
     assert_eq!(
         decoded.header.nonce, request_nonce,
         "PEER_ACK nonce must echo the PEER_REQUEST nonce"
     );
 
-    // 3. Frame HMAC must be valid under node_psk.
-    assert!(
-        verify_frame(&decoded, &TEST_NODE_PSK, &RustCryptoHmac),
-        "PEER_ACK frame HMAC must be valid under node_psk"
-    );
+    // 2. Frame AEAD must be valid under node_psk.
+    let plaintext = open_frame(&decoded, &TEST_NODE_PSK, &GatewayAead, &RustCryptoSha256).unwrap();
 
-    // 1. Parse PEER_ACK CBOR: { 1: status, 2: registration_proof }
-    let ack: ciborium::Value = ciborium::from_reader(&decoded.payload[..]).unwrap();
+    // 1. Parse PEER_ACK CBOR: { 1: status(0) }
+    let ack: ciborium::Value = ciborium::from_reader(&plaintext[..]).unwrap();
     let map = ack.as_map().unwrap();
     let mut status: Option<u64> = None;
-    let mut proof: Option<Vec<u8>> = None;
     for (k, v) in map {
         let key = k.as_integer().and_then(|i| u64::try_from(i).ok()).unwrap();
-        match key {
-            k if k == PEER_ACK_KEY_STATUS => {
-                status = v.as_integer().and_then(|i| u64::try_from(i).ok());
-            }
-            k if k == PEER_ACK_KEY_PROOF => {
-                proof = v.as_bytes().map(|b| b.to_vec());
-            }
-            _ => {}
+        if key == PEER_ACK_KEY_STATUS {
+            status = v.as_integer().and_then(|i| u64::try_from(i).ok());
         }
     }
     assert_eq!(status, Some(0), "PEER_ACK status must be 0 (success)");
-    let proof = proof.expect("PEER_ACK must contain registration_proof");
-    assert_eq!(proof.len(), 32, "registration_proof must be 32 bytes");
-
-    // 2. Verify registration_proof independently.
-    // proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)
-    let hmac = RustCryptoHmac;
-    let mut proof_input = Vec::with_capacity(b"sonde-peer-ack-v1".len() + encrypted_payload.len());
-    proof_input.extend_from_slice(b"sonde-peer-ack-v1");
-    proof_input.extend_from_slice(&encrypted_payload);
-    let expected_proof = hmac.compute(&TEST_NODE_PSK, &proof_input);
     assert_eq!(
-        proof, expected_proof,
-        "registration_proof must equal HMAC-SHA256(node_psk, 'sonde-peer-ack-v1' || encrypted_payload)"
+        map.len(),
+        1,
+        "AEAD PEER_ACK must contain only status (no registration_proof)"
     );
 }

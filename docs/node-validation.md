@@ -26,10 +26,10 @@ This document defines integration test cases that validate the node firmware aga
 A test fixture that simulates the gateway side of the protocol:
 
 - Listens for inbound frames from the node.
-- Verifies HMAC and decodes CBOR using `sonde-protocol`.
+- Decrypts and authenticates inbound frames using `sonde-protocol` AES-256-GCM.
 - Responds with configurable COMMAND, CHUNK, and APP_DATA_REPLY messages.
 - Tracks received frames for assertion (message types, sequence numbers, payloads).
-- Supports configurable behaviors: delay responses, drop responses (simulate timeout), send invalid HMAC, send wrong nonce/seq.
+- Supports configurable behaviors: delay responses, drop responses (simulate timeout), send invalid AEAD ciphertext, send wrong nonce/seq.
 
 ### 2.2  Mock HAL
 
@@ -95,7 +95,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 2. Assert: bytes 0–1 = key_hint (big-endian).
 3. Assert: byte 2 = `MSG_WAKE` (0x01).
 4. Assert: bytes 3–10 = nonce (big-endian 64-bit value; verify it differs between the two frames).
-5. Assert: last 32 bytes = valid HMAC-SHA256 over preceding bytes.
+5. Assert: last 16 bytes = valid AES-256-GCM authentication tag; frame decrypts successfully with the node's PSK.
 6. Assert: total length ≤ 250 bytes.
 
 ---
@@ -241,25 +241,23 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ## 5  Authentication and replay protection tests
 
-### T-N300  HMAC on outbound frames (legacy)
+### T-N300  AEAD on outbound frames
 
-**Traceability:** Legacy test — does not map to a current requirement. ND-0300 is now AES-256-GCM; see T-N606a and T-N606b for AEAD verification.
-
-**Note:** This test applies only to the HMAC code path when `aes-gcm-codec` is disabled.
+**Traceability:** ND-0300
 
 **Procedure:**
-1. Capture any outbound frame (with HMAC code path active).
-2. Independently compute HMAC-SHA256 over header + payload using the node's PSK.
-3. Assert: computed HMAC matches the frame's last 32 bytes.
+1. Capture any outbound frame.
+2. Verify AES-256-GCM decryption succeeds using the node's PSK.
+3. Assert: frame uses AEAD wire format (11B header + ciphertext + 16B GCM tag).
 
 ---
 
-### T-N301  Invalid HMAC rejected
+### T-N301  Invalid AEAD ciphertext rejected
 
 **Validates:** ND-0301
 
 **Procedure:**
-1. Mock gateway sends COMMAND with a corrupted HMAC.
+1. Mock gateway sends COMMAND with corrupted ciphertext (AEAD authentication fails).
 2. Assert: node discards the frame.
 3. Assert: node retries WAKE (treats it as no response).
 
@@ -617,7 +615,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Install a program that calls `send([0xAA, 0xBB])`.
 2. Run wake cycle with AEAD providers installed (via `install_aead`).
 3. Capture the outbound APP_DATA frame from the transport.
-4. Assert: the frame has the AEAD wire format (11B header + ciphertext + 16B GCM tag), NOT the HMAC format (11B header + plaintext + 32B HMAC).
+4. Assert: the frame has the AEAD wire format (11B header + ciphertext + 16B GCM tag), NOT the legacy format (11B header + plaintext + 32B tag).
 5. Assert: `decode_frame_aead()` + `open_frame()` successfully decrypts the frame using the node's PSK.
 6. Assert: the decrypted CBOR contains AppData with blob `[0xAA, 0xBB]`.
 
@@ -812,7 +810,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0800
 
 **Procedure:**
-1. Mock gateway sends COMMAND with valid HMAC but garbage CBOR payload.
+1. Mock gateway sends COMMAND with valid AEAD encryption but garbage CBOR payload (encrypted valid GCM tag over malformed content).
 2. Assert: node discards the frame.
 3. Assert: no crash, node retries or sleeps.
 
@@ -823,7 +821,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0801
 
 **Procedure:**
-1. Mock gateway sends a frame with `msg_type = 0x99` (unknown) and valid HMAC.
+1. Mock gateway sends a frame with `msg_type = 0x99` (unknown) and valid AEAD encryption.
 2. Assert: node discards the frame.
 
 ---
@@ -1007,7 +1005,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 3. Assert: `msg_type` = 0x05.
 4. Assert: nonce is exactly 8 bytes and is sourced from the RNG abstraction (verified via mock RNG in test). Assert it is not a fixed constant (e.g., not always zero).
 5. Assert: CBOR payload decodes to `{1: <value>}` where the value matches NVS key `peer_payload`.
-6. Assert: HMAC-SHA256 over header+payload verifies with the PSK from NVS key `psk`.
+6. Assert: AES-256-GCM authenticated encryption verifies with the PSK from NVS key `psk`.
 7. Assert: ESP-NOW channel matches NVS key `channel`.
 
 ---
@@ -1042,7 +1040,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Node sends PEER_REQUEST with nonce N.
-2. Mock gateway responds with PEER_ACK: valid HMAC, nonce = N, correct `registration_proof` = HMAC-SHA256(`node_psk`, `"sonde-peer-ack-v1" ‖ encrypted_payload`).
+2. Mock gateway responds with PEER_ACK: valid AES-256-GCM encryption with `node_psk`, nonce = N.
 3. Assert: node accepts the PEER_ACK.
 
 ---
@@ -1102,7 +1100,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Complete BLE pairing and registration (`reg_complete` set).
 2. Reboot node; node sends WAKE.
-3. Mock gateway does not respond (or responds with invalid HMAC).
+3. Mock gateway does not respond (or responds with invalid AEAD ciphertext).
 4. Assert: `reg_complete` flag is cleared.
 5. Assert: on next boot the node sends PEER_REQUEST instead of WAKE.
 
@@ -1264,12 +1262,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N1011  HMAC verification failure WARN log
+### T-N1011  AEAD verification failure WARN log
 
 **Validates:** ND-1009
 
 **Procedure:**
-1. Configure mock gateway to respond with a frame bearing a corrupted HMAC.
+1. Configure mock gateway to respond with a frame bearing corrupted AEAD ciphertext.
 2. Run `run_wake_cycle`.
 3. Assert: a WARN log is emitted containing "COMMAND verification failed".
 
@@ -1344,9 +1342,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-1014
 
 **Procedure:**
-1. Trigger an operator-visible error (e.g., NVS read failure by corrupting NVS partition, or HMAC verification failure with wrong PSK).
+1. Trigger an operator-visible error (e.g., NVS read failure by corrupting NVS partition, or AEAD decryption failure with wrong PSK).
 2. Capture serial output.
-3. Assert: the error log includes the failed operation name (e.g., `"HMAC verification"`, `"NVS read"`).
+3. Assert: the error log includes the failed operation name (e.g., `"AEAD decryption"`, `"NVS read"`).
 4. Assert: the error log includes the underlying subsystem error (e.g., ESP-IDF error code).
 5. Assert: no secret key material (PSK bytes, passwords) appears in the log.
 
@@ -1447,12 +1445,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N924  Invalid HMAC COMMAND — silent discard, no diagnostic frame
+### T-N924  Invalid AEAD COMMAND — silent discard, no diagnostic frame
 
 **Validates:** ND-0301
 
 **Procedure:**
-1. Node sends WAKE; mock gateway responds with a COMMAND bearing an invalid HMAC.
+1. Node sends WAKE; mock gateway responds with a COMMAND bearing invalid AEAD ciphertext.
 2. Assert: node discards the COMMAND.
 3. Monitor all transmitted frames until the next WAKE retry.
 4. Assert: no error response or diagnostic frame is transmitted — only the next WAKE retry appears.
@@ -1652,12 +1650,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N941  PEER_ACK with corrupted HMAC silently discarded
+### T-N941  PEER_ACK with corrupted AEAD ciphertext silently discarded
 
 **Validates:** ND-0912
 
 **Procedure:**
-1. Send a PEER_ACK with a valid nonce and registration proof but a corrupted HMAC.
+1. Send a PEER_ACK with a valid nonce but corrupted AEAD ciphertext (authentication tag tampered).
 2. Assert: the node silently discards the frame.
 3. Assert: no error response is transmitted.
 

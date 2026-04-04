@@ -32,7 +32,7 @@ The firmware is **uniform across all nodes** — application behavior is defined
 | Platform bindings | `esp-idf-hal` + `esp-idf-svc` | Full ESP-IDF feature access (ESP-NOW, deep sleep, hardware crypto, flash partitions) |
 | BPF interpreter | `sonde-bpf` — custom RFC 9669 interpreter with tagged registers and zero heap allocation |
 | CBOR | Via `sonde-protocol` (`ciborium`) | serde-compatible; matches protocol crate implementation |
-| HMAC | ESP-IDF hardware HMAC peripheral (implements `sonde-protocol::HmacProvider` trait) | Hardware-accelerated; ~10x faster than software |
+| AES-256-GCM | ESP-IDF hardware AES peripheral (implements `sonde-protocol::AeadProvider` trait) | Hardware-accelerated AEAD encryption and authentication |
 | SHA-256 | ESP-IDF hardware SHA peripheral | Hardware-accelerated; used for program hash verification |
 | RNG | ESP-IDF hardware TRNG | True random number generator; used for WAKE nonce |
 | Toolchain | Upstream Rust (C3) / `espup` (S3) | C3 is RISC-V (upstream); S3 is Xtensa (custom toolchain) |
@@ -41,7 +41,7 @@ The firmware is **uniform across all nodes** — application behavior is defined
 
 ## 3  Module architecture
 
-The node firmware is divided into eleven functional modules arranged in two tiers. The upper tier handles the data path: Transport (ESP-NOW radio), Protocol Codec (frame encode/decode), Wake Cycle Engine (session state machine), and BPF Runtime (program execution). The lower tier provides platform services: HAL (I2C/SPI/GPIO/ADC buses), Key Store (PSK in dedicated flash partition), Program Store (A/B flash partitions), Map Storage (RTC SRAM), Auth (HMAC verification and key-hint derivation), and BLE Pairing (LESC Just Works provisioning and PEER_REQUEST registration). A horizontal Sleep Manager spans the bottom of the firmware, managing deep sleep, wake intervals, and RTC memory. Data flows left-to-right in the upper tier; the Wake Cycle Engine coordinates all lower-tier modules.
+The node firmware is divided into eleven functional modules arranged in two tiers. The upper tier handles the data path: Transport (ESP-NOW radio), Protocol Codec (frame encode/decode), Wake Cycle Engine (session state machine), and BPF Runtime (program execution). The lower tier provides platform services: HAL (I2C/SPI/GPIO/ADC buses), Key Store (PSK in dedicated flash partition), Program Store (A/B flash partitions), Map Storage (RTC SRAM), Auth (AEAD encryption/decryption and key-hint derivation), and BLE Pairing (LESC Just Works provisioning and PEER_REQUEST registration). A horizontal Sleep Manager spans the bottom of the firmware, managing deep sleep, wake intervals, and RTC memory. Data flows left-to-right in the upper tier; the Wake Cycle Engine coordinates all lower-tier modules.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -76,7 +76,7 @@ The node firmware is divided into eleven functional modules arranged in two tier
 | **Map Storage** | Sleep-persistent maps in RTC slow SRAM | ND-0603, ND-0606 |
 | **HAL** | I2C, SPI, GPIO, ADC bus access for BPF helpers | ND-0601 |
 | **Sleep Manager** | Deep sleep entry, wake interval, RTC memory management, GPIO sleep preparation | ND-0203, ND-1013 |
-| **Auth** | HMAC-SHA256 (hardware), nonce generation, response verification | ND-0300–0304 |
+| **Auth** | AES-256-GCM AEAD (hardware), nonce generation, response verification | ND-0300–0304 |
 | **BLE Pairing** | NimBLE stack, GATT provisioning service, PEER_REQUEST registration | ND-0900–0918 |
 
 ---
@@ -130,9 +130,9 @@ The state machine has five main states plus two alternate boot paths. Starting f
 
 1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) no PSK or button held → BLE pairing mode, (2) PSK + no `reg_complete` → PEER_REQUEST registration, (3) PSK + `reg_complete` → proceed to step 2.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
-3. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`). HMAC-sign. Transmit via ESP-NOW.
+3. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`). AEAD-encrypt with PSK. Transmit via ESP-NOW.
 4. **Await COMMAND**: Wait up to 50 ms. If no response, retry (up to 3 times, 100 ms between). If all retries fail, sleep.
-5. **Verify COMMAND**: Check HMAC. Verify echoed nonce matches. Decode CBOR. Extract `starting_seq` and `timestamp_ms`.
+5. **Verify COMMAND**: Decrypt via AES-256-GCM. Verify echoed nonce matches. Decode CBOR. Extract `starting_seq` and `timestamp_ms`.
 6. **Dispatch command**:
    - `NOP` → proceed to BPF execution.
    - `UPDATE_PROGRAM` / `RUN_EPHEMERAL` → enter chunked transfer.
@@ -155,7 +155,7 @@ for chunk_index in 0..chunk_count:
     await CHUNK response (50 ms timeout, 3 retries per chunk)
         if recv returns wrong msg_type → discard, re-read (not a retry)
     if all retries fail → abort, sleep
-    verify echoed seq, HMAC
+    verify echoed seq, AEAD authentication
     store chunk data
 
 reassemble program image
@@ -171,11 +171,11 @@ send PROGRAM_ACK { program_hash }
 
 ## 5  Protocol codec
 
-The protocol codec is provided by the shared `sonde-protocol` crate (see § Shared protocol crate below). The node uses the same frame format, CBOR message types, and constants as the gateway. Platform-specific behavior (HMAC computation) is injected via a trait.
+The protocol codec is provided by the shared `sonde-protocol` crate (see § Shared protocol crate below). The node uses the same frame format, CBOR message types, and constants as the gateway. Platform-specific behavior (AEAD encryption) is injected via a trait.
 
 ### 5.1  Frame construction
 
-Uses `sonde_protocol::encode_frame()` with a constructed `FrameHeader`, the node's PSK, and the node's HMAC implementation:
+Uses `sonde_protocol::encode_frame_aead()` with a constructed `FrameHeader`, the node's PSK, and the node's AEAD and SHA-256 implementations:
 
 ```rust
 let header = sonde_protocol::FrameHeader {
@@ -183,19 +183,19 @@ let header = sonde_protocol::FrameHeader {
     msg_type,
     nonce: nonce_or_seq,
 };
-let frame = sonde_protocol::encode_frame(
-    &header, &payload_cbor, psk, &hmac_impl,
+let frame = sonde_protocol::encode_frame_aead(
+    &header, &payload_cbor, psk, &aead_impl, &sha_impl,
 );
 ```
 
-The hardware HMAC implementation wraps the ESP-IDF HMAC peripheral behind the `sonde_protocol::HmacProvider` trait. Total frame size is asserted ≤ 250 bytes (ND-0103).
+The hardware AES-GCM implementation wraps the ESP-IDF AES peripheral behind the `sonde_protocol::AeadProvider` trait. Total frame size is asserted ≤ 250 bytes (ND-0103).
 
 ### 5.2  Frame verification (inbound)
 
-Uses `sonde_protocol::decode_frame()` and `sonde_protocol::verify_frame()`:
+Uses `sonde_protocol::decode_frame_aead()` and `sonde_protocol::open_frame()`:
 
-1. Decode frame into header + payload + HMAC.
-2. Verify HMAC via `sonde_protocol::verify_frame()` using the hardware peripheral (through `HmacProvider` trait).
+1. Attempt AES-256-GCM authenticated decryption using the node's PSK.
+2. If decryption fails (authentication tag mismatch) → discard.
 3. Verify echoed nonce/seq matches the value sent. Mismatch → discard.
 4. Decode CBOR payload into typed `GatewayMessage`.
 
@@ -384,9 +384,9 @@ A pointer to this struct is passed as the first argument (R1) to the BPF program
 
 1. Increment the session sequence number.
 2. Construct APP_DATA frame with the blob and current sequence number.
-3. HMAC-sign and transmit.
+3. AEAD-encrypt and transmit.
 4. For `send()`: return immediately (do not wait for reply).
-5. For `send_recv()`: wait for APP_DATA_REPLY (50 ms timeout). Verify HMAC and echoed sequence number. Return reply blob to BPF program.
+5. For `send_recv()`: wait for APP_DATA_REPLY (50 ms timeout). Decrypt via AES-256-GCM and verify echoed sequence number. Return reply blob to BPF program.
 
 Each call increments the sequence number, ensuring independent replay protection per message.
 
@@ -512,7 +512,7 @@ All inbound protocol errors result in **silent discard** — the node does not s
 
 | Error | Behavior |
 |---|---|
-| HMAC verification failure | Discard frame. |
+| AEAD authentication failure | Discard frame. |
 | Echoed nonce/seq mismatch | Discard frame. |
 | Malformed CBOR (ND-0800) | Discard frame. |
 | Unexpected `msg_type` (ND-0801) | Discard frame. |
@@ -628,7 +628,7 @@ When the node boots with a PSK stored but the `reg_complete` flag not set (boot 
    - `msg_type` = 0x05.
    - `nonce` = fresh 8-byte random value from the hardware RNG.
    - CBOR payload: `{1: encrypted_payload}`.
-   - HMAC-SHA256 computed with `node_psk` (loaded from the key store — see §6.1, §6.1a) over header + payload.
+   - AES-256-GCM encrypted with `node_psk` (loaded from the key store — see §6.1, §6.1a).
 
 **Transmission and retransmission (ND-0910):**
 
@@ -642,9 +642,9 @@ After transmitting PEER_REQUEST, the node listens for a PEER_ACK for at least 10
 
 On receiving a candidate PEER_ACK frame, the node:
 
-1. Verifies the frame HMAC using `node_psk`.
+1. Decrypts the frame via AES-256-GCM using `node_psk`. If decryption fails → discard.
 2. Verifies that the echoed `nonce` matches the nonce sent in the PEER_REQUEST.
-3. Computes the expected `registration_proof` as `HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)`.
+3. Successful decryption constitutes proof that the gateway holds `node_psk` (no separate `registration_proof` needed).
 4. Discards the frame if any check fails.
 
 **Registration completion (ND-0913):**
@@ -657,7 +657,7 @@ After the first successful WAKE/COMMAND exchange (the gateway responds with a va
 
 **Self-healing on WAKE failure (ND-0915):**
 
-If WAKE fails (no response or HMAC verification failure) after `reg_complete` is set, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state.
+If WAKE fails (no response or AEAD decryption failure) after `reg_complete` is set, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state.
 
 ---
 
@@ -669,25 +669,25 @@ The `sonde-protocol` crate is a `no_std`-compatible Rust library shared between 
 
 | Component | Description |
 |---|---|
-| **Constants** | `msg_type` codes, command codes, CBOR key numbers, frame sizes, HMAC size |
-| **Frame codec** | `encode_frame()`, `decode_frame()`, header parsing at fixed offsets |
+| **Constants** | `msg_type` codes, command codes, CBOR key numbers, frame sizes, AEAD tag size |
+| **Frame codec** | `encode_frame_aead()`, `decode_frame_aead()`, `open_frame()`, header parsing at fixed offsets |
 | **CBOR messages** | `NodeMessage` and `GatewayMessage` enums with typed fields; CBOR encode/decode using integer keys |
 | **Program image** | `ProgramImage` and `MapDef` structs; CBOR deterministic encode/decode |
-| **HMAC trait** | `HmacProvider` trait — platform provides the implementation |
+| **AEAD trait** | `AeadProvider` trait — platform provides the implementation |
 
-### 16.2  HMAC trait
+### 16.2  AEAD trait
 
 ```rust
-pub trait HmacProvider {
-    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32];
-    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool;
+pub trait AeadProvider {
+    fn seal(&self, key: &[u8], nonce: &[u8], aad: &[u8], plaintext: &[u8]) -> Vec<u8>;
+    fn open(&self, key: &[u8], nonce: &[u8], aad: &[u8], ciphertext: &[u8]) -> Option<Vec<u8>>;
 }
 ```
 
 | Platform | Implementation |
 |---|---|
-| Gateway | `hmac` + `sha2` crates (RustCrypto, software) |
-| Node | ESP-IDF hardware HMAC peripheral |
+| Gateway | `aes-gcm` crate (RustCrypto, software) |
+| Node | ESP-IDF hardware AES peripheral |
 | Tests | Software implementation (same as gateway) |
 
 ### 16.3  `no_std` compatibility
@@ -705,7 +705,7 @@ The node firmware uses the Rust `log` crate (v0.4) as the logging facade. On ESP
 | Level | Usage |
 |---|---|
 | `info!` | Normal operational events: boot, wake cycle transitions, frame send/receive, BPF execution, sleep entry, `bpf_trace_printk` output |
-| `warn!` | Recoverable error conditions: RNG failure, transport timeout, HMAC mismatch, storage I/O errors |
+| `warn!` | Recoverable error conditions: RNG failure, transport timeout, AEAD authentication failure, storage I/O errors |
 | `error!` | Non-recoverable errors: BPF load/registration failures |
 | `debug!` | Verbose diagnostic output: BPF helper I/O calls (helper name + return value) |
 
@@ -757,7 +757,7 @@ The following events are logged per the ND-10xx requirements:
 | BLE pairing mode | INFO | `bin/node.rs` | entry/exit (already present) | ND-1008 |
 | RNG failure | WARN | `wake_cycle.rs` | — | ND-1009 |
 | WAKE retries exhausted | WARN | `wake_cycle.rs` | — | ND-1009 |
-| HMAC mismatch | WARN | `wake_cycle.rs` | — | ND-1009 |
+| AEAD auth failure | WARN | `wake_cycle.rs` | — | ND-1009 |
 | GET_CHUNK sent | DEBUG | `wake_cycle.rs` | `chunk_index`, `attempt` | ND-1011 |
 | CHUNK received | DEBUG | `wake_cycle.rs` | `chunk_index`, data `len` | ND-1011 |
 | Commit hash + ABI version | WARN | `bin/node.rs` | `commit`, `abi_version` | ND-1015 |
@@ -776,7 +776,7 @@ When the node encounters an error at an operator-visible boundary, the error log
 | Boundary | Diagnostic fields |
 |---|---|
 | WiFi scan | ESP-IDF error code, scan configuration (channels, dwell, active/passive) |
-| HMAC verification | `key_hint`, operation name |
+| AEAD decryption | `key_hint`, operation name |
 | Program hash verification | `program_hash`, expected vs actual |
 | NVS storage I/O | NVS key/namespace, ESP-IDF status code |
 | Deep-sleep entry | sleep duration, reason |

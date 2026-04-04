@@ -51,20 +51,8 @@ pub enum PairingError {
     IndicationTimeout,
 
     // Protocol errors
-    #[error("gateway authentication failed: {0} — verify the gateway is running and the registration window is open")]
-    GatewayAuthFailed(String),
-
     #[error("registration failed: {0} — verify the gateway is running and the registration window is open")]
     RegistrationFailed(String),
-
-    #[error("Ed25519 signature verification failed — the gateway identity may have changed or data was corrupted")]
-    SignatureVerificationFailed,
-
-    #[error("gateway public key does not match stored identity (TOFU violation) — if the gateway was re-keyed, clear local pairing first")]
-    PublicKeyMismatch,
-
-    #[error("gateway identity mismatch: stored gateway_id does not match presented gateway_id — if the gateway was reinstalled or reset, clear local pairing and re-pair")]
-    GatewayIdMismatch,
 
     #[error("gateway registration window is closed — open the registration window on the gateway and retry")]
     RegistrationWindowClosed,
@@ -120,14 +108,8 @@ pub enum PairingError {
     #[error("RNG failed: {0}")]
     RngFailed(String),
 
-    #[error("invalid public key: {0}")]
-    InvalidPublicKey(String),
-
     #[error("encryption failed: {0}")]
     EncryptionFailed(String),
-
-    #[error("not paired — run Phase 1 (gateway pairing) first before provisioning nodes")]
-    NotPaired,
 
     #[error("BLE pairing used insecure method `{method}` — Numeric Comparison (LESC) is required")]
     InsecurePairingMethod { method: PairingMethod },

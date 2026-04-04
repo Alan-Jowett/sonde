@@ -5,9 +5,9 @@
 
 extern crate alloc;
 
+pub mod aead_codec;
 pub mod ble_envelope;
 pub mod chunk;
-pub mod codec;
 pub mod constants;
 pub mod error;
 pub mod header;
@@ -16,25 +16,17 @@ pub mod modem;
 pub mod program_image;
 pub mod traits;
 
-#[cfg(feature = "aes-gcm-codec")]
-pub mod aead_codec;
-
+pub use aead_codec::{
+    build_gcm_nonce, decode_frame_aead, encode_frame_aead, open_frame, DecodedFrameAead,
+};
 pub use ble_envelope::{encode_ble_envelope, parse_ble_envelope};
 pub use chunk::{chunk_count, get_chunk};
-pub use codec::{decode_frame, encode_frame, verify_frame, DecodedFrame};
 pub use constants::*;
 pub use error::{DecodeError, EncodeError};
 pub use header::FrameHeader;
 pub use messages::{CommandPayload, GatewayMessage, NodeMessage};
 pub use program_image::{program_hash, MapDef, ProgramImage};
-pub use traits::{HmacProvider, Sha256Provider};
-
-#[cfg(feature = "aes-gcm-codec")]
-pub use aead_codec::{
-    build_gcm_nonce, decode_frame_aead, encode_frame_aead, open_frame, DecodedFrameAead,
-};
-#[cfg(feature = "aes-gcm-codec")]
-pub use traits::AeadProvider;
+pub use traits::{AeadProvider, Sha256Provider};
 
 /// Derive the 2-byte key hint from a PSK.
 ///

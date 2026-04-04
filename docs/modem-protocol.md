@@ -22,7 +22,7 @@ The system consists of three components connected in series: the Gateway (runnin
 └──────────┘             └──────────────┘           └──────────────┘
 ```
 
-The modem is **protocol-unaware**: it does not perform HMAC verification, CBOR parsing, session management, or any cryptographic operation. It relays opaque byte frames between USB and radio, adding only the peer MAC address and RSSI metadata.
+The modem is **protocol-unaware**: it does not perform cryptographic verification, CBOR parsing, session management, or any cryptographic operation. It relays opaque byte frames between USB and radio, adding only the peer MAC address and RSSI metadata.
 
 ### 1.1  Design principles
 

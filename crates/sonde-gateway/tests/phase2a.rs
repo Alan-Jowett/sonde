@@ -10,10 +10,10 @@
 use std::time::Duration;
 
 use sonde_gateway::{
-    InMemoryStorage, MockTransport, NodeRecord, ProgramLibrary, RustCryptoHmac, RustCryptoSha256,
-    SessionManager, SessionState, Storage, Transport, VerificationProfile,
+    InMemoryStorage, MockTransport, NodeRecord, ProgramLibrary, RustCryptoSha256, SessionManager,
+    SessionState, Storage, Transport, VerificationProfile,
 };
-use sonde_protocol::{HmacProvider, Sha256Provider};
+use sonde_protocol::Sha256Provider;
 
 // ── Transport (T-0100) ──────────────────────────────────────────────
 
@@ -469,33 +469,6 @@ async fn t0407_program_size_enforcement() {
 }
 
 // ── Crypto unit tests ──────────────────────────────────────────────
-
-/// HMAC compute + verify round-trip.
-#[tokio::test]
-async fn crypto_hmac_round_trip() {
-    let hmac_provider = RustCryptoHmac;
-    let key = [0x42u8; 32];
-    let data = b"hello sonde protocol";
-
-    let mac = hmac_provider.compute(&key, data);
-    assert_eq!(mac.len(), 32);
-
-    let valid = hmac_provider.verify(&key, data, &mac);
-    assert!(valid, "HMAC verify must succeed with correct key and data");
-}
-
-/// HMAC verify with wrong key fails.
-#[tokio::test]
-async fn crypto_hmac_wrong_key_fails() {
-    let hmac_provider = RustCryptoHmac;
-    let key_a = [0x11u8; 32];
-    let key_b = [0x22u8; 32];
-    let data = b"test payload";
-
-    let mac = hmac_provider.compute(&key_a, data);
-    let valid = hmac_provider.verify(&key_b, data, &mac);
-    assert!(!valid, "HMAC verify must fail with wrong key");
-}
 
 /// SHA-256 hash is deterministic.
 #[tokio::test]

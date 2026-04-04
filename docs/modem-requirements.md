@@ -338,7 +338,7 @@ The modem firmware MUST maintain `tx_count`, `rx_count`, `tx_fail_count`, and `u
 
 The modem firmware:
 
-- MUST NOT perform HMAC verification or any cryptographic operation.
+- MUST NOT perform cryptographic verification or any cryptographic operation.
 - MUST NOT parse CBOR payloads or interpret frame contents.
 - MUST NOT maintain sessions, node state, or protocol-level logic.
 - MUST NOT perform over-the-air updates (firmware is flashed via USB/esptool).

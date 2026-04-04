@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! AES-256-GCM frame codec (feature-gated behind `aes-gcm-codec`).
+//! AES-256-GCM frame codec.
 //!
-//! This module provides an authenticated-encryption frame codec that can
-//! replace the HMAC-SHA256 codec once all consumers have migrated.
+//! This module provides the authenticated-encryption frame codec.
 //!
 //! Wire format:
 //! ```text

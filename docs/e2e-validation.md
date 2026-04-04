@@ -17,7 +17,7 @@ These tests validate that:
 
 - The protocol wire format is compatible between gateway and node.
 - The chunked transfer protocol completes successfully across the full stack.
-- Authentication (HMAC, nonce, sequence numbers) works end-to-end.
+- Authentication (AEAD, nonce, sequence numbers) works end-to-end.
 - Admin commands (schedule, reboot, ephemeral) flow from the engine to the node.
 - Application data is routed from a node through the gateway to a handler and back.
 
@@ -183,7 +183,7 @@ impl E2eNode {
 1. Node runs `run_wake_cycle()`.
 2. Node sends WAKE with `program_hash = []`, `battery_mv = 3300`.
 3. Gateway receives WAKE, creates session, responds with COMMAND(NOP).
-4. Node receives COMMAND, verifies HMAC, proceeds to BPF execution (no program → skip).
+4. Node receives COMMAND, verifies AEAD authentication, proceeds to BPF execution (no program → skip).
 5. Node sleeps.
 
 **Assertions:**
@@ -194,22 +194,22 @@ impl E2eNode {
 
 ---
 
-#### T-E2E-002  HMAC authentication round-trip
+#### T-E2E-002  AEAD authentication round-trip
 
-**Validates:** HMAC-SHA256 authentication works across gateway (software crypto) and node (injected crypto).
+**Validates:** AES-256-GCM authentication works across gateway (software crypto) and node (injected crypto).
 
 **Preconditions:**
 1. Node registered with PSK `[0xAA; 32]`.
 
 **Procedure:**
-1. Node sends WAKE authenticated with PSK.
-2. Gateway verifies HMAC using its `RustCryptoHmac`.
-3. Gateway responds with COMMAND authenticated with the same PSK.
-4. Node verifies HMAC using its `TestHmac`.
+1. Node sends WAKE authenticated with PSK via AES-256-GCM.
+2. Gateway decrypts and verifies using its `RustCryptoAead`.
+3. Gateway responds with COMMAND encrypted with the same PSK.
+4. Node decrypts using its `TestAead`.
 
 **Assertions:**
 - Wake cycle completes successfully (no `AuthFailure`).
-- Both sides use the same PSK and produce compatible HMAC tags.
+- Both sides use the same PSK and produce compatible AEAD ciphertexts.
 
 ---
 
@@ -242,7 +242,7 @@ impl E2eNode {
 
 **Procedure:**
 1. Node sends WAKE authenticated with wrong PSK.
-2. Gateway receives frame, HMAC verification fails.
+2. Gateway receives frame, AEAD decryption fails.
 3. Gateway does not respond.
 4. Node sends WAKE 4 times total (1 initial + 3 retries), then sleeps.
 
@@ -407,20 +407,20 @@ impl E2eNode {
 **Preconditions:**
 1. Node registered with PSK.
 2. BPF program calls `send([0xDE, 0xAD])`.
-3. Gateway configured with `aes-gcm-codec` feature (AEAD wake cycle).
+3. Gateway configured with AEAD wake cycle.
 4. Handler configured for the program hash.
 
 **Procedure:**
 1. Node executes AEAD wake cycle: WAKE (AEAD) → COMMAND/NOP (AEAD).
 2. BPF program executes and calls `send()`.
-3. BPF helper produces an AEAD-authenticated APP_DATA frame (not HMAC).
+3. BPF helper produces an AEAD-authenticated APP_DATA frame.
 4. Gateway receives the frame, decrypts with AES-256-GCM, validates sequence.
 5. Gateway routes decrypted blob to handler via stdin.
 6. Handler receives DATA message, processes it.
 
 **Assertions:**
 - Handler receives DATA message with blob `[0xDE, 0xAD]`.
-- The APP_DATA frame on the wire uses AEAD format (11B header + ciphertext + 16B tag), NOT HMAC format.
+- The APP_DATA frame on the wire uses AEAD format (11B header + ciphertext + 16B tag).
 - The node/gateway exchange completes without the APP_DATA frame being silently discarded (e.g., the blob is delivered to the handler and processing continues normally).
 
 ---
@@ -588,7 +588,7 @@ impl E2eNode {
 
 #### T-E2E-061  Phone registration (Phase 1)
 
-**Validates:** GW-1206–GW-1210 — REQUEST_GW_INFO challenge-response, REGISTER_PHONE ECDH + AES-GCM, registration window enforcement.
+**Validates:** GW-1206–GW-1210 — REGISTER_PHONE PSK exchange over BLE LESC, registration window enforcement.
 
 **Preconditions:**
 1. Gateway identity stored.
@@ -597,8 +597,8 @@ impl E2eNode {
 **Procedure:**
 1. Send REQUEST_GW_INFO envelope via `handle_ble_recv` with 32-byte challenge.
 2. Parse GW_INFO_RESPONSE (verify Ed25519 public key, gateway_id, signature).
-3. Send REGISTER_PHONE with ephemeral X25519 public key + label.
-4. Decrypt PHONE_REGISTERED response (ECDH + HKDF + AES-256-GCM).
+3. Send REGISTER_PHONE with phone-generated PSK + label over BLE LESC.
+4. Parse PHONE_REGISTERED response (plaintext over BLE LESC — status, PSK, key_hint, channel).
 5. Close registration window and attempt REGISTER_PHONE again.
 
 **Assertions:**
@@ -616,7 +616,7 @@ impl E2eNode {
 2. Encrypted payload constructed from Phase 1 artifacts.
 
 **Procedure:**
-1. Build `encrypted_payload` (CBOR PairingRequest + phone HMAC + ECDH + AES-GCM).
+1. Build `encrypted_payload` (CBOR PairingRequest encrypted with AES-256-GCM using `phone_psk`).
 2. Call `handle_node_provision` with key_hint, PSK, channel, and encrypted payload.
 
 **Assertions:**
@@ -635,8 +635,8 @@ impl E2eNode {
 **Procedure:**
 1. Run wake cycle. Node detects `!reg_complete && has_peer_payload`.
 2. Node builds PEER_REQUEST frame (msg_type 0x05) and sends via ESP-NOW.
-3. Gateway decrypts encrypted_payload (ECDH + HKDF + AES-GCM), verifies phone HMAC, registers node.
-4. Gateway returns PEER_ACK with `registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" ‖ encrypted_payload)`.
+3. Gateway decrypts encrypted_payload (AES-256-GCM with `phone_psk`), registers node.
+4. Gateway returns PEER_ACK encrypted with `node_psk` via AES-256-GCM.
 5. Node verifies PEER_ACK, sets `reg_complete`, proceeds to WAKE.
 
 **Assertions:**
@@ -703,7 +703,7 @@ impl E2eNode {
 2. Encrypted payload built with the revoked phone's credentials.
 
 **Procedure:**
-1. Run wake cycle: PEER_REQUEST sent → gateway discards (revoked phone HMAC fails) → PEER_ACK timeout.
+1. Run wake cycle: PEER_REQUEST sent → gateway discards (revoked phone PSK, AEAD decryption fails) → PEER_ACK timeout.
 
 **Assertions:**
 - PEER_REQUEST frame sent.

@@ -4,9 +4,7 @@
 //! Integration tests for the AES-256-GCM `process_frame_aead` engine path.
 //!
 //! These tests mirror the HMAC engine tests (phase2b) but exercise the AEAD
-//! codec. Only compiled when the `aes-gcm-codec` feature is enabled.
-
-#![cfg(feature = "aes-gcm-codec")]
+//! codec.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -463,63 +461,5 @@ async fn t0503b_app_data_invalid_gcm_tag_rejected() {
     assert!(
         resp.is_none(),
         "APP_DATA with corrupted GCM tag must be silently discarded"
-    );
-}
-
-/// T-0503c: APP_DATA with HMAC framing (wrong crypto) is rejected by AEAD gateway.
-#[tokio::test]
-async fn t0503c_app_data_hmac_framing_rejected() {
-    use sonde_protocol::{encode_frame, HmacProvider};
-
-    struct TestHmac;
-    impl HmacProvider for TestHmac {
-        fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
-            use hmac::{Hmac, Mac};
-            use sha2::Sha256;
-            let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-            mac.update(data);
-            mac.finalize().into_bytes().into()
-        }
-        fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-            use hmac::{Hmac, Mac};
-            use sha2::Sha256;
-            let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
-            mac.update(data);
-            mac.verify_slice(expected).is_ok()
-        }
-    }
-
-    let storage = Arc::new(InMemoryStorage::new());
-    let gw = make_gateway(storage.clone());
-
-    let psk = [0x44u8; 32];
-    let program_hash = vec![0x44u8; 32];
-    let node = TestNode::new("node-appdata-hmac", 0x0012, psk);
-    let mut rec = node.to_record();
-    rec.current_program_hash = Some(program_hash.clone());
-    storage.upsert_node(&rec).await.unwrap();
-
-    let seq = wake_and_get_seq(&gw, &node, 3000, &program_hash).await;
-
-    // Build APP_DATA using HMAC framing (old format) instead of AEAD.
-    let header = FrameHeader {
-        key_hint: node.key_hint,
-        msg_type: MSG_APP_DATA,
-        nonce: seq,
-    };
-    let msg = NodeMessage::AppData {
-        blob: vec![0xCA, 0xFE],
-    };
-    let cbor = msg.encode().unwrap();
-    let hmac_frame = encode_frame(&header, &cbor, &psk, &TestHmac).unwrap();
-
-    // The AEAD gateway should reject this because the frame format
-    // doesn't match (HMAC = 32B trailer, AEAD = 16B GCM tag + ciphertext).
-    let resp = gw
-        .process_frame_aead(&hmac_frame, node.peer_address())
-        .await;
-    assert!(
-        resp.is_none(),
-        "HMAC-framed APP_DATA must be rejected by AEAD gateway"
     );
 }

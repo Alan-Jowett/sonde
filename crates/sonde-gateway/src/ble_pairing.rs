@@ -5,7 +5,7 @@
 //!
 //! Processes BLE messages relayed from the modem and implements:
 //! - REQUEST_GW_INFO (0x01): Ed25519 challenge-response (GW-1206)
-//! - REGISTER_PHONE (0x02): ECDH + HKDF + AES-GCM phone PSK issuance (GW-1209)
+//! - REGISTER_PHONE (0x02): phone PSK registration (GW-1209)
 //! - Registration window enforcement (GW-1207/GW-1208)
 //!
 //! Messages arrive as raw BLE envelope bytes via `BLE_RECV` and responses are
@@ -14,13 +14,9 @@
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
-use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use ed25519_dalek::Signer;
-use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
-use x25519_dalek::PublicKey as X25519PublicKey;
 use zeroize::Zeroizing;
 
 use sonde_protocol::{encode_ble_envelope, parse_ble_envelope};
@@ -47,9 +43,6 @@ const BLE_MSG_ERROR: u8 = 0xFF;
 
 /// Error code: registration window not open.
 const ERROR_WINDOW_CLOSED: u8 = 0x02;
-
-/// HKDF info string for phone registration AES key derivation.
-const HKDF_INFO: &[u8] = b"sonde-phone-reg-v1";
 
 // ---------------------------------------------------------------------------
 // Registration window
@@ -271,180 +264,6 @@ fn handle_request_gw_info(body: &[u8], identity: &GatewayIdentity) -> Option<Vec
 }
 
 // ---------------------------------------------------------------------------
-// REGISTER_PHONE (GW-1207, GW-1209)
-// ---------------------------------------------------------------------------
-
-/// Handle REGISTER_PHONE: check window, perform ECDH, issue phone PSK.
-///
-/// REGISTER_PHONE body: ephemeral_pubkey(32) + label_len(1) + label(label_len).
-/// PHONE_REGISTERED body: nonce(12) + ciphertext (AES-256-GCM encrypted inner).
-/// Inner plaintext: status(1) + phone_psk(32) + phone_key_hint(2) + rf_channel(1) = 36 bytes.
-#[allow(dead_code)] // Retained for ECDH/HMAC fallback; will be removed with full HMAC cleanup.
-async fn handle_register_phone(
-    body: &[u8],
-    identity: &GatewayIdentity,
-    storage: &Arc<dyn Storage>,
-    window: &mut RegistrationWindow,
-    rf_channel: u8,
-    controller: Option<&BlePairingController>,
-) -> Option<Vec<u8>> {
-    /// Generic error code for malformed requests.
-    const ERROR_GENERIC: u8 = 0x01;
-
-    // Check registration window
-    if !window.is_open() {
-        info!("REGISTER_PHONE rejected: registration window closed");
-        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_WINDOW_CLOSED]);
-    }
-
-    // Parse body
-    if body.len() < 33 {
-        warn!(
-            len = body.len(),
-            "REGISTER_PHONE: body too short (min 33 bytes)"
-        );
-        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
-    }
-
-    let ephemeral_pubkey_bytes: [u8; 32] = body[..32].try_into().unwrap();
-    let label_len = body[32] as usize;
-
-    if label_len > PHONE_LABEL_MAX_BYTES {
-        warn!(label_len, "REGISTER_PHONE: label too long (max 64 bytes)");
-        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
-    }
-
-    if body.len() != 33 + label_len {
-        warn!(
-            expected = 33 + label_len,
-            actual = body.len(),
-            "REGISTER_PHONE: body length mismatch"
-        );
-        return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
-    }
-
-    let label = match std::str::from_utf8(&body[33..33 + label_len]) {
-        Ok(s) => s.to_owned(),
-        Err(_) => {
-            warn!("REGISTER_PHONE: label is not valid UTF-8");
-            return encode_ble_envelope(BLE_MSG_ERROR, &[ERROR_GENERIC]);
-        }
-    };
-
-    // 1. Generate phone PSK from OS CSPRNG
-    let mut phone_psk = Zeroizing::new([0u8; 32]);
-    if getrandom::fill(phone_psk.as_mut_slice()).is_err() {
-        warn!("REGISTER_PHONE: CSPRNG failure");
-        return None;
-    }
-
-    // 2. Derive phone_key_hint = SHA-256(psk)[30..32] as BE u16
-    let psk_hash = Sha256::digest(phone_psk.as_slice());
-    let phone_key_hint = u16::from_be_bytes([psk_hash[30], psk_hash[31]]);
-
-    // 3. ECDH key agreement
-    let (x25519_secret, _x25519_pub) = match identity.to_x25519() {
-        Ok(pair) => pair,
-        Err(e) => {
-            warn!(?e, "REGISTER_PHONE: Ed25519 → X25519 conversion failed");
-            return None;
-        }
-    };
-
-    let phone_x25519_pub = X25519PublicKey::from(ephemeral_pubkey_bytes);
-    let shared_secret = x25519_secret.diffie_hellman(&phone_x25519_pub);
-
-    // Reject low-order shared secret (all zeros)
-    if shared_secret.as_bytes() == &[0u8; 32] {
-        warn!("REGISTER_PHONE: ECDH shared secret is zero (low-order point)");
-        return None;
-    }
-
-    // 4. Derive AES key via HKDF-SHA256
-    let gateway_id = identity.gateway_id();
-    let hkdf = Hkdf::<Sha256>::new(Some(gateway_id), shared_secret.as_bytes());
-    let mut aes_key = Zeroizing::new([0u8; 32]);
-    if hkdf.expand(HKDF_INFO, &mut *aes_key).is_err() {
-        warn!("REGISTER_PHONE: HKDF expansion failed");
-        return None;
-    }
-
-    // 5. Build plaintext: status(1) + phone_psk(32) + phone_key_hint(2) + rf_channel(1)
-    // Wrapped in Zeroizing to wipe key material after encryption.
-    let mut plaintext = Zeroizing::new(vec![0u8; 36]);
-    plaintext[0] = 0x00; // status = accepted
-    plaintext[1..33].copy_from_slice(&*phone_psk);
-    plaintext[33..35].copy_from_slice(&phone_key_hint.to_be_bytes());
-    plaintext[35] = rf_channel;
-
-    // 6. Encrypt with AES-256-GCM (AAD = gateway_id)
-    let cipher = match Aes256Gcm::new_from_slice(&*aes_key) {
-        Ok(c) => c,
-        Err(_) => {
-            warn!("REGISTER_PHONE: AES-256-GCM key init failed");
-            return None;
-        }
-    };
-
-    let mut nonce_bytes = [0u8; 12];
-    if getrandom::fill(&mut nonce_bytes).is_err() {
-        warn!("REGISTER_PHONE: CSPRNG failure for GCM nonce");
-        return None;
-    }
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
-    let ciphertext = match cipher.encrypt(
-        nonce,
-        aes_gcm::aead::Payload {
-            msg: &plaintext,
-            aad: gateway_id,
-        },
-    ) {
-        Ok(ct) => ct,
-        Err(_) => {
-            warn!("REGISTER_PHONE: AES-256-GCM encryption failed");
-            return None;
-        }
-    };
-
-    // 7. Build PHONE_REGISTERED response: nonce(12) + ciphertext
-    let mut response = Vec::with_capacity(12 + ciphertext.len());
-    response.extend_from_slice(&nonce_bytes);
-    response.extend_from_slice(&ciphertext);
-
-    // 8. Store phone PSK record
-    let record = PhonePskRecord {
-        phone_id: 0, // auto-assigned by storage
-        phone_key_hint,
-        psk: phone_psk,
-        label,
-        issued_at: SystemTime::now(),
-        status: PhonePskStatus::Active,
-    };
-
-    if let Err(e) = storage.store_phone_psk(&record).await {
-        warn!(?e, "REGISTER_PHONE: failed to store phone PSK");
-        return None;
-    }
-
-    info!(
-        phone_key_hint,
-        label = record.label,
-        "phone registered successfully"
-    );
-
-    // Broadcast registration event to admin CLI streams.
-    if let Some(ctrl) = controller {
-        ctrl.broadcast_event(BlePairingEventKind::PhoneRegistered {
-            label: record.label.clone(),
-            phone_key_hint,
-        });
-    }
-
-    encode_ble_envelope(BLE_MSG_PHONE_REGISTERED, &response)
-}
-
-// ---------------------------------------------------------------------------
 // REGISTER_PHONE — AEAD variant (simplified, phone generates PSK)
 // ---------------------------------------------------------------------------
 
@@ -548,7 +367,6 @@ async fn handle_register_phone_aead(
 mod tests {
     use super::*;
     use crate::gateway_identity::GatewayIdentity;
-    use crate::storage::InMemoryStorage;
     use ed25519_dalek::Verifier;
 
     fn test_identity() -> GatewayIdentity {
@@ -620,101 +438,6 @@ mod tests {
 
         let verifying_key = identity.verifying_key();
         assert!(verifying_key.verify(&wrong_data, &signature).is_err());
-    }
-
-    // -- T-1205: REGISTER_PHONE rejected when window closed --
-
-    #[tokio::test]
-    async fn t_1205_register_phone_window_closed() {
-        let identity = test_identity();
-        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
-        let mut window = RegistrationWindow::new(); // closed by default
-
-        // Build a minimal REGISTER_PHONE body
-        let mut body = vec![0u8; 33];
-        body[32] = 0; // label_len = 0
-
-        let response =
-            handle_register_phone(&body, &identity, &storage, &mut window, 6, None).await;
-        let response = response.unwrap();
-        let (msg_type, resp_body) = parse_ble_envelope(&response).unwrap();
-        assert_eq!(msg_type, BLE_MSG_ERROR);
-        assert_eq!(resp_body, &[ERROR_WINDOW_CLOSED]);
-    }
-
-    // -- T-1207: REGISTER_PHONE happy path (ECDH + decrypt) --
-
-    #[tokio::test]
-    async fn t_1207_register_phone_happy_path() {
-        let identity = test_identity();
-        let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
-        let mut window = RegistrationWindow::new();
-        window.open(120);
-
-        // Generate a phone ephemeral X25519 keypair from random bytes.
-        let mut phone_secret_bytes = [0u8; 32];
-        getrandom::fill(&mut phone_secret_bytes).unwrap();
-        let phone_secret = x25519_dalek::StaticSecret::from(phone_secret_bytes);
-        let phone_public = x25519_dalek::PublicKey::from(&phone_secret);
-
-        // Build REGISTER_PHONE body
-        let label = b"Test Phone";
-        let mut body = Vec::with_capacity(33 + label.len());
-        body.extend_from_slice(phone_public.as_bytes());
-        body.push(label.len() as u8);
-        body.extend_from_slice(label);
-
-        let response =
-            handle_register_phone(&body, &identity, &storage, &mut window, 6, None).await;
-        let response = response.expect("should get PHONE_REGISTERED response");
-
-        let (msg_type, resp_body) = parse_ble_envelope(&response).unwrap();
-        assert_eq!(msg_type, BLE_MSG_PHONE_REGISTERED);
-
-        // Decrypt: phone derives the same AES key via ECDH + HKDF
-        let nonce_bytes = &resp_body[..12];
-        let ciphertext = &resp_body[12..];
-
-        // Phone-side ECDH: shared = X25519(phone_secret, gw_x25519_public)
-        let (_, gw_x25519_pub) = identity.to_x25519().unwrap();
-        let phone_shared_secret = phone_secret.diffie_hellman(&gw_x25519_pub);
-
-        let hkdf = Hkdf::<Sha256>::new(Some(identity.gateway_id()), phone_shared_secret.as_bytes());
-        let mut aes_key = [0u8; 32];
-        hkdf.expand(HKDF_INFO, &mut aes_key).unwrap();
-
-        let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
-        let nonce = Nonce::from_slice(nonce_bytes);
-        let plaintext = cipher
-            .decrypt(
-                nonce,
-                aes_gcm::aead::Payload {
-                    msg: ciphertext,
-                    aad: identity.gateway_id(),
-                },
-            )
-            .expect("AES-GCM decryption should succeed");
-
-        assert_eq!(plaintext.len(), 36);
-        assert_eq!(plaintext[0], 0x00); // status = accepted
-        let phone_psk = &plaintext[1..33];
-        let key_hint = u16::from_be_bytes([plaintext[33], plaintext[34]]);
-        let channel = plaintext[35];
-
-        assert_eq!(channel, 6);
-        assert_ne!(phone_psk, &[0u8; 32]); // PSK should be non-zero
-
-        // Verify key_hint = SHA-256(psk)[30..32]
-        let psk_hash = Sha256::digest(phone_psk);
-        let expected_hint = u16::from_be_bytes([psk_hash[30], psk_hash[31]]);
-        assert_eq!(key_hint, expected_hint);
-
-        // Verify phone PSK was stored
-        let records = storage.list_phone_psks().await.unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].label, "Test Phone");
-        assert_eq!(records[0].phone_key_hint, key_hint);
-        assert!(matches!(records[0].status, PhonePskStatus::Active));
     }
 
     // -- REQUEST_GW_INFO: wrong challenge length --

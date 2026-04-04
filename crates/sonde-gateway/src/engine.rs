@@ -9,18 +9,15 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use sonde_protocol::{
-    decode_frame, encode_frame, verify_frame, CommandPayload, FrameHeader, GatewayMessage,
-    HmacProvider, NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND,
-    MSG_GET_CHUNK, MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_PROOF,
-    PEER_ACK_KEY_STATUS, PEER_REQ_KEY_PAYLOAD,
+    decode_frame_aead, encode_frame_aead, open_frame, CommandPayload, FrameHeader, GatewayMessage,
+    NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_CHUNK, MSG_COMMAND, MSG_GET_CHUNK,
+    MSG_PEER_ACK, MSG_PEER_REQUEST, MSG_PROGRAM_ACK, MSG_WAKE, PEER_ACK_KEY_STATUS,
+    PEER_REQ_KEY_PAYLOAD,
 };
 
 use std::collections::BTreeMap;
 
-#[cfg(feature = "aes-gcm-codec")]
-use sonde_protocol::{decode_frame_aead, encode_frame_aead, open_frame};
-
-use crate::crypto::{RustCryptoHmac, RustCryptoSha256};
+use crate::crypto::RustCryptoSha256;
 use crate::gateway_identity::GatewayIdentity;
 use crate::handler::HandlerRouter;
 use crate::phone_trust::PhonePskStatus;
@@ -176,7 +173,6 @@ pub struct Gateway {
     storage: Arc<dyn Storage>,
     session_manager: Arc<SessionManager>,
     program_library: ProgramLibrary,
-    crypto_hmac: RustCryptoHmac,
     #[allow(dead_code)]
     crypto_sha: RustCryptoSha256,
     /// Pending commands per node (ephemeral programs, schedule changes, reboots).
@@ -184,6 +180,7 @@ pub struct Gateway {
     /// Optional handler router for APP_DATA dispatch (Phase 2C).
     handler_router: Option<Arc<HandlerRouter>>,
     /// Cached gateway identity for ECDH decryption (lazy-loaded from storage).
+    #[allow(dead_code)]
     identity_cache: RwLock<Option<Arc<GatewayIdentity>>>,
 }
 
@@ -195,7 +192,6 @@ impl Gateway {
             storage,
             session_manager: Arc::new(SessionManager::new(session_timeout)),
             program_library: ProgramLibrary::new(),
-            crypto_hmac: RustCryptoHmac,
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
             handler_router: None,
@@ -221,7 +217,6 @@ impl Gateway {
             storage,
             session_manager: Arc::new(SessionManager::new(session_timeout)),
             program_library: ProgramLibrary::new(),
-            crypto_hmac: RustCryptoHmac,
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
             handler_router: Some(handler_router),
@@ -239,7 +234,6 @@ impl Gateway {
             storage,
             session_manager,
             program_library: ProgramLibrary::new(),
-            crypto_hmac: RustCryptoHmac,
             crypto_sha: RustCryptoSha256,
             pending_commands,
             handler_router: None,
@@ -277,58 +271,6 @@ impl Gateway {
         self.session_manager.as_ref()
     }
 
-    /// Main entry point: process a raw inbound frame and optionally return a
-    /// response frame. Returns `None` for silent discard.
-    pub async fn process_frame(&self, raw: &[u8], peer: PeerAddress) -> Option<Vec<u8>> {
-        // 1. Decode the frame (reject TooShort / TooLong)
-        let decoded = decode_frame(raw).ok()?;
-
-        // GW-1211: For PEER_REQUEST (0x05), bypass the normal key-hint lookup
-        // and HMAC verification. The node is not yet registered, so its PSK
-        // is unknown. HMAC is verified later (step 8) using the node_psk
-        // extracted from the decrypted payload.
-        if decoded.header.msg_type == MSG_PEER_REQUEST {
-            return self.handle_peer_request(raw, &decoded).await;
-        }
-
-        // 2. Extract key_hint from header
-        let key_hint = decoded.header.key_hint;
-
-        // 3. Lookup candidate nodes by key_hint
-        let candidates = self.storage.get_nodes_by_key_hint(key_hint).await.ok()?;
-        if candidates.is_empty() {
-            // GW-1002: log discard of frames from unknown nodes.
-            warn!(
-                key_hint,
-                "discarding frame from unknown node (no key_hint match)"
-            );
-            return None;
-        }
-
-        // 4. Try HMAC verify with each candidate PSK — identify the node
-        let mut matched_node: Option<NodeRecord> = None;
-        for candidate in &candidates {
-            if verify_frame(&decoded, &candidate.psk, &self.crypto_hmac) {
-                matched_node = Some(candidate.clone());
-                break;
-            }
-        }
-        let node = matched_node?;
-
-        // 5. Dispatch by msg_type
-        match decoded.header.msg_type {
-            MSG_WAKE => {
-                self.handle_wake(&node, &decoded.header, &decoded.payload, peer)
-                    .await
-            }
-            MSG_GET_CHUNK | MSG_PROGRAM_ACK | MSG_APP_DATA => {
-                self.handle_post_wake(&node, &decoded.header, &decoded.payload)
-                    .await
-            }
-            _ => None,
-        }
-    }
-
     /// Process a raw frame using AES-256-GCM authenticated encryption.
     ///
     /// This is the AEAD counterpart of [`process_frame`]. It decodes the
@@ -338,7 +280,6 @@ impl Gateway {
     /// For `PEER_REQUEST` frames, the `key_hint` identifies a phone PSK
     /// (not a node PSK).  The outer frame is decrypted with `phone_psk`,
     /// and the inner payload is also decrypted with `phone_psk`.
-    #[cfg(feature = "aes-gcm-codec")]
     pub async fn process_frame_aead(&self, raw: &[u8], peer: PeerAddress) -> Option<Vec<u8>> {
         use crate::aead::GatewayAead;
 
@@ -386,7 +327,6 @@ impl Gateway {
     }
 
     /// Encode a response frame using AES-256-GCM.
-    #[cfg(feature = "aes-gcm-codec")]
     fn encode_response_aead(
         &self,
         header: &FrameHeader,
@@ -396,6 +336,7 @@ impl Gateway {
         use crate::aead::GatewayAead;
         encode_frame_aead(header, cbor, psk, &GatewayAead, &self.crypto_sha).ok()
     }
+    #[allow(dead_code)]
     async fn get_identity(&self) -> Option<Arc<GatewayIdentity>> {
         // Fast path: return cached identity.
         {
@@ -412,206 +353,6 @@ impl Gateway {
         Some(arc)
     }
 
-    /// Handle a PEER_REQUEST frame (GW-1211–GW-1221).
-    ///
-    /// Implements the 13-step pipeline from ble-pairing-protocol.md §7.3.
-    /// All verification failures result in silent discard (no PEER_ACK).
-    async fn handle_peer_request(
-        &self,
-        _raw: &[u8],
-        decoded: &sonde_protocol::DecodedFrame,
-    ) -> Option<Vec<u8>> {
-        use aes_gcm::aead::{Aead, KeyInit};
-        use aes_gcm::{Aes256Gcm, Nonce};
-        use hkdf::Hkdf;
-        use sha2::Sha256;
-        use x25519_dalek::PublicKey as X25519PublicKey;
-        use zeroize::Zeroizing;
-
-        const HKDF_INFO: &[u8] = b"sonde-node-pair-v1";
-        const PROOF_DOMAIN: &[u8] = b"sonde-peer-ack-v1";
-        const MAX_TIMESTAMP_DRIFT_S: u64 = 86400;
-
-        // Step 1: msg_type already verified by caller (== MSG_PEER_REQUEST).
-
-        // Step 2: Bypass key-hint lookup (handled by caller).
-
-        // Step 3: Parse CBOR, extract encrypted_payload.
-        let cbor: ciborium::Value = ciborium::from_reader(&decoded.payload[..]).ok()?;
-        let map = cbor.as_map()?;
-        let mut encrypted_payload: Option<&[u8]> = None;
-        for (k, v) in map {
-            let key = k.as_integer().and_then(|i| u64::try_from(i).ok())?;
-            if key == PEER_REQ_KEY_PAYLOAD {
-                encrypted_payload = v.as_bytes().map(|b| b.as_slice());
-            }
-        }
-        let encrypted_payload = encrypted_payload?;
-
-        // Step 4: Decrypt encrypted_payload (ECDH + HKDF + AES-256-GCM).
-        // encrypted_payload layout: eph_public(32) + nonce(12) + ciphertext(N+16)
-        if encrypted_payload.len() < 44 + 16 {
-            return None; // Too short for eph_pub + nonce + tag
-        }
-        let eph_public_bytes: [u8; 32] = encrypted_payload[..32].try_into().ok()?;
-        let gcm_nonce = &encrypted_payload[32..44];
-        let ciphertext = &encrypted_payload[44..];
-
-        let identity = self.get_identity().await?;
-        let (x25519_secret, _) = identity.to_x25519().ok()?;
-        let eph_public = X25519PublicKey::from(eph_public_bytes);
-        let shared_secret = x25519_secret.diffie_hellman(&eph_public);
-
-        // Reject zero shared secret (low-order point).
-        if shared_secret.as_bytes() == &[0u8; 32] {
-            return None;
-        }
-
-        let gateway_id = identity.gateway_id();
-        let hkdf = Hkdf::<Sha256>::new(Some(gateway_id), shared_secret.as_bytes());
-        let mut aes_key = Zeroizing::new([0u8; 32]);
-        hkdf.expand(HKDF_INFO, &mut *aes_key).ok()?;
-
-        let cipher = Aes256Gcm::new_from_slice(&*aes_key).ok()?;
-        let nonce = Nonce::from_slice(gcm_nonce);
-        let authenticated_request = cipher
-            .decrypt(
-                nonce,
-                aes_gcm::aead::Payload {
-                    msg: ciphertext,
-                    aad: gateway_id,
-                },
-            )
-            .ok()?;
-
-        // Step 5: Parse authenticated_request.
-        // Layout: phone_key_hint(2) + cbor_bytes(N) + phone_hmac(32)
-        if authenticated_request.len() < 2 + 32 {
-            return None;
-        }
-        let phone_key_hint =
-            u16::from_be_bytes([authenticated_request[0], authenticated_request[1]]);
-        let cbor_bytes = &authenticated_request[2..authenticated_request.len() - 32];
-        let phone_hmac = &authenticated_request[authenticated_request.len() - 32..];
-
-        // Step 6: Verify phone HMAC (GW-1213).
-        let phone_candidates = self
-            .storage
-            .get_phone_psks_by_key_hint(phone_key_hint)
-            .await
-            .ok()?;
-
-        let mut matched_phone_id: Option<u32> = None;
-        for phone in &phone_candidates {
-            if matches!(phone.status, PhonePskStatus::Revoked) {
-                continue;
-            }
-            if let Ok(hmac_arr) = <&[u8; 32]>::try_from(phone_hmac) {
-                if self.crypto_hmac.verify(&*phone.psk, cbor_bytes, hmac_arr) {
-                    matched_phone_id = Some(phone.phone_id);
-                    break;
-                }
-            }
-        }
-        let phone_id = matched_phone_id?;
-
-        // Step 7: Parse PairingRequest CBOR (shared with AEAD path).
-        let pr = parse_pairing_request(cbor_bytes)?;
-
-        // Step 8: Verify frame HMAC with extracted node_psk (GW-1214).
-        if !verify_frame(decoded, &pr.node_psk, &self.crypto_hmac) {
-            return None;
-        }
-
-        // Step 9: Verify timestamp within ±86400s (GW-1215).
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs();
-        if now.abs_diff(pr.timestamp) > MAX_TIMESTAMP_DRIFT_S {
-            return None;
-        }
-
-        // Step 10 + 11: Verify key_hint consistency (GW-1217).
-        // Verify that the CBOR key_hint matches the frame header AND that it
-        // is correctly derived from node_psk, preventing divergent records.
-        let derived_hint = sonde_protocol::key_hint_from_psk(&pr.node_psk, &self.crypto_sha);
-        if decoded.header.key_hint != derived_hint || pr.node_key_hint != derived_hint {
-            return None;
-        }
-
-        // Step 10 + 12: Atomically register node, rejecting if node_id exists (GW-1216, GW-1218).
-        let mut record = NodeRecord::new(pr.node_id, pr.node_key_hint, pr.node_psk);
-        record.rf_channel = Some(pr.rf_channel);
-        record.sensors = pr.sensors;
-        record.registered_by_phone_id = Some(phone_id);
-        if !self.storage.insert_node_if_not_exists(&record).await.ok()? {
-            // Duplicate node_id. Check if PSK matches the existing record
-            // (GW-1218 AC4). If so, still send PEER_ACK so the node can
-            // complete enrollment after a lost ACK. If PSK differs, discard
-            // silently (GW-1218 AC5).
-            let existing = self.storage.get_node(&record.node_id).await.ok()??;
-            if existing.psk != record.psk {
-                info!(
-                    node_id = %record.node_id,
-                    key_hint = record.key_hint,
-                    result = "duplicate_psk_mismatch",
-                    "PEER_REQUEST processed"
-                );
-                return None;
-            }
-            info!(
-                node_id = %record.node_id,
-                key_hint = record.key_hint,
-                result = "duplicate_ack_resent",
-                "PEER_REQUEST processed"
-            );
-        } else {
-            // GW-1300 AC1: log successful PEER_REQUEST registration.
-            info!(
-                node_id = %record.node_id,
-                key_hint = record.key_hint,
-                result = "registered",
-                "PEER_REQUEST processed"
-            );
-        }
-
-        // Step 13: Send PEER_ACK (GW-1219).
-        // registration_proof = HMAC-SHA256(node_psk, "sonde-peer-ack-v1" || encrypted_payload)
-        let mut proof_input = Vec::with_capacity(PROOF_DOMAIN.len() + encrypted_payload.len());
-        proof_input.extend_from_slice(PROOF_DOMAIN);
-        proof_input.extend_from_slice(encrypted_payload);
-        let proof = self.crypto_hmac.compute(&record.psk, &proof_input);
-
-        // Build CBOR: { 1: 0, 2: registration_proof }
-        let ack_cbor = ciborium::Value::Map(vec![
-            (
-                ciborium::Value::Integer(PEER_ACK_KEY_STATUS.into()),
-                ciborium::Value::Integer(0.into()),
-            ),
-            (
-                ciborium::Value::Integer(PEER_ACK_KEY_PROOF.into()),
-                ciborium::Value::Bytes(proof.to_vec()),
-            ),
-        ]);
-        let mut ack_cbor_buf = Vec::new();
-        ciborium::into_writer(&ack_cbor, &mut ack_cbor_buf).ok()?;
-
-        let ack_header = FrameHeader {
-            key_hint: record.key_hint,
-            msg_type: MSG_PEER_ACK,
-            nonce: decoded.header.nonce, // echo nonce
-        };
-
-        let frame =
-            encode_frame(&ack_header, &ack_cbor_buf, &record.psk, &self.crypto_hmac).ok()?;
-
-        // GW-1300 AC2: log PEER_ACK frame encoded (transport send happens later).
-        info!(node_id = %record.node_id, "PEER_ACK frame encoded");
-
-        Some(frame)
-    }
-
     /// Handle a PEER_REQUEST frame over the AEAD path.
     ///
     /// The phone builds the complete ESP-NOW PEER_REQUEST frame encrypted
@@ -622,7 +363,6 @@ impl Gateway {
     /// 4. Decrypts the inner payload with `phone_psk` (AAD = `"sonde-pairing-v2"`).
     /// 5. Parses the PairingRequest CBOR and registers the node.
     /// 6. Sends PEER_ACK encrypted with `node_psk`.
-    #[cfg(feature = "aes-gcm-codec")]
     async fn handle_peer_request_aead(
         &self,
         decoded: &sonde_protocol::DecodedFrameAead<'_>,
@@ -988,28 +728,7 @@ impl Gateway {
         Some((response_header, response_cbor))
     }
 
-    /// Handle a WAKE message: create session, determine command, respond.
-    async fn handle_wake(
-        &self,
-        node: &NodeRecord,
-        header: &FrameHeader,
-        payload: &[u8],
-        peer: PeerAddress,
-    ) -> Option<Vec<u8>> {
-        let (response_header, response_cbor) =
-            self.handle_wake_core(node, header, payload, peer).await?;
-        let frame = encode_frame(
-            &response_header,
-            &response_cbor,
-            &node.psk,
-            &self.crypto_hmac,
-        )
-        .ok()?;
-        Some(frame)
-    }
-
-    /// AEAD variant of [`handle_wake`] — same business logic, AES-256-GCM encoding.
-    #[cfg(feature = "aes-gcm-codec")]
+    /// AEAD variant of [`handle_wake_aead`] — same business logic, AES-256-GCM encoding.
     async fn handle_wake_aead(
         &self,
         node: &NodeRecord,
@@ -1022,8 +741,7 @@ impl Gateway {
         self.encode_response_aead(&response_header, &response_cbor, &node.psk)
     }
 
-    /// AEAD variant of [`handle_post_wake`] — same dispatch, AES-256-GCM encoding.
-    #[cfg(feature = "aes-gcm-codec")]
+    /// AEAD variant of [`handle_post_wake_aead`] — same dispatch, AES-256-GCM encoding.
     async fn handle_post_wake_aead(
         &self,
         node: &NodeRecord,
@@ -1062,8 +780,7 @@ impl Gateway {
         }
     }
 
-    /// AEAD variant of [`handle_get_chunk`] — AES-256-GCM response encoding.
-    #[cfg(feature = "aes-gcm-codec")]
+    /// AEAD variant of [`handle_get_chunk_aead`] — AES-256-GCM response encoding.
     async fn handle_get_chunk_aead(
         &self,
         node: &NodeRecord,
@@ -1076,8 +793,7 @@ impl Gateway {
         self.encode_response_aead(&response_header, &response_cbor, &node.psk)
     }
 
-    /// AEAD variant of [`handle_app_data`] — AES-256-GCM response encoding.
-    #[cfg(feature = "aes-gcm-codec")]
+    /// AEAD variant of [`handle_app_data_aead`] — AES-256-GCM response encoding.
     async fn handle_app_data_aead(
         &self,
         node: &NodeRecord,
@@ -1087,54 +803,6 @@ impl Gateway {
         let (response_header, response_cbor) =
             self.handle_app_data_core(node, header, blob).await?;
         self.encode_response_aead(&response_header, &response_cbor, &node.psk)
-    }
-
-    /// Handle post-WAKE messages (GET_CHUNK, PROGRAM_ACK, APP_DATA).
-    ///
-    /// Flow: pre-decode payload → atomically verify+advance seq → dispatch.
-    /// Pre-decoding before the atomic seq advance ensures malformed CBOR
-    /// does not consume a sequence number, while the atomic check+increment
-    /// prevents TOCTOU races on concurrent frames.
-    async fn handle_post_wake(
-        &self,
-        node: &NodeRecord,
-        header: &FrameHeader,
-        payload: &[u8],
-    ) -> Option<Vec<u8>> {
-        // 1. Pre-decode: validate the message payload before touching session state
-        let msg = match NodeMessage::decode(header.msg_type, payload) {
-            Ok(m) => m,
-            Err(e) => {
-                // GW-0101 AC3: log malformed inbound CBOR.
-                warn!(
-                    node_id = %node.node_id,
-                    msg_type = header.msg_type,
-                    error = %e,
-                    "discarding post-WAKE message with malformed CBOR payload"
-                );
-                return None;
-            }
-        };
-
-        // 2. Atomically verify session + sequence and advance counter
-        self.session_manager
-            .verify_and_advance_seq(&node.node_id, header.nonce)
-            .await
-            .ok()?;
-
-        // 3. Dispatch with pre-decoded message (side effects applied only after
-        //    both decode and seq check have passed)
-        match msg {
-            NodeMessage::GetChunk { chunk_index } => {
-                self.handle_get_chunk(node, header, chunk_index).await
-            }
-            NodeMessage::ProgramAck { program_hash } => {
-                self.handle_program_ack(node, program_hash).await;
-                None
-            }
-            NodeMessage::AppData { blob } => self.handle_app_data(node, header, blob).await,
-            _ => None,
-        }
     }
 
     /// Shared GET_CHUNK business logic: look up session/program, serve chunk.
@@ -1188,26 +856,6 @@ impl Gateway {
         };
 
         Some((response_header, response_cbor))
-    }
-
-    /// Serve a chunk from the program library.
-    async fn handle_get_chunk(
-        &self,
-        node: &NodeRecord,
-        header: &FrameHeader,
-        chunk_index: u32,
-    ) -> Option<Vec<u8>> {
-        let (response_header, response_cbor) = self
-            .handle_get_chunk_core(node, header, chunk_index)
-            .await?;
-        let frame = encode_frame(
-            &response_header,
-            &response_cbor,
-            &node.psk,
-            &self.crypto_hmac,
-        )
-        .ok()?;
-        Some(frame)
     }
 
     /// Handle PROGRAM_ACK: validate against session state, update the node's
@@ -1308,27 +956,6 @@ impl Gateway {
         };
 
         Some((response_header, response_cbor))
-    }
-
-    /// Route APP_DATA to the handler router (Phase 2C). Looks up the node's
-    /// `current_program_hash` from storage, calls the handler, and wraps any
-    /// non-empty reply in a `GatewayMessage::AppDataReply` frame.
-    async fn handle_app_data(
-        &self,
-        node: &NodeRecord,
-        header: &FrameHeader,
-        blob: Vec<u8>,
-    ) -> Option<Vec<u8>> {
-        let (response_header, response_cbor) =
-            self.handle_app_data_core(node, header, blob).await?;
-        let frame = encode_frame(
-            &response_header,
-            &response_cbor,
-            &node.psk,
-            &self.crypto_hmac,
-        )
-        .ok()?;
-        Some(frame)
     }
 
     /// Command selection logic (priority order per design doc 6.4).

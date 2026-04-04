@@ -1,36 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Software HMAC-SHA256 and SHA-256 providers, plus ESP32 hardware RNG.
+//! Software SHA-256 provider, plus ESP32 hardware RNG.
 //!
-//! The software crypto implementations use the `hmac`/`sha2` crates and
-//! work on every platform (host tests, CI, ESP32). Hardware-accelerated
+//! The software crypto implementation uses the `sha2` crate and works
+//! on every platform (host tests, CI, ESP32). Hardware-accelerated
 //! crypto can be layered on top later as an optimisation.
 //!
 //! [`EspRng`] is only available with the `esp` feature and uses the
 //! ESP32 hardware true-RNG via `esp_random()`.
 
-use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
-use sonde_protocol::{HmacProvider, Sha256Provider};
-
-/// HMAC-SHA256 provider backed by the `hmac` + `sha2` RustCrypto crates.
-pub struct SoftwareHmac;
-
-impl HmacProvider for SoftwareHmac {
-    fn compute(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
-        mac.update(data);
-        mac.finalize().into_bytes().into()
-    }
-
-    fn verify(&self, key: &[u8], data: &[u8], expected: &[u8; 32]) -> bool {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
-        mac.update(data);
-        // Constant-time comparison via the `Mac` trait.
-        mac.verify_slice(expected).is_ok()
-    }
-}
+use sonde_protocol::Sha256Provider;
 
 /// SHA-256 provider backed by the `sha2` RustCrypto crate.
 pub struct SoftwareSha256;
@@ -59,23 +40,6 @@ impl crate::traits::Rng for EspRng {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hmac_compute_and_verify() {
-        let hmac = SoftwareHmac;
-        let key = b"test-key";
-        let data = b"hello world";
-        let tag = hmac.compute(key, data);
-        assert!(hmac.verify(key, data, &tag));
-    }
-
-    #[test]
-    fn hmac_verify_rejects_tampered() {
-        let hmac = SoftwareHmac;
-        let key = b"test-key";
-        let tag = hmac.compute(key, b"original");
-        assert!(!hmac.verify(key, b"tampered", &tag));
-    }
 
     #[test]
     fn sha256_known_vector() {

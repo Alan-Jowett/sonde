@@ -14,13 +14,10 @@
 //!
 //! # Storage layout
 //!
-//! Each [`PairingArtifacts`] field is stored as a separate
-//! `SharedPreferences` entry:
+//! AEAD pairing artifacts are stored as separate `SharedPreferences` entries:
 //!
 //! | Key              | Type          | Encoding       |
 //! |------------------|---------------|----------------|
-//! | `gw_public_key`  | `[u8; 32]`    | hex string     |
-//! | `gateway_id`     | `[u8; 16]`    | hex string     |
 //! | `phone_psk`      | `[u8; 32]`    | hex string     |
 //! | `phone_key_hint` | `u16`         | int            |
 //! | `rf_channel`     | `u8`          | int            |
@@ -37,19 +34,15 @@ use tracing::debug;
 use zeroize::Zeroizing;
 
 use crate::error::PairingError;
-use crate::store::PairingStore;
-use crate::types::{GatewayIdentity, PairingArtifacts};
 
 /// Cached JavaVM for creating stores on demand (set in `JNI_OnLoad`).
 static CACHED_STORE_VM: OnceLock<JavaVM> = OnceLock::new();
 
-/// Cached `SecureStore` class ref — see [`CACHED_HELPER_CLASS`](super::android_transport)
+/// Cached `SecureStore` class ref - see [`CACHED_HELPER_CLASS`](super::android_transport)
 /// for the rationale.
 static CACHED_STORE_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 
 // SharedPreferences key constants
-const KEY_GW_PUBLIC_KEY: &str = "gw_public_key";
-const KEY_GATEWAY_ID: &str = "gateway_id";
 const KEY_PHONE_PSK: &str = "phone_psk";
 const KEY_PHONE_KEY_HINT: &str = "phone_key_hint";
 const KEY_RF_CHANNEL: &str = "rf_channel";
@@ -73,7 +66,7 @@ pub struct AndroidPairingStore {
     store: Global<JObject<'static>>,
 }
 
-// SAFETY: Same justification as AndroidBleTransport — JavaVM is Send+Sync
+// SAFETY: Same justification as AndroidBleTransport - JavaVM is Send+Sync
 // and GlobalRef is Send.
 unsafe impl Send for AndroidPairingStore {}
 unsafe impl Sync for AndroidPairingStore {}
@@ -91,7 +84,7 @@ impl AndroidPairingStore {
 
         let cached = CACHED_STORE_CLASS.get().ok_or_else(|| {
             PairingError::StoreSaveFailed(
-                "SecureStore class not cached — call cache_store_class() \
+                "SecureStore class not cached - call cache_store_class() \
                  from JNI_OnLoad before using the store"
                     .into(),
             )
@@ -135,7 +128,7 @@ impl AndroidPairingStore {
             .find_class(jni_str!("io/sonde/pair/SecureStore"))
             .map_err(|e| {
                 PairingError::StoreSaveFailed(format!(
-                    "SecureStore class not found — ensure io.sonde.pair.SecureStore \
+                    "SecureStore class not found - ensure io.sonde.pair.SecureStore \
                  is compiled into the APK and androidx.security:security-crypto \
                  is in the Gradle dependencies: {e}"
                 ))
@@ -150,7 +143,7 @@ impl AndroidPairingStore {
     /// [`cache_vm()`] must have been called first.
     pub fn from_cached_vm() -> Result<Self, PairingError> {
         let vm = CACHED_STORE_VM.get().ok_or_else(|| {
-            PairingError::StoreSaveFailed("JavaVM not cached — call cache_vm() first".into())
+            PairingError::StoreSaveFailed("JavaVM not cached - call cache_vm() first".into())
         })?;
         vm.attach_current_thread(|env| {
             let context = get_app_context(env)?;
@@ -163,25 +156,15 @@ impl AndroidPairingStore {
             other => other,
         })
     }
-}
 
-impl PairingStore for AndroidPairingStore {
-    fn save_artifacts(&mut self, artifacts: &PairingArtifacts) -> Result<(), PairingError> {
+    /// Save AEAD pairing artifacts to encrypted SharedPreferences.
+    pub fn save_artifacts_aead(
+        &mut self,
+        artifacts: &crate::phase1::PairingArtifactsAead,
+    ) -> Result<(), PairingError> {
         self.vm.attach_current_thread(|env| {
             let store = self.store.as_obj();
 
-            put_bytes(
-                env,
-                store,
-                KEY_GW_PUBLIC_KEY,
-                &artifacts.gateway_identity.public_key,
-            )?;
-            put_bytes(
-                env,
-                store,
-                KEY_GATEWAY_ID,
-                &artifacts.gateway_identity.gateway_id,
-            )?;
             put_bytes(env, store, KEY_PHONE_PSK, artifacts.phone_psk.as_ref())?;
             put_int(
                 env,
@@ -192,24 +175,19 @@ impl PairingStore for AndroidPairingStore {
             put_int(env, store, KEY_RF_CHANNEL, artifacts.rf_channel as i32)?;
             put_string(env, store, KEY_PHONE_LABEL, &artifacts.phone_label)?;
 
-            debug!("pairing artifacts saved");
+            debug!("AEAD pairing artifacts saved");
             Ok(())
         })
     }
 
-    fn load_artifacts(&self) -> Result<Option<PairingArtifacts>, PairingError> {
+    /// Load AEAD pairing artifacts from encrypted SharedPreferences.
+    pub fn load_artifacts_aead(
+        &self,
+    ) -> Result<Option<crate::phase1::PairingArtifactsAead>, PairingError> {
         self.vm
             .attach_current_thread(|env| {
                 let store = self.store.as_obj();
 
-                let gw_public_key = match get_bytes(env, store, KEY_GW_PUBLIC_KEY)? {
-                    Some(b) => b,
-                    None => return Ok(None),
-                };
-                let gateway_id = match get_bytes(env, store, KEY_GATEWAY_ID)? {
-                    Some(b) => b,
-                    None => return Ok(None),
-                };
                 let phone_psk = match get_bytes(env, store, KEY_PHONE_PSK)? {
                     Some(b) => b,
                     None => return Ok(None),
@@ -224,21 +202,11 @@ impl PairingStore for AndroidPairingStore {
                 }
                 let phone_label = get_string(env, store, KEY_PHONE_LABEL)?.unwrap_or_default();
 
-                let gw_pk: [u8; 32] = gw_public_key.try_into().map_err(|_| {
-                    PairingError::StoreLoadFailed("gw_public_key: expected 32 bytes".into())
-                })?;
-                let gw_id: [u8; 16] = gateway_id.try_into().map_err(|_| {
-                    PairingError::StoreLoadFailed("gateway_id: expected 16 bytes".into())
-                })?;
                 let psk: [u8; 32] = phone_psk.try_into().map_err(|_| {
                     PairingError::StoreLoadFailed("phone_psk: expected 32 bytes".into())
                 })?;
 
-                Ok(Some(PairingArtifacts {
-                    gateway_identity: GatewayIdentity {
-                        public_key: gw_pk,
-                        gateway_id: gw_id,
-                    },
+                Ok(Some(crate::phase1::PairingArtifactsAead {
                     phone_psk: Zeroizing::new(psk),
                     phone_key_hint: phone_key_hint as u16,
                     rf_channel: rf_channel as u8,
@@ -253,7 +221,8 @@ impl PairingStore for AndroidPairingStore {
             })
     }
 
-    fn clear(&mut self) -> Result<(), PairingError> {
+    /// Clear all pairing artifacts from encrypted SharedPreferences.
+    pub fn clear(&mut self) -> Result<(), PairingError> {
         self.vm
             .attach_current_thread(|env| {
                 env.call_method(self.store.as_obj(), jni_str!("clear"), jni_sig!("()V"), &[])
@@ -268,63 +237,10 @@ impl PairingStore for AndroidPairingStore {
                 other => other,
             })
     }
-
-    fn load_gateway_identity(&self) -> Result<Option<GatewayIdentity>, PairingError> {
-        self.vm
-            .attach_current_thread(|env| {
-                let store = self.store.as_obj();
-
-                let gw_public_key = match get_bytes(env, store, KEY_GW_PUBLIC_KEY)? {
-                    Some(b) => b,
-                    None => return Ok(None),
-                };
-                let gateway_id = match get_bytes(env, store, KEY_GATEWAY_ID)? {
-                    Some(b) => b,
-                    None => return Ok(None),
-                };
-
-                let gw_pk: [u8; 32] = gw_public_key.try_into().map_err(|_| {
-                    PairingError::StoreLoadFailed("gw_public_key: expected 32 bytes".into())
-                })?;
-                let gw_id: [u8; 16] = gateway_id.try_into().map_err(|_| {
-                    PairingError::StoreLoadFailed("gateway_id: expected 16 bytes".into())
-                })?;
-
-                Ok(Some(GatewayIdentity {
-                    public_key: gw_pk,
-                    gateway_id: gw_id,
-                }))
-            })
-            .map_err(|e| match e {
-                PairingError::JniError(msg) => {
-                    PairingError::StoreLoadFailed(format!("attach_current_thread: {msg}"))
-                }
-                other => other,
-            })
-    }
-
-    fn save_gateway_identity(&mut self, identity: &GatewayIdentity) -> Result<(), PairingError> {
-        self.vm
-            .attach_current_thread(|env| {
-                let store = self.store.as_obj();
-
-                put_bytes(env, store, KEY_GW_PUBLIC_KEY, &identity.public_key)?;
-                put_bytes(env, store, KEY_GATEWAY_ID, &identity.gateway_id)?;
-
-                debug!("gateway identity saved");
-                Ok(())
-            })
-            .map_err(|e| match e {
-                PairingError::JniError(msg) => {
-                    PairingError::StoreSaveFailed(format!("attach_current_thread: {msg}"))
-                }
-                other => other,
-            })
-    }
 }
 
 // ---------------------------------------------------------------------------
-// JNI helpers — SecureStore method wrappers
+// JNI helpers - SecureStore method wrappers
 // ---------------------------------------------------------------------------
 
 fn put_bytes(

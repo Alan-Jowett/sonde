@@ -3,19 +3,12 @@
 
 // Frame structure
 pub const HEADER_SIZE: usize = 11;
-pub const HMAC_SIZE: usize = 32;
-pub const MIN_FRAME_SIZE: usize = HEADER_SIZE + HMAC_SIZE; // 43
 pub const MAX_FRAME_SIZE: usize = 250; // ESP-NOW reference
-pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE - HMAC_SIZE; // 207
 
-// AES-256-GCM constants (available when the `aes-gcm-codec` feature is enabled)
-#[cfg(feature = "aes-gcm-codec")]
+// AES-256-GCM constants
 pub const AEAD_TAG_SIZE: usize = 16;
-#[cfg(feature = "aes-gcm-codec")]
 pub const GCM_NONCE_SIZE: usize = 12;
-#[cfg(feature = "aes-gcm-codec")]
 pub const MIN_FRAME_SIZE_AEAD: usize = HEADER_SIZE + AEAD_TAG_SIZE; // 27
-#[cfg(feature = "aes-gcm-codec")]
 pub const MAX_PAYLOAD_SIZE_AEAD: usize = MAX_FRAME_SIZE - HEADER_SIZE - AEAD_TAG_SIZE; // 223
 
 // Header offsets

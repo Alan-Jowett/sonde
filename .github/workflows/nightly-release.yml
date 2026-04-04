@@ -11,6 +11,9 @@ name: Nightly Release
 on:
   schedule:
     - cron: '0 6 * * *'
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
 
 concurrency:
@@ -58,8 +61,14 @@ jobs:
       - name: Build .deb package
         run: |
           sudo apt-get update && sudo apt-get install -y fakeroot
-          DATE=$(date -u +%Y%m%d)
-          bash installer/linux/build-deb.sh --version "0.1.0+nightly.${DATE}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            BASE=$(grep '^version' crates/sonde-gateway/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+            DATE=$(date -u +%Y%m%d)
+            VERSION="${BASE}+nightly.${DATE}"
+          fi
+          bash installer/linux/build-deb.sh --version "${VERSION}"
 
       - name: Upload .deb
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -96,9 +105,17 @@ jobs:
 
       - name: Build MSI
         run: |
-          $runNum = "${{ github.run_number }}"
+          $ref = "${{ github.ref }}"
+          if ($ref -match '^refs/tags/v(\d+\.\d+\.\d+)$') {
+            $ver = $Matches[1] + ".0"
+          } else {
+            $base = (Select-String -Path crates\sonde-gateway\Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+            $epoch = [DateTime]::new(2026, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+            $revision = [int](New-TimeSpan -Start $epoch -End (Get-Date).ToUniversalTime().Date).TotalDays
+            $ver = "$base.$revision"
+          }
           wix build installer\windows\sonde.wxs `
-            -d Version="0.1.0.$runNum" `
+            -d Version="$ver" `
             -d GatewayBin=target\release\sonde-gateway.exe `
             -d AdminBin=target\release\sonde-admin.exe `
             -d CustomActionCaDll=installer\windows\CustomActions\bin\Release\net472\SondeCustomActions.CA.dll `
@@ -133,12 +150,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          DATE=$(date -u +%Y-%m-%d)
-          TAG="nightly-${DATE}"
 
-          # Delete previous release for today (re-runs)
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            IS_RELEASE=true
+          else
+            DATE=$(date -u +%Y-%m-%d)
+            TAG="nightly-${DATE}"
+            IS_RELEASE=false
+          fi
+
+          # Delete previous release for this tag (idempotent re-runs)
           gh release delete "$TAG" --yes 2>/dev/null || true
-          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          if [[ "$IS_RELEASE" != "true" ]]; then
+            git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          fi
 
           # Rename artifacts to avoid basename collisions (e.g. both
           # node and modem firmware produce flash_image.bin).
@@ -191,9 +217,14 @@ jobs:
             ASSETS+=("$f")
           done < <(find release-assets -type f -print0)
 
-          gh release create "$TAG" \
-            --title "Nightly Build ${DATE}" \
-            --prerelease \
-            --target "${{ github.sha }}" \
-            --notes-file notes.md \
-            "${ASSETS[@]}"
+          RELEASE_ARGS=(
+            --target "${{ github.sha }}"
+            --notes-file notes.md
+          )
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            RELEASE_ARGS+=(--title "Release ${TAG}")
+          else
+            RELEASE_ARGS+=(--title "Nightly Build ${DATE}" --prerelease)
+          fi
+
+          gh release create "$TAG" "${RELEASE_ARGS[@]}" "${ASSETS[@]}"

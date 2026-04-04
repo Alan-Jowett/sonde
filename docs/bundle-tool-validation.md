@@ -754,12 +754,18 @@ A `test_helpers` module provides:
 **Traces to:** SB-0604
 
 **Steps:**
-1. In the template repo, set `.sonde-version` to a specific sonde CI run ID.
-2. Push and wait for CI.
-3. Check which sonde-bundle binary was downloaded.
+1. In the template repo, set `.sonde-version` to each supported selector form in turn:
+   - a specific sonde release tag
+   - a specific sonde CI run ID
+   - a branch name
+2. For each value, push and wait for CI.
+3. Check which `sonde-bundle` binary the workflow downloaded.
 
 **Expected:**
-- The CI log shows downloading sonde-bundle from the pinned run, not latest.
+- When `.sonde-version` is a release tag, the workflow downloads `sonde-bundle` from that release.
+- When `.sonde-version` is a CI run ID, the workflow downloads `sonde-bundle` from that pinned run.
+- When `.sonde-version` is a branch name, the workflow resolves it to the latest successful CI run for that branch and downloads `sonde-bundle` from that run.
+- In all cases, the workflow does not fall back to the latest available build from another release, run, or branch.
 
 ---
 

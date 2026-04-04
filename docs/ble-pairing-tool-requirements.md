@@ -1087,13 +1087,13 @@ The pairing tool MUST apply build-type–aware log-level policies: compile-time 
 
 ### PT-1214  Board pin configuration in NODE_PROVISION
 
-**Priority:** Should (deferred — `sonde-pair` does not yet implement this)  
-**Source:** issue #490, ND-0608
+**Priority:** Should  
+**Source:** issue #490, issue #641, ND-0608
 
 **Description:**  
 The pairing tool SHOULD support including optional board-specific pin configuration (I2C SDA/SCL GPIO numbers) in the NODE_PROVISION message body so that a single firmware binary works across different ESP32-C3 boards.
 
-The node-side parsing (ND-0608) is implemented; the pairing-tool encoding side is tracked as future work. The `sonde-pair` API (`provision_node`) does **not** yet accept a pin-config parameter and the NODE_PROVISION payload does **not** yet include a trailing CBOR map for pin configuration.
+Pin configuration is sourced from the bundle manifest's `hardware.pins` section (see [bundle-format.md](bundle-format.md) §4.5).  When the bundle declares I2C sensors for a node, the `pins` section is required and the pairing tool reads `i2c0_sda` and `i2c0_scl` from it.  The `provision_node` API accepts an optional pin config parameter; callers (e.g., `sonde-pair-ui`) extract pins from the bundle manifest and pass them through.
 
 **Acceptance criteria:**
 
@@ -1101,6 +1101,8 @@ The node-side parsing (ND-0608) is implemented; the pairing-tool encoding side i
 2. When provided, pin config is encoded as a deterministic CBOR map and appended to the NODE_PROVISION body after the encrypted payload.
 3. When not provided, the NODE_PROVISION body is identical to the existing format (backward compatible).
 4. The CBOR map uses integer keys: 1 = `i2c0_sda` (uint), 2 = `i2c0_scl` (uint).
+5. GPIO values MUST be in the range 0–21 (ESP32-C3).
+6. `i2c0_sda` MUST NOT equal `i2c0_scl`.
 
 ---
 

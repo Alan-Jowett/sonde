@@ -37,9 +37,27 @@ pub async fn provision_node(
     device_address: &[u8; 6],
     node_id: &str,
     sensors: &[crate::types::SensorDescriptor],
+    pin_config: Option<PinConfig>,
 ) -> Result<NodeProvisionResult, PairingError> {
     // Step 1: Validate node_id
     validate_node_id(node_id)?;
+
+    // Step 1a: Validate pin config (PT-1214 AC 5, AC 6)
+    if let Some(ref pc) = pin_config {
+        const MAX_GPIO: u8 = 21;
+        if pc.i2c0_sda > MAX_GPIO || pc.i2c0_scl > MAX_GPIO {
+            return Err(PairingError::InvalidPinConfig(format!(
+                "GPIO pin number out of range (0–{}), got sda={}, scl={}",
+                MAX_GPIO, pc.i2c0_sda, pc.i2c0_scl
+            )));
+        }
+        if pc.i2c0_sda == pc.i2c0_scl {
+            return Err(PairingError::InvalidPinConfig(format!(
+                "i2c0_sda and i2c0_scl must be different GPIO pins, both are {}",
+                pc.i2c0_sda
+            )));
+        }
+    }
 
     // Step 2: Generate node PSK
     let mut node_psk = Zeroizing::new([0u8; 32]);
@@ -85,6 +103,7 @@ pub async fn provision_node(
         &node_psk,
         artifacts.rf_channel,
         &encrypted_frame,
+        pin_config,
     )
     .await;
 
@@ -99,6 +118,7 @@ async fn do_provision_node(
     node_psk: &[u8; 32],
     rf_channel: u8,
     encrypted_frame: &[u8],
+    pin_config: Option<PinConfig>,
 ) -> Result<NodeProvisionResult, PairingError> {
     if encrypted_frame.len() > PEER_PAYLOAD_MAX_LEN {
         return Err(PairingError::PayloadTooLarge {
@@ -108,13 +128,38 @@ async fn do_provision_node(
     }
     let payload_len = encrypted_frame.len() as u16;
 
-    let mut provision_payload =
-        Zeroizing::new(Vec::with_capacity(2 + 32 + 1 + 2 + encrypted_frame.len()));
+    // Pin config CBOR {1: u8, 2: u8} is at most 7 bytes (map(2) + 2×(uint,uint)).
+    let pin_cbor_capacity = if pin_config.is_some() { 7 } else { 0 };
+
+    let mut provision_payload = Zeroizing::new(Vec::with_capacity(
+        2 + 32 + 1 + 2 + encrypted_frame.len() + pin_cbor_capacity,
+    ));
     provision_payload.extend_from_slice(&node_key_hint.to_be_bytes());
     provision_payload.extend_from_slice(node_psk);
     provision_payload.push(rf_channel);
     provision_payload.extend_from_slice(&payload_len.to_be_bytes());
     provision_payload.extend_from_slice(encrypted_frame);
+
+    // Append optional pin config CBOR (PT-1214, ND-0608)
+    if let Some(pc) = pin_config {
+        let pin_cbor = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Integer(1.into()),
+                ciborium::Value::Integer(pc.i2c0_sda.into()),
+            ),
+            (
+                ciborium::Value::Integer(2.into()),
+                ciborium::Value::Integer(pc.i2c0_scl.into()),
+            ),
+        ]);
+        ciborium::into_writer(&pin_cbor, &mut *provision_payload)
+            .map_err(|e| PairingError::CborEncodeFailed(format!("pin_config: {e}")))?;
+        trace!(
+            sda = pc.i2c0_sda,
+            scl = pc.i2c0_scl,
+            "appended pin config CBOR to NODE_PROVISION"
+        );
+    }
 
     let message = Zeroizing::new(build_envelope(NODE_PROVISION, &provision_payload).ok_or(
         PairingError::PayloadTooLarge {
@@ -224,6 +269,7 @@ mod tests {
             &[0xAA; 6],
             "test-node",
             &[],
+            None,
         )
         .await;
 
@@ -258,6 +304,7 @@ mod tests {
             &[0xAA; 6],
             "test-node",
             &[],
+            None,
         )
         .await;
 
@@ -292,12 +339,211 @@ mod tests {
             &[0xAA; 6],
             "", // empty node_id
             &[],
+            None,
         )
         .await;
 
         assert!(
             matches!(result, Err(PairingError::InvalidNodeId(_))),
             "expected InvalidNodeId, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_node_pin_config_appended() {
+        use crate::phase1::PairingArtifacts;
+
+        let artifacts = PairingArtifacts {
+            phone_psk: Zeroizing::new([0x55u8; 32]),
+            phone_key_hint: compute_key_hint(&[0x55u8; 32]),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        };
+
+        let rng = MockRng::new([0x42u8; 32]);
+
+        let ack_body = [0x00u8];
+        let mut ack_envelope = Vec::new();
+        ack_envelope.push(NODE_ACK);
+        ack_envelope.extend_from_slice(&(ack_body.len() as u16).to_be_bytes());
+        ack_envelope.extend_from_slice(&ack_body);
+
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(ack_envelope));
+
+        let pc = PinConfig {
+            i2c0_sda: 4,
+            i2c0_scl: 5,
+        };
+
+        let result = provision_node(
+            &mut transport,
+            &artifacts,
+            &rng,
+            &[0xAA; 6],
+            "test-node",
+            &[],
+            Some(pc),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "provision with pin_config should succeed: {result:?}"
+        );
+
+        assert_eq!(transport.written.len(), 1);
+        let (_svc, _chr, data) = &transport.written[0];
+        let body = &data[3..];
+        let payload_len = u16::from_be_bytes([body[35], body[36]]) as usize;
+        let pin_cbor_start = 37 + payload_len;
+        assert!(
+            body.len() > pin_cbor_start,
+            "body should have trailing CBOR"
+        );
+
+        let trailing = &body[pin_cbor_start..];
+        let value: ciborium::Value = ciborium::from_reader(trailing).expect("valid CBOR");
+        let map = value.as_map().expect("CBOR map");
+        let sda = map
+            .iter()
+            .find(|(k, _)| *k == ciborium::Value::Integer(1.into()))
+            .expect("key 1")
+            .1
+            .as_integer()
+            .unwrap();
+        let scl = map
+            .iter()
+            .find(|(k, _)| *k == ciborium::Value::Integer(2.into()))
+            .expect("key 2")
+            .1
+            .as_integer()
+            .unwrap();
+        assert_eq!(i128::from(sda), 4);
+        assert_eq!(i128::from(scl), 5);
+    }
+
+    #[tokio::test]
+    async fn provision_node_pin_config_none_no_trailing() {
+        use crate::phase1::PairingArtifacts;
+
+        let artifacts = PairingArtifacts {
+            phone_psk: Zeroizing::new([0x55u8; 32]),
+            phone_key_hint: compute_key_hint(&[0x55u8; 32]),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        };
+
+        let rng = MockRng::new([0x42u8; 32]);
+
+        let ack_body = [0x00u8];
+        let mut ack_envelope = Vec::new();
+        ack_envelope.push(NODE_ACK);
+        ack_envelope.extend_from_slice(&(ack_body.len() as u16).to_be_bytes());
+        ack_envelope.extend_from_slice(&ack_body);
+
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(ack_envelope));
+
+        let result = provision_node(
+            &mut transport,
+            &artifacts,
+            &rng,
+            &[0xAA; 6],
+            "test-node",
+            &[],
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "provision without pin_config should succeed: {result:?}"
+        );
+
+        let (_svc, _chr, data) = &transport.written[0];
+        let body = &data[3..];
+        let payload_len = u16::from_be_bytes([body[35], body[36]]) as usize;
+        assert_eq!(
+            body.len(),
+            37 + payload_len,
+            "no trailing bytes when pin_config is None"
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_node_pin_config_out_of_range() {
+        use crate::phase1::PairingArtifacts;
+
+        let artifacts = PairingArtifacts {
+            phone_psk: Zeroizing::new([0x55u8; 32]),
+            phone_key_hint: compute_key_hint(&[0x55u8; 32]),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        };
+
+        let rng = MockRng::new([0x42u8; 32]);
+        let mut transport = MockBleTransport::new(247);
+
+        let result = provision_node(
+            &mut transport,
+            &artifacts,
+            &rng,
+            &[0xAA; 6],
+            "test-node",
+            &[],
+            Some(PinConfig {
+                i2c0_sda: 22,
+                i2c0_scl: 5,
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(PairingError::InvalidPinConfig(_))),
+            "expected InvalidPinConfig, got {result:?}"
+        );
+        assert!(
+            transport.written.is_empty(),
+            "no BLE writes on validation failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_node_pin_config_sda_equals_scl() {
+        use crate::phase1::PairingArtifacts;
+
+        let artifacts = PairingArtifacts {
+            phone_psk: Zeroizing::new([0x55u8; 32]),
+            phone_key_hint: compute_key_hint(&[0x55u8; 32]),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        };
+
+        let rng = MockRng::new([0x42u8; 32]);
+        let mut transport = MockBleTransport::new(247);
+
+        let result = provision_node(
+            &mut transport,
+            &artifacts,
+            &rng,
+            &[0xAA; 6],
+            "test-node",
+            &[],
+            Some(PinConfig {
+                i2c0_sda: 4,
+                i2c0_scl: 4,
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(PairingError::InvalidPinConfig(_))),
+            "expected InvalidPinConfig, got {result:?}"
+        );
+        assert!(
+            transport.written.is_empty(),
+            "no BLE writes on validation failure"
         );
     }
 }

@@ -776,7 +776,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Mock gateway does not respond.
 2. Assert: node sends exactly 4 WAKE frames (1 initial + 3 retries).
-3. Assert: ~100 ms between each attempt.
+3. Assert: ~400 ms between each attempt.
 4. Assert: node sleeps after final retry.
 
 ---
@@ -798,8 +798,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0702
 
 **Procedure:**
-1. Mock gateway delays response by 80 ms (>50 ms timeout).
-2. Assert: node treats it as timeout and retries after 100 ms delay.
+1. Mock gateway delays response by 250 ms (>200 ms timeout).
+2. Assert: node treats it as timeout and retries after 400 ms delay.
 
 ---
 
@@ -1592,7 +1592,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N936  Chunked transfer inter-retry delay ≈ 100 ms
+### T-N936  Chunked transfer inter-retry delay ≈ 400 ms
 
 **Validates:** ND-0701
 
@@ -1600,19 +1600,19 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 1. Begin a chunked transfer.
 2. Simulate a missing-chunk scenario that triggers retries.
 3. Measure the delay between consecutive retry transmissions.
-4. Assert: the inter-retry delay is approximately 100 ms (±20 ms).
+4. Assert: the inter-retry delay is approximately 400 ms (±20 ms).
 
 ---
 
-### T-N937  Response timeout boundary at 50 ms
+### T-N937  Response timeout boundary at 200 ms
 
 **Validates:** ND-0702
 
 **Procedure:**
 1. Node sends a request.
-2. Mock gateway responds at 30 ms after the request.
-3. Assert: node accepts the response (under 50 ms timeout).
-4. Repeat: node sends a request; mock gateway responds at 80 ms.
+2. Mock gateway responds at 150 ms after the request.
+3. Assert: node accepts the response (under 200 ms timeout).
+4. Repeat: node sends a request; mock gateway responds at 250 ms.
 5. Assert: node treats the late response as a timeout.
 
 ---

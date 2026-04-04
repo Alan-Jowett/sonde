@@ -26,8 +26,8 @@ use crate::FIRMWARE_ABI_VERSION;
 
 /// Retry and timing constants (protocol.md §9, node-requirements.md ND-0700/ND-0702).
 const WAKE_MAX_RETRIES: u32 = 3;
-const RETRY_DELAY_MS: u32 = 100;
-const RESPONSE_TIMEOUT_MS: u32 = 50;
+const RETRY_DELAY_MS: u32 = 400;
+const RESPONSE_TIMEOUT_MS: u32 = 200;
 
 /// Default instruction budget for BPF execution.
 const DEFAULT_INSTRUCTION_BUDGET: u64 = 100_000;

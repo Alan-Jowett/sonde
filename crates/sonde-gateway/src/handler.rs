@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ciborium::Value;
@@ -305,13 +306,13 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(reader: &mut R) -> io::Result
 
 // --- Configuration ---
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProgramMatcher {
     Any,
     Hash(Vec<u8>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HandlerConfig {
     pub matchers: Vec<ProgramMatcher>,
     pub command: String,
@@ -570,6 +571,76 @@ impl HandlerProcess {
         self.stdout_reader = None;
     }
 
+    /// Attempt a graceful shutdown: close stdin (signals EOF to the handler),
+    /// wait up to `timeout` for the process to exit, then forcibly kill it.
+    async fn graceful_shutdown(&mut self, timeout: Duration) {
+        // Close stdin to signal the handler that no more input is coming.
+        self.stdin = None;
+
+        if let Some(ref mut child) = self.child {
+            match tokio::time::timeout(timeout, child.wait()).await {
+                Ok(Ok(status)) => {
+                    let code = status.code().unwrap_or(-1);
+                    if status.success() {
+                        info!(
+                            command = %self.config.command,
+                            code = code,
+                            "handler exited gracefully"
+                        );
+                    } else {
+                        warn!(
+                            command = %self.config.command,
+                            code = code,
+                            "handler exited with error during graceful shutdown"
+                        );
+                    }
+                }
+                Ok(Err(e)) => {
+                    error!(
+                        command = %self.config.command,
+                        error = %e,
+                        "failed to wait for handler during graceful shutdown"
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        command = %self.config.command,
+                        timeout_secs = timeout.as_secs(),
+                        "handler did not exit within timeout — forcibly killing"
+                    );
+                    if let Some(mut child) = self.child.take() {
+                        if let Err(e) = child.kill().await {
+                            warn!(
+                                command = %self.config.command,
+                                error = %e,
+                                "failed to forcibly kill handler"
+                            );
+                        }
+                        // Bound the post-kill wait to 2 s to guarantee shutdown completes.
+                        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(e)) => {
+                                error!(
+                                    command = %self.config.command,
+                                    error = %e,
+                                    "failed to wait for handler after forced kill"
+                                );
+                            }
+                            Err(_) => {
+                                error!(
+                                    command = %self.config.command,
+                                    "handler did not exit after forced kill within 2 s"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.child = None;
+        self.stdout_reader = None;
+    }
+
     async fn check_exit_status(&mut self) {
         if let Some(mut child) = self.child.take() {
             match child.wait().await {
@@ -733,7 +804,7 @@ pub fn load_handler_configs(path: &Path) -> Result<Vec<HandlerConfig>, HandlerCo
 // --- HandlerRouter ---
 
 pub struct HandlerRouter {
-    handlers: Vec<(HandlerConfig, Mutex<HandlerProcess>)>,
+    handlers: Vec<(HandlerConfig, Arc<Mutex<HandlerProcess>>)>,
 }
 
 impl HandlerRouter {
@@ -742,7 +813,7 @@ impl HandlerRouter {
             .into_iter()
             .map(|c| {
                 let process = HandlerProcess::new(c.clone());
-                (c, Mutex::new(process))
+                (c, Arc::new(Mutex::new(process)))
             })
             .collect();
         Self { handlers }
@@ -768,6 +839,27 @@ impl HandlerRouter {
             }
         }
         None
+    }
+
+    /// Find the handler matching `program_hash` and return cloned references.
+    ///
+    /// The returned `Arc<Mutex<HandlerProcess>>` can be used after releasing
+    /// the `RwLock` read guard, avoiding lock contention during handler I/O.
+    pub fn find_handler_cloned(
+        &self,
+        program_hash: &[u8],
+    ) -> Option<(HandlerConfig, Arc<Mutex<HandlerProcess>>)> {
+        let idx = self.find_handler(program_hash)?;
+        let (config, process) = &self.handlers[idx];
+        Some((config.clone(), Arc::clone(process)))
+    }
+
+    /// Clone all handler process references for event broadcasting.
+    ///
+    /// The returned `Arc`s can be used after releasing the `RwLock` read
+    /// guard, avoiding lock contention during handler I/O.
+    pub fn clone_all_process_refs(&self) -> Vec<Arc<Mutex<HandlerProcess>>> {
+        self.handlers.iter().map(|(_, p)| Arc::clone(p)).collect()
     }
 
     /// Route APP_DATA to the matching handler. Returns the reply data blob,
@@ -841,6 +933,67 @@ impl HandlerRouter {
             let mut process = process_mutex.lock().await;
             process.send_event(&msg).await;
         }
+    }
+
+    /// Replace the handler set with a new configuration (GW-1404).
+    ///
+    /// Diffs the old and new config sets:
+    /// - **Added** handlers are inserted (process spawned lazily on first message).
+    /// - **Removed** handlers are removed from routing when `self.handlers` is
+    ///   replaced, then returned for the caller to shut down *after* releasing
+    ///   the write lock to avoid prolonged lock contention.
+    /// - **Unchanged** handlers (same config) retain their existing `HandlerProcess`.
+    ///
+    /// This method updates routing immediately; removed handlers stop
+    /// receiving new requests as soon as `reload` returns, and their
+    /// processes are terminated afterwards by the caller via
+    /// [`shutdown_removed_handlers`].
+    pub fn reload(
+        &mut self,
+        new_configs: Vec<HandlerConfig>,
+    ) -> Vec<(HandlerConfig, Arc<Mutex<HandlerProcess>>)> {
+        // Build the new handler list, reusing existing processes where configs match.
+        let mut old_handlers: Vec<Option<(HandlerConfig, Arc<Mutex<HandlerProcess>>)>> =
+            self.handlers.drain(..).map(Some).collect();
+        let mut new_handlers = Vec::with_capacity(new_configs.len());
+
+        for new_cfg in new_configs {
+            // Look for a matching existing handler to reuse.
+            let reused = old_handlers.iter_mut().position(|slot| {
+                if let Some((old_cfg, _)) = slot.as_ref() {
+                    old_cfg == &new_cfg
+                } else {
+                    false
+                }
+            });
+
+            if let Some(idx) = reused {
+                // Unchanged handler — retain existing process.
+                new_handlers.push(old_handlers[idx].take().unwrap());
+            } else {
+                // Added handler — create new process (spawned lazily).
+                let process = HandlerProcess::new(new_cfg.clone());
+                new_handlers.push((new_cfg, Arc::new(Mutex::new(process))));
+            }
+        }
+
+        self.handlers = new_handlers;
+
+        // Return removed handlers for the caller to shut down outside the lock.
+        old_handlers.into_iter().flatten().collect()
+    }
+}
+
+/// Gracefully shut down a set of removed handler processes (GW-1404 AC3).
+///
+/// Call this *after* releasing the `HandlerRouter` write lock so that the
+/// shutdown timeout (5 s per handler) does not block APP_DATA routing.
+pub async fn shutdown_removed_handlers(removed: Vec<(HandlerConfig, Arc<Mutex<HandlerProcess>>)>) {
+    const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(5);
+    for (cfg, process_arc) in removed {
+        info!(command = %cfg.command, "removing handler — initiating graceful shutdown");
+        let mut process = process_arc.lock().await;
+        process.graceful_shutdown(GRACEFUL_TIMEOUT).await;
     }
 }
 

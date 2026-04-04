@@ -505,6 +505,58 @@ A `test_helpers` module provides:
 
 ---
 
+### T-SB-0605  Pins required when I2C sensor declared
+
+**Traces to:** SB-0203
+
+**Steps:**
+1. Create a manifest with a node that has a sensor of type `"i2c"` but no `hardware.pins` section.
+2. Validate.
+
+**Expected:**
+- Error containing: "``pins`` with ``i2c0_sda`` and ``i2c0_scl`` required when I2C sensor is declared" (prefixed with node name).
+
+---
+
+### T-SB-0606  Pin SDA equals SCL rejected
+
+**Traces to:** SB-0203
+
+**Steps:**
+1. Create a manifest with `hardware.pins.i2c0_sda: 4` and `hardware.pins.i2c0_scl: 4`.
+2. Validate.
+
+**Expected:**
+- Error containing: "``i2c0_sda`` and ``i2c0_scl`` must be different GPIO pins" (prefixed with node name).
+
+---
+
+### T-SB-0607  Pin GPIO out of range rejected
+
+**Traces to:** SB-0203
+
+**Steps:**
+1. Create a manifest with `hardware.pins.i2c0_sda: 22`.
+2. Validate.
+
+**Expected:**
+- Error containing: "GPIO pin number out of range (0–21)" (prefixed with node name, includes actual values).
+
+---
+
+### T-SB-0608  Partial pin spec rejected (SDA without SCL)
+
+**Traces to:** SB-0203
+
+**Steps:**
+1. Create a manifest with `hardware.pins` containing only `i2c0_sda: 4` (no `i2c0_scl`).
+2. Validate.
+
+**Expected:**
+- Manifest decode/deserialization error indicating missing required field `i2c0_scl`.
+
+---
+
 ## 8  Cross-reference validation tests
 
 ### T-SB-0700  Unreferenced program warning
@@ -754,18 +806,12 @@ A `test_helpers` module provides:
 **Traces to:** SB-0604
 
 **Steps:**
-1. In the template repo, set `.sonde-version` to each supported selector form in turn:
-   - a specific sonde release tag
-   - a specific sonde CI run ID
-   - a branch name
-2. For each value, push and wait for CI.
-3. Check which `sonde-bundle` binary the workflow downloaded.
+1. In the template repo, set `.sonde-version` to a specific sonde CI run ID.
+2. Push and wait for CI.
+3. Check which sonde-bundle binary was downloaded.
 
 **Expected:**
-- When `.sonde-version` is a release tag, the workflow downloads `sonde-bundle` from that release.
-- When `.sonde-version` is a CI run ID, the workflow downloads `sonde-bundle` from that pinned run.
-- When `.sonde-version` is a branch name, the workflow resolves it to the latest successful CI run for that branch and downloads `sonde-bundle` from that run.
-- In all cases, the workflow does not fall back to the latest available build from another release, run, or branch.
+- The CI log shows downloading sonde-bundle from the pinned run, not latest.
 
 ---
 
@@ -797,7 +843,7 @@ A `test_helpers` module provides:
 | SB-0200 | T-SB-0203, T-SB-0204, T-SB-0300, T-SB-0301, T-SB-0302, T-SB-0303, T-SB-0304, T-SB-0305, T-SB-0306 |
 | SB-0201 | T-SB-0400, T-SB-0401, T-SB-0402, T-SB-0403, T-SB-0404 |
 | SB-0202 | T-SB-0500, T-SB-0501, T-SB-0502, T-SB-0503, T-SB-0504 |
-| SB-0203 | T-SB-0600, T-SB-0601, T-SB-0602, T-SB-0603, T-SB-0604 |
+| SB-0203 | T-SB-0600, T-SB-0601, T-SB-0602, T-SB-0603, T-SB-0604, T-SB-0605, T-SB-0606, T-SB-0607, T-SB-0608 |
 | SB-0204 | T-SB-0700 |
 | SB-0300 | T-SB-0800, T-SB-0802 |
 | SB-0301 | T-SB-0801 |

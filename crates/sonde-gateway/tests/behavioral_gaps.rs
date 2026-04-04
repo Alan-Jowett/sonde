@@ -42,6 +42,7 @@ use sonde_gateway::admin::AdminService;
 use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::gateway_identity::GatewayIdentity;
+use sonde_gateway::handler::HandlerRouter;
 use sonde_gateway::program::{ProgramLibrary, VerificationProfile};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::session::SessionManager;
@@ -132,6 +133,7 @@ impl TestHarness {
             self.storage.clone(),
             self.pending_commands.clone(),
             self.session_manager.clone(),
+            Arc::new(RwLock::new(HandlerRouter::new(Vec::new()))),
         )
     }
 }
@@ -1122,13 +1124,13 @@ async fn t0504_many_to_one_handler_routing() {
 
     let mut args: Vec<String> = python_args().iter().map(|s| s.to_string()).collect();
     args.push(script_path.to_str().unwrap().to_string());
-    let router = Arc::new(HandlerRouter::new(vec![HandlerConfig {
+    let router = Arc::new(RwLock::new(HandlerRouter::new(vec![HandlerConfig {
         matchers: vec![ProgramMatcher::Any],
         command: python_cmd().to_string(),
         args,
         reply_timeout: None,
         working_dir: None,
-    }]));
+    }])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = Gateway::new_with_handler(storage.clone(), Duration::from_secs(30), router);

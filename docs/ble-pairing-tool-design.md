@@ -245,6 +245,8 @@ Offset  Size           Field
 
 The node persists these to NVS. If the map is absent (older pairing tool), the node uses compiled-in defaults. Future keys (SPI pins, pairing button GPIO) may be added without breaking backward compatibility.
 
+**Pin config source:** The pairing tool obtains `i2c0_sda` and `i2c0_scl` values from the bundle manifest's `hardware.pins` section (see [bundle-format.md](bundle-format.md) §4.5).  When the bundle declares I2C sensors for a node, the `pins` section is required and the pairing tool passes the values through to `provision_node` as an optional `PinConfig` parameter.  This keeps the bundle self-contained — no separate board profile management is needed.
+
 ---
 
 ## 5  BLE transport layer

@@ -68,6 +68,7 @@ impl E2eTestEnv {
             storage.clone(),
             pending_commands.clone(),
             session_manager,
+            Arc::new(RwLock::new(HandlerRouter::new(Vec::new()))),
         ));
         Self {
             gateway,
@@ -97,7 +98,7 @@ impl E2eTestEnv {
             reply_timeout: None,
             working_dir: None,
         };
-        let router = Arc::new(HandlerRouter::new(vec![config]));
+        let router = Arc::new(RwLock::new(HandlerRouter::new(vec![config])));
         let gateway = Arc::new(Gateway::new_with_handler(
             storage.clone(),
             Duration::from_secs(30),

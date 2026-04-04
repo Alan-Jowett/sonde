@@ -285,7 +285,8 @@ async fn provision_node(
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = BtleplugTransport::new().await?;
             let rng = OsRng;
-            phase2::provision_node(&mut transport, &artifacts, &rng, &addr, &node_id, &[]).await
+            phase2::provision_node(&mut transport, &artifacts, &rng, &addr, &node_id, &[], None)
+                .await
         })
     })
     .await
@@ -483,7 +484,8 @@ async fn provision_node(
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = AndroidBleTransport::from_cached_vm()?;
             let rng = OsRng;
-            phase2::provision_node(&mut transport, &artifacts, &rng, &addr, &node_id, &[]).await
+            phase2::provision_node(&mut transport, &artifacts, &rng, &addr, &node_id, &[], None)
+                .await
         })
     })
     .await

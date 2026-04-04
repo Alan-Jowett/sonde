@@ -113,7 +113,7 @@ async fn do_wake(
 
 fn make_gateway_with_handler(
     storage: Arc<InMemoryStorage>,
-    handler_router: Arc<HandlerRouter>,
+    handler_router: Arc<tokio::sync::RwLock<HandlerRouter>>,
 ) -> Gateway {
     Gateway::new_with_handler(storage, Duration::from_secs(30), handler_router)
 }
@@ -1266,10 +1266,9 @@ async fn t0500_app_data_echo_forwarding() {
     let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
 
     let program_hash = vec![0x10; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1308,10 +1307,9 @@ async fn t0501_app_data_reply_fixed_data() {
     let script = write_handler_script(tmp.path(), "fixed.py", FIXED_REPLY_HANDLER_PY);
 
     let program_hash = vec![0x11; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1345,10 +1343,9 @@ async fn t0502_empty_reply_suppressed() {
     let script = write_handler_script(tmp.path(), "empty.py", EMPTY_REPLY_HANDLER_PY);
 
     let program_hash = vec![0x12; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1375,10 +1372,9 @@ async fn t0503_multiple_app_data_per_wake() {
     let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
 
     let program_hash = vec![0x13; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1422,10 +1418,9 @@ async fn t0504_handler_transport_framing() {
     let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
 
     let program_hash = vec![0x14; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1462,10 +1457,9 @@ async fn t0505_handler_respawn_on_clean_exit() {
     let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
 
     let program_hash = vec![0x15; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1514,10 +1508,9 @@ async fn t0506_handler_crash_no_reply() {
     let script = write_handler_script(tmp.path(), "crash.py", CRASH_HANDLER_PY);
 
     let program_hash = vec![0x16; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1547,10 +1540,10 @@ async fn t0507_routing_by_program_hash() {
     let hash_a = vec![0xA0; 32];
     let hash_b = vec![0xB0; 32];
 
-    let router = Arc::new(HandlerRouter::new(vec![
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
         python_handler_config(vec![ProgramMatcher::Hash(hash_a.clone())], echo_script),
         python_handler_config(vec![ProgramMatcher::Hash(hash_b.clone())], fixed_script),
-    ]));
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1607,10 +1600,9 @@ async fn t0508_no_handler_match_no_reply() {
 
     // Handler only matches hash [0xAA; 32]
     let handler_hash = vec![0xAA; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(handler_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(handler_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1635,10 +1627,9 @@ async fn t0509_catch_all_handler() {
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
 
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Any],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Any], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1675,10 +1666,9 @@ async fn t0510_request_id_correlation() {
     let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
 
     let program_hash = vec![0x17; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1715,10 +1705,9 @@ async fn t0511_request_id_mismatch_discarded() {
     let script = write_handler_script(tmp.path(), "wrong_id.py", WRONG_REQUEST_ID_HANDLER_PY);
 
     let program_hash = vec![0x18; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1745,10 +1734,9 @@ async fn t0512_handler_no_crash_on_wake() {
     let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
 
     let program_hash = vec![0x19; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Any],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Any], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1780,10 +1768,9 @@ async fn t0513_log_messages_no_crash() {
     let script = write_handler_script(tmp.path(), "log.py", LOG_HANDLER_PY);
 
     let program_hash = vec![0x1A; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1824,10 +1811,9 @@ async fn t0503b_handler_persistence_across_messages() {
     let script = write_handler_script(tmp.path(), "counter.py", STATEFUL_COUNTER_HANDLER_PY);
 
     let program_hash = vec![0x53; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -1878,7 +1864,7 @@ async fn t0503c_handler_reply_timeout() {
     let mut config =
         python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script);
     config.reply_timeout = Some(Duration::from_secs(2));
-    let router = Arc::new(HandlerRouter::new(vec![config]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![config])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -2078,10 +2064,9 @@ async fn gw0503_ac3_persistent_handler_stays_alive() {
     let script = write_handler_script(tmp.path(), "counter.py", PERSISTENT_COUNTER_HANDLER_PY);
 
     let program_hash = vec![0x30; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -2131,10 +2116,9 @@ async fn gw0501_sequence_number_correctness() {
     let script = write_handler_script(tmp.path(), "multi.py", MULTI_ECHO_HANDLER_PY);
 
     let program_hash = vec![0x31; 32];
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![ProgramMatcher::Hash(program_hash.clone())],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);
@@ -2185,13 +2169,15 @@ async fn gw0504_many_to_one_routing() {
     let hash_y = vec![0xD0; 32];
 
     // One handler configured for both program hashes
-    let router = Arc::new(HandlerRouter::new(vec![python_handler_config(
-        vec![
-            ProgramMatcher::Hash(hash_x.clone()),
-            ProgramMatcher::Hash(hash_y.clone()),
-        ],
-        script,
-    )]));
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(
+            vec![
+                ProgramMatcher::Hash(hash_x.clone()),
+                ProgramMatcher::Hash(hash_y.clone()),
+            ],
+            script,
+        ),
+    ])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway_with_handler(storage.clone(), router);

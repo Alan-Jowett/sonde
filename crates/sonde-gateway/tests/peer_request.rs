@@ -66,7 +66,14 @@ impl TestEnv {
         let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
         let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let gateway = Gateway::new_with_pending(storage.clone(), pending_commands, session_manager);
+        let gateway = Gateway::new_with_pending(
+            storage.clone(),
+            pending_commands,
+            session_manager,
+            Arc::new(RwLock::new(sonde_gateway::handler::HandlerRouter::new(
+                Vec::new(),
+            ))),
+        );
 
         Self {
             storage,

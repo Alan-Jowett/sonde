@@ -1111,10 +1111,16 @@ async fn t1403_handler_live_reload_add() {
     let node = TestNode::new("node-1403", 0x1403, [0x43u8; 32]);
     setup_node_with_program(&mem_storage, &node, &program_hash).await;
 
-    // Gateway sharing state with admin — initially no handler router.
-    let mut gw = Gateway::new_with_pending(storage.clone(), pending.clone(), sm.clone());
+    // Gateway sharing state with admin — initially empty handler router.
+    let handler_router = Arc::new(RwLock::new(HandlerRouter::new(Vec::new())));
+    let gw = Gateway::new_with_pending(
+        storage.clone(),
+        pending.clone(),
+        sm.clone(),
+        handler_router.clone(),
+    );
 
-    // 1. No handler router → APP_DATA produces no reply.
+    // 1. Empty handler router → APP_DATA produces no reply.
     let seq = do_wake(&gw, &node, 1000, &program_hash).await;
     let resp = gw
         .process_frame(
@@ -1157,8 +1163,10 @@ async fn t1403_handler_live_reload_add() {
         .filter_map(|r| handler_record_to_test_config(r, &script))
         .collect();
     assert_eq!(configs.len(), 1, "storage should contain one handler");
-    let router = Arc::new(HandlerRouter::new(configs));
-    gw.set_handler_router(router).unwrap();
+    {
+        let mut w = handler_router.write().await;
+        *w = HandlerRouter::new(configs);
+    }
 
     // 4. Same gateway now routes APP_DATA after reload.
     let seq2 = do_wake(&gw, &node, 2000, &program_hash).await;
@@ -1226,9 +1234,8 @@ async fn t1404_handler_live_reload_remove() {
         .filter_map(|r| handler_record_to_test_config(r, &script))
         .collect();
     assert_eq!(configs.len(), 1, "storage should contain one handler");
-    let router = Arc::new(HandlerRouter::new(configs));
-    let mut gw = Gateway::new_with_pending(storage.clone(), pending, sm);
-    gw.set_handler_router(router).unwrap();
+    let router = Arc::new(RwLock::new(HandlerRouter::new(configs)));
+    let gw = Gateway::new_with_pending(storage.clone(), pending, sm, router);
 
     let seq = do_wake(&gw, &node, 3000, &program_hash).await;
     let blob = vec![0xAA, 0xBB];
@@ -1275,13 +1282,13 @@ async fn t1404_handler_live_reload_remove() {
         post_records.is_empty(),
         "storage should be empty after remove"
     );
-    let empty_router = Arc::new(HandlerRouter::new(Vec::new()));
-    let mut gw2 = Gateway::new_with_pending(
+    let empty_router = Arc::new(RwLock::new(HandlerRouter::new(Vec::new())));
+    let gw2 = Gateway::new_with_pending(
         storage,
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(SessionManager::new(Duration::from_secs(30))),
+        empty_router,
     );
-    gw2.set_handler_router(empty_router).unwrap();
     let seq2 = do_wake(&gw2, &node, 4000, &program_hash).await;
     let resp2 = gw2
         .process_frame(&node.build_app_data(seq2, &[0xCC]), node.peer_address())

@@ -425,6 +425,50 @@ impl E2eNode {
 
 ---
 
+#### T-E2E-033  Live reload — handler add end-to-end
+
+**Validates:** GW-1404, GW-1407.
+
+**Preconditions:**
+1. Node registered with a PSK and a known `program_hash`.
+2. Gateway started with no handlers configured.
+
+**Procedure:**
+1. Node completes AEAD WAKE/COMMAND exchange.
+2. Node sends APP_DATA with blob `[0x01, 0x02]`.
+3. Assert: no APP_DATA_REPLY is sent (no handler matched).
+4. Call `AddHandler` via admin API with the node's `program_hash` and a test echo handler.
+5. Node completes another AEAD WAKE/COMMAND exchange.
+6. Node sends APP_DATA with blob `[0x03, 0x04]`.
+
+**Assertions:**
+- APP_DATA_REPLY is received after step 6 (handler was live-added and routed correctly).
+- No gateway restart occurred between steps 3 and 6.
+
+---
+
+#### T-E2E-034  Live reload — handler remove end-to-end
+
+**Validates:** GW-1404, GW-1407.
+
+**Preconditions:**
+1. Node registered with a PSK.
+2. Gateway started with a catch-all handler (`program_hash` = `"*"`).
+
+**Procedure:**
+1. Node completes AEAD WAKE/COMMAND exchange.
+2. Node sends APP_DATA with blob `[0xAA, 0xBB]`.
+3. Assert: APP_DATA_REPLY is received (handler matched).
+4. Call `RemoveHandler` via admin API with `program_hash` = `"*"`.
+5. Node completes another AEAD WAKE/COMMAND exchange.
+6. Node sends APP_DATA with blob `[0xCC, 0xDD]`.
+
+**Assertions:**
+- No APP_DATA_REPLY is sent after step 6 (handler was live-removed).
+- The handler process from step 2 is no longer running.
+
+---
+
 ### 4.5  Error handling
 
 #### T-E2E-040  Unknown node silent discard

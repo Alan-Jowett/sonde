@@ -945,8 +945,7 @@ impl Gateway {
             match router.find_handler_cloned(&program_hash) {
                 Some(result) => result,
                 None => {
-                    let ph_hex: String =
-                        program_hash.iter().map(|b| format!("{b:02x}")).collect();
+                    let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
                     warn!(
                         node_id = %node.node_id,
                         program_hash = %ph_hex,

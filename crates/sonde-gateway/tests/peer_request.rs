@@ -70,7 +70,9 @@ impl TestEnv {
             storage.clone(),
             pending_commands,
             session_manager,
-            Arc::new(RwLock::new(sonde_gateway::handler::HandlerRouter::new(Vec::new()))),
+            Arc::new(RwLock::new(sonde_gateway::handler::HandlerRouter::new(
+                Vec::new(),
+            ))),
         );
 
         Self {

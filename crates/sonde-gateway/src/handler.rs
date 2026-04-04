@@ -942,7 +942,10 @@ impl HandlerRouter {
     /// - **Removed** handlers are returned for the caller to shut down *after*
     ///   releasing the write lock, avoiding prolonged lock contention.
     /// - **Unchanged** handlers (same config) retain their existing `HandlerProcess`.
-    pub fn reload(&mut self, new_configs: Vec<HandlerConfig>) -> Vec<(HandlerConfig, Arc<Mutex<HandlerProcess>>)> {
+    pub fn reload(
+        &mut self,
+        new_configs: Vec<HandlerConfig>,
+    ) -> Vec<(HandlerConfig, Arc<Mutex<HandlerProcess>>)> {
         // Build the new handler list, reusing existing processes where configs match.
         let mut old_handlers: Vec<Option<(HandlerConfig, Arc<Mutex<HandlerProcess>>)>> =
             self.handlers.drain(..).map(Some).collect();

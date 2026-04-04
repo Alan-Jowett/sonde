@@ -367,9 +367,13 @@ async fn run_gateway(
                     reply_timeout_ms: cfg.reply_timeout.map(|d| d.as_millis() as u64),
                 };
                 match storage.add_handler(&record).await {
-                    Ok(true) => info!(program_hash = %record.program_hash, "bootstrapped handler into DB"),
+                    Ok(true) => {
+                        info!(program_hash = %record.program_hash, "bootstrapped handler into DB")
+                    }
                     Ok(false) => {} // duplicate, DB takes precedence
-                    Err(e) => warn!(program_hash = %record.program_hash, error = %e, "failed to bootstrap handler"),
+                    Err(e) => {
+                        warn!(program_hash = %record.program_hash, error = %e, "failed to bootstrap handler")
+                    }
                 }
             }
         }
@@ -382,10 +386,13 @@ async fn run_gateway(
         .into_iter()
         .filter_map(sonde_gateway::admin::handler_record_to_config)
         .collect();
-    info!(count = handler_configs_from_db.len(), "loaded handler configs from database");
-    let handler_router = Arc::new(tokio::sync::RwLock::new(
-        HandlerRouter::new(handler_configs_from_db.clone()),
-    ));
+    info!(
+        count = handler_configs_from_db.len(),
+        "loaded handler configs from database"
+    );
+    let handler_router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(
+        handler_configs_from_db.clone(),
+    )));
 
     // Create gateway engine with the shared handler router (D-485, GW-1407).
     let gateway = Arc::new(Gateway::new_with_pending(

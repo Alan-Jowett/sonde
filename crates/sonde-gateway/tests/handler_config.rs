@@ -1113,7 +1113,12 @@ async fn t1403_handler_live_reload_add() {
 
     // Gateway sharing state with admin — initially empty handler router.
     let handler_router = Arc::new(RwLock::new(HandlerRouter::new(Vec::new())));
-    let gw = Gateway::new_with_pending(storage.clone(), pending.clone(), sm.clone(), handler_router.clone());
+    let gw = Gateway::new_with_pending(
+        storage.clone(),
+        pending.clone(),
+        sm.clone(),
+        handler_router.clone(),
+    );
 
     // 1. Empty handler router → APP_DATA produces no reply.
     let seq = do_wake(&gw, &node, 1000, &program_hash).await;

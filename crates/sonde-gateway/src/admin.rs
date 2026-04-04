@@ -77,10 +77,7 @@ impl AdminService {
     }
 
     /// Set the shared handler router for live reload (GW-1404, GW-1407).
-    pub fn with_handler_router(
-        mut self,
-        router: Arc<tokio::sync::RwLock<HandlerRouter>>,
-    ) -> Self {
+    pub fn with_handler_router(mut self, router: Arc<tokio::sync::RwLock<HandlerRouter>>) -> Self {
         self.handler_router = Some(router);
         self
     }

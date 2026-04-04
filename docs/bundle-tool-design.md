@@ -430,8 +430,129 @@ pipelines, build scripts, and as a dependency without pulling in tokio.
 
 ---
 
+## 9  CI distribution (SB-0600, SB-0601)
+
+### 9.1  Workflow integration
+
+The existing `ci.yml` workflow is extended with a new job matrix that builds
+`sonde-bundle` in release mode on three runners:
+
+| Runner | Target | Artifact name |
+|--------|--------|---------------|
+| `ubuntu-latest` | x86_64-unknown-linux-gnu | `sonde-bundle-linux-x86_64` |
+| `windows-latest` | x86_64-pc-windows-msvc | `sonde-bundle-windows-x86_64` |
+| `macos-14` | aarch64-apple-darwin | `sonde-bundle-macos-aarch64` |
+
+Each job runs:
+1. Checkout + Rust toolchain setup
+2. `cargo build --release -p sonde-bundle`
+3. Upload `target/release/sonde-bundle[.exe]` as a GitHub Actions artifact
+
+This job runs as part of the existing `ci.yml` workflow on every push to
+`main` and on PRs.  The macOS build is skipped on PRs to control runner costs.
+
+### 9.2  Artifact naming
+
+Artifacts use the pattern `sonde-bundle-{os}-{arch}` (e.g.,
+`sonde-bundle-linux-x86_64`).  The binary inside the artifact retains its
+original name (`sonde-bundle` or `sonde-bundle.exe`).
+
+---
+
+## 10  Template repository (SB-0602–SB-0605)
+
+### 10.1  Purpose
+
+The `sonde-app-template` repository is a GitHub template that provides a
+ready-to-use scaffold for sonde app developers.  A developer clones the
+template, writes BPF C programs and Python handlers, pushes, and receives
+a `.sondeapp` artifact from CI.
+
+### 10.2  Directory layout
+
+```
+sonde-app-template/
+├── CMakeLists.txt              # Top-level CMake build
+├── cmake/
+│   └── bpf-toolchain.cmake     # Toolchain file: clang -target bpf
+├── bpf/
+│   ├── include/
+│   │   └── sonde_helpers.h     # BPF helper declarations (pinned ABI version)
+│   └── my_sensor.c             # Example BPF program
+├── handler/
+│   └── handler.py              # Example Python data handler
+├── app.yaml                    # Bundle manifest
+├── .github/
+│   └── workflows/
+│       └── build.yml           # CI: cmake build + sonde-bundle create
+├── .sonde-version              # Pins sonde-bundle version
+└── README.md                   # Getting started guide
+```
+
+### 10.3  CMake build system
+
+**`cmake/bpf-toolchain.cmake`:**
+- Sets `CMAKE_C_COMPILER` to `clang`
+- Sets `CMAKE_C_COMPILER_TARGET` to `bpf`
+- Sets `CMAKE_C_FLAGS` to `-O2 -Wall -Wextra`
+- Disables linking (BPF targets produce relocatable `.o` files only)
+
+**`CMakeLists.txt`:**
+- Minimum CMake version: 3.16
+- Uses the BPF toolchain file
+- Globs `bpf/*.c` as sources
+- Compiles each to a `.o` in `build/bpf/` (CMake default output directory)
+- Includes `bpf/include/` as an include directory
+- Generates `compile_commands.json` for IDE support
+
+### 10.4  CI workflow (`build.yml`)
+
+**Trigger:** Push to `main`, pull requests.
+
+**Steps:**
+1. Checkout repository
+2. Read `.sonde-version` and resolve to a GitHub Actions run ID:
+   - if it is a decimal run ID, use it directly
+   - if it is a branch name, query the latest successful CI run on that
+     branch and use that run's ID
+3. Download `sonde-bundle-linux-x86_64` artifact from the sonde repo's CI
+   using `gh run download --repo alan-jowett/sonde <resolved-run-id> --name sonde-bundle-linux-x86_64 --dir ./bin/`,
+   authenticating with a token that has `actions:read` access
+4. Install clang (via `apt-get install clang` or pre-installed on runner)
+5. `cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/bpf-toolchain.cmake`
+6. `cmake --build build`
+7. `chmod +x ./bin/sonde-bundle && ./bin/sonde-bundle create .`
+8. Upload `.sondeapp` as workflow artifact
+
+### 10.5  Version pinning
+
+The `.sonde-version` file contains a single line identifying which sonde CI
+run to use for downloading `sonde-bundle`.
+
+Supported values:
+- A GitHub Actions **run ID** (decimal) — used directly with `gh run download`.
+- A **branch name** — the workflow resolves it to the latest successful CI
+  run on that branch before calling `gh run download`.
+
+For reproducible builds, pin a specific run ID rather than a moving branch
+reference such as `main`.
+
+### 10.6  Header versioning
+
+`bpf/include/sonde_helpers.h` includes a comment:
+```c
+// Sonde ABI version: 1 (from sonde v0.3.0)
+```
+
+When the sonde repo adds or changes helpers, the template maintainer copies
+the updated header and bumps the ABI version comment.  The README documents
+this process.
+
+---
+
 ## Revision history
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 0.1 | 2026-03-31 | sonde contributors | Initial draft |
+| 0.2 | 2026-04-04 | sonde contributors | Added §9 CI distribution, §10 template repository (SB-0600–SB-0605). |

@@ -114,6 +114,43 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # ── sonde-bundle binary distribution (SB-0600, SB-0601) ───────────────────
+  sonde-bundle:
+    name: Build sonde-bundle (${{ matrix.os }})
+    # Skip macOS on PRs to control runner costs (SB-0601).
+    if: ${{ matrix.os != 'macos-14' || github.event_name == 'push' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: sonde-bundle-linux-x86_64
+            binary: target/release/sonde-bundle
+          - os: windows-latest
+            artifact: sonde-bundle-windows-x86_64
+            binary: target/release/sonde-bundle.exe
+          - os: macos-14
+            artifact: sonde-bundle-macos-aarch64
+            binary: target/release/sonde-bundle
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+
+      - name: Build sonde-bundle (release)
+        run: cargo build --release -p sonde-bundle
+
+      - name: Upload sonde-bundle binary
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 7
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest

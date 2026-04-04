@@ -305,13 +305,13 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(reader: &mut R) -> io::Result
 
 // --- Configuration ---
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProgramMatcher {
     Any,
     Hash(Vec<u8>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HandlerConfig {
     pub matchers: Vec<ProgramMatcher>,
     pub command: String,
@@ -567,6 +567,54 @@ impl HandlerProcess {
             let _ = child.wait().await;
         }
         self.stdin = None;
+        self.stdout_reader = None;
+    }
+
+    /// Attempt a graceful shutdown: close stdin (signals EOF to the handler),
+    /// wait up to `timeout` for the process to exit, then forcibly kill it.
+    async fn graceful_shutdown(&mut self, timeout: Duration) {
+        // Close stdin to signal the handler that no more input is coming.
+        self.stdin = None;
+
+        if let Some(ref mut child) = self.child {
+            match tokio::time::timeout(timeout, child.wait()).await {
+                Ok(Ok(status)) => {
+                    let code = status.code().unwrap_or(-1);
+                    if status.success() {
+                        info!(
+                            command = %self.config.command,
+                            code = code,
+                            "handler exited gracefully"
+                        );
+                    } else {
+                        warn!(
+                            command = %self.config.command,
+                            code = code,
+                            "handler exited with error during graceful shutdown"
+                        );
+                    }
+                }
+                Ok(Err(e)) => {
+                    error!(
+                        command = %self.config.command,
+                        error = %e,
+                        "failed to wait for handler during graceful shutdown"
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        command = %self.config.command,
+                        timeout_secs = timeout.as_secs(),
+                        "handler did not exit within timeout — forcibly killing"
+                    );
+                    if let Some(mut child) = self.child.take() {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
+                }
+            }
+        }
+        self.child = None;
         self.stdout_reader = None;
     }
 
@@ -841,6 +889,52 @@ impl HandlerRouter {
             let mut process = process_mutex.lock().await;
             process.send_event(&msg).await;
         }
+    }
+
+    /// Replace the handler set with a new configuration (GW-1404).
+    ///
+    /// Diffs the old and new config sets:
+    /// - **Added** handlers are inserted (process spawned lazily on first message).
+    /// - **Removed** handlers have their process gracefully terminated (5 s timeout,
+    ///   then forcible kill) before removal.
+    /// - **Unchanged** handlers (same config) retain their existing `HandlerProcess`.
+    pub async fn reload(&mut self, new_configs: Vec<HandlerConfig>) {
+        const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(5);
+
+        // Build the new handler list, reusing existing processes where configs match.
+        let mut old_handlers: Vec<Option<(HandlerConfig, Mutex<HandlerProcess>)>> =
+            self.handlers.drain(..).map(Some).collect();
+        let mut new_handlers = Vec::with_capacity(new_configs.len());
+
+        for new_cfg in new_configs {
+            // Look for a matching existing handler to reuse.
+            let reused = old_handlers.iter_mut().position(|slot| {
+                if let Some((old_cfg, _)) = slot.as_ref() {
+                    old_cfg == &new_cfg
+                } else {
+                    false
+                }
+            });
+
+            if let Some(idx) = reused {
+                // Unchanged handler — retain existing process.
+                new_handlers.push(old_handlers[idx].take().unwrap());
+            } else {
+                // Added handler — create new process (spawned lazily).
+                let process = HandlerProcess::new(new_cfg.clone());
+                new_handlers.push((new_cfg, Mutex::new(process)));
+            }
+        }
+
+        // Gracefully shut down removed handlers (those remaining in old_handlers).
+        for slot in old_handlers.into_iter().flatten() {
+            let (cfg, process_mutex) = slot;
+            info!(command = %cfg.command, "removing handler — initiating graceful shutdown");
+            let mut process = process_mutex.into_inner();
+            process.graceful_shutdown(GRACEFUL_TIMEOUT).await;
+        }
+
+        self.handlers = new_handlers;
     }
 }
 

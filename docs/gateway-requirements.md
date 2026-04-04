@@ -1700,6 +1700,7 @@ When a handler is added or removed via the admin API, the gateway MUST update it
 2. After `RemoveHandler` succeeds, subsequent `APP_DATA` frames matching the removed handler's `program_hash` are no longer routed (or fall through to a catch-all, if one exists).
 3. If the removed handler has a running process, the gateway MUST first request a graceful shutdown of the process and, if it does not exit within a configured timeout, MUST forcibly terminate it (e.g., `SIGTERM` then `SIGKILL` on POSIX, or the platform-equivalent graceful-then-forced termination on Windows) before removing the handler from the routing table.
 4. Live reload does not disrupt in-flight requests to other handlers.
+5. State import (`ImportState` per GW-1406) MUST trigger a live reload of the `HandlerRouter` after replacing handler records in the database, so that the imported handler configuration is immediately effective for both APP_DATA routing and event broadcasting.
 
 ---
 
@@ -1717,6 +1718,7 @@ The gateway SHOULD support a `--handler-config <path>` CLI flag that imports han
 2. Existing handler entries in the database are not overwritten by the YAML file.
 3. If the YAML file contains invalid entries (e.g., malformed `program_hash`), the gateway logs a warning for each invalid entry and continues processing valid ones.
 4. The gateway starts successfully even if `--handler-config` is not provided and no handlers exist in the database.
+5. After bootstrap import, the `HandlerRouter` is built from the database (per GW-1407), not directly from the parsed YAML. The YAML file is a seed; the database is the authoritative source for routing.
 
 ---
 
@@ -1734,6 +1736,23 @@ The state export bundle (GW-0805, GW-1001) SHOULD include handler routing config
 2. `ImportState` restores handler records from the bundle, replacing any existing handlers in a single transaction.
 3. A state bundle exported from one gateway and imported into another produces an identical handler configuration (round-trip fidelity), including per-handler `reply_timeout_ms` values.
 4. If the imported bundle contains no handler records (e.g., exported from an older gateway version), the existing handlers in the target database are preserved.
+
+---
+
+### GW-1407  HandlerRouter initialization
+
+**Priority:** Must  
+**Source:** Issue #640
+
+**Description:**  
+The gateway MUST always initialize a `HandlerRouter` from the database at startup, regardless of whether `--handler-config` is provided. If no handler records exist in the database, the `HandlerRouter` MUST be initialized with an empty configuration. The `HandlerRouter` MUST be wrapped in a shared, lockable reference (`Arc<tokio::sync::RwLock<HandlerRouter>>`) accessible to both the engine frame loop (for routing) and the admin API (for live reload per GW-1404).
+
+**Acceptance criteria:**
+
+1. The gateway starts with a functional (possibly empty) `HandlerRouter` even when `--handler-config` is not provided and the database contains no handler records.
+2. The `HandlerRouter` instance is shared between the engine and admin service via `Arc<tokio::sync::RwLock<HandlerRouter>>`.
+3. The engine frame loop acquires a read lock for APP_DATA and event routing; the admin API acquires a write lock only during reload operations.
+4. After `sonde-admin handler add` succeeds, the next APP_DATA frame matching the new handler's `program_hash` is routed without requiring a gateway restart.
 
 ---
 

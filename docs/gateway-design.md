@@ -471,15 +471,17 @@ Multiple program hashes can map to the same handler (GW-0504).
 
 > **Shared state (D-485):** The `Gateway` instance MUST be wired so
 > that the admin API and the handler router share the same
-> `pending_commands`/`SessionManager`. In production, construct the
-> gateway via `new_with_pending` and then call `set_handler_router`
-> with the same shared state; do **not** create an independent
-> `pending_commands` map for the handler path. D-485 occurred when a
-> constructor created a separate `pending_commands` map, breaking the
-> admin→engine path; that pattern is forbidden. The convenience
-> constructor `new_with_handler` currently allocates its own internal
-> `pending_commands`/`SessionManager` and is only safe to use in
-> contexts that do not expose the admin API or otherwise require
+> `pending_commands`/`SessionManager`/`HandlerRouter`. In production,
+> construct the gateway via `new_with_pending`, passing the shared
+> `Arc<tokio::sync::RwLock<HandlerRouter>>` built from the database at
+> startup (GW-1407). The same `Arc` is given to the `AdminService` for
+> live reload (GW-1404, §19.5). Do **not** create an independent
+> `pending_commands` map or `HandlerRouter` for any code path. D-485
+> occurred when a constructor created a separate `pending_commands`
+> map, breaking the admin→engine path; that pattern is forbidden. The
+> convenience constructor `new_with_handler` currently allocates its
+> own internal `pending_commands`/`SessionManager` and is only safe to
+> use in contexts that do not expose the admin API or otherwise require
 > shared state.
 
 ### 9.2  Routing
@@ -1003,9 +1005,9 @@ The gateway emits the version string in its first `info!()` log line so that ope
 2. Initialize storage backend.
 3. Load node registry and program library from storage.
 4. Initialize transport (e.g., open ESP-NOW interface, or for USB modem: open serial port → `RESET` → `MODEM_READY` → `SET_CHANNEL`; see §4.2). The channel is read from the database (GW-0808); if no value is persisted, the CLI `--channel` flag seeds the database.
-5. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §18.6).
-6. Load handler configuration from database and build `HandlerRouter` (GW-1401).
-7. Start gRPC admin API server.
+5. If `--handler-config` is provided, bootstrap handlers from YAML into the database (GW-1405, §19.6).
+6. Load handler configuration from database and build `HandlerRouter` (GW-1401, GW-1407). The router is always built, even if no handlers exist. Wrap in `Arc<tokio::sync::RwLock<HandlerRouter>>` for shared access.
+7. Start gRPC admin API server, passing the shared `HandlerRouter` reference to the `AdminService` for live reload (GW-1404).
 8. Start handler processes for configured handlers.
 9. Start session reaper background task.
 10. Start node timeout detector background task.
@@ -1371,7 +1373,7 @@ sonde-admin handler list
 
 ### 19.5  Handler live reload
 
-The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<tokio::sync::RwLock<HandlerRouter>>`). Since handler routing and reload occur inside async tasks, `tokio::sync::RwLock` is required to avoid blocking the Tokio runtime. When `AddHandler` or `RemoveHandler` succeeds at the storage layer:
+The `AdminService` holds a reference to the `HandlerRouter` (wrapped in `Arc<tokio::sync::RwLock<HandlerRouter>>`). Since handler routing and reload occur inside async tasks, `tokio::sync::RwLock` is required to avoid blocking the Tokio runtime. When `AddHandler` or `RemoveHandler` succeeds at the storage layer, or when `ImportState` replaces handler records (GW-1404 AC5):
 
 1. The `AdminService` calls `list_handlers()` on the storage trait to get the current handler set.
 2. It converts each `HandlerRecord` to a `HandlerConfig` (§18.2).
@@ -1422,7 +1424,7 @@ On import, the existing `handler_config_from_cbor` decoder is extended to read k
 
 **Import:** `import_state()` restores handler records atomically within the same transaction that replaces nodes and programs. If the incoming bundle contains a handlers array, all existing handlers are deleted and replaced. If the handlers key is absent (bundle from older gateway version), existing handlers are preserved (no-op for backwards compatibility).
 
-After import, the `AdminService` triggers a handler live reload (§18.5) so the `HandlerRouter` reflects the imported configuration.
+After import, the `AdminService` triggers a handler live reload (§19.5) so the `HandlerRouter` reflects the imported configuration.
 
 ---
 

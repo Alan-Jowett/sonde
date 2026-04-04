@@ -2378,6 +2378,64 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-1407a  HandlerRouter always initialized
+
+**Validates:** GW-1407
+
+**Procedure:**
+1. Start gateway without `--handler-config` and with an empty database (no handlers).
+2. Assert: the gateway starts successfully and the `HandlerRouter` is initialized (not `None`).
+3. Call `AddHandler` with a catch-all (`"*"`) and a test echo handler command.
+4. Send `APP_DATA` for any program hash.
+5. Assert: `APP_DATA_REPLY` is received (the handler processed the request without restart).
+
+---
+
+### T-1407b  HandlerRouter shared between engine and admin
+
+**Validates:** GW-1407
+
+**Procedure:**
+1. Start gateway with one handler pre-loaded in the database.
+2. Send `APP_DATA` matching the handler's `program_hash`.
+3. Assert: handler receives the DATA message (engine reads from shared router).
+4. Call `RemoveHandler` via admin API.
+5. Send `APP_DATA` again.
+6. Assert: no `APP_DATA_REPLY` (admin wrote to the same shared router the engine reads).
+
+---
+
+### T-1405b  Bootstrap builds router from database
+
+**Validates:** GW-1405, GW-1407
+
+**Procedure:**
+1. Create a temporary `handlers.yaml` with a catch-all handler (`"*"`) and a test echo handler command.
+2. Start gateway with `--handler-config handlers.yaml` and an empty database.
+3. Send `APP_DATA` for any program hash.
+4. Assert: `APP_DATA_REPLY` is received (handler routed via DB-built router).
+5. Call `RemoveHandler` for `"*"` via admin API.
+6. Send `APP_DATA` again.
+7. Assert: no `APP_DATA_REPLY` is sent (router was built from DB, and admin removal updated the shared router — proving the YAML was a seed, not the routing source).
+
+---
+
+### T-1406b  State import triggers HandlerRouter reload
+
+**Validates:** GW-1404, GW-1406
+
+**Procedure:**
+1. Start gateway A with no handlers. Add a catch-all handler via `AddHandler` with a test echo handler command.
+2. Call `ExportState` with a test passphrase.
+3. Start gateway B with no handlers configured and an empty database.
+4. Send `APP_DATA` on gateway B.
+5. Assert: no `APP_DATA_REPLY` (no handlers).
+6. Call `ImportState` on gateway B with the bundle from step 2.
+7. Send `APP_DATA` on gateway B.
+8. Assert: `APP_DATA_REPLY` is received (imported handler is immediately routable without restart).
+
+---
+
 ## 14  Installer and service management tests
 
 ### T-1500  MSI adds PATH entry

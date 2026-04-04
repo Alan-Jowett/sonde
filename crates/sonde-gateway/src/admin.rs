@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 use crate::ble_pairing::BlePairingController;
 use crate::engine::PendingCommand;
 use crate::handler::HandlerConfig;
+use crate::handler::HandlerRouter;
 use crate::handler::ProgramMatcher;
 use crate::modem::UsbEspNowTransport;
 use crate::program::{ProgramLibrary, VerificationProfile};
@@ -36,6 +37,8 @@ pub struct AdminService {
     ble_controller: Option<Arc<BlePairingController>>,
     transport: Option<Arc<UsbEspNowTransport>>,
     handler_configs: RwLock<Vec<HandlerConfig>>,
+    /// Shared handler router for live reload (GW-1404, GW-1407).
+    handler_router: Option<Arc<tokio::sync::RwLock<HandlerRouter>>>,
 }
 
 impl AdminService {
@@ -52,6 +55,7 @@ impl AdminService {
             ble_controller: None,
             transport: None,
             handler_configs: RwLock::new(Vec::new()),
+            handler_router: None,
         }
     }
 
@@ -72,7 +76,17 @@ impl AdminService {
         self
     }
 
-    /// Reload handler configs from storage into the in-memory cache.
+    /// Set the shared handler router for live reload (GW-1404, GW-1407).
+    pub fn with_handler_router(
+        mut self,
+        router: Arc<tokio::sync::RwLock<HandlerRouter>>,
+    ) -> Self {
+        self.handler_router = Some(router);
+        self
+    }
+
+    /// Reload handler configs from storage into the in-memory cache and
+    /// live-reload the shared `HandlerRouter` (GW-1404).
     async fn reload_handler_configs(&self) {
         match self.storage.list_handlers().await {
             Ok(records) => {
@@ -80,7 +94,12 @@ impl AdminService {
                     .into_iter()
                     .filter_map(handler_record_to_config)
                     .collect();
-                *self.handler_configs.write().await = configs;
+                *self.handler_configs.write().await = configs.clone();
+
+                // Live-reload the shared HandlerRouter (GW-1404).
+                if let Some(router) = &self.handler_router {
+                    router.write().await.reload(configs).await;
+                }
             }
             Err(e) => {
                 warn!("failed to reload handler configs: {e}");
@@ -94,7 +113,7 @@ impl AdminService {
 /// Returns `None` for records with invalid `program_hash` values so that
 /// corrupt/misconfigured rows are skipped rather than silently producing
 /// a handler that can never match.
-fn handler_record_to_config(r: HandlerRecord) -> Option<HandlerConfig> {
+pub fn handler_record_to_config(r: HandlerRecord) -> Option<HandlerConfig> {
     let matcher = if r.program_hash == "*" {
         ProgramMatcher::Any
     } else {
@@ -925,6 +944,22 @@ impl GatewayAdmin for AdminService {
                 .await
                 .map_err(storage_err)?;
             *self.handler_configs.write().await = handler_cfgs;
+        }
+
+        // Live-reload the HandlerRouter after import (GW-1404 AC5).
+        if let Some(router) = &self.handler_router {
+            match self.storage.list_handlers().await {
+                Ok(recs) => {
+                    let cfgs: Vec<HandlerConfig> = recs
+                        .into_iter()
+                        .filter_map(handler_record_to_config)
+                        .collect();
+                    router.write().await.reload(cfgs).await;
+                }
+                Err(e) => {
+                    warn!("failed to reload handler router after import: {e}");
+                }
+            }
         }
 
         // Clear any pending commands queued for the old node set.

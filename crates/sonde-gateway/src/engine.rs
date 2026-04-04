@@ -177,8 +177,8 @@ pub struct Gateway {
     crypto_sha: RustCryptoSha256,
     /// Pending commands per node (ephemeral programs, schedule changes, reboots).
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
-    /// Optional handler router for APP_DATA dispatch (Phase 2C).
-    handler_router: Option<Arc<HandlerRouter>>,
+    /// Shared handler router for APP_DATA dispatch and event routing (GW-1407).
+    handler_router: Arc<tokio::sync::RwLock<HandlerRouter>>,
     /// Cached gateway identity for ECDH decryption (lazy-loaded from storage).
     #[allow(dead_code)]
     identity_cache: RwLock<Option<Arc<GatewayIdentity>>>,
@@ -186,7 +186,7 @@ pub struct Gateway {
 
 impl Gateway {
     /// Create a new gateway with the given storage backend and session timeout.
-    /// No handler router is configured; APP_DATA is silently accepted.
+    /// An empty `HandlerRouter` is created (GW-1407).
     pub fn new(storage: Arc<dyn Storage>, session_timeout: Duration) -> Self {
         Self {
             storage,
@@ -194,7 +194,7 @@ impl Gateway {
             program_library: ProgramLibrary::new(),
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
-            handler_router: None,
+            handler_router: Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(Vec::new()))),
             identity_cache: RwLock::new(None),
         }
     }
@@ -206,12 +206,12 @@ impl Gateway {
     /// This constructor allocates its own `pending_commands` and
     /// `SessionManager`. It is **not** suitable for production use where
     /// the admin API must share those objects. Use [`new_with_pending`]
-    /// followed by [`set_handler_router`] instead. This method exists
+    /// instead, passing the shared `HandlerRouter`. This method exists
     /// for test convenience only (D-485).
     pub fn new_with_handler(
         storage: Arc<dyn Storage>,
         session_timeout: Duration,
-        handler_router: Arc<HandlerRouter>,
+        handler_router: Arc<tokio::sync::RwLock<HandlerRouter>>,
     ) -> Self {
         Self {
             storage,
@@ -219,16 +219,17 @@ impl Gateway {
             program_library: ProgramLibrary::new(),
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
-            handler_router: Some(handler_router),
+            handler_router,
             identity_cache: RwLock::new(None),
         }
     }
 
-    /// Create a gateway that shares state with an `AdminService`.
+    /// Create a gateway that shares state with an `AdminService` (GW-1407, D-485).
     pub fn new_with_pending(
         storage: Arc<dyn Storage>,
         pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
         session_manager: Arc<SessionManager>,
+        handler_router: Arc<tokio::sync::RwLock<HandlerRouter>>,
     ) -> Self {
         Self {
             storage,
@@ -236,7 +237,7 @@ impl Gateway {
             program_library: ProgramLibrary::new(),
             crypto_sha: RustCryptoSha256,
             pending_commands,
-            handler_router: None,
+            handler_router,
             identity_cache: RwLock::new(None),
         }
     }
@@ -251,24 +252,14 @@ impl Gateway {
             .push(cmd);
     }
 
-    /// Set the handler router for APP_DATA dispatch (GW-0504 AC4).
-    ///
-    /// Called after construction when `--handler-config` is provided,
-    /// allowing the gateway to share `pending_commands` with the admin
-    /// API while also routing APP_DATA to handler processes.
-    pub fn set_handler_router(&mut self, router: Arc<HandlerRouter>) -> Result<(), &'static str> {
-        if self.handler_router.is_some() {
-            return Err(
-                "handler_router is already set; set_handler_router must only be called once during initialization",
-            );
-        }
-        self.handler_router = Some(router);
-        Ok(())
-    }
-
     /// Expose the session manager for test inspection.
     pub fn session_manager(&self) -> &SessionManager {
         self.session_manager.as_ref()
+    }
+
+    /// Return a clone of the shared handler router reference (GW-1407).
+    pub fn handler_router(&self) -> Arc<tokio::sync::RwLock<HandlerRouter>> {
+        Arc::clone(&self.handler_router)
     }
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
@@ -681,7 +672,8 @@ impl Gateway {
         let _ = self.storage.upsert_node(&updated_node).await;
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)
-        if let Some(router) = &self.handler_router {
+        {
+            let router = self.handler_router.read().await;
             let mut details = BTreeMap::new();
             details.insert(
                 "battery_mv".to_string(),
@@ -885,7 +877,8 @@ impl Gateway {
         let _ = self.storage.upsert_node(&updated_node).await;
 
         // Emit program_updated EVENT to handlers (GW-0507)
-        if let Some(router) = &self.handler_router {
+        {
+            let router = self.handler_router.read().await;
             let mut details = BTreeMap::new();
             details.insert(
                 "program_hash".to_string(),
@@ -916,7 +909,7 @@ impl Gateway {
         header: &FrameHeader,
         blob: Vec<u8>,
     ) -> Option<(FrameHeader, Vec<u8>)> {
-        let router = self.handler_router.as_ref()?;
+        let router = self.handler_router.read().await;
 
         // Use the node's `current_program_hash` (set via PROGRAM_ACK) for routing.
         // The node record was already loaded during frame authentication.
@@ -1156,10 +1149,7 @@ impl Gateway {
     /// per gateway-design.md). Call this periodically from the gateway main
     /// loop.
     pub async fn check_node_timeouts(&self, multiplier: u64) {
-        let router = match &self.handler_router {
-            Some(r) => r,
-            None => return,
-        };
+        let router = self.handler_router.read().await;
 
         let multiplier = if multiplier == 0 { 3 } else { multiplier };
 

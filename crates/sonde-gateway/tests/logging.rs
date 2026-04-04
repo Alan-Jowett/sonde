@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::{Gateway, PendingCommand};
 use sonde_gateway::gateway_identity::GatewayIdentity;
+use sonde_gateway::handler::HandlerRouter;
 use sonde_gateway::phone_trust::{PhonePskRecord, PhonePskStatus};
 use sonde_gateway::program::{ProgramLibrary, VerificationProfile};
 use sonde_gateway::registry::NodeRecord;
@@ -315,7 +316,12 @@ async fn t1302_peer_request_logging() {
     let session_manager = Arc::new(SessionManager::new(Duration::from_secs(30)));
     let pending: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
-    let gw = Gateway::new_with_pending(storage.clone(), pending, session_manager);
+    let gw = Gateway::new_with_pending(
+        storage.clone(),
+        pending,
+        session_manager,
+        Arc::new(RwLock::new(HandlerRouter::new(Vec::new()))),
+    );
 
     let frame = build_peer_request(
         &identity,
@@ -647,7 +653,7 @@ async fn t1308_app_data_handler_pipeline_logging() {
         reply_timeout: None,
         working_dir: None,
     };
-    let router = Arc::new(HandlerRouter::new(vec![config]));
+    let router = Arc::new(RwLock::new(HandlerRouter::new(vec![config])));
 
     let storage = Arc::new(InMemoryStorage::new());
     let gw = Gateway::new_with_handler(storage.clone(), Duration::from_secs(30), router);

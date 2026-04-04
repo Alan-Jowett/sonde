@@ -417,7 +417,7 @@ None
 
 **Target Language**: Rust (no_std where applicable, ESP-IDF for firmware crates)
 
-**Conventions**: Sonde conventions: REQ-ID traceability in code comments, SPDX-License-Identifier on all files, CBOR wire format per protocol.md, HMAC-SHA256 authentication, no unwrap in production code, all public APIs documented
+**Conventions**: Sonde conventions: REQ-ID traceability in code comments, SPDX-License-Identifier on all files, CBOR wire format per protocol.md, AES-256-GCM authenticated encryption, no unwrap in production code, all public APIs documented
 
 **Max Iterations**: 3
 

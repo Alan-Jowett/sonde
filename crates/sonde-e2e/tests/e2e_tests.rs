@@ -90,7 +90,7 @@ async fn t_e2e_060_gateway_identity_persistence() {
 /// T-E2E-061 — Phone registration: TOFU + registration window + PSK exchange.
 ///
 /// Full Phase 1 round-trip: REQUEST_GW_INFO challenge-response, REGISTER_PHONE
-/// with ECDH key exchange, and verification that:
+/// with AEAD phone PSK exchange, and verification that:
 /// - Phone PSK is stored in gateway storage.
 /// - A closed registration window correctly returns ERROR 0x02.
 #[tokio::test(flavor = "multi_thread")]

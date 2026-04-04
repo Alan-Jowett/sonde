@@ -1203,13 +1203,13 @@ static firmware that executes dynamic BPF programs delivered over-the-air withou
 firmware updates.
 
 Architecture — Rust 2021 workspace (resolver = 2) with 9 crates:
-- sonde-protocol (no_std): wire format, CBOR messages, frame codec, HMAC-SHA256 auth
+- sonde-protocol (no_std): wire format, CBOR messages, frame codec, AES-256-GCM AEAD
 - sonde-gateway (tokio): async gateway service, program distribution, handler routing, gRPC admin API
 - sonde-node (ESP32): firmware wake cycle, BPF dispatch, persistent storage, ESP-NOW radio
 - sonde-modem (ESP32-S3): USB-to-ESP-NOW bridge firmware
 - sonde-bpf (no_std): zero-alloc RFC 9669 BPF interpreter with tagged registers
 - sonde-admin: CLI admin tool, gRPC client
-- sonde-pair: BLE pairing core library (ed25519, x25519, HKDF, AES-GCM)
+- sonde-pair: BLE pairing core library (AES-256-GCM, SHA-256)
 - sonde-pair-ui: Tauri v2 desktop/Android pairing app (in progress)
 - sonde-e2e: end-to-end integration tests
 
@@ -1239,10 +1239,10 @@ Conventions:
 - DCO sign-off on commits (git commit -s)
 - cargo fmt --all, cargo clippy --all-targets -- -D warnings
 - Custom Error enums with impl Display; Result<T, E> return types
-- Traits for platform abstraction: Transport, Storage, Rng, Clock, Hal, HmacProvider, Sha256Provider
+- Traits for platform abstraction: Transport, Storage, Rng, Clock, Hal, AeadProvider, Sha256Provider
 - In-source #[cfg(test)] unit tests; tests/ for integration tests
 - Feature flags for platform code (esp feature for ESP32)
-- Wire format: CBOR-encoded, HMAC-SHA256 authenticated, 250-byte ESP-NOW frames
+- Wire format: CBOR-encoded, AES-256-GCM authenticated-encrypted, 250-byte ESP-NOW frames
 - BPF programs: compiled from C, verified by Prevail, max 4KB resident / 2KB ephemeral
 
 ---

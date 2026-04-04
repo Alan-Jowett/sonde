@@ -5322,7 +5322,6 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "getrandom 0.4.2",
- "hkdf",
  "hmac",
  "hyper-util",
  "pbkdf2",

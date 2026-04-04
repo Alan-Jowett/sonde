@@ -24,8 +24,9 @@ use crate::sleep::{SleepManager, WakeReason};
 use crate::traits::{Clock, PlatformStorage, Rng, Transport};
 use crate::FIRMWARE_ABI_VERSION;
 
-/// Retry and timing constants (protocol.md §9, node-requirements.md ND-0700/ND-0702).
-const WAKE_MAX_RETRIES: u32 = 3;
+/// Retry and timing constants shared by WAKE/COMMAND and GET_CHUNK exchanges
+/// (protocol.md §9, node-requirements.md ND-0700/ND-0701/ND-0702).
+const MAX_RETRIES: u32 = 3;
 const RETRY_DELAY_MS: u32 = 400;
 const RESPONSE_TIMEOUT_MS: u32 = 200;
 
@@ -202,7 +203,7 @@ pub fn wake_command_exchange<T: Transport, A: AeadProvider, S: Sha256Provider>(
     let frame = encode_frame(&header, &payload_cbor, &identity.psk, aead, sha)
         .map_err(|_| NodeError::MalformedPayload("frame encode failed"))?;
 
-    for attempt in 0..=WAKE_MAX_RETRIES {
+    for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
             clock.delay_ms(RETRY_DELAY_MS);
         }
@@ -489,7 +490,7 @@ fn get_chunk_with_retry<T: Transport, A: AeadProvider, S: Sha256Provider>(
         .encode()
         .map_err(|_| NodeError::MalformedPayload("GET_CHUNK message encode failed"))?;
 
-    for attempt in 0..=WAKE_MAX_RETRIES {
+    for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
             clock.delay_ms(RETRY_DELAY_MS);
         }

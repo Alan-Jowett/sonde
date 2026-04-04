@@ -776,7 +776,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Procedure:**
 1. Mock gateway does not respond.
 2. Assert: node sends exactly 4 WAKE frames (1 initial + 3 retries).
-3. Assert: ~400 ms between each attempt.
+3. For each unanswered WAKE except the final one, assert the node waits up to 200 ms (`RESPONSE_TIMEOUT_MS`) for a reply, then delays 400 ms (`RETRY_DELAY_MS`) before the next WAKE, giving ~600 ms between successive transmissions on a timeout-only path.
 4. Assert: node sleeps after final retry.
 
 ---
@@ -799,7 +799,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Mock gateway delays response by 250 ms (>200 ms timeout).
-2. Assert: node treats it as timeout and retries after 400 ms delay.
+2. Assert: node treats it as timeout, waits 400 ms backoff (`RETRY_DELAY_MS`), then retries.
 
 ---
 
@@ -1592,15 +1592,16 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
-### T-N936  Chunked transfer inter-retry delay ≈ 400 ms
+### T-N936  Chunked transfer retry backoff and cadence
 
 **Validates:** ND-0701
 
 **Procedure:**
 1. Begin a chunked transfer.
 2. Simulate a missing-chunk scenario that triggers retries.
-3. Measure the delay between consecutive retry transmissions.
-4. Assert: the inter-retry delay is approximately 400 ms (±20 ms).
+3. Measure the backoff delay (from response timeout expiry to next `GET_CHUNK` transmission).
+4. Assert: the backoff delay is approximately 400 ms (`RETRY_DELAY_MS`, ±20 ms).
+5. Assert: the total interval between successive `GET_CHUNK` transmissions on a timeout-only path is approximately 600 ms (200 ms response timeout + 400 ms backoff, ±50 ms).
 
 ---
 

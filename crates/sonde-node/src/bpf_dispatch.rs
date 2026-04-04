@@ -29,8 +29,9 @@ use crate::sleep::SleepManager;
 use crate::traits::{Clock, Transport};
 
 /// Default response timeout for `send_recv` helper (ms). Matches the protocol
-/// spec (node-requirements.md ND-0702).
-const SEND_RECV_TIMEOUT_MS: u32 = 50;
+/// spec (node-requirements.md ND-0702) and accounts for USB-CDC modem bridge
+/// round-trip latency.
+const SEND_RECV_TIMEOUT_MS: u32 = 200;
 
 /// Maximum buffer length for bus helper operations (I2C/SPI).
 /// Defence-in-depth cap to prevent oversized stack/heap access.

@@ -576,7 +576,7 @@ If the node sends `WAKE` and receives no `COMMAND` response:
 | Parameter | Value |
 |---|---|
 | Retry count | 3 |
-| Retry delay | Fixed, 400 ms between attempts |
+| Backoff delay | Fixed, 400 ms after response timeout (§9.3). On a timeout-only path, successive transmissions are ~600 ms apart (200 ms timeout + 400 ms backoff). |
 | After max retries | Sleep until next scheduled wake interval. |
 
 Exponential backoff is unnecessary — if the gateway isn't responding after 3 attempts, it's likely unavailable. Sleeping preserves battery.
@@ -588,8 +588,8 @@ If the node sends `GET_CHUNK` and receives no `CHUNK` response:
 | Parameter | Value |
 |---|---|
 | Retry count | 3 per chunk |
-| Retry delay | Fixed, 400 ms between attempts |
-| Sequence numbers | Each `GET_CHUNK` retry MUST use the next sequence number (not reuse the original). This maintains strict session sequencing and lets the gateway reject duplicates when the original request was received but the response was lost; it also provides replay protection as a secondary benefit. |
+| Backoff delay | Fixed, 400 ms after response timeout (§9.3). On a timeout-only path, successive transmissions are ~600 ms apart (200 ms timeout + 400 ms backoff). |
+| Sequence numbers |Each `GET_CHUNK` retry MUST use the next sequence number (not reuse the original). This maintains strict session sequencing and lets the gateway reject duplicates when the original request was received but the response was lost; it also provides replay protection as a secondary benefit. |
 | After max retries | Abort transfer, sleep. Retry from chunk 0 on next wake. |
 
 ### 9.3  Response timeout

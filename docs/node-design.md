@@ -131,7 +131,7 @@ The state machine has five main states plus two alternate boot paths. Starting f
 1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) no PSK or button held → BLE pairing mode, (2) PSK + no `reg_complete` → PEER_REQUEST registration, (3) PSK + `reg_complete` → proceed to step 2.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
 3. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`). AEAD-encrypt with PSK. Transmit via ESP-NOW.
-4. **Await COMMAND**: Wait up to 200 ms for a response. On timeout, back off for 400 ms before retrying, up to 3 attempts total. If all attempts fail, sleep.
+4. **Await COMMAND**: Wait up to 200 ms for a response. On timeout, back off for 400 ms before retrying, up to 4 total attempts. If all attempts fail, sleep.
 5. **Verify COMMAND**: Decrypt via AES-256-GCM. Verify echoed nonce matches. Decode CBOR. Extract `starting_seq` and `timestamp_ms`.
 6. **Dispatch command**:
    - `NOP` → proceed to BPF execution.

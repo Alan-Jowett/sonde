@@ -179,6 +179,9 @@ nodes:
   - name: "sensor-1"                 # String, node name/ID
     program: "temp-reader"           # String, references a program name from programs list
     hardware:                        # Optional, hardware profile
+      pins:                          # Optional, GPIO pin mapping (required if I2C sensors declared)
+        i2c0_sda: 4                  # Integer, I2C0 SDA GPIO number (0-21)
+        i2c0_scl: 5                  # Integer, I2C0 SCL GPIO number (0-21)
       sensors:
         - type: "i2c"               # String: "i2c", "adc", "gpio", "spi"
           id: 118                    # Integer, bus address or channel number
@@ -191,6 +194,9 @@ nodes:
 | `name` | string | yes | Node name/ID; MUST be unique within the `nodes` list |
 | `program` | string | yes | MUST reference a `name` in the `programs` list |
 | `hardware` | object | no | Hardware profile for the node |
+| `hardware.pins` | object | conditional | GPIO pin mapping; MUST be present when any sensor has `type: "i2c"` |
+| `hardware.pins.i2c0_sda` | integer | yes (if pins) | I2C0 SDA GPIO number, 0–21 (ESP32-C3) |
+| `hardware.pins.i2c0_scl` | integer | yes (if pins) | I2C0 SCL GPIO number, 0–21 (ESP32-C3); MUST differ from `i2c0_sda` |
 | `hardware.sensors` | list | no | List of sensor descriptors |
 | `hardware.sensors[].type` | string | yes (if sensor) | One of: `"i2c"`, `"adc"`, `"gpio"`, `"spi"` |
 | `hardware.sensors[].id` | integer | yes (if sensor) | Bus address or channel number, 0–65535 |
@@ -198,9 +204,12 @@ nodes:
 | `hardware.rf_channel` | integer | no | ESP-NOW RF channel, 1–13 |
 
 **Notes:**
-- The `hardware` section is informational for V1.  It is included in the bundle
-  so that future tools (e.g., the BLE pairing tool) can use it to configure
-  nodes at pairing time without requiring a bundle format change.
+- The `hardware.pins` section carries GPIO pin assignments that the BLE pairing
+  tool provisions to the node during pairing (see PT-1214, ND-0608).  The node
+  stores them in NVS so a single firmware binary works across boards with
+  different pin mappings.
+- When any sensor has `type: "i2c"`, `pins` with `i2c0_sda` and `i2c0_scl` is
+  required so the node knows which GPIOs to configure for the I2C bus.
 - The `name` field corresponds to the `node_id` used in gateway `AssignProgram`
   and other admin API calls.
 - Multiple nodes MAY reference the same program.
@@ -287,6 +296,10 @@ For each node target:
 4. `hardware.sensors[].id`, if present, is a non-negative integer in the range 0–65535.
 5. `hardware.rf_channel`, if present, is between 1 and 13 inclusive.
 6. `hardware.sensors[].label`, if present, is at most 64 bytes UTF-8.
+7. If any sensor has `type: "i2c"`, `hardware.pins` MUST be present with `i2c0_sda` and `i2c0_scl`.
+8. `hardware.pins.i2c0_sda` and `hardware.pins.i2c0_scl`, if present, are integers in the range 0–21.
+9. `hardware.pins.i2c0_sda` MUST NOT equal `hardware.pins.i2c0_scl`.
+10. If `hardware.pins` is present but omits either `i2c0_sda` or `i2c0_scl`, manifest decoding fails and the bundle is rejected as invalid.
 
 ### 6.6  Cross-reference validation
 
@@ -404,6 +417,9 @@ nodes:
   - name: "greenhouse-1"
     program: "temp-reader"
     hardware:
+      pins:
+        i2c0_sda: 4
+        i2c0_scl: 5
       sensors:
         - type: "i2c"
           id: 118
@@ -413,6 +429,9 @@ nodes:
   - name: "greenhouse-2"
     program: "temp-reader"
     hardware:
+      pins:
+        i2c0_sda: 4
+        i2c0_scl: 5
       sensors:
         - type: "i2c"
           id: 118

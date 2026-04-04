@@ -169,6 +169,10 @@ that node names are unique.
 3. `hardware.sensors[].type` values outside `{"i2c", "adc", "gpio", "spi"}` are rejected.
 4. `hardware.rf_channel` values outside 1–13 are rejected.
 5. `hardware.sensors[].label` values exceeding 64 bytes UTF-8 are rejected.
+6. When any sensor has `type: "i2c"`, `hardware.pins` MUST be present with `i2c0_sda` and `i2c0_scl` fields.
+7. `hardware.pins.i2c0_sda` and `hardware.pins.i2c0_scl` values outside 0–21 are rejected.
+8. `hardware.pins.i2c0_sda` MUST NOT equal `hardware.pins.i2c0_scl`.
+9. If `hardware.pins` is present but omits either `i2c0_sda` or `i2c0_scl`, manifest decoding fails and the bundle is rejected as invalid.
 
 ---
 
@@ -393,7 +397,7 @@ The template repository MUST allow the developer to control which version of
 
 **Acceptance criteria:**
 
-1. A variable (e.g., `SONDE_VERSION` in the workflow file or a `.sonde-version` file) controls which CI run to download `sonde-bundle` from.
+1. A variable (e.g., `SONDE_VERSION` in the workflow file or a `.sonde-version` file) controls which CI run or release tag to download `sonde-bundle` from.
 2. Changing the variable and pushing triggers a build with the new version.
 3. The README documents how to update the version.
 
@@ -429,7 +433,7 @@ bundle from the project directory, then validate that bundle with
 | SB-0200 | Structural validation | Must |
 | SB-0201 | Program reference validation | Must |
 | SB-0202 | Handler reference validation | Must |
-| SB-0203 | Node reference validation | Must |
+| SB-0203 | Node reference validation (incl. pin map) | Must |
 | SB-0204 | Cross-reference validation | Should |
 | SB-0300 | Create bundle from directory | Must |
 | SB-0301 | Validate on create | Must |

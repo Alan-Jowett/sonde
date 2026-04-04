@@ -1115,8 +1115,7 @@ TestNode {
 
 ### T-PT-1214a  Pin config included in NODE_PROVISION when provided
 
-**Validates:** PT-1214 (AC 1, 2, 4)  
-**Status:** Deferred — `sonde-pair` does not yet implement pin config encoding.
+**Validates:** PT-1214 (AC 1, 2, 4)
 
 **Procedure:**
 1. Call `provision_node(...)` with pin config `Some(PinConfig { i2c0_sda: 4, i2c0_scl: 5 })`.
@@ -1127,10 +1126,31 @@ TestNode {
 
 ---
 
+### T-PT-1214c  Pin config with out-of-range GPIO rejected
+
+**Validates:** PT-1214 (AC 5)
+
+**Procedure:**
+1. Call `provision_node(...)` with pin config `Some(PinConfig { i2c0_sda: 22, i2c0_scl: 5 })`.
+2. Assert: the call returns an error indicating GPIO number out of range (0–21).
+3. Assert: no NODE_PROVISION message is written to the BLE transport.
+
+---
+
+### T-PT-1214d  Pin config with SDA equal to SCL rejected
+
+**Validates:** PT-1214 (AC 6)
+
+**Procedure:**
+1. Call `provision_node(...)` with pin config `Some(PinConfig { i2c0_sda: 4, i2c0_scl: 4 })`.
+2. Assert: the call returns an error indicating SDA and SCL must be different pins.
+3. Assert: no NODE_PROVISION message is written to the BLE transport.
+
+---
+
 ### T-PT-1214b  No pin config in NODE_PROVISION — backward compatible
 
-**Validates:** PT-1214 (AC 1, 3)  
-**Status:** Deferred — `sonde-pair` does not yet implement pin config encoding.
+**Validates:** PT-1214 (AC 1, 3)
 
 **Procedure:**
 1. Call `provision_node(...)` with pin config `None`.
@@ -1230,3 +1250,5 @@ TestNode {
 | T-PT-1212 | PT-1212 | Error context in log output |
 | T-PT-1214a | PT-1214 | Pin config included in NODE_PROVISION when provided |
 | T-PT-1214b | PT-1214 | No pin config in NODE_PROVISION — backward compatible |
+| T-PT-1214c | PT-1214 | Pin config with out-of-range GPIO rejected |
+| T-PT-1214d | PT-1214 | Pin config with SDA equal to SCL rejected |

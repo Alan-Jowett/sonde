@@ -128,3 +128,16 @@ pub struct SensorDescriptor {
     /// Optional human-readable label (max 64 bytes UTF-8).
     pub label: Option<String>,
 }
+
+/// Board-specific I2C pin configuration for NODE_PROVISION (PT-1214).
+///
+/// When present, encoded as a deterministic CBOR map and appended to the
+/// NODE_PROVISION body after the encrypted payload.  The node persists
+/// these to NVS so a single firmware binary works across boards (ND-0608).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinConfig {
+    /// I2C0 SDA GPIO number (0–21 for ESP32-C3).
+    pub i2c0_sda: u8,
+    /// I2C0 SCL GPIO number (0–21 for ESP32-C3).
+    pub i2c0_scl: u8,
+}

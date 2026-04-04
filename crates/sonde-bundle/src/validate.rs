@@ -403,6 +403,39 @@ pub fn validate_manifest(manifest: &Manifest, source_dir: &Path) -> ValidationRe
                     });
                 }
             }
+
+            let has_i2c_sensor = hw.sensors.iter().any(|s| s.sensor_type == SensorType::I2c);
+
+            if let Some(ref pins) = hw.pins {
+                const MAX_GPIO: u8 = 21;
+                if pins.i2c0_sda > MAX_GPIO || pins.i2c0_scl > MAX_GPIO {
+                    result.errors.push(ValidationError {
+                        rule: "node.hardware.pins",
+                        message: format!(
+                            "node `{}`: GPIO pin number out of range (0–{}), got sda={}, scl={}",
+                            node.name, MAX_GPIO, pins.i2c0_sda, pins.i2c0_scl
+                        ),
+                    });
+                }
+                if pins.i2c0_sda == pins.i2c0_scl {
+                    result.errors.push(ValidationError {
+                        rule: "node.hardware.pins",
+                        message: format!(
+                            "node `{}`: `i2c0_sda` and `i2c0_scl` must be different GPIO pins, both are {}",
+                            node.name, pins.i2c0_sda
+                        ),
+                    });
+                }
+            } else if has_i2c_sensor {
+                result.errors.push(ValidationError {
+                    rule: "node.hardware.pins",
+                    message: format!(
+                        "node `{}`: `pins` with `i2c0_sda` and `i2c0_scl` required when I2C sensor is declared",
+                        node.name
+                    ),
+                });
+            }
+
             for sensor in &hw.sensors {
                 if let SensorType::Unknown(ref s) = sensor.sensor_type {
                     result.errors.push(ValidationError {
@@ -809,6 +842,7 @@ mod tests {
         m.nodes[0].hardware = Some(HardwareProfile {
             sensors: vec![],
             rf_channel: Some(14),
+            pins: None,
         });
         let r = validate_manifest(&m, dir.path());
         assert!(!r.is_valid());
@@ -827,6 +861,10 @@ mod tests {
                 label: Some("x".repeat(65)),
             }],
             rf_channel: None,
+            pins: Some(PinMap {
+                i2c0_sda: 4,
+                i2c0_scl: 5,
+            }),
         });
         let r = validate_manifest(&m, dir.path());
         assert!(!r.is_valid());
@@ -972,6 +1010,153 @@ mod tests {
             r.is_valid(),
             "valid working_dir should pass: {:?}",
             r.errors
+        );
+    }
+
+    #[test]
+    fn test_pins_required_when_i2c_sensor_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        let mut m = minimal_manifest();
+        m.nodes[0].hardware = Some(HardwareProfile {
+            sensors: vec![SensorDescriptor {
+                sensor_type: SensorType::I2c,
+                id: 0x48,
+                label: None,
+            }],
+            rf_channel: None,
+            pins: None,
+        });
+        let r = validate_manifest(&m, dir.path());
+        assert!(!r.is_valid());
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.message.contains("pins") && e.message.contains("I2C")));
+    }
+
+    #[test]
+    fn test_pin_sda_equals_scl_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        let mut m = minimal_manifest();
+        m.nodes[0].hardware = Some(HardwareProfile {
+            sensors: vec![SensorDescriptor {
+                sensor_type: SensorType::I2c,
+                id: 0x48,
+                label: None,
+            }],
+            rf_channel: None,
+            pins: Some(PinMap {
+                i2c0_sda: 4,
+                i2c0_scl: 4,
+            }),
+        });
+        let r = validate_manifest(&m, dir.path());
+        assert!(!r.is_valid());
+        assert!(r
+            .errors
+            .iter()
+            .any(|e| e.message.contains("different GPIO pins")));
+    }
+
+    #[test]
+    fn test_pin_gpio_out_of_range_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        let mut m = minimal_manifest();
+        m.nodes[0].hardware = Some(HardwareProfile {
+            sensors: vec![SensorDescriptor {
+                sensor_type: SensorType::I2c,
+                id: 0x48,
+                label: None,
+            }],
+            rf_channel: None,
+            pins: Some(PinMap {
+                i2c0_sda: 22,
+                i2c0_scl: 5,
+            }),
+        });
+        let r = validate_manifest(&m, dir.path());
+        assert!(!r.is_valid());
+        assert!(r.errors.iter().any(|e| e.message.contains("out of range")));
+    }
+
+    #[test]
+    fn test_pins_valid_with_i2c_sensor() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        let mut m = minimal_manifest();
+        m.nodes[0].hardware = Some(HardwareProfile {
+            sensors: vec![SensorDescriptor {
+                sensor_type: SensorType::I2c,
+                id: 0x48,
+                label: None,
+            }],
+            rf_channel: None,
+            pins: Some(PinMap {
+                i2c0_sda: 4,
+                i2c0_scl: 5,
+            }),
+        });
+        let r = validate_manifest(&m, dir.path());
+        assert!(
+            r.is_valid(),
+            "valid I2C sensor with pins should pass: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn test_pins_without_i2c_sensor_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_test_dir(dir.path());
+        let mut m = minimal_manifest();
+        m.nodes[0].hardware = Some(HardwareProfile {
+            sensors: vec![],
+            rf_channel: None,
+            pins: Some(PinMap {
+                i2c0_sda: 4,
+                i2c0_scl: 5,
+            }),
+        });
+        let r = validate_manifest(&m, dir.path());
+        assert!(
+            r.is_valid(),
+            "pins without I2C sensor should be allowed: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn test_partial_pins_missing_scl_rejected_at_parse() {
+        let yaml = r#"
+schema_version: 1
+name: test-app
+version: "0.1.0"
+programs:
+  - name: test-prog
+    path: bpf/test.elf
+    profile: resident
+nodes:
+  - name: node-1
+    program: test-prog
+    hardware:
+      pins:
+        i2c0_sda: 4
+      sensors:
+        - type: i2c
+          id: 0x48
+"#;
+        let result = Manifest::from_yaml(yaml);
+        assert!(
+            result.is_err(),
+            "partial pins (missing i2c0_scl) should fail deserialization"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("i2c0_scl"),
+            "error should mention missing field i2c0_scl, got: {err}"
         );
     }
 }

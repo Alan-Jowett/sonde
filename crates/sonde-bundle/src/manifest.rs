@@ -107,13 +107,33 @@ pub struct NodeTarget {
     pub hardware: Option<HardwareProfile>,
 }
 
-/// Hardware profile describing physical sensors on a node.
+/// Hardware profile describing physical sensors and pin assignments on a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardwareProfile {
     #[serde(default)]
     pub sensors: Vec<SensorDescriptor>,
     #[serde(default)]
     pub rf_channel: Option<u8>,
+    /// GPIO pin mapping for the node's bus peripherals.
+    ///
+    /// Required when any sensor has `type: "i2c"`.  The pairing tool
+    /// provisions these values to the node via NODE_PROVISION (PT-1214,
+    /// ND-0608) so a single firmware binary works across boards.
+    #[serde(default)]
+    pub pins: Option<PinMap>,
+}
+
+/// GPIO pin mapping for a node's bus peripherals.
+///
+/// All fields are required when the struct is present.  GPIO numbers
+/// must be in the ESP32-C3 range (0–21) and `i2c0_sda` must differ
+/// from `i2c0_scl`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinMap {
+    /// I2C bus 0 SDA GPIO number (0–21).
+    pub i2c0_sda: u8,
+    /// I2C bus 0 SCL GPIO number (0–21).
+    pub i2c0_scl: u8,
 }
 
 /// A sensor attached to a node.

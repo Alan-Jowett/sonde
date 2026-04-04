@@ -386,13 +386,43 @@ impl HandlerProcess {
 
             // Drain stderr in a background task so handler diagnostics
             // (e.g. Python tracebacks) appear in the gateway log instead
-            // of being silently discarded.
+            // of being silently discarded.  Lines are capped at 4 KB to
+            // prevent a misbehaving handler from causing unbounded memory
+            // growth.
             if let Some(stderr) = child.stderr.take() {
                 let cmd_label = self.config.command.clone();
+                const MAX_STDERR_LINE: usize = 4096;
                 tokio::spawn(async move {
-                    let mut lines = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        warn!(handler = %cmd_label, "{line}");
+                    let mut reader = BufReader::new(stderr);
+                    let mut buf = String::with_capacity(256);
+                    loop {
+                        buf.clear();
+                        match reader.read_line(&mut buf).await {
+                            Ok(0) => break, // EOF
+                            Ok(n) if n > MAX_STDERR_LINE => {
+                                buf.truncate(MAX_STDERR_LINE);
+                                warn!(
+                                    handler = %cmd_label,
+                                    "{}… (truncated, {} bytes total)",
+                                    buf.trim_end(),
+                                    n,
+                                );
+                            }
+                            Ok(_) => {
+                                let line = buf.trim_end();
+                                if !line.is_empty() {
+                                    warn!(handler = %cmd_label, "{line}");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    handler = %cmd_label,
+                                    error = %e,
+                                    "stderr read error",
+                                );
+                                break;
+                            }
+                        }
                     }
                 });
             }

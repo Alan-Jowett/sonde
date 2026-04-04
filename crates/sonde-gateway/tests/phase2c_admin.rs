@@ -112,6 +112,9 @@ impl TestHarness {
             self.storage.clone(),
             self.pending_commands.clone(),
             self.session_manager.clone(),
+            Arc::new(RwLock::new(sonde_gateway::handler::HandlerRouter::new(
+                Vec::new(),
+            ))),
         )
     }
 }

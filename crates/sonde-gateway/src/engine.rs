@@ -177,16 +177,16 @@ pub struct Gateway {
     crypto_sha: RustCryptoSha256,
     /// Pending commands per node (ephemeral programs, schedule changes, reboots).
     pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
-    /// Optional handler router for APP_DATA dispatch (Phase 2C).
-    handler_router: Option<Arc<HandlerRouter>>,
-    /// Cached gateway identity for ECDH decryption (lazy-loaded from storage).
+    /// Shared handler router for APP_DATA dispatch and event routing (GW-1407).
+    handler_router: Arc<tokio::sync::RwLock<HandlerRouter>>,
+    /// Cached gateway identity metadata for pairing/peer-request handling (lazy-loaded from storage).
     #[allow(dead_code)]
     identity_cache: RwLock<Option<Arc<GatewayIdentity>>>,
 }
 
 impl Gateway {
     /// Create a new gateway with the given storage backend and session timeout.
-    /// No handler router is configured; APP_DATA is silently accepted.
+    /// An empty `HandlerRouter` is created (GW-1407).
     pub fn new(storage: Arc<dyn Storage>, session_timeout: Duration) -> Self {
         Self {
             storage,
@@ -194,7 +194,7 @@ impl Gateway {
             program_library: ProgramLibrary::new(),
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
-            handler_router: None,
+            handler_router: Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(Vec::new()))),
             identity_cache: RwLock::new(None),
         }
     }
@@ -206,12 +206,12 @@ impl Gateway {
     /// This constructor allocates its own `pending_commands` and
     /// `SessionManager`. It is **not** suitable for production use where
     /// the admin API must share those objects. Use [`new_with_pending`]
-    /// followed by [`set_handler_router`] instead. This method exists
+    /// instead, passing the shared `HandlerRouter`. This method exists
     /// for test convenience only (D-485).
     pub fn new_with_handler(
         storage: Arc<dyn Storage>,
         session_timeout: Duration,
-        handler_router: Arc<HandlerRouter>,
+        handler_router: Arc<tokio::sync::RwLock<HandlerRouter>>,
     ) -> Self {
         Self {
             storage,
@@ -219,16 +219,17 @@ impl Gateway {
             program_library: ProgramLibrary::new(),
             crypto_sha: RustCryptoSha256,
             pending_commands: Arc::new(RwLock::new(HashMap::new())),
-            handler_router: Some(handler_router),
+            handler_router,
             identity_cache: RwLock::new(None),
         }
     }
 
-    /// Create a gateway that shares state with an `AdminService`.
+    /// Create a gateway that shares state with an `AdminService` (GW-1407, D-485).
     pub fn new_with_pending(
         storage: Arc<dyn Storage>,
         pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>>,
         session_manager: Arc<SessionManager>,
+        handler_router: Arc<tokio::sync::RwLock<HandlerRouter>>,
     ) -> Self {
         Self {
             storage,
@@ -236,7 +237,7 @@ impl Gateway {
             program_library: ProgramLibrary::new(),
             crypto_sha: RustCryptoSha256,
             pending_commands,
-            handler_router: None,
+            handler_router,
             identity_cache: RwLock::new(None),
         }
     }
@@ -251,24 +252,14 @@ impl Gateway {
             .push(cmd);
     }
 
-    /// Set the handler router for APP_DATA dispatch (GW-0504 AC4).
-    ///
-    /// Called after construction when `--handler-config` is provided,
-    /// allowing the gateway to share `pending_commands` with the admin
-    /// API while also routing APP_DATA to handler processes.
-    pub fn set_handler_router(&mut self, router: Arc<HandlerRouter>) -> Result<(), &'static str> {
-        if self.handler_router.is_some() {
-            return Err(
-                "handler_router is already set; set_handler_router must only be called once during initialization",
-            );
-        }
-        self.handler_router = Some(router);
-        Ok(())
-    }
-
     /// Expose the session manager for test inspection.
     pub fn session_manager(&self) -> &SessionManager {
         self.session_manager.as_ref()
+    }
+
+    /// Return a clone of the shared handler router reference (GW-1407).
+    pub fn handler_router(&self) -> Arc<tokio::sync::RwLock<HandlerRouter>> {
+        Arc::clone(&self.handler_router)
     }
 
     /// Process a raw frame using AES-256-GCM authenticated encryption.
@@ -681,7 +672,9 @@ impl Gateway {
         let _ = self.storage.upsert_node(&updated_node).await;
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)
-        if let Some(router) = &self.handler_router {
+        {
+            let process_refs = self.handler_router.read().await.clone_all_process_refs();
+            // Lock released — broadcast events without holding router lock.
             let mut details = BTreeMap::new();
             details.insert(
                 "battery_mv".to_string(),
@@ -691,9 +684,16 @@ impl Gateway {
                 "firmware_abi_version".to_string(),
                 ciborium::Value::Integer(firmware_abi_version.into()),
             );
-            router
-                .route_event(&node.node_id, "node_online", details, timestamp_ms / 1000)
-                .await;
+            let msg = crate::handler::HandlerMessage::Event {
+                node_id: node.node_id.clone(),
+                event_type: "node_online".to_string(),
+                details,
+                timestamp: timestamp_ms / 1000,
+            };
+            for process_arc in &process_refs {
+                let mut process = process_arc.lock().await;
+                process.send_event(&msg).await;
+            }
         }
 
         // GW-1300 AC4: log COMMAND selected (transport send happens later).
@@ -885,7 +885,9 @@ impl Gateway {
         let _ = self.storage.upsert_node(&updated_node).await;
 
         // Emit program_updated EVENT to handlers (GW-0507)
-        if let Some(router) = &self.handler_router {
+        {
+            let process_refs = self.handler_router.read().await.clone_all_process_refs();
+            // Lock released — broadcast events without holding router lock.
             let mut details = BTreeMap::new();
             details.insert(
                 "program_hash".to_string(),
@@ -895,9 +897,16 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            router
-                .route_event(&node.node_id, "program_updated", details, timestamp)
-                .await;
+            let msg = crate::handler::HandlerMessage::Event {
+                node_id: node.node_id.clone(),
+                event_type: "program_updated".to_string(),
+                details,
+                timestamp,
+            };
+            for process_arc in &process_refs {
+                let mut process = process_arc.lock().await;
+                process.send_event(&msg).await;
+            }
         }
 
         // Transition session from ChunkedTransfer to BpfExecuting
@@ -916,14 +925,18 @@ impl Gateway {
         header: &FrameHeader,
         blob: Vec<u8>,
     ) -> Option<(FrameHeader, Vec<u8>)> {
-        let router = self.handler_router.as_ref()?;
-
         // Use the node's `current_program_hash` (set via PROGRAM_ACK) for routing.
         // The node record was already loaded during frame authentication.
         let program_hash = match &node.current_program_hash {
             Some(hash) => hash.clone(),
             None => return None,
         };
+
+        // Find the matching handler under the read lock, then release before I/O.
+        let (config, process_arc) = {
+            let router = self.handler_router.read().await;
+            router.find_handler_cloned(&program_hash)?
+        }; // read lock released here
 
         // GW-1308 AC1: log APP_DATA received with node_id, program_hash, len.
         if tracing::enabled!(tracing::Level::INFO) {
@@ -936,26 +949,56 @@ impl Gateway {
             );
         }
 
+        // GW-1308 AC2: handler matched with program_hash and command.
+        if tracing::enabled!(tracing::Level::INFO) {
+            let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+            info!(
+                program_hash = %ph_hex,
+                command = %config.command,
+                "handler matched"
+            );
+        }
+
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        let reply_data = router
-            .route_app_data(&node.node_id, &program_hash, &blob, timestamp, header.nonce)
-            .await?;
+        // GW-1308 AC3: handler invoked with command.
+        info!(command = %config.command, "handler invoked");
 
-        // Encode APP_DATA_REPLY with the same nonce as the incoming APP_DATA
-        let response_msg = GatewayMessage::AppDataReply { blob: reply_data };
-        let response_cbor = response_msg.encode().ok()?;
-
-        let response_header = FrameHeader {
-            key_hint: node.key_hint,
-            msg_type: MSG_APP_DATA_REPLY,
-            nonce: header.nonce,
+        let msg = crate::handler::HandlerMessage::Data {
+            request_id: header.nonce,
+            node_id: node.node_id.clone(),
+            program_hash: program_hash.to_vec(),
+            data: blob,
+            timestamp,
         };
 
-        Some((response_header, response_cbor))
+        let mut process = process_arc.lock().await;
+        let reply = process.send_data(&msg).await?;
+        match reply {
+            crate::handler::HandlerMessage::DataReply { data, .. } => {
+                if data.is_empty() {
+                    None
+                } else {
+                    // GW-1308 AC4: handler replied with len.
+                    info!(len = data.len(), "handler replied");
+
+                    let response_msg = GatewayMessage::AppDataReply { blob: data };
+                    let response_cbor = response_msg.encode().ok()?;
+
+                    let response_header = FrameHeader {
+                        key_hint: node.key_hint,
+                        msg_type: MSG_APP_DATA_REPLY,
+                        nonce: header.nonce,
+                    };
+
+                    Some((response_header, response_cbor))
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Command selection logic (priority order per design doc 6.4).
@@ -1156,10 +1199,8 @@ impl Gateway {
     /// per gateway-design.md). Call this periodically from the gateway main
     /// loop.
     pub async fn check_node_timeouts(&self, multiplier: u64) {
-        let router = match &self.handler_router {
-            Some(r) => r,
-            None => return,
-        };
+        // Clone handler process refs under the read lock, then release.
+        let process_refs = self.handler_router.read().await.clone_all_process_refs();
 
         let multiplier = if multiplier == 0 { 3 } else { multiplier };
 
@@ -1193,9 +1234,16 @@ impl Gateway {
                     "expected_interval_s".to_string(),
                     ciborium::Value::Integer(interval.into()),
                 );
-                router
-                    .route_event(&node.node_id, "node_timeout", details, now.as_secs())
-                    .await;
+                let msg = crate::handler::HandlerMessage::Event {
+                    node_id: node.node_id.clone(),
+                    event_type: "node_timeout".to_string(),
+                    details,
+                    timestamp: now.as_secs(),
+                };
+                for process_arc in &process_refs {
+                    let mut process = process_arc.lock().await;
+                    process.send_event(&msg).await;
+                }
             }
         }
     }

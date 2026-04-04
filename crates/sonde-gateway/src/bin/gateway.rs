@@ -337,8 +337,9 @@ async fn run_gateway(
     let pending_commands: Arc<RwLock<HashMap<String, Vec<PendingCommand>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    // 5. Gateway engine — wire up handler router when a config file was given
-    let (gateway, handler_configs) = if let Some(config_path) = &cli.handler_config {
+    // 5. Gateway engine — always build HandlerRouter from DB (GW-1407).
+    //    If --handler-config is provided, bootstrap YAML into DB first (GW-1405).
+    if let Some(config_path) = &cli.handler_config {
         let configs = load_handler_configs(config_path).map_err(|e| {
             error!("failed to load handler config: {e}");
             e
@@ -346,30 +347,60 @@ async fn run_gateway(
         info!(
             path = %config_path.display(),
             count = configs.len(),
-            "loaded handler config"
+            "loaded handler config — bootstrapping into database"
         );
-        let configs_for_admin = configs.clone();
-        let router = Arc::new(HandlerRouter::new(configs));
-        // Use new_with_pending to share pending_commands with the admin
-        // API, then set the handler router separately (D-485).
-        let mut gw = Gateway::new_with_pending(
-            storage.clone(),
-            pending_commands.clone(),
-            session_manager.clone(),
-        );
-        gw.set_handler_router(router)
-            .expect("handler_router must not already be set during gateway init");
-        (Arc::new(gw), configs_for_admin)
-    } else {
-        (
-            Arc::new(Gateway::new_with_pending(
-                storage.clone(),
-                pending_commands.clone(),
-                session_manager.clone(),
-            )),
-            Vec::new(),
-        )
-    };
+        // Bootstrap: import each config into DB (GW-1405 §19.6).
+        for cfg in &configs {
+            for matcher in &cfg.matchers {
+                use sonde_gateway::handler::ProgramMatcher;
+                let program_hash = match matcher {
+                    ProgramMatcher::Any => "*".to_string(),
+                    ProgramMatcher::Hash(bytes) => {
+                        bytes.iter().map(|b| format!("{b:02x}")).collect()
+                    }
+                };
+                let record = sonde_gateway::storage::HandlerRecord {
+                    program_hash,
+                    command: cfg.command.clone(),
+                    args: cfg.args.clone(),
+                    working_dir: cfg.working_dir.clone(),
+                    reply_timeout_ms: cfg.reply_timeout.map(|d| d.as_millis() as u64),
+                };
+                match storage.add_handler(&record).await {
+                    Ok(true) => {
+                        info!(program_hash = %record.program_hash, "bootstrapped handler into DB")
+                    }
+                    Ok(false) => {} // duplicate, DB takes precedence
+                    Err(e) => {
+                        warn!(program_hash = %record.program_hash, error = %e, "failed to bootstrap handler")
+                    }
+                }
+            }
+        }
+    }
+
+    // Always load handlers from DB and build the router (GW-1407).
+    let handler_configs_from_db: Vec<sonde_gateway::handler::HandlerConfig> = storage
+        .list_handlers()
+        .await?
+        .into_iter()
+        .filter_map(sonde_gateway::admin::handler_record_to_config)
+        .collect();
+    info!(
+        count = handler_configs_from_db.len(),
+        "loaded handler configs from database"
+    );
+    let handler_router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(
+        handler_configs_from_db.clone(),
+    )));
+
+    // Create gateway engine with the shared handler router (D-485, GW-1407).
+    let gateway = Arc::new(Gateway::new_with_pending(
+        storage.clone(),
+        pending_commands.clone(),
+        session_manager.clone(),
+        handler_router.clone(),
+    ));
 
     // 6–9. Modem transport + processing loops with reconnection (GW-1103).
     //
@@ -458,7 +489,8 @@ async fn run_gateway(
             session_manager.clone(),
         )
         .with_ble(Arc::clone(&ble_controller), Arc::clone(&transport))
-        .with_handler_configs(handler_configs.clone());
+        .with_handler_configs(handler_configs_from_db.clone())
+        .with_handler_router(handler_router.clone());
         let admin_socket = cli.admin_socket.clone();
 
         let grpc_handle = tokio::spawn(async move {

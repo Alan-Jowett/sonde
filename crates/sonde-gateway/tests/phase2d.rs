@@ -18,6 +18,7 @@ use sonde_protocol::modem::{
     encode_modem_frame, FrameDecoder, ModemMessage, ModemReady, ModemStatus,
 };
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tokio::sync::RwLock;
 
 // ─── Modem test helpers ────────────────────────────────────────────────
 
@@ -198,7 +199,7 @@ async fn t0507_check_node_timeouts_emits_event() {
     node.last_seen = Some(SystemTime::now() - Duration::from_secs(200));
     storage.upsert_node(&node).await.unwrap();
 
-    let router = Arc::new(HandlerRouter::new(vec![]));
+    let router = Arc::new(RwLock::new(HandlerRouter::new(vec![])));
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
     gw.check_node_timeouts(3).await;
     // No panic = success; the scan logic ran and found the timed-out node,
@@ -216,7 +217,7 @@ async fn t0507_check_node_timeouts_not_timed_out() {
     node.last_seen = Some(SystemTime::now() - Duration::from_secs(30));
     storage.upsert_node(&node).await.unwrap();
 
-    let router = Arc::new(HandlerRouter::new(vec![]));
+    let router = Arc::new(RwLock::new(HandlerRouter::new(vec![])));
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
     gw.check_node_timeouts(3).await;
     // No panic, no timeout detected.
@@ -230,7 +231,7 @@ async fn t0507_check_node_timeouts_no_last_seen() {
     let node = NodeRecord::new("new-node".into(), 0x0003, [0xCC; 32]);
     storage.upsert_node(&node).await.unwrap();
 
-    let router = Arc::new(HandlerRouter::new(vec![]));
+    let router = Arc::new(RwLock::new(HandlerRouter::new(vec![])));
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
     gw.check_node_timeouts(3).await;
     // No panic — node with no last_seen is skipped.
@@ -246,7 +247,7 @@ async fn t0507_check_node_timeouts_zero_interval() {
     node.last_seen = Some(SystemTime::now() - Duration::from_secs(500));
     storage.upsert_node(&node).await.unwrap();
 
-    let router = Arc::new(HandlerRouter::new(vec![]));
+    let router = Arc::new(RwLock::new(HandlerRouter::new(vec![])));
     let gw = Gateway::new_with_handler(storage, Duration::from_secs(30), router);
     gw.check_node_timeouts(3).await;
     // No panic — zero interval means no timeout check.
@@ -489,7 +490,7 @@ async fn gw0507_node_timeout_event_with_fields() {
         working_dir: None,
     };
 
-    let router = Arc::new(HandlerRouter::new(vec![config]));
+    let router = Arc::new(RwLock::new(HandlerRouter::new(vec![config])));
     let storage = Arc::new(InMemoryStorage::new());
 
     // Register a node that has timed out: 60s interval, last seen 200s ago

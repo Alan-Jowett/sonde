@@ -1590,7 +1590,10 @@ mod tests {
             // Verify all recv calls used RESPONSE_TIMEOUT_MS (ND-0702)
             assert_eq!(transport.recv_timeouts.len(), 4); // 1 initial + 3 retries
             assert!(
-                transport.recv_timeouts.iter().all(|&t| t == RESPONSE_TIMEOUT_MS),
+                transport
+                    .recv_timeouts
+                    .iter()
+                    .all(|&t| t == RESPONSE_TIMEOUT_MS),
                 "all recv calls should use RESPONSE_TIMEOUT_MS"
             );
         }

@@ -134,14 +134,20 @@ pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>,
 
 /// Decode a DIAG_RELAY_RESPONSE BLE body.
 ///
-/// Returns `(status, payload)` on success. Rejects truncated bodies
-/// and bodies with trailing bytes.
+/// Returns `(status, payload)` on success. Rejects truncated bodies,
+/// bodies with trailing bytes, and payloads exceeding `MAX_FRAME_SIZE`.
 pub fn decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeError> {
     if body.len() < 3 {
         return Err(DecodeError::TooShort);
     }
     let status = body[0];
     let payload_len = u16::from_be_bytes([body[1], body[2]]) as usize;
+    if payload_len > MAX_FRAME_SIZE {
+        return Err(DecodeError::CborError(alloc::format!(
+            "DIAG_RELAY_RESPONSE payload_len {} exceeds MAX_FRAME_SIZE {}",
+            payload_len, MAX_FRAME_SIZE
+        )));
+    }
     if body.len() < 3 + payload_len {
         return Err(DecodeError::TooShort);
     }
@@ -159,6 +165,7 @@ pub fn decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use crate::constants::{BLE_DIAG_RELAY_REQUEST, BLE_DIAG_RELAY_RESPONSE};
 
     #[test]
@@ -281,6 +288,17 @@ mod tests {
     #[test]
     fn diag_relay_response_decode_trailing_bytes() {
         let body = [0x00, 0, 1, 0xAA, 0xBB]; // payload_len=1 but 2 data bytes
+        assert!(decode_diag_relay_response(&body).is_err());
+    }
+
+    #[test]
+    fn diag_relay_response_decode_oversized_payload_rejected() {
+        // payload_len > MAX_FRAME_SIZE should be rejected
+        let oversized_len = (MAX_FRAME_SIZE as u16) + 1;
+        let mut body = vec![0x00]; // status OK
+        body.extend_from_slice(&oversized_len.to_be_bytes());
+        // Don't need to provide actual payload bytes — the length check
+        // should reject before reaching the slice bounds check.
         assert!(decode_diag_relay_response(&body).is_err());
     }
 }

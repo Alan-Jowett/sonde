@@ -405,6 +405,8 @@ Signal quality thresholds are configurable on the gateway (see `gateway-requirem
 
 The boundaries are inclusive: `−60 dBm` is good, `−75 dBm` is marginal.
 
+When the gateway cannot determine RSSI (e.g., loopback transport or test environment), it uses a sentinel value of `rssi_dbm = 0` and sets `signal_quality = 2` (bad) per **GW-1702**. Pairing tools should treat `rssi_dbm = 0` as "RSSI unavailable" rather than an actual measurement.
+
 ---
 
 ## 6  Message flows

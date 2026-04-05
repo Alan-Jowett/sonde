@@ -380,14 +380,14 @@ pub fn handle_diag_relay_request(body: &[u8]) -> Result<DiagRelayParams, Vec<u8>
 }
 
 fn encode_diag_relay_status(status: u8) -> Vec<u8> {
-    sonde_protocol::encode_diag_relay_response(status, &[]).expect("status response fits")
+    sonde_protocol::encode_diag_relay_response(status, &[]).unwrap_or_default()
 }
 
 /// Encode a DIAG_RELAY_RESPONSE BLE envelope.
 pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Vec<u8> {
-    let body = sonde_protocol::encode_diag_relay_response(status, payload).expect("response fits");
-    encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESPONSE, &body)
-        .expect("response envelope fits")
+    let body = sonde_protocol::encode_diag_relay_response(status, payload)
+        .unwrap_or_else(|_| encode_diag_relay_status(status));
+    encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESPONSE, &body).unwrap_or_default()
 }
 
 /// Execute the diagnostic relay: broadcast on ESP-NOW, listen for DIAG_REPLY.

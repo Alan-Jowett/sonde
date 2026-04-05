@@ -310,22 +310,43 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                             // Save current channel, switch, relay, restore (ND-1101, ND-1106).
                             let mut orig_primary: u8 = 0;
                             let mut orig_secondary: esp_idf_sys::wifi_second_chan_t = 0;
-                            unsafe {
-                                esp_idf_sys::esp_wifi_get_channel(
+                            let restore_channel = unsafe {
+                                let rc = esp_idf_sys::esp_wifi_get_channel(
                                     &mut orig_primary,
                                     &mut orig_secondary,
                                 );
-                                let _ = esp_idf_sys::esp_wifi_set_channel(
+                                if rc != esp_idf_sys::ESP_OK {
+                                    warn!("BLE: failed to read Wi-Fi channel before DIAG relay: err={}", rc);
+                                }
+                                rc == esp_idf_sys::ESP_OK
+                            };
+                            let set_ok = unsafe {
+                                let rc = esp_idf_sys::esp_wifi_set_channel(
                                     params.rf_channel,
                                     esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE,
                                 );
+                                if rc != esp_idf_sys::ESP_OK {
+                                    warn!("BLE: failed to set Wi-Fi channel {} for DIAG relay: err={}", params.rf_channel, rc);
+                                }
+                                rc == esp_idf_sys::ESP_OK
+                            };
+                            if !set_ok {
+                                Some(encode_diag_relay_response(
+                                    sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
+                                    &[],
+                                ))
+                            } else {
+                                let response = do_diag_relay(t, &params);
+                                if restore_channel {
+                                    unsafe {
+                                        let rc = esp_idf_sys::esp_wifi_set_channel(orig_primary, orig_secondary);
+                                        if rc != esp_idf_sys::ESP_OK {
+                                            warn!("BLE: failed to restore Wi-Fi channel after DIAG relay: err={}", rc);
+                                        }
+                                    }
+                                }
+                                Some(response)
                             }
-                            let response = do_diag_relay(t, &params);
-                            unsafe {
-                                let _ =
-                                    esp_idf_sys::esp_wifi_set_channel(orig_primary, orig_secondary);
-                            }
-                            Some(response)
                         }
                         (Ok(_), None) => {
                             warn!("BLE: DIAG_RELAY_REQUEST but no transport available");

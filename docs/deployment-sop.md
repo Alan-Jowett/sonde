@@ -387,25 +387,33 @@ Profiles:
 
 Handlers are external processes that receive `APP_DATA` from nodes via
 length-prefixed CBOR on stdin and can reply via stdout. The workspace
-includes a reference handler (`sonde-tmp102-handler`) for TMP102
-temperature sensors — built with `cargo build` alongside the other
-crates, no additional runtime dependencies required.
+includes two reference handlers for TMP102 temperature sensors:
+
+- **Rust** (`sonde-tmp102-handler`) — built with `cargo build`, no runtime
+  dependencies. Recommended for deployment.
+- **Python** (`test-programs/tmp102_handler.py`) — requires `python3` and the
+  `cbor2` pip package. Useful as a readable protocol example.
 
 Use the admin CLI to add a handler while the gateway is running — no
 restart required:
 
 ```sh
+# Rust handler (recommended)
 sonde-admin handler add "*" sonde-tmp102-handler
+
+# Python handler (alternative)
+sonde-admin handler add "*" python3 test-programs/tmp102_handler.py
 ```
 
 The first argument is the program hash to match (or `"*"` for a
 catch-all that handles all programs). Additional arguments are passed
 to the handler command.
 
-On Windows the same command works — just ensure the binary is on your
-PATH or use the full path to the built executable:
+On Windows, use the full path to the built executable or `python`
+instead of `python3`:
 ```powershell
 sonde-admin handler add "*" .\target\release\sonde-tmp102-handler.exe
+sonde-admin handler add "*" python test-programs\tmp102_handler.py
 ```
 
 **Optional flags:**

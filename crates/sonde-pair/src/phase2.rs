@@ -233,6 +233,93 @@ async fn do_provision_node(
     Ok(NodeProvisionResult { status })
 }
 
+/// Result of an RSSI diagnostic check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiagnosticResult {
+    /// Measured RSSI in dBm (typically −30 to −90).
+    pub rssi_dbm: i8,
+    /// Signal quality: 0=good, 1=marginal, 2=bad.
+    pub signal_quality: u8,
+}
+
+/// Perform an RSSI diagnostic using the node as a radio relay (PT-1300).
+///
+/// The node must already be connected via BLE. This function can be called
+/// multiple times (diagnostic is repeatable, PT-1306) and does not modify
+/// any pairing state (PT-1308).
+pub async fn check_rssi(
+    transport: &mut dyn BleTransport,
+    artifacts: &crate::phase1::PairingArtifacts,
+) -> Result<DiagnosticResult, PairingError> {
+    // 1. Build DIAG_REQUEST frame (PT-1301).
+    let (diag_frame, request_nonce) =
+        crate::crypto::build_diag_request_frame(&artifacts.phone_psk)?;
+
+    // 2. Wrap in DIAG_RELAY_REQUEST BLE envelope (PT-1302).
+    let relay_body = sonde_protocol::encode_diag_relay_request(artifacts.rf_channel, &diag_frame)
+        .map_err(|e| PairingError::DiagnosticFailed(format!("relay encode: {}", e)))?;
+    let envelope =
+        sonde_protocol::encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_REQUEST, &relay_body)
+            .ok_or_else(|| PairingError::DiagnosticFailed("BLE envelope too large".into()))?;
+
+    // 3. Write to node BLE characteristic.
+    transport
+        .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &envelope)
+        .await?;
+
+    // 4. Wait for DIAG_RELAY_RESPONSE (10s timeout, PT-1303).
+    let response = transport
+        .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, 10_000)
+        .await?;
+
+    // 5. Parse BLE envelope.
+    let (msg_type, body) = sonde_protocol::parse_ble_envelope(&response).ok_or_else(|| {
+        PairingError::InvalidResponse {
+            msg_type: 0,
+            reason: "malformed BLE envelope".into(),
+        }
+    })?;
+    if msg_type != sonde_protocol::BLE_DIAG_RELAY_RESPONSE {
+        return Err(PairingError::InvalidResponse {
+            msg_type,
+            reason: format!(
+                "expected DIAG_RELAY_RESPONSE (0x82), got 0x{:02x}",
+                msg_type
+            ),
+        });
+    }
+
+    // 6. Parse relay response status.
+    let (status, payload) = sonde_protocol::decode_diag_relay_response(body).map_err(|e| {
+        PairingError::InvalidResponse {
+            msg_type,
+            reason: format!("decode relay response: {}", e),
+        }
+    })?;
+
+    match status {
+        sonde_protocol::DIAG_RELAY_STATUS_OK => {
+            // 7. Decrypt DIAG_REPLY (PT-1303 AC-2).
+            let (rssi_dbm, signal_quality) =
+                crate::crypto::decrypt_diag_reply(payload, &artifacts.phone_psk, request_nonce)?;
+            Ok(DiagnosticResult {
+                rssi_dbm,
+                signal_quality,
+            })
+        }
+        sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT => Err(PairingError::DiagnosticFailed(
+            "no response from gateway — verify gateway is running and modem is connected".into(),
+        )),
+        sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR => Err(PairingError::DiagnosticFailed(
+            "channel error — verify RF channel configuration".into(),
+        )),
+        other => Err(PairingError::DiagnosticFailed(format!(
+            "unknown relay status: 0x{:02x}",
+            other
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +632,63 @@ mod tests {
             transport.written.is_empty(),
             "no BLE writes on validation failure"
         );
+    }
+
+    // ── RSSI diagnostic tests ─────────────────────────────────────
+
+    fn mock_artifacts() -> crate::phase1::PairingArtifacts {
+        use crate::crypto::PairSha256;
+        let psk = [0x55u8; 32];
+        crate::phase1::PairingArtifacts {
+            phone_psk: zeroize::Zeroizing::new(psk),
+            phone_key_hint: sonde_protocol::key_hint_from_psk(&psk, &PairSha256),
+            rf_channel: 6,
+            phone_label: "test".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_rssi_timeout_status() {
+        let artifacts = mock_artifacts();
+
+        let relay_body = sonde_protocol::encode_diag_relay_response(
+            sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        let ble_response = sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_DIAG_RELAY_RESPONSE,
+            &relay_body,
+        )
+        .unwrap();
+
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(ble_response));
+
+        let result = check_rssi(&mut transport, &artifacts).await;
+        assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+        assert_eq!(transport.written.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn check_rssi_channel_error_status() {
+        let artifacts = mock_artifacts();
+
+        let relay_body = sonde_protocol::encode_diag_relay_response(
+            sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
+            &[],
+        )
+        .unwrap();
+        let ble_response = sonde_protocol::encode_ble_envelope(
+            sonde_protocol::BLE_DIAG_RELAY_RESPONSE,
+            &relay_body,
+        )
+        .unwrap();
+
+        let mut transport = MockBleTransport::new(247);
+        transport.queue_response(Ok(ble_response));
+
+        let result = check_rssi(&mut transport, &artifacts).await;
+        assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
     }
 }

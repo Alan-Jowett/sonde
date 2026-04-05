@@ -66,7 +66,7 @@ const GCM_NONCE_LEN: usize = 12;
 const GCM_TAG_LEN: usize = 16;
 
 /// [`sonde_protocol::Sha256Provider`] backed by `sha2::Sha256`.
-struct PairSha256;
+pub(crate) struct PairSha256;
 
 impl sonde_protocol::Sha256Provider for PairSha256 {
     fn hash(&self, data: &[u8]) -> [u8; 32] {
@@ -75,7 +75,7 @@ impl sonde_protocol::Sha256Provider for PairSha256 {
 }
 
 /// [`sonde_protocol::AeadProvider`] backed by `aes_gcm::Aes256Gcm`.
-struct PairAead;
+pub(crate) struct PairAead;
 
 impl sonde_protocol::AeadProvider for PairAead {
     fn seal(&self, key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
@@ -173,6 +173,81 @@ pub fn decrypt_pairing_request(
     let plaintext =
         aes256gcm_decrypt(phone_psk, nonce, ciphertext_and_tag, PAIRING_REQUEST_AAD).ok()?;
     Some(plaintext)
+}
+
+/// Build a DIAG_REQUEST ESP-NOW frame authenticated with phone_psk.
+///
+/// Returns `(frame_bytes, nonce)`. The nonce is needed to verify the reply.
+pub fn build_diag_request_frame(phone_psk: &[u8; 32]) -> Result<(Vec<u8>, u64), PairingError> {
+    let sha = PairSha256;
+    let aead = PairAead;
+
+    let msg = sonde_protocol::NodeMessage::DiagRequest {
+        diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
+    };
+    let cbor = msg
+        .encode()
+        .map_err(|_| PairingError::EncryptionFailed("CBOR encode failed".into()))?;
+
+    let mut frame_nonce_bytes = [0u8; 8];
+    getrandom::fill(&mut frame_nonce_bytes).map_err(|e| PairingError::RngFailed(e.to_string()))?;
+    let frame_nonce = u64::from_be_bytes(frame_nonce_bytes);
+
+    let phone_key_hint = sonde_protocol::key_hint_from_psk(phone_psk, &sha);
+    let header = sonde_protocol::FrameHeader {
+        key_hint: phone_key_hint,
+        msg_type: sonde_protocol::MSG_DIAG_REQUEST,
+        nonce: frame_nonce,
+    };
+
+    let frame = sonde_protocol::encode_frame(&header, &cbor, phone_psk, &aead, &sha)
+        .map_err(|_| PairingError::EncryptionFailed("frame encode failed".into()))?;
+
+    Ok((frame, frame_nonce))
+}
+
+/// Decrypt a DIAG_REPLY ESP-NOW frame and extract the diagnostic result.
+///
+/// Verifies the reply nonce matches the request nonce.
+pub fn decrypt_diag_reply(
+    raw_frame: &[u8],
+    phone_psk: &[u8; 32],
+    expected_nonce: u64,
+) -> Result<(i8, u8), PairingError> {
+    let sha = PairSha256;
+    let aead = PairAead;
+
+    let decoded = sonde_protocol::decode_frame(raw_frame)
+        .map_err(|_| PairingError::DiagnosticFailed("malformed DIAG_REPLY frame".into()))?;
+
+    if decoded.header.msg_type != sonde_protocol::MSG_DIAG_REPLY {
+        return Err(PairingError::DiagnosticFailed(
+            "expected MSG_DIAG_REPLY msg_type".into(),
+        ));
+    }
+
+    if decoded.header.nonce != expected_nonce {
+        return Err(PairingError::DiagnosticFailed(
+            "DIAG_REPLY nonce mismatch".into(),
+        ));
+    }
+
+    let payload = sonde_protocol::open_frame(&decoded, phone_psk, &aead, &sha)
+        .map_err(|_| PairingError::EncryptionFailed("DIAG_REPLY decryption failed".into()))?;
+
+    let msg = sonde_protocol::GatewayMessage::decode(sonde_protocol::MSG_DIAG_REPLY, &payload)
+        .map_err(|e| PairingError::DiagnosticFailed(format!("DIAG_REPLY CBOR decode: {}", e)))?;
+
+    match msg {
+        sonde_protocol::GatewayMessage::DiagReply {
+            rssi_dbm,
+            signal_quality,
+            ..
+        } => Ok((rssi_dbm, signal_quality)),
+        _ => Err(PairingError::DiagnosticFailed(
+            "unexpected message variant".into(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -369,5 +444,95 @@ mod aead_tests {
     fn pairing_request_empty_payload_returns_none() {
         let psk = [0x42u8; 32];
         assert!(decrypt_pairing_request(&psk, &[]).is_none());
+    }
+
+    #[test]
+    fn diag_request_frame_round_trip() {
+        let psk = [0x42u8; 32];
+        let (frame, nonce) = build_diag_request_frame(&psk).unwrap();
+
+        // Verify header fields.
+        let decoded = sonde_protocol::decode_frame(&frame).unwrap();
+        assert_eq!(decoded.header.msg_type, sonde_protocol::MSG_DIAG_REQUEST);
+        assert_eq!(decoded.header.nonce, nonce);
+        let expected_hint = sonde_protocol::key_hint_from_psk(&psk, &PairSha256);
+        assert_eq!(decoded.header.key_hint, expected_hint);
+
+        // Decrypt and verify CBOR payload.
+        let plaintext = sonde_protocol::open_frame(&decoded, &psk, &PairAead, &PairSha256).unwrap();
+        let msg = sonde_protocol::NodeMessage::decode(sonde_protocol::MSG_DIAG_REQUEST, &plaintext)
+            .unwrap();
+        match msg {
+            sonde_protocol::NodeMessage::DiagRequest { diagnostic_type } => {
+                assert_eq!(diagnostic_type, sonde_protocol::DIAG_TYPE_RSSI);
+            }
+            _ => panic!("expected DiagRequest"),
+        }
+    }
+
+    #[test]
+    fn diag_reply_decrypt_success() {
+        let psk = [0x42u8; 32];
+        let nonce: u64 = 0xDEADBEEF;
+
+        // Build a synthetic DIAG_REPLY frame.
+        let reply = sonde_protocol::GatewayMessage::DiagReply {
+            diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
+            rssi_dbm: -55,
+            signal_quality: sonde_protocol::SIGNAL_QUALITY_GOOD,
+        };
+        let cbor = reply.encode().unwrap();
+        let header = sonde_protocol::FrameHeader {
+            key_hint: sonde_protocol::key_hint_from_psk(&psk, &PairSha256),
+            msg_type: sonde_protocol::MSG_DIAG_REPLY,
+            nonce,
+        };
+        let frame =
+            sonde_protocol::encode_frame(&header, &cbor, &psk, &PairAead, &PairSha256).unwrap();
+
+        let (rssi, sq) = decrypt_diag_reply(&frame, &psk, nonce).unwrap();
+        assert_eq!(rssi, -55);
+        assert_eq!(sq, sonde_protocol::SIGNAL_QUALITY_GOOD);
+    }
+
+    #[test]
+    fn diag_reply_nonce_mismatch_rejected() {
+        let psk = [0x42u8; 32];
+        let reply = sonde_protocol::GatewayMessage::DiagReply {
+            diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
+            rssi_dbm: -55,
+            signal_quality: 0,
+        };
+        let cbor = reply.encode().unwrap();
+        let header = sonde_protocol::FrameHeader {
+            key_hint: sonde_protocol::key_hint_from_psk(&psk, &PairSha256),
+            msg_type: sonde_protocol::MSG_DIAG_REPLY,
+            nonce: 0xAAAA,
+        };
+        let frame =
+            sonde_protocol::encode_frame(&header, &cbor, &psk, &PairAead, &PairSha256).unwrap();
+
+        assert!(decrypt_diag_reply(&frame, &psk, 0xBBBB).is_err());
+    }
+
+    #[test]
+    fn diag_reply_wrong_psk_rejected() {
+        let psk = [0x42u8; 32];
+        let wrong = [0x99u8; 32];
+        let reply = sonde_protocol::GatewayMessage::DiagReply {
+            diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
+            rssi_dbm: -55,
+            signal_quality: 0,
+        };
+        let cbor = reply.encode().unwrap();
+        let header = sonde_protocol::FrameHeader {
+            key_hint: sonde_protocol::key_hint_from_psk(&psk, &PairSha256),
+            msg_type: sonde_protocol::MSG_DIAG_REPLY,
+            nonce: 0xDEAD,
+        };
+        let frame =
+            sonde_protocol::encode_frame(&header, &cbor, &psk, &PairAead, &PairSha256).unwrap();
+
+        assert!(decrypt_diag_reply(&frame, &wrong, 0xDEAD).is_err());
     }
 }

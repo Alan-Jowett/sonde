@@ -1672,3 +1672,78 @@ enum Commands {
     },
 }
 ```
+
+---
+
+## 21  Pairing-time diagnostic handler
+
+> **Requirements:** GW-1700 (DIAG_REQUEST reception), GW-1701 (DIAG_REQUEST session bypass), GW-1702 (RSSI measurement), GW-1703 (signal quality assessment), GW-1704 (DIAG_REPLY construction), GW-1705 (configurable RSSI thresholds), GW-1706 (diagnostic logging).
+
+### 21.1  Overview
+
+The gateway handles `DIAG_REQUEST` frames (`msg_type` 0x06) from pre-provisioning nodes acting as radio relays for the pairing tool. This provides the installer with RF link quality feedback before committing to node placement.
+
+### 21.2  Frame reception and authentication
+
+`DIAG_REQUEST` frames are processed in the main frame dispatch loop alongside `WAKE`, `APP_DATA`, and `PEER_REQUEST`. Authentication uses the same phone PSK lookup path as `PEER_REQUEST`:
+
+1. Extract `key_hint` from the frame header.
+2. Look up non-revoked phone PSK candidates matching `key_hint` (reuses `PhonePskStore::lookup_by_hint()`).
+3. Attempt AES-256-GCM-Open with each candidate.
+4. On successful decryption: decode the CBOR payload and extract `diagnostic_type`.
+5. On decryption failure: silently discard (consistent with protocol error handling).
+
+**Session bypass (GW-1701):** Unlike `WAKE` or post-WAKE messages, `DIAG_REQUEST` does not create or require an active session. The frame is processed statelessly — the gateway does not track the sender MAC or maintain any diagnostic session state.
+
+### 21.3  RSSI measurement pipeline
+
+The RSSI for the diagnostic reply comes from the modem's `RECV_FRAME` message. The existing `UsbModemTransport` already parses RSSI from each received frame (see §4.2). The diagnostic handler captures the RSSI that was associated with the `RECV_FRAME` carrying the `DIAG_REQUEST`.
+
+Implementation approach:
+- The `UsbModemTransport::recv_with_rssi()` method returns `(Vec<u8>, PeerAddress, i8)` — the raw frame, sender address, and RSSI. The base `Transport::recv()` trait method returns `(Vec<u8>, PeerAddress)` without RSSI; `Gateway::process_frame()` delegates to `process_frame_with_rssi(raw, peer, None)` for transports without RSSI support.
+- The diagnostic handler reads `rssi` from the `process_frame_with_rssi` parameter. If `None` (e.g., loopback transport), uses a sentinel value of `0` dBm and logs a warning **(GW-1702)**.
+
+### 21.4  Signal quality assessment
+
+The gateway evaluates the RSSI against two configurable thresholds **(GW-1703, GW-1705)**:
+
+```rust
+pub struct RssiThresholds {
+    pub good_threshold: i8,  // default: -60
+    pub bad_threshold: i8,   // default: -75
+}
+
+impl RssiThresholds {
+    pub fn assess(&self, rssi_dbm: i8) -> u8 {
+        if rssi_dbm >= self.good_threshold {
+            SIGNAL_QUALITY_GOOD      // 0
+        } else if rssi_dbm >= self.bad_threshold {
+            SIGNAL_QUALITY_MARGINAL  // 1
+        } else {
+            SIGNAL_QUALITY_BAD       // 2
+        }
+    }
+}
+```
+
+Thresholds are configured at gateway startup via the CLI flags `--rssi-good-threshold` and `--rssi-bad-threshold`. The gateway validates `good_threshold > bad_threshold` and logs an error if violated.
+
+### 21.5  DIAG_REPLY construction
+
+The gateway constructs and transmits a `DIAG_REPLY` frame **(GW-1704)**:
+
+1. Build CBOR payload: `{ 1: diagnostic_type, 2: rssi_dbm, 3: signal_quality }` using deterministic encoding (RFC 8949 §4.2).
+2. Frame header:
+   - `key_hint` = phone's `key_hint` (same as the request).
+   - `msg_type` = `0x85`.
+   - `nonce` = echo the request nonce (binds reply to request).
+3. Encrypt with the same `phone_psk` that decrypted the request. AAD = 11-byte header.
+4. Transmit via modem `SEND_FRAME`, addressed to the sender MAC from the `RECV_FRAME` metadata.
+
+### 21.6  Logging
+
+All diagnostic events are logged at `INFO` level **(GW-1706)**:
+- `DIAG_REQUEST` received: sender MAC, phone key_hint, diagnostic_type.
+- `DIAG_REPLY` sent: RSSI value, signal quality assessment, target MAC.
+- Decryption failures are logged at `DEBUG` level (consistent with GW-1302).
+- PSK values are never logged (consistent with GW-1307).

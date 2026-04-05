@@ -158,7 +158,9 @@ Total envelope overhead: 3 bytes.
 | Type | Direction | Name | Description |
 |------|-----------|------|-------------|
 | 0x01 | Phone → Node | `NODE_PROVISION` | Provision PSK + encrypted payload. |
+| 0x02 | Phone → Node | `DIAG_RELAY_REQUEST` | Diagnostic relay request. See §6a. |
 | 0x81 | Node → Phone | `NODE_ACK` | Provision acknowledgement. |
+| 0x82 | Node → Phone | `DIAG_RELAY_RESPONSE` | Diagnostic relay response. See §6a. |
 | 0xFF | Either | `ERROR` | Error response. |
 
 ---
@@ -383,6 +385,94 @@ Offset  Size  Field
 | `NODE_ACK` not received within 5 s | Phone disconnects, reports timeout. |
 | `NODE_ACK` status ≠ 0x00 | Phone reports error, disconnects. |
 | Node receives `NODE_PROVISION` while already paired (no button override) | Node sends `NODE_ACK(0x01)`. |
+
+---
+
+## 6a  Pairing-time RSSI diagnostic
+
+### 6a.1  Overview
+
+Before provisioning, the pairing tool may request an RF link quality check by using the node as a **dumb radio relay**. The node does not decrypt or interpret the diagnostic payload — it relays an opaque ESP-NOW frame to the gateway and forwards the reply back.
+
+This step is **optional** (the installer may skip it) and **repeatable** (the installer may run it multiple times to test different node positions).
+
+### 6a.2  BLE message formats
+
+#### DIAG_RELAY_REQUEST (0x02, Phone → Node)
+
+```
+┌──────────────┬──────────────┬───────────────────────────┐
+│ rf_channel   │ payload_len  │ payload                   │
+│ (1 byte)     │ (2 bytes BE) │ (payload_len bytes)       │
+└──────────────┴──────────────┴───────────────────────────┘
+```
+
+| Field | Size | Description |
+|---|---|---|
+| `rf_channel` | 1 byte | WiFi channel (1–13) to broadcast on. From Phase 1 `PHONE_REGISTERED`. |
+| `payload_len` | 2 bytes, BE | Length of the opaque ESP-NOW frame. |
+| `payload` | variable | Complete `DIAG_REQUEST` ESP-NOW frame (header + ciphertext + GCM tag), built by the pairing tool. |
+
+#### DIAG_RELAY_RESPONSE (0x82, Node → Phone)
+
+```
+┌──────────────┬──────────────┬───────────────────────────┐
+│ status       │ payload_len  │ payload                   │
+│ (1 byte)     │ (2 bytes BE) │ (payload_len bytes)       │
+└──────────────┴──────────────┴───────────────────────────┘
+```
+
+| Field | Size | Description |
+|---|---|---|
+| `status` | 1 byte | `0x00` = success (payload contains `DIAG_REPLY`), `0x01` = timeout (no reply after retries), `0x02` = channel error. |
+| `payload_len` | 2 bytes, BE | Length of the opaque ESP-NOW reply frame. Zero if `status` ≠ `0x00`. |
+| `payload` | variable | Raw `DIAG_REPLY` ESP-NOW frame from gateway (if status is `0x00`). |
+
+### 6a.3  Node relay behavior
+
+1. Node receives `DIAG_RELAY_REQUEST` on the Node Command BLE characteristic.
+2. Node temporarily tunes the ESP-NOW radio to `rf_channel`.
+3. Node broadcasts `payload` as a raw ESP-NOW frame (broadcast MAC `FF:FF:FF:FF:FF:FF`).
+4. Node listens for an inbound ESP-NOW frame with `msg_type` = `0x85` (`DIAG_REPLY`) in the header (byte offset 2).
+5. **Retry behavior**: up to **3 retransmissions** with **200 ms** backoff between attempts, **2-second** listen window per attempt.
+6. If a valid `DIAG_REPLY` frame is received, node sends `DIAG_RELAY_RESPONSE(status=0x00, payload=<raw frame>)` via BLE indication.
+7. If all retries are exhausted without receiving a reply, node sends `DIAG_RELAY_RESPONSE(status=0x01, payload_len=0)`.
+8. Node restores its previous radio state after the diagnostic completes.
+
+The node identifies reply frames by inspecting the `msg_type` byte at header offset 2 — this field is plaintext (part of the AAD, not the ciphertext). The node does not decrypt or validate the reply payload.
+
+### 6a.4  Pairing tool behavior
+
+1. Tool connects to the node's BLE Node Provisioning Service (same service used for Phase 2).
+2. Tool constructs a `DIAG_REQUEST` ESP-NOW frame authenticated with `phone_psk`:
+   - Header: `[phone_key_hint (2B) | msg_type=0x06 (1B) | random_nonce (8B)]`
+   - CBOR payload: `{ 1: 0x01 }` (diagnostic_type = DIAG_RSSI)
+   - AES-256-GCM encryption using `phone_psk`, AAD = 11-byte header
+3. Tool sends `DIAG_RELAY_REQUEST(rf_channel, payload=<frame>)` via BLE write.
+4. Tool waits up to **10 seconds** for `DIAG_RELAY_RESPONSE`.
+5. On `status=0x00`: tool decrypts the `DIAG_REPLY` payload using `phone_psk`, displays RSSI and signal quality assessment.
+6. On `status=0x01` (timeout) or `status=0x02` (channel error): tool displays an error message with guidance.
+7. If signal quality is `2` (bad): tool displays a warning and requires installer confirmation before allowing provisioning to proceed.
+
+### 6a.5  Timing
+
+| Parameter | Value |
+|-----------|-------|
+| BLE diagnostic timeout (pairing tool) | 10 seconds |
+| ESP-NOW listen window (node, per attempt) | 2 seconds |
+| ESP-NOW retry backoff (node) | 200 ms |
+| ESP-NOW max retries (node) | 3 |
+| Worst-case node-side duration | ~8.6 seconds |
+
+### 6a.6  Error handling
+
+| Condition | Behavior |
+|-----------|----------|
+| `rf_channel` outside 1–13 | Node sends `DIAG_RELAY_RESPONSE(status=0x02)`. |
+| `payload_len` = 0 or exceeds MAX_FRAME_SIZE (250) | Node sends `DIAG_RELAY_RESPONSE(status=0x02)`. |
+| No `DIAG_REPLY` received after 3 retries | Node sends `DIAG_RELAY_RESPONSE(status=0x01)`. |
+| BLE disconnect during diagnostic | Node aborts relay, restores radio state. |
+| Gateway cannot decrypt (wrong PSK / revoked) | Gateway silently discards. Node times out. |
 
 ---
 

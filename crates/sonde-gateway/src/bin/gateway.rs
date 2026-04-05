@@ -178,6 +178,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     generate_master_key: bool,
 
+    /// RSSI threshold (dBm) at or above which signal quality is "good".
+    #[arg(long, default_value_t = -60)]
+    rssi_good_threshold: i8,
+
+    /// RSSI threshold (dBm) at or below which signal quality is "bad".
+    #[arg(long, default_value_t = -75)]
+    rssi_bad_threshold: i8,
+
     /// Run as a Windows NT service.
     ///
     /// This flag is set automatically by `sonde-gateway install` in the service
@@ -395,12 +403,16 @@ async fn run_gateway(
     )));
 
     // Create gateway engine with the shared handler router (D-485, GW-1407).
-    let gateway = Arc::new(Gateway::new_with_pending(
-        storage.clone(),
-        pending_commands.clone(),
-        session_manager.clone(),
-        handler_router.clone(),
-    ));
+    let gateway = Arc::new({
+        let mut gw = Gateway::new_with_pending(
+            storage.clone(),
+            pending_commands.clone(),
+            session_manager.clone(),
+            handler_router.clone(),
+        );
+        gw.set_rssi_thresholds(cli.rssi_good_threshold, cli.rssi_bad_threshold);
+        gw
+    });
 
     // 6–9. Modem transport + processing loops with reconnection (GW-1103).
     //
@@ -506,10 +518,10 @@ async fn run_gateway(
 
         let frame_loop = tokio::spawn(async move {
             loop {
-                match transport_ref.recv().await {
-                    Ok((raw_frame, peer_addr)) => {
+                match transport_ref.recv_with_rssi().await {
+                    Ok((raw_frame, peer_addr, rssi)) => {
                         if let Some(response) = gateway_ref
-                            .process_frame(&raw_frame, peer_addr.clone())
+                            .process_frame_with_rssi(&raw_frame, peer_addr.clone(), Some(rssi))
                             .await
                         {
                             if let Err(e) = transport_ref.send(&response, &peer_addr).await {

@@ -659,6 +659,45 @@ After the first successful WAKE/COMMAND exchange (the gateway responds with a va
 
 If WAKE fails (no response or AEAD decryption failure) after `reg_complete` is set, the node clears the `reg_complete` flag and reverts to sending PEER_REQUEST on the next boot. This allows the node to re-register if the gateway lost its registration state.
 
+### 15.8  Diagnostic relay (pre-provisioning)
+
+> **Requirements:** ND-1100 (BLE diagnostic relay command), ND-1101 (diagnostic ESP-NOW broadcast), ND-1102 (diagnostic reply reception), ND-1103 (diagnostic retry behavior), ND-1104 (diagnostic timeout handling), ND-1105 (diagnostic BLE response forwarding), ND-1106 (diagnostic radio state restoration).
+
+While in BLE pairing mode (before `NODE_PROVISION` is received), the node can act as a **dumb radio relay** for pairing-time diagnostics. The pairing tool uses this to measure the node→gateway RF link quality before committing to provisioning.
+
+**BLE command handling (ND-1100):**
+
+The node's BLE GATT handler processes `DIAG_RELAY_REQUEST` (envelope type `0x02`) on the Node Command characteristic:
+
+1. Parse the envelope body: `rf_channel` (1 byte), `payload_len` (2 bytes BE), `payload` (variable).
+2. Validate: `rf_channel` ∈ 1–13 and 0 < `payload_len` ≤ 250. On validation failure → respond with `DIAG_RELAY_RESPONSE(status=0x02)`.
+
+**ESP-NOW relay (ND-1101, ND-1102):**
+
+1. Save the current ESP-NOW channel (if any).
+2. Tune the ESP-NOW radio to `rf_channel`.
+3. Broadcast `payload` as a raw ESP-NOW frame to `FF:FF:FF:FF:FF:FF`.
+4. Listen for inbound ESP-NOW frames.
+5. Accept the first frame whose `msg_type` byte (header offset 2) = `0x85` (`DIAG_REPLY`).
+6. Ignore frames with any other `msg_type`.
+
+**Retry behavior (ND-1103):**
+
+Matches the WAKE cycle retry parameters:
+- Up to 3 retransmissions.
+- 200 ms backoff between attempts.
+- 2-second listen window per attempt.
+- A reply received during any attempt terminates the loop.
+
+**Response (ND-1104, ND-1105):**
+
+- On reply received: send `DIAG_RELAY_RESPONSE(status=0x00, payload=<raw DIAG_REPLY frame>)` via BLE indication.
+- On timeout after all retries: send `DIAG_RELAY_RESPONSE(status=0x01, payload_len=0)`.
+
+**Radio state restoration (ND-1106):**
+
+After the relay completes, restore the ESP-NOW channel to its previous value. The node remains in BLE pairing mode and can accept further diagnostic relay requests or proceed to `NODE_PROVISION`.
+
 ---
 
 ## 16  Shared protocol crate (`sonde-protocol`)

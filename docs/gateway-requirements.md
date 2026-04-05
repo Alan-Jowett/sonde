@@ -1847,6 +1847,133 @@ The `sonde-admin deploy` command SHOULD support a `--dry-run` flag that shows wh
 
 ---
 
+## 16  Pairing-time diagnostics
+
+### GW-1700  DIAG_REQUEST reception
+
+**Priority:** Must  
+**Source:** protocol.md §5.8, ble-pairing-protocol.md §6a
+
+**Description:**  
+The gateway MUST accept `DIAG_REQUEST` frames (`msg_type` `0x06`) on the ESP-NOW transport. `DIAG_REQUEST` frames are authenticated with a phone PSK — the gateway MUST use the same phone PSK lookup path as `PEER_REQUEST` (`msg_type` `0x05`).
+
+**Acceptance criteria:**
+
+1. `DIAG_REQUEST` frames are recognized and processed by the gateway.
+2. The `key_hint` in the frame header is used to look up non-revoked phone PSK candidates.
+3. AES-256-GCM decryption is attempted with each candidate phone PSK.
+4. Frames that fail decryption are silently discarded.
+
+---
+
+### GW-1701  DIAG_REQUEST session bypass
+
+**Priority:** Must  
+**Source:** protocol.md §7.2
+
+**Description:**  
+The gateway MUST accept `DIAG_REQUEST` frames without requiring an active node session. The diagnostic is pre-provisioning — the node sending the frame is not yet registered. The `nonce` field in the header is a random value used only for request-reply binding.
+
+**Acceptance criteria:**
+
+1. `DIAG_REQUEST` frames are accepted from unknown sender MACs (no session required).
+2. No session state is created or modified by processing a `DIAG_REQUEST`.
+3. Replay protection is not enforced for `DIAG_REQUEST` (there is no session to track sequence numbers against).
+
+---
+
+### GW-1702  RSSI measurement
+
+**Priority:** Must  
+**Source:** protocol.md §5.9, modem-protocol.md §4.4
+
+**Description:**  
+When processing a `DIAG_REQUEST` with `diagnostic_type` = `0x01` (`DIAG_RSSI`), the gateway MUST include the RSSI of the received frame in the `DIAG_REPLY`. The RSSI is obtained from the modem's `RECV_FRAME` message, which includes the signal strength measured by the modem's ESP-NOW radio.
+
+**Acceptance criteria:**
+
+1. The RSSI value from the `RECV_FRAME` that carried the `DIAG_REQUEST` is captured and included in the reply.
+2. The RSSI value is an `i8` representing dBm.
+3. If the modem does not provide RSSI (e.g., USB loopback transport), the gateway logs a warning and uses a sentinel value of `0` dBm.
+
+---
+
+### GW-1703  Signal quality assessment
+
+**Priority:** Must  
+**Source:** protocol.md §5.9
+
+**Description:**  
+The gateway MUST assess the RSSI value against configurable thresholds and include a `signal_quality` field in the `DIAG_REPLY`: `0` = good, `1` = marginal, `2` = bad.
+
+Default thresholds:
+
+| Assessment | RSSI range |
+|---|---|
+| Good (`0`) | ≥ −60 dBm |
+| Marginal (`1`) | −60 to −75 dBm (exclusive of −60, inclusive of −75) |
+| Bad (`2`) | < −75 dBm |
+
+**Acceptance criteria:**
+
+1. The `signal_quality` field is set based on the measured RSSI and the configured thresholds.
+2. Threshold values are configurable (see GW-1705).
+3. The assessment uses the default thresholds listed above when no custom configuration is provided.
+
+---
+
+### GW-1704  DIAG_REPLY construction
+
+**Priority:** Must  
+**Source:** protocol.md §5.9
+
+**Description:**  
+The gateway MUST construct a `DIAG_REPLY` frame (`msg_type` `0x85`) encrypted with the same `phone_psk` that was used to decrypt the `DIAG_REQUEST`. The `nonce` field in the reply header MUST echo the `nonce` from the request, binding the reply to the request. The `key_hint` in the reply header MUST be the phone's `key_hint`.
+
+CBOR payload: `{ 1: diagnostic_type, 2: rssi_dbm, 3: signal_quality }`.
+
+**Acceptance criteria:**
+
+1. The `DIAG_REPLY` frame is encrypted with the same `phone_psk` used for decryption.
+2. The `nonce` in the reply header echoes the request nonce.
+3. The `key_hint` matches the phone's key hint.
+4. The CBOR payload contains all three required fields with correct types.
+5. The reply is sent via the modem, addressed to the sender MAC from the `RECV_FRAME`.
+
+---
+
+### GW-1705  Configurable RSSI thresholds
+
+**Priority:** Should  
+**Source:** protocol.md §5.9
+
+**Description:**  
+The gateway SHOULD support configurable RSSI thresholds for the signal quality assessment. Thresholds are specified as two `i8` values: `good_threshold` (default: −60 dBm) and `bad_threshold` (default: −75 dBm). RSSI ≥ `good_threshold` → good; RSSI < `bad_threshold` → bad; otherwise → marginal.
+
+**Acceptance criteria:**
+
+1. RSSI thresholds can be set via the gateway configuration file.
+2. Default values are used when no configuration is provided.
+3. The gateway validates that `good_threshold` > `bad_threshold` at startup and logs an error if not.
+
+---
+
+### GW-1706  Diagnostic logging
+
+**Priority:** Must  
+**Source:** GW-1307
+
+**Description:**  
+The gateway MUST log `DIAG_REQUEST` reception and `DIAG_REPLY` transmission at `INFO` level, including: the sender MAC, the phone `key_hint`, the measured RSSI, and the signal quality assessment. PSK values MUST NOT be logged (consistent with GW-1307).
+
+**Acceptance criteria:**
+
+1. `DIAG_REQUEST` reception is logged at `INFO` level with sender MAC and key_hint.
+2. `DIAG_REPLY` transmission is logged at `INFO` level with RSSI and signal quality.
+3. No PSK material appears in any log entry.
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Priority |
@@ -1955,3 +2082,10 @@ The `sonde-admin deploy` command SHOULD support a `--dry-run` flag that shows wh
 | GW-1602 | CLI — bundle undeploy | Must |
 | GW-1603 | CLI — bundle validate | Must |
 | GW-1604 | Deploy dry-run mode | Should |
+| GW-1700 | DIAG_REQUEST reception | Must |
+| GW-1701 | DIAG_REQUEST session bypass | Must |
+| GW-1702 | RSSI measurement | Must |
+| GW-1703 | Signal quality assessment | Must |
+| GW-1704 | DIAG_REPLY construction | Must |
+| GW-1705 | Configurable RSSI thresholds | Should |
+| GW-1706 | Diagnostic logging | Must |

@@ -33,12 +33,15 @@ use esp32_nimble::{
 use log::{info, warn};
 
 use crate::ble_pairing::{
-    encode_node_ack, handle_node_provision, is_mtu_acceptable, parse_ble_envelope,
-    parse_node_provision, BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
+    do_diag_relay, encode_diag_relay_response, encode_node_ack, handle_diag_relay_request,
+    handle_node_provision, is_mtu_acceptable, parse_ble_envelope, parse_node_provision,
+    BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
+use crate::esp_transport::EspNowTransport;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
+use sonde_protocol::BLE_DIAG_RELAY_REQUEST;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,12 +70,18 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// NODE_PROVISION triggers a factory reset before writing new credentials
 /// (ND-0917).
 ///
+/// `transport`: optional ESP-NOW transport for DIAG_RELAY_REQUEST support
+/// (ND-1100). When `Some`, diagnostic relay requests are forwarded over
+/// the radio with channel switching (ND-1101, ND-1106). When `None`,
+/// relay requests return `DIAG_RELAY_STATUS_CHANNEL_ERROR`.
+///
 /// Returns `Ok(())` when the BLE connection is terminated (the caller should
 /// reboot per ND-0907), or `Err` if BLE initialisation fails.
 pub fn run_ble_pairing_mode<S: PlatformStorage>(
     storage: &mut S,
     map_storage: &mut MapStorage,
     button_held: bool,
+    mut transport: Option<&mut EspNowTransport>,
 ) -> NodeResult<()> {
     let paired_on_entry = storage.read_key().is_some();
 
@@ -289,6 +298,72 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                             warn!("BLE: NODE_PROVISION parse error: {}", e);
                             None // silently discard
                         }
+                    }
+                }
+                Some((msg_type, body)) if msg_type == BLE_DIAG_RELAY_REQUEST => {
+                    match (handle_diag_relay_request(body), transport.as_deref_mut()) {
+                        (Ok(params), Some(t)) => {
+                            info!(
+                                "BLE: DIAG_RELAY_REQUEST rf_channel={} (ND-1100)",
+                                params.rf_channel
+                            );
+                            // Save current channel, switch, relay, restore (ND-1101, ND-1106).
+                            let mut orig_primary: u8 = 0;
+                            let mut orig_secondary: esp_idf_sys::wifi_second_chan_t = 0;
+                            let got_channel = unsafe {
+                                esp_idf_sys::esp_wifi_get_channel(
+                                    &mut orig_primary,
+                                    &mut orig_secondary,
+                                ) == esp_idf_sys::ESP_OK
+                            };
+                            if !got_channel {
+                                // Fall back to stored channel so we can still restore (ND-1106).
+                                orig_primary = storage.read_channel().unwrap_or(1);
+                                orig_secondary =
+                                    esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE;
+                                warn!(
+                                    "BLE: esp_wifi_get_channel failed, will restore to channel {}",
+                                    orig_primary
+                                );
+                            }
+                            let set_ok = unsafe {
+                                let rc = esp_idf_sys::esp_wifi_set_channel(
+                                    params.rf_channel,
+                                    esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE,
+                                );
+                                if rc != esp_idf_sys::ESP_OK {
+                                    warn!("BLE: failed to set Wi-Fi channel {} for DIAG relay: err={}", params.rf_channel, rc);
+                                }
+                                rc == esp_idf_sys::ESP_OK
+                            };
+                            if !set_ok {
+                                Some(encode_diag_relay_response(
+                                    sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
+                                    &[],
+                                ))
+                            } else {
+                                let response = do_diag_relay(t, &params);
+                                // Always restore channel (ND-1106).
+                                unsafe {
+                                    let rc = esp_idf_sys::esp_wifi_set_channel(
+                                        orig_primary,
+                                        orig_secondary,
+                                    );
+                                    if rc != esp_idf_sys::ESP_OK {
+                                        warn!("BLE: failed to restore Wi-Fi channel after DIAG relay: err={}", rc);
+                                    }
+                                }
+                                Some(response)
+                            }
+                        }
+                        (Ok(_), None) => {
+                            warn!("BLE: DIAG_RELAY_REQUEST but no transport available");
+                            Some(encode_diag_relay_response(
+                                sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
+                                &[],
+                            ))
+                        }
+                        (Err(error_response), _) => Some(error_response),
                     }
                 }
                 Some((msg_type, _)) => {

@@ -22,12 +22,14 @@ pub const MSG_GET_CHUNK: u8 = 0x02;
 pub const MSG_PROGRAM_ACK: u8 = 0x03;
 pub const MSG_APP_DATA: u8 = 0x04;
 pub const MSG_PEER_REQUEST: u8 = 0x05;
+pub const MSG_DIAG_REQUEST: u8 = 0x06;
 
 // msg_type codes (gateway -> node)
 pub const MSG_COMMAND: u8 = 0x81;
 pub const MSG_CHUNK: u8 = 0x82;
 pub const MSG_APP_DATA_REPLY: u8 = 0x83;
 pub const MSG_PEER_ACK: u8 = 0x84;
+pub const MSG_DIAG_REPLY: u8 = 0x85;
 
 // Command codes
 pub const CMD_NOP: u8 = 0x00;
@@ -69,3 +71,32 @@ pub const MAP_KEY_KEY_SIZE: u64 = 2;
 pub const MAP_KEY_VALUE_SIZE: u64 = 3;
 pub const MAP_KEY_MAX_ENTRIES: u64 = 4;
 pub const MAP_KEY_INITIAL_DATA: u64 = 5;
+
+// CBOR integer keys (DIAG_REQUEST / DIAG_REPLY -- separate keyspace)
+// Keys are scoped per msg_type — key 1 in DIAG_REQUEST (diagnostic_type)
+// is unrelated to key 1 in WAKE (firmware_abi_version).
+// DIAG_REQUEST: { 1: diagnostic_type }
+// DIAG_REPLY:   { 1: diagnostic_type, 2: rssi_dbm, 3: signal_quality }
+pub const DIAG_KEY_DIAGNOSTIC_TYPE: u64 = 1;
+pub const DIAG_KEY_RSSI_DBM: u64 = 2;
+pub const DIAG_KEY_SIGNAL_QUALITY: u64 = 3;
+
+// Diagnostic type codes
+pub const DIAG_TYPE_RSSI: u8 = 0x01;
+
+// Signal quality assessment codes
+pub const SIGNAL_QUALITY_GOOD: u8 = 0;
+pub const SIGNAL_QUALITY_MARGINAL: u8 = 1;
+pub const SIGNAL_QUALITY_BAD: u8 = 2;
+
+// BLE envelope message types (Node Command characteristic)
+pub const BLE_NODE_PROVISION: u8 = 0x01;
+pub const BLE_DIAG_RELAY_REQUEST: u8 = 0x02;
+pub const BLE_NODE_ACK: u8 = 0x81;
+pub const BLE_DIAG_RELAY_RESPONSE: u8 = 0x82;
+pub const BLE_ERROR: u8 = 0xFF;
+
+// DIAG_RELAY_RESPONSE status codes
+pub const DIAG_RELAY_STATUS_OK: u8 = 0x00;
+pub const DIAG_RELAY_STATUS_TIMEOUT: u8 = 0x01;
+pub const DIAG_RELAY_STATUS_CHANNEL_ERROR: u8 = 0x02;

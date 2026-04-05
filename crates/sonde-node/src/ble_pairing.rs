@@ -338,6 +338,136 @@ pub fn handle_node_provision<S: PlatformStorage>(
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostic relay (ble-pairing-protocol.md §6a, ND-1100 through ND-1106)
+// ---------------------------------------------------------------------------
+
+/// Parsed DIAG_RELAY_REQUEST parameters.
+pub struct DiagRelayParams {
+    pub rf_channel: u8,
+    pub payload: Vec<u8>,
+}
+
+/// Parse and validate a DIAG_RELAY_REQUEST BLE envelope body.
+///
+/// Returns `Ok(params)` on success, or `Err(encoded_error_response)` if
+/// the request is invalid (bad channel or payload size).
+pub fn handle_diag_relay_request(body: &[u8]) -> Result<DiagRelayParams, Vec<u8>> {
+    use sonde_protocol::{
+        decode_diag_relay_request, BLE_DIAG_RELAY_RESPONSE, DIAG_RELAY_STATUS_CHANNEL_ERROR,
+        MAX_FRAME_SIZE,
+    };
+
+    let (rf_channel, payload) = decode_diag_relay_request(body).map_err(|_| {
+        encode_ble_envelope(
+            BLE_DIAG_RELAY_RESPONSE,
+            &encode_diag_relay_status(DIAG_RELAY_STATUS_CHANNEL_ERROR),
+        )
+        .expect("error response fits")
+    })?;
+
+    if !(1..=13).contains(&rf_channel) || payload.is_empty() || payload.len() > MAX_FRAME_SIZE {
+        return Err(encode_ble_envelope(
+            BLE_DIAG_RELAY_RESPONSE,
+            &encode_diag_relay_status(DIAG_RELAY_STATUS_CHANNEL_ERROR),
+        )
+        .expect("error response fits"));
+    }
+
+    Ok(DiagRelayParams {
+        rf_channel,
+        payload: payload.to_vec(),
+    })
+}
+
+fn encode_diag_relay_status(status: u8) -> Vec<u8> {
+    sonde_protocol::encode_diag_relay_response(status, &[]).unwrap_or_default()
+}
+
+/// Encode a DIAG_RELAY_RESPONSE BLE envelope.
+pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Vec<u8> {
+    let body = sonde_protocol::encode_diag_relay_response(status, payload)
+        .unwrap_or_else(|_| encode_diag_relay_status(status));
+    encode_ble_envelope(sonde_protocol::BLE_DIAG_RELAY_RESPONSE, &body).unwrap_or_default()
+}
+
+/// Execute the diagnostic relay: broadcast on ESP-NOW, listen for DIAG_REPLY.
+///
+/// Retries up to 3 times with 200ms backoff and 2s listen window per attempt
+/// (matching WAKE retry parameters per ND-1103).
+///
+/// **Channel switching** (ND-1101): The caller is responsible for tuning the
+/// ESP-NOW radio to `params.rf_channel` before calling this function and
+/// restoring it afterwards (ND-1106). On ESP32, this is done in
+/// `esp_ble_pairing.rs` using `esp_wifi_set_channel()`. This function is
+/// platform-independent and operates on whatever channel the transport is
+/// currently configured for.
+pub fn do_diag_relay<T: crate::traits::Transport>(
+    transport: &mut T,
+    params: &DiagRelayParams,
+) -> Vec<u8> {
+    const DIAG_MAX_RETRIES: u32 = 3;
+    const DIAG_RETRY_DELAY_MS: u64 = 200;
+    const DIAG_LISTEN_TIMEOUT_MS: u32 = 2000;
+
+    for attempt in 0..=DIAG_MAX_RETRIES {
+        if attempt > 0 {
+            #[cfg(feature = "esp")]
+            std::thread::sleep(std::time::Duration::from_millis(DIAG_RETRY_DELAY_MS));
+            #[cfg(not(feature = "esp"))]
+            {
+                let _ = DIAG_RETRY_DELAY_MS; // avoid unused warning in tests
+            }
+        }
+
+        if transport.send(&params.payload).is_err() {
+            continue;
+        }
+
+        // Listen for DIAG_REPLY (msg_type 0x85 at header byte offset 2),
+        // ignoring other msg_types until the per-attempt listen window expires.
+        #[cfg(feature = "esp")]
+        {
+            let mut remaining_ms = DIAG_LISTEN_TIMEOUT_MS;
+            loop {
+                if remaining_ms == 0 {
+                    break;
+                }
+                let before = std::time::Instant::now();
+                match transport.recv(remaining_ms) {
+                    Ok(Some(raw)) => {
+                        if raw.len() >= 3
+                            && raw[sonde_protocol::OFFSET_MSG_TYPE]
+                                == sonde_protocol::MSG_DIAG_REPLY
+                        {
+                            return encode_diag_relay_response(
+                                sonde_protocol::DIAG_RELAY_STATUS_OK,
+                                &raw,
+                            );
+                        }
+                        let elapsed = before.elapsed().as_millis() as u32;
+                        remaining_ms = remaining_ms.saturating_sub(elapsed.max(1));
+                    }
+                    _ => break,
+                }
+            }
+        }
+        #[cfg(not(feature = "esp"))]
+        {
+            // In test builds, recv returns immediately; single attempt per retry.
+            if let Ok(Some(raw)) = transport.recv(DIAG_LISTEN_TIMEOUT_MS) {
+                if raw.len() >= 3
+                    && raw[sonde_protocol::OFFSET_MSG_TYPE] == sonde_protocol::MSG_DIAG_REPLY
+                {
+                    return encode_diag_relay_response(sonde_protocol::DIAG_RELAY_STATUS_OK, &raw);
+                }
+            }
+        }
+    }
+
+    encode_diag_relay_response(sonde_protocol::DIAG_RELAY_STATUS_TIMEOUT, &[])
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

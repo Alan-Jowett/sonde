@@ -145,7 +145,8 @@ pub fn decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeErro
     if payload_len > MAX_FRAME_SIZE {
         return Err(DecodeError::CborError(alloc::format!(
             "DIAG_RELAY_RESPONSE payload_len {} exceeds MAX_FRAME_SIZE {}",
-            payload_len, MAX_FRAME_SIZE
+            payload_len,
+            MAX_FRAME_SIZE
         )));
     }
     if body.len() < 3 + payload_len {
@@ -165,8 +166,8 @@ pub fn decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::constants::{BLE_DIAG_RELAY_REQUEST, BLE_DIAG_RELAY_RESPONSE};
+    use alloc::vec;
 
     #[test]
     fn round_trip() {

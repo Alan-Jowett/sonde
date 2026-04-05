@@ -1,0 +1,3 @@
+[submodule "prevail-rust"]
+	path = prevail-rust
+	url = https://github.com/elazarg/prevail-rust.git

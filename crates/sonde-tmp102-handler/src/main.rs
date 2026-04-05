@@ -250,10 +250,7 @@ fn main() {
                 Value::Integer(1.into()),
                 Value::Integer((MSG_TYPE_DATA_REPLY as i64).into()),
             ),
-            (
-                Value::Integer(2.into()),
-                Value::Integer(request_id.into()),
-            ),
+            (Value::Integer(2.into()), Value::Integer(request_id.into())),
             (Value::Integer(3.into()), Value::Bytes(vec![])),
         ];
         if let Err(e) = write_message(&mut stdout, reply) {

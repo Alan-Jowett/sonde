@@ -238,7 +238,7 @@ async fn do_provision_node(
 pub struct DiagnosticResult {
     /// Measured RSSI in dBm (typically −30 to −90).
     pub rssi_dbm: i8,
-    /// Signal quality: 0=good, 1=marginal, 2=bad, 255=unknown.
+    /// Signal quality: 0=good, 1=marginal, 2=bad.
     pub signal_quality: u8,
 }
 

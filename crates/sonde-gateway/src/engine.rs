@@ -261,7 +261,7 @@ impl Gateway {
             tracing::error!(
                 good,
                 bad,
-                "invalid RSSI thresholds (good must be > bad), using defaults (GW-1705)"
+                "invalid RSSI thresholds (good must be > bad), keeping existing values (GW-1705)"
             );
         }
     }

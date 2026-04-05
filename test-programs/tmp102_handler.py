@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 """
-tmp102_handler.py — Gateway handler for TMP102 temperature sensor.
+tmp102_handler.py ΓÇö Gateway handler for TMP102 temperature sensor.
 
 Receives APP_DATA via the sonde handler protocol (4-byte BE length +
 CBOR on stdin), decodes TMP102 payloads, and writes JSON records to
@@ -98,7 +98,7 @@ def main():
             f.write(json.dumps(record) + "\n")
 
         # Log to stderr (gateway captures handler stderr for diagnostics)
-        temp_str = f"{decoded['temperature_c']:.3f}°C" if decoded else "decode failed"
+        temp_str = f"{decoded['temperature_c']:.3f}┬░C" if decoded else "decode failed"
         print(f"[TMP102] {node_id}: {temp_str}", file=sys.stderr, flush=True)
 
         # Reply with empty DATA_REPLY so gateway knows we processed it

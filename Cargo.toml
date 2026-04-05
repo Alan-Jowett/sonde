@@ -11,12 +11,14 @@ members = [
     "crates/sonde-e2e",
     "crates/sonde-pair",
     "crates/sonde-pair-ui/src-tauri",
+    "crates/sonde-tmp102-handler",
 ]
 default-members = [
     "crates/sonde-protocol",
     "crates/sonde-gateway",
     "crates/sonde-admin",
     "crates/sonde-bundle",
+    "crates/sonde-tmp102-handler",
 ]
 
 # Firmware-specific release profile. Build with: cargo build --profile firmware

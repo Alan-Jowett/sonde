@@ -5434,6 +5434,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonde-tmp102-handler"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "serde_json",
+]
+
+[[package]]
 name = "soup3"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

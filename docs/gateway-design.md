@@ -1726,7 +1726,7 @@ impl RssiThresholds {
 }
 ```
 
-Thresholds are loaded from the gateway configuration file at startup. The gateway validates `good_threshold > bad_threshold` and logs an error if violated.
+Thresholds are configured at gateway startup via the CLI flags `--rssi-good-threshold` and `--rssi-bad-threshold`. The gateway validates `good_threshold > bad_threshold` and logs an error if violated.
 
 ### 21.5  DIAG_REPLY construction
 

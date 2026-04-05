@@ -404,6 +404,29 @@ mod tests {
     }
 
     #[test]
+    fn test_read_message_truncated_payload() {
+        // Valid 4-byte length prefix claiming 10 bytes, but only 3 bytes of payload
+        let mut data = vec![0x00, 0x00, 0x00, 0x0A]; // length = 10
+        data.extend_from_slice(&[0x01, 0x02, 0x03]); // only 3 bytes
+        let mut cursor = io::Cursor::new(data);
+        let result = read_message(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn test_read_message_exceeds_1mb_limit() {
+        // Length prefix claiming more than 1 MB
+        let length: u32 = 1_048_577; // 1 MB + 1
+        let mut data = Vec::new();
+        data.extend_from_slice(&length.to_be_bytes());
+        let mut cursor = io::Cursor::new(data);
+        let result = read_message(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn test_format_utc_epoch() {
         let ts = format_utc_now();
         assert!(ts.ends_with('Z'));

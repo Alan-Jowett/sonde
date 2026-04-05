@@ -33,10 +33,12 @@ use esp32_nimble::{
 use log::{info, warn};
 
 use crate::ble_pairing::{
-    encode_node_ack, handle_node_provision, is_mtu_acceptable, parse_ble_envelope,
-    parse_node_provision, BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
+    do_diag_relay, encode_diag_relay_response, encode_node_ack, handle_diag_relay_request,
+    handle_node_provision, is_mtu_acceptable, parse_ble_envelope, parse_node_provision,
+    BLE_MIN_ATT_MTU, BLE_MSG_NODE_PROVISION,
 };
 use crate::error::NodeResult;
+use crate::esp_transport::EspNowTransport;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
 use sonde_protocol::BLE_DIAG_RELAY_REQUEST;
@@ -68,12 +70,18 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// NODE_PROVISION triggers a factory reset before writing new credentials
 /// (ND-0917).
 ///
+/// `transport`: optional ESP-NOW transport for DIAG_RELAY_REQUEST support
+/// (ND-1100). When `Some`, diagnostic relay requests are forwarded over
+/// the radio with channel switching (ND-1101, ND-1106). When `None`,
+/// relay requests return `DIAG_RELAY_STATUS_CHANNEL_ERROR`.
+///
 /// Returns `Ok(())` when the BLE connection is terminated (the caller should
 /// reboot per ND-0907), or `Err` if BLE initialisation fails.
 pub fn run_ble_pairing_mode<S: PlatformStorage>(
     storage: &mut S,
     map_storage: &mut MapStorage,
     button_held: bool,
+    mut transport: Option<&mut EspNowTransport>,
 ) -> NodeResult<()> {
     let paired_on_entry = storage.read_key().is_some();
 
@@ -293,14 +301,41 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                     }
                 }
                 Some((msg_type, body)) if msg_type == BLE_DIAG_RELAY_REQUEST => {
-                    // TODO(ND-1100): Wire up diagnostic relay once ESP-NOW
-                    // transport is passed into run_ble_pairing_mode. Requires:
-                    // 1. Accept Transport parameter
-                    // 2. esp_wifi_set_channel() to params.rf_channel (ND-1101)
-                    // 3. Call handle_diag_relay_request + do_diag_relay
-                    // 4. Restore original channel (ND-1106)
-                    warn!("BLE: DIAG_RELAY_REQUEST received but relay not yet wired up");
-                    None
+                    match (handle_diag_relay_request(body), transport.as_deref_mut()) {
+                        (Ok(params), Some(t)) => {
+                            info!(
+                                "BLE: DIAG_RELAY_REQUEST rf_channel={} (ND-1100)",
+                                params.rf_channel
+                            );
+                            // Save current channel, switch, relay, restore (ND-1101, ND-1106).
+                            let mut orig_primary: u8 = 0;
+                            let mut orig_secondary: esp_idf_sys::wifi_second_chan_t = 0;
+                            unsafe {
+                                esp_idf_sys::esp_wifi_get_channel(
+                                    &mut orig_primary,
+                                    &mut orig_secondary,
+                                );
+                                let _ = esp_idf_sys::esp_wifi_set_channel(
+                                    params.rf_channel,
+                                    esp_idf_sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE,
+                                );
+                            }
+                            let response = do_diag_relay(t, &params);
+                            unsafe {
+                                let _ =
+                                    esp_idf_sys::esp_wifi_set_channel(orig_primary, orig_secondary);
+                            }
+                            Some(response)
+                        }
+                        (Ok(_), None) => {
+                            warn!("BLE: DIAG_RELAY_REQUEST but no transport available");
+                            Some(encode_diag_relay_response(
+                                sonde_protocol::DIAG_RELAY_STATUS_CHANNEL_ERROR,
+                                &[],
+                            ))
+                        }
+                        (Err(error_response), _) => Some(error_response),
+                    }
                 }
                 Some((msg_type, _)) => {
                     warn!(

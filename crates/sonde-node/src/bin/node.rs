@@ -128,7 +128,21 @@ fn main() {
             storage.read_key().is_none(),
             button_held
         );
-        match run_ble_pairing_mode(&mut storage, &mut map_storage, button_held) {
+
+        // Try to initialize ESP-NOW for diagnostic relay (ND-1100).
+        // If this fails, BLE pairing still works — just without RSSI diagnostics.
+        // Use stored channel if available; the relay handler switches to the
+        // requested rf_channel before broadcasting anyway.
+        let diag_channel = storage.read_channel().unwrap_or(1);
+        let mut diag_transport =
+            EspNowTransport::new(peripherals.modem, sysloop, nvs_partition, diag_channel).ok();
+
+        match run_ble_pairing_mode(
+            &mut storage,
+            &mut map_storage,
+            button_held,
+            diag_transport.as_mut(),
+        ) {
             Ok(()) => {
                 info!("BLE pairing mode exited — rebooting");
                 sleep_ctrl.reboot();

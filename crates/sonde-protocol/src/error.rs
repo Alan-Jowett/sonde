@@ -8,6 +8,7 @@ use core::fmt;
 pub enum EncodeError {
     FrameTooLarge,
     CborError(String),
+    InvalidParameter(String),
 }
 
 impl fmt::Display for EncodeError {
@@ -15,6 +16,7 @@ impl fmt::Display for EncodeError {
         match self {
             EncodeError::FrameTooLarge => write!(f, "frame exceeds maximum size"),
             EncodeError::CborError(msg) => write!(f, "CBOR encoding error: {}", msg),
+            EncodeError::InvalidParameter(msg) => write!(f, "invalid parameter: {}", msg),
         }
     }
 }
@@ -29,6 +31,7 @@ pub enum DecodeError {
     MissingField(u64),
     InvalidFieldType(u64),
     CborError(String),
+    InvalidParameter(String),
 }
 
 impl fmt::Display for DecodeError {
@@ -46,6 +49,7 @@ impl fmt::Display for DecodeError {
             DecodeError::MissingField(k) => write!(f, "missing required CBOR key: {}", k),
             DecodeError::InvalidFieldType(k) => write!(f, "invalid type for CBOR key: {}", k),
             DecodeError::CborError(msg) => write!(f, "CBOR decoding error: {}", msg),
+            DecodeError::InvalidParameter(msg) => write!(f, "invalid parameter: {}", msg),
         }
     }
 }

@@ -57,14 +57,14 @@ pub fn encode_ble_envelope(msg_type: u8, body: &[u8]) -> Option<Vec<u8>> {
 /// or `payload` exceeds `MAX_FRAME_SIZE`.
 pub fn encode_diag_relay_request(rf_channel: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError> {
     if !(1..=13).contains(&rf_channel) {
-        return Err(EncodeError::CborError(alloc::format!(
-            "invalid DIAG_RELAY_REQUEST parameter: rf_channel {} out of range 1-13",
+        return Err(EncodeError::InvalidParameter(alloc::format!(
+            "DIAG_RELAY_REQUEST rf_channel {} out of range 1-13",
             rf_channel
         )));
     }
     if payload.is_empty() {
-        return Err(EncodeError::CborError(
-            "invalid DIAG_RELAY_REQUEST parameter: payload must not be empty".into(),
+        return Err(EncodeError::InvalidParameter(
+            "DIAG_RELAY_REQUEST payload must not be empty".into(),
         ));
     }
     if payload.len() > MAX_FRAME_SIZE {
@@ -89,14 +89,14 @@ pub fn decode_diag_relay_request(body: &[u8]) -> Result<(u8, &[u8]), DecodeError
     }
     let rf_channel = body[0];
     if !(1..=13).contains(&rf_channel) {
-        return Err(DecodeError::CborError(alloc::format!(
+        return Err(DecodeError::InvalidParameter(alloc::format!(
             "rf_channel {} out of range 1-13",
             rf_channel
         )));
     }
     let payload_len = u16::from_be_bytes([body[1], body[2]]) as usize;
     if payload_len == 0 || payload_len > MAX_FRAME_SIZE {
-        return Err(DecodeError::CborError(alloc::format!(
+        return Err(DecodeError::InvalidParameter(alloc::format!(
             "payload_len {} out of range 1-{}",
             payload_len,
             MAX_FRAME_SIZE
@@ -117,8 +117,8 @@ pub fn decode_diag_relay_request(body: &[u8]) -> Result<(u8, &[u8]), DecodeError
 /// When `status` ≠ `DIAG_RELAY_STATUS_OK`, `payload` must be empty.
 pub fn encode_diag_relay_response(status: u8, payload: &[u8]) -> Result<Vec<u8>, EncodeError> {
     if status != crate::constants::DIAG_RELAY_STATUS_OK && !payload.is_empty() {
-        return Err(EncodeError::CborError(
-            "DIAG_RELAY_RESPONSE: payload must be empty for non-OK status".into(),
+        return Err(EncodeError::InvalidParameter(
+            "DIAG_RELAY_RESPONSE payload must be empty for non-OK status".into(),
         ));
     }
     if payload.len() > MAX_FRAME_SIZE {
@@ -143,7 +143,7 @@ pub fn decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeErro
     let status = body[0];
     let payload_len = u16::from_be_bytes([body[1], body[2]]) as usize;
     if payload_len > MAX_FRAME_SIZE {
-        return Err(DecodeError::CborError(alloc::format!(
+        return Err(DecodeError::InvalidParameter(alloc::format!(
             "DIAG_RELAY_RESPONSE payload_len {} exceeds MAX_FRAME_SIZE {}",
             payload_len,
             MAX_FRAME_SIZE
@@ -156,7 +156,7 @@ pub fn decode_diag_relay_response(body: &[u8]) -> Result<(u8, &[u8]), DecodeErro
         return Err(DecodeError::TooLong);
     }
     if status != crate::DIAG_RELAY_STATUS_OK && payload_len != 0 {
-        return Err(DecodeError::CborError(
+        return Err(DecodeError::InvalidParameter(
             "non-OK DIAG_RELAY_RESPONSE must have empty payload".into(),
         ));
     }

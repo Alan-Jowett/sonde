@@ -39,6 +39,7 @@ use crate::ble_pairing::{
 use crate::error::NodeResult;
 use crate::map_storage::MapStorage;
 use crate::traits::PlatformStorage;
+use sonde_protocol::BLE_DIAG_RELAY_REQUEST;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -290,6 +291,16 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                             None // silently discard
                         }
                     }
+                }
+                Some((msg_type, body)) if msg_type == BLE_DIAG_RELAY_REQUEST => {
+                    // TODO(ND-1100): Wire up diagnostic relay once ESP-NOW
+                    // transport is passed into run_ble_pairing_mode. Requires:
+                    // 1. Accept Transport parameter
+                    // 2. esp_wifi_set_channel() to params.rf_channel (ND-1101)
+                    // 3. Call handle_diag_relay_request + do_diag_relay
+                    // 4. Restore original channel (ND-1106)
+                    warn!("BLE: DIAG_RELAY_REQUEST received but relay not yet wired up");
+                    None
                 }
                 Some((msg_type, _)) => {
                     warn!(

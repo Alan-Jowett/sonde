@@ -1700,8 +1700,8 @@ The gateway handles `DIAG_REQUEST` frames (`msg_type` 0x06) from pre-provisionin
 The RSSI for the diagnostic reply comes from the modem's `RECV_FRAME` message. The existing `UsbModemTransport` already parses RSSI from each received frame (see §4.2). The diagnostic handler captures the RSSI that was associated with the `RECV_FRAME` carrying the `DIAG_REQUEST`.
 
 Implementation approach:
-- The `Transport::recv()` method returns `(FrameHeader, Vec<u8>, metadata)` where metadata includes `rssi: Option<i8>` and `sender_mac: [u8; 6]`.
-- The diagnostic handler reads `rssi` from the metadata. If `None` (e.g., loopback transport), uses a sentinel value of `0` dBm and logs a warning **(GW-1702)**.
+- The `UsbModemTransport::recv_with_rssi()` method returns `(Vec<u8>, PeerAddress, i8)` — the raw frame, sender address, and RSSI. The base `Transport::recv()` trait method returns `(Vec<u8>, PeerAddress)` without RSSI; `Gateway::process_frame()` delegates to `process_frame_with_rssi(raw, peer, None)` for transports without RSSI support.
+- The diagnostic handler reads `rssi` from the `process_frame_with_rssi` parameter. If `None` (e.g., loopback transport), uses a sentinel value of `0` dBm and logs a warning **(GW-1702)**.
 
 ### 21.4  Signal quality assessment
 

@@ -339,7 +339,10 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
                                 let response = do_diag_relay(t, &params);
                                 if restore_channel {
                                     unsafe {
-                                        let rc = esp_idf_sys::esp_wifi_set_channel(orig_primary, orig_secondary);
+                                        let rc = esp_idf_sys::esp_wifi_set_channel(
+                                            orig_primary,
+                                            orig_secondary,
+                                        );
                                         if rc != esp_idf_sys::ESP_OK {
                                             warn!("BLE: failed to restore Wi-Fi channel after DIAG relay: err={}", rc);
                                         }

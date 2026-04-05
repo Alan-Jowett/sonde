@@ -1254,14 +1254,14 @@ The `.deb` package (built by `installer/linux/build-deb.sh`) ships:
 
 **systemd unit file** (`sonde-gateway.service`):
 
-The unit runs as the `sonde` user with `SupplementaryGroups=dialout`, reads all runtime parameters (`SERIAL_PORT`, `DB_PATH`, `KEY_PROVIDER`, `MASTER_KEY_FILE`, `CHANNEL`) from `EnvironmentFile=/etc/sonde/environment`, and applies security hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/var/lib/sonde`). See `installer/linux/sonde-gateway.service` for the full unit definition.
+The unit runs as the `sonde` user with `SupplementaryGroups=dialout`, reads `SERIAL_PORT` from `EnvironmentFile=/etc/sonde/environment`, and includes `--master-key-file /var/lib/sonde/master-key.hex --generate-master-key` so the master key is auto-generated on first start (same pattern as the Windows MSI). Security hardening: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/var/lib/sonde`, `ReadOnlyPaths=/etc/sonde`. See `installer/linux/sonde-gateway.service` for the full unit definition.
 
 ### 18.5  Configuration file locations
 
 | Platform | Configuration | Database | Master key |
 |---|---|---|---|
 | Windows | `%ProgramData%\sonde\` | `%ProgramData%\sonde\gateway.db` | `%ProgramData%\sonde\master-key.hex` |
-| Linux (`.deb`) | `/etc/sonde/` | `/var/lib/sonde/gateway.db` | `/etc/sonde/master-key.hex` |
+| Linux (`.deb`) | `/etc/sonde/` | `/var/lib/sonde/gateway.db` | `/var/lib/sonde/master-key.hex` |
 | Linux (manual) | Operator-chosen | Operator-chosen | Operator-chosen |
 
 The MSI creates `%ProgramData%\sonde\` at install time (via the `ConfigGroup` component). The `.deb` `postinst` creates `/etc/sonde/` and `/var/lib/sonde/`. In both cases the directories are preserved on uninstall to avoid data loss.

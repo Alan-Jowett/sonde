@@ -1631,6 +1631,7 @@ The `.deb` package SHOULD include a systemd unit file and `postinst` / `prerm` s
 4. `dpkg -L sonde` lists `/lib/systemd/system/sonde-gateway.service` and `/etc/sonde/environment`.
 5. On package removal, the service is stopped and disabled; on upgrade, the service is stopped but not disabled.
 6. `/etc/sonde/environment` is listed in `conffiles` so `dpkg` prompts before overwriting operator edits.
+7. The systemd unit includes `--master-key-file /var/lib/sonde/master-key.hex` and `--generate-master-key` so the master key is generated automatically on first start without manual intervention.
 
 ---
 

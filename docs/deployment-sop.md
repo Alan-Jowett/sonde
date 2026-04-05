@@ -126,7 +126,8 @@ The `.deb` package:
 - Creates a `sonde` system user and group, and adds `sonde` to the `dialout` group (for serial access)
 - Installs a systemd service unit (`sonde-gateway.service`)
 - Creates `/etc/sonde/` (config) and `/var/lib/sonde/` (database, keys)
-- Enables and starts the service (it will fail until configured — see step 5)
+- Generates the master key automatically on first start (`--generate-master-key`)
+- Enables and starts the service
 
 ### Windows
 
@@ -158,7 +159,12 @@ msiexec /i .\installer\sonde-x86_64.msi MODEM_PORT=COM5 /quiet
 
 ### Linux
 
-Edit `/etc/sonde/environment` to set the modem serial port:
+The gateway generates its master key automatically on first start and
+stores it at `/var/lib/sonde/master-key.hex`. No manual key setup is
+required.
+
+If your modem serial port differs from the default (`/dev/ttyUSB0`),
+edit `/etc/sonde/environment`:
 
 ```sh
 sudo nano /etc/sonde/environment
@@ -168,34 +174,7 @@ sudo nano /etc/sonde/environment
 SERIAL_PORT=/dev/ttyACM0
 ```
 
-Generate a master key and add it to the service configuration:
-
-```sh
-# Atomically create the key file with restrictive permissions so the
-# key material is never world-readable, even transiently.
-sudo sh -c 'openssl rand -hex 32 | install -m 640 -o root -g sonde /dev/stdin /etc/sonde/master-key.hex'
-```
-
-Create a systemd override to add the master key file:
-
-```sh
-sudo systemctl edit sonde-gateway
-```
-
-Add the following (note: the blank `ExecStart=` line is required to
-clear the default before setting the new value):
-
-```ini
-[Service]
-ExecStart=
-ExecStart=/usr/local/bin/sonde-gateway \
-    --db /var/lib/sonde/gateway.db \
-    --port ${SERIAL_PORT} \
-    --key-provider file \
-    --master-key-file /etc/sonde/master-key.hex
-```
-
-Restart the service:
+Then restart the service:
 
 ```sh
 sudo systemctl restart sonde-gateway
@@ -209,6 +188,13 @@ journalctl -u sonde-gateway -n 30 --no-pager
 ```
 
 You should see `master key loaded` and `modem transport ready`.
+
+The gateway stores its database and master key under `/var/lib/sonde/`:
+
+| File | Purpose |
+|------|---------|
+| `gateway.db` | SQLite database (nodes, programs, sessions) |
+| `master-key.hex` | 64-hex-char master key (**back this up securely!**) |
 
 ### Windows
 
@@ -581,7 +567,7 @@ testing or `sonde_gateway=debug` for detailed diagnostics.
 | `non-ELF program images not accepted` | Release gateway rejects raw CBOR — submit ELF files |
 | Windows BLE pairing fails with "Not connected" | Stale Bluetooth cache — open Windows Settings → Bluetooth & devices → Devices, find the modem/node entry, click **Remove device**, then retry pairing from scratch |
 | `espflash` "port busy" error | Close any open serial monitor (e.g., `espflash monitor`, PuTTY) before flashing |
-| Gateway service won't start (Linux) | Check `journalctl -u sonde-gateway -n 30` — common causes: wrong serial port in `/etc/sonde/environment`, missing master key file |
+| Gateway service won't start (Linux) | Check `journalctl -u sonde-gateway -n 30` — common causes: wrong serial port in `/etc/sonde/environment`, cannot create master key file (check `/var/lib/sonde/` permissions) |
 | Gateway service won't start (Windows) | Check `%ProgramData%\sonde\gateway.log` and Event Viewer → Application log — common cause: modem COM port changed (re-run MSI or update service args) |
 | `NODE_ACK` indication warning in pairing tool | Non-fatal — the node is provisioned successfully. Verify with `sonde-admin node list` |
 | Node not responding after pairing | Verify the node's RF channel matches the modem/gateway channel (step 7). If you changed the modem channel after pairing, re-pair the node on the new channel |

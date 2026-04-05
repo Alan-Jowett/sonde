@@ -41,9 +41,13 @@ const MSG_TYPE_DATA: u64 = 0x01;
 const MSG_TYPE_DATA_REPLY: u64 = 0x81;
 
 /// CBOR integer keys for the handler protocol.
+///
+/// Keys 1–5 are used in DATA (gateway → handler). DATA_REPLY
+/// (handler → gateway) reuses keys 1–2 and uses key 3 for reply data.
 const KEY_MSG_TYPE: i64 = 1;
 const KEY_REQUEST_ID: i64 = 2;
 const KEY_NODE_ID: i64 = 3;
+const KEY_REPLY_DATA: i64 = 3;
 const KEY_DATA: i64 = 5;
 
 /// Look up a value by integer key in a CBOR map (represented as Vec of pairs).
@@ -247,11 +251,14 @@ fn main() {
 
         let reply = vec![
             (
-                Value::Integer(1.into()),
+                Value::Integer(KEY_MSG_TYPE.into()),
                 Value::Integer((MSG_TYPE_DATA_REPLY as i64).into()),
             ),
-            (Value::Integer(2.into()), Value::Integer(request_id.into())),
-            (Value::Integer(3.into()), Value::Bytes(vec![])),
+            (
+                Value::Integer(KEY_REQUEST_ID.into()),
+                Value::Integer(request_id.into()),
+            ),
+            (Value::Integer(KEY_REPLY_DATA.into()), Value::Bytes(vec![])),
         ];
         if let Err(e) = write_message(&mut stdout, reply) {
             eprintln!("[TMP102] write error: {e}");

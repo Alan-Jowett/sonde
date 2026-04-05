@@ -394,12 +394,21 @@ includes two reference handlers for TMP102 temperature sensors:
 - **Python** (`test-programs/tmp102_handler.py`) — requires `python3` and the
   `cbor2` pip package. Useful as a readable protocol example.
 
+Build the Rust handler before registering it:
+
+```sh
+cargo build -p sonde-tmp102-handler --release
+```
+
+The resulting binary is at `target/release/sonde-tmp102-handler`
+(`target\release\sonde-tmp102-handler.exe` on Windows).
+
 Use the admin CLI to add a handler while the gateway is running — no
 restart required:
 
 ```sh
 # Rust handler (recommended)
-sonde-admin handler add "*" sonde-tmp102-handler
+sonde-admin handler add "*" target/release/sonde-tmp102-handler
 
 # Python handler (alternative)
 sonde-admin handler add "*" python3 test-programs/tmp102_handler.py
@@ -409,12 +418,14 @@ The first argument is the program hash to match (or `"*"` for a
 catch-all that handles all programs). Additional arguments are passed
 to the handler command.
 
-On Windows, use the full path to the built executable or `python`
-instead of `python3`:
+On Windows:
 ```powershell
 sonde-admin handler add "*" .\target\release\sonde-tmp102-handler.exe
 sonde-admin handler add "*" python test-programs\tmp102_handler.py
 ```
+
+The handler writes `temperature_log.jsonl` relative to its working
+directory. Use `--working-dir` to control where output lands:
 
 **Optional flags:**
 - `--working-dir DIR` — set the handler's working directory

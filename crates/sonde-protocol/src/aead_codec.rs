@@ -197,7 +197,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test] // T-P010: GCM nonce construction
     fn nonce_construction_length() {
         let psk = [0x42u8; 32];
         let frame_nonce: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(&nonce[4..12], &frame_nonce);
     }
 
-    #[test]
+    #[test] // T-P011: AEAD encode/decode round-trip
     fn encode_decode_round_trip() {
         let hdr = FrameHeader {
             key_hint: 1,
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(plaintext, payload);
     }
 
-    #[test]
+    #[test] // T-P012: Tampered GCM tag rejected
     fn tampered_tag_fails() {
         let hdr = FrameHeader {
             key_hint: 1,
@@ -246,14 +246,14 @@ mod tests {
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
-    #[test]
+    #[test] // T-P013: Frame too short for header+tag
     fn too_short_frame() {
         let short = vec![0u8; MIN_FRAME_SIZE - 1];
         let err = decode_frame(&short).unwrap_err();
         assert!(matches!(err, DecodeError::TooShort));
     }
 
-    #[test]
+    #[test] // T-P014: Maximum payload fits within frame budget
     fn max_payload_fits() {
         let hdr = FrameHeader {
             key_hint: 0,
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(raw.len(), MAX_FRAME_SIZE);
     }
 
-    #[test]
+    #[test] // T-P015: Payload exceeding budget rejected
     fn payload_too_large() {
         let hdr = FrameHeader {
             key_hint: 0,
@@ -279,7 +279,7 @@ mod tests {
         assert!(matches!(err, EncodeError::FrameTooLarge));
     }
 
-    #[test]
+    #[test] // T-P016: Empty payload round-trip
     fn empty_payload_round_trip() {
         let hdr = FrameHeader {
             key_hint: 0,

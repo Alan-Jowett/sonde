@@ -971,9 +971,9 @@ impl Default for FrameDecoder {
 mod tests {
     use super::*;
 
-    // -- Round-trip tests --
+    // -- Round-trip tests (T-P080 through T-P082) --
 
-    #[test]
+    #[test] // T-P080: ModemMessage round-trip — RESET
     fn round_trip_reset() {
         let msg = ModemMessage::Reset;
         let frame = encode_modem_frame(&msg).unwrap();
@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(decoded, msg);
     }
 
-    #[test]
+    #[test] // T-P081: ModemMessage round-trip — SEND_FRAME
     fn round_trip_send_frame() {
         let msg = ModemMessage::SendFrame(SendFrame {
             peer_mac: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
@@ -992,7 +992,7 @@ mod tests {
         assert_eq!(decoded, msg);
     }
 
-    #[test]
+    #[test] // T-P082: ModemMessage round-trip — SET_CHANNEL
     fn round_trip_set_channel() {
         let msg = ModemMessage::SetChannel(6);
         let frame = encode_modem_frame(&msg).unwrap();
@@ -1111,7 +1111,7 @@ mod tests {
 
     // -- Frame envelope tests --
 
-    #[test]
+    #[test] // T-P083: Frame envelope structure
     fn frame_envelope_structure() {
         let msg = ModemMessage::SetChannel(6);
         let frame = encode_modem_frame(&msg).unwrap();
@@ -1141,14 +1141,14 @@ mod tests {
 
     // -- Error handling tests --
 
-    #[test]
+    #[test] // T-P084: Decode empty frame rejected
     fn decode_empty_frame() {
         let data = [0x00, 0x00]; // len = 0
         let err = decode_modem_frame(&data).unwrap_err();
         assert_eq!(err, ModemCodecError::EmptyFrame);
     }
 
-    #[test]
+    #[test] // T-P085: Decode oversized frame rejected
     fn decode_oversized_frame() {
         let data = [0x02, 0x01]; // len = 513, exceeds 512
         let err = decode_modem_frame(&data).unwrap_err();
@@ -1197,7 +1197,7 @@ mod tests {
 
     // -- FrameDecoder (streaming) tests --
 
-    #[test]
+    #[test] // T-P086: Streaming decoder — complete frame
     fn streaming_complete_frame() {
         let mut decoder = FrameDecoder::new();
         let frame = encode_modem_frame(&ModemMessage::GetStatus).unwrap();
@@ -1224,7 +1224,7 @@ mod tests {
         assert_eq!(msg, ModemMessage::SetChannel(3));
     }
 
-    #[test]
+    #[test] // T-P087: Streaming decoder — multiple frames
     fn streaming_multiple_frames() {
         let mut decoder = FrameDecoder::new();
         let f1 = encode_modem_frame(&ModemMessage::Reset).unwrap();
@@ -1295,7 +1295,7 @@ mod tests {
 
     // -- RSSI sign preservation test --
 
-    #[test]
+    #[test] // T-P088: RecvFrame with negative RSSI
     fn recv_frame_negative_rssi() {
         let msg = ModemMessage::RecvFrame(RecvFrame {
             peer_mac: [1, 2, 3, 4, 5, 6],
@@ -1313,7 +1313,7 @@ mod tests {
 
     // -- STATUS counter boundary test --
 
-    #[test]
+    #[test] // T-P089: Status with max counters
     fn status_max_counters() {
         let msg = ModemMessage::Status(ModemStatus {
             channel: 14,

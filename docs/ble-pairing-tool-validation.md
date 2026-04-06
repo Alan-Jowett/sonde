@@ -352,39 +352,7 @@ TestNode {
 
 ---
 
-### T-PT-202  Gateway authentication happy path (signature verification)
-
-> **RETIRED (issue #495).** Gateway authentication via Ed25519 signature verification removed; the simplified pairing flow relies on LESC Numeric Comparison for gateway identity assurance.
-
----
-
-### T-PT-203  Gateway authentication failure (bad signature)
-
-> **RETIRED (issue #495).** Ed25519 signature verification removed from the pairing protocol. LESC Numeric Comparison provides authentication.
-
----
-
-### T-PT-204  GW_INFO_RESPONSE timeout (45 s)
-
-> **RETIRED (issue #495).** `REQUEST_GW_INFO` / `GW_INFO_RESPONSE` messages removed from the pairing protocol.
-
----
-
-### T-PT-205  TOFU — first connection persists public key
-
-> **RETIRED (issue #495).** TOFU pinning of gateway public key removed; LESC Numeric Comparison replaces gateway identity verification.
-
----
-
-### T-PT-206  TOFU — mismatched public key rejected
-
-> **RETIRED (issue #495).** TOFU pinning of gateway public key removed from the pairing protocol.
-
----
-
-### T-PT-207  TOFU — operator can clear pinned identity
-
-> **RETIRED (issue #495).** TOFU identity pinning removed; no gateway public key is stored.
+> **T-PT-202 through T-PT-207 — RETIRED (issue #495).** Gateway Ed25519 authentication (T-PT-202, T-PT-203), `GW_INFO_RESPONSE` timeout (T-PT-204), and TOFU key pinning (T-PT-205, T-PT-206, T-PT-207) were removed when the pairing protocol was simplified to use BLE LESC Numeric Comparison for mutual authentication.
 
 ---
 
@@ -983,15 +951,7 @@ TestNode {
 
 ## 11  Cryptographic tests
 
-### T-PT-900  HKDF parameters correct for Phase 1 — RETIRED
-
-> **RETIRED (issue #495).** HKDF key derivation removed; the simplified pairing flow uses `phone_psk` directly as the AES-256-GCM key.
-
----
-
-### T-PT-901  HKDF parameters correct for Phase 2 — RETIRED
-
-> **RETIRED (issue #495).** HKDF key derivation removed; Phase 2 encryption uses `phone_psk` directly as the AES-256-GCM key.
+> **T-PT-900, T-PT-901 — RETIRED (issue #495).** HKDF key derivation tests removed; the simplified pairing flow uses `phone_psk` directly as the AES-256-GCM key.
 
 ---
 

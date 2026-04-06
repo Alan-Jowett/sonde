@@ -354,17 +354,12 @@ pub struct MockBleTransport {
 
 All cryptographic operations are implemented in `crypto.rs`.  Key material is wrapped in `zeroize::Zeroizing` throughout (PT-0304, PT-0408).
 
-### 6.1  Ed25519 signature verification — RETIRED
+### 6.1–6.3  RETIRED cryptographic operations
 
-> **RETIRED (issue #495, PR #628).** Gateway challenge–response authentication via Ed25519 is eliminated. BLE LESC Numeric Comparison provides mutual authentication. The `verify_gateway_signature()` function no longer exists.
-
-### 6.2  Ed25519 → X25519 conversion — RETIRED
-
-> **RETIRED (issue #495, PR #628).** Ed25519→X25519 key conversion and ECDH key agreement are eliminated. AES-256-GCM with pre-shared keys replaces all asymmetric cryptography in the pairing flow.
-
-### 6.3  X25519 ECDH key agreement — RETIRED
-
-> **RETIRED (issue #628).** X25519 ECDH key agreement and HKDF key derivation are no longer used. AES-256-GCM with pre-shared keys (PSK-direct) replaces all asymmetric cryptography in the pairing flow.
+> **RETIRED (issue #495, PR #628).** The following operations have been eliminated:
+> - **§6.1 Ed25519 signature verification** — Gateway challenge–response authentication replaced by BLE LESC Numeric Comparison.
+> - **§6.2 Ed25519 → X25519 conversion** — No asymmetric key conversion needed.
+> - **§6.3 X25519 ECDH key agreement / HKDF** — AES-256-GCM with pre-shared keys (PSK-direct) replaces all asymmetric cryptography.
 
 ### 6.4  AES-256-GCM encryption/decryption
 

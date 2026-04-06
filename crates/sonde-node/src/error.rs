@@ -6,7 +6,7 @@ use core::fmt;
 /// Errors produced by the node firmware.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeError {
-    /// HMAC verification failed on an inbound frame.
+    /// AEAD authentication failed (AES-256-GCM) on an inbound frame.
     AuthFailure,
     /// Echoed nonce/seq in response does not match the value we sent.
     ResponseBindingMismatch,
@@ -51,7 +51,7 @@ pub enum NodeError {
 impl fmt::Display for NodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NodeError::AuthFailure => write!(f, "HMAC verification failed"),
+            NodeError::AuthFailure => write!(f, "AEAD authentication failed (AES-256-GCM)"),
             NodeError::ResponseBindingMismatch => write!(f, "response binding mismatch"),
             NodeError::UnexpectedMsgType(t) => write!(f, "unexpected msg_type: 0x{:02x}", t),
             NodeError::MalformedPayload(msg) => write!(f, "malformed payload: {}", msg),

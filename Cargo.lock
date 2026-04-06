@@ -5304,6 +5304,7 @@ dependencies = [
  "sonde-node",
  "sonde-pair",
  "sonde-protocol",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

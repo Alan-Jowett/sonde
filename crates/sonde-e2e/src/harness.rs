@@ -126,6 +126,10 @@ pub struct WakeCycleStats {
     pub wake_nonces: Vec<u64>,
     /// `(msg_type, nonce)` for every frame the node sent.
     pub sent_frames: Vec<(u8, u64)>,
+    /// Raw bytes of captured outbound APP_DATA frames only.
+    pub sent_raw_frames: Vec<Vec<u8>>,
+    /// `msg_type` for every non-`None` response with a valid protocol header.
+    pub received_msg_types: Vec<u8>,
 }
 
 /// Lightweight handle representing a remote node.
@@ -251,6 +255,8 @@ impl NodeProxy {
             response_count: transport.response_count(),
             wake_nonces: transport.wake_nonces().to_vec(),
             sent_frames: transport.sent_frames().to_vec(),
+            sent_raw_frames: transport.sent_raw_frames().to_vec(),
+            received_msg_types: transport.received_msg_types().to_vec(),
         }
     }
 }
@@ -268,6 +274,8 @@ struct BridgeTransport {
     response_count: usize,
     wake_nonces: Vec<u64>,
     sent_frames: Vec<(u8, u64)>,
+    sent_raw_frames: Vec<Vec<u8>>,
+    received_msg_types: Vec<u8>,
     rt: tokio::runtime::Handle,
     tamper_outgoing: bool,
 }
@@ -281,6 +289,8 @@ impl BridgeTransport {
             response_count: 0,
             wake_nonces: Vec::new(),
             sent_frames: Vec::new(),
+            sent_raw_frames: Vec::new(),
+            received_msg_types: Vec::new(),
             rt: tokio::runtime::Handle::try_current()
                 .expect("BridgeTransport must be created inside a Tokio runtime"),
             tamper_outgoing: false,
@@ -304,6 +314,14 @@ impl BridgeTransport {
     fn sent_frames(&self) -> &[(u8, u64)] {
         &self.sent_frames
     }
+
+    fn received_msg_types(&self) -> &[u8] {
+        &self.received_msg_types
+    }
+
+    fn sent_raw_frames(&self) -> &[Vec<u8>] {
+        &self.sent_raw_frames
+    }
 }
 
 impl NodeTransport for BridgeTransport {
@@ -320,6 +338,11 @@ impl NodeTransport for BridgeTransport {
             if msg_type == sonde_protocol::MSG_WAKE {
                 self.wake_nonces.push(nonce);
             }
+            // Only capture APP_DATA raw frames to avoid copying bulk
+            // CHUNK data during program download.
+            if msg_type == sonde_protocol::MSG_APP_DATA {
+                self.sent_raw_frames.push(frame.to_vec());
+            }
         }
 
         let gateway = self.gateway.clone();
@@ -335,8 +358,12 @@ impl NodeTransport for BridgeTransport {
             self.rt.block_on(gateway.process_frame(&frame_vec, peer))
         });
 
-        if response.is_some() {
+        if let Some(ref resp) = response {
             self.response_count += 1;
+            if resp.len() >= sonde_protocol::HEADER_SIZE {
+                self.received_msg_types
+                    .push(resp[sonde_protocol::OFFSET_MSG_TYPE]);
+            }
         }
         self.pending_response = response;
         Ok(())

@@ -295,7 +295,7 @@ pub trait BleTransport: Send + Sync {
     /// is required for gateway connections (PT-0300) — a Just Works
     /// fallback MUST be treated as a connection failure.  Just Works
     /// is acceptable only for node provisioning connections.
-    /// Connection establishment MUST time out after 10 seconds (PT-1002).
+    /// Connection establishment MUST time out after 30 seconds (PT-1002).
     async fn connect(&self, device: &DeviceId) -> Result<u16, PairingError>;
 
     /// Disconnect from the currently connected device.

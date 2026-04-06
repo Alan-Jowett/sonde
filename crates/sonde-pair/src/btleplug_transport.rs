@@ -40,7 +40,7 @@ use crate::transport::BleTransport;
 use crate::types::{PairingMethod, ScannedDevice, BLE_MTU_MIN};
 
 /// BLE connection timeout (PT-1002).
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default MTU reported when the platform does not expose the negotiated value.
 ///
@@ -281,7 +281,7 @@ impl BleTransport for BtleplugTransport {
                 .find(|p| p.address() == target_addr)
                 .ok_or(PairingError::DeviceNotFound)?;
 
-            // Connect with a timeout (PT-1002: 10 s).
+            // Connect with a timeout (PT-1002: 30 s).
             tokio::time::timeout(CONNECT_TIMEOUT, peripheral.connect())
                 .await
                 .map_err(|_| PairingError::Timeout {

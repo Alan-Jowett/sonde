@@ -41,6 +41,7 @@ jobs:
   android:
     name: Android APK
     uses: ./.github/workflows/tauri-android.yml
+    secrets: inherit
 
   # ── Installer builds (depend on gateway binaries) ───────────────
   installer-linux:
@@ -177,7 +178,10 @@ jobs:
           cp artifacts/modem-firmware/flash_image.bin       release-assets/modem-flash_image.bin
           for f in artifacts/sonde-pair-windows/*; do cp -r "$f" release-assets/; done
           for f in artifacts/sonde-pair-linux/*;   do cp -r "$f" release-assets/; done
-          for f in artifacts/sonde-pair-android/*; do cp -r "$f" release-assets/; done
+          for f in artifacts/sonde-pair-android-debug/*; do cp -r "$f" release-assets/; done
+          if [ -d artifacts/sonde-pair-android-release ]; then
+            for f in artifacts/sonde-pair-android-release/*; do cp -r "$f" release-assets/; done
+          fi
           for f in artifacts/sonde-installer-linux/*;  do cp -r "$f" release-assets/; done
           for f in artifacts/sonde-installer-windows/*; do cp -r "$f" release-assets/; done
 
@@ -195,7 +199,8 @@ jobs:
           | ESP32-S3 Modem firmware | `modem-flash_image.bin` |
           | Desktop — Windows | `*.exe` |
           | Desktop — Linux | `*.deb` |
-          | Android APK | `*.apk` |
+          | Android APK (debug) | `*-debug.apk` |
+          | Android APK (release) | `*-release.apk` (when signing secrets configured) |
           | Installer — Windows | `sonde-x86_64.msi` |
           | Installer — Linux | `sonde_*_amd64.deb` |
 

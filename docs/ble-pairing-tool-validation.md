@@ -912,7 +912,7 @@ TestNode {
 2. Assert: `PHONE_REGISTERED` timeout = 30 s.
 3. Assert: `NODE_ACK` timeout = 5 s.
 4. Assert: BLE scan default timeout = 30 s.
-5. Assert: BLE connection establishment timeout = 10 s.
+5. Assert: BLE connection establishment timeout = 30 s.
 
 ---
 

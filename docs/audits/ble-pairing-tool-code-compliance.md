@@ -120,7 +120,7 @@
 |-----|-------|--------|-------------------|
 | PT-1000 | Transient BLE failure tolerance | ✅ | After any error, phase returns to "Error: …". UI allows restarting scan. Transport always disconnects on error paths. |
 | PT-1001 | No resource leaks on failure | ✅ | `pair_with_gateway` and `provision_node` both call `transport.disconnect().await.ok()` on every exit. `BtleplugTransport::Drop` attempts disconnect. GATT subscriptions cleaned up on disconnect. |
-| PT-1002 | Deterministic timeouts | ⚠️ **D10** | See **D10-003**. `GW_INFO_RESPONSE`: 5 s ✅. `PHONE_REGISTERED`: 30 s ✅. `NODE_ACK`: 5 s ✅. Scan: 30 s ✅. BLE connection: btleplug uses 10 s ✅, but Android uses **30 s** (spec says 10 s). |
+| PT-1002 | Deterministic timeouts | ✅ | **D10-003 RESOLVED** (issue #655). `GW_INFO_RESPONSE`: 45 s ✅. `PHONE_REGISTERED`: 30 s ✅. `NODE_ACK`: 5 s ✅. Scan: 30 s ✅. BLE connection: both platforms use 30 s ✅ (spec updated from 10 s to 30 s). |
 | PT-1003 | No implicit retries | ✅ | No protocol-level retry logic found. All failures are immediately reported. |
 | PT-1004 | Reusable core | ✅ | `sonde-pair` crate has no UI or platform deps. Used by `sonde-pair-ui` (Tauri frontend) and by the built-in test suite (148+ tests across modules). |
 
@@ -307,12 +307,10 @@ Several `PairingError` variants lack actionable guidance:
 
 ### D10-003: Android BLE connection timeout is 30 s, spec says 10 s (PT-1002)
 
-**Severity:** Low
-**Requirement:** PT-1002: "BLE connection establishment 10 s."
+**Severity:** Low — **RESOLVED** (issue #655)
+**Requirement:** PT-1002: "BLE connection establishment 30 s."
 
-`android_transport.rs` uses `CONNECT_TIMEOUT_MS = 30_000` (30 s), documented as including LESC bonding time. The spec says 10 s for connection establishment. The comment explains the 30 s budget covers "GATT connect, LESC Numeric Comparison bonding, MTU negotiation, and service discovery" — which is a reasonable engineering decision, but it deviates from the spec's 10 s value.
-
-**Recommendation:** Either update the spec to allow a longer budget for LESC bonding on Android, or split the timeout into connection (10 s) + bonding (additional 20 s).
+`android_transport.rs` uses `CONNECT_TIMEOUT_MS = 30_000` (30 s), documented as including LESC bonding time. PT-1002 has been updated from 10 s to 30 s to accommodate the LESC Numeric Comparison bonding flow, which requires human confirmation. Both `android_transport.rs` and `btleplug_transport.rs` now use 30 s consistently.
 
 ---
 
@@ -369,7 +367,7 @@ Several `PairingError` variants lack actionable guidance:
 | **P0** | D8-001 (LESC enforcement) | Add `PairingMethod` to `BleTransport` trait; verify on Android; reject Just Works |
 | **P1** | D10-002 (actionable errors) | Add operator guidance to all error message strings |
 | **P1** | D8-004 (verbose toggle) | Add runtime log-level toggle via `tracing_subscriber::reload` |
-| **P2** | D10-003 (Android timeout) | Reconcile spec timeout (10 s) with LESC bonding budget (30 s) |
+| ~~P2~~ | ~~D10-003 (Android timeout)~~ | ~~Reconcile spec timeout (10 s) with LESC bonding budget (30 s)~~ — **RESOLVED** (issue #655) |
 | **P2** | D8-002 (already-paired prompt) | Add `is_paired` check in UI before Phase 1 |
 | **P2** | D8-003 (phase granularity) | Add sub-phase callbacks to protocol functions |
 | **P3** | D8-005 (corruption UX) | Auto-offer store reset on corruption in UI |

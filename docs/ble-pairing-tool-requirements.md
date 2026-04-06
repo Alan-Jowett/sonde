@@ -756,7 +756,7 @@ BLE connections, GATT subscriptions, and platform BLE resources MUST be released
 **Source:** ble-pairing-protocol.md §3.4, §5, §6
 
 **Description:**  
-All timeouts MUST be deterministic and explicitly configured to the following values: `GW_INFO_RESPONSE` 45 s, `PHONE_REGISTERED` 30 s, `NODE_ACK` 5 s, BLE scan default 30 s, BLE connection establishment 10 s.
+All timeouts MUST be deterministic and explicitly configured to the following values: `GW_INFO_RESPONSE` 45 s, `PHONE_REGISTERED` 30 s, `NODE_ACK` 5 s, BLE scan default 30 s, BLE connection establishment 30 s.
 
 **Acceptance criteria:**
 

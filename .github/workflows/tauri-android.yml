@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sonde contributors
 #
-# Tauri Android APK CI: build sonde-pair-ui for Android (aarch64) and
-# upload the unsigned debug APK as a CI artifact for sideloading/testing.
+# Tauri Android APK CI: build sonde-pair-ui for Android (aarch64).
+# Produces a debug APK (always) and a signed release APK (when
+# signing secrets are configured). See docs/android-signing.md.
 
 name: Tauri Android APK
 
@@ -100,14 +101,62 @@ jobs:
         working-directory: crates/sonde-pair-ui
         run: cargo tauri android build --debug
 
-      # ------------------------------------------------------------------ #
-      # Upload artifact
-      # ------------------------------------------------------------------ #
-
-      - name: Upload APK
+      # Upload debug APK immediately so it's available even if the
+      # optional release build fails.
+      - name: Upload debug APK
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: sonde-pair-android
-          path: crates/sonde-pair-ui/src-tauri/gen/android/**/outputs/**/*.apk
+          name: sonde-pair-android-debug
+          path: crates/sonde-pair-ui/src-tauri/gen/android/**/outputs/**/debug/**/*.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      # ------------------------------------------------------------------ #
+      # Release build (conditional — requires all 4 signing secrets)
+      # ------------------------------------------------------------------ #
+
+      - name: Validate signing secrets
+        id: signing
+        run: |
+          if [ -n "$KEYSTORE" ] && [ -n "$STORE_PASS" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASS" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release APK skipped — signing secrets not configured"
+          fi
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Decode release keystore
+        if: steps.signing.outputs.available == 'true'
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE" | base64 --decode > /tmp/sonde-release.jks
+          chmod 600 /tmp/sonde-release.jks
+
+      - name: Build Android APK (release)
+        if: steps.signing.outputs.available == 'true'
+        working-directory: crates/sonde-pair-ui
+        env:
+          ORG_GRADLE_PROJECT_android.injected.signing.store.file: /tmp/sonde-release.jks
+          ORG_GRADLE_PROJECT_android.injected.signing.store.password: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_android.injected.signing.key.alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_android.injected.signing.key.password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: cargo tauri android build
+
+      - name: Clean up keystore
+        if: always()
+        run: rm -f /tmp/sonde-release.jks
+
+      - name: Upload release APK
+        if: steps.signing.outputs.available == 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sonde-pair-android-release
+          path: crates/sonde-pair-ui/src-tauri/gen/android/**/outputs/**/release/**/*.apk
           retention-days: 7
           if-no-files-found: error

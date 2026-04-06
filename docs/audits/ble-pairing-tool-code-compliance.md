@@ -120,7 +120,7 @@
 |-----|-------|--------|-------------------|
 | PT-1000 | Transient BLE failure tolerance | ✅ | After any error, phase returns to "Error: …". UI allows restarting scan. Transport always disconnects on error paths. |
 | PT-1001 | No resource leaks on failure | ✅ | `pair_with_gateway` and `provision_node` both call `transport.disconnect().await.ok()` on every exit. `BtleplugTransport::Drop` attempts disconnect. GATT subscriptions cleaned up on disconnect. |
-| PT-1002 | Deterministic timeouts | ✅ | **D10-003 RESOLVED** (issue #655). `GW_INFO_RESPONSE`: 45 s ✅. `PHONE_REGISTERED`: 30 s ✅. `NODE_ACK`: 5 s ✅. Scan: 30 s ✅. BLE connection: both platforms use 30 s ✅ (spec updated from 10 s to 30 s). |
+| PT-1002 | Deterministic timeouts | ✅ | **D10-003 RESOLVED** (issue #655). `GW_INFO_RESPONSE`: RETIRED / N/A (AEAD Phase 1 flow). `PHONE_REGISTERED`: 30 s ✅. `NODE_ACK`: 5 s ✅. Scan: 30 s ✅. BLE connection: both platforms use 30 s ✅ (spec updated from 10 s to 30 s). |
 | PT-1003 | No implicit retries | ✅ | No protocol-level retry logic found. All failures are immediately reported. |
 | PT-1004 | Reusable core | ✅ | `sonde-pair` crate has no UI or platform deps. Used by `sonde-pair-ui` (Tauri frontend) and by the built-in test suite (148+ tests across modules). |
 
@@ -305,7 +305,7 @@ Several `PairingError` variants lack actionable guidance:
 
 ---
 
-### D10-003: Android BLE connection timeout is 30 s, spec says 10 s (PT-1002)
+### D10-003: Android BLE connection timeout — RESOLVED (PT-1002)
 
 **Severity:** Low — **RESOLVED** (issue #655)
 **Requirement:** PT-1002: "BLE connection establishment 30 s."

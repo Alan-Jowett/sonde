@@ -119,7 +119,7 @@ tracing-test = "0.2"
 
 ### 4.2  Phase 1 state machine — Gateway pairing
 
-The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairing-protocol.md §5](ble-pairing-protocol.md).  It is implemented as an async function that takes a `BleTransport`, `PairingStore`, and `RngProvider` and returns `Result<PairingArtifacts, PairingError>`.
+The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairing-protocol.md §5](ble-pairing-protocol.md).  It is implemented as an async function that takes a `BleTransport`, `RngProvider`, `device_address`, `phone_label`, and an optional `progress` callback, and returns `Result<PairingArtifacts, PairingError>`.
 
 ```
 ┌─────────┐
@@ -130,34 +130,19 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 ┌─────────────────┐
 │  Connecting     │──── MTU < 247 ────► Error("MTU too low")
 └────┬────────────┘                      disconnect
-     │ MTU ≥ 247
-     ▼
-┌─────────────────────────┐
-│ Authenticating          │
-│ write REQUEST_GW_INFO   │
-│ (32-byte challenge)     │
-│ wait GW_INFO_RESPONSE   │──── timeout 45s ───► Error("timeout")
-│                         │──── bad signature ──► Error("auth failed")
-└────┬────────────────────┘                      disconnect
-     │ signature valid
-     ▼
-┌─────────────────┐
-│ TOFU Check      │──── key mismatch ──► Error("public key mismatch")
-└────┬────────────┘                      disconnect
-     │ first use → pin key; or key matches stored key
+     │ MTU ≥ 247, LESC Numeric Comparison
      ▼
 ┌─────────────────────────┐
 │ Registering             │
-│ generate ephemeral X25519│
+│ generate phone_psk      │
 │ write REGISTER_PHONE    │
-│ wait response           │──── timeout 30s ────► Error("timeout")
+│ (phone_psk ‖ label)     │
+│ wait PHONE_REGISTERED   │──── timeout 30s ────► Error("timeout")
 │                         │──── ERROR(0x02) ────► Error("window closed")
 │                         │──── ERROR(0x03) ────► Error("already paired")
-│                         │──── bad GCM tag ────► Error("decrypt failed")
 └────┬────────────────────┘                      disconnect
-     │ decrypt PHONE_REGISTERED
-     │ extract phone_psk, phone_key_hint, rf_channel
-     │ zero ephemeral key, shared secret, AES key
+     │ extract phone_key_hint, rf_channel
+     │ verify phone_key_hint matches computed hint
      ▼
 ┌─────────────────┐
 │  Persist        │ persist all artifacts to PairingStore
@@ -168,9 +153,9 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 
 **Key design decisions:**
 
-- TOFU check occurs *after* the challenge–response exchange.  The tool first authenticates the gateway via Ed25519 signature verification, then compares the received `gw_public_key` against any previously pinned key in the store.  On first use, the key is pinned; on subsequent connections, a mismatch is rejected.  This ordering ensures the gateway is live and holds the claimed private key before the TOFU decision is made (PT-0302).
+- BLE LESC Numeric Comparison provides mutual authentication — no asymmetric key exchange, no TOFU pinning (PT-0106, PT-0904).
 - No artifacts are persisted until the entire flow succeeds.  On any error, the BLE connection is released and the store is left unchanged (PT-0502).
-- Already-paired detection: if the store contains a `gw_public_key`, the tool warns the operator before starting Phase 1 and offers to proceed or cancel (PT-0601).
+- The `phone_key_hint` returned by the gateway is verified against `SHA-256(phone_psk)[30..32]` to confirm the gateway stored the correct PSK.
 
 ### 4.3  Phase 2 state machine — Node provisioning
 
@@ -194,10 +179,9 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 │ 2. Generate node_psk (CSPRNG)│
 │ 3. Derive node_key_hint     │
 │ 4. Build PairingRequest CBOR│
-│ 5. Encrypt with phone_psk   │
-│ 6. Encrypt with gw_public_key│
-│ 7. Check payload ≤ 202 bytes│──── too large ──► Error (before BLE)
-│ 8. Assemble NODE_PROVISION   │
+│ 5. AES-GCM encrypt payload  │
+│ 6. Check payload ≤ 202 bytes│──── too large ──► Error (before BLE)
+│ 7. Assemble NODE_PROVISION   │
 └────┬────────────────────────┘
      │
      ▼
@@ -370,37 +354,15 @@ pub struct MockBleTransport {
 
 All cryptographic operations are implemented in `crypto.rs`.  Key material is wrapped in `zeroize::Zeroizing` throughout (PT-0304, PT-0408).
 
-### 6.1  Ed25519 signature verification (Phase 1)
+### 6.1  Ed25519 signature verification — RETIRED
 
-Used to authenticate the gateway's `GW_INFO_RESPONSE` (PT-0301).
+> **RETIRED (issue #495, PR #628).** Gateway challenge–response authentication via Ed25519 is eliminated. BLE LESC Numeric Comparison provides mutual authentication. The `verify_gateway_signature()` function no longer exists.
 
-```rust
-/// Verify Ed25519 signature over (challenge ‖ gateway_id).
-pub fn verify_gateway_signature(
-    gw_public_key: &[u8; 32],
-    challenge: &[u8; 32],
-    gateway_id: &[u8; 16],
-    signature: &[u8; 64],
-) -> Result<(), PairingError>
-```
+### 6.2  Ed25519 → X25519 conversion — RETIRED
 
-Uses `ed25519_dalek::VerifyingKey::verify_strict()` to reject non-canonical signatures.
+> **RETIRED (issue #495, PR #628).** Ed25519→X25519 key conversion and ECDH key agreement are eliminated. AES-256-GCM with pre-shared keys replaces all asymmetric cryptography in the pairing flow.
 
-### 6.2  Ed25519 → X25519 conversion
-
-Used in both Phase 1 (decrypting `PHONE_REGISTERED`) and Phase 2 (encrypting pairing payload) (PT-0902).
-
-```rust
-/// Convert an Ed25519 public key to X25519 public key.
-/// Rejects low-order points (returns error).
-pub fn ed25519_to_x25519_public(
-    ed_public: &[u8; 32],
-) -> Result<x25519_dalek::PublicKey, PairingError>
-```
-
-Uses `curve25519_dalek::edwards::CompressedEdwardsY` → `to_montgomery()` conversion.  After conversion, checks that the resulting X25519 public key is not a low-order point (all-zero or small-order Curve25519 points).  Returns `PairingError::InvalidGatewayPublicKey` on failure.
-
-### 6.3  AES-256-GCM encryption/decryption — RETIRED (§6.3 renumbered)
+### 6.3  X25519 ECDH key agreement — RETIRED
 
 > **RETIRED (issue #628).** X25519 ECDH key agreement and HKDF key derivation are no longer used. AES-256-GCM with pre-shared keys (PSK-direct) replaces all asymmetric cryptography in the pairing flow.
 
@@ -462,9 +424,7 @@ All storage operations are behind the `PairingStore` trait (PT-0802).  This enab
 ```rust
 /// Pairing artifacts stored after successful Phase 1.
 pub struct PairingArtifacts {
-    pub gw_public_key: [u8; 32],
-    pub gateway_id: [u8; 16],
-    pub phone_psk: [u8; 32],
+    pub phone_psk: Zeroizing<[u8; 32]>,
     pub phone_key_hint: u16,
     pub rf_channel: u8,
     pub phone_label: String,
@@ -492,11 +452,9 @@ After successful Phase 1, the following artifacts are persisted (PT-0800):
 
 | Field | Size | Source |
 |-------|------|--------|
-| `gw_public_key` | 32 bytes | `GW_INFO_RESPONSE` |
-| `gateway_id` | 16 bytes | `GW_INFO_RESPONSE` |
-| `phone_psk` | 32 bytes | Decrypted from `PHONE_REGISTERED` |
-| `phone_key_hint` | 2 bytes | Decrypted from `PHONE_REGISTERED` |
-| `rf_channel` | 1 byte | Decrypted from `PHONE_REGISTERED` |
+| `phone_psk` | 32 bytes | Generated by tool, sent in `REGISTER_PHONE` |
+| `phone_key_hint` | 2 bytes | Received in `PHONE_REGISTERED` |
+| `rf_channel` | 1 byte | Received in `PHONE_REGISTERED` |
 | `phone_label` | Variable (max 64 bytes UTF-8) | Operator-supplied |
 
 **No node PSK is ever persisted** (PT-0804).  Node PSKs exist only in memory during Phase 2 and are zeroed after provisioning.
@@ -530,7 +488,7 @@ When a `PskProtector` is configured (e.g. the DPAPI protector on Windows or the 
 #### Android (`AndroidPairingStore`)
 
 - Backend: Android `EncryptedSharedPreferences` backed by the Android Keystore
-- Keys: `gw_public_key`, `gateway_id`, `phone_psk`, `phone_key_hint`, `rf_channel`, `phone_label`
+- Keys: `phone_psk`, `phone_key_hint`, `rf_channel`, `phone_label`
 - Accessed via JNI bridge from Rust (Tauri Mobile provides the JNI environment)
 - On corruption: clears the corrupted preferences and returns `PairingError::StoreCorrupted`
 
@@ -740,9 +698,9 @@ pub fn decode_envelope(data: &[u8]) -> Result<(u8, &[u8]), PairingError> {
 
 | Constant | Value | Direction | Service |
 |----------|-------|-----------|---------|
-| `REQUEST_GW_INFO` | `0x01` | Phone → GW | Gateway Command |
+| ~~`REQUEST_GW_INFO`~~ | ~~`0x01`~~ | ~~Phone → GW~~ | ~~Gateway Command~~ — **RETIRED** (issue #495) |
 | `REGISTER_PHONE` | `0x02` | Phone → GW | Gateway Command |
-| `GW_INFO_RESPONSE` | `0x81` | GW → Phone | Gateway Command |
+| ~~`GW_INFO_RESPONSE`~~ | ~~`0x81`~~ | ~~GW → Phone~~ | ~~Gateway Command~~ — **RETIRED** (issue #495) |
 | `PHONE_REGISTERED` | `0x82` | GW → Phone | Gateway Command |
 | `NODE_PROVISION` | `0x01` | Phone → Node | Node Command |
 | `NODE_ACK` | `0x81` | Node → Phone | Node Command |
@@ -817,9 +775,8 @@ Cryptographic operations and CBOR construction — testable with known test vect
 
 | Step | Module | What to build | Test with |
 |---|---|---|---|
-| P2.1 | `crypto.rs` (signature) | `verify_gateway_signature()`, `ed25519_to_x25519_public()` | T-PT-202, T-PT-203, T-PT-309 |
-| P2.2 | `crypto.rs` (AES-GCM) | `aes_gcm_encrypt()`, `aes_gcm_decrypt()`, `derive_key_hint()` | T-PT-307, T-PT-308, T-PT-902, T-PT-303 |
-| P2.3 | `cbor.rs` | `PairingRequest` CBOR construction with deterministic encoding (RFC 8949 §4.2) | T-PT-304, T-PT-903 |
+| P2.1 | `crypto.rs` (AES-GCM) | `aes_gcm_encrypt()`, `aes_gcm_decrypt()`, `derive_key_hint()` | T-PT-307, T-PT-308, T-PT-902, T-PT-303 |
+| P2.2 | `cbor.rs` | `PairingRequest` CBOR construction with deterministic encoding (RFC 8949 §4.2) | T-PT-304, T-PT-903 |
 
 **Exit criteria (P2):** All cryptographic operations pass known test vectors.  CBOR encoding is deterministic and matches precomputed reference vectors.  AES-GCM AAD is verified.
 
@@ -830,7 +787,7 @@ Connect foundation and crypto into the Phase 1 and Phase 2 state machines.
 | Step | Module | What to build | Test with |
 |---|---|---|---|
 | P3.1 | `discovery.rs` | Scan lifecycle (start, stop, timeout, stale eviction), device filtering by service UUID | T-PT-100 to T-PT-104 |
-| P3.2 | `phase1.rs` | Phase 1 state machine: connect → TOFU → authenticate → register → decrypt → persist | T-PT-200 to T-PT-213 |
+| P3.2 | `phase1.rs` | Phase 1 state machine: connect → register → persist (AEAD-only, no TOFU/ECDH) | T-PT-200 to T-PT-213 |
 | P3.3 | `phase2.rs` | Phase 2 state machine: prerequisite check → connect → build payload → provision → ACK | T-PT-300 to T-PT-315 |
 | P3.4 | Integration | Error handling, idempotency, security, non-functional tests | T-PT-400 to T-PT-402, T-PT-500 to T-PT-502, T-PT-700 to T-PT-703, T-PT-800 to T-PT-802 |
 

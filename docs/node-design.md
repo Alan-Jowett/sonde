@@ -32,7 +32,7 @@ The firmware is **uniform across all nodes** — application behavior is defined
 | Platform bindings | `esp-idf-hal` + `esp-idf-svc` | Full ESP-IDF feature access (ESP-NOW, deep sleep, hardware crypto, flash partitions) |
 | BPF interpreter | `sonde-bpf` — custom RFC 9669 interpreter with tagged registers and zero heap allocation |
 | CBOR | Via `sonde-protocol` (`ciborium`) | serde-compatible; matches protocol crate implementation |
-| AES-256-GCM | ESP-IDF hardware AES peripheral (implements `sonde-protocol::AeadProvider` trait) | Hardware-accelerated AEAD encryption and authentication |
+| AES-256-GCM | RustCrypto `aes-gcm` crate (pure-Rust, `no_std`) (implements `sonde-protocol::AeadProvider` trait) | Pure-Rust AES-256-GCM; `no_std`-compatible, implements `AeadProvider` trait |
 | SHA-256 | ESP-IDF hardware SHA peripheral | Hardware-accelerated; used for program hash verification |
 | RNG | ESP-IDF hardware TRNG | True random number generator; used for WAKE nonce |
 | Toolchain | Upstream Rust (C3) / `espup` (S3) | C3 is RISC-V (upstream); S3 is Xtensa (custom toolchain) |
@@ -188,7 +188,7 @@ let frame = sonde_protocol::encode_frame(
 );
 ```
 
-The hardware AES-GCM implementation wraps the ESP-IDF AES peripheral behind the `sonde_protocol::AeadProvider` trait. Total frame size is asserted ≤ 250 bytes (ND-0103).
+The AES-GCM implementation uses the RustCrypto `aes-gcm` crate behind the `sonde_protocol::AeadProvider` trait. Total frame size is asserted ≤ 250 bytes (ND-0103).
 
 ### 5.2  Frame verification (inbound)
 
@@ -726,7 +726,7 @@ pub trait AeadProvider {
 | Platform | Implementation |
 |---|---|
 | Gateway | `aes-gcm` crate (RustCrypto, software) |
-| Node | ESP-IDF hardware AES peripheral |
+| Node | RustCrypto `aes-gcm` crate |
 | Tests | Software implementation (same as gateway) |
 
 ### 16.3  `no_std` compatibility

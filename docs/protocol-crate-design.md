@@ -57,12 +57,14 @@ pub const MSG_WAKE: u8 = 0x01;
 pub const MSG_GET_CHUNK: u8 = 0x02;
 pub const MSG_PROGRAM_ACK: u8 = 0x03;
 pub const MSG_APP_DATA: u8 = 0x04;
+pub const MSG_PEER_REQUEST: u8 = 0x05;
 pub const MSG_DIAG_REQUEST: u8 = 0x06;
 
 // msg_type codes (gateway → node)
 pub const MSG_COMMAND: u8 = 0x81;
 pub const MSG_CHUNK: u8 = 0x82;
 pub const MSG_APP_DATA_REPLY: u8 = 0x83;
+pub const MSG_PEER_ACK: u8 = 0x84;
 pub const MSG_DIAG_REPLY: u8 = 0x85;
 
 // Command codes
@@ -87,6 +89,11 @@ pub const KEY_CHUNK_INDEX: u64 = 11;
 pub const KEY_CHUNK_DATA: u64 = 12;
 pub const KEY_STARTING_SEQ: u64 = 13;
 pub const KEY_TIMESTAMP_MS: u64 = 14;
+
+// CBOR integer keys (peer messages — separate keyspace, scoped to msg_type 0x05/0x84)
+pub const PEER_REQ_KEY_PAYLOAD: u64 = 1;
+pub const PEER_ACK_KEY_STATUS: u64 = 1;
+pub const PEER_ACK_KEY_PROOF: u64 = 2;
 
 // CBOR integer keys (diagnostic messages — separate keyspace, scoped to msg_type 0x06/0x85)
 pub const DIAG_KEY_DIAGNOSTIC_TYPE: u64 = 1;
@@ -120,6 +127,7 @@ pub const MAP_KEY_TYPE: u64 = 1;
 pub const MAP_KEY_KEY_SIZE: u64 = 2;
 pub const MAP_KEY_VALUE_SIZE: u64 = 3;
 pub const MAP_KEY_MAX_ENTRIES: u64 = 4;
+pub const MAP_KEY_INITIAL_DATA: u64 = 5;
 ```
 
 ---
@@ -159,11 +167,11 @@ pub trait AeadProvider {
     /// Encrypt `plaintext` with AES-256-GCM.
     /// Returns `ciphertext || 16-byte tag`.
     /// `nonce` is 12 bytes; `aad` is the additional authenticated data.
-    fn seal(&self, key: &[u8], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8>;
+    fn seal(&self, key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8>;
 
     /// Decrypt `ciphertext_and_tag` with AES-256-GCM.
     /// Returns the plaintext on success, or `None` if the tag check fails.
-    fn open(&self, key: &[u8], nonce: &[u8; 12], aad: &[u8], ciphertext_and_tag: &[u8]) -> Option<Vec<u8>>;
+    fn open(&self, key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], ciphertext_and_tag: &[u8]) -> Option<Vec<u8>>;
 }
 ```
 
@@ -263,6 +271,9 @@ pub enum NodeMessage {
     DiagRequest {
         diagnostic_type: u8,
     },
+    PeerRequest {
+        payload: Vec<u8>,
+    },
 }
 
 impl NodeMessage {
@@ -314,6 +325,10 @@ pub enum GatewayMessage {
         rssi_dbm: i8,
         signal_quality: u8,
     },
+    PeerAck {
+        status: u8,
+        proof: Vec<u8>,
+    },
 }
 
 impl GatewayMessage {
@@ -322,7 +337,28 @@ impl GatewayMessage {
 }
 ```
 
-### 6.3  `command_type` / `CommandPayload` consistency invariant
+### 6.3  Peer messages
+
+#### `PEER_REQUEST` (0x05) — Node → Gateway
+
+Carries the BLE pairing payload for gateway-mediated node onboarding.
+
+| CBOR key | Constant | Type | Description |
+|---|---|---|---|
+| 1 | `PEER_REQ_KEY_PAYLOAD` | `bstr` | Opaque BLE pairing payload bytes |
+
+#### `PEER_ACK` (0x84) — Gateway → Node
+
+Acknowledges a peer request.
+
+| CBOR key | Constant | Type | Description |
+|---|---|---|---|
+| 1 | `PEER_ACK_KEY_STATUS` | `u8` | Status code |
+| 2 | `PEER_ACK_KEY_PROOF` | `bstr` | Opaque proof bytes |
+
+These message types use a **separate CBOR keyspace** scoped to `msg_type` 0x05/0x84 — the same pattern as diagnostic messages (§12).
+
+### 6.4  `command_type` / `CommandPayload` consistency invariant
 
 The `command_type` field (CBOR key 4) in the COMMAND payload is the authoritative wire-format discriminator. It MUST match the `CommandPayload` variant in `GatewayMessage::Command`:
 
@@ -339,7 +375,7 @@ The `command_type` field (CBOR key 4) in the COMMAND payload is the authoritativ
 
 Because `command_type` is fully determined by the `CommandPayload` variant, the public `GatewayMessage::Command` API is defined in terms of the payload only; implementations may cache the derived `command_type` internally for pattern matching and logging, but callers do not read or write it directly.
 
-### 6.4  CBOR encoding rules
+### 6.5  CBOR encoding rules
 
 - All payloads are CBOR maps with integer keys (§3 constants).
 - Unknown keys in inbound messages are ignored (forward compatibility).
@@ -364,6 +400,10 @@ pub struct MapDef {
 pub struct ProgramImage {
     pub bytecode: Vec<u8>,
     pub maps: Vec<MapDef>,
+    /// Initial data for each map, parallel to `maps`.
+    /// Empty Vec means zero-filled. Carries ELF section content
+    /// (.rodata / .data) for global variable maps.
+    pub map_initial_data: Vec<Vec<u8>>,
 }
 ```
 

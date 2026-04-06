@@ -169,7 +169,7 @@ mod tests {
     use crate::constants::{BLE_DIAG_RELAY_REQUEST, BLE_DIAG_RELAY_RESPONSE};
     use alloc::vec;
 
-    #[test]
+    #[test] // T-P100: BLE envelope round-trip
     fn round_trip() {
         let body = [0x42u8; 10];
         let encoded = encode_ble_envelope(0x01, &body).unwrap();
@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(decoded, &body);
     }
 
-    #[test]
+    #[test] // T-P101: BLE envelope with empty body
     fn empty_body() {
         let encoded = encode_ble_envelope(0x81, &[]).unwrap();
         let (msg_type, body) = parse_ble_envelope(&encoded).unwrap();
@@ -186,17 +186,17 @@ mod tests {
         assert!(body.is_empty());
     }
 
-    #[test]
+    #[test] // T-P102: BLE envelope too short rejected
     fn too_short() {
         assert!(parse_ble_envelope(&[0x01, 0x00]).is_none());
     }
 
-    #[test]
+    #[test] // T-P103: BLE envelope truncated body rejected
     fn truncated() {
         assert!(parse_ble_envelope(&[0x01, 0x00, 0x04, 0xAA, 0xBB]).is_none());
     }
 
-    #[test]
+    #[test] // T-P104: BLE envelope trailing bytes rejected
     fn trailing_bytes() {
         assert!(parse_ble_envelope(&[0x01, 0x00, 0x02, 0xAA, 0xBB, 0xCC]).is_none());
     }

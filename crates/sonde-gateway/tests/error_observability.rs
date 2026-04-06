@@ -338,3 +338,134 @@ fn t1306_ac5_graceful_log_file_failure() {
         "error message should be non-empty for diagnostics"
     );
 }
+
+/// T-1306a: File sink writes to `<db-path>.log`.
+///
+/// Validates the path derivation and file creation logic used by the
+/// gateway's service-mode logging (`init_service_logging` in the binary).
+/// The actual tracing layer integration is binary-level and requires
+/// running the gateway in service mode; this test validates the
+/// underlying path derivation and file I/O that the binary depends on.
+#[test]
+fn t1306a_file_sink_path_derivation() {
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    // The gateway derives the log path as `<db-path>.log`.
+    let db_path = PathBuf::from("/var/lib/sonde/gateway.db");
+    let log_path = db_path.with_extension("log");
+    assert_eq!(
+        log_path,
+        PathBuf::from("/var/lib/sonde/gateway.log"),
+        "log file path must be <db-path> with .log extension"
+    );
+
+    // Verify the file can be created and written to (same OpenOptions
+    // as the gateway's file sink: create + append).
+    let tmp = tempfile::tempdir().unwrap();
+    let test_db = tmp.path().join("test.db");
+    let test_log = test_db.with_extension("log");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&test_log)
+        .expect("log file must be creatable at derived path");
+    writeln!(file, "test log entry").unwrap();
+    drop(file);
+
+    let contents = std::fs::read_to_string(&test_log).unwrap();
+    assert!(
+        contents.contains("test log entry"),
+        "written content must be readable from the log file"
+    );
+}
+
+/// T-1306b: ETW provider registered.
+///
+/// This test requires a Windows environment with ETW infrastructure
+/// and cannot be meaningfully automated without the `windows` crate.
+/// Marked `#[ignore]` — verify manually on Windows via:
+/// `logman query providers | findstr sonde-gateway`
+#[test]
+#[ignore = "requires Windows ETW infrastructure — verify manually"]
+#[cfg(windows)]
+fn t1306b_etw_provider_registered() {
+    // Manual verification: run `logman query providers` on Windows
+    // and confirm "sonde-gateway" appears in the provider list.
+}
+
+/// T-1306c: Runtime log-level reload.
+///
+/// Validates that the `tracing_subscriber::reload::Layer` mechanism
+/// correctly changes the active filter — events suppressed before
+/// reload appear after reload, and vice versa.
+///
+/// Uses ERROR→INFO transition (not DEBUG) because some workspace crates
+/// set `release_max_level_info`, and Cargo feature unification can
+/// statically disable DEBUG call sites.
+#[test]
+fn t1306c_runtime_log_level_reload() {
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::EnvFilter;
+
+    // Shared buffer to capture formatted log output.
+    let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let buf_clone = buf.clone();
+
+    // Create a reloadable filter layer starting at ERROR (suppresses INFO).
+    let initial = EnvFilter::new("error");
+    let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(initial);
+
+    let writer =
+        move || -> Box<dyn std::io::Write + Send> { Box::new(SharedWriter(buf_clone.clone())) };
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(writer)
+        .with_ansi(false);
+
+    let subscriber = tracing_subscriber::registry().with(filter).with(fmt_layer);
+
+    // Scope the subscriber to this test only (not global).
+    tracing::subscriber::with_default(subscriber, || {
+        // 1. INFO event should be suppressed at ERROR level.
+        tracing::info!("before_reload");
+        {
+            let locked = buf.lock().unwrap();
+            let output = String::from_utf8_lossy(&locked);
+            assert!(
+                !output.contains("before_reload"),
+                "INFO event must be suppressed at ERROR level"
+            );
+        }
+
+        // 2. Reload to INFO level.
+        let new_filter = EnvFilter::new("info");
+        reload_handle
+            .reload(new_filter)
+            .expect("reload must succeed");
+
+        // 3. INFO event should now appear.
+        tracing::info!("after_reload");
+        {
+            let locked = buf.lock().unwrap();
+            let output = String::from_utf8_lossy(&locked);
+            assert!(
+                output.contains("after_reload"),
+                "INFO event must appear after reload to INFO level"
+            );
+        }
+    });
+}
+
+/// Writer adapter that appends to a shared buffer.
+struct SharedWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

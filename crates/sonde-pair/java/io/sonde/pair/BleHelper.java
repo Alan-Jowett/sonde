@@ -257,35 +257,111 @@ public class BleHelper {
     // --- Permission checks -------------------------------------------------
 
     /**
-     * Verify that all BLE permissions required by the current API level have
-     * been granted.  Throws a descriptive exception listing the missing
-     * permissions so the Rust layer can surface an actionable error message.
+     * Return the list of BLE permissions required by the current API level
+     * that have not yet been granted.
      */
-    private void requireBlePermissions() throws Exception {
+    private List<String> getMissingBlePermissions() {
         List<String> missing = new ArrayList<>();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Android 12+ (API 31): need BLUETOOTH_SCAN and BLUETOOTH_CONNECT
             if (context.checkSelfPermission("android.permission.BLUETOOTH_SCAN")
                     != PackageManager.PERMISSION_GRANTED) {
-                missing.add("BLUETOOTH_SCAN");
+                missing.add("android.permission.BLUETOOTH_SCAN");
             }
             if (context.checkSelfPermission("android.permission.BLUETOOTH_CONNECT")
                     != PackageManager.PERMISSION_GRANTED) {
-                missing.add("BLUETOOTH_CONNECT");
+                missing.add("android.permission.BLUETOOTH_CONNECT");
             }
         } else {
             // Android 6–11: need ACCESS_FINE_LOCATION for BLE scanning
             if (context.checkSelfPermission("android.permission.ACCESS_FINE_LOCATION")
                     != PackageManager.PERMISSION_GRANTED) {
-                missing.add("ACCESS_FINE_LOCATION");
+                missing.add("android.permission.ACCESS_FINE_LOCATION");
             }
         }
 
+        return missing;
+    }
+
+    /**
+     * Request any missing BLE permissions at runtime via a transparent
+     * {@link PermissionActivity}.  Blocks until the user responds to the
+     * system dialog or all permissions are already granted.
+     *
+     * @throws Exception if the user denies the permissions or the request
+     *                   times out (30 s).
+     */
+    private void requestBlePermissions() throws Exception {
+        List<String> missing = getMissingBlePermissions();
+        if (missing.isEmpty()) return;
+
+        java.util.concurrent.CompletableFuture<Boolean> future =
+                new java.util.concurrent.CompletableFuture<>();
+        long nonce = PermissionActivity.nextNonce();
+
+        synchronized (PermissionActivity.class) {
+            if (PermissionActivity.pendingResult != null
+                    && !PermissionActivity.pendingResult.isDone()) {
+                throw new Exception("BLE permission request already in progress");
+            }
+            PermissionActivity.pendingResult = future;
+            PermissionActivity.activeNonce = nonce;
+        }
+
+        try {
+            Intent intent = new Intent(context, PermissionActivity.class);
+            intent.putExtra(PermissionActivity.EXTRA_PERMISSIONS,
+                    missing.toArray(new String[0]));
+            intent.putExtra(PermissionActivity.EXTRA_NONCE, nonce);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+
+            boolean granted;
+            try {
+                granted = future.get(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new Exception("BLE permission request was interrupted", e);
+            } catch (java.util.concurrent.TimeoutException e) {
+                throw new Exception("BLE permission request timed out", e);
+            } catch (java.util.concurrent.ExecutionException e) {
+                throw new Exception("BLE permission request failed", e);
+            }
+            if (!granted) {
+                List<String> names = new ArrayList<>();
+                for (String p : missing) {
+                    names.add(p.substring(p.lastIndexOf('.') + 1));
+                }
+                throw new Exception(
+                    "BLE permissions denied by user — grant "
+                    + String.join(", ", names) + " in Settings");
+            }
+        } finally {
+            synchronized (PermissionActivity.class) {
+                if (PermissionActivity.pendingResult == future) {
+                    PermissionActivity.pendingResult = null;
+                }
+            }
+        }
+    }
+
+    /**
+     * Verify that all BLE permissions required by the current API level have
+     * been granted.  Throws a descriptive exception listing the missing
+     * permissions so the Rust layer can surface an actionable error message.
+     */
+    private void requireBlePermissions() throws Exception {
+        List<String> missing = getMissingBlePermissions();
+
         if (!missing.isEmpty()) {
+            List<String> names = new ArrayList<>();
+            for (String p : missing) {
+                names.add(p.substring(p.lastIndexOf('.') + 1));
+            }
             throw new Exception(
                 "BLE permissions not granted — request these at runtime: "
-                + String.join(", ", missing));
+                + String.join(", ", names));
         }
     }
 
@@ -303,6 +379,7 @@ public class BleHelper {
      *                       (e.g. {@code "0000fe60-0000-1000-8000-00805f9b34fb"})
      */
     public void startScan(String serviceUuidStr) throws Exception {
+        requestBlePermissions();
         requireBlePermissions();
 
         BluetoothLeScanner scanner = adapter.getBluetoothLeScanner();
@@ -430,6 +507,7 @@ public class BleHelper {
      * @return the negotiated ATT MTU
      */
     public int connect(byte[] address, long timeoutMs) throws Exception {
+        requestBlePermissions();
         requireBlePermissions();
         disconnectInner();
 

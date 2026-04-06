@@ -464,6 +464,7 @@ pub enum DecodeError {
     TooLong,
     AuthenticationFailed,  // AES-256-GCM tag verification failed
     InvalidMsgType(u8),
+    InvalidCommandType(u8), // unrecognized command_type in GatewayMessage::Command
     MissingField(u64),     // CBOR key that was expected
     InvalidFieldType(u64), // CBOR key with wrong type
     CborError(String),

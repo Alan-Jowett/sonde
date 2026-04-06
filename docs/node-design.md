@@ -41,7 +41,7 @@ The firmware is **uniform across all nodes** — application behavior is defined
 
 ## 3  Module architecture
 
-The node firmware is divided into eleven functional modules arranged in two tiers. The upper tier handles the data path: Transport (ESP-NOW radio), Protocol Codec (frame encode/decode), Wake Cycle Engine (session state machine), and BPF Runtime (program execution). The lower tier provides platform services: HAL (I2C/SPI/GPIO/ADC buses), Key Store (PSK in dedicated flash partition), Program Store (A/B flash partitions), Map Storage (RTC SRAM), Auth (AEAD encryption/decryption and key-hint derivation), and BLE Pairing (LESC Just Works provisioning and PEER_REQUEST registration). A horizontal Sleep Manager spans the bottom of the firmware, managing deep sleep, wake intervals, and RTC memory. Data flows left-to-right in the upper tier; the Wake Cycle Engine coordinates all lower-tier modules.
+The node firmware is divided into twelve functional modules arranged in two tiers. The upper tier handles the data path: Transport (ESP-NOW radio), Protocol Codec (frame encode/decode), Wake Cycle Engine (session state machine), and BPF Runtime (program execution). The lower tier provides platform services: HAL (I2C/SPI/GPIO/ADC buses), Key Store (PSK in dedicated flash partition), Program Store (A/B flash partitions), Map Storage (RTC SRAM), Auth (AEAD encryption/decryption and key-hint derivation), Node AEAD (`AeadProvider` implementation), and BLE Pairing (LESC Just Works provisioning and PEER_REQUEST registration). A horizontal Sleep Manager spans the bottom of the firmware, managing deep sleep, wake intervals, and RTC memory. Data flows left-to-right in the upper tier; the Wake Cycle Engine coordinates all lower-tier modules.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -76,7 +76,8 @@ The node firmware is divided into eleven functional modules arranged in two tier
 | **Map Storage** | Sleep-persistent maps in RTC slow SRAM | ND-0603, ND-0606 |
 | **HAL** | I2C, SPI, GPIO, ADC bus access for BPF helpers | ND-0601 |
 | **Sleep Manager** | Deep sleep entry, wake interval, RTC memory management, GPIO sleep preparation | ND-0203, ND-1013 |
-| **Auth** | AES-256-GCM AEAD (hardware), nonce generation, response verification | ND-0300–0304 |
+| **node_aead** | AES-256-GCM `AeadProvider` implementation (pure-Rust `aes-gcm` crate, `no_std`-compatible) | ND-0300 |
+| **Auth** | AES-256-GCM AEAD via `node_aead` provider, nonce generation, response verification | ND-0300–0304 |
 | **BLE Pairing** | NimBLE stack, GATT provisioning service, PEER_REQUEST registration | ND-0900–0918 |
 
 ---

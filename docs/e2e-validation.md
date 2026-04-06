@@ -987,7 +987,8 @@ crates/sonde-e2e/
 ├── Cargo.toml          # depends on sonde-gateway, sonde-node, sonde-modem, sonde-protocol, sonde-pair
 └── tests/
     ├── harness.rs      # shared test setup (ChannelRadio, ChannelTransport, E2eNode, BLE pairing helpers, etc.)
-    └── e2e_tests.rs    # test cases T-E2E-001 through T-E2E-070 (T-E2E-080..083 are spec-only, not yet implemented)
+    ├── e2e_tests.rs    # test cases T-E2E-060..070, T-E2E-081, T-E2E-083
+    └── aead_e2e_tests.rs  # AEAD and handler routing tests: T-E2E-001..004, T-E2E-030..034
 ```
 
 ### 6.2  Async ↔ sync bridge

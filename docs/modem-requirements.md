@@ -575,7 +575,7 @@ The modem MUST start BLE advertising on `BLE_ENABLE` and stop advertising + disc
 **Source:** modem-protocol.md §4.15, §4.16
 
 **Description:**
-During BLE LESC Numeric Comparison pairing, the modem MUST send `BLE_PAIRING_CONFIRM` with the 6-digit passkey to the gateway and wait for `BLE_PAIRING_CONFIRM_REPLY` before accepting or rejecting the pairing. If no reply is received within 30 seconds, the modem MUST reject the pairing.
+During BLE LESC Numeric Comparison pairing, the modem MUST send `BLE_PAIRING_CONFIRM` with the 6-digit passkey to the gateway and wait for `BLE_PAIRING_CONFIRM_REPLY` before accepting or rejecting the pairing at the application level (see MD-0416 for the SMP-layer tentative accept model). If no reply is received within 30 seconds, the modem MUST reject the pairing.
 
 **Acceptance criteria:**
 
@@ -599,6 +599,23 @@ The modem MUST enforce a 60-second idle timeout on BLE connections before SMP pa
 1. A BLE client that connects and does not initiate pairing (no SMP progress to Numeric Comparison) within 60 s is disconnected by the modem.
 2. `BLE_DISCONNECTED` is sent to the gateway after the idle disconnect.
 3. If BLE is still enabled, advertising resumes after the idle disconnect.
+
+---
+
+### MD-0416  LESC tentative accept model
+
+**Priority:** Must
+**Source:** modem-design.md §15.2 (D9-5)
+
+**Description:**
+Because NimBLE's `on_confirm_pin` callback is synchronous and cannot block for the gateway's asynchronous `BLE_PAIRING_CONFIRM_REPLY`, the modem MUST accept the LESC pairing immediately at the BLE SMP layer to allow the BLE stack to proceed with key exchange, then defer the final authentication decision to the gateway via the passkey relay.  This refines MD-0414: the "wait for `BLE_PAIRING_CONFIRM_REPLY`" requirement in MD-0414 applies to the modem's application-level authorization decision, not to the synchronous SMP callback response.  The encrypted link is established before operator approval; the following mitigations MUST be in place:
+
+**Acceptance criteria:**
+
+1. `BleEvent::Connected` is deferred until the operator accepts the passkey via `BLE_PAIRING_CONFIRM_REPLY(0x01)`.
+2. GATT writes received before authentication are buffered (not processed) until the `authenticated` flag is set (see MD-0409 criterion 5).
+3. NVS bond persistence is disabled (`CONFIG_BT_NIMBLE_NVS_PERSIST=n`) so that tentatively accepted bonds are not persisted across reboots.
+4. On operator rejection (`BLE_PAIRING_CONFIRM_REPLY(0x00)`), the client is disconnected immediately.
 
 ---
 
@@ -758,6 +775,7 @@ When the modem encountersan error at an operator-visible boundary (BLE GATT oper
 | MD-0413 | BLE_ENABLE / BLE_DISABLE commands | Must |
 | MD-0414 | Numeric Comparison pin relay | Must |
 | MD-0415 | BLE idle timeout | Must |
+| MD-0416 | LESC tentative accept model | Must |
 | MD-0500 | ESP-NOW frame logging | Must |
 | MD-0501 | BLE lifecycle logging | Must |
 | MD-0502 | BLE GATT write logging | Must |

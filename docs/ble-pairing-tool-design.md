@@ -145,8 +145,8 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
      │ verify phone_key_hint matches computed hint
      ▼
 ┌─────────────────┐
-│  Persist        │ persist all artifacts to PairingStore
 │  Disconnect     │
+│  Return         │ return PairingArtifacts to caller
 │  Success        │
 └─────────────────┘
 ```
@@ -159,7 +159,7 @@ The Phase 1 state machine drives the gateway pairing flow defined in [ble-pairin
 
 ### 4.3  Phase 2 state machine — Node provisioning
 
-The Phase 2 state machine implements the node provisioning flow from [ble-pairing-protocol.md §6](ble-pairing-protocol.md).  It takes a `BleTransport`, `PairingStore`, `RngProvider`, and operator-supplied `node_id` and returns `Result<NodeProvisionResult, PairingError>`.
+The Phase 2 state machine implements the node provisioning flow from [ble-pairing-protocol.md §6](ble-pairing-protocol.md).  `provision_node()` takes a `BleTransport`, `PairingArtifacts` (from Phase 1), `RngProvider`, device address, operator-supplied `node_id`, sensor descriptors, and an optional `PinConfig`, and returns `Result<NodeProvisionResult, PairingError>`.
 
 ```
 ┌─────────────┐
@@ -328,7 +328,17 @@ The transport guarantees cleanup on all paths:
 - On error (connection drop, timeout, protocol error): the protocol layer calls `disconnect()`.  The transport releases resources even if the BLE connection is already lost (PT-1001).
 - Stale device eviction: during scanning, devices that stop advertising for > 10 s are removed from scan results (PT-0202).
 
-### 5.6  Mock BLE transport
+### 5.6  LESC enforcement
+
+After connecting, both `pair_with_gateway()` (Phase 1) and `provision_node()` (Phase 2) call `enforce_lesc()` to verify that the BLE pairing method meets security requirements (PT-0904, PT-0106).  Both phases connect to the **modem** (which supports LESC Numeric Comparison), not directly to the node.  The function queries `BleTransport::pairing_method()`:
+
+- **`NumericComparison`** — accepted (LESC Numeric Comparison confirmed).
+- **`None` (not observable)** — accepted (the OS enforced pairing; the transport cannot distinguish the method).
+- **`JustWorks`** or **`Unknown`** — rejected.  The transport is immediately disconnected and `PairingError::InsecurePairingMethod` is returned.
+
+This check runs before any protocol messages are exchanged, ensuring that an insecure BLE link is never used to transmit key material.
+
+### 5.7  Mock BLE transport
 
 A `MockBleTransport` is provided for testing (PT-1200).  It implements the `BleTransport` trait with:
 
@@ -412,32 +422,19 @@ All values above are wrapped in `Zeroizing<[u8; N]>` to ensure zeroing on drop e
 
 ## 7  Persistence
 
-### 7.1  `PairingStore` trait
+### 7.1  Pairing artifact persistence
 
-All storage operations are behind the `PairingStore` trait (PT-0802).  This enables platform-specific secure storage backends and in-memory mocks for testing.
+Pairing artifacts are returned as plain data from the core protocol functions (`pair_with_gateway()` and `provision_node()`).  The core crate does **not** define a `PairingStore` trait — persistence is caller-managed.  The Tauri UI layer (or any other consumer) is responsible for saving, loading, and clearing artifacts using whatever secure storage is appropriate for the platform (PT-0802).
+
+On Android, `AndroidPairingStore` in `android_store.rs` provides a concrete implementation backed by `EncryptedSharedPreferences` via a JNI bridge to the companion `SecureStore` Java class.
 
 ```rust
-/// Pairing artifacts stored after successful Phase 1.
+/// Pairing artifacts returned by Phase 1.
 pub struct PairingArtifacts {
     pub phone_psk: Zeroizing<[u8; 32]>,
     pub phone_key_hint: u16,
     pub rf_channel: u8,
     pub phone_label: String,
-}
-
-#[async_trait]
-pub trait PairingStore: Send + Sync {
-    /// Load pairing artifacts from storage.
-    /// Returns None if no pairing exists.
-    /// Returns Err on corruption or I/O failure.
-    async fn load(&self) -> Result<Option<PairingArtifacts>, PairingError>;
-
-    /// Persist pairing artifacts after successful Phase 1.
-    /// Overwrites any existing artifacts.
-    async fn save(&self, artifacts: &PairingArtifacts) -> Result<(), PairingError>;
-
-    /// Clear all pairing artifacts (operator-initiated reset).
-    async fn clear(&self) -> Result<(), PairingError>;
 }
 ```
 
@@ -866,8 +863,8 @@ No log event at any level may include key material: PSKs, ephemeral private keys
 |---|---|
 | §2 Technology choices | PT-0100, PT-0101, PT-0103, PT-1100 |
 | §3 Crate structure | PT-0102, PT-0103, PT-0104, PT-1004 |
-| §4 Architecture | PT-0301, PT-0302, PT-0303, PT-0304, PT-0400–PT-0408, PT-0502, PT-0600, PT-0601, PT-1002 |
-| §5 BLE transport | PT-0102, PT-0200–PT-0202, PT-0300, PT-0401, PT-1001, PT-1200 |
+| §4 Architecture | PT-0301, PT-0303, PT-0304, PT-0400–PT-0409, PT-0502, PT-0600, PT-0601, PT-1002 |
+| §5 BLE transport | PT-0102, PT-0200–PT-0202, PT-0300, PT-0401, PT-0904, PT-1001, PT-1200 |
 | §6 Cryptographic operations | PT-0301, PT-0304, PT-0402, PT-0404, PT-0405, PT-0408, PT-0900, PT-0901, PT-0902, PT-1100–PT-1103 |
 | §7 Persistence | PT-0800–PT-0804 |
 | §8 Error handling | PT-0500–PT-0502, PT-1000, PT-1003 |

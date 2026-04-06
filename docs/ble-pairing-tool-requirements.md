@@ -436,6 +436,22 @@ After a successful `NODE_PROVISION` write, the tool MUST zero `node_psk` from me
 
 ---
 
+### PT-0409  Pin configuration validation
+
+**Priority:** Must  
+**Source:** PT-1214 (board pin configuration), phase2.rs implementation
+
+**Description:**  
+Before provisioning, the tool MUST validate any pin configuration supplied by the operator.  GPIO pin numbers must be in range 0–21 (valid ESP32-C3 GPIOs), and the I²C SDA and SCL pins must not be identical.  Invalid configurations MUST be rejected before any BLE transmission.
+
+**Acceptance criteria:**
+
+1. A pin configuration with any GPIO number > 21 is rejected with an actionable error identifying the out-of-range pin.
+2. A pin configuration where SDA == SCL is rejected with an actionable error.
+3. A valid pin configuration (both pins in range, SDA ≠ SCL) is accepted.
+
+---
+
 ## 7  Error handling
 
 ### PT-0500  Error classification
@@ -1155,6 +1171,7 @@ When the pairing tool encounters an error at a user-facing boundary (BLE connect
 | PT-0406 | Encrypted payload size validation | Active |
 | PT-0407 | NODE_PROVISION transmission and acknowledgement | Active |
 | PT-0408 | Node PSK zeroing | Active |
+| PT-0409 | Pin configuration validation | Active |
 | PT-0500 | Error classification | Active |
 | PT-0501 | Actionable error messages | Active |
 | PT-0502 | No partial state on failure | Active |

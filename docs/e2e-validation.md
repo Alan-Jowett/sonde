@@ -232,6 +232,25 @@ impl E2eNode {
 
 ---
 
+#### T-E2E-002c  AEAD wake cycle with BPF APP_DATA
+
+**Validates:** GW-0600, ND-0300, ND-0602.
+
+**Preconditions:**
+1. Node registered with matching PSK.
+2. BPF program assigned that calls `send()` (helper 8).
+
+**Procedure:**
+1. Node completes AEAD wake cycle (WAKE → COMMAND → program download).
+2. BPF program executes and calls `send()` with a 2-byte blob.
+3. Node sends an AEAD-authenticated APP_DATA frame.
+
+**Assertions:**
+- `run_wake_cycle()` returns `Sleep { seconds: 60 }`.
+- Exactly one `MSG_APP_DATA` frame was sent by the node.
+
+---
+
 #### T-E2E-003  Wrong PSK rejected silently
 
 **Validates:** GW-0601 (wrong key → silent discard), ND-0301.
@@ -249,6 +268,27 @@ impl E2eNode {
 **Assertions:**
 - `run_wake_cycle()` returns `Sleep { seconds: 60 }` (retries exhausted).
 - Gateway sent zero response frames.
+
+---
+
+#### T-E2E-004  Tampered AEAD frame (silent discard)
+
+**Validates:** GW-0600 (GCM tag verification), ND-0300.
+
+**Preconditions:**
+1. Node registered with matching PSK.
+2. Tamper mode enabled on transport (bit-flip in ciphertext region).
+
+**Procedure:**
+1. Node sends WAKE with valid PSK.
+2. Transport flips a bit in the ciphertext before forwarding.
+3. Gateway receives frame, GCM authentication fails.
+4. Gateway silently discards the frame — no response.
+
+**Assertions:**
+- `run_wake_cycle()` returns `Sleep { seconds: 60 }` (retries exhausted).
+- Gateway sent zero response frames.
+- Gateway did not update `last_seen` or battery telemetry for the node.
 
 ---
 
@@ -900,7 +940,9 @@ impl E2eNode {
 | T-E2E-001 | GW-0100, GW-0102, GW-0103, ND-0200, ND-0201 |
 | T-E2E-002 | GW-0600, ND-0300, ND-0301 |
 | T-E2E-002b | GW-0600, ND-0300, ND-0301, ND-0304 |
+| T-E2E-002c | GW-0600, ND-0300, ND-0602 |
 | T-E2E-003 | GW-0601, GW-1002, ND-0301 |
+| T-E2E-004 | GW-0600, ND-0300 |
 | T-E2E-010 | GW-0201, GW-0300, GW-0302, ND-0500, ND-0501, ND-0506 |
 | T-E2E-011 | GW-0200 |
 | T-E2E-020 | GW-0203, GW-0803, ND-0202 |

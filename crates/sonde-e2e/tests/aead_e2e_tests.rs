@@ -63,7 +63,7 @@ fn make_program_from_bytecode(bytecode: &[u8]) -> (ProgramRecord, Vec<u8>) {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// T-E2E-050 — AEAD NOP wake cycle.
+/// T-E2E-001 — AEAD NOP wake cycle.
 ///
 /// A paired node with no pending commands completes a normal WAKE/COMMAND
 /// exchange over AES-256-GCM and returns to sleep at its configured
@@ -74,7 +74,7 @@ fn make_program_from_bytecode(bytecode: &[u8]) -> (ProgramRecord, Vec<u8>) {
 ///   compatible AES-256-GCM frames.
 /// - Gateway updates node telemetry after a successful AEAD exchange.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_050_nop_wake_cycle() {
+async fn t_e2e_001_nop_wake_cycle() {
     let env = E2eTestEnv::new();
     let psk = [0x50; 32];
     env.register_node("aead-nop", 1, psk).await;
@@ -100,13 +100,13 @@ async fn t_e2e_050_nop_wake_cycle() {
     );
 }
 
-/// T-E2E-050b — Consecutive AEAD wake cycles (state persistence).
+/// T-E2E-002b — Consecutive AEAD wake cycles (state persistence).
 ///
 /// Runs two AEAD wake cycles on the same `NodeProxy` to verify that
 /// persistent storage and monotonic RNG state work correctly across
 /// multiple AES-256-GCM exchanges.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_050b_consecutive_wake_cycles() {
+async fn t_e2e_002b_consecutive_wake_cycles() {
     let env = E2eTestEnv::new();
     let psk = [0x55; 32];
     env.register_node("aead-multi", 1, psk).await;
@@ -132,14 +132,13 @@ async fn t_e2e_050b_consecutive_wake_cycles() {
     );
 }
 
-/// T-E2E-051 — AEAD wake cycle with BPF APP_DATA.
+/// T-E2E-002c — AEAD wake cycle with BPF APP_DATA.
 ///
 /// Exercises the full AEAD wake cycle with a BPF program that calls the
-/// `send()` helper. The WAKE/COMMAND exchange uses AES-256-GCM; the BPF
-/// dispatch sends APP_DATA via the HMAC codec (this is the current design —
-/// BPF helpers have not yet been migrated to AEAD).
+/// `send()` helper. Both the WAKE/COMMAND exchange and the resulting
+/// `APP_DATA` dispatch use the AES-256-GCM AEAD frame path.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_051_app_data_fire_and_forget() {
+async fn t_e2e_002c_app_data_fire_and_forget() {
     use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
 
     let env = E2eTestEnv::new();
@@ -170,13 +169,13 @@ async fn t_e2e_051_app_data_fire_and_forget() {
     );
 }
 
-/// T-E2E-052 — AEAD wrong PSK (silent discard).
+/// T-E2E-003 — AEAD wrong PSK (silent discard).
 ///
 /// When the node's PSK does not match the gateway's record, the gateway
 /// cannot decrypt the AEAD frame and silently discards it. The node
 /// exhausts its retries and sleeps.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_052_wrong_psk_rejected() {
+async fn t_e2e_003_wrong_psk_rejected() {
     let env = E2eTestEnv::new();
     env.register_node("aead-wrong", 1, [0xAA; 32]).await;
 
@@ -202,13 +201,13 @@ async fn t_e2e_052_wrong_psk_rejected() {
     );
 }
 
-/// T-E2E-053 — AEAD tampered frame (silent discard).
+/// T-E2E-004 — AEAD tampered frame (silent discard).
 ///
 /// A bit-flip in the ciphertext region causes the GCM tag check to fail.
 /// The gateway silently discards the corrupted frame and the node receives
 /// no response, eventually exhausting retries.
 #[tokio::test(flavor = "multi_thread")]
-async fn t_e2e_053_tampered_frame_discarded() {
+async fn t_e2e_004_tampered_frame_discarded() {
     let env = E2eTestEnv::new();
     let psk = [0x53; 32];
     env.register_node("aead-tamper", 1, psk).await;
@@ -227,6 +226,10 @@ async fn t_e2e_053_tampered_frame_discarded() {
     assert!(
         record.last_seen.is_none(),
         "`last_seen` should be None — gateway silently discarded the tampered WAKE"
+    );
+    assert_eq!(
+        record.last_battery_mv, None,
+        "battery should not be updated on tampered frame"
     );
 }
 

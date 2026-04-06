@@ -1989,9 +1989,9 @@ Test functions in `crates/sonde-node/src/` are unit tests; those in `crates/sond
 | T-N207 | `test_unknown_command_treated_as_nop` | wake_cycle.rs |
 | T-N208 | `test_set_next_wake_shorter`, `test_set_next_wake_equal` *(partial — unit tests cover SleepManager clamping logic; the full e2e set_next_wake → base-interval-restore cycle is not yet tested)* | sleep.rs |
 | T-N209 | `test_set_next_wake_longer_clamped` | sleep.rs |
-| T-N300 | `wake_command_exchange_round_trip`, `t_e2e_050_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
-| T-N301 | `t_e2e_052_wrong_psk_rejected`, `t_e2e_053_tampered_frame_discarded` | aead_e2e_tests.rs |
-| T-N302 | `wake_command_exchange_round_trip`, `t_e2e_050_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
+| T-N300 | `wake_command_exchange_round_trip`, `t_e2e_001_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
+| T-N301 | `t_e2e_003_wrong_psk_rejected`, `t_e2e_004_tampered_frame_discarded` | aead_e2e_tests.rs |
+| T-N302 | `wake_command_exchange_round_trip`, `t_e2e_001_nop_wake_cycle` | wake_cycle.rs, aead_e2e_tests.rs |
 | T-N303 | `test_wrong_nonce_discarded`, `test_send_recv_app_data_wrong_nonce` | wake_cycle.rs |
 | T-N304 | `test_wrong_seq_on_chunk_discarded` | wake_cycle.rs |
 | T-N305 | `test_sequence_increment_correctness`, `t_e2e_041_sequence_numbers` | wake_cycle.rs, e2e_tests.rs |

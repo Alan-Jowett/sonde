@@ -1352,6 +1352,52 @@ mod tests {
             assert!(!wake_payload.is_empty());
         }
 
+        /// T-N702: Response timeout — 200ms boundary.
+        ///
+        /// First recv returns None (simulating response delayed beyond
+        /// RESPONSE_TIMEOUT_MS). Node retries; second recv succeeds.
+        /// Validates that recv is called with the 200ms timeout and
+        /// that the retry mechanism recovers.
+        #[test]
+        fn t_n702_response_timeout_boundary() {
+            let psk = [0x42u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+            let identity = NodeIdentity { key_hint, psk };
+            let clock = MockClock;
+            let mut transport = MockTransport::new();
+
+            // First attempt: timeout (None).
+            transport.queue_response(None);
+            // Retry: succeed with a valid COMMAND.
+            let command_frame = make_command(&psk, 42, &CommandPayload::Nop);
+            transport.queue_response(Some(command_frame));
+
+            let result = wake_command_exchange(
+                &mut transport,
+                &identity,
+                42,
+                &[0u8; 32],
+                3300,
+                &clock,
+                &aead,
+                &sha,
+            );
+
+            assert!(result.is_ok(), "retry after timeout should succeed");
+
+            // Verify both recv calls used RESPONSE_TIMEOUT_MS = 200 (ND-0702).
+            assert_eq!(transport.recv_timeouts.len(), 2, "initial + 1 retry");
+            assert!(
+                transport
+                    .recv_timeouts
+                    .iter()
+                    .all(|&t| t == RESPONSE_TIMEOUT_MS),
+                "all recv calls must use RESPONSE_TIMEOUT_MS (200 ms)"
+            );
+        }
+
         #[test]
         fn send_app_data_round_trip() {
             let psk = [0x42u8; 32];

@@ -396,6 +396,8 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 
 **Validates:** bpf-environment.md §5.3, ND-0504
 
+**E2E coverage:** Partially covered by T-E2E-081 (`t_e2e_081_ephemeral_restrictions`) which deploys a resident program with maps and verifies map state after BPF execution. Direct unit coverage for persistence across cycles exists in `crates/sonde-node/src/map_storage.rs` (`test_data_preserved_when_layout_matches`), which validates that map data is preserved when the RTC layout matches.
+
 **Procedure:**
 1. Deploy a BPF program (via mock gateway) that calls `map_lookup_elem` on a defined map, writes a value via `map_update_elem`, then reads it back.
 2. Execute a full wake cycle (WAKE → COMMAND → BPF execution).
@@ -407,6 +409,8 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 
 **Validates:** bpf-environment.md §5.3, ND-0606
 
+**E2E coverage:** Unit coverage for map budget enforcement exists in `crates/sonde-node/src/map_storage.rs` (`test_allocate_exceeds_budget`) and program-load rejection is checked in `crates/sonde-node/src/program_store.rs` via `NodeError::MapBudgetExceeded`. E2E-level coverage via T-E2E-083 (`t_e2e_083_instruction_budget_enforcement`) exercises the budget mechanism end-to-end for instruction budgets; map memory budgets are structurally similar.
+
 **Procedure:**
 1. Deploy a BPF program (via mock gateway) that declares map definitions exceeding the node's memory budget.
 2. Attempt to load the program.
@@ -417,6 +421,8 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 ### T-BPF-033  Context write from BPF program → `ReadOnlyWrite` termination
 
 **Validates:** bpf-environment.md §4, ND-0505
+
+**E2E coverage:** Context write rejection is unit-tested in `crates/sonde-node/src/sonde_bpf_adapter.rs` (`t_n929_write_to_read_only_context_silently_ignored`), which validates that writes to the read-only Context region are silently ignored. T-E2E-081 (`t_e2e_081_ephemeral_restrictions`) exercises related ephemeral-program restrictions (map writes, `set_next_wake`) at the E2E level.
 
 **Procedure:**
 1. Deploy a BPF program that attempts to write to the `sonde_context` structure via `STX_DW [r1 + 0], r0` (R1 = Context pointer).

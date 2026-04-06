@@ -1162,7 +1162,7 @@ The MSI includes a custom dialog page ("Modem Configuration") that collects the 
 5. On uninstall, `ServiceControl Remove="uninstall"` stops and removes the service. Data files in `%ProgramData%\sonde\` are preserved (not included in `RemoveFile` elements).
 6. On upgrade, the service is stopped before file replacement and restarted after.
 
-### 18.2  `sonde-gateway install` subcommand (CLI fallback)
+### 18.2  `sonde-gateway install` subcommand — CLI fallback (GW-1501)
 
 The gateway binary exposes an `install` subcommand as a fallback for headless, scripted, or non-Windows deployments. The implementation is platform-specific:
 
@@ -1256,7 +1256,7 @@ The `.deb` package (built by `installer/linux/build-deb.sh`) ships:
 
 The unit runs as the `sonde` user with `SupplementaryGroups=dialout`, reads `SERIAL_PORT` from `EnvironmentFile=/etc/sonde/environment`, and includes `--master-key-file /var/lib/sonde/master-key.hex --generate-master-key` so the master key is auto-generated on first start (same pattern as the Windows MSI). Security hardening: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths=/var/lib/sonde`, `ReadOnlyPaths=/etc/sonde`. See `installer/linux/sonde-gateway.service` for the full unit definition.
 
-### 18.5  Configuration file locations
+### 18.5  Configuration file locations (GW-1500, GW-1501, GW-1503)
 
 | Platform | Configuration | Database | Master key |
 |---|---|---|---|

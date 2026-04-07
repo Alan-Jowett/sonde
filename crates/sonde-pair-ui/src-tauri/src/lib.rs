@@ -21,7 +21,7 @@ use serde::Serialize;
 use sonde_pair::discovery::{service_type, DeviceScanner, ServiceType};
 use sonde_pair::phase1::PairingProgress;
 use sonde_pair::rng::OsRng;
-use sonde_pair::types::ScannedDevice;
+use sonde_pair::types::{PinConfig, ScannedDevice};
 use sonde_pair::{phase1, phase2};
 
 #[cfg(not(target_os = "android"))]
@@ -100,6 +100,24 @@ fn parse_address(s: &str) -> Result<[u8; 6], String> {
             .map_err(|_| format!("invalid hex byte `{part}` in address"))?;
     }
     Ok(addr)
+}
+
+/// Resolve optional I2C pin parameters into a `PinConfig` (PT-1216 AC 7).
+///
+/// Both parameters must be present or both absent.  Providing exactly one
+/// is an error.
+fn resolve_pin_config(
+    i2c_sda: Option<u8>,
+    i2c_scl: Option<u8>,
+) -> Result<Option<PinConfig>, String> {
+    match (i2c_sda, i2c_scl) {
+        (Some(sda), Some(scl)) => Ok(Some(PinConfig {
+            i2c0_sda: sda,
+            i2c0_scl: scl,
+        })),
+        (None, None) => Ok(None),
+        _ => Err("Provide both I2C SDA and I2C SCL pins, or leave both empty.".into()),
+    }
 }
 
 fn device_to_info(d: &ScannedDevice) -> DeviceInfo {
@@ -250,6 +268,8 @@ async fn provision_node(
     state: tauri::State<'_, AppState>,
     address: String,
     node_id: String,
+    i2c_sda: Option<u8>,
+    i2c_scl: Option<u8>,
 ) -> Result<String, String> {
     *state.scanner.lock().unwrap() = None;
 
@@ -260,6 +280,8 @@ async fn provision_node(
             return Err(e);
         }
     };
+
+    let pin_config = resolve_pin_config(i2c_sda, i2c_scl)?;
 
     // Load artifacts from in-memory cache, falling back to file store.
     let artifacts = {
@@ -285,8 +307,16 @@ async fn provision_node(
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = BtleplugTransport::new().await?;
             let rng = OsRng;
-            phase2::provision_node(&mut transport, &artifacts, &rng, &addr, &node_id, &[], None)
-                .await
+            phase2::provision_node(
+                &mut transport,
+                &artifacts,
+                &rng,
+                &addr,
+                &node_id,
+                &[],
+                pin_config,
+            )
+            .await
         })
     })
     .await
@@ -460,6 +490,8 @@ async fn provision_node(
     state: tauri::State<'_, AppState>,
     address: String,
     node_id: String,
+    i2c_sda: Option<u8>,
+    i2c_scl: Option<u8>,
 ) -> Result<String, String> {
     *state.scanner.lock().unwrap() = None;
 
@@ -470,6 +502,8 @@ async fn provision_node(
             return Err(e);
         }
     };
+
+    let pin_config = resolve_pin_config(i2c_sda, i2c_scl)?;
 
     let artifacts = state
         .pairing_artifacts
@@ -484,8 +518,16 @@ async fn provision_node(
         tokio::runtime::Handle::current().block_on(async {
             let mut transport = AndroidBleTransport::from_cached_vm()?;
             let rng = OsRng;
-            phase2::provision_node(&mut transport, &artifacts, &rng, &addr, &node_id, &[], None)
-                .await
+            phase2::provision_node(
+                &mut transport,
+                &artifacts,
+                &rng,
+                &addr,
+                &node_id,
+                &[],
+                pin_config,
+            )
+            .await
         })
     })
     .await
@@ -693,4 +735,49 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error running Sonde Pairing Tool");
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_pin_config_both_present() {
+        let result = resolve_pin_config(Some(5), Some(6)).unwrap();
+        let pc = result.unwrap();
+        assert_eq!(pc.i2c0_sda, 5);
+        assert_eq!(pc.i2c0_scl, 6);
+    }
+
+    #[test]
+    fn resolve_pin_config_both_absent() {
+        let result = resolve_pin_config(None, None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_pin_config_only_sda_rejected() {
+        let result = resolve_pin_config(Some(5), None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("both"));
+    }
+
+    #[test]
+    fn resolve_pin_config_only_scl_rejected() {
+        let result = resolve_pin_config(None, Some(6));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("both"));
+    }
+
+    #[test]
+    fn resolve_pin_config_zero_one_values() {
+        let result = resolve_pin_config(Some(0), Some(1)).unwrap();
+        let pc = result.unwrap();
+        assert_eq!(pc.i2c0_sda, 0);
+        assert_eq!(pc.i2c0_scl, 1);
+    }
 }

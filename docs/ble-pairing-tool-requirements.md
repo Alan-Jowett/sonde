@@ -540,7 +540,7 @@ The tool SHOULD check local state before initiating Phase 1 and warn the operato
 **Source:** Product requirements §5.2
 
 **Description:**  
-The UI MUST provide at least: scan toggle (start/stop), device list (with service type and name), device select, pair action, node ID input (Phase 2 only), status area (current phase and progress), and error display (actionable messages).
+The UI MUST provide at least: scan toggle (start/stop), device list (with service type and name), device select, pair action, node ID input (Phase 2 only), board selector (Phase 2 only — see PT-1216), status area (current phase and progress), and error display (actionable messages).
 
 **Acceptance criteria:**
 
@@ -1109,7 +1109,7 @@ The pairing tool MUST apply build-type–aware log-level policies: compile-time 
 **Description:**  
 The pairing tool SHOULD support including optional board-specific pin configuration (I2C SDA/SCL GPIO numbers) in the NODE_PROVISION message body so that a single firmware binary works across different ESP32-C3 boards.
 
-Pin configuration is sourced from the bundle manifest's `hardware.pins` section (see [bundle-format.md](bundle-format.md) §4.5).  When the bundle declares I2C sensors for a node, the `pins` section is required and the pairing tool reads `i2c0_sda` and `i2c0_scl` from it.  The `provision_node` API accepts an optional pin config parameter; callers (e.g., `sonde-pair-ui`) extract pins from the bundle manifest and pass them through.
+Pin configuration is sourced from the board selector UI (see PT-1216).  The operator selects a named board preset or enters custom GPIO pin numbers.  The `provision_node` API accepts an optional pin config parameter; the UI layer extracts the selected board's pin assignments and passes them through.
 
 **Acceptance criteria:**
 
@@ -1138,6 +1138,35 @@ When the pairing tool encounters an error at a user-facing boundary (BLE connect
 2. Where a corrective action is known, the error includes actionable guidance text.
 3. BLE "Not connected" errors include the peer address and a hint about possible stale OS-level Bluetooth pairings.
 4. Serial port errors include the port name, the OS error code, and a hint about possible conflicts (e.g., another application holding the port).
+
+---
+
+### PT-1216  Board selector UI for node provisioning
+
+**Priority:** Must  
+**Source:** PT-1214 (board pin configuration), ND-0608
+
+**Description:**  
+The pairing tool UI MUST present a board selector during Phase 2 (node provisioning) so the operator can specify the target board's I2C pin assignments without entering raw GPIO numbers. The selector is always visible on the provisioning card and determines the `PinConfig` passed to `provision_node()`.
+
+The tool MUST include at least the following named presets:
+
+| Preset | `i2c0_sda` | `i2c0_scl` |
+|--------|-----------|-----------|
+| Espressif ESP32-C3 DevKitM-1 | 0 | 1 |
+| SparkFun ESP32-C3 Pro Micro | 5 | 6 |
+
+A "Custom" option MUST also be available, which reveals two numeric input fields for arbitrary GPIO pin entry (validated per PT-0409).
+
+**Acceptance criteria:**
+
+1. The Phase 2 provisioning card includes a board selector dropdown with the named presets above and a "Custom" option.
+2. The default selection is "Espressif ESP32-C3 DevKitM-1".
+3. Selecting a named preset sets the `PinConfig` to the preset's pin values — no additional input required.
+4. Selecting "Custom" reveals two numeric input fields for SDA and SCL GPIO numbers.
+5. Custom GPIO values are validated per PT-0409 (range 0–21, SDA ≠ SCL) before provisioning.
+6. The selected `PinConfig` is always passed to `provision_node()` — the tool never sends `None` when the UI is used.
+7. The Tauri `provision_node` command accepts optional `i2c_sda` and `i2c_scl` parameters and converts them to a `PinConfig`.
 
 ---
 
@@ -1215,3 +1244,4 @@ When the pairing tool encounters an error at a user-facing boundary (BLE connect
 | PT-1213 | Build-type–aware log levels | Active |
 | PT-1214 | Board pin configuration in NODE_PROVISION | Active |
 | PT-1215 | Error diagnostic observability (extends PT-1212) | Active |
+| PT-1216 | Board selector UI for node provisioning | Active |

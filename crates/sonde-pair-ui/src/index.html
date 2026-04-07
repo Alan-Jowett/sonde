@@ -38,6 +38,22 @@
       <h2>Phase 2 &mdash; Node Provisioning</h2>
       <label for="node-id">Node ID</label>
       <input id="node-id" type="text" placeholder="sensor-01" maxlength="64" />
+      <label for="board-select">Board</label>
+      <select id="board-select">
+        <option value="custom">Custom</option>
+      </select>
+      <div id="custom-pins" class="custom-pins hidden">
+        <div class="pin-row">
+          <div class="pin-field">
+            <label for="custom-sda">I2C SDA GPIO</label>
+            <input id="custom-sda" type="number" min="0" max="21" placeholder="0" />
+          </div>
+          <div class="pin-field">
+            <label for="custom-scl">I2C SCL GPIO</label>
+            <input id="custom-scl" type="number" min="0" max="21" placeholder="1" />
+          </div>
+        </div>
+      </div>
       <button id="btn-provision" disabled>Provision Node</button>
     </section>
 

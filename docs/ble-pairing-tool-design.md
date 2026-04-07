@@ -229,7 +229,7 @@ Offset  Size           Field
 
 The node persists these to NVS. If the map is absent (older pairing tool), the node uses compiled-in defaults. Future keys (SPI pins, pairing button GPIO) may be added without breaking backward compatibility.
 
-**Pin config source:** The pairing tool obtains `i2c0_sda` and `i2c0_scl` values from the bundle manifest's `hardware.pins` section (see [bundle-format.md](bundle-format.md) §4.5).  When the bundle declares I2C sensors for a node, the `pins` section is required and the pairing tool passes the values through to `provision_node` as an optional `PinConfig` parameter.  This keeps the bundle self-contained — no separate board profile management is needed.
+**Pin config source:** The pairing tool obtains `i2c0_sda` and `i2c0_scl` values from the board selector UI (see PT-1216).  The operator selects a named board preset (e.g., "Espressif ESP32-C3 DevKitM-1" or "SparkFun ESP32-C3 Pro Micro") or enters custom GPIO numbers.  The UI layer resolves the selection to a `PinConfig` and passes it to `provision_node()`.  This keeps provisioning simple — no separate board profile files or bundle manifests are required.
 
 ---
 
@@ -728,16 +728,51 @@ The mock RNG for testing returns deterministic bytes, enabling reproducible test
 
 ## 12  Input validation
 
-The `validation.rs` module validates all user inputs before any BLE or cryptographic operation (PT-0403, PT-1205):
+User inputs are validated before any BLE or cryptographic operation (PT-0403, PT-1205).  Validation is split across `validation.rs` (string and range checks for Phase 1/2 fields) and `phase2.rs` (payload size and pin configuration checks):
 
-| Input | Validation rule | Error |
-|-------|----------------|-------|
-| `node_id` | 1–64 bytes UTF-8 | `PairingError::InvalidNodeId` |
-| `rf_channel` | 1–13 inclusive | `PairingError::InvalidRfChannel` |
-| `phone_label` | 0–64 bytes UTF-8 | `PairingError::InvalidLabel` |
-| Encrypted payload | ≤ 202 bytes | `PairingError::PayloadTooLarge` |
+| Input | Validation rule | Validated by | Error |
+|-------|----------------|-------------|-------|
+| `node_id` | 1–64 bytes UTF-8 | `validation.rs` | `PairingError::InvalidNodeId` |
+| `rf_channel` | 1–13 inclusive | `validation.rs` | `PairingError::InvalidRfChannel` |
+| `phone_label` | 0–64 bytes UTF-8 | `validation.rs` | `PairingError::InvalidLabel` |
+| Encrypted payload | ≤ 202 bytes | `phase2.rs` | `PairingError::PayloadTooLarge` |
+| `i2c0_sda` | 0–21, ≠ `i2c0_scl` | `phase2.rs` | `PairingError::InvalidPinConfig` |
+| `i2c0_scl` | 0–21, ≠ `i2c0_sda` | `phase2.rs` | `PairingError::InvalidPinConfig` |
 
 All validation occurs *before* any BLE write, ensuring that invalid inputs never reach the transport layer.
+
+---
+
+## 12.1  Board selector UI (PT-1216)
+
+The Tauri UI includes a board selector dropdown on the Phase 2 (Node Provisioning) card.  The selector is always visible (not collapsed behind an "Advanced" section) and determines the I2C `PinConfig` passed to `provision_node()`.
+
+### Board presets
+
+Board presets are defined as a static table in the frontend JavaScript.  Each preset maps a human-readable board name to its I2C pin assignments:
+
+| Preset label | `i2c0_sda` | `i2c0_scl` |
+|---|---|---|
+| Espressif ESP32-C3 DevKitM-1 | 0 | 1 |
+| SparkFun ESP32-C3 Pro Micro | 5 | 6 |
+| Custom | (user input) | (user input) |
+
+The default selection is "Espressif ESP32-C3 DevKitM-1".  Adding a new board requires only a new entry in the frontend preset table — no backend or protocol changes.
+
+### UI behavior
+
+- **Named preset selected:** The two GPIO values are resolved from the preset table.  No additional input fields are shown.
+- **"Custom" selected:** Two numeric `<input>` fields for SDA and SCL are revealed.  Values are validated client-side per PT-0409 (range 0–21, SDA ≠ SCL) before the Tauri command is invoked.  Validation errors are displayed in the existing error bar.
+
+### Tauri command interface
+
+The `provision_node` Tauri command gains two optional parameters:
+
+```
+provision_node(address, nodeId, i2cSda?, i2cScl?)
+```
+
+When both `i2cSda` and `i2cScl` are provided, the backend constructs `Some(PinConfig { i2c0_sda, i2c0_scl })` and passes it to `phase2::provision_node()`.  When both are omitted, `None` is passed (backward compatible for non-UI callers).  Providing exactly one is an error.
 
 ---
 
@@ -871,6 +906,7 @@ No log event at any level may include key material: PSKs, ephemeral private keys
 | §9 Platform-specific | PT-0100, PT-0105, PT-0106, PT-0107, PT-0108, PT-0300, PT-0801, PT-0904 |
 | §10 BLE message envelope | PT-0301, PT-0303, PT-0407 |
 | §11 RNG provider | PT-0901, PT-0903 |
-| §12 Input validation | PT-0403, PT-0406 |
+| §12 Input validation | PT-0403, PT-0406, PT-0409 |
+| §12.1 Board selector UI | PT-1216, PT-1214, PT-0700 |
 | §13 Implementation order | PT-0700, PT-0701, PT-0702, PT-1200–PT-1206 |
 | §14 Diagnostic logging | PT-0702, PT-0900, PT-1207–PT-1212 |

@@ -1120,6 +1120,61 @@ TestNode {
 
 ---
 
+### T-PT-1216a  Board preset passes correct pin config
+
+**Validates:** PT-1216 (AC 1, 3, 6), PT-1214 (AC 1, 2)
+
+**Procedure:**
+1. Call `phase2::provision_node(...)` with `MockBleTransport` and pin config `Some(PinConfig { i2c0_sda: 5, i2c0_scl: 6 })` (SparkFun preset values).
+2. Capture the NODE_PROVISION message body written to the mock BLE transport.
+3. Assert: the trailing CBOR map contains integer key 1 = 5 (`i2c0_sda`), integer key 2 = 6 (`i2c0_scl`).
+
+---
+
+### T-PT-1216b  Default preset is Espressif DevKitM-1
+
+**Validates:** PT-1216 (AC 2, 3)
+
+**Procedure:**
+1. Open the provisioning UI and verify the initial board selector value is "Espressif ESP32-C3 DevKitM-1".
+2. Without changing the board selection or manually overriding the I2C pins, trigger provisioning.
+3. Capture the NODE_PROVISION message body written to the mock BLE transport.
+4. Assert: the trailing CBOR map contains integer key 1 = 0 (`i2c0_sda`), integer key 2 = 1 (`i2c0_scl`).
+
+---
+
+### T-PT-1216c  Custom board with valid GPIOs
+
+**Validates:** PT-1216 (AC 4, 5, 6)
+
+**Procedure:**
+1. Call `phase2::provision_node(...)` with `MockBleTransport` and pin config `Some(PinConfig { i2c0_sda: 8, i2c0_scl: 9 })` (custom values).
+2. Capture the NODE_PROVISION message body written to the mock BLE transport.
+3. Assert: the trailing CBOR map contains integer key 1 = 8 (`i2c0_sda`), integer key 2 = 9 (`i2c0_scl`).
+
+---
+
+### T-PT-1216d  Custom board with invalid GPIOs rejected
+
+**Validates:** PT-1216 (AC 5), PT-0409
+
+**Procedure:**
+1. Call `phase2::provision_node(...)` with `MockBleTransport` and pin config `Some(PinConfig { i2c0_sda: 25, i2c0_scl: 6 })`.
+2. Assert: the call returns `Err(PairingError::InvalidPinConfig(_))`.
+3. Assert: no NODE_PROVISION message is written to the mock BLE transport.
+
+---
+
+### T-PT-1216e  Provision with only one pin parameter rejected
+
+**Validates:** PT-1216 (AC 7)
+
+**Procedure:**
+1. Call `resolve_pin_config(Some(5), None)`.
+2. Assert: the call returns an error indicating both pins must be provided.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Test ID | Requirement | Title |
@@ -1212,3 +1267,8 @@ TestNode {
 | T-PT-1214b | PT-1214 | No pin config in NODE_PROVISION — backward compatible |
 | T-PT-1214c | PT-1214 | Pin config with out-of-range GPIO rejected |
 | T-PT-1214d | PT-1214 | Pin config with SDA equal to SCL rejected |
+| T-PT-1216a | PT-1216, PT-1214 | Board preset passes correct pin config |
+| T-PT-1216b | PT-1216 | Default preset is Espressif DevKitM-1 |
+| T-PT-1216c | PT-1216 | Custom board with valid GPIOs |
+| T-PT-1216d | PT-1216, PT-0409 | Custom board with invalid GPIOs rejected |
+| T-PT-1216e | PT-1216 | Provision with only one pin parameter rejected |

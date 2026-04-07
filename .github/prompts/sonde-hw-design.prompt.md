@@ -248,7 +248,12 @@ work on that phase:
 | 8–9. Manufacturing | `.github/prompts/steps/sonde-hw-manufacturing.md` | manufacturing-artifact-generation |
 
 **Loading rules:**
-- Read the methodology file for the current phase BEFORE starting work
+- Read the methodology file for the current phase BEFORE starting work.
+  Use whatever file-reading capability your environment provides:
+  - **Copilot CLI / terminal agent**: use the `view` tool to read the file
+  - **Copilot Chat / IDE agent**: use `#file:` references or workspace
+    file reading tools
+  - The paths above are relative to the repository root
 - Do NOT read all files upfront — load each phase just-in-time
 - Follow the protocol phases in the loaded file IN ORDER
 - Apply the Core Methodology (anti-hallucination + self-verification)

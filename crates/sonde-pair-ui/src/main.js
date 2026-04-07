@@ -14,6 +14,10 @@ const deviceList = document.getElementById("device-list");
 const phoneLabel = document.getElementById("phone-label");
 const btnPair = document.getElementById("btn-pair");
 const nodeId = document.getElementById("node-id");
+const boardSelect = document.getElementById("board-select");
+const customPins = document.getElementById("custom-pins");
+const customSda = document.getElementById("custom-sda");
+const customScl = document.getElementById("custom-scl");
 const btnProvision = document.getElementById("btn-provision");
 const pairingStatus = document.getElementById("pairing-status");
 const btnClear = document.getElementById("btn-clear");
@@ -32,6 +36,45 @@ let scanning = false;
 let pollTimer = null;
 let logTimer = null;
 let busy = false;
+
+// ---------------------------------------------------------------------------
+// Board presets (PT-1216)
+// ---------------------------------------------------------------------------
+
+const BOARD_PRESETS = {
+  devkitm1: { label: "Espressif ESP32-C3 DevKitM-1", sda: 0, scl: 1 },
+  sparkfun: { label: "SparkFun ESP32-C3 Pro Micro",   sda: 5, scl: 6 },
+};
+
+/** Populate the board selector from BOARD_PRESETS (single source of truth). */
+function initBoardSelect() {
+  const customOption = boardSelect.querySelector('option[value="custom"]');
+  boardSelect.textContent = "";
+  for (const [value, preset] of Object.entries(BOARD_PRESETS)) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = preset.label;
+    boardSelect.appendChild(option);
+  }
+  if (customOption) boardSelect.appendChild(customOption);
+  customPins.classList.toggle("hidden", boardSelect.value !== "custom");
+}
+
+/** Resolve the current board selection to { sda, scl } or null on error. */
+function resolveI2cPins() {
+  const board = boardSelect.value;
+  if (board === "custom") {
+    const sda = customSda.valueAsNumber;
+    const scl = customScl.valueAsNumber;
+    if (!Number.isInteger(sda) || !Number.isInteger(scl)) { showError("Enter SDA and SCL GPIO numbers"); return null; }
+    if (sda < 0 || sda > 21 || scl < 0 || scl > 21) { showError("GPIO must be 0–21"); return null; }
+    if (sda === scl) { showError("SDA and SCL must be different pins"); return null; }
+    return { sda, scl };
+  }
+  const preset = BOARD_PRESETS[board];
+  if (!preset) { showError("Unknown board selection"); return null; }
+  return { sda: preset.sda, scl: preset.scl };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -202,6 +245,8 @@ async function provisionNode() {
   if (!selectedAddress) return;
   const nid = nodeId.value.trim();
   if (!nid) { showError("Enter a Node ID"); return; }
+  const pins = resolveI2cPins();
+  if (!pins) return;
   clearError();
   if (scanning) await stopScan();
   setBusy(true);
@@ -210,6 +255,8 @@ async function provisionNode() {
     const status = await invoke("provision_node", {
       address: selectedAddress,
       nodeId: nid,
+      i2cSda: pins.sda,
+      i2cScl: pins.scl,
     });
     setPhase("Complete");
     // status is a human-readable string from NodeAckStatus
@@ -285,6 +332,10 @@ btnPair.addEventListener("click", pairGateway);
 btnProvision.addEventListener("click", provisionNode);
 btnClear.addEventListener("click", clearPairing);
 verboseToggle.addEventListener("change", toggleVerbose);
+boardSelect.addEventListener("change", () => {
+  customPins.classList.toggle("hidden", boardSelect.value !== "custom");
+});
 
 // Initial state
+initBoardSelect();
 refreshPairingStatus();

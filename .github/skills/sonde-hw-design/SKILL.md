@@ -1,9 +1,3 @@
----
-description: 'End-to-end hardware design workflow for Sonde sensor/carrier boards — requirements through manufacturing'
-agent: 'agent'
-tools: ['search/web']
----
-
 # End-to-End Hardware Design Workflow — Sonde Project
 
 You are guiding a user through a **complete hardware design cycle** for
@@ -241,11 +235,11 @@ work on that phase:
 
 | Phase | File to Read | Protocols Loaded |
 |-------|-------------|------------------|
-| 1. Requirements | `.github/prompts/steps/sonde-hw-requirements.md` | requirements-elicitation |
-| 2–3. Components | `.github/prompts/steps/sonde-hw-components.md` | component-selection, component-selection-audit |
-| 4–5. Schematic | `.github/prompts/steps/sonde-hw-schematic.md` | schematic-design, schematic-compliance-audit |
-| 6–7. Layout | `.github/prompts/steps/sonde-hw-layout.md` | pcb-layout-design, layout-design-review |
-| 8–9. Manufacturing | `.github/prompts/steps/sonde-hw-manufacturing.md` | manufacturing-artifact-generation |
+| 1. Requirements | `.github/skills/sonde-hw-design/steps/sonde-hw-requirements.md` | requirements-elicitation |
+| 2–3. Components | `.github/skills/sonde-hw-design/steps/sonde-hw-components.md` | component-selection, component-selection-audit |
+| 4–5. Schematic | `.github/skills/sonde-hw-design/steps/sonde-hw-schematic.md` | schematic-design, schematic-compliance-audit |
+| 6–7. Layout | `.github/skills/sonde-hw-design/steps/sonde-hw-layout.md` | pcb-layout-design, layout-design-review |
+| 8–9. Manufacturing | `.github/skills/sonde-hw-design/steps/sonde-hw-manufacturing.md` | manufacturing-artifact-generation |
 
 **Loading rules:**
 - Read the methodology file for the current phase BEFORE starting work.
@@ -267,7 +261,7 @@ work on that phase:
 
 **Goal**: Understand what the user wants to build and extract requirements.
 
-Load `.github/prompts/steps/sonde-hw-requirements.md` and follow the
+Load `.github/skills/sonde-hw-design/steps/sonde-hw-requirements.md` and follow the
 requirements-elicitation protocol. Ask clarifying questions about sensors,
 interfaces, power source, environment, form factor, and cost targets.
 Surface implicit requirements for Sonde nodes: deep-sleep current budget,
@@ -281,7 +275,7 @@ power gating, DIP socket for MCU module, programming access.
 
 **Goal**: Select core functional components that fulfil the requirements.
 
-Load `.github/prompts/steps/sonde-hw-components.md` and follow the
+Load `.github/skills/sonde-hw-design/steps/sonde-hw-components.md` and follow the
 component-selection protocol. For Sonde designs, weight power consumption
 and cost heavily. Evaluate quiescent/shutdown current for every component
 on a gated rail.
@@ -306,7 +300,7 @@ Present selected components, audit verdict, and risk flags. Ask:
 
 **Goal**: Design a complete KiCad schematic.
 
-Load `.github/prompts/steps/sonde-hw-schematic.md` and follow the
+Load `.github/skills/sonde-hw-design/steps/sonde-hw-schematic.md` and follow the
 schematic-design protocol. For Sonde designs, pay special attention to:
 - Power gating circuit (P-MOSFET or load switch on sensor rail)
 - DIP socket pinout for ESP32 module
@@ -332,7 +326,7 @@ Present schematic, key decisions, audit results, BOM. Ask:
 
 **Goal**: Produce a routed, DRC-clean PCB.
 
-Load `.github/prompts/steps/sonde-hw-layout.md` and follow the
+Load `.github/skills/sonde-hw-design/steps/sonde-hw-layout.md` and follow the
 pcb-layout-design protocol. Gather connector/component placement
 preferences from user before routing.
 
@@ -356,7 +350,7 @@ Ask: "Do you approve this layout?"
 
 **Goal**: Generate all files for fab submission.
 
-Load `.github/prompts/steps/sonde-hw-manufacturing.md` and follow the
+Load `.github/skills/sonde-hw-design/steps/sonde-hw-manufacturing.md` and follow the
 manufacturing-artifact-generation protocol. Confirm fab service and
 board parameters with user.
 

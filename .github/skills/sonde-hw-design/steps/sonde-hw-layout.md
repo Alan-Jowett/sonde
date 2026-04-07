@@ -32,6 +32,46 @@ spec and placement script, but routing and DRC phases cannot execute.
    footprint, physical dimensions, mounting type (SMD/TH/module),
    special placement requirements.
 
+   **Mandatory footprint dimension table**: Produce a courtyard
+   bounding box for EVERY component. Courtyard = body + pad
+   extensions + 0.25mm clearance. This drives all placement.
+
+   | Ref | Component | Courtyard W×H (mm) | Notes |
+   |-----|-----------|-------------------|-------|
+   | U1 | QFN-48 | 8.5 × 8.5 | — |
+   | R1 | 0402 | 1.8 × 1.0 | — |
+   | J1 | JST-SH 4-pin | 8.0 × 5.5 | +8mm cable zone |
+   | ... | ... | ... | ... |
+
+   **Common courtyard sizes** (verify against actual footprint):
+
+   | Package | Courtyard W×H (mm) |
+   |---------|-------------------|
+   | 0402 | 1.8 × 1.0 |
+   | 0603 | 2.4 × 1.4 |
+   | 0805 | 3.0 × 1.8 |
+   | SOT-23 / SOT-23-6 | 3.5 × 3.0 |
+   | SOD-323 | 3.0 × 1.8 |
+   | SOIC-8 | 6.0 × 5.0 |
+   | JST-PH 2-pin SMD RA | 8.0 × 6.0 (+10mm cable) |
+   | JST-SH 4-pin SMD RA | 8.0 × 5.5 (+8mm cable) |
+   | JST-XH 3-pin SMD RA | 10.5 × 8.0 (+12mm cable) |
+   | 1×7 header 2.54mm | 2.54 × 17.78 |
+   | M2.5 mounting hole | 5.5 × 5.5 |
+
+   **Module exclusion zones**: Plug-in modules (Xiao, Nano, Pico)
+   have a body that sits BETWEEN the socket rows. The full module
+   outline is an exclusion zone — no components under the module.
+
+   | Module | Outline W×H (mm) | Socket Spacing (mm) |
+   |--------|-----------------|---------------------|
+   | Seeed Xiao | 21.0 × 17.5 | 17.5 |
+   | Arduino Nano | 45.0 × 18.0 | 15.24 |
+   | RPi Pico | 51.0 × 21.0 | 17.78 |
+
+   **Connector clearance zones**: Edge-mounted connectors need
+   8–12mm cable clearance beyond the mating face.
+
 3. **Design constraints from upstream**: Power dissipation, high-speed
    signals, RF clearance zones, current-carrying traces.
 
@@ -128,7 +168,19 @@ Do NOT proceed to board definition until the user confirms.
 
 2. **Placement rules**:
    - 1.27mm placement grid
-   - ≥ 1mm courtyard clearance
+   - **Courtyard collision check (MANDATORY)**: After assigning
+     coordinates, verify no two courtyard bounding boxes overlap.
+     Use dimensions from Phase 1 inventory. For each pair:
+     `gap = distance - (courtyard_A/2 + courtyard_B/2)` ≥ 0.25mm.
+   - **Module exclusion zone**: If using a plug-in module (Xiao,
+     Nano, etc.), the full module outline is an exclusion zone.
+     Components (decoupling caps, pull-ups) go OUTSIDE the module
+     footprint — along edges or beyond pin rows.
+   - **Connector edge offset**: Edge connectors must have their
+     body origin offset inward so pads are fully on the board.
+     Offset = half the connector depth (e.g., 3mm for JST-PH).
+   - **Connector clearance zones**: Reserve 8–12mm inward from
+     each connector's mating face. No components in this zone.
    - Decoupling caps within 3mm of IC power pin
    - Crystal within 5mm of MCU oscillator pins
    - No components in antenna keepout
@@ -137,8 +189,13 @@ Do NOT proceed to board definition until the user confirms.
 3. **Thermal placement**: Regulators with thermal vias. Heat sources
    away from temperature sensors. Exposed pads with ≥ 4 thermal vias.
 
-4. **Group placement verification**: Signal flow logical, power flows
-   source to loads, high-speed paths short, connectors accessible.
+4. **Group placement verification**:
+   - **Courtyard collision audit**: For every adjacent pair, verify
+     no overlap. Produce a collision report table. Fix ALL overlaps.
+   - **Module exclusion zone audit**: Verify zero components inside
+     the module outline.
+   - Signal flow logical, power flows source to loads
+   - High-speed paths short, connectors accessible
 
 ### Phase 6: Routing Strategy
 

@@ -81,14 +81,14 @@ async fn t0702_battery_level_tracking() {
     );
 
     // First WAKE: battery at 3300 mV.
-    node.update_telemetry(3300, 1);
+    node.update_telemetry(3300, 1, "0.4.0".into());
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-bat").await.unwrap().unwrap();
     assert_eq!(fetched.last_battery_mv, Some(3300));
 
     // Second WAKE: battery drops to 2900 mV.
-    node.update_telemetry(2900, 1);
+    node.update_telemetry(2900, 1, "0.4.0".into());
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-bat").await.unwrap().unwrap();
@@ -111,7 +111,7 @@ async fn t0702b_battery_history_retention_and_cap() {
 
     // Send 105 readings (exceeds the 100-reading cap).
     for i in 0u32..105 {
-        node.update_telemetry(3000 + i, 1);
+        node.update_telemetry(3000 + i, 1, "0.4.0".into());
     }
     storage.upsert_node(&node).await.unwrap();
 
@@ -151,14 +151,14 @@ async fn t0703_firmware_abi_version_tracking() {
         "initial ABI version must be None"
     );
 
-    node.update_telemetry(3300, 2);
+    node.update_telemetry(3300, 2, "0.4.0".into());
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-abi").await.unwrap().unwrap();
     assert_eq!(fetched.firmware_abi_version, Some(2));
 
     // ABI version updated on subsequent WAKE.
-    node.update_telemetry(3300, 3);
+    node.update_telemetry(3300, 3, "0.4.0".into());
     storage.upsert_node(&node).await.unwrap();
 
     let fetched = storage.get_node("node-abi").await.unwrap().unwrap();

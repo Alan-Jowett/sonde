@@ -16,6 +16,7 @@ pub enum NodeMessage {
         firmware_abi_version: u32,
         program_hash: Vec<u8>,
         battery_mv: u32,
+        firmware_version: String,
     },
     GetChunk {
         chunk_index: u32,
@@ -160,6 +161,19 @@ fn get_bytes(fields: &[(u64, Value)], key: u64) -> Result<Vec<u8>, DecodeError> 
         .ok_or(DecodeError::InvalidFieldType(key))
 }
 
+/// Maximum length for string fields decoded from the wire (e.g., firmware_version).
+/// Prevents unbounded allocation from malicious/buggy peers.
+const MAX_STRING_FIELD_LEN: usize = 32;
+
+fn get_string(fields: &[(u64, Value)], key: u64) -> Result<String, DecodeError> {
+    let val = get_field(fields, key)?;
+    match val.as_text() {
+        Some(s) if s.len() <= MAX_STRING_FIELD_LEN && s.is_ascii() => Ok(String::from(s)),
+        Some(_) => Err(DecodeError::InvalidFieldType(key)),
+        None => Err(DecodeError::InvalidFieldType(key)),
+    }
+}
+
 fn decode_nested_map(fields: &[(u64, Value)], key: u64) -> Result<Vec<(u64, Value)>, DecodeError> {
     let val = get_field(fields, key)?;
     match val {
@@ -206,11 +220,13 @@ impl NodeMessage {
                 firmware_abi_version,
                 program_hash,
                 battery_mv,
+                firmware_version,
             } => {
                 alloc::vec![
                     (KEY_FIRMWARE_ABI_VERSION, u32_val(*firmware_abi_version)),
                     (KEY_PROGRAM_HASH, Value::Bytes(program_hash.clone())),
                     (KEY_BATTERY_MV, u32_val(*battery_mv)),
+                    (KEY_FIRMWARE_VERSION, Value::Text(firmware_version.clone())),
                 ]
             }
             NodeMessage::GetChunk { chunk_index } => {
@@ -236,6 +252,7 @@ impl NodeMessage {
                 firmware_abi_version: get_u32(&fields, KEY_FIRMWARE_ABI_VERSION)?,
                 program_hash: get_bytes(&fields, KEY_PROGRAM_HASH)?,
                 battery_mv: get_u32(&fields, KEY_BATTERY_MV)?,
+                firmware_version: get_string(&fields, KEY_FIRMWARE_VERSION)?,
             }),
             MSG_GET_CHUNK => Ok(NodeMessage::GetChunk {
                 chunk_index: get_u32(&fields, KEY_CHUNK_INDEX)?,

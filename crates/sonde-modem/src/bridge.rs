@@ -21,8 +21,39 @@ use sonde_protocol::modem::{
 
 use crate::status::ModemCounters;
 
-/// Firmware version: major.minor.patch.build (one byte each).
-const FIRMWARE_VERSION: [u8; 4] = [0, 1, 0, 0];
+/// Parse a single Cargo version component (digits only, must fit in u8).
+const fn parse_version_component(s: &str) -> u8 {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        panic!("empty Cargo version component");
+    }
+
+    let mut val = 0u16;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < b'0' || b > b'9' {
+            panic!("non-digit Cargo version component");
+        }
+        val = val * 10 + (b - b'0') as u16;
+        if val > u8::MAX as u16 {
+            panic!("Cargo version component exceeds u8 range");
+        }
+        i += 1;
+    }
+
+    val as u8
+}
+
+/// Firmware version derived from the workspace Cargo version at compile time.
+/// Encoded as [major, minor, patch, build] (one byte each) for the
+/// MODEM_READY wire format.
+const FIRMWARE_VERSION: [u8; 4] = [
+    parse_version_component(env!("CARGO_PKG_VERSION_MAJOR")),
+    parse_version_component(env!("CARGO_PKG_VERSION_MINOR")),
+    parse_version_component(env!("CARGO_PKG_VERSION_PATCH")),
+    0,
+];
 
 /// Maximum number of received radio frames forwarded per `poll()` call.
 /// Prevents starvation of serial decode and other poll() work under

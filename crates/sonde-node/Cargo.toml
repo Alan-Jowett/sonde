@@ -1,6 +1,6 @@
 [package]
 name = "sonde-node"
-version = "0.3.0"
+version.workspace = true
 edition = "2021"
 description = "Sonde node firmware — wake cycle engine, BPF runtime, and platform abstractions"
 

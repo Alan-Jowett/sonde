@@ -23,6 +23,9 @@ default-members = [
     "crates/sonde-sht40-handler",
 ]
 
+[workspace.package]
+version = "0.4.0"
+
 # Firmware-specific release profile. Build with: cargo build --profile firmware
 # Only affects firmware builds; regular `cargo build --release` uses defaults.
 [profile.firmware]

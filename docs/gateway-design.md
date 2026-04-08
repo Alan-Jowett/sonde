@@ -281,7 +281,7 @@ recv frame
   │     ├── determine command (check program_hash, pending actions)
   │     ├── encode COMMAND response
   │     ├── send response (echoing wake nonce)
-  │     ├── update node registry (battery_mv, firmware_abi_version)
+  │     ├── update node registry (battery_mv, firmware_abi_version, firmware_version)
   │     └── emit EVENT to handler (node_online)
   │
   ├── if post-WAKE (GET_CHUNK, PROGRAM_ACK, APP_DATA):
@@ -330,6 +330,7 @@ pub struct NodeRecord {
     pub current_program_hash: Option<Vec<u8>>,
     pub schedule_interval_s: u32,
     pub firmware_abi_version: Option<u32>,
+    pub firmware_version: Option<String>,
     pub last_battery_mv: Option<u32>,
     pub last_seen: Option<SystemTime>,
     pub admin_node_id: String,  // opaque human-readable ID for handler API
@@ -538,7 +539,7 @@ The session manager emits lifecycle events to handlers (GW-0507):
 
 | Event | When | Details |
 |---|---|---|
-| `node_online` | WAKE processed | `battery_mv`, `firmware_abi_version` |
+| `node_online` | WAKE processed | `battery_mv`, `firmware_abi_version`, `firmware_version` |
 | `program_updated` | PROGRAM_ACK received | `program_hash` |
 | `node_timeout` | Node missed expected wake | `last_seen`, `expected_interval_s` |
 

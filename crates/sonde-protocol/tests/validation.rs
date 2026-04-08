@@ -131,6 +131,7 @@ fn test_p020() {
         firmware_abi_version: 1,
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
     };
     let cbor = msg.encode().unwrap();
     let decoded = NodeMessage::decode(MSG_WAKE, &cbor).unwrap();
@@ -139,10 +140,12 @@ fn test_p020() {
             firmware_abi_version,
             program_hash,
             battery_mv,
+            firmware_version,
         } => {
             assert_eq!(firmware_abi_version, 1);
             assert_eq!(program_hash, vec![0xAA; 32]);
             assert_eq!(battery_mv, 3300);
+            assert_eq!(firmware_version, "0.4.0");
         }
         _ => panic!("expected Wake"),
     }
@@ -154,6 +157,7 @@ fn test_p021() {
         firmware_abi_version: 1,
         program_hash: vec![],
         battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
     };
     let cbor = msg.encode().unwrap();
     let decoded = NodeMessage::decode(MSG_WAKE, &cbor).unwrap();
@@ -312,6 +316,7 @@ fn test_p029() {
         firmware_abi_version: 1,
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
     };
     let cbor = msg.encode().unwrap();
 
@@ -334,10 +339,12 @@ fn test_p029() {
             firmware_abi_version,
             program_hash,
             battery_mv,
+            firmware_version,
         } => {
             assert_eq!(firmware_abi_version, 1);
             assert_eq!(program_hash, vec![0xAA; 32]);
             assert_eq!(battery_mv, 3300);
+            assert_eq!(firmware_version, "0.4.0");
         }
         _ => panic!("expected Wake"),
     }
@@ -355,6 +362,10 @@ fn test_p030() {
             ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
             ciborium::Value::Bytes(vec![0xAA; 32]),
         ),
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
+            ciborium::Value::Text("0.4.0".into()),
+        ),
     ];
     // KEY_BATTERY_MV deliberately omitted
     let mut cbor = Vec::new();
@@ -366,6 +377,100 @@ fn test_p030() {
         "expected MissingField(KEY_BATTERY_MV), got {:?}",
         err
     );
+
+    // Also test missing firmware_version (key 15).
+    let map2 = vec![
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
+            ciborium::Value::Bytes(vec![0xAA; 32]),
+        ),
+        (
+            ciborium::Value::Integer(KEY_BATTERY_MV.into()),
+            ciborium::Value::Integer(3300.into()),
+        ),
+    ];
+    // KEY_FIRMWARE_VERSION deliberately omitted
+    let mut cbor2 = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map2), &mut cbor2).unwrap();
+
+    let err2 = NodeMessage::decode(MSG_WAKE, &cbor2).unwrap_err();
+    assert!(
+        matches!(err2, DecodeError::MissingField(KEY_FIRMWARE_VERSION)),
+        "expected MissingField(KEY_FIRMWARE_VERSION), got {:?}",
+        err2
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T-P030b  Oversized / non-ASCII firmware_version rejected
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p030b_oversized_firmware_version() {
+    // firmware_version exceeding 32 bytes must be rejected.
+    let map = vec![
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
+            ciborium::Value::Bytes(vec![0xAA; 32]),
+        ),
+        (
+            ciborium::Value::Integer(KEY_BATTERY_MV.into()),
+            ciborium::Value::Integer(3300.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
+            ciborium::Value::Text("a]".repeat(20)), // 40 bytes > 32
+        ),
+    ];
+    let mut cbor = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+    let err = NodeMessage::decode(MSG_WAKE, &cbor).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::InvalidFieldType(KEY_FIRMWARE_VERSION)),
+        "expected InvalidFieldType for oversized firmware_version, got {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_p030b_non_ascii_firmware_version() {
+    // Non-ASCII firmware_version must be rejected.
+    let map = vec![
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
+            ciborium::Value::Bytes(vec![0xAA; 32]),
+        ),
+        (
+            ciborium::Value::Integer(KEY_BATTERY_MV.into()),
+            ciborium::Value::Integer(3300.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
+            ciborium::Value::Text("0.4.0-β".into()),
+        ),
+    ];
+    let mut cbor = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+    let err = NodeMessage::decode(MSG_WAKE, &cbor).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::InvalidFieldType(KEY_FIRMWARE_VERSION)),
+        "expected InvalidFieldType for non-ASCII firmware_version, got {:?}",
+        err
+    );
 }
 
 #[test]
@@ -374,6 +479,7 @@ fn test_p031() {
         firmware_abi_version: 1,
         program_hash: vec![],
         battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
     }
     .encode()
     .unwrap();
@@ -391,6 +497,7 @@ fn test_p032() {
         firmware_abi_version: 1,
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
     };
     let cbor = msg.encode().unwrap();
     // Decode as generic CBOR and check that keys are positive integers, not strings.
@@ -857,6 +964,7 @@ fn test_p039() {
             firmware_abi_version: 1,
             program_hash: vec![0xAA; 32],
             battery_mv: u32::MAX,
+            firmware_version: "0.4.0".into(),
         };
         let cbor = msg.encode().unwrap();
         let decoded = NodeMessage::decode(MSG_WAKE, &cbor).unwrap();
@@ -1339,6 +1447,7 @@ fn test_p063() {
         firmware_abi_version: 1,
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
     }
     .encode()
     .unwrap();

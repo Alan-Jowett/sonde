@@ -89,6 +89,7 @@ pub const KEY_CHUNK_INDEX: u64 = 11;
 pub const KEY_CHUNK_DATA: u64 = 12;
 pub const KEY_STARTING_SEQ: u64 = 13;
 pub const KEY_TIMESTAMP_MS: u64 = 14;
+pub const KEY_FIRMWARE_VERSION: u64 = 15;
 
 // CBOR integer keys (peer messages — separate keyspace, scoped to msg_type 0x05/0x84)
 pub const PEER_REQ_KEY_PAYLOAD: u64 = 1;
@@ -258,6 +259,7 @@ pub enum NodeMessage {
         firmware_abi_version: u32,
         program_hash: Vec<u8>,
         battery_mv: u32,
+        firmware_version: String,
     },
     GetChunk {
         chunk_index: u32,

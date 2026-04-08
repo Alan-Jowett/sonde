@@ -376,6 +376,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     current_program_hash BLOB,
     schedule_interval_s INTEGER NOT NULL DEFAULT 60,
     firmware_abi_version INTEGER,
+    firmware_version TEXT,
     last_battery_mv INTEGER,
     last_seen_epoch_s INTEGER,
     rf_channel INTEGER,
@@ -555,6 +556,14 @@ impl SqliteStorage {
                         ))
                     })?;
             }
+            if !has_col("firmware_version") {
+                conn.execute_batch("ALTER TABLE nodes ADD COLUMN firmware_version TEXT")
+                    .map_err(|e| {
+                        StorageError::Internal(format!(
+                            "migration failed: ALTER TABLE nodes ADD COLUMN firmware_version: {e}"
+                        ))
+                    })?;
+            }
         }
         // Migrate any legacy plaintext 32-byte PSK blobs to AES-256-GCM encrypted
         // form. This must run before `validate_master_key` since validation only
@@ -694,6 +703,7 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
     };
     let sensors_json: Option<String> = row.get(10)?;
     let registered_by_phone_id: Option<u32> = row.get(11)?;
+    let firmware_version: Option<String> = row.get(12)?;
     Ok(NodeRecord {
         node_id,
         key_hint: {
@@ -711,6 +721,7 @@ fn row_to_node(row: &rusqlite::Row<'_>, master_key: &[u8; 32]) -> rusqlite::Resu
         current_program_hash: row.get(4)?,
         schedule_interval_s: row.get(5)?,
         firmware_abi_version: row.get(6)?,
+        firmware_version,
         last_battery_mv: row.get(7)?,
         last_seen: last_seen_epoch.map(epoch_s_to_system_time),
         rf_channel,
@@ -824,7 +835,7 @@ impl Storage for SqliteStorage {
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, schedule_interval_s, firmware_abi_version, \
                      last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                     registered_by_phone_id FROM nodes",
+                     registered_by_phone_id, firmware_version FROM nodes",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -851,7 +862,7 @@ impl Storage for SqliteStorage {
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, schedule_interval_s, firmware_abi_version, \
                      last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                     registered_by_phone_id FROM nodes WHERE node_id = ?1",
+                     registered_by_phone_id, firmware_version FROM nodes WHERE node_id = ?1",
                     params![node_id],
                     |row| row_to_node(row, &mk),
                 )
@@ -876,7 +887,7 @@ impl Storage for SqliteStorage {
                     "SELECT node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, schedule_interval_s, firmware_abi_version, \
                      last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                     registered_by_phone_id FROM nodes WHERE key_hint = ?1",
+                     registered_by_phone_id, firmware_version FROM nodes WHERE key_hint = ?1",
                 )
                 .map_err(map_err)?;
             let rows = stmt
@@ -906,8 +917,8 @@ impl Storage for SqliteStorage {
                 "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                  current_program_hash, schedule_interval_s, firmware_abi_version, \
                  last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                 registered_by_phone_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+                 registered_by_phone_id, firmware_version) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
                  ON CONFLICT(node_id) DO UPDATE SET \
                  key_hint = excluded.key_hint, \
                  psk = excluded.psk, \
@@ -919,7 +930,8 @@ impl Storage for SqliteStorage {
                  last_seen_epoch_s = excluded.last_seen_epoch_s, \
                  rf_channel = excluded.rf_channel, \
                  sensors_json = excluded.sensors_json, \
-                 registered_by_phone_id = excluded.registered_by_phone_id",
+                 registered_by_phone_id = excluded.registered_by_phone_id, \
+                 firmware_version = excluded.firmware_version",
                 params![
                     record.node_id,
                     record.key_hint as u32,
@@ -933,6 +945,7 @@ impl Storage for SqliteStorage {
                     record.rf_channel.map(|c| c as u32),
                     sensors_json,
                     record.registered_by_phone_id,
+                    record.firmware_version,
                 ],
             )
             .map_err(map_err)?;
@@ -955,8 +968,8 @@ impl Storage for SqliteStorage {
                     "INSERT OR IGNORE INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                      current_program_hash, schedule_interval_s, firmware_abi_version, \
                      last_battery_mv, last_seen_epoch_s, rf_channel, sensors_json, \
-                     registered_by_phone_id) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                     registered_by_phone_id, firmware_version) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                     params![
                         record.node_id,
                         record.key_hint as u32,
@@ -970,6 +983,7 @@ impl Storage for SqliteStorage {
                         record.rf_channel.map(|c| c as u32),
                         sensors_json,
                         record.registered_by_phone_id,
+                        record.firmware_version,
                     ],
                 )
                 .map_err(map_err)?;
@@ -1139,8 +1153,8 @@ impl Storage for SqliteStorage {
                     conn.execute(
                         "INSERT INTO nodes (node_id, key_hint, psk, assigned_program_hash, \
                          current_program_hash, schedule_interval_s, firmware_abi_version, \
-                         last_battery_mv, last_seen_epoch_s) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                         last_battery_mv, last_seen_epoch_s, firmware_version) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         params![
                             &record.node_id,
                             record.key_hint,
@@ -1151,6 +1165,7 @@ impl Storage for SqliteStorage {
                             record.firmware_abi_version,
                             record.last_battery_mv,
                             last_seen_epoch,
+                            record.firmware_version,
                         ],
                     )
                     .map_err(map_err)?;
@@ -1688,6 +1703,7 @@ mod tests {
             current_program_hash: None,
             schedule_interval_s: 60,
             firmware_abi_version: None,
+            firmware_version: None,
             last_battery_mv: None,
             last_seen: None,
             rf_channel: None,

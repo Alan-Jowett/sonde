@@ -271,7 +271,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Validates:** protocol.md §5.1 (WAKE message fields)
 
 **Procedure:**
-1. Create `NodeMessage::Wake { firmware_abi_version: 1, program_hash: vec![0xAA; 32], battery_mv: 3300 }`.
+1. Create `NodeMessage::Wake { firmware_abi_version: 1, program_hash: vec![0xAA; 32], battery_mv: 3300, firmware_version: "0.4.0".to_string() }`.
 2. Encode to CBOR.
 3. Decode with `msg_type = MSG_WAKE`.
 4. Assert: all fields match.
@@ -386,6 +386,9 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 1. Manually construct CBOR for a Wake with `battery_mv` omitted.
 2. Decode.
 3. Assert: `DecodeError::MissingField(KEY_BATTERY_MV)`.
+4. Manually construct CBOR for a Wake with `firmware_version` omitted.
+5. Decode.
+6. Assert: `DecodeError::MissingField(KEY_FIRMWARE_VERSION)`.
 
 ---
 
@@ -406,7 +409,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 **Procedure:**
 1. Encode a Wake message.
 2. Manually inspect the CBOR bytes.
-3. Assert: map keys are small positive integers (1, 2, 3), not text strings.
+3. Assert: map keys are small positive integers (1, 2, 3, 15), not text strings.
 
 ---
 

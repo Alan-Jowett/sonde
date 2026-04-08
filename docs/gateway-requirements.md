@@ -79,11 +79,11 @@ All control-plane messages produced by the gateway MUST be encoded in CBOR.
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the fixed binary header; the CBOR payload contains `firmware_abi_version`, `program_hash`, and `battery_mv`.
+The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the fixed binary header; the CBOR payload contains `firmware_abi_version`, `program_hash`, `battery_mv`, and `firmware_version`.
 
 **Acceptance criteria:**
 
-1. The gateway extracts `key_hint` and `nonce` from the fixed header and the three CBOR payload fields from a valid `WAKE` message.
+1. The gateway extracts `key_hint` and `nonce` from the fixed header and the four CBOR payload fields from a valid `WAKE` message.
 2. The gateway rejects `WAKE` messages missing any required field.
 3. Parsed values are made available for command-selection logic.
 

@@ -147,7 +147,7 @@ The modem MUST respond with `SET_CHANNEL_ACK` (§4.5) after the channel change t
 
 Sent when the modem has completed initialization and is ready to send and receive ESP-NOW frames. The gateway MUST wait for this message before sending any other commands.
 
-The `MODEM_READY` body contains two fields: a 4-byte big-endian `firmware_version` (encoded as major.minor.patch.build, one byte each) followed by the 6-byte `mac_address` (the modem's own WiFi MAC).
+The `MODEM_READY` body contains two fields: a 4-byte big-endian `firmware_version` (encoded as major.minor.patch.build, one byte each, derived from the crate's `CARGO_PKG_VERSION` at compile time) followed by the 6-byte `mac_address` (the modem's own WiFi MAC).
 
 ```
 ┌────────────────────────┬──────────────────┐

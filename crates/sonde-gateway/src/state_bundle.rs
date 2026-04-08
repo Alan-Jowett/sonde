@@ -80,6 +80,7 @@ const NODE_KEY_RF_CHANNEL: i64 = 10;
 const NODE_KEY_SENSORS: i64 = 11;
 const NODE_KEY_REGISTERED_BY: i64 = 12;
 const NODE_KEY_BATTERY_HISTORY: i64 = 13;
+const NODE_KEY_FW_VERSION: i64 = 14;
 
 // ── CBOR key IDs (program map) ──────────────────────────────────────────────
 
@@ -461,6 +462,13 @@ fn node_to_cbor(n: &NodeRecord) -> ciborium::value::Value {
                 )
             },
         ),
+        (
+            Value::Integer(NODE_KEY_FW_VERSION.into()),
+            match &n.firmware_version {
+                Some(v) => Value::Text(v.clone()),
+                None => Value::Null,
+            },
+        ),
     ])
 }
 
@@ -775,6 +783,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
     let mut sensors: Vec<SensorDescriptor> = Vec::new();
     let mut registered_by_phone_id: Option<u32> = None;
     let mut battery_history: Vec<BatteryReading> = Vec::new();
+    let mut firmware_version: Option<String> = None;
 
     for (k, v) in map {
         if let Value::Integer(key_int) = k {
@@ -933,6 +942,15 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
                         }
                     }
                 }
+                Some(NODE_KEY_FW_VERSION) => match v {
+                    Value::Text(s) => firmware_version = Some(s),
+                    Value::Null => {}
+                    _ => {
+                        return Err(BundleError::Decode(
+                            "firmware_version must be text or null".into(),
+                        ))
+                    }
+                },
                 _ => {} // ignore unknown fields for forward compatibility
             }
         }
@@ -976,6 +994,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         current_program_hash: current_program_hash.flatten(),
         schedule_interval_s,
         firmware_abi_version: firmware_abi_version.flatten(),
+        firmware_version,
         last_battery_mv: last_battery_mv.flatten(),
         last_seen,
         rf_channel,

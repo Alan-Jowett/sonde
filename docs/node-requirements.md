@@ -126,14 +126,15 @@ Each wake cycle MUST follow this structure: wake → send one or more `WAKE` mes
 **Source:** protocol.md §5.1
 
 **Description:**  
-The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 of the resident program, or zero-length if none installed), and `battery_mv`. The `nonce` header field MUST contain a fresh 64-bit random value from the hardware RNG.
+The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 of the resident program, or zero-length if none installed), `battery_mv`, and `firmware_version` (semantic version string derived from `CARGO_PKG_VERSION` at compile time, e.g., `"0.4.0"`). The `nonce` header field MUST contain a fresh 64-bit random value from the hardware RNG.
 
 **Acceptance criteria:**
 
 1. `firmware_abi_version` reflects the actual firmware ABI.
 2. `program_hash` matches the SHA-256 of the currently installed resident program.
 3. `battery_mv` is a current ADC reading of the battery voltage.
-4. The nonce is generated from the hardware RNG (not a constant or predictable value).
+4. `firmware_version` is a valid semantic version string matching the compiled firmware version.
+5. The nonce is generated from the hardware RNG (not a constant or predictable value).
 
 ---
 

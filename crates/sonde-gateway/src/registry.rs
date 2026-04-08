@@ -40,6 +40,7 @@ pub struct NodeRecord {
     pub current_program_hash: Option<Vec<u8>>,
     pub schedule_interval_s: u32,
     pub firmware_abi_version: Option<u32>,
+    pub firmware_version: Option<String>,
     pub last_battery_mv: Option<u32>,
     pub last_seen: Option<SystemTime>,
     /// RF channel the node operates on (1–13). Set during BLE pairing.
@@ -63,6 +64,7 @@ impl NodeRecord {
             current_program_hash: None,
             schedule_interval_s: 60,
             firmware_abi_version: None,
+            firmware_version: None,
             last_battery_mv: None,
             last_seen: None,
             rf_channel: None,
@@ -72,10 +74,16 @@ impl NodeRecord {
         }
     }
 
-    /// Update battery and ABI fields (called on each WAKE).
-    pub fn update_telemetry(&mut self, battery_mv: u32, firmware_abi_version: u32) {
+    /// Update battery, ABI, and firmware version fields (called on each WAKE).
+    pub fn update_telemetry(
+        &mut self,
+        battery_mv: u32,
+        firmware_abi_version: u32,
+        firmware_version: &str,
+    ) {
         self.last_battery_mv = Some(battery_mv);
         self.firmware_abi_version = Some(firmware_abi_version);
+        self.firmware_version = Some(firmware_version.to_string());
         let now = SystemTime::now();
         self.last_seen = Some(now);
 

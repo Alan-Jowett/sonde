@@ -189,6 +189,7 @@ pub fn wake_command_exchange<T: Transport, A: AeadProvider, S: Sha256Provider>(
         firmware_abi_version: FIRMWARE_ABI_VERSION,
         program_hash: program_hash.to_vec(),
         battery_mv,
+        firmware_version: env!("CARGO_PKG_VERSION").into(),
     };
     let payload_cbor = wake_msg
         .encode()

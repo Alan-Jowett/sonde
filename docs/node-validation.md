@@ -159,7 +159,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 4. Assert: `firmware_abi_version` matches firmware ABI.
 5. Assert: `program_hash` = hash X.
 6. Assert: `battery_mv` = 3300.
-7. Assert: the WAKE frame header `nonce` field (in the fixed 11-byte header, not the CBOR payload) is present and sourced from the hardware RNG.
+7. Assert: `firmware_version` is a valid semantic version string matching the compiled firmware version.
+8. Assert: the WAKE frame header `nonce` field (in the fixed 11-byte header, not the CBOR payload) is present and sourced from the hardware RNG.
 
 ---
 

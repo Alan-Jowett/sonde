@@ -65,6 +65,7 @@ impl TestNode {
             firmware_abi_version,
             program_hash: program_hash.to_vec(),
             battery_mv,
+            firmware_version: "0.4.0".into(),
         };
         let cbor = msg.encode().unwrap();
         encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
@@ -930,6 +931,7 @@ async fn t0602_wrong_key_rejected() {
         firmware_abi_version: 1,
         program_hash: vec![0u8; 32],
         battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
     };
     let cbor = msg.encode().unwrap();
     let frame = encode_frame(&header, &cbor, &wrong_psk, &GatewayAead, &RustCryptoSha256).unwrap();

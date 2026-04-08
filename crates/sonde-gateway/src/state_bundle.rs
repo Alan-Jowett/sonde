@@ -976,6 +976,7 @@ fn node_from_cbor(v: ciborium::value::Value) -> Result<NodeRecord, BundleError> 
         current_program_hash: current_program_hash.flatten(),
         schedule_interval_s,
         firmware_abi_version: firmware_abi_version.flatten(),
+        firmware_version: None,
         last_battery_mv: last_battery_mv.flatten(),
         last_seen,
         rf_channel,

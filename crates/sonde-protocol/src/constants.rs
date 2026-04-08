@@ -53,6 +53,7 @@ pub const KEY_CHUNK_INDEX: u64 = 11;
 pub const KEY_CHUNK_DATA: u64 = 12;
 pub const KEY_STARTING_SEQ: u64 = 13;
 pub const KEY_TIMESTAMP_MS: u64 = 14;
+pub const KEY_FIRMWARE_VERSION: u64 = 15;
 
 // CBOR integer keys (PEER_REQUEST / PEER_ACK messages)
 // Keys are scoped per msg_type — key 1 in PEER_REQUEST (encrypted_payload)

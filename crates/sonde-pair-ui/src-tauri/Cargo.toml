@@ -1,6 +1,6 @@
 [package]
 name = "sonde-pair-ui"
-version = "0.3.0"
+version.workspace = true
 edition = "2021"
 license = "MIT"
 description = "Tauri v2 BLE pairing tool for sonde sensor nodes"

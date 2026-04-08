@@ -654,13 +654,14 @@ impl Gateway {
         peer: PeerAddress,
     ) -> Option<(FrameHeader, Vec<u8>)> {
         // 1. Decode NodeMessage::Wake from payload
-        let (firmware_abi_version, program_hash, battery_mv) =
+        let (firmware_abi_version, program_hash, battery_mv, firmware_version) =
             match NodeMessage::decode(MSG_WAKE, payload) {
                 Ok(NodeMessage::Wake {
                     firmware_abi_version,
                     program_hash,
                     battery_mv,
-                }) => (firmware_abi_version, program_hash, battery_mv),
+                    firmware_version,
+                }) => (firmware_abi_version, program_hash, battery_mv, firmware_version),
                 Ok(_) => return None,
                 Err(e) => {
                     // GW-0101 AC3: log malformed inbound CBOR.
@@ -805,9 +806,9 @@ impl Gateway {
             _ => {}
         }
 
-        // 4. Update registry (battery_mv, firmware_abi_version, last_seen)
+        // 4. Update registry (battery_mv, firmware_abi_version, firmware_version, last_seen)
         let mut updated_node = node.clone();
-        updated_node.update_telemetry(battery_mv, firmware_abi_version);
+        updated_node.update_telemetry(battery_mv, firmware_abi_version, &firmware_version);
         let _ = self.storage.upsert_node(&updated_node).await;
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)
@@ -822,6 +823,10 @@ impl Gateway {
             details.insert(
                 "firmware_abi_version".to_string(),
                 ciborium::Value::Integer(firmware_abi_version.into()),
+            );
+            details.insert(
+                "firmware_version".to_string(),
+                ciborium::Value::Text(firmware_version.clone()),
             );
             let msg = crate::handler::HandlerMessage::Event {
                 node_id: node.node_id.clone(),

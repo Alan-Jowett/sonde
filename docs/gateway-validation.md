@@ -103,9 +103,9 @@ A configurable stub handler process (or in-process mock) that:
 **Validates:** GW-0102
 
 **Procedure:**
-1. Send a WAKE with `firmware_abi_version=1`, `program_hash=<known_hash>`, `battery_mv=3300`.
+1. Send a WAKE with `firmware_abi_version=1`, `program_hash=<known_hash>`, `battery_mv=3300`, `firmware_version="0.4.0"`.
 2. Assert: gateway responds with a COMMAND.
-3. Assert: the node's registry entry is updated with the received `firmware_abi_version` and `battery_mv`.
+3. Assert: the node's registry entry is updated with the received `firmware_abi_version`, `battery_mv`, and `firmware_version`.
 
 ---
 
@@ -116,6 +116,8 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Send a WAKE missing `battery_mv` (valid AEAD, valid header).
 2. Assert: gateway discards the frame (no COMMAND response).
+3. Send a WAKE missing `firmware_version` (valid AEAD, valid header).
+4. Assert: gateway discards the frame (no COMMAND response).
 
 ---
 

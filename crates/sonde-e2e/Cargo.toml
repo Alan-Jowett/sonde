@@ -1,6 +1,6 @@
 [package]
 name = "sonde-e2e"
-version = "0.3.0"
+version.workspace = true
 edition = "2021"
 description = "End-to-end integration tests for the sonde platform"
 

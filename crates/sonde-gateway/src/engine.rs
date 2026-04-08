@@ -661,7 +661,12 @@ impl Gateway {
                     program_hash,
                     battery_mv,
                     firmware_version,
-                }) => (firmware_abi_version, program_hash, battery_mv, firmware_version),
+                }) => (
+                    firmware_abi_version,
+                    program_hash,
+                    battery_mv,
+                    firmware_version,
+                ),
                 Ok(_) => return None,
                 Err(e) => {
                     // GW-0101 AC3: log malformed inbound CBOR.

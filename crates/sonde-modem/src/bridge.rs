@@ -49,7 +49,12 @@ const FIRMWARE_VERSION: [u8; 4] = {
     }
     let d1 = find_dot(V, 0);
     let d2 = find_dot(V, d1 + 1);
-    [parse_byte(V, 0, d1), parse_byte(V, d1 + 1, d2), parse_byte(V, d2 + 1, V.len()), 0]
+    [
+        parse_byte(V, 0, d1),
+        parse_byte(V, d1 + 1, d2),
+        parse_byte(V, d2 + 1, V.len()),
+        0,
+    ]
 };
 
 /// Maximum number of received radio frames forwarded per `poll()` call.

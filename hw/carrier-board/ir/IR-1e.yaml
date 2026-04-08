@@ -209,7 +209,7 @@ library_check:
 # Area Summary
 # ===========================================================================
 area_summary:
-  total_courtyard_area_mm2: 425.50
+  total_courtyard_area_mm2: 415.55
   # Breakdown:
   #   Q1:       13.06
   #   FB1:       1.75

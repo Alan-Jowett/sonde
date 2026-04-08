@@ -7,7 +7,9 @@
 >   KiCad 8 schematics, PCB layouts, Specctra DSN files, and
 >   manufacturing artifacts.
 > **Audience:** Implementers (human or LLM agent) building the crate.
-> **Related:** [protocol-crate-design.md](protocol-crate-design.md),
+> **Related:** [kicad-export-design.md](kicad-export-design.md),
+>   [kicad-export-validation.md](kicad-export-validation.md),
+>   [protocol-crate-design.md](protocol-crate-design.md),
 >   [gateway-requirements.md](gateway-requirements.md) (format reference)
 
 ---

@@ -17,7 +17,7 @@ file fixtures. No KiCad installation is required for unit or
 integration tests. KiCad-dependent tests (ERC, DRC, Gerber export)
 are gated behind a `kicad` feature flag or `#[ignore]` attribute.
 
-There are 62 test cases organized into 9 sections.
+There are 63 test cases organized into 9 sections.
 
 ### Test data
 

@@ -161,11 +161,17 @@ fn get_bytes(fields: &[(u64, Value)], key: u64) -> Result<Vec<u8>, DecodeError> 
         .ok_or(DecodeError::InvalidFieldType(key))
 }
 
+/// Maximum length for string fields decoded from the wire (e.g., firmware_version).
+/// Prevents unbounded allocation from malicious/buggy peers.
+const MAX_STRING_FIELD_LEN: usize = 32;
+
 fn get_string(fields: &[(u64, Value)], key: u64) -> Result<String, DecodeError> {
     let val = get_field(fields, key)?;
-    val.as_text()
-        .map(String::from)
-        .ok_or(DecodeError::InvalidFieldType(key))
+    match val.as_text() {
+        Some(s) if s.len() <= MAX_STRING_FIELD_LEN && s.is_ascii() => Ok(String::from(s)),
+        Some(_) => Err(DecodeError::InvalidFieldType(key)),
+        None => Err(DecodeError::InvalidFieldType(key)),
+    }
 }
 
 fn decode_nested_map(fields: &[(u64, Value)], key: u64) -> Result<Vec<(u64, Value)>, DecodeError> {

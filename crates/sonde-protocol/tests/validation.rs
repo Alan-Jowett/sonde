@@ -405,6 +405,74 @@ fn test_p030() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// T-P030b  Oversized / non-ASCII firmware_version rejected
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_p030b_oversized_firmware_version() {
+    // firmware_version exceeding 32 bytes must be rejected.
+    let map = vec![
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
+            ciborium::Value::Bytes(vec![0xAA; 32]),
+        ),
+        (
+            ciborium::Value::Integer(KEY_BATTERY_MV.into()),
+            ciborium::Value::Integer(3300.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
+            ciborium::Value::Text("a]".repeat(20)), // 40 bytes > 32
+        ),
+    ];
+    let mut cbor = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+    let err = NodeMessage::decode(MSG_WAKE, &cbor).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::InvalidFieldType(KEY_FIRMWARE_VERSION)),
+        "expected InvalidFieldType for oversized firmware_version, got {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_p030b_non_ascii_firmware_version() {
+    // Non-ASCII firmware_version must be rejected.
+    let map = vec![
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
+            ciborium::Value::Bytes(vec![0xAA; 32]),
+        ),
+        (
+            ciborium::Value::Integer(KEY_BATTERY_MV.into()),
+            ciborium::Value::Integer(3300.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
+            ciborium::Value::Text("0.4.0-β".into()),
+        ),
+    ];
+    let mut cbor = Vec::new();
+    ciborium::ser::into_writer(&ciborium::Value::Map(map), &mut cbor).unwrap();
+
+    let err = NodeMessage::decode(MSG_WAKE, &cbor).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::InvalidFieldType(KEY_FIRMWARE_VERSION)),
+        "expected InvalidFieldType for non-ASCII firmware_version, got {:?}",
+        err
+    );
+}
+
 #[test]
 fn test_p031() {
     let valid_cbor = NodeMessage::Wake {

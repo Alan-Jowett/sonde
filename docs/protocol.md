@@ -260,7 +260,7 @@ Sent at the start of each wake cycle (retransmitted up to 3 times if no COMMAND 
 | `firmware_abi_version` | uint | Yes | ABI version of the node firmware (bumped when BPF helper API changes). |
 | `program_hash` | bstr | Yes | Hash of the currently installed resident program. Zero-length if no program installed. |
 | `battery_mv` | uint | Yes | Battery voltage in millivolts. |
-| `firmware_version` | tstr | Yes | Firmware semantic version string (e.g., `"0.4.0"`). Derived from `CARGO_PKG_VERSION` at compile time. |
+| `firmware_version` | tstr | Yes | Firmware version string (e.g., `"0.4.0"`). ASCII-only, maximum 32 bytes. Derived from `CARGO_PKG_VERSION` at compile time. |
 
 `key_hint` and `nonce` are in the fixed header and are not duplicated in the payload. Both are already authenticated by the AEAD construction (the header is AAD).
 
@@ -690,10 +690,10 @@ There is no separate wire protocol version field. The protocol evolves through:
 
 1. **CBOR extensibility** — both sides ignore unknown map keys. New optional fields and new command types can be added without breaking existing nodes.
 2. **`firmware_abi_version` gating** — the gateway knows each node's ABI version from the `WAKE` message and only sends commands/fields the node understands.
-3. **`firmware_version` reporting** — from version 0.4.0, nodes include a semantic version string in `WAKE` (key 15), enabling the gateway to identify the firmware build running on each node.
-4. **Immutability rule** — existing field semantics and message types are never redefined. All changes are additive only.
+3. **`firmware_version` reporting** — from version 0.4.0, nodes include a version string in `WAKE` (key 15), enabling the gateway to identify the firmware build running on each node.
+4. **Immutability rule** — existing field semantics and message types are never redefined. Changes are additive except during pre-1.0 breaking upgrades (see below).
 
-> **Breaking change in 0.4.0:** The `firmware_version` field (key 15) in `WAKE` is **required**. Gateways running 0.4.0+ will silently discard `WAKE` messages from pre-0.4.0 nodes that do not include this field. All nodes must be updated to 0.4.0 firmware.
+> **Breaking change in 0.4.0:** The `firmware_version` field (key 15) in `WAKE` is **required**. Gateways running 0.4.0+ will silently discard `WAKE` messages from pre-0.4.0 nodes that do not include this field. All nodes must be updated to 0.4.0 firmware. Pre-1.0 versions reserve the right to make breaking protocol changes when necessary; post-1.0 all changes will be strictly additive.
 
 This avoids version negotiation complexity and matches the reality that node firmware updates require physical access and are rare.
 

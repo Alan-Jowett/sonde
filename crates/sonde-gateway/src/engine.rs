@@ -813,7 +813,7 @@ impl Gateway {
 
         // 4. Update registry (battery_mv, firmware_abi_version, firmware_version, last_seen)
         let mut updated_node = node.clone();
-        updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version.clone());
+        updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version);
         let _ = self.storage.upsert_node(&updated_node).await;
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)
@@ -829,10 +829,12 @@ impl Gateway {
                 "firmware_abi_version".to_string(),
                 ciborium::Value::Integer(firmware_abi_version.into()),
             );
-            details.insert(
-                "firmware_version".to_string(),
-                ciborium::Value::Text(firmware_version.clone()),
-            );
+            if let Some(ref fv) = updated_node.firmware_version {
+                details.insert(
+                    "firmware_version".to_string(),
+                    ciborium::Value::Text(fv.clone()),
+                );
+            }
             let msg = crate::handler::HandlerMessage::Event {
                 node_id: node.node_id.clone(),
                 event_type: "node_online".to_string(),

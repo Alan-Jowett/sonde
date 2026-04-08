@@ -21,41 +21,39 @@ use sonde_protocol::modem::{
 
 use crate::status::ModemCounters;
 
+/// Parse a single Cargo version component (digits only, must fit in u8).
+const fn parse_version_component(s: &str) -> u8 {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        panic!("empty Cargo version component");
+    }
+
+    let mut val = 0u16;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < b'0' || b > b'9' {
+            panic!("non-digit Cargo version component");
+        }
+        val = val * 10 + (b - b'0') as u16;
+        if val > u8::MAX as u16 {
+            panic!("Cargo version component exceeds u8 range");
+        }
+        i += 1;
+    }
+
+    val as u8
+}
+
 /// Firmware version derived from the workspace Cargo version at compile time.
 /// Encoded as [major, minor, patch, build] (one byte each) for the
 /// MODEM_READY wire format.
-const FIRMWARE_VERSION: [u8; 4] = {
-    const V: &str = env!("CARGO_PKG_VERSION");
-    const fn parse_byte(s: &str, start: usize, end: usize) -> u8 {
-        let mut val = 0u8;
-        let bytes = s.as_bytes();
-        let mut i = start;
-        while i < end {
-            val = val * 10 + (bytes[i] - b'0');
-            i += 1;
-        }
-        val
-    }
-    const fn find_dot(s: &str, start: usize) -> usize {
-        let bytes = s.as_bytes();
-        let mut i = start;
-        while i < bytes.len() {
-            if bytes[i] == b'.' {
-                return i;
-            }
-            i += 1;
-        }
-        bytes.len()
-    }
-    let d1 = find_dot(V, 0);
-    let d2 = find_dot(V, d1 + 1);
-    [
-        parse_byte(V, 0, d1),
-        parse_byte(V, d1 + 1, d2),
-        parse_byte(V, d2 + 1, V.len()),
-        0,
-    ]
-};
+const FIRMWARE_VERSION: [u8; 4] = [
+    parse_version_component(env!("CARGO_PKG_VERSION_MAJOR")),
+    parse_version_component(env!("CARGO_PKG_VERSION_MINOR")),
+    parse_version_component(env!("CARGO_PKG_VERSION_PATCH")),
+    0,
+];
 
 /// Maximum number of received radio frames forwarded per `poll()` call.
 /// Prevents starvation of serial decode and other poll() work under

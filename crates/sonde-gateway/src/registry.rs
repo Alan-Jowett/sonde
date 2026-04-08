@@ -79,11 +79,11 @@ impl NodeRecord {
         &mut self,
         battery_mv: u32,
         firmware_abi_version: u32,
-        firmware_version: &str,
+        firmware_version: String,
     ) {
         self.last_battery_mv = Some(battery_mv);
         self.firmware_abi_version = Some(firmware_abi_version);
-        self.firmware_version = Some(firmware_version.to_string());
+        self.firmware_version = Some(firmware_version);
         let now = SystemTime::now();
         self.last_seen = Some(now);
 

@@ -813,7 +813,7 @@ impl Gateway {
 
         // 4. Update registry (battery_mv, firmware_abi_version, firmware_version, last_seen)
         let mut updated_node = node.clone();
-        updated_node.update_telemetry(battery_mv, firmware_abi_version, &firmware_version);
+        updated_node.update_telemetry(battery_mv, firmware_abi_version, firmware_version.clone());
         let _ = self.storage.upsert_node(&updated_node).await;
 
         // 4a. Emit node_online EVENT to handlers (GW-0507)

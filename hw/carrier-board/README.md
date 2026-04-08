@@ -80,7 +80,7 @@ Use a soldering iron at 350°C with lead-free solder.
 ## Schematic Summary
 
 ```
-VBAT (2×AA lithium, JST PH) ──┬──[C3 1µF]── GND
+VBAT (2×AA lithium, JST PH) ──┬──[C3 10µF]── GND
                                │
                                ├──► XIAO 3V3 pin (direct, no regulator)
                                │

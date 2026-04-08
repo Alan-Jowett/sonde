@@ -12,8 +12,8 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` or `#[test]` with
-file fixtures. No KiCad installation is required for unit or
+All tests in this document are pure Rust `#[test]` tests, including
+file-fixture-based integration tests. No KiCad installation is required for unit or
 integration tests. KiCad-dependent tests (ERC, DRC, Gerber export)
 are gated behind a `kicad` feature flag or `#[ignore]` attribute.
 

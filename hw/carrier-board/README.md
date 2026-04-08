@@ -9,7 +9,7 @@ module and provides connectors for I2C (Qwiic), 1-Wire sensors, and a 2×AA lith
 battery pack. The board powers the MCU directly from the battery (no LDO) and
 includes a P-FET load switch for gating sensor power during deep sleep.
 
-**Carrier board deep sleep current: ~0.01 µA** (essentially zero).
+**Carrier board deep sleep current (excluding the XIAO ESP32-C3 module): ~0.01 µA** (essentially zero).
 
 ## Prerequisites
 
@@ -64,8 +64,8 @@ includes a P-FET load switch for gating sensor power during deep sleep.
 JLCPCB SMT assembly handles the SMD components (resistors, caps, MOSFET,
 JST SH connectors). The following through-hole parts need hand soldering:
 
-- **J3, J4** — JST XH 3-pin (1-Wire connectors)
-- **J5** — JST PH 2-pin (battery connector)
+- **J2** — JST XH 3-pin (1-Wire connector)
+- **J3** — JST PH 2-pin (battery connector)
 - **J6, J7** — 1×7 female pin headers (XIAO socket)
 
 Use a soldering iron at 350°C with lead-free solder.
@@ -98,7 +98,7 @@ VBAT (2×AA lithium, JST PH) ──┬──[C3 1µF]── GND
                                  SDA,SCL          1-Wire DQ    VBAT_SENSE
                                  (GPIO6,7)        (GPIO3)      (GPIO2 ADC)
                                     │               │
-                                 J1,J2 Qwiic     J3,J4 JST XH
+                                 J1 Qwiic        J2 JST XH
 ```
 
 ## BOM Cost (qty 100)
@@ -113,5 +113,5 @@ VBAT (2×AA lithium, JST PH) ──┬──[C3 1µF]── GND
 
 ## Design Documents
 
-- [Requirements Specification](../../docs/carrier-board-requirements.md)
-- [Schematic Design](../../docs/carrier-board-design.md)
+- Manufacturing and assembly guidance: this document (`hw/carrier-board/README.md`)
+- Hardware design sources: IR files in `hw/carrier-board/ir/`

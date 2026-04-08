@@ -413,10 +413,20 @@ mod tests {
         let rh_le = rh_mpercent.to_le_bytes();
 
         [
-            t_bytes[0], t_bytes[1], t_crc,
-            rh_bytes[0], rh_bytes[1], rh_crc,
-            temp_le[0], temp_le[1], temp_le[2], temp_le[3],
-            rh_le[0], rh_le[1], rh_le[2], rh_le[3],
+            t_bytes[0],
+            t_bytes[1],
+            t_crc,
+            rh_bytes[0],
+            rh_bytes[1],
+            rh_crc,
+            temp_le[0],
+            temp_le[1],
+            temp_le[2],
+            temp_le[3],
+            rh_le[0],
+            rh_le[1],
+            rh_le[2],
+            rh_le[3],
         ]
     }
 
@@ -490,10 +500,7 @@ mod tests {
                 Value::Integer(3.into()),
                 Value::Text("sensor-1".to_string()),
             ),
-            (
-                Value::Integer(5.into()),
-                Value::Bytes(vec![0x00; 14]),
-            ),
+            (Value::Integer(5.into()), Value::Bytes(vec![0x00; 14])),
         ];
 
         let mut buf = Vec::new();

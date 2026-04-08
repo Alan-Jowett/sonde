@@ -1,0 +1,5 @@
+{"device":"dev-board","humidity_pct":24.748,"raw_hex":"6415e13ef954785b0000ac600000","rh_raw":16121,"t_raw":25621,"temperature_c":23.416,"timestamp":"2026-04-08T00:27:34Z"}
+{"device":"dev-board","humidity_pct":22.44,"raw_hex":"634a1f3a3f365a590000a8570000","rh_raw":14911,"t_raw":25418,"temperature_c":22.874,"timestamp":"2026-04-08T00:32:33Z"}
+{"device":"dev-board","humidity_pct":24.973,"raw_hex":"633c413f6f3f355900008d610000","rh_raw":16239,"t_raw":25404,"temperature_c":22.837,"timestamp":"2026-04-08T00:37:33Z"}
+{"device":"dev-board","humidity_pct":22.124,"raw_hex":"635b6d399941875900006c560000","rh_raw":14745,"t_raw":25435,"temperature_c":22.919,"timestamp":"2026-04-08T00:42:33Z"}
+{"device":"dev-board","humidity_pct":26.026,"raw_hex":"63475341975252590000aa650000","rh_raw":16791,"t_raw":25415,"temperature_c":22.866,"timestamp":"2026-04-08T00:47:33Z"}

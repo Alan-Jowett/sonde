@@ -1230,7 +1230,7 @@ Component-to-artifact mapping:
 | BLE Pairing | ble-pairing-tool-requirements.md | ble-pairing-tool-design.md | ble-pairing-tool-validation.md | crates/sonde-pair + pairing-tool |
 | Protocol | — | protocol-crate-design.md | protocol-crate-validation.md | crates/sonde-protocol |
 | BPF Interpreter | — | — | safe-bpf-interpreter-validation.md | crates/sonde-bpf |
-| Hardware | hw-requirements.md | hw-design.md + hw-schematic-design.md | — | hw/ |
+| Hardware | kicad-export-requirements.md | kicad-export-design.md | kicad-export-validation.md | crates/sonde-kicad + hw/ |
 | E2E | — | — | e2e-validation.md | crates/sonde-e2e |
 
 Conventions:

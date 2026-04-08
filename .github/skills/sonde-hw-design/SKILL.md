@@ -30,23 +30,97 @@ This is a multi-phase, interactive workflow. The pipeline follows a
 producing universal intermediate representations (IRs), and pluggable
 EDA tool backends that lower IRs to tool-specific design files.
 
+## Critical Constraints — Read Before Doing Anything
+
+**You MUST execute this pipeline one pass at a time, in order.** You
+start at Pass 0. You MUST NOT skip ahead to later passes.
+
+**You MUST NOT generate any code, scripts, schematics, PCB files, or
+EDA-tool-specific output until the pipeline reaches the corresponding
+post-binding tool step.** The front-end passes produce ONLY structured
+YAML intermediate representations (IRs). If you find yourself writing
+Python, KiCad S-expressions, Altium files, Eagle XML, or any code that
+directly generates a schematic or PCB, you have violated the pipeline —
+STOP and return to the current pass.
+
+**Permitted output per pass:**
+
+| Pass | Permitted output | Prohibited output |
+|------|-----------------|-------------------|
+| Pass 0 | IR-0 YAML file only | Code, schematics, PCB files |
+| Pass 1 | IR-1 YAML file only | Code, schematics, PCB files |
+| Pass 1b | IR-PB YAML file only | Code, schematics, PCB files |
+| Pass 2 | IR-2 YAML file only | Code, schematics, PCB files, Python scripts |
+| Binding | User's backend choice (text) | Any generated files |
+| Post-binding tools | Backend-specific files via tool calls | LLM-authored EDA files |
+| Pass 3 | IR-3 YAML file only | Code, schematics, PCB files |
+
+**Any scripts you write for post-binding tool steps MUST read their
+data from the IR files at runtime.** Scripts MUST NOT hardcode component
+lists, net names, pin assignments, values, or library mappings as Python
+dicts or string constants. If the script would produce the same output
+with the IR files deleted, it is hardcoding data — rewrite it to load
+from the IRs. The only permitted constants in generated code are
+format-specific syntax (S-expression structure, coordinate math, font
+sizes, file headers).
+
+**Fail-stop rule**: If a script cannot read or parse a required IR file
+(file missing, malformed YAML, missing expected fields), it MUST raise
+an error and halt. It MUST NOT fall back to generating the data from
+memory, prior conversation context, or hardcoded defaults. A missing
+IR means an earlier pass needs to be re-executed, not worked around.
+
+**Gate-driven iteration**: When a tool step has a validation gate (e.g.,
+DRC with zero violations, ERC with zero errors), and the gate fails,
+you MUST iterate on the script to fix the violations — do NOT ask the
+user whether to proceed. Only present the output for user approval
+AFTER the gate criteria are satisfied. Asking the user to accept a
+failing gate is itself a gate violation.
+
+**You MUST NOT proceed to the next pass until the current pass's
+validation gate is satisfied AND the user explicitly approves.** Ask
+the user to confirm before advancing. Treat silence as "not approved."
+
+**Each pass produces exactly one IR artifact as a YAML file on disk.**
+Do not hold IR content in conversation memory — write it to a file.
+
+**Why this matters**: A previous monolithic workflow attempted to lower
+high-level requirements directly to KiCad Python scripts without IRs,
+causing: (1) electrically correct but visually unreadable schematics,
+(2) layout failures from lack of physical size awareness, and (3)
+design intent encoded in code rather than reviewable artifacts. This
+pipeline exists specifically to prevent that failure mode. If you skip
+the IR steps, you WILL reproduce these failures.
+
+## Current Pass Tracking
+
+When you begin this workflow, announce:
+```
+CURRENT PASS: Pass 0 — Requirements Elicitation
+STATUS: In progress
+NEXT: Pass 1 — Component Selection (blocked until Pass 0 gate passes)
+```
+
+Update this status block each time a pass completes and the user
+approves. This keeps both you and the user oriented.
+
 ## Architecture
 
 ```
 Front-End (LLM reasoning, backend-agnostic)
-  Pass 0: Requirements Elicitation       → IR-0
-  Pass 1: Component Selection            → IR-1
-  Tool:   Generic Geometry Derivation    → IR-1g
-  Pass 1b: Power Budget                  → IR-PB
-  Pass 2: Circuit Design                 → IR-2
+  Pass 0: Requirements Elicitation       → IR-0  (YAML)
+  Pass 1: Component Selection            → IR-1  (YAML)
+  Tool:   Generic Geometry Derivation    → IR-1g (YAML)
+  Pass 1b: Power Budget                  → IR-PB (YAML)
+  Pass 2: Circuit Design                 → IR-2  (YAML)
                     ↓
           [Backend Binding Point]
                     ↓
 Post-Binding (may use backend-specific data)
   Tool:   Library Check                  → missing-components list
-  Tool:   Geometry Enrichment            → IR-1e
-  LLM:    Custom Footprint Description   → IR-FP (for missing components)
-  Pass 3: Physical Placement Constraints → IR-3
+  Tool:   Geometry Enrichment            → IR-1e (YAML)
+  LLM:    Custom Footprint Description   → IR-FP (YAML, for missing components)
+  Pass 3: Physical Placement Constraints → IR-3  (YAML)
   Tool:   Schematic Rendering            → EDA schematic file
   Tool:   PCB Layout                     → EDA PCB file
   Tool:   Manufacturing Artifacts        → Gerber, BOM, pick-and-place
@@ -75,6 +149,12 @@ Post-Binding (may use backend-specific data)
 
 6. **IR-PB is the single authority for power data** — IR-2 references
    the IR-PB power tree by cross-reference, not by duplication.
+
+7. **IRs are the design, scripts are dumb transforms** — Any code
+   generated by the pipeline (renderers, layout scripts, generators)
+   is a mechanical translation from IR → EDA format. The code reads
+   the IRs; it does not contain the design. If the code cannot read
+   the IRs, it halts — it never fills in the gaps from memory.
 
 ## Inputs
 
@@ -224,7 +304,7 @@ Required content:
 ### Pass 0 — Requirements Elicitation (Interactive)
 
 **Input**: User's natural language description of the hardware project.
-**Output**: IR-0 (Structured Requirements).
+**Output**: IR-0 (Structured Requirements) — a YAML file, nothing else.
 **Mode**: Interactive — you MUST ask clarifying questions and probe for
 implicit requirements across at least: power, environment, interfaces,
 form factor, regulatory. Do NOT auto-proceed without explicit user
@@ -236,12 +316,20 @@ measurable acceptance criterion.
 
 **Gate**: IR-0 schema validation + explicit human approval.
 
+### Critical Rule
+
+**Do NOT proceed to Pass 1 until the user explicitly says requirements
+are complete** (e.g., "APPROVED", "proceed", "looks good"). Write
+IR-0 as a YAML file on disk, present it to the user, ask for approval,
+and WAIT. The ONLY artifact you produce in this pass is IR-0.yaml.
+
 ---
 
 ### Pass 1 — Component Selection
 
 **Input**: IR-0.
-**Output**: IR-1, then IR-1g (via deterministic tool step).
+**Output**: IR-1 (Component Bill) — a YAML file, nothing else. Then
+IR-1g is derived via deterministic tool step.
 
 Select components satisfying IR-0 requirements. For each component:
 - Verify the part number exists and is currently orderable via web search
@@ -253,12 +341,19 @@ Select components satisfying IR-0 requirements. For each component:
 **Gate**: All IR-0 requirements mapped to ≥1 component; ASSUMED part
 numbers flagged; explicit human approval.
 
+### Critical Rule
+
+**Do NOT proceed to Pass 1b until the user explicitly approves the
+component selection.** Write IR-1 as a YAML file on disk, present it
+to the user, ask for approval, and WAIT. The ONLY artifact you produce
+in this pass is IR-1.yaml (plus IR-1g.yaml via tool step).
+
 ---
 
 ### Pass 1b — Power Budget
 
 **Input**: IR-0, IR-1.
-**Output**: IR-PB.
+**Output**: IR-PB (Power Budget) — a YAML file, nothing else.
 
 Compute the power budget from IR-1 components. Model the full regulation
 chain. If margin is insufficient (<20%), halt with blocking warning and
@@ -268,13 +363,21 @@ regulator topology). Require human decision before proceeding.
 **Gate**: Total power within source capacity with ≥20% margin; regulator
 thermal dissipation within package ratings.
 
+### Critical Rule
+
+**Do NOT proceed to Pass 2 until the user explicitly approves the
+power budget.** Write IR-PB as a YAML file on disk, present it to the
+user, ask for approval, and WAIT. The ONLY artifact you produce in this
+pass is IR-PB.yaml.
+
 ---
 
 ### Pass 2 — Circuit Design
 
 **Input**: IR-0, IR-1, IR-1g (generic geometry for rough feasibility),
 IR-PB.
-**Output**: IR-2.
+**Output**: IR-2 (Logical Circuit Description) — a YAML file, nothing
+else. NOT Python. NOT a schematic. NOT KiCad code. A YAML netlist.
 
 Produce a complete circuit description. You MUST have access to component
 datasheet specifications. Every supporting circuitry value MUST cite a
@@ -296,6 +399,17 @@ labels, halt and request additional context.
 shorts, all components connected); power tree consistency with IR-PB;
 explicit human approval.
 
+### Critical Rule
+
+**Do NOT proceed to backend binding until the user explicitly approves
+the circuit design.** Write IR-2 as a YAML file on disk, present it to
+the user, ask for approval, and WAIT.
+
+**Self-check**: IR-2 is a YAML netlist. If you have written any Python,
+any KiCad S-expressions, any `.kicad_sch` content, or any code that
+generates a schematic, you have violated the pipeline. Delete that
+output, return to this pass, and produce IR-2 as YAML.
+
 ---
 
 ### Backend Binding Point
@@ -304,9 +418,17 @@ After Pass 2, all front-end passes are complete. Ask the user to select
 the target EDA backend (e.g., KiCad, Altium). All subsequent steps MAY
 use backend-specific data.
 
+### Critical Rule
+
+**Do NOT proceed past the binding point until the user has explicitly
+named the target EDA backend.** Do not assume KiCad or any other tool.
+
 ---
 
 ### Post-Binding Tool Steps
+
+These are deterministic tool calls — NOT LLM reasoning. You invoke
+command-line tools or APIs. You do NOT write the EDA files yourself.
 
 **Library Check**: Map IR-1 generic descriptions to backend-specific
 symbol and footprint library names. Report missing components.
@@ -316,15 +438,24 @@ footprint library for bounding box and courtyard dimensions (accurate
 to 0.1mm). Produce IR-1e.
 
 **Custom Footprint Generation** (if needed): For components missing
-library entries, generate IR-FP from datasheet specs (LLM-assisted),
-then invoke the backend footprint generator to create library entries.
+library entries, generate IR-FP from datasheet specs (LLM-assisted
+YAML), then invoke the backend footprint generator to create library
+entries.
+
+### Critical Rule
+
+**Do NOT proceed to Pass 3 until the library check, geometry
+enrichment, and any custom footprint generation are complete and the
+user has reviewed the results.** Present the library check report
+(matched/missing components) and IR-1e to the user.
 
 ---
 
 ### Pass 3 — Physical Placement Constraints (Interactive, Post-Binding)
 
 **Input**: IR-0, IR-1e (enriched geometry), IR-2, IR-PB.
-**Output**: IR-3.
+**Output**: IR-3 (Physical Placement Constraints) — a YAML file,
+nothing else.
 
 This is an interactive post-binding LLM pass. Ask the user for board
 dimensions and connector positions — do NOT assume without confirmation.
@@ -339,35 +470,105 @@ courtyard-based area delta as feedback.
 no conflicting constraints; explicit human approval of connector
 placement.
 
+### Critical Rule
+
+**Do NOT proceed to schematic rendering until the user explicitly
+approves the placement constraints.** Write IR-3 as a YAML file on
+disk, present it to the user, ask for approval, and WAIT.
+
 ---
 
 ### Schematic Rendering (Backend Tool Step)
 
-**Input**: IR-2, backend library mappings (+ generated footprints from
-IR-FP if applicable).
+**Input**: IR-2, IR-1e (library mappings), IR-3 (placement zones),
+plus generated footprints from IR-FP if applicable.
 **Output**: EDA-tool-specific schematic file.
 
-Deterministic tool call — NOT LLM reasoning. The renderer MUST use
-correct library symbols (not generic blocks), group components by IR-2
-functional groups, and draw wire connections (not just net labels on
-disconnected pins).
+Deterministic tool call — NOT LLM reasoning. You invoke the backend's
+schematic renderer. You do NOT write KiCad S-expressions or schematic
+code yourself. The renderer MUST use correct library symbols (not
+generic blocks), group components by IR-2 functional groups, and draw
+wire connections (not just net labels on disconnected pins).
+
+**If you write a script to generate the schematic**, the script MUST
+read ALL design data from the IR files at runtime — specific field
+mappings:
+- Component list, reference designators → `IR-2.netlist[].ref_des`
+- Component values → `IR-2.netlist[].value`
+- Net names, pin connections → `IR-2.netlist[].pins[].net`
+- Functional group membership → `IR-2.functional_groups[].components`
+- Signal flow direction → `IR-2.functional_groups[].signal_flow`
+- Library symbol names → `IR-1e.components[].kicad_symbol`
+- Footprint names → `IR-1e.components[].kicad_footprint`
+- Placement zone anchors → `IR-3.component_zones[].zone.anchor`
+- Placement zone extents → `IR-3.component_zones[].zone.extent_mm`
+
+The script MUST NOT contain hardcoded Python dicts, lists, or string
+constants that duplicate data from the IRs. The only permitted constants
+are KiCad format syntax (S-expression structure, coordinate math, font
+sizes, file headers).
+
+**Self-check**: If deleting the IR YAML files would not change the
+script's output, the script is hardcoding data instead of consuming
+the IRs — rewrite it to load and iterate the IR data structures.
+
+**Fail-stop**: If the script cannot read or parse a required IR file,
+it MUST raise an error and halt. It MUST NOT fall back to generating
+data from memory or hardcoded defaults.
 
 **Gate**: EDA tool's ERC with zero errors; human visual inspection
 confirming correct symbols, visible wire paths, and distinct functional
-groups.
+groups. If ERC fails, iterate on the script — do NOT ask the user
+whether to proceed with errors.
+
+### Critical Rule
+
+**Do NOT proceed to PCB layout until the ERC passes with zero errors
+AND the user explicitly approves the rendered schematic.**
 
 ---
 
 ### PCB Layout (Backend Tool Step)
 
-**Input**: IR-2 (netlist), IR-3 (placement constraints).
+**Input**: IR-2 (netlist), IR-3 (placement constraints), IR-1e
+(component geometry).
 **Output**: EDA-tool-specific PCB file.
 
 Deterministic tool call. All components placed within board outline, no
 courtyard overlaps, connectors per IR-3 edge placement, all nets routed.
 
+**If you write a script**, the script MUST read ALL placement and
+geometry data from the IR files — specific field mappings:
+- Board outline dimensions → `IR-3.board_outline.width_mm`,
+  `IR-3.board_outline.height_mm`
+- Board layer count → `IR-3.board_outline.layers`
+- Connector positions → `IR-3.connector_placement[].position.x_mm`,
+  `IR-3.connector_placement[].position.y_mm` (use these coordinates
+  DIRECTLY — do not recompute or approximate)
+- Component zone anchors → `IR-3.component_zones[].zone.anchor.x_mm`,
+  `IR-3.component_zones[].zone.anchor.y_mm`
+- Component zone extents → `IR-3.component_zones[].zone.extent_mm`
+- Proximity constraints → `IR-3.component_zones[].proximity_constraint_mm`
+- Component courtyard sizes → `IR-1e.components[].courtyard_mm` (use
+  these to prevent overlaps when distributing components within zones)
+- Component bounding boxes → `IR-1e.components[].bbox_mm`
+- Footprint names → `IR-1e.components[].kicad_footprint`
+- Netlist → `IR-2.netlist[].pins[].net` (for copper connectivity)
+- Keep-out zones → `IR-3.keepout_zones[]` (if defined)
+- Routing constraints → `IR-3.routing_constraints[]` (trace widths,
+  impedance targets)
+
+No hardcoded component data — same IR consumption and fail-stop rules
+as schematic rendering apply.
+
 **Gate**: DRC with zero violations; unrouted net count = 0; human layout
-inspection.
+inspection. If DRC fails, iterate on the script — do NOT ask the user
+whether to proceed with violations.
+
+### Critical Rule
+
+**Do NOT proceed to manufacturing artifact generation until DRC passes
+with zero violations AND the user explicitly approves the PCB layout.**
 
 ---
 
@@ -379,6 +580,12 @@ inspection.
 **Gate**: Cross-artifact consistency (Gerber layer count matches stackup,
 BOM count matches schematic, pick-and-place count matches BOM); human
 Gerber inspection in viewer; explicit approval.
+
+### Critical Rule
+
+**The design is NOT complete until the user has inspected Gerbers in a
+viewer and explicitly confirmed they are correct.** Do not declare
+success until this final gate passes.
 
 ---
 
@@ -432,6 +639,12 @@ Gerber inspection in viewer; explicit approval.
 - **CON-003**: IR schemas MUST NOT reference EDA-tool-specific concepts.
 - **CON-004**: NO re-use of a failed IR as input to the next pass
   without modification.
+- **CON-005**: Generated scripts MUST read design data from IR files;
+  NO hardcoded component data in code.
+- **CON-006**: If a script cannot read a required IR, it MUST halt;
+  NO fallback to memory or hardcoded defaults.
+- **CON-007**: If a gate fails, the agent MUST iterate to fix it;
+  NO asking the user to accept a failing gate.
 
 ---
 
@@ -458,5 +671,8 @@ Gerber inspection in viewer; explicit approval.
 - Do NOT duplicate power tree data in IR-2 — reference IR-PB.
 - Do NOT proceed with >30% ASSUMED labels — request more context.
 - Do NOT assume connector placement without user confirmation.
+- Do NOT hardcode IR data in generated scripts — read from YAML files.
+- Do NOT fall back to memory if an IR file is unreadable — halt instead.
+- Do NOT ask the user to accept a failing gate — iterate to fix it.
 - Multi-board designs, firmware development, enclosure design, circuit
   simulation, and production-scale DFM optimization are out of scope.

@@ -1,0 +1,673 @@
+# IR-0: Structured Requirements — Sonde Carrier Board
+# Pipeline: Pass 0 — Requirements Elicitation
+# Source: F:\carrier_board\carrier-board-requirements.md
+# Generated: 2026-04-08
+
+schema_version: "1.0.0"
+project: sonde-carrier
+description: >
+  2-layer carrier PCB for Seeed Studio XIAO ESP32-C3 module providing
+  Qwiic I2C, 1-Wire, P-FET power gating, and 2×AA lithium battery input.
+  No LDO — battery voltage feeds XIAO 3V3 pin directly via ferrite bead.
+
+# ===========================================================================
+# Functional Requirements
+# ===========================================================================
+functional_requirements:
+
+  # --- MCU Interface ---
+  - id: REQ-HW-0100
+    title: "XIAO ESP32-C3 socket"
+    description: >
+      The board SHALL accept a Seeed Studio XIAO ESP32-C3 module via two
+      1×7 female pin headers at 2.54 mm pitch, spaced 17.5 mm center-to-center.
+    priority: MUST
+    acceptance_criteria:
+      - "XIAO ESP32-C3 module inserts into J6/J7 headers without force-fit"
+      - "Header spacing measures 17.5 mm ± 0.2 mm center-to-center"
+    source: CB-0100
+
+  - id: REQ-HW-0101
+    title: "DIP-socket insertion"
+    description: >
+      The XIAO module SHALL plug in via pre-soldered pins inserted into
+      carrier board headers (DIP-socket style). No soldering to carrier required.
+    priority: MUST
+    acceptance_criteria:
+      - "Module inserts and removes by hand without tools"
+      - "Electrical contact verified at all 14 pins"
+    source: CB-0101
+
+  - id: REQ-HW-0102
+    title: "Power routing via 3V3 pin"
+    description: >
+      The board SHALL route power to the XIAO 3V3 pin, bypassing the XIAO's
+      onboard 5 V regulator. The XIAO 5V/VIN pin SHALL NOT be connected.
+    priority: MUST
+    acceptance_criteria:
+      - "VBAT rail connects to XIAO 3V3 pin through ferrite bead"
+      - "XIAO 5V/VIN pin is electrically disconnected (no trace, no via)"
+    source: CB-0102
+
+  - id: REQ-HW-0103
+    title: "Ground connection"
+    description: "The board SHALL connect to the XIAO GND pin(s)."
+    priority: MUST
+    acceptance_criteria:
+      - "Continuity measured between carrier GND plane and XIAO GND pin(s)"
+    source: CB-0103
+
+  # --- Connectors ---
+  - id: REQ-HW-0200
+    title: "Qwiic I2C connector"
+    description: >
+      The board SHALL provide 1 Qwiic-compatible connector (JST SH 4-pin,
+      1.0 mm pitch, SM04B-SRSS-TB) placed at a board edge with housing
+      facing outward for horizontal cable exit.
+    priority: MUST
+    acceptance_criteria:
+      - "SM04B-SRSS-TB connector footprint present and routed"
+      - "Connector housing faces outward at board edge"
+      - "Qwiic cable mates without obstruction"
+    source: CB-0200
+
+  - id: REQ-HW-0201
+    title: "Qwiic pinout"
+    description: >
+      Qwiic connector pinout SHALL follow SparkFun Qwiic standard:
+      pin 1 = GND, pin 2 = VCC (SENSOR_V), pin 3 = SDA, pin 4 = SCL.
+    priority: MUST
+    acceptance_criteria:
+      - "Pin 1 nets to GND, pin 2 to SENSOR_V, pin 3 to SDA, pin 4 to SCL"
+    source: CB-0201
+
+  - id: REQ-HW-0202
+    title: "I2C GPIO assignment"
+    description: "I2C bus signals: SDA = GPIO6, SCL = GPIO7."
+    priority: MUST
+    acceptance_criteria:
+      - "SDA net connects to XIAO pin D4 (GPIO6)"
+      - "SCL net connects to XIAO pin D5 (GPIO7)"
+    source: CB-0202
+
+  - id: REQ-HW-0203
+    title: "1-Wire connector"
+    description: >
+      The board SHALL provide 1 connector for 1-Wire sensors using a JST XH
+      3-pin right-angle header (2.5 mm pitch, S3B-XH-A) at a board edge
+      with housing facing outward.
+    priority: MUST
+    acceptance_criteria:
+      - "S3B-XH-A connector footprint present and routed"
+      - "Right-angle orientation with housing at board edge"
+    source: CB-0203
+
+  - id: REQ-HW-0204
+    title: "1-Wire pinout"
+    description: >
+      1-Wire connector pinout: pin 1 = GND, pin 2 = DATA, pin 3 = VCC (SENSOR_V).
+    priority: MUST
+    acceptance_criteria:
+      - "Pin 1 nets to GND, pin 2 to 1W_DATA, pin 3 to SENSOR_V"
+    source: CB-0204
+
+  - id: REQ-HW-0205
+    title: "1-Wire GPIO assignment"
+    description: "1-Wire data line: GPIO3."
+    priority: MUST
+    acceptance_criteria:
+      - "1W_DATA net connects to XIAO pin D1 (GPIO3)"
+    source: CB-0205
+
+  - id: REQ-HW-0206
+    title: "Battery connector"
+    description: >
+      The board SHALL provide a battery input connector using a JST PH 2-pin
+      right-angle header (2.0 mm pitch, S2B-PH-K-S). Pin 1 = VCC (+),
+      pin 2 = GND (−). Connector at board edge with housing facing outward.
+    priority: MUST
+    acceptance_criteria:
+      - "S2B-PH-K-S footprint present and routed"
+      - "Pin 1 connects to VBAT, pin 2 connects to GND"
+      - "Right-angle, housing at board edge"
+    source: CB-0206
+
+  # --- Power ---
+  - id: REQ-HW-0300
+    title: "Battery input specification"
+    description: >
+      The board SHALL accept 2×AA lithium batteries (nominal 3.0 V,
+      max 3.6 V fresh, min ~1.8 V depleted) via the JST PH battery connector.
+    priority: MUST
+    acceptance_criteria:
+      - "Board operates correctly with input voltage 1.8 V to 3.6 V"
+      - "No component exceeds absolute maximum rating at 3.6 V input"
+    source: CB-0300
+
+  - id: REQ-HW-0301
+    title: "Direct battery feed via ferrite bead"
+    description: >
+      The board SHALL feed VBAT through a series ferrite bead (FB1) to the
+      XIAO 3V3 pin, bypassing the XIAO's 5 V regulator. No LDO.
+      VDD varies with battery state (2.4–3.6 V). Accepted risk: 2×AA lithium
+      cells can produce up to 3.64 V open-circuit, at ESP32-C3 absolute
+      maximum 3.6 V. Under load this drops below 3.6 V. Ferrite bead
+      dampens battery insertion transients.
+    priority: MUST
+    acceptance_criteria:
+      - "Ferrite bead FB1 in series between VBAT and XIAO 3V3 pin"
+      - "No LDO or linear regulator in the power path"
+      - "Voltage at XIAO 3V3 pin ≤ 3.6 V under 10 mA load"
+    source: CB-0301
+
+  - id: REQ-HW-0302
+    title: "VBAT decoupling capacitor"
+    description: >
+      A 10 µF ceramic decoupling capacitor (C3) SHALL be placed near the
+      XIAO 3V3 pin for inrush absorption and TX burst charge reservoir.
+    priority: MUST
+    acceptance_criteria:
+      - "10 µF ± 20% ceramic capacitor placed within 5 mm of XIAO 3V3 pin"
+      - "Voltage rating ≥ 6.3 V"
+    source: CB-0302
+
+  - id: REQ-HW-0303
+    title: "No reverse polarity protection"
+    description: >
+      No reverse polarity protection required — polarized JST PH connector
+      provides mechanical keying.
+    priority: INFO
+    acceptance_criteria:
+      - "JST PH connector is keyed (polarized housing)"
+    source: CB-0303
+
+  - id: REQ-HW-0304
+    title: "No power switch"
+    description: >
+      No power switch required — power controlled by battery
+      connect/disconnect.
+    priority: INFO
+    acceptance_criteria:
+      - "No power switch component in BOM"
+    source: CB-0304
+
+  # --- Power Gating ---
+  - id: REQ-HW-0400
+    title: "P-FET high-side load switch"
+    description: >
+      The board SHALL include a P-channel MOSFET high-side load switch
+      (Si2301CDS-T1-GE3, SOT-23) to gate a SENSOR_V power rail.
+    priority: MUST
+    acceptance_criteria:
+      - "Si2301CDS-T1-GE3 in SOT-23 package placed and routed"
+      - "Source connected to VBAT, drain to SENSOR_V rail"
+    source: CB-0400
+
+  - id: REQ-HW-0401
+    title: "SENSOR_V rail loads"
+    description: >
+      The SENSOR_V rail SHALL power: Qwiic VCC pins, 1-Wire VCC pins,
+      I2C pull-up resistors, 1-Wire pull-up resistor, and battery voltage divider.
+    priority: MUST
+    acceptance_criteria:
+      - "All listed loads net to SENSOR_V rail in schematic"
+      - "No ungated load connected to VBAT directly (except ferrite bead path)"
+    source: CB-0401
+
+  - id: REQ-HW-0402
+    title: "P-FET gate control"
+    description: >
+      The P-FET gate SHALL be controlled by GPIO4 (XIAO pin D2).
+      GPIO4 has RTC hold capability for deep sleep state retention.
+    priority: MUST
+    acceptance_criteria:
+      - "P-FET gate net connects to XIAO pin D2 (GPIO4)"
+    source: CB-0402
+
+  - id: REQ-HW-0403
+    title: "Gate pull-up resistor"
+    description: >
+      A 100 kΩ pull-up resistor from P-FET gate to VBAT SHALL ensure
+      MOSFET defaults to OFF during boot, reset, and deep sleep.
+    priority: MUST
+    acceptance_criteria:
+      - "100 kΩ ± 5% resistor between SENSOR_EN net and VBAT"
+      - "SENSOR_V measures < 0.1 V when GPIO4 is floating/high-Z"
+    source: CB-0403
+
+  - id: REQ-HW-0404
+    title: "P-FET control logic"
+    description: >
+      Firmware drives GPIO4 LOW to turn on SENSOR_V (Vgs ≈ −VBAT)
+      and HIGH to turn off.
+    priority: INFO
+    acceptance_criteria:
+      - "SENSOR_V ≈ VBAT when GPIO4 driven LOW"
+      - "SENSOR_V < 0.1 V when GPIO4 driven HIGH"
+    source: CB-0404
+
+  - id: REQ-HW-0405
+    title: "Deep sleep current target"
+    description: >
+      Total carrier board deep sleep current (excluding XIAO module)
+      SHALL be ≤ 20 µA. Design target: < 1 µA.
+    priority: MUST
+    acceptance_criteria:
+      - "Measured deep sleep current of carrier board alone ≤ 20 µA"
+      - "Calculated leakage budget < 1 µA"
+    source: CB-0405
+
+  - id: REQ-HW-0406
+    title: "SENSOR_V decoupling"
+    description: >
+      The SENSOR_V rail SHALL include a 1 µF decoupling capacitor.
+    priority: MUST
+    acceptance_criteria:
+      - "1 µF ± 20% ceramic capacitor on SENSOR_V rail, near P-FET drain"
+    source: CB-0406
+
+  # --- Sensor Interface ---
+  - id: REQ-HW-0500
+    title: "I2C pull-up resistors"
+    description: >
+      The I2C bus (SDA, SCL) SHALL have 4.7 kΩ pull-up resistors to
+      SENSOR_V (gated rail).
+    priority: MUST
+    acceptance_criteria:
+      - "4.7 kΩ ± 5% resistor from SDA to SENSOR_V"
+      - "4.7 kΩ ± 5% resistor from SCL to SENSOR_V"
+    source: CB-0500
+
+  - id: REQ-HW-0501
+    title: "1-Wire pull-up resistor"
+    description: >
+      The 1-Wire data line SHALL have a 4.7 kΩ pull-up resistor to
+      SENSOR_V (gated rail).
+    priority: MUST
+    acceptance_criteria:
+      - "4.7 kΩ ± 5% resistor from 1W_DATA to SENSOR_V"
+    source: CB-0501
+
+  - id: REQ-HW-0502
+    title: "Pull-ups on gated rail"
+    description: >
+      All pull-up resistors on gated SENSOR_V rail ensures zero leakage
+      in deep sleep.
+    priority: INFO
+    acceptance_criteria:
+      - "No pull-up resistor connects to VBAT directly"
+    source: CB-0502
+
+  # --- Battery Voltage Sensing ---
+  - id: REQ-HW-0600
+    title: "Battery voltage divider"
+    description: >
+      The board SHALL include a resistor voltage divider on the SENSOR_V
+      rail (gated) for battery voltage sensing.
+    priority: MUST
+    acceptance_criteria:
+      - "Voltage divider present on SENSOR_V rail"
+      - "Divider powered from gated rail (zero current in deep sleep)"
+    source: CB-0600
+
+  - id: REQ-HW-0601
+    title: "ADC GPIO assignment"
+    description: >
+      The divider midpoint SHALL connect to GPIO2 (XIAO pin D0, ADC-capable).
+    priority: MUST
+    acceptance_criteria:
+      - "Divider midpoint net connects to XIAO pin D0 (GPIO2)"
+    source: CB-0601
+
+  - id: REQ-HW-0602
+    title: "Divider ratio"
+    description: >
+      The divider SHALL use 100 kΩ / 100 kΩ resistors (1:2 ratio).
+      At VBAT = 3.6 V → ADC = 1.8 V; at VBAT = 3.0 V → ADC = 1.5 V.
+    priority: MUST
+    acceptance_criteria:
+      - "Upper resistor: 100 kΩ ± 1% from SENSOR_V to midpoint"
+      - "Lower resistor: 100 kΩ ± 1% from midpoint to GND"
+      - "ADC voltage = VBAT / 2 ± 2%"
+    source: CB-0602
+
+  - id: REQ-HW-0603
+    title: "ADC filter capacitor"
+    description: >
+      A 100 nF capacitor from ADC pin to GND for sampling accuracy
+      with 50 kΩ Thévenin source impedance. Settling: ~35 ms.
+    priority: MUST
+    acceptance_criteria:
+      - "100 nF ± 10% capacitor from GPIO2 (ADC) to GND"
+    source: CB-0603
+
+  # --- Physical ---
+  - id: REQ-HW-0700
+    title: "2-layer PCB"
+    description: "The PCB SHALL be 2-layer (front copper + back copper)."
+    priority: MUST
+    acceptance_criteria:
+      - "PCB stackup: 2 copper layers, FR4 substrate"
+    source: CB-0700
+
+  - id: REQ-HW-0701
+    title: "Board dimensions"
+    description: "The board SHALL be as compact as feasible. Target: ≤ 25 mm × 35 mm."
+    priority: SHOULD
+    acceptance_criteria:
+      - "Board outline ≤ 25 mm × 35 mm"
+    source: CB-0701
+
+  - id: REQ-HW-0702
+    title: "No mounting holes"
+    description: >
+      The board SHALL NOT include mounting holes. Secured via snap-fit,
+      adhesive, friction fit, or slot-in rails.
+    priority: MUST
+    acceptance_criteria:
+      - "No mounting hole features in PCB design"
+    source: CB-0702
+
+  - id: REQ-HW-0703
+    title: "No LEDs"
+    description: "The board SHALL NOT include any LEDs (power budget priority)."
+    priority: MUST
+    acceptance_criteria:
+      - "No LED components in BOM or schematic"
+    source: CB-0703
+
+  - id: REQ-HW-0704
+    title: "Silkscreen labels"
+    description: >
+      Silkscreen SHALL label all connectors (J1–J3, J6–J7), polarity
+      markings, and the sonde project name.
+    priority: SHOULD
+    acceptance_criteria:
+      - "All connector reference designators visible on silkscreen"
+      - "Polarity markings (+/−) on battery connector"
+      - "Project name 'sonde' on silkscreen"
+    source: CB-0704
+
+  - id: REQ-HW-0705
+    title: "Antenna clearance"
+    description: >
+      The XIAO uses u.FL external antenna variant. The carrier board
+      SHALL provide clearance for u.FL connector and antenna cable routing.
+      No copper keep-out zone required.
+    priority: MUST
+    acceptance_criteria:
+      - "No component or connector within 3 mm of XIAO antenna edge"
+    source: CB-0705
+
+  - id: REQ-HW-0706
+    title: "USB-C access"
+    description: >
+      The XIAO SHALL be oriented so USB-C port extends beyond or is flush
+      with one board edge for direct cable access.
+    priority: MUST
+    acceptance_criteria:
+      - "USB-C port accessible without obstruction from board edge"
+    source: CB-0706
+
+  - id: REQ-HW-0707
+    title: "Connector edge placement"
+    description: >
+      All sensor and battery connectors (J1–J3) SHALL be right-angle at
+      board edges with housings facing outward. No connectors on USB-access
+      edge or opposite (u.FL) edge.
+    priority: MUST
+    acceptance_criteria:
+      - "J1, J2, J3 placed at left or right board edges"
+      - "No connector on USB edge or antenna edge"
+      - "All connector housings face outward"
+    source: CB-0707
+
+  # --- Environmental ---
+  - id: REQ-HW-0800
+    title: "Operating temperature range"
+    description: "Operating temperature: −20 °C to +60 °C."
+    priority: MUST
+    acceptance_criteria:
+      - "All components rated for −20 °C to +60 °C minimum"
+    source: CB-0800
+
+  - id: REQ-HW-0801
+    title: "Component temperature rating"
+    description: "All components SHALL be rated for the operating temperature range."
+    priority: MUST
+    acceptance_criteria:
+      - "Datasheet operating temperature covers −20 °C to +60 °C for every BOM line"
+    source: CB-0801
+
+  # --- Manufacturing ---
+  - id: REQ-HW-0900
+    title: "JLCPCB target fab"
+    description: "Design SHALL target JLCPCB for PCB fabrication and SMT assembly."
+    priority: MUST
+    acceptance_criteria:
+      - "Gerber files pass JLCPCB online DFM check"
+      - "SMT assembly order accepted by JLCPCB"
+    source: CB-0900
+
+  - id: REQ-HW-0901
+    title: "Deliverables"
+    description: >
+      Deliverables: KiCad 8 project files, Gerber files (or export instructions),
+      JLCPCB-format BOM (CSV), JLCPCB-format CPL (CSV).
+    priority: MUST
+    acceptance_criteria:
+      - "KiCad 8 .kicad_pro, .kicad_sch, .kicad_pcb files present"
+      - "BOM CSV with LCSC part numbers"
+      - "CPL CSV with X/Y/rotation per component"
+    source: CB-0901
+
+  - id: REQ-HW-0902
+    title: "JLCPCB/LCSC parts availability"
+    description: "All SMD components SHOULD be in JLCPCB/LCSC parts library."
+    priority: SHOULD
+    acceptance_criteria:
+      - "Each SMD component has a valid LCSC part number"
+      - "Part status: 'In Stock' at time of order"
+    source: CB-0902
+
+  - id: REQ-HW-0903
+    title: "Through-hole hand soldering"
+    description: >
+      Through-hole connectors (JST XH, JST PH, female headers) MAY require
+      hand soldering if JLCPCB THT assembly is not used.
+    priority: INFO
+    acceptance_criteria:
+      - "THT components identified in BOM with hand-solder note"
+    source: CB-0903
+
+  - id: REQ-HW-0904
+    title: "KiCad 8 EDA format"
+    description: "The EDA source format SHALL be KiCad 8."
+    priority: MUST
+    acceptance_criteria:
+      - "All design files open in KiCad 8 without errors"
+    source: CB-0904
+
+# ===========================================================================
+# Electrical Constraints
+# ===========================================================================
+electrical_constraints:
+  power_source:
+    type: "2×AA lithium battery"
+    voltage_nominal_V: 3.0
+    voltage_max_V: 3.6
+    voltage_min_V: 1.8
+    connector: "JST PH 2-pin (S2B-PH-K-S)"
+    traceability: [REQ-HW-0300, REQ-HW-0206]
+
+  power_regulation:
+    type: "none (direct feed via ferrite bead)"
+    ferrite_bead: "120 Ω @ 100 MHz, 0402"
+    traceability: [REQ-HW-0301]
+
+  power_gating:
+    device: "Si2301CDS-T1-GE3 (P-FET, SOT-23)"
+    control_pin: "GPIO4"
+    default_state: "OFF (gate pulled to VBAT via 100 kΩ)"
+    gated_rail: "SENSOR_V"
+    traceability: [REQ-HW-0400, REQ-HW-0402, REQ-HW-0403]
+
+  deep_sleep_current:
+    max_uA: 20
+    target_uA: 1
+    note: "Carrier board only, excludes XIAO module"
+    traceability: [REQ-HW-0405]
+
+  decoupling:
+    - location: "XIAO 3V3 pin"
+      value: "10 µF"
+      package: "0805"
+      traceability: [REQ-HW-0302]
+    - location: "SENSOR_V rail"
+      value: "1 µF"
+      package: "0402"
+      traceability: [REQ-HW-0406]
+    - location: "ADC pin (GPIO2)"
+      value: "100 nF"
+      package: "0402"
+      traceability: [REQ-HW-0603]
+
+# ===========================================================================
+# Mechanical Constraints
+# ===========================================================================
+mechanical_constraints:
+  board:
+    layers: 2
+    target_dimensions_mm: "25 × 35"
+    substrate: "FR4"
+    thickness_mm: 1.6
+    surface_finish: "HASL (lead-free)"
+    copper_weight_oz: 1
+    mounting_holes: false
+    traceability: [REQ-HW-0700, REQ-HW-0701, REQ-HW-0702]
+
+  connector_placement:
+    usb_edge: "XIAO USB-C flush/extending, no other connectors"
+    antenna_edge: "XIAO u.FL antenna end, no connectors, clearance required"
+    side_edges: "J1 (Qwiic), J2 (1-Wire), J3 (Battery) — right-angle, outward"
+    traceability: [REQ-HW-0705, REQ-HW-0706, REQ-HW-0707]
+
+# ===========================================================================
+# Environmental Constraints
+# ===========================================================================
+environmental_constraints:
+  temperature:
+    operating_min_C: -20
+    operating_max_C: 60
+    traceability: [REQ-HW-0800, REQ-HW-0801]
+  humidity: "N/A (prototype board)"
+  vibration: "N/A (prototype board)"
+  altitude: "N/A (prototype board)"
+  ingress_protection: "N/A (prototype board)"
+  emc: "N/A (prototype board)"
+
+# ===========================================================================
+# Regulatory Constraints
+# ===========================================================================
+regulatory_constraints:
+  fcc: "N/A — XIAO module is pre-certified (FCC ID: 2AYPK-XIAOESP32C3)"
+  ce: "N/A — XIAO module is pre-certified"
+  ul: "N/A — prototype board, no UL listing required"
+
+# ===========================================================================
+# Interface Requirements
+# ===========================================================================
+interface_requirements:
+  - interface: "I2C"
+    protocol: "I2C (standard/fast mode)"
+    connector: "JST SH 4-pin (SM04B-SRSS-TB) — Qwiic compatible"
+    pin_count: 4
+    direction: "bidirectional"
+    gpio: {sda: GPIO6, scl: GPIO7}
+    pull_ups: "4.7 kΩ to SENSOR_V"
+    traceability: [REQ-HW-0200, REQ-HW-0201, REQ-HW-0202, REQ-HW-0500]
+
+  - interface: "1-Wire"
+    protocol: "Dallas 1-Wire"
+    connector: "JST XH 3-pin RA (S3B-XH-A)"
+    pin_count: 3
+    direction: "bidirectional"
+    gpio: {data: GPIO3}
+    pull_up: "4.7 kΩ to SENSOR_V"
+    traceability: [REQ-HW-0203, REQ-HW-0204, REQ-HW-0205, REQ-HW-0501]
+
+  - interface: "Battery ADC"
+    protocol: "Analog (resistor divider)"
+    pin_count: 1
+    direction: "input"
+    gpio: {adc: GPIO2}
+    divider_ratio: "1:2 (100 kΩ / 100 kΩ)"
+    filter: "100 nF to GND"
+    traceability: [REQ-HW-0600, REQ-HW-0601, REQ-HW-0602, REQ-HW-0603]
+
+  - interface: "Sensor power control"
+    protocol: "GPIO (digital output)"
+    pin_count: 1
+    direction: "output"
+    gpio: {sensor_en: GPIO4}
+    logic: "LOW = sensors ON, HIGH = sensors OFF"
+    traceability: [REQ-HW-0402, REQ-HW-0404]
+
+# ===========================================================================
+# GPIO Pin Map
+# ===========================================================================
+gpio_pin_map:
+  - xiao_pin: "D0 (A0)"
+    gpio: GPIO2
+    function: "Battery voltage ADC"
+    traceability: [REQ-HW-0601]
+  - xiao_pin: "D1 (A1)"
+    gpio: GPIO3
+    function: "1-Wire data"
+    traceability: [REQ-HW-0205]
+  - xiao_pin: "D2 (A2)"
+    gpio: GPIO4
+    function: "SENSOR_EN (P-FET gate)"
+    traceability: [REQ-HW-0402]
+  - xiao_pin: "D3 (A3)"
+    gpio: GPIO5
+    function: "Spare"
+    traceability: []
+  - xiao_pin: "D4"
+    gpio: GPIO6
+    function: "I2C SDA"
+    traceability: [REQ-HW-0202]
+  - xiao_pin: "D5"
+    gpio: GPIO7
+    function: "I2C SCL"
+    traceability: [REQ-HW-0202]
+  - xiao_pin: "D6"
+    gpio: GPIO21
+    function: "Spare (UART TX)"
+    traceability: []
+  - xiao_pin: "D7"
+    gpio: GPIO20
+    function: "Spare (UART RX)"
+    traceability: []
+  - xiao_pin: "D8"
+    gpio: GPIO8
+    function: "Spare (SPI SCK)"
+    traceability: []
+  - xiao_pin: "D9"
+    gpio: GPIO9
+    function: "Spare (BOOT — avoid LOW at boot)"
+    traceability: []
+  - xiao_pin: "D10"
+    gpio: GPIO10
+    function: "Spare (SPI MOSI)"
+    traceability: []
+
+# ===========================================================================
+# Cost Constraint
+# ===========================================================================
+cost_constraint:
+  target_retail_usd: 5.00
+  bom_plus_assembly_target_usd: 3.00
+  quantity: 100
+  note: "XIAO ESP32-C3 (~$5) supplied separately by user"
+  traceability: "carrier-board-requirements.md header"

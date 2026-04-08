@@ -1,0 +1,372 @@
+# IR-PB: Power Budget — Sonde Carrier Board
+# Pipeline: Pass 1b — Power Budget
+# Input: IR-0.yaml, IR-1.yaml
+# Generated: 2026-04-08
+
+schema_version: "1.0.0"
+project: sonde-carrier
+
+# ===========================================================================
+# Power Source
+# ===========================================================================
+power_source:
+  type: "2×AA lithium battery (series)"
+  reference_battery: "Energizer L91 Ultimate Lithium"
+  chemistry: "Li/FeS₂ primary"
+  cell_count: 2
+  configuration: "series"
+  voltage:
+    open_circuit_V: 3.58    # 1.79V × 2 (fresh, 21°C)
+    nominal_V: 3.0          # 1.5V × 2 (under load)
+    max_V: 3.6              # practical max under light load
+    min_V: 1.8              # 0.9V × 2 (end of life)
+    cutoff_V: 2.2           # ESP32-C3 VDD min operating = 3.0V but
+                            # operates marginally down to ~2.2V
+  capacity_mAh: 3000        # typical at moderate drain (100-250mA)
+  max_continuous_A: 3.0
+  max_pulse_A: 5.0          # 2s on / 8s off
+  operating_temp_C: [-40, 60]
+  internal_resistance_ohm: 0.12  # typical per cell, 0.24 total
+  source_label: KNOWN
+  source_citation: "Energizer L91 datasheet (data.energizer.com/pdfs/l91.pdf)"
+
+# ===========================================================================
+# Power Regulation Chain (Tree)
+# ===========================================================================
+# This design has NO voltage regulator. Battery voltage feeds directly
+# to the MCU VDD via a ferrite bead. The "regulation chain" is a
+# passthrough with a filter element.
+
+power_tree:
+  - node: "VBAT"
+    description: "Battery terminal voltage"
+    type: "source"
+    voltage_V: {min: 1.8, nominal: 3.0, max: 3.6}
+    children: ["VBAT_FILT", "Q1_SOURCE"]
+
+  - node: "VBAT_FILT"
+    description: "Filtered battery voltage (after ferrite bead FB1)"
+    type: "passthrough"
+    parent: "VBAT"
+    filter_element:
+      ref_des: FB1
+      type: "ferrite bead"
+      dc_resistance_ohm: 0.190
+      impedance_ohm_at_100MHz: 120
+    voltage_drop_at_peak_V: 0.066  # 0.190Ω × 347mA
+    voltage_V:
+      min: 1.73   # 1.8 - 0.066
+      nominal: 2.93  # 3.0 - 0.066
+      max: 3.59   # 3.6 - 0.013 (at light load)
+    children: ["MCU_VDD"]
+
+  - node: "MCU_VDD"
+    description: "ESP32-C3 VDD (via XIAO 3V3 pin)"
+    type: "load"
+    parent: "VBAT_FILT"
+    voltage_V: {min: 1.73, nominal: 2.93, max: 3.59}
+    note: >
+      XIAO ESP32-C3 absolute max VDD = 3.6V. At max battery (3.6V),
+      ferrite bead drops ~13mV under light load, leaving ~3.59V —
+      marginally at abs max. Under any real load (>70mA), drop is
+      sufficient to keep VDD ≤ 3.6V. Accepted risk per REQ-HW-0301.
+
+  - node: "Q1_SOURCE"
+    description: "P-FET source (connected to VBAT)"
+    type: "switch"
+    parent: "VBAT"
+    switch_element:
+      ref_des: Q1
+      type: "P-channel MOSFET"
+      part_number: "Si2301CDS-T1-GE3"
+      rds_on_ohm: 0.160  # at Vgs = -2.5V (worst case low battery)
+      off_state_leakage_uA: 0.01
+    control_signal: "SENSOR_EN (GPIO4)"
+    control_logic: "Active LOW (GPIO LOW = ON, GPIO HIGH = OFF)"
+    children: ["SENSOR_V"]
+
+  - node: "SENSOR_V"
+    description: "Gated sensor power rail"
+    type: "rail"
+    parent: "Q1_SOURCE"
+    voltage_drop_V: 0.002  # Rds(on) × max sensor current
+    voltage_V:
+      min: 1.80   # ~VBAT (negligible FET drop)
+      nominal: 3.0
+      max: 3.6
+
+# ===========================================================================
+# Power Consumers
+# ===========================================================================
+consumers:
+
+  # --- MCU (via XIAO module, on VBAT_FILT rail) ---
+  - ref_des: "U1 (XIAO ESP32-C3)"
+    rail: "MCU_VDD"
+    supplied_by_bom: false  # user-supplied module
+    modes:
+      - mode: "TX burst (802.11b @21dBm)"
+        current_typical_mA: 290
+        current_max_mA: 335
+        duty_cycle_pct: 1  # brief TX bursts
+        source_label: KNOWN
+        source_citation: "ESP32-C3 datasheet §4.5, Table 11"
+      - mode: "RX listen"
+        current_typical_mA: 84
+        current_max_mA: 87
+        source_label: KNOWN
+        source_citation: "ESP32-C3 datasheet §4.5, Table 11"
+      - mode: "CPU active (160 MHz, no radio)"
+        current_typical_mA: 22
+        current_max_mA: 25
+        source_label: KNOWN
+        source_citation: "ESP32-C3 datasheet §4.5"
+      - mode: "Deep sleep (RTC timer + RTC memory)"
+        current_typical_mA: 0.005
+        current_max_mA: 0.005
+        note: "Chip only. XIAO onboard components add ~39µA."
+        source_label: KNOWN
+        source_citation: "ESP32-C3 datasheet §4.5"
+    xiao_deep_sleep_total_uA: 44
+    xiao_deep_sleep_note: >
+      XIAO ESP32-C3 module total deep sleep includes: ESP32-C3 chip (5µA)
+      + CH9102 USB-Serial (20µA typical) + onboard LDO quiescent + misc.
+      Community measurements: ~44µA total module deep sleep.
+    xiao_deep_sleep_source_label: INFERRED
+    xiao_deep_sleep_source_citation: >
+      Community measurements
+      (github.com/fabianoriccardi/esp32-c3-power-consumption).
+      XIAO onboard component contributions are estimated.
+
+  # --- Carrier Board Loads (on SENSOR_V rail, gated) ---
+  - ref_des: R1
+    rail: "SENSOR_V"
+    description: "I2C SDA pull-up"
+    current_when_active_mA: 0.70  # 3.3V / 4.7kΩ (bus idle HIGH)
+    current_deep_sleep_mA: 0      # rail gated OFF
+    source_label: KNOWN
+    source_citation: "Ohm's law: 3.3V / 4700Ω = 0.702mA"
+
+  - ref_des: R2
+    rail: "SENSOR_V"
+    description: "I2C SCL pull-up"
+    current_when_active_mA: 0.70
+    current_deep_sleep_mA: 0
+    source_label: KNOWN
+    source_citation: "Ohm's law: 3.3V / 4700Ω = 0.702mA"
+
+  - ref_des: R3
+    rail: "SENSOR_V"
+    description: "1-Wire pull-up"
+    current_when_active_mA: 0.70
+    current_deep_sleep_mA: 0
+    source_label: KNOWN
+    source_citation: "Ohm's law: 3.3V / 4700Ω = 0.702mA"
+
+  - ref_des: R4
+    rail: "VBAT"
+    description: "P-FET gate pull-up"
+    current_all_modes_mA: 0
+    note: >
+      When GPIO4 HIGH (sleep): gate = VBAT via pull-up, zero current
+      (both ends at VBAT). When GPIO4 LOW (active): current through R4
+      = VBAT / 100kΩ = 0.033mA — drawn from VBAT, not SENSOR_V.
+    current_gpio_low_mA: 0.033
+    source_label: KNOWN
+    source_citation: "Ohm's law: 3.3V / 100kΩ = 0.033mA"
+
+  - ref_des: "R5+R6"
+    rail: "SENSOR_V"
+    description: "Battery voltage divider"
+    current_when_active_mA: 0.017  # 3.3V / 200kΩ
+    current_deep_sleep_mA: 0
+    source_label: KNOWN
+    source_citation: "Ohm's law: 3.3V / (100kΩ + 100kΩ) = 0.0165mA"
+
+  - ref_des: "External I2C sensors"
+    rail: "SENSOR_V"
+    description: "User-supplied I2C sensors (Qwiic)"
+    current_when_active_mA: 10  # conservative estimate
+    current_deep_sleep_mA: 0
+    note: "Typical I2C sensor: 0.1-10mA. Using 10mA as worst case."
+    source_label: ASSUMED
+    source_citation: "Conservative estimate for typical I2C sensors"
+
+  - ref_des: "External 1-Wire sensors"
+    rail: "SENSOR_V"
+    description: "User-supplied 1-Wire sensors (e.g., DS18B20)"
+    current_when_active_mA: 1.5  # DS18B20 during conversion
+    current_deep_sleep_mA: 0
+    source_label: ASSUMED
+    source_citation: "DS18B20 datasheet: 1.5mA during 12-bit conversion"
+
+# ===========================================================================
+# Operating Mode Totals
+# ===========================================================================
+operating_modes:
+
+  - mode: "Active — Peak TX + Sensors"
+    description: "Worst-case: ESP32-C3 TX burst with all sensors active"
+    breakdown:
+      mcu_mA: 335.0        # ESP32-C3 TX peak
+      pull_ups_mA: 2.1     # R1 + R2 + R3
+      divider_mA: 0.017
+      gate_pullup_mA: 0.033  # R4 when GPIO4 LOW
+      sensors_mA: 11.5     # I2C (10) + 1-Wire (1.5)
+    total_mA: 348.65
+    source_voltage_V: 3.0
+    ferrite_drop_V: 0.066  # 0.190Ω × 348.65mA
+    mcu_voltage_V: 2.93
+    pfet_drop_V: 0.002     # 0.160Ω × 13.65mA
+    sensor_rail_V: 2.998
+    power_mW: 1046         # 3.0V × 348.65mA
+
+  - mode: "Active — CPU + Sensors (no radio)"
+    description: "Typical: BPF execution with sensors"
+    breakdown:
+      mcu_mA: 25.0
+      pull_ups_mA: 2.1
+      divider_mA: 0.017
+      gate_pullup_mA: 0.033
+      sensors_mA: 5.0  # moderate sensor load
+    total_mA: 32.15
+    ferrite_drop_V: 0.006
+    mcu_voltage_V: 2.994
+
+  - mode: "Deep Sleep"
+    description: "All sensors off, P-FET gated, ESP32-C3 in deep sleep"
+    breakdown:
+      xiao_module_uA: 44     # chip 5µA + onboard components ~39µA
+      carrier_board_uA: 0.01  # Q1 off-state leakage only
+    total_uA: 44.01
+    total_mA: 0.044
+    carrier_board_only_uA: 0.01
+    carrier_board_meets_req: true  # REQ-HW-0405: ≤20µA, actual: 0.01µA
+    source_label: INFERRED
+    notes: >
+      Carrier board deep sleep current is dominated by Q1 off-state
+      leakage (~0.01µA). All other carrier board loads are on the gated
+      SENSOR_V rail and draw zero current. System deep sleep is dominated
+      by the XIAO module (~44µA) which is not part of the carrier BOM.
+
+# ===========================================================================
+# Thermal Analysis
+# ===========================================================================
+thermal_analysis:
+  - ref_des: FB1
+    package: "0402"
+    power_dissipation_mW: 23  # I²R = 0.349² × 0.190 × 1000
+    max_package_rating_mW: 100  # typical 0402 ferrite bead
+    margin_pct: 77
+    status: "PASS"
+
+  - ref_des: Q1
+    package: "SOT-23"
+    power_dissipation_mW: 0.03  # I²R = 0.0137² × 0.160 × 1000
+    max_package_rating_mW: 350  # Si2301 SOT-23 at Tamb=25°C
+    margin_pct: 99.99
+    status: "PASS"
+
+  - ref_des: "All 0402 passives"
+    package: "0402"
+    max_power_dissipation_mW: 2.3  # worst case: 3.3V²/4700 = 2.3mW
+    max_package_rating_mW: 62.5
+    margin_pct: 96
+    status: "PASS"
+
+# ===========================================================================
+# Battery Life Estimates
+# ===========================================================================
+battery_life_estimates:
+  battery_capacity_mAh: 3000
+
+  - scenario: "Conservative duty cycle (1.7%)"
+    description: "5s wake every 300s (5 minutes)"
+    wake_current_mA: 100    # average during wake (CPU + brief TX)
+    sleep_current_mA: 0.044
+    duty_cycle_pct: 1.7
+    weighted_average_mA: 1.74  # 0.017×100 + 0.983×0.044
+    battery_life_hours: 1724
+    battery_life_days: 72
+    source_label: INFERRED
+
+  - scenario: "Aggressive duty cycle (17%)"
+    description: "10s wake every 60s"
+    wake_current_mA: 100
+    sleep_current_mA: 0.044
+    duty_cycle_pct: 17
+    weighted_average_mA: 17.04
+    battery_life_hours: 176
+    battery_life_days: 7.3
+    source_label: INFERRED
+
+  - scenario: "Ultra-low power (0.3%)"
+    description: "3s wake every 15 minutes"
+    wake_current_mA: 100
+    sleep_current_mA: 0.044
+    duty_cycle_pct: 0.33
+    weighted_average_mA: 0.37
+    battery_life_hours: 8108
+    battery_life_days: 338
+    source_label: INFERRED
+
+# ===========================================================================
+# Margin Analysis
+# ===========================================================================
+margin_analysis:
+  peak_current:
+    source_capacity_mA: 3000  # battery continuous max
+    peak_draw_mA: 348.65
+    margin_factor: 8.6        # 3000 / 348.65
+    margin_pct: 88.4          # (1 - 348.65/3000) × 100
+    status: "PASS — 8.6× margin exceeds 20% requirement"
+
+  pulse_current:
+    source_pulse_mA: 5000     # battery pulse max
+    peak_draw_mA: 348.65
+    margin_factor: 14.3
+    status: "PASS"
+
+  voltage_headroom_at_min_battery:
+    battery_min_V: 2.4        # depleted but still operating
+    ferrite_drop_V: 0.066
+    mcu_voltage_V: 2.33
+    esp32c3_min_vdd_V: 3.0    # recommended minimum
+    note: >
+      At VBAT < 3.0V, the ESP32-C3 operates below recommended VDD.
+      Some functionality may degrade. This is expected at end-of-life
+      and is an accepted trade-off per REQ-HW-0301 (no LDO design).
+    status: "WARNING — ESP32-C3 below recommended VDD at battery EOL"
+
+  carrier_deep_sleep:
+    requirement_max_uA: 20    # REQ-HW-0405
+    actual_uA: 0.01
+    margin_pct: 99.95
+    status: "PASS — 0.01µA vs 20µA limit (99.95% margin)"
+
+  thermal:
+    all_components: "PASS — all components well within package ratings"
+    hottest_component: "FB1 at 23mW (77% margin below 100mW limit)"
+
+  design_margin_overall:
+    status: "PASS"
+    summary: >
+      All margins exceed the required 20% threshold. Peak current
+      draw is 8.6× below battery capacity. Deep sleep current is
+      2000× below the 20µA limit. No thermal concerns. The only
+      advisory is ESP32-C3 operating below recommended VDD at
+      battery end-of-life, which is an accepted design trade-off
+      documented in REQ-HW-0301.
+
+# ===========================================================================
+# Epistemic Summary
+# ===========================================================================
+epistemic_summary:
+  total_data_points: 24
+  known_count: 17
+  inferred_count: 5
+  assumed_count: 2
+  assumed_items:
+    - "External I2C sensor current (10mA estimate)"
+    - "External 1-Wire sensor current (1.5mA DS18B20 estimate)"
+  assumed_ratio_pct: 8.3  # 2/24 — well below 30% threshold

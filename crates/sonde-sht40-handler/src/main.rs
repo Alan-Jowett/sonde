@@ -94,7 +94,7 @@ struct Sht40Reading {
 
 /// Decode a 14-byte SHT40 payload.
 ///
-/// Returns `None` if the payload length is wrong or CRC validation fails.
+/// Returns `Err` if the payload length is wrong or CRC validation fails.
 fn decode_sht40(data: &[u8]) -> Result<Sht40Reading, &'static str> {
     if data.len() != SHT40_PAYLOAD_LEN {
         return Err("wrong payload length");
@@ -371,12 +371,14 @@ fn hex_encode(data: &[u8]) -> String {
 /// Uses `std::time::SystemTime` to avoid a `chrono` dependency. Produces
 /// output like `"2026-04-05T00:11:00Z"`.
 fn format_utc_now() -> String {
-    let now = std::time::SystemTime::now();
-    let dur = now
+    let dur = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = dur.as_secs();
+    format_utc_secs(dur.as_secs())
+}
 
+/// Format seconds since Unix epoch as an ISO 8601 UTC string.
+fn format_utc_secs(secs: u64) -> String {
     let days = secs / 86400;
     let time_of_day = secs % 86400;
     let hours = time_of_day / 3600;
@@ -559,9 +561,12 @@ mod tests {
 
     #[test]
     fn test_format_utc_epoch() {
-        let ts = format_utc_now();
-        assert!(ts.ends_with('Z'));
-        assert_eq!(ts.len(), 20);
+        assert_eq!(format_utc_secs(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_format_utc_known_timestamp() {
+        assert_eq!(format_utc_secs(1_775_347_860), "2026-04-05T00:11:00Z");
     }
 
     #[test]

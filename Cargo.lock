@@ -5435,6 +5435,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonde-sht40-handler"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "serde_json",
+]
+
+[[package]]
 name = "sonde-tmp102-handler"
 version = "0.1.0"
 dependencies = [

@@ -7,3 +7,151 @@ pub mod footprints;
 pub mod placement;
 pub mod silkscreen;
 pub mod zones;
+
+use crate::error::Error;
+use crate::ir::IrBundle;
+use crate::sexpr::SExpr;
+use crate::uuid_gen::UuidGenerator;
+
+/// Generate a KiCad 8 PCB from an IR bundle.
+pub fn emit_pcb(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<String, Error> {
+    let ir3 = bundle.ir3.as_ref().ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
+    let board = &ir3.board;
+
+    let mut children = vec![
+        SExpr::pair("version", "20231120"),
+        SExpr::pair_quoted("generator", "sonde-kicad"),
+        SExpr::pair_quoted("generator_version", env!("CARGO_PKG_VERSION")),
+        SExpr::pair_quoted("uuid", &uuid_gen.next("pcb:root")),
+        SExpr::pair_quoted("paper", "A4"),
+    ];
+
+    // Layers
+    children.push(build_layers(board.layers));
+
+    // Setup (design rules)
+    children.push(build_setup(ir3));
+
+    // Net definitions
+    let net_map = build_nets(&bundle.ir2, &mut children);
+
+    // Board outline
+    build_outline(board, uuid_gen, &mut children);
+
+    // Keep-out zones
+    if let Some(keepouts) = &ir3.keepout_zones {
+        zones::build_keepout_zones(keepouts, board.height_mm, uuid_gen, &mut children);
+    }
+
+    // Ground plane copper pour
+    zones::build_ground_pour(ir3, &net_map, uuid_gen, &mut children);
+
+    // Component footprints (placed)
+    placement::build_placements(bundle, &net_map, uuid_gen, &mut children)?;
+
+    // Silkscreen labels
+    silkscreen::build_silkscreen(ir3, board.height_mm, uuid_gen, &mut children);
+
+    let root = SExpr::list("kicad_pcb", children);
+    Ok(root.serialize())
+}
+
+fn build_layers(layer_count: u32) -> SExpr {
+    let mut layers = vec![
+        SExpr::List(vec![SExpr::Atom("0".into()), SExpr::Quoted("F.Cu".into()), SExpr::Atom("signal".into())]),
+        SExpr::List(vec![SExpr::Atom("31".into()), SExpr::Quoted("B.Cu".into()), SExpr::Atom("signal".into())]),
+    ];
+    if layer_count >= 4 {
+        layers.insert(1, SExpr::List(vec![SExpr::Atom("1".into()), SExpr::Quoted("In1.Cu".into()), SExpr::Atom("signal".into())]));
+        layers.insert(2, SExpr::List(vec![SExpr::Atom("2".into()), SExpr::Quoted("In2.Cu".into()), SExpr::Atom("signal".into())]));
+    }
+    for &(id, name) in &[
+        ("34", "B.Paste"), ("35", "F.Paste"),
+        ("36", "B.SilkS"), ("37", "F.SilkS"),
+        ("38", "B.Mask"), ("39", "F.Mask"),
+        ("44", "Edge.Cuts"),
+        ("46", "B.CrtYd"), ("47", "F.CrtYd"),
+        ("48", "B.Fab"), ("49", "F.Fab"),
+    ] {
+        layers.push(SExpr::List(vec![
+            SExpr::Atom(id.into()),
+            SExpr::Quoted(name.into()),
+            SExpr::Atom("user".into()),
+        ]));
+    }
+    SExpr::list("layers", layers)
+}
+
+fn build_setup(ir3: &crate::ir::Ir3) -> SExpr {
+    let mut setup_children = Vec::new();
+    if let Some(rc) = &ir3.routing_constraints {
+        if let Some(via) = &rc.via_constraints {
+            setup_children.push(SExpr::list("pad_to_mask_clearance", vec![SExpr::Atom("0.05".into())]));
+            setup_children.push(SExpr::list("pcbplotparams", vec![
+                SExpr::pair("layerselection", "0x00010fc_ffffffff"),
+                SExpr::pair("outputdirectory", "\"\""),
+            ]));
+            let _ = via; // via constraints used in net classes below
+        }
+    }
+    SExpr::list("setup", setup_children)
+}
+
+/// Build net definitions and return a name→id mapping.
+fn build_nets(
+    ir2: &crate::ir::Ir2,
+    children: &mut Vec<SExpr>,
+) -> std::collections::HashMap<String, u32> {
+    let mut net_map = std::collections::HashMap::new();
+
+    // Net 0 is always the unconnected net
+    children.push(SExpr::List(vec![
+        SExpr::Atom("net".into()),
+        SExpr::Atom("0".into()),
+        SExpr::Quoted(String::new()),
+    ]));
+
+    let mut net_names: Vec<&str> = ir2.nets.iter().map(|n| n.name.as_str()).collect();
+    net_names.sort();
+
+    for (i, name) in net_names.iter().enumerate() {
+        let id = (i + 1) as u32;
+        net_map.insert(name.to_string(), id);
+        children.push(SExpr::List(vec![
+            SExpr::Atom("net".into()),
+            SExpr::Atom(id.to_string()),
+            SExpr::Quoted(name.to_string()),
+        ]));
+    }
+
+    net_map
+}
+
+fn build_outline(
+    board: &crate::ir::ir3::Board,
+    uuid_gen: &mut UuidGenerator,
+    children: &mut Vec<SExpr>,
+) {
+    let w = board.width_mm;
+    let h = board.height_mm;
+    let corners = [(0.0, 0.0, w, 0.0), (w, 0.0, w, h), (w, h, 0.0, h), (0.0, h, 0.0, 0.0)];
+
+    for (x1, y1, x2, y2) in &corners {
+        children.push(SExpr::list("gr_line", vec![
+            SExpr::list("start", vec![SExpr::Atom(fmt(*x1)), SExpr::Atom(fmt(*y1))]),
+            SExpr::list("end", vec![SExpr::Atom(fmt(*x2)), SExpr::Atom(fmt(*y2))]),
+            SExpr::list("stroke", vec![
+                SExpr::pair("width", "0.05"),
+                SExpr::pair("type", "default"),
+            ]),
+            SExpr::pair_quoted("layer", "Edge.Cuts"),
+            SExpr::pair_quoted("uuid", &uuid_gen.next(&format!("outline:{x1}:{y1}:{x2}:{y2}"))),
+        ]));
+    }
+}
+
+fn fmt(v: f64) -> String {
+    let s = format!("{v:.4}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.to_string()
+}

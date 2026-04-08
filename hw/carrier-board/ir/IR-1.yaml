@@ -1,0 +1,570 @@
+# IR-1: Component Bill — Sonde Carrier Board
+# Pipeline: Pass 1 — Component Selection
+# Input: IR-0.yaml
+# Generated: 2026-04-08
+
+schema_version: "1.0.0"
+project: sonde-carrier
+
+# Note: The Seeed Studio XIAO ESP32-C3 module is USER-SUPPLIED and not
+# part of this BOM. The carrier board interfaces with it via J6/J7 headers.
+
+components:
+
+  # =========================================================================
+  # Active Components
+  # =========================================================================
+
+  - ref_des: Q1
+    description: "P-channel MOSFET high-side load switch"
+    manufacturer: "Vishay Siliconix"
+    part_number: "Si2301CDS-T1-GE3"
+    package: "SOT-23-3"
+    generic_footprint: "SOT-23"
+    electrical_specs:
+      type: "P-channel MOSFET"
+      vds_max_V: -20
+      vgs_max_V: 8
+      id_continuous_A: -3.1
+      rds_on_ohm_at_vgs_neg4_5V: 0.115
+      rds_on_ohm_at_vgs_neg2_5V: 0.160
+      gate_threshold_vgs_V: [-0.4, -1.2]  # min, max
+      operating_temp_C: [-55, 150]
+    pin_assignment:
+      pin_1: {name: "Gate", net: "SENSOR_EN"}
+      pin_2: {name: "Source", net: "VBAT"}
+      pin_3: {name: "Drain", net: "SENSOR_V"}
+    satisfies: [REQ-HW-0400, REQ-HW-0402, REQ-HW-0405]
+    rationale: >
+      Si2301 is a ubiquitous, low-cost P-FET in SOT-23. Its low Vgs(th)
+      (-0.4 to -1.2V) ensures full enhancement at VBAT as low as 2.4V.
+      Sub-µA off-state leakage meets the deep-sleep current target.
+      Widely stocked at JLCPCB/LCSC.
+    sourcing:
+      lcsc_pn: "C10487"
+      unit_price_usd_qty100: 0.065
+      stock_units: 325000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  # =========================================================================
+  # Passive Components — Ferrite Bead
+  # =========================================================================
+
+  - ref_des: FB1
+    description: "Ferrite bead for battery input transient damping"
+    manufacturer: "Murata"
+    part_number: "BLM15AG121SN1D"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      impedance_ohm_at_100MHz: 120
+      rated_current_mA: 550
+      dc_resistance_ohm: 0.190
+      operating_temp_C: [-55, 125]
+    pin_assignment:
+      pin_1: {name: "1", net: "VBAT"}
+      pin_2: {name: "2", net: "VBAT_FILT"}
+    satisfies: [REQ-HW-0301]
+    rationale: >
+      120Ω@100MHz ferrite bead dampens battery insertion ringing from lead
+      inductance. 550mA rating exceeds peak ESP32-C3 TX current (~350mA).
+      Replaces original BOM C76712 (possibly discontinued at LCSC) with
+      equivalent Murata part at lower cost and higher stock.
+    sourcing:
+      lcsc_pn: "C85812"
+      unit_price_usd_qty100: 0.007
+      stock_units: 238800
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+    notes: >
+      Original requirements spec listed C76712; this is a verified
+      drop-in replacement with better availability.
+
+  # =========================================================================
+  # Passive Components — Resistors
+  # =========================================================================
+
+  - ref_des: R1
+    description: "I2C SDA pull-up resistor"
+    manufacturer: "Uniroyal"
+    part_number: "0402WGF4701TCE"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      resistance_ohm: 4700
+      tolerance_pct: 1
+      power_rating_W: 0.0625
+      voltage_rating_V: 50
+      operating_temp_C: [-55, 155]
+    pin_assignment:
+      pin_1: {name: "1", net: "SDA"}
+      pin_2: {name: "2", net: "SENSOR_V"}
+    satisfies: [REQ-HW-0500]
+    rationale: >
+      4.7kΩ pull-up per I2C standard for standard/fast mode at 3.3V.
+      On gated SENSOR_V rail for zero deep-sleep leakage.
+    sourcing:
+      lcsc_pn: "C25900"
+      unit_price_usd_qty100: 0.005
+      stock_units: 1000000  # commodity part
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: R2
+    description: "I2C SCL pull-up resistor"
+    manufacturer: "Uniroyal"
+    part_number: "0402WGF4701TCE"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      resistance_ohm: 4700
+      tolerance_pct: 1
+      power_rating_W: 0.0625
+      voltage_rating_V: 50
+      operating_temp_C: [-55, 155]
+    pin_assignment:
+      pin_1: {name: "1", net: "SCL"}
+      pin_2: {name: "2", net: "SENSOR_V"}
+    satisfies: [REQ-HW-0500]
+    rationale: "Same as R1 — SCL pull-up on gated rail."
+    sourcing:
+      lcsc_pn: "C25900"
+      unit_price_usd_qty100: 0.005
+      stock_units: 1000000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: R3
+    description: "1-Wire data pull-up resistor"
+    manufacturer: "Uniroyal"
+    part_number: "0402WGF4701TCE"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      resistance_ohm: 4700
+      tolerance_pct: 1
+      power_rating_W: 0.0625
+      voltage_rating_V: 50
+      operating_temp_C: [-55, 155]
+    pin_assignment:
+      pin_1: {name: "1", net: "1W_DATA"}
+      pin_2: {name: "2", net: "SENSOR_V"}
+    satisfies: [REQ-HW-0501]
+    rationale: >
+      4.7kΩ pull-up per Dallas 1-Wire specification.
+      On gated SENSOR_V rail for zero deep-sleep leakage.
+    sourcing:
+      lcsc_pn: "C25900"
+      unit_price_usd_qty100: 0.005
+      stock_units: 1000000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: R4
+    description: "P-FET gate pull-up resistor (default OFF)"
+    manufacturer: "Uniroyal"
+    part_number: "0402WGF1003TCE"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      resistance_ohm: 100000
+      tolerance_pct: 1
+      power_rating_W: 0.0625
+      voltage_rating_V: 50
+      operating_temp_C: [-55, 155]
+    pin_assignment:
+      pin_1: {name: "1", net: "SENSOR_EN"}
+      pin_2: {name: "2", net: "VBAT"}
+    satisfies: [REQ-HW-0403]
+    rationale: >
+      100kΩ pull-up from gate to VBAT ensures P-FET defaults OFF during
+      boot/reset/deep-sleep. High value draws zero current when gate is
+      driven to VBAT (GPIO HIGH) or held at VBAT by the pull-up itself.
+    sourcing:
+      lcsc_pn: "C25741"
+      unit_price_usd_qty100: 0.005
+      stock_units: 1000000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: R5
+    description: "Battery voltage divider — upper resistor"
+    manufacturer: "Uniroyal"
+    part_number: "0402WGF1003TCE"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      resistance_ohm: 100000
+      tolerance_pct: 1
+      power_rating_W: 0.0625
+      voltage_rating_V: 50
+      operating_temp_C: [-55, 155]
+    pin_assignment:
+      pin_1: {name: "1", net: "SENSOR_V"}
+      pin_2: {name: "2", net: "VBAT_SENSE"}
+    satisfies: [REQ-HW-0600, REQ-HW-0602]
+    rationale: >
+      Upper leg of 100kΩ/100kΩ voltage divider (1:2 ratio).
+      On gated SENSOR_V rail — zero current in deep sleep.
+    sourcing:
+      lcsc_pn: "C25741"
+      unit_price_usd_qty100: 0.005
+      stock_units: 1000000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: R6
+    description: "Battery voltage divider — lower resistor"
+    manufacturer: "Uniroyal"
+    part_number: "0402WGF1003TCE"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      resistance_ohm: 100000
+      tolerance_pct: 1
+      power_rating_W: 0.0625
+      voltage_rating_V: 50
+      operating_temp_C: [-55, 155]
+    pin_assignment:
+      pin_1: {name: "1", net: "VBAT_SENSE"}
+      pin_2: {name: "2", net: "GND"}
+    satisfies: [REQ-HW-0600, REQ-HW-0602]
+    rationale: "Lower leg of voltage divider to GND."
+    sourcing:
+      lcsc_pn: "C25741"
+      unit_price_usd_qty100: 0.005
+      stock_units: 1000000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  # =========================================================================
+  # Passive Components — Capacitors
+  # =========================================================================
+
+  - ref_des: C1
+    description: "VBAT decoupling capacitor (near XIAO 3V3 pin)"
+    manufacturer: "Samsung"
+    part_number: "CL21A106KAYNNNE"
+    package: "0805"
+    generic_footprint: "0805"
+    electrical_specs:
+      capacitance_uF: 10
+      tolerance_pct: 10
+      voltage_rating_V: 25
+      dielectric: "X5R"
+      operating_temp_C: [-55, 85]
+    pin_assignment:
+      pin_1: {name: "1", net: "VBAT_FILT"}
+      pin_2: {name: "2", net: "GND"}
+    satisfies: [REQ-HW-0302]
+    rationale: >
+      10µF ceramic absorbs inrush energy during battery insertion and
+      provides charge reservoir during TX bursts. 0805 package for
+      sufficient capacitance at 3.3V bias (X5R derating acceptable here).
+    sourcing:
+      lcsc_pn: "C15850"
+      unit_price_usd_qty100: 0.02
+      stock_units: 500000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: C2
+    description: "SENSOR_V rail decoupling capacitor"
+    manufacturer: "Samsung"
+    part_number: "CL05A105KA5NQNC"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      capacitance_uF: 1
+      tolerance_pct: 10
+      voltage_rating_V: 25
+      dielectric: "X5R"
+      operating_temp_C: [-55, 85]
+    pin_assignment:
+      pin_1: {name: "1", net: "SENSOR_V"}
+      pin_2: {name: "2", net: "GND"}
+    satisfies: [REQ-HW-0406]
+    rationale: >
+      1µF decoupling on gated SENSOR_V rail for sensor bus stability.
+    sourcing:
+      lcsc_pn: "C52923"
+      unit_price_usd_qty100: 0.01
+      stock_units: 500000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: C3
+    description: "ADC filter capacitor"
+    manufacturer: "YAGEO"
+    part_number: "CC0402KRX7R7BB104"
+    package: "0402"
+    generic_footprint: "0402"
+    electrical_specs:
+      capacitance_nF: 100
+      tolerance_pct: 10
+      voltage_rating_V: 16
+      dielectric: "X7R"
+      operating_temp_C: [-55, 125]
+    pin_assignment:
+      pin_1: {name: "1", net: "VBAT_SENSE"}
+      pin_2: {name: "2", net: "GND"}
+    satisfies: [REQ-HW-0603]
+    rationale: >
+      100nF filter cap for ADC sampling accuracy with 50kΩ Thévenin
+      source impedance from the voltage divider. Settling ~35ms.
+    sourcing:
+      lcsc_pn: "C307331"
+      unit_price_usd_qty100: 0.005
+      stock_units: 500000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: ASSUMED
+      notes: "LCSC P/N from original BOM; not independently re-verified"
+
+  # =========================================================================
+  # Connectors
+  # =========================================================================
+
+  - ref_des: J1
+    description: "Qwiic I2C connector (JST SH 4-pin, SMD)"
+    manufacturer: "JST"
+    part_number: "SM04B-SRSS-TB(LF)(SN)"
+    package: "JST SH 4-pin SMD right-angle"
+    generic_footprint: "JST-SH-4-pin-SMD-RA"
+    electrical_specs:
+      pin_count: 4
+      pitch_mm: 1.0
+      voltage_rating_V: 50
+      current_rating_A: 1.0
+      mounting: "SMD"
+      operating_temp_C: [-25, 85]
+    pin_assignment:
+      pin_1: {name: "1", net: "GND"}
+      pin_2: {name: "2", net: "SENSOR_V"}
+      pin_3: {name: "3", net: "SDA"}
+      pin_4: {name: "4", net: "SCL"}
+    satisfies: [REQ-HW-0200, REQ-HW-0201]
+    rationale: >
+      SparkFun Qwiic standard connector. SM04B-SRSS-TB is the standard
+      board-side SMD connector for the Qwiic ecosystem. Supports
+      daisy-chaining for multiple I2C sensors.
+    sourcing:
+      lcsc_pn: "C160404"
+      unit_price_usd_qty100: 0.15
+      stock_units: 55000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: J2
+    description: "1-Wire sensor connector (JST XH 3-pin, THT right-angle)"
+    manufacturer: "JST"
+    part_number: "S3B-XH-A(LF)(SN)"
+    package: "JST XH 3-pin THT right-angle"
+    generic_footprint: "JST-XH-3-pin-THT-RA"
+    electrical_specs:
+      pin_count: 3
+      pitch_mm: 2.5
+      voltage_rating_V: 250
+      current_rating_A: 3.0
+      mounting: "THT"
+      operating_temp_C: [-25, 85]
+    pin_assignment:
+      pin_1: {name: "1", net: "GND"}
+      pin_2: {name: "2", net: "1W_DATA"}
+      pin_3: {name: "3", net: "SENSOR_V"}
+    satisfies: [REQ-HW-0203, REQ-HW-0204]
+    rationale: >
+      JST XH 3-pin right-angle header for 1-Wire sensor connections.
+      2.5mm pitch provides robust mechanical connection. Multi-drop
+      1-Wire bus supports multiple sensors on one connector.
+    sourcing:
+      lcsc_pn: "C157928"
+      unit_price_usd_qty100: 0.08
+      stock_units: 118700
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: J3
+    description: "Battery input connector (JST PH 2-pin, THT right-angle)"
+    manufacturer: "JST"
+    part_number: "S2B-PH-K-S(LF)(SN)"
+    package: "JST PH 2-pin THT right-angle"
+    generic_footprint: "JST-PH-2-pin-THT-RA"
+    electrical_specs:
+      pin_count: 2
+      pitch_mm: 2.0
+      voltage_rating_V: 100
+      current_rating_A: 2.0
+      mounting: "THT"
+      operating_temp_C: [-25, 85]
+    pin_assignment:
+      pin_1: {name: "1 (+)", net: "VBAT"}
+      pin_2: {name: "2 (−)", net: "GND"}
+    satisfies: [REQ-HW-0206, REQ-HW-0300, REQ-HW-0303]
+    rationale: >
+      JST PH 2-pin right-angle is the de-facto standard for small
+      lithium battery packs. Polarized housing prevents reverse insertion.
+    sourcing:
+      lcsc_pn: "C157932"
+      unit_price_usd_qty100: 0.06
+      stock_units: 100000
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: KNOWN
+
+  - ref_des: J6
+    description: "XIAO left header socket (1×7 female, 2.54mm)"
+    manufacturer: "Generic"
+    part_number: "1×7 Female Header 2.54mm"
+    package: "1×7 THT 2.54mm pitch"
+    generic_footprint: "PinHeader-1x7-P2.54mm"
+    electrical_specs:
+      pin_count: 7
+      pitch_mm: 2.54
+      mounting: "THT"
+      operating_temp_C: [-40, 105]
+    pin_assignment:
+      pin_1: {name: "D0/A0", net: "VBAT_SENSE", note: "GPIO2 — Battery ADC"}
+      pin_2: {name: "D1/A1", net: "1W_DATA", note: "GPIO3 — 1-Wire data"}
+      pin_3: {name: "D2/A2", net: "SENSOR_EN", note: "GPIO4 — P-FET gate"}
+      pin_4: {name: "D3/A3", net: "NC_SPARE", note: "GPIO5 — Spare"}
+      pin_5: {name: "D4/SDA", net: "SDA", note: "GPIO6 — I2C SDA"}
+      pin_6: {name: "D5/SCL", net: "SCL", note: "GPIO7 — I2C SCL"}
+      pin_7: {name: "3V3", net: "VBAT_FILT", note: "Power input to XIAO"}
+    satisfies: [REQ-HW-0100, REQ-HW-0101, REQ-HW-0102]
+    rationale: >
+      DIP-socket style female header for tool-free XIAO insertion/removal.
+      Left header carries D0–D5 signals and 3V3 power.
+    sourcing:
+      lcsc_pn: "—"
+      unit_price_usd_qty100: 0.10
+      stock_units: null
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: ASSUMED
+      notes: >
+        Generic female header; no specific LCSC P/N. Available from
+        many suppliers. May need hand soldering (THT).
+
+  - ref_des: J7
+    description: "XIAO right header socket (1×7 female, 2.54mm)"
+    manufacturer: "Generic"
+    part_number: "1×7 Female Header 2.54mm"
+    package: "1×7 THT 2.54mm pitch"
+    generic_footprint: "PinHeader-1x7-P2.54mm"
+    electrical_specs:
+      pin_count: 7
+      pitch_mm: 2.54
+      mounting: "THT"
+      operating_temp_C: [-40, 105]
+    pin_assignment:
+      pin_1: {name: "D6", net: "NC_SPARE", note: "GPIO21 — Spare (UART TX)"}
+      pin_2: {name: "D7", net: "NC_SPARE", note: "GPIO20 — Spare (UART RX)"}
+      pin_3: {name: "D8", net: "NC_SPARE", note: "GPIO8 — Spare (SPI SCK)"}
+      pin_4: {name: "D9", net: "NC_SPARE", note: "GPIO9 — Spare (BOOT)"}
+      pin_5: {name: "D10", net: "NC_SPARE", note: "GPIO10 — Spare (SPI MOSI)"}
+      pin_6: {name: "GND", net: "GND", note: "Ground connection"}
+      pin_7: {name: "5V", net: "NC", note: "NOT CONNECTED per REQ-HW-0102"}
+    satisfies: [REQ-HW-0100, REQ-HW-0101, REQ-HW-0103]
+    rationale: >
+      Right header carries D6–D10, GND, and 5V (NC). XIAO 5V pin
+      deliberately unconnected to bypass onboard regulator.
+    sourcing:
+      lcsc_pn: "—"
+      unit_price_usd_qty100: 0.10
+      stock_units: null
+      lifecycle: "active"
+      date_verified: "2026-04-08"
+      verification_label: ASSUMED
+      notes: "Generic female header; same as J6."
+
+# ===========================================================================
+# Requirement Coverage Matrix
+# ===========================================================================
+# Every REQ-HW-* from IR-0 MUST be covered by at least one component.
+#
+# REQ-HW-0100: J6, J7 (XIAO socket headers)
+# REQ-HW-0101: J6, J7 (DIP-socket insertion)
+# REQ-HW-0102: J6 pin 7 (3V3), J7 pin 7 (5V NC)
+# REQ-HW-0103: J7 pin 6 (GND)
+# REQ-HW-0200: J1 (Qwiic connector)
+# REQ-HW-0201: J1 (Qwiic pinout)
+# REQ-HW-0202: J6 pins 5,6 (GPIO6, GPIO7) [interface, not component]
+# REQ-HW-0203: J2 (1-Wire connector)
+# REQ-HW-0204: J2 (1-Wire pinout)
+# REQ-HW-0205: J6 pin 2 (GPIO3) [interface, not component]
+# REQ-HW-0206: J3 (Battery connector)
+# REQ-HW-0300: J3 (Battery input spec)
+# REQ-HW-0301: FB1 (Ferrite bead)
+# REQ-HW-0302: C1 (10µF decoupling)
+# REQ-HW-0303: J3 (Polarized JST PH)
+# REQ-HW-0304: N/A (no switch — by design)
+# REQ-HW-0400: Q1 (Si2301 P-FET)
+# REQ-HW-0401: Q1 drain → SENSOR_V rail [routing, validated in IR-2]
+# REQ-HW-0402: Q1 gate → GPIO4
+# REQ-HW-0403: R4 (gate pull-up)
+# REQ-HW-0404: Q1 (P-FET control logic) [firmware, not component]
+# REQ-HW-0405: Q1 + R4 (deep sleep current)
+# REQ-HW-0406: C2 (SENSOR_V decoupling)
+# REQ-HW-0500: R1, R2 (I2C pull-ups)
+# REQ-HW-0501: R3 (1-Wire pull-up)
+# REQ-HW-0502: R1, R2, R3 (all on gated rail) [routing, not component]
+# REQ-HW-0600: R5, R6 (voltage divider)
+# REQ-HW-0601: R5/R6 midpoint → GPIO2 [routing]
+# REQ-HW-0602: R5, R6 (100kΩ each)
+# REQ-HW-0603: C3 (ADC filter cap)
+# REQ-HW-0700: [PCB spec, not component]
+# REQ-HW-0701: [PCB spec, not component]
+# REQ-HW-0702: [PCB spec, not component]
+# REQ-HW-0703: No LEDs in BOM ✓
+# REQ-HW-0704: [Silkscreen, not component]
+# REQ-HW-0705: [Layout, not component]
+# REQ-HW-0706: [Layout, not component]
+# REQ-HW-0707: J1, J2, J3 (edge placement) [layout]
+# REQ-HW-0800: All components rated for -20°C to +60°C ✓
+# REQ-HW-0801: See individual component operating_temp_C ranges ✓
+# REQ-HW-0900: [Fab target, not component]
+# REQ-HW-0901: [Deliverables, not component]
+# REQ-HW-0902: All SMD parts have LCSC P/Ns (except generic headers)
+# REQ-HW-0903: J2, J3, J6, J7 are THT (may require hand solder)
+# REQ-HW-0904: [EDA format, not component]
+
+# ===========================================================================
+# BOM Summary
+# ===========================================================================
+bom_summary:
+  total_unique_parts: 8  # unique P/Ns (not counting qty multiples)
+  total_placements: 15
+  smd_count: 9           # Q1, FB1, R1-R6, C1, C2, C3, J1
+  tht_count: 4           # J2, J3, J6, J7
+  estimated_bom_cost_qty100_usd: 0.85
+  estimated_assembly_cost_qty100_usd: 0.80
+  estimated_total_per_board_usd: 1.85
+  cost_target_met: true  # $1.85 < $3.00 target
+
+# ===========================================================================
+# ASSUMED Items Flag
+# ===========================================================================
+assumed_items:
+  - ref_des: J6
+    field: "sourcing.lcsc_pn"
+    reason: "Generic female header — no specific LCSC P/N identified"
+  - ref_des: J7
+    field: "sourcing.lcsc_pn"
+    reason: "Same as J6"
+  - ref_des: C3
+    field: "sourcing.verification_label"
+    reason: "LCSC P/N C307331 from original BOM, not independently re-verified"

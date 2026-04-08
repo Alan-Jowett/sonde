@@ -1,0 +1,187 @@
+# IR-1g: Generic Geometry — Sonde Carrier Board
+# Pipeline: Pass 1 (deterministic tool step)
+# Input: IR-1.yaml
+# Generated: 2026-04-08
+# Source: JEDEC package standard dimensions (body only, no courtyard)
+#
+# WARNING: These are generic JEDEC body estimates, NOT exact footprint
+# dimensions. Do NOT use for definitive placement feasibility. Exact
+# courtyard dimensions come from IR-1e (post-binding).
+
+schema_version: "1.0.0"
+project: sonde-carrier
+
+component_geometry:
+
+  - ref_des: Q1
+    package: "SOT-23-3"
+    jedec_standard: "JESD97 / TO-236AB"
+    body_mm:
+      width: 1.3
+      height: 2.9
+    notes: "SOT-23 standard body dimensions (not including leads)"
+
+  - ref_des: FB1
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Standard 0402 imperial body"
+
+  - ref_des: R1
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Standard 0402 imperial body"
+
+  - ref_des: R2
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Same as R1"
+
+  - ref_des: R3
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Same as R1"
+
+  - ref_des: R4
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Same as R1"
+
+  - ref_des: R5
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Same as R1"
+
+  - ref_des: R6
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Same as R1"
+
+  - ref_des: C1
+    package: "0805"
+    jedec_standard: "EIA 0805 (metric 2012)"
+    body_mm:
+      width: 1.25
+      height: 2.0
+    notes: "Standard 0805 imperial body"
+
+  - ref_des: C2
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Same as R1"
+
+  - ref_des: C3
+    package: "0402"
+    jedec_standard: "EIA 0402 (metric 1005)"
+    body_mm:
+      width: 0.5
+      height: 1.0
+    notes: "Same as R1"
+
+  - ref_des: J1
+    package: "JST SH 4-pin SMD RA"
+    jedec_standard: "N/A (manufacturer-specific)"
+    body_mm:
+      width: 6.0
+      height: 4.3
+    notes: >
+      JST SM04B-SRSS-TB body dimensions from JST datasheet.
+      Width = 4 pins × 1.0mm pitch + housing. Depth ≈ 4.3mm.
+
+  - ref_des: J2
+    package: "JST XH 3-pin THT RA"
+    jedec_standard: "N/A (manufacturer-specific)"
+    body_mm:
+      width: 10.0
+      height: 7.0
+    notes: >
+      JST S3B-XH-A body dimensions from JST datasheet.
+      Width = 3 pins × 2.5mm pitch + housing. Depth includes
+      right-angle bend. Height is vertical extent above PCB.
+
+  - ref_des: J3
+    package: "JST PH 2-pin THT RA"
+    jedec_standard: "N/A (manufacturer-specific)"
+    body_mm:
+      width: 6.0
+      height: 6.0
+    notes: >
+      JST S2B-PH-K-S body dimensions from JST datasheet.
+      Width = 2 pins × 2.0mm pitch + housing.
+
+  - ref_des: J6
+    package: "1×7 Female Header 2.54mm THT"
+    jedec_standard: "N/A (generic)"
+    body_mm:
+      width: 2.54
+      height: 17.78
+    notes: >
+      1×7 at 2.54mm pitch. Width = single row (2.54mm).
+      Height = 7 × 2.54mm = 17.78mm.
+
+  - ref_des: J7
+    package: "1×7 Female Header 2.54mm THT"
+    jedec_standard: "N/A (generic)"
+    body_mm:
+      width: 2.54
+      height: 17.78
+    notes: "Same as J6"
+
+# ===========================================================================
+# Rough Area Estimate (body area only — not courtyard)
+# ===========================================================================
+area_summary:
+  total_component_body_area_mm2: 232.95
+  # Breakdown:
+  #   Q1:  1.3×2.9 = 3.77
+  #   FB1: 0.5×1.0 = 0.50
+  #   R1-R6: 6 × (0.5×1.0) = 3.00
+  #   C1:  1.25×2.0 = 2.50
+  #   C2:  0.5×1.0 = 0.50
+  #   C3:  0.5×1.0 = 0.50
+  #   J1:  6.0×4.3 = 25.80
+  #   J2:  10.0×7.0 = 70.00  (THT, right-angle — extends beyond board edge)
+  #   J3:  6.0×6.0 = 36.00  (THT, right-angle — extends beyond board edge)
+  #   J6:  2.54×17.78 = 45.19
+  #   J7:  2.54×17.78 = 45.19
+  #   ─────────────────
+  #   Total = 232.95 mm²
+  #
+  # Board area target: 25 × 35 = 875 mm²
+  # Body utilization: 232.95 / 875 = ~26.6%
+  #
+  # Note: J2, J3 right-angle connectors extend beyond board edge,
+  # so on-board footprint area is smaller. J6/J7 dominate board area
+  # as expected (they define the XIAO socket spacing).
+
+  board_target_area_mm2: 875.0
+  body_utilization_pct: 26.6
+  feasibility: "PASS — well within limits for 2-layer board"
+  notes: >
+    Body-only estimate. Courtyard will be larger (typically 1.5-2×
+    body area for SMD). THT right-angle connectors (J2, J3) extend
+    beyond board edge — their on-board footprint is smaller than body
+    dimensions suggest. Definitive check uses IR-1e courtyards in Pass 3.

@@ -46,9 +46,9 @@ requirements through to manufacturing. Each stage feeds into the next.
 ```
 
 **Input documents:**
-- `docs/hw-requirements.md` — hardware requirements (35 requirements)
-- `docs/hw-design.md` — generation tool architecture
-- `docs/hw-schematic-design.md` — component selections and pin assignments
+- `docs/kicad-export-requirements.md` — KiCad export tool requirements
+- `docs/kicad-export-design.md` — KiCad export tool architecture
+- `docs/kicad-export-validation.md` — KiCad export tool test plan
 
 ---
 

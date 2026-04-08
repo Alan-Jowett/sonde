@@ -65,7 +65,7 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
           else
-            BASE=$(grep '^version' crates/sonde-gateway/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+            BASE=$(sed -n '/\[workspace\.package\]/,/^\[/{ s/^version *= *"\(.*\)"/\1/p; }' Cargo.toml)
             DATE=$(date -u +%Y%m%d)
             VERSION="${BASE}+nightly.${DATE}"
           fi
@@ -110,7 +110,7 @@ jobs:
           if ($ref -match '^refs/tags/v(\d+\.\d+\.\d+)$') {
             $ver = $Matches[1] + ".0"
           } else {
-            $base = (Select-String -Path crates\sonde-gateway\Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+            $base = (Select-String -Path Cargo.toml -Pattern '^\s*version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
             $epoch = [DateTime]::new(2026, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
             $revision = [int](New-TimeSpan -Start $epoch -End (Get-Date).ToUniversalTime().Date).TotalDays
             $ver = "$base.$revision"

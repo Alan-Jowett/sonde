@@ -15,6 +15,7 @@ pub struct Ir3 {
     pub board: Board,
     pub connector_placement: Vec<ConnectorPlacement>,
     pub component_zones: Vec<ComponentZone>,
+    pub explicit_placement: Option<Vec<ExplicitPlacement>>,
     pub keepout_zones: Option<Vec<KeepoutZone>>,
     pub routing_constraints: Option<RoutingConstraints>,
     pub silkscreen: Option<Silkscreen>,
@@ -68,6 +69,13 @@ pub struct ZoneSpec {
     pub description: Option<String>,
     pub anchor: Position,
     pub extent_mm: super::ir1e::Dimensions,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExplicitPlacement {
+    pub ref_des: String,
+    pub position: Position,
+    pub rotation: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

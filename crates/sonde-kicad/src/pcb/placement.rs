@@ -186,6 +186,17 @@ pub fn build_placements(
         pos_map.insert(cp.ref_des.clone(), (cp.position.x_mm, ky, rotation));
     }
 
+    // Phase 1b: Apply explicit placements (hand-tuned positions from IR-3)
+    if let Some(explicit) = &ir3.explicit_placement {
+        for ep in explicit {
+            if !pos_map.contains_key(&ep.ref_des) {
+                let ky = board_h - ep.position.y_mm;
+                let rot = ep.rotation.unwrap_or(0.0);
+                pos_map.insert(ep.ref_des.clone(), (ep.position.x_mm, ky, rot));
+            }
+        }
+    }
+
     // Phase 2: Place zone components, checking for courtyard overlap
     for zone in &ir3.component_zones {
         let anchor_x = zone.zone.anchor.x_mm;

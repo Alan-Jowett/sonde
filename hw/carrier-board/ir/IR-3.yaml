@@ -45,8 +45,8 @@ connector_placement:
 - ref_des: J6
   description: XIAO left header socket (1×7, 2.54mm)
   position:
-    x_mm: 3.75
-    y_mm: 7.0
+    x_mm: 3.8
+    y_mm: 8.8
   orientation: vertical, pin 1 at bottom (D0), no rotation
   courtyard_mm:
     width: 3.55
@@ -60,8 +60,8 @@ connector_placement:
 - ref_des: J7
   description: XIAO right header socket (1×7, 2.54mm)
   position:
-    x_mm: 21.25
-    y_mm: 8.5
+    x_mm: 21.2
+    y_mm: 8.8
   orientation: vertical, pin 1 at bottom (D6), no rotation
   courtyard_mm:
     width: 3.55
@@ -76,8 +76,8 @@ connector_placement:
   description: Qwiic I2C connector (JST SH 4-pin SMD)
   edge: left
   position:
-    x_mm: 5.0
-    y_mm: 28.0
+    x_mm: 4.0
+    y_mm: 30.5
   orientation: housing facing left (outward), rotated 90°
   courtyard_mm:
     width: 7.8
@@ -92,8 +92,8 @@ connector_placement:
   description: Battery connector (JST PH 2-pin THT RA)
   edge: right
   position:
-    x_mm: 22.0
-    y_mm: 3.5
+    x_mm: 22.9
+    y_mm: 4.5
   orientation: housing facing right (outward), rotated 270°
   courtyard_mm:
     width: 6.9
@@ -108,8 +108,8 @@ connector_placement:
   description: 1-Wire connector (JST PH 3-pin THT RA)
   edge: right
   position:
-    x_mm: 20.0
-    y_mm: 33.0
+    x_mm: 22.9
+    y_mm: 32.5
   orientation: housing facing right (outward), rotated 270°
   courtyard_mm:
     width: 8.9

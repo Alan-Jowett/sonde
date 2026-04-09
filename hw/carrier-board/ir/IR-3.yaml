@@ -133,7 +133,7 @@ connector_placement:
     edge: right
     position:
       x_mm: 25.0  # flush with right edge
-      y_mm: 31.0  # upper-right, above J7 top courtyard (27.50)
+      y_mm: 33.0  # upper-right, above J7 top courtyard
     orientation: "housing facing right (outward), rotated 270°"
     courtyard_mm: {width: 8.90, height: 8.60}
     courtyard_bounds: {min_x: -2.45, min_y: -1.85, max_x: 6.45, max_y: 6.75}

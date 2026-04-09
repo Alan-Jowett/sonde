@@ -31,41 +31,121 @@ impl BBox {
             && self.y_max > other.y_min
     }
 
-    fn from_courtyard(cx: f64, cy: f64, hw: f64, hh: f64, rotation: f64) -> Self {
-        // hw, hh = half-width, half-height of courtyard in local coords
-        // Rotation swaps width/height for 90°/270°
-        let (ew, eh) = match rotation as i32 % 360 {
-            90 | 270 | -90 | -270 => (hh, hw),
-            _ => (hw, hh),
-        };
+    /// Create a bbox from actual asymmetric courtyard bounds + position + rotation.
+    ///
+    /// `bounds` = (min_x, min_y, max_x, max_y) relative to footprint origin.
+    /// Rotation transforms the bounds before adding position offset.
+    /// KiCad uses Y-down, so 90° CW: (x,y) → (y, -x).
+    fn from_asymmetric(
+        cx: f64,
+        cy: f64,
+        bounds: (f64, f64, f64, f64),
+        rotation: f64,
+        margin: f64,
+    ) -> Self {
+        let (bx_min, by_min, bx_max, by_max) = bounds;
+
+        // Rotate all four corners and take the new AABB
+        let corners = [
+            (bx_min, by_min),
+            (bx_max, by_min),
+            (bx_max, by_max),
+            (bx_min, by_max),
+        ];
+
+        let rot_rad = rotation.to_radians();
+        let cos_r = rot_rad.cos();
+        let sin_r = rot_rad.sin();
+
+        let rotated: Vec<(f64, f64)> = corners
+            .iter()
+            .map(|&(x, y)| (x * cos_r - y * sin_r, x * sin_r + y * cos_r))
+            .collect();
+
+        let rxs: Vec<f64> = rotated.iter().map(|c| c.0).collect();
+        let rys: Vec<f64> = rotated.iter().map(|c| c.1).collect();
+
         BBox {
-            x_min: cx - ew,
-            y_min: cy - eh,
-            x_max: cx + ew,
-            y_max: cy + eh,
+            x_min: cx + rxs.iter().cloned().reduce(f64::min).unwrap() - margin,
+            y_min: cy + rys.iter().cloned().reduce(f64::min).unwrap() - margin,
+            x_max: cx + rxs.iter().cloned().reduce(f64::max).unwrap() + margin,
+            y_max: cy + rys.iter().cloned().reduce(f64::max).unwrap() + margin,
         }
     }
 }
 
-/// Component courtyard dimensions (half-widths).
-/// Uses IR-1e courtyard dimensions with generous margin for connectors.
-fn get_courtyard_half_dims(
+/// Extract actual courtyard bounds from a KiCad .kicad_mod file.
+///
+/// Returns (min_x, min_y, max_x, max_y) relative to footprint origin,
+/// or a fallback from IR-1e courtyard_mm if the file isn't available.
+fn get_courtyard_bounds(
     ref_des: &str,
     bundle: &IrBundle,
-) -> (f64, f64) {
-    bundle
-        .ir1e
-        .components
-        .iter()
-        .find(|c| c.ref_des == ref_des)
-        .and_then(|c| c.courtyard_mm.as_ref())
-        .map(|d| {
-            // Connectors have large asymmetric courtyards that extend
-            // off-board. Use a generous margin to prevent DRC violations.
-            let margin = if ref_des.starts_with('J') { 2.0 } else { 0.5 };
-            (d.width / 2.0 + margin, d.height / 2.0 + margin)
-        })
-        .unwrap_or((1.0, 1.0))
+    fp_dir: &Option<PathBuf>,
+) -> (f64, f64, f64, f64) {
+    // Try to read actual courtyard from .kicad_mod
+    if let Some(dir) = fp_dir {
+        let comp = bundle.ir1e.components.iter().find(|c| c.ref_des == ref_des);
+        if let Some(comp) = comp {
+            if let Some(path) = resolve_footprint_path(dir, &comp.kicad_footprint) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Some(bounds) = extract_courtyard_bounds(&content) {
+                        return bounds;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: use IR-1e courtyard_mm as symmetric bounds
+    let comp = bundle.ir1e.components.iter().find(|c| c.ref_des == ref_des);
+    if let Some(comp) = comp {
+        if let Some(d) = &comp.courtyard_mm {
+            return (-d.width / 2.0, -d.height / 2.0, d.width / 2.0, d.height / 2.0);
+        }
+    }
+    (-1.0, -1.0, 1.0, 1.0)
+}
+
+/// Parse courtyard bounds from .kicad_mod file content.
+fn extract_courtyard_bounds(content: &str) -> Option<(f64, f64, f64, f64)> {
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+
+    // Match fp_line with CrtYd layer — these define the courtyard rectangle
+    // Pattern: (fp_line (start X Y) (end X Y) ... (layer "F.CrtYd") ...)
+    // or       (fp_rect (start X Y) (end X Y) ... (layer "F.CrtYd") ...)
+    for line in content.lines() {
+        if !line.contains("CrtYd") {
+            continue;
+        }
+        // Extract coordinates from (start X Y) and (end X Y)
+        let mut pos = 0;
+        while let Some(idx) = line[pos..].find("(start ").or_else(|| line[pos..].find("(end ")) {
+            let start = pos + idx;
+            let after_paren = start + line[start..].find(' ').unwrap_or(0) + 1;
+            let rest = &line[after_paren..];
+            let parts: Vec<&str> = rest.splitn(3, |c: char| c.is_whitespace() || c == ')').collect();
+            if parts.len() >= 2 {
+                if let (Ok(x), Ok(y)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                    xs.push(x);
+                    ys.push(y);
+                }
+            }
+            pos = after_paren + 1;
+        }
+    }
+
+    if xs.len() >= 2 && ys.len() >= 2 {
+        Some((
+            xs.iter().cloned().reduce(f64::min)?,
+            ys.iter().cloned().reduce(f64::min)?,
+            xs.iter().cloned().reduce(f64::max)?,
+            ys.iter().cloned().reduce(f64::max)?,
+        ))
+    } else {
+        None
+    }
 }
 
 /// Build footprint placement nodes for all components.
@@ -98,8 +178,8 @@ pub fn build_placements(
             }
         };
 
-        let (hw, hh) = get_courtyard_half_dims(&cp.ref_des, bundle);
-        let bbox = BBox::from_courtyard(cp.position.x_mm, ky, hw, hh, rotation);
+        let bounds = get_courtyard_bounds(&cp.ref_des, bundle, &fp_dir);
+        let bbox = BBox::from_asymmetric(cp.position.x_mm, ky, bounds, rotation, 0.5);
         placed_bboxes.push(bbox);
         pos_map.insert(cp.ref_des.clone(), (cp.position.x_mm, ky, rotation));
     }
@@ -118,23 +198,21 @@ pub fn build_placements(
             .collect();
 
         for (i, ref_des) in to_place.iter().enumerate() {
-            let (hw, hh) = get_courtyard_half_dims(ref_des, bundle);
+            let bounds = get_courtyard_bounds(ref_des, bundle, &fp_dir);
             let mut x = anchor_x + (i as f64 % 2.0) * spacing;
             let mut y = anchor_ky + (i as f64 / 2.0).floor() * spacing;
 
             // Try to find a non-overlapping position
-            for _ in 0..100 {
-                let candidate = BBox::from_courtyard(x, y, hw + 0.5, hh + 0.5, 0.0);
+            for _ in 0..200 {
+                let candidate = BBox::from_asymmetric(x, y, bounds, 0.0, 0.5);
 
-                // Check board bounds (with margin)
-                let in_bounds = candidate.x_min >= 1.0
-                    && candidate.x_max <= board_w - 1.0
-                    && candidate.y_min >= 1.0
-                    && candidate.y_max <= board_h - 1.0;
+                let in_bounds = candidate.x_min >= 0.5
+                    && candidate.x_max <= board_w - 0.5
+                    && candidate.y_min >= 0.5
+                    && candidate.y_max <= board_h - 0.5;
 
                 let overlaps = placed_bboxes.iter().any(|b| candidate.overlaps(b));
 
-                // Check keepout zones
                 let in_keepout = ir3.keepout_zones.as_ref().is_some_and(|kzs| {
                     kzs.iter().any(|kz| {
                         let kx1 = kz.boundary.x_mm;
@@ -150,19 +228,19 @@ pub fn build_placements(
                     break;
                 }
 
-                // Shift position — scan across the board
+                // Scan across the board in a grid pattern
                 x += spacing;
-                if x + hw > board_w - 1.0 {
+                if x > board_w - 2.0 {
                     x = 2.0;
                     y += spacing;
                 }
-                if y + hh > board_h - 1.0 {
+                if y > board_h - 2.0 {
                     y = 2.0;
-                    x += spacing;
+                    x += 1.0;
                 }
             }
 
-            let bbox = BBox::from_courtyard(x, y, hw, hh, 0.0);
+            let bbox = BBox::from_asymmetric(x, y, bounds, 0.0, 0.25);
             placed_bboxes.push(bbox);
             pos_map.insert(ref_des.clone(), (x, y, 0.0));
         }

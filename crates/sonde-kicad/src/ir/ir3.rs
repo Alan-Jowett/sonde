@@ -131,5 +131,6 @@ pub struct SilkscreenLabel {
     pub text: String,
     pub location: Option<String>,
     pub position: Option<Position>,
+    pub rotation: Option<f64>,
     pub layer: Option<String>,
 }

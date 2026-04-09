@@ -35,13 +35,19 @@ pub fn build_silkscreen(
             (lx, ly)
         };
 
+        let rot = label.rotation.unwrap_or(0.0);
+        let mut at_items = vec![
+            SExpr::Atom("at".into()),
+            SExpr::Atom(fmt(x)),
+            SExpr::Atom(fmt(y)),
+        ];
+        if rot.abs() > 0.01 {
+            at_items.push(SExpr::Atom(fmt(rot)));
+        }
+
         children.push(SExpr::list("gr_text", vec![
             SExpr::Quoted(label.text.clone()),
-            SExpr::List(vec![
-                SExpr::Atom("at".into()),
-                SExpr::Atom(fmt(x)),
-                SExpr::Atom(fmt(y)),
-            ]),
+            SExpr::List(at_items),
             SExpr::pair_quoted("layer", layer),
             SExpr::pair_quoted("uuid", &uuid_gen.next(&format!("silk:{i}"))),
             SExpr::list("effects", vec![

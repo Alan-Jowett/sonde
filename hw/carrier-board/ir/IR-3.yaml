@@ -45,7 +45,7 @@ connector_placement:
 - ref_des: J6
   description: XIAO left header socket (1Ã—7, 2.54mm)
   position:
-    x_mm: 21.25
+    x_mm: 20.12
     y_mm: 8.8
   orientation: vertical, pin 1 at bottom (D0), no rotation
   courtyard_mm:
@@ -60,7 +60,7 @@ connector_placement:
 - ref_des: J7
   description: XIAO right header socket (1Ã—7, 2.54mm)
   position:
-    x_mm: 3.75
+    x_mm: 4.88
     y_mm: 8.8
   orientation: vertical, pin 1 at bottom (D6), no rotation
   courtyard_mm:

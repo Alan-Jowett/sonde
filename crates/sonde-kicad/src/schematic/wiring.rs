@@ -28,6 +28,8 @@ pub fn build_connectivity(
         .map(|p| (p.ref_des.as_str(), p))
         .collect();
 
+    let registry = crate::schematic::symbols::SymbolRegistry::new();
+
     let mut instances = Vec::new();
     let mut wires = Vec::new();
     let mut labels = Vec::new();
@@ -90,8 +92,14 @@ pub fn build_connectivity(
         ));
         inst_children.push(property_hidden("Datasheet", "~", pos.x, pos.y));
 
-        // Pins
+        // Pins — use actual pin positions from symbol definitions
         if let Some(entry) = netlist_entry {
+            let sym_pins = registry.pin_positions(&comp.kicad_symbol);
+            let pin_pos_map: std::collections::HashMap<&str, (f64, f64)> = sym_pins
+                .iter()
+                .map(|(num, x, y)| (num.as_str(), (*x, *y)))
+                .collect();
+
             for pin in &entry.pins {
                 let pin_uuid =
                     uuid_gen.next(&format!("pin:{}:{}", comp.ref_des, pin.pin));
@@ -103,9 +111,15 @@ pub fn build_connectivity(
                     ],
                 ));
 
-                // Pin endpoint (simplified: offset from component position)
-                let pin_x = pos.x - 5.08;
-                let pin_y = pos.y + (pin.pin as f64 - 1.0) * -2.54;
+                // Pin endpoint: component position + symbol pin offset
+                let pin_num_str = pin.pin.to_string();
+                let (pin_dx, pin_dy) = pin_pos_map
+                    .get(pin_num_str.as_str())
+                    .copied()
+                    .unwrap_or((-5.08, (pin.pin as f64 - 1.0) * -2.54));
+
+                let pin_x = pos.x + pin_dx;
+                let pin_y = pos.y + pin_dy;
 
                 if pin.is_nc() {
                     // No-connect marker

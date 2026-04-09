@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-//! Vendored KiCad symbol definitions.
+//! KiCad symbol definitions — loaded from installed library or vendored fallback.
 //!
-//! Symbol shapes are embedded as S-expression fragments compiled into the binary.
-//! This eliminates the dependency on a KiCad installation for schematic generation.
+//! When a KiCad installation is detected, symbol definitions are read from the
+//! installed `.kicad_sym` files. This ensures pin positions, shapes, and electrical
+//! types match exactly what KiCad ERC expects. Vendored symbols serve as a fallback
+//! when KiCad is not installed.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::sexpr::{parser, SExpr};
 
-/// Registry of vendored KiCad symbol definitions.
+/// Registry of KiCad symbol definitions.
 pub struct SymbolRegistry {
     symbols: HashMap<String, SExpr>,
 }
@@ -22,12 +25,53 @@ impl Default for SymbolRegistry {
 }
 
 impl SymbolRegistry {
-    /// Create a new registry with all vendored symbols loaded.
+    /// Create a new registry, preferring installed KiCad symbols over vendored ones.
     pub fn new() -> Self {
         let mut symbols = HashMap::new();
+
+        // Try loading from installed KiCad
+        if let Some(sym_dir) = find_kicad_symbol_dir() {
+            let libs = ["Device", "Connector_Generic", "power"];
+            for lib_name in &libs {
+                let path = sym_dir.join(format!("{lib_name}.kicad_sym"));
+                if path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        load_kicad_sym_file(&content, lib_name, &mut symbols);
+                    }
+                }
+            }
+        }
+
+        // Fill in any missing symbols from vendored fallback
         for (name, sexpr_str) in VENDORED_SYMBOLS {
-            if let Ok(parsed) = parser::parse(sexpr_str) {
-                symbols.insert(name.to_string(), parsed);
+            if !symbols.contains_key(*name) {
+                if let Ok(parsed) = parser::parse(sexpr_str) {
+                    symbols.insert(name.to_string(), parsed);
+                }
+            }
+        }
+
+        Self { symbols }
+    }
+
+    /// Create a registry from a specific KiCad symbol directory.
+    pub fn from_dir(sym_dir: &Path) -> Self {
+        let mut symbols = HashMap::new();
+        let libs = ["Device", "Connector_Generic", "power"];
+        for lib_name in &libs {
+            let path = sym_dir.join(format!("{lib_name}.kicad_sym"));
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    load_kicad_sym_file(&content, lib_name, &mut symbols);
+                }
+            }
+        }
+        // Vendored fallback
+        for (name, sexpr_str) in VENDORED_SYMBOLS {
+            if !symbols.contains_key(*name) {
+                if let Ok(parsed) = parser::parse(sexpr_str) {
+                    symbols.insert(name.to_string(), parsed);
+                }
             }
         }
         Self { symbols }
@@ -36,6 +80,16 @@ impl SymbolRegistry {
     /// Look up a symbol definition by library-qualified name.
     pub fn get(&self, name: &str) -> Option<&SExpr> {
         self.symbols.get(name)
+    }
+
+    /// Extract pin positions from a symbol definition.
+    ///
+    /// Returns `(pin_number, x, y)` for each pin in the symbol.
+    pub fn pin_positions(&self, name: &str) -> Vec<(String, f64, f64)> {
+        let Some(sym) = self.symbols.get(name) else {
+            return Vec::new();
+        };
+        extract_pins_recursive(sym)
     }
 }
 
@@ -47,6 +101,126 @@ pub fn power_symbol_name(net_name: &str) -> String {
         "+5V" | "5V" => "power:+5V".to_string(),
         other => format!("power:{other}"),
     }
+}
+
+/// Detect the installed KiCad symbol library directory.
+fn find_kicad_symbol_dir() -> Option<PathBuf> {
+    // Check common installation paths
+    let candidates = [
+        PathBuf::from(r"C:\Program Files\KiCad\8.0\share\kicad\symbols"),
+        PathBuf::from(r"C:\Program Files\KiCad\9.0\share\kicad\symbols"),
+        PathBuf::from("/usr/share/kicad/symbols"),
+        PathBuf::from("/usr/local/share/kicad/symbols"),
+        PathBuf::from("/opt/kicad/share/kicad/symbols"),
+    ];
+    // Also check KICAD8_SYMBOL_DIR env var
+    if let Ok(dir) = std::env::var("KICAD8_SYMBOL_DIR") {
+        let p = PathBuf::from(dir);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    candidates.into_iter().find(|p| p.exists())
+}
+
+/// Parse a `.kicad_sym` file and extract symbol definitions into the registry.
+///
+/// A `.kicad_sym` file has the structure:
+/// ```text
+/// (kicad_symbol_lib
+///   (symbol "R" ...)
+///   (symbol "C" ...)
+/// )
+/// ```
+fn load_kicad_sym_file(content: &str, lib_name: &str, symbols: &mut HashMap<String, SExpr>) {
+    let Ok(tree) = parser::parse(content.trim()) else {
+        return;
+    };
+    let SExpr::List(items) = &tree else { return };
+
+    for item in items {
+        let SExpr::List(children) = item else { continue };
+        let Some(SExpr::Atom(tag)) = children.first() else {
+            continue;
+        };
+        if tag != "symbol" {
+            continue;
+        }
+        let Some(sym_name) = children.get(1) else {
+            continue;
+        };
+        let name_str = match sym_name {
+            SExpr::Quoted(s) => s.clone(),
+            SExpr::Atom(s) => s.clone(),
+            _ => continue,
+        };
+        // Skip sub-units (names like "R_0_1", "R_1_1")
+        if name_str.contains('_')
+            && name_str
+                .rsplit('_')
+                .next()
+                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()))
+        {
+            continue;
+        }
+        let qualified_name = format!("{lib_name}:{name_str}");
+
+        // Clone the symbol and replace its name with the library-qualified version
+        let mut modified = children.clone();
+        modified[1] = SExpr::Quoted(qualified_name.clone());
+        // Also qualify any sub-unit symbol names inside
+        qualify_sub_symbols(&mut modified, lib_name);
+
+        symbols.insert(qualified_name, SExpr::List(modified));
+    }
+}
+
+/// In KiCad's lib_symbols format, sub-unit symbols (e.g., "R_0_1", "R_1_1")
+/// do NOT get library-qualified names — only the top-level symbol does.
+/// This function is intentionally a no-op.
+fn qualify_sub_symbols(_items: &mut [SExpr], _lib_name: &str) {
+    // Sub-unit names must remain unqualified in KiCad's format.
+}
+
+/// Extract pin positions from an S-expression symbol definition.
+fn extract_pins_recursive(node: &SExpr) -> Vec<(String, f64, f64)> {
+    let mut pins = Vec::new();
+    if let SExpr::List(items) = node {
+        if matches!(items.first(), Some(SExpr::Atom(tag)) if tag == "pin") {
+            // (pin <type> <dir> (at x y [rot]) ... (number "N" ...))
+            let mut x = 0.0;
+            let mut y = 0.0;
+            let mut number = String::new();
+            for child in items {
+                if let SExpr::List(inner) = child {
+                    match inner.first() {
+                        Some(SExpr::Atom(tag)) if tag == "at" => {
+                            if let Some(SExpr::Atom(xv)) = inner.get(1) {
+                                x = xv.parse().unwrap_or(0.0);
+                            }
+                            if let Some(SExpr::Atom(yv)) = inner.get(2) {
+                                y = yv.parse().unwrap_or(0.0);
+                            }
+                        }
+                        Some(SExpr::Atom(tag)) if tag == "number" => {
+                            if let Some(SExpr::Quoted(n) | SExpr::Atom(n)) = inner.get(1) {
+                                number = n.clone();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if !number.is_empty() {
+                pins.push((number, x, y));
+            }
+        } else {
+            for child in items {
+                pins.extend(extract_pins_recursive(child));
+            }
+        }
+    }
+    pins
 }
 
 /// Vendored symbol definitions as (name, S-expression) pairs.

@@ -154,13 +154,9 @@ fn load_kicad_sym_file(content: &str, lib_name: &str, symbols: &mut HashMap<Stri
             SExpr::Atom(s) => s.clone(),
             _ => continue,
         };
-        // Skip sub-units (names like "R_0_1", "R_1_1")
-        if name_str.contains('_')
-            && name_str
-                .rsplit('_')
-                .next()
-                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()))
-        {
+        // Skip sub-units: names ending with _N_N pattern (e.g., "R_0_1", "Conn_01x04_1_1")
+        // but NOT top-level names like "Conn_01x04" or "Q_PMOS_GSD"
+        if is_sub_unit_name(&name_str) {
             continue;
         }
         let qualified_name = format!("{lib_name}:{name_str}");
@@ -180,6 +176,23 @@ fn load_kicad_sym_file(content: &str, lib_name: &str, symbols: &mut HashMap<Stri
 /// This function is intentionally a no-op.
 fn qualify_sub_symbols(_items: &mut [SExpr], _lib_name: &str) {
     // Sub-unit names must remain unqualified in KiCad's format.
+}
+
+/// Check if a symbol name is a sub-unit (e.g., "R_0_1", "Conn_01x04_1_1").
+///
+/// Sub-units end with `_N_N` where N are digit sequences. This distinguishes
+/// "R_0_1" (sub-unit) from "Conn_01x04" (top-level) or "Q_PMOS_GSD" (top-level).
+fn is_sub_unit_name(name: &str) -> bool {
+    let parts: Vec<&str> = name.rsplitn(3, '_').collect();
+    // Need at least _N_N at the end (3 parts from rsplitn(3))
+    if parts.len() < 3 {
+        return false;
+    }
+    // parts[0] = last segment, parts[1] = second-to-last
+    parts[0].chars().all(|c| c.is_ascii_digit())
+        && !parts[0].is_empty()
+        && parts[1].chars().all(|c| c.is_ascii_digit())
+        && !parts[1].is_empty()
 }
 
 /// Extract pin positions from an S-expression symbol definition.

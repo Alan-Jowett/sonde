@@ -112,6 +112,8 @@ pub fn build_connectivity(
                 ));
 
                 // Pin endpoint: component position + symbol pin offset
+                // KiCad symbol Y-coordinates use Y-up convention, but the
+                // schematic sheet uses Y-down. Pin dy must be negated.
                 let pin_num_str = pin.pin.to_string();
                 let (pin_dx, pin_dy) = pin_pos_map
                     .get(pin_num_str.as_str())
@@ -119,7 +121,7 @@ pub fn build_connectivity(
                     .unwrap_or((-5.08, (pin.pin as f64 - 1.0) * -2.54));
 
                 let pin_x = pos.x + pin_dx;
-                let pin_y = pos.y + pin_dy;
+                let pin_y = pos.y - pin_dy;
 
                 if pin.is_nc() {
                     // No-connect marker

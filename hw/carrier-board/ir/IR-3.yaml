@@ -59,7 +59,7 @@ edges:
 #
 # Courtyard bounds from KiCad 8.0.9 footprint library:
 #   J1 (JST_SH_SM04B): (-3.90, -3.28) to (3.90, 3.28) — symmetric
-#   J2 (JST_XH_S3B):   (-2.95, -2.80) to (7.95, 9.70) — housing +Y
+#   J2 (JST_PH_S3B):   (-2.45, -1.85) to (6.45, 6.75) — housing +Y
 #   J3 (JST_PH_S2B):   (-2.45, -1.85) to (4.45, 6.75) — housing +Y
 #   J6 (PinSocket_1x07):(-1.80, -1.80) to (1.75, 17.00) — pads +Y
 #   J7 (PinSocket_1x07): same as J6
@@ -129,20 +129,21 @@ connector_placement:
       Clears J6 bottom courtyard (8.70) by 0.75mm. ✓
 
   - ref_des: J2
-    description: "1-Wire connector (JST XH 3-pin THT RA)"
+    description: "1-Wire connector (JST PH 3-pin THT RA)"
     edge: right
     position:
       x_mm: 25.0  # flush with right edge
-      y_mm: 33.0  # upper-right, above J7 top courtyard (27.50)
+      y_mm: 31.0  # upper-right, above J7 top courtyard (27.50)
     orientation: "housing facing right (outward), rotated 270°"
-    courtyard_mm: {width: 10.90, height: 12.50}
-    courtyard_bounds: {min_x: -2.95, min_y: -2.80, max_x: 7.95, max_y: 9.70}
+    courtyard_mm: {width: 8.90, height: 8.60}
+    courtyard_bounds: {min_x: -2.45, min_y: -1.85, max_x: 6.45, max_y: 6.75}
     mounting: THT
     notes: >
-      At 270° rotation, courtyard: (-9.70, -2.95) to (2.80, 7.95).
-      Board coords: (15.30, 23.05) to (27.80, 38.95).
-      Clears J7 top courtyard (27.50) — J2 bottom at 28.05. ✓
-      Housing extends off-board (right + top).
+      Changed from JST XH to JST PH — 30% smaller courtyard.
+      At 270° rotation, courtyard: (-6.75, -2.45) to (1.85, 6.45).
+      Board coords: (18.25, 24.55) to (26.85, 37.45).
+      Clears J7 top courtyard (27.50) — J2 bottom at 24.55.
+      On-board extent: x=18.25 to 25.0 (6.75mm into board).
 
 # ===========================================================================
 # Component Grouping Zones
@@ -174,9 +175,9 @@ component_zones:
   - group: i2c-interface
     components: [J1, R1, R2]
     zone:
-      description: "Upper-left area, near Qwiic connector"
-      anchor: {x_mm: 5.0, y_mm: 28.0}
-      extent_mm: {width: 8.0, height: 5.0}
+      description: "Upper area, near Qwiic connector"
+      anchor: {x_mm: 7.0, y_mm: 29.0}
+      extent_mm: {width: 8.0, height: 4.0}
     proximity_constraint_mm: 3.0
     notes: >
       R1, R2 pull-ups near J1 (y=30). Zone above J6 top (27.50).
@@ -185,8 +186,8 @@ component_zones:
     components: [J2, R3]
     zone:
       description: "Upper-center area, near 1-Wire connector"
-      anchor: {x_mm: 10.0, y_mm: 29.0}
-      extent_mm: {width: 5.0, height: 4.0}
+      anchor: {x_mm: 12.0, y_mm: 29.0}
+      extent_mm: {width: 4.0, height: 4.0}
     proximity_constraint_mm: 3.0
     notes: >
       R3 placed in open area above pin headers, between J6/J7
@@ -195,13 +196,13 @@ component_zones:
   - group: battery-sensing
     components: [R5, R6, C3]
     zone:
-      description: "Center area, between pin headers"
-      anchor: {x_mm: 10.0, y_mm: 10.0}
-      extent_mm: {width: 6.0, height: 5.0}
+      description: "Center area, between pin headers away from edges"
+      anchor: {x_mm: 12.0, y_mm: 18.0}
+      extent_mm: {width: 5.0, height: 4.0}
     proximity_constraint_mm: 3.0
     notes: >
-      Voltage divider and ADC filter in the open center between
-      J6 (x=5.50) and J7 (x=19.45). Near J6 pin 1 (y=10.5).
+      Voltage divider and ADC filter in the center of the board,
+      well clear of all connector courtyards.
 
 # ===========================================================================
 # Keep-Out Zones

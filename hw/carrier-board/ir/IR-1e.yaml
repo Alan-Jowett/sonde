@@ -141,18 +141,18 @@ components:
     notes: "SMD connector — courtyard includes mounting/shield pad"
 
   - ref_des: J2
-    ir1_generic_footprint: "JST-XH-3-pin-THT-RA"
+    ir1_generic_footprint: "JST-PH-3-pin-THT-RA"
     kicad_symbol: "Connector_Generic:Conn_01x03"
-    kicad_footprint: "Connector_JST:JST_XH_S3B-XH-A_1x03_P2.50mm_Horizontal"
+    kicad_footprint: "Connector_JST:JST_PH_S3B-PH-K_1x03_P2.00mm_Horizontal"
     library_status: "FOUND"
-    bbox_mm: {width: 10.90, height: 12.50}
-    courtyard_mm: {width: 10.90, height: 12.50}
-    courtyard_area_mm2: 136.25
+    bbox_mm: {width: 8.90, height: 8.60}
+    courtyard_mm: {width: 8.90, height: 8.60}
+    courtyard_area_mm2: 76.54
     source: "KiCad 8.0 library, F.CrtYd layer"
     notes: >
-      Right-angle THT connector — large courtyard includes body extension
-      beyond board edge for mating cable. On-board footprint is smaller
-      (pins + housing base ≈ 10.9 × 5mm).
+      Changed from JST XH (10.9×12.5mm) to JST PH (8.9×8.6mm) to
+      reduce courtyard footprint. Right-angle THT connector —
+      courtyard includes housing extension beyond board edge.
 
   - ref_des: J3
     ir1_generic_footprint: "JST-PH-2-pin-THT-RA"

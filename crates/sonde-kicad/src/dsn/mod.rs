@@ -13,6 +13,12 @@ pub fn emit_dsn(bundle: &IrBundle) -> Result<String, Error> {
     let ir3 = bundle.ir3.as_ref().ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
     let board = &ir3.board;
 
+    // Use same page offset as PCB generation (A4 centered)
+    let page_w = 297.0;
+    let page_h = 210.0;
+    let offset_x = (page_w - board.width_mm) / 2.0;
+    let offset_y = (page_h - board.height_mm) / 2.0;
+
     let mut dsn = String::new();
     dsn.push_str(&format!("(pcb \"{}.dsn\"\n", bundle.project));
     dsn.push_str("  (parser\n");
@@ -24,13 +30,13 @@ pub fn emit_dsn(bundle: &IrBundle) -> Result<String, Error> {
     dsn.push_str("  (resolution um 10)\n");
     dsn.push_str("  (unit um)\n");
 
-    // Structure
-    structure::write_structure(&mut dsn, ir3);
+    // Structure (board boundary with page offset)
+    structure::write_structure(&mut dsn, ir3, offset_x, offset_y);
 
-    // Placement
-    write_placement(&mut dsn, bundle, board.height_mm);
+    // Placement (component positions with page offset)
+    write_placement(&mut dsn, bundle, board.height_mm, offset_x, offset_y);
 
-    // Library (simplified pad images)
+    // Library (pad images)
     write_library(&mut dsn, bundle);
 
     // Network
@@ -43,7 +49,7 @@ pub fn emit_dsn(bundle: &IrBundle) -> Result<String, Error> {
     Ok(dsn)
 }
 
-fn write_placement(dsn: &mut String, bundle: &IrBundle, board_height: f64) {
+fn write_placement(dsn: &mut String, bundle: &IrBundle, board_height: f64, ox: f64, oy: f64) {
     dsn.push_str("  (placement\n");
 
     // Group components by footprint
@@ -73,10 +79,11 @@ fn write_placement(dsn: &mut String, bundle: &IrBundle, board_height: f64) {
 
     for comp in &bundle.ir1e.components {
         let (x, y) = pos_map.get(&comp.ref_des).copied().unwrap_or((10.0, 10.0));
-        // DSN uses bottom-left origin (same as IR-3), µm units
-        let x_um = mm_to_um(x);
-        let y_um = mm_to_um(y);
-        let _ = board_height; // DSN uses same coord system as IR-3
+        // Convert IR-3 coords to KiCad page coords (same as PCB), then to µm
+        let kicad_x = x + ox;
+        let kicad_y = board_height - y + oy;
+        let x_um = mm_to_um(kicad_x);
+        let y_um = mm_to_um(kicad_y);
         by_footprint
             .entry(comp.kicad_footprint.as_str())
             .or_default()

@@ -6,7 +6,7 @@
 use crate::ir::ir3::Ir3;
 
 /// Write the DSN `(structure ...)` section.
-pub fn write_structure(dsn: &mut String, ir3: &Ir3) {
+pub fn write_structure(dsn: &mut String, ir3: &Ir3, ox: f64, oy: f64) {
     let board = &ir3.board;
     dsn.push_str("  (structure\n");
 
@@ -18,25 +18,27 @@ pub fn write_structure(dsn: &mut String, ir3: &Ir3) {
         dsn.push_str("    (layer In2.Cu (type signal) (property (index 3)))\n");
     }
 
-    // Board boundary (µm)
-    let w = (board.width_mm * 1000.0) as i64;
-    let h = (board.height_mm * 1000.0) as i64;
+    // Board boundary (µm, with page offset)
+    let x1 = (ox * 1000.0) as i64;
+    let y1 = (oy * 1000.0) as i64;
+    let x2 = x1 + (board.width_mm * 1000.0) as i64;
+    let y2 = y1 + (board.height_mm * 1000.0) as i64;
     dsn.push_str("    (boundary\n");
     dsn.push_str(&format!(
-        "      (path signal 0 0 0 {w} 0 {w} {h} 0 {h} 0 0)\n"
+        "      (path signal 0 {x1} {y1} {x2} {y1} {x2} {y2} {x1} {y2} {x1} {y1})\n"
     ));
     dsn.push_str("    )\n");
 
     // Keep-outs
     if let Some(keepouts) = &ir3.keepout_zones {
         for kz in keepouts {
-            let x1 = (kz.boundary.x_mm * 1000.0) as i64;
-            let y1 = (kz.boundary.y_mm * 1000.0) as i64;
-            let x2 = x1 + (kz.boundary.width_mm * 1000.0) as i64;
-            let y2 = y1 + (kz.boundary.height_mm * 1000.0) as i64;
+            let kx1 = ((kz.boundary.x_mm + ox) * 1000.0) as i64;
+            let ky1 = ((kz.boundary.y_mm + oy) * 1000.0) as i64;
+            let kx2 = kx1 + (kz.boundary.width_mm * 1000.0) as i64;
+            let ky2 = ky1 + (kz.boundary.height_mm * 1000.0) as i64;
             dsn.push_str(&format!("    (keepout \"{}\"\n", kz.name));
             dsn.push_str(&format!(
-                "      (polygon signal 0 {x1} {y1} {x2} {y1} {x2} {y2} {x1} {y2})\n"
+                "      (polygon signal 0 {kx1} {ky1} {kx2} {ky1} {kx2} {ky2} {kx1} {ky2})\n"
             ));
             dsn.push_str("    )\n");
         }

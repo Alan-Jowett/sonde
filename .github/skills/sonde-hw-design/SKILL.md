@@ -232,6 +232,11 @@ library. Produced by the geometry enrichment tool step post-binding.
 Required fields per component:
 - `bbox_mm` (width, height) — bounding box
 - `courtyard_mm` (width, height) — courtyard dimensions
+- `courtyard_bounds` (min_x, min_y, max_x, max_y) — courtyard extent
+  relative to the footprint origin. This is REQUIRED because KiCad
+  footprints have **asymmetric** courtyards (the origin is at pad 1,
+  not the courtyard center). Tools that use `courtyard_mm` as a centered
+  bounding box will produce incorrect overlap checks.
 - Summary field: total courtyard area of all components
 
 ### IR-PB: Power Budget
@@ -294,8 +299,35 @@ Required content:
 - Routing constraints for critical signals: differential pairs
   (impedance target + tolerance), power traces (minimum width from
   IR-PB current data), net references from IR-2
-- Feasibility check: total courtyard area (IR-1e) vs. board area.
-  Warning at >70% utilization; blocking failure at >90%.
+- Feasibility check:
+  - **Area check**: total courtyard area (IR-1e) vs. board area.
+    Warning at >70% utilization; blocking failure at >90%.
+  - **Pairwise overlap check** (REQUIRED): after placing all connectors
+    and assigning zone anchors, verify that no two component courtyard
+    bounding boxes overlap when rotation is applied. The area ratio
+    check alone is NOT sufficient — a board at 32% utilization can
+    still have courtyard overlaps if components are clustered.
+
+**Placement validation rules** (must be checked before gate approval):
+
+1. **Rotation-aware courtyard bounds**: when placing connectors at board
+   edges with rotation, transform `courtyard_bounds` (min_x, min_y,
+   max_x, max_y) from IR-1e by the rotation angle. A courtyard of
+   `(-2.45, -1.85, 4.45, 6.75)` rotated 90° becomes
+   `(-6.75, -2.45, 1.85, 4.45)` in board coordinates.
+
+2. **Pin span validation**: for multi-pin connectors (headers, SIPs),
+   verify that the full pin span (`pin_count × pitch`) fits within
+   the board boundary after rotation. `position + pin_span` must not
+   exceed board dimensions in any direction.
+
+3. **Connector-to-connector clearance**: every connector pair must have
+   at least 2mm clearance between their rotated courtyard bounds.
+
+4. **Zone anchor clearance**: zone anchor positions must clear all
+   connector courtyards by at least 1mm. The zone extent rectangle
+   (`anchor + extent_mm`) must not intersect any connector's rotated
+   courtyard.
 
 ---
 
@@ -466,9 +498,42 @@ courtyard areas are larger than body areas — this is expected, not a
 regression. On failure, trigger re-execution of Pass 2 with the
 courtyard-based area delta as feedback.
 
+**Placement validation (MUST perform before gate approval):**
+
+1. **Rotation-aware courtyard checking**: when placing connectors at
+   board edges with rotation, transform the `courtyard_bounds` (or
+   compute from `courtyard_mm` using the footprint's asymmetric
+   origin offset) by the rotation angle. A right-angle connector
+   rotated 90° has its housing extending in a different axis than at
+   0°. Do NOT use `courtyard_mm` as a centered bounding box — KiCad
+   footprints have asymmetric courtyards where the origin is at pad 1.
+
+2. **Pin span validation**: for multi-pin connectors (headers, SIPs),
+   compute the full pin span as `(pin_count - 1) × pitch`. After
+   applying rotation, verify that `position + rotated_pin_span` stays
+   within the board boundary in all directions. A 7-pin 2.54mm header
+   spans 15.24mm — if placed at y=8mm with pins going downward,
+   pin 7 would be at y=-7mm (off board).
+
+3. **Pairwise connector clearance**: after placing all connectors,
+   check every pair for courtyard overlap (using rotated bounds). Edge
+   connectors with large right-angle housings often extend far into
+   the board — verify they clear the pin headers and each other.
+
+4. **Zone anchor vs. connector clearance**: before assigning a zone
+   anchor, verify the zone's extent rectangle does not overlap any
+   connector's rotated courtyard. Placing passives "near the
+   associated connector for short traces" is good practice, but the
+   zone must clear the connector's physical footprint.
+
+5. **Pairwise overlap check**: after all positions are determined,
+   verify no two component courtyards overlap. Report any violations.
+   The area-based feasibility ratio (32% < 70%) does NOT guarantee
+   non-overlapping placement.
+
 **Gate**: Physical feasibility (utilization <70% warning, <90% blocking);
-no conflicting constraints; explicit human approval of connector
-placement.
+no courtyard overlaps; no components extending off board; explicit human
+approval of connector placement.
 
 ### Critical Rule
 

@@ -67,20 +67,42 @@ pub fn build_placements(
         pos_map.insert(cp.ref_des.clone(), (adj_x, adj_y, rotation));
     }
 
+    // Zone-based placement: place components in available board space
+    // avoiding already-placed connectors. Use larger spacing to prevent overlap.
+    let placed_positions: Vec<(f64, f64)> = pos_map.values().map(|&(x, y, _)| (x, y)).collect();
+
     for zone in &ir3.component_zones {
         let anchor_x = zone.zone.anchor.x_mm;
         let anchor_ky = board_h - zone.zone.anchor.y_mm;
-        let spacing = zone.proximity_constraint_mm;
+        let spacing = zone.proximity_constraint_mm.max(3.0);
 
-        for (i, ref_des) in zone.components.iter().enumerate() {
-            if pos_map.contains_key(ref_des) {
-                continue;
+        let to_place: Vec<&String> = zone
+            .components
+            .iter()
+            .filter(|r| !pos_map.contains_key(r.as_str()))
+            .collect();
+
+        for (i, ref_des) in to_place.iter().enumerate() {
+            // Try positions in a grid until we find one not too close to existing
+            let mut x = anchor_x + (i as f64 % 2.0) * spacing;
+            let mut y = anchor_ky + (i as f64 / 2.0).floor() * spacing;
+
+            // Nudge away from any existing placement that's too close
+            for _ in 0..10 {
+                let too_close = placed_positions.iter().any(|&(px, py)| {
+                    (x - px).abs() < 2.0 && (y - py).abs() < 2.0
+                });
+                if !too_close {
+                    break;
+                }
+                y += spacing;
+                if y > board_h - 2.0 {
+                    y = anchor_ky;
+                    x += spacing;
+                }
             }
-            let col = i % 3;
-            let row = i / 3;
-            let x = anchor_x + col as f64 * spacing;
-            let y = anchor_ky + row as f64 * spacing;
-            pos_map.insert(ref_des.clone(), (x, y, 0.0));
+
+            pos_map.insert(ref_des.to_string(), (x, y, 0.0));
         }
     }
 

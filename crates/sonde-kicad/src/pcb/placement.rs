@@ -31,19 +31,31 @@ pub fn build_placements(
     for cp in &ir3.connector_placement {
         let ky = board_h - cp.position.y_mm;
 
-        // Determine rotation to make housing face outward from the board edge.
+        // Determine rotation based on edge and orientation.
+        //
         // Default footprint orientations:
-        //   JST SH (SMD): pads at y=-2, housing extends +Y → cable enters from +Y
-        //   JST XH/PH (THT RA): pads along X, housing extends +Y → cable enters from +Y
+        //   JST SH (SMD): pads at y=-2, housing extends +Y
+        //   JST XH/PH (THT RA): pads along X, housing extends +Y
+        //   PinSocket 1x07: pads along +Y from origin (pin 1 at origin)
+        //
         // Rotations needed:
-        //   Left edge: rotate 90° → +Y becomes -X (housing faces left/outward)
-        //   Right edge: rotate 270° → +Y becomes +X (housing faces right/outward)
+        //   Left edge: 90° → +Y becomes -X (housing faces left/outward)
+        //   Right edge: 270° → +Y becomes +X (housing faces right/outward)
+        //   Vertical "pin 1 at bottom": 180° → pads go upward from origin
         let rotation = match cp.edge.as_deref() {
             Some("left") => 90.0,
             Some("right") => 270.0,
             Some("top") => 180.0,
             Some("bottom") => 0.0,
-            _ => 0.0,
+            None | Some(_) => {
+                // Non-edge components: check orientation hint
+                let orient = cp.orientation.as_deref().unwrap_or("");
+                if orient.contains("pin 1 at bottom") {
+                    180.0 // Flip so pads extend upward (toward lower KiCad Y)
+                } else {
+                    0.0
+                }
+            }
         };
 
         // Place footprint origin at the edge position directly.

@@ -79,11 +79,13 @@ fn write_placement(dsn: &mut String, bundle: &IrBundle, board_height: f64, ox: f
 
     for comp in &bundle.ir1e.components {
         let (x, y) = pos_map.get(&comp.ref_des).copied().unwrap_or((10.0, 10.0));
-        // Convert IR-3 coords to KiCad page coords (same as PCB), then to µm
+        // Convert IR-3 coords to KiCad page coords, then to DSN coords.
+        // KiCad page: x_kicad = x + ox, y_kicad = board_height - y + oy
+        // DSN: same X as KiCad, but Y is negated (DSN Y-up vs KiCad Y-down)
         let kicad_x = x + ox;
         let kicad_y = board_height - y + oy;
         let x_um = mm_to_um(kicad_x);
-        let y_um = mm_to_um(kicad_y);
+        let y_um = mm_to_um(-kicad_y); // negate Y for DSN
         by_footprint
             .entry(comp.kicad_footprint.as_str())
             .or_default()

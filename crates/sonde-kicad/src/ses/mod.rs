@@ -30,16 +30,17 @@ pub fn import_ses(
     if let SExpr::List(ref mut items) = pcb_tree {
         for route in &routes.wires {
             let net_id = net_map.get(&route.net).copied().unwrap_or(0);
-            let width_mm = route.width_um as f64 / 1000.0;
+            let width_mm = route.width_um as f64 / 10000.0;
 
             for seg in route.segments.windows(2) {
                 let (x1, y1) = seg[0];
                 let (x2, y2) = seg[1];
-                // DSN Y is negated relative to KiCad — negate back
-                let x1_mm = x1 as f64 / 1000.0;
-                let y1_mm = -(y1 as f64) / 1000.0;
-                let x2_mm = x2 as f64 / 1000.0;
-                let y2_mm = -(y2 as f64) / 1000.0;
+                // SES coordinates use resolution um 10 = 0.1µm units.
+                // Convert to mm: divide by 10000. Y is negated (DSN Y-up → KiCad Y-down).
+                let x1_mm = x1 as f64 / 10000.0;
+                let y1_mm = -(y1 as f64) / 10000.0;
+                let x2_mm = x2 as f64 / 10000.0;
+                let y2_mm = -(y2 as f64) / 10000.0;
 
                 items.push(SExpr::list("segment", vec![
                     SExpr::list("start", vec![
@@ -66,8 +67,8 @@ pub fn import_ses(
 
         for via in &routes.vias {
             let net_id = net_map.get(&via.net).copied().unwrap_or(0);
-            let x_mm = via.x_um as f64 / 1000.0;
-            let y_mm = -(via.y_um as f64) / 1000.0;
+            let x_mm = via.x_um as f64 / 10000.0;
+            let y_mm = -(via.y_um as f64) / 10000.0;
 
             items.push(SExpr::list("via", vec![
                 SExpr::List(vec![

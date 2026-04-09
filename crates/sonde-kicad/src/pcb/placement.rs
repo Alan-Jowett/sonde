@@ -48,21 +48,22 @@ impl BBox {
 }
 
 /// Component courtyard dimensions (half-widths).
-/// Uses actual footprint courtyard measurements for connectors.
+/// Uses IR-1e courtyard dimensions with generous margin for connectors.
 fn get_courtyard_half_dims(
     ref_des: &str,
     bundle: &IrBundle,
 ) -> (f64, f64) {
-    // Use the courtyard from IR-1e, but for connectors use the actual
-    // footprint dimensions which include off-board housing extension.
-    // Add extra margin for safety.
     bundle
         .ir1e
         .components
         .iter()
         .find(|c| c.ref_des == ref_des)
         .and_then(|c| c.courtyard_mm.as_ref())
-        .map(|d| (d.width / 2.0 + 0.25, d.height / 2.0 + 0.25))
+        .map(|d| {
+            // Add extra margin for connectors (ref_des starting with J)
+            let margin = if ref_des.starts_with('J') { 1.0 } else { 0.25 };
+            (d.width / 2.0 + margin, d.height / 2.0 + margin)
+        })
         .unwrap_or((1.0, 1.0))
 }
 

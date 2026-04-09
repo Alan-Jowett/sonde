@@ -75,77 +75,74 @@ connector_placement:
     description: "XIAO left header socket (1×7, 2.54mm)"
     position:
       x_mm: 3.75   # (25 - 17.5) / 2 = 3.75 from left edge
-      y_mm: 9.0    # pin 1 (D0) at y=9; pin 7 (3V3) at y=9+15.24=24.24
+      y_mm: 10.5   # pin 1 (D0) at y=10.5; pin 7 (3V3) at y=10.5+15.24=25.74
     orientation: "vertical, pin 1 at bottom (D0), no rotation"
     courtyard_mm: {width: 3.55, height: 18.80}
     courtyard_bounds: {min_x: -1.80, min_y: -1.80, max_x: 1.75, max_y: 17.00}
     mounting: THT
     notes: >
-      Left header of XIAO socket. Pin 1 at y=9.0, pin 7 at y=24.24.
+      Left header of XIAO socket. Pin 1 at y=10.5, pin 7 at y=25.74.
       17.5mm center-to-center spacing to J7.
-      Rotated courtyard in board coords: (1.95, 7.20) to (5.50, 26.00).
+      Board courtyard: (1.95, 8.70) to (5.50, 27.50).
 
   - ref_des: J7
     description: "XIAO right header socket (1×7, 2.54mm)"
     position:
       x_mm: 21.25  # 3.75 + 17.5 = 21.25 from left edge
-      y_mm: 9.0
+      y_mm: 10.5
     orientation: "vertical, pin 1 at bottom (D6), no rotation"
     courtyard_mm: {width: 3.55, height: 18.80}
     courtyard_bounds: {min_x: -1.80, min_y: -1.80, max_x: 1.75, max_y: 17.00}
     mounting: THT
     notes: >
       Right header of XIAO socket. Mirrored with J6.
-      Rotated courtyard in board coords: (19.45, 7.20) to (23.00, 26.00).
+      Board courtyard: (19.45, 8.70) to (23.00, 27.50).
 
   - ref_des: J1
     description: "Qwiic I2C connector (JST SH 4-pin SMD)"
     edge: left
     position:
       x_mm: 0.0   # flush with left edge
-      y_mm: 28.0  # upper-left, above J6 pin 7 (24.24) with clearance
+      y_mm: 32.0  # upper-left, above J6 top courtyard (27.50)
     orientation: "housing facing left (outward), rotated 90°"
     courtyard_mm: {width: 7.80, height: 6.56}
     courtyard_bounds: {min_x: -3.90, min_y: -3.28, max_x: 3.90, max_y: 3.28}
     mounting: SMD
     notes: >
-      At 90° rotation, courtyard rotates to (-3.28, -3.90) to (3.28, 3.90).
-      Board coords: (-3.28, 24.10) to (3.28, 31.90). Housing extends
-      left (off-board). Clears J6 pin 7 at y=24.24 by ~0.14mm minimum —
-      acceptable for SMD connector.
+      At 90° rotation, courtyard: (-3.28, -3.90) to (3.28, 3.90).
+      Board coords: (-3.28, 26.10) to (3.28, 33.90).
+      Clears J6 top courtyard (27.50) by 1.40mm. ✓
 
   - ref_des: J3
     description: "Battery connector (JST PH 2-pin THT RA)"
     edge: left
     position:
       x_mm: 0.0   # flush with left edge
-      y_mm: 6.0   # lower-left, below J6 pin 1 (9.0) with clearance
+      y_mm: 3.5   # lower-left, below J6 bottom courtyard (8.70)
     orientation: "housing facing left (outward), rotated 90°"
     courtyard_mm: {width: 6.90, height: 8.60}
     courtyard_bounds: {min_x: -2.45, min_y: -1.85, max_x: 4.45, max_y: 6.75}
     mounting: THT
     notes: >
-      At 90° rotation, courtyard rotates to (-6.75, -2.45) to (1.85, 4.45).
-      Board coords: (-6.75, 1.55) to (1.85, 10.45). Housing extends far
-      left (off-board). On-board pads within x=0 to 1.85.
-      Clears J6 courtyard bottom (y=7.20) — gap ≈ 3.25mm.
+      At 90° rotation, courtyard: (-6.75, -2.45) to (1.85, 4.45).
+      Board coords: (-6.75, -0.95) to (1.85, 7.95).
+      Clears J6 bottom courtyard (8.70) by 0.75mm. ✓
 
   - ref_des: J2
     description: "1-Wire connector (JST XH 3-pin THT RA)"
     edge: right
     position:
       x_mm: 25.0  # flush with right edge
-      y_mm: 28.0  # upper-right, above J7 pin 7 (24.24)
+      y_mm: 33.0  # upper-right, above J7 top courtyard (27.50)
     orientation: "housing facing right (outward), rotated 270°"
     courtyard_mm: {width: 10.90, height: 12.50}
     courtyard_bounds: {min_x: -2.95, min_y: -2.80, max_x: 7.95, max_y: 9.70}
     mounting: THT
     notes: >
-      At 270° rotation, courtyard rotates to (-9.70, -7.95) to (2.80, 2.95).
-      Board coords: (15.30, 20.05) to (27.80, 30.95). Housing extends
-      right (off-board). On-board extent: x=15.30 to 25.0.
-      Clears J7 courtyard top (y=26.00) — gap ≈ 5.95mm from J7 top to
-      J2 bottom (20.05). No overlap.
+      At 270° rotation, courtyard: (-9.70, -2.95) to (2.80, 7.95).
+      Board coords: (15.30, 23.05) to (27.80, 38.95).
+      Clears J7 top courtyard (27.50) — J2 bottom at 28.05. ✓
+      Housing extends off-board (right + top).
 
 # ===========================================================================
 # Component Grouping Zones
@@ -156,60 +153,55 @@ component_zones:
     components: [J3, FB1, C1]
     zone:
       description: "Lower-left area, near battery connector"
-      anchor: {x_mm: 4.0, y_mm: 3.0}
-      extent_mm: {width: 6.0, height: 5.0}
+      anchor: {x_mm: 4.0, y_mm: 5.0}
+      extent_mm: {width: 6.0, height: 3.0}
     proximity_constraint_mm: 3.0
     notes: >
-      FB1 and C1 placed below J6 and near J3 pads.
-      Zone clears J6 courtyard bottom (y=7.20) and J3 rotated
-      courtyard on-board extent (x up to 1.85).
+      FB1 and C1 placed near J3 (y=3.5). Zone between J3 on-board
+      pads (x up to 1.85) and J6 bottom (y=8.70).
 
   - group: power-gating
     components: [Q1, R4, C2]
     zone:
-      description: "Center-left area, between pin headers"
-      anchor: {x_mm: 7.0, y_mm: 12.0}
+      description: "Center area, between pin headers"
+      anchor: {x_mm: 8.0, y_mm: 12.0}
       extent_mm: {width: 8.0, height: 6.0}
     proximity_constraint_mm: 3.0
     notes: >
-      Q1/R4/C2 placed in the open area between J6 and J7 pin headers.
-      Zone clears J6 courtyard (x up to 5.50) and J7 courtyard
-      (x from 19.45). Available width: 5.50 to 19.45 = 13.95mm.
+      Q1/R4/C2 placed in the open area between J6 (x=5.50) and
+      J7 (x=19.45) pin headers. 13.95mm available width.
 
   - group: i2c-interface
     components: [J1, R1, R2]
     zone:
       description: "Upper-left area, near Qwiic connector"
-      anchor: {x_mm: 5.0, y_mm: 26.0}
-      extent_mm: {width: 8.0, height: 6.0}
+      anchor: {x_mm: 5.0, y_mm: 28.0}
+      extent_mm: {width: 8.0, height: 5.0}
     proximity_constraint_mm: 3.0
     notes: >
-      R1, R2 pull-ups placed near J1 (at y=28) and J6 pins 5/6
-      (SDA/SCL at y≈21-22). Zone above J6 pin 7 (y=24.24).
+      R1, R2 pull-ups near J1 (y=30). Zone above J6 top (27.50).
 
   - group: onewire-interface
     components: [J2, R3]
     zone:
-      description: "Upper-right area, near 1-Wire connector"
-      anchor: {x_mm: 14.0, y_mm: 27.0}
-      extent_mm: {width: 5.0, height: 6.0}
+      description: "Upper-center area, near 1-Wire connector"
+      anchor: {x_mm: 10.0, y_mm: 29.0}
+      extent_mm: {width: 5.0, height: 4.0}
     proximity_constraint_mm: 3.0
     notes: >
-      R3 pull-up placed between J7 and J2, above the pin header area.
-      Zone clears J7 courtyard top (y=26.00) and J2 on-board extent
-      (x from 15.30). R3 at x≈14 is just left of J2's reach.
+      R3 placed in open area above pin headers, between J6/J7
+      top (27.50) and J2 (y=31).
 
   - group: battery-sensing
     components: [R5, R6, C3]
     zone:
       description: "Center area, between pin headers"
-      anchor: {x_mm: 10.0, y_mm: 8.0}
+      anchor: {x_mm: 10.0, y_mm: 10.0}
       extent_mm: {width: 6.0, height: 5.0}
     proximity_constraint_mm: 3.0
     notes: >
-      Voltage divider and ADC filter in the open center between J6/J7.
-      Near J6 pin 1 (GPIO2 ADC at y=9.0) for short analog trace.
-      Zone fully between J6 (x=5.50) and J7 (x=19.45).
+      Voltage divider and ADC filter in the open center between
+      J6 (x=5.50) and J7 (x=19.45). Near J6 pin 1 (y=10.5).
 
 # ===========================================================================
 # Keep-Out Zones

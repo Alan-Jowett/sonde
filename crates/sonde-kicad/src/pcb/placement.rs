@@ -25,12 +25,35 @@ pub fn build_placements(
     let board_h = ir3.board.height_mm;
     let fp_dir = find_kicad_footprint_dir();
 
-    // Build position map: ref_des → (x, y) in KiCad coords
-    let mut pos_map: HashMap<String, (f64, f64)> = HashMap::new();
+    // Build position map: ref_des → (x, y, rotation_degrees) in KiCad coords
+    let mut pos_map: HashMap<String, (f64, f64, f64)> = HashMap::new();
 
     for cp in &ir3.connector_placement {
         let ky = board_h - cp.position.y_mm;
-        pos_map.insert(cp.ref_des.clone(), (cp.position.x_mm, ky));
+
+        // Determine rotation from edge placement
+        let rotation = match cp.edge.as_deref() {
+            Some("left") => 180.0,  // Housing faces left (outward)
+            Some("right") => 0.0,   // Housing faces right (outward)
+            Some("top") => 90.0,
+            Some("bottom") => 270.0,
+            _ => 0.0,
+        };
+
+        // For edge connectors, offset inward so pads are on-board
+        let (adj_x, adj_y) = match cp.edge.as_deref() {
+            Some("left") => {
+                let cw = cp.courtyard_mm.as_ref().map(|c| c.width).unwrap_or(0.0);
+                (cp.position.x_mm + cw / 2.0, ky)
+            }
+            Some("right") => {
+                let cw = cp.courtyard_mm.as_ref().map(|c| c.width).unwrap_or(0.0);
+                (cp.position.x_mm - cw / 2.0, ky)
+            }
+            _ => (cp.position.x_mm, ky),
+        };
+
+        pos_map.insert(cp.ref_des.clone(), (adj_x, adj_y, rotation));
     }
 
     for zone in &ir3.component_zones {
@@ -46,7 +69,7 @@ pub fn build_placements(
             let row = i / 3;
             let x = anchor_x + col as f64 * spacing;
             let y = anchor_ky + row as f64 * spacing;
-            pos_map.insert(ref_des.clone(), (x, y));
+            pos_map.insert(ref_des.clone(), (x, y, 0.0));
         }
     }
 
@@ -57,7 +80,7 @@ pub fn build_placements(
     });
 
     for comp in &sorted_comps {
-        let (x, y) = pos_map.get(&comp.ref_des).copied().unwrap_or((10.0, 10.0));
+        let (x, y, rotation) = pos_map.get(&comp.ref_des).copied().unwrap_or((12.5, 17.5, 0.0));
         let netlist_entry = bundle.ir2.netlist.iter().find(|e| e.ref_des == comp.ref_des);
         let value = netlist_entry.and_then(|e| e.value.as_deref()).unwrap_or("~");
 
@@ -69,6 +92,7 @@ pub fn build_placements(
                 value,
                 x,
                 y,
+                rotation,
                 netlist_entry,
                 net_map,
             };
@@ -80,9 +104,8 @@ pub fn build_placements(
         if let Some(node) = fp_node {
             children.push(node);
         } else {
-            // Fallback: generate stub footprint
             children.push(build_stub_footprint(
-                comp, value, x, y, netlist_entry, net_map, uuid_gen,
+                comp, value, x, y, rotation, netlist_entry, net_map, uuid_gen,
             ));
         }
     }
@@ -127,6 +150,7 @@ struct PlacementParams<'a> {
     value: &'a str,
     x: f64,
     y: f64,
+    rotation: f64,
     netlist_entry: Option<&'a crate::ir::ir2::NetlistEntry>,
     net_map: &'a HashMap<String, u32>,
 }
@@ -186,6 +210,7 @@ fn load_library_footprint(
             SExpr::Atom("at".into()),
             SExpr::Atom(fmt(params.x)),
             SExpr::Atom(fmt(params.y)),
+            SExpr::Atom(fmt(params.rotation)),
         ]),
     );
 
@@ -251,11 +276,13 @@ fn assign_pad_net(children: &mut Vec<SExpr>, pad_nets: &HashMap<String, (u32, St
 }
 
 /// Build a stub footprint as fallback when library is unavailable.
+#[allow(clippy::too_many_arguments)]
 fn build_stub_footprint(
     comp: &crate::ir::ir1e::Ir1eComponent,
     value: &str,
     x: f64,
     y: f64,
+    rotation: f64,
     netlist_entry: Option<&crate::ir::ir2::NetlistEntry>,
     net_map: &HashMap<String, u32>,
     uuid_gen: &mut UuidGenerator,
@@ -268,6 +295,7 @@ fn build_stub_footprint(
             SExpr::Atom("at".into()),
             SExpr::Atom(fmt(x)),
             SExpr::Atom(fmt(y)),
+            SExpr::Atom(fmt(rotation)),
         ]),
     ];
 

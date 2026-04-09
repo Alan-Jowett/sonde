@@ -19,9 +19,11 @@ pub fn build_silkscreen(
 
     for (i, label) in labels.iter().enumerate() {
         let layer = label.layer.as_deref().unwrap_or("F.SilkS");
-        // Simple placement: distribute labels along top edge
-        let x = 5.0 + i as f64 * 8.0;
-        let y = 2.0; // near top edge in KiCad coords (Y=0 is top)
+        // Place labels along the top edge, within board bounds
+        let board_w = ir3.board.width_mm;
+        let num_labels = labels.len().max(1) as f64;
+        let x = (board_w / (num_labels + 1.0)) * (i as f64 + 1.0);
+        let y = 2.0; // near top edge in KiCad coords
         let _ = board_height;
 
         children.push(SExpr::list("gr_text", vec![

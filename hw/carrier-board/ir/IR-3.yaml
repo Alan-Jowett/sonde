@@ -168,12 +168,6 @@ component_zones:
       anchor: {x_mm: 10.0, y_mm: 19.0}
       extent_mm: {width: 5.0, height: 3.0}
     proximity_constraint_mm: 3.0
-      anchor: {x_mm: 12.0, y_mm: 18.0}
-      extent_mm: {width: 5.0, height: 4.0}
-    proximity_constraint_mm: 3.0
-    notes: >
-      Voltage divider and ADC filter in the center of the board,
-      well clear of all connector courtyards.
 
 # ===========================================================================
 # Keep-Out Zones

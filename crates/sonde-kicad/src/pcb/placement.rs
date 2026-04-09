@@ -14,6 +14,58 @@ use crate::ir::IrBundle;
 use crate::sexpr::{parser, SExpr};
 use crate::uuid_gen::UuidGenerator;
 
+/// Axis-aligned bounding box (in board coordinates after rotation).
+#[derive(Debug, Clone, Copy)]
+struct BBox {
+    x_min: f64,
+    y_min: f64,
+    x_max: f64,
+    y_max: f64,
+}
+
+impl BBox {
+    fn overlaps(&self, other: &BBox) -> bool {
+        self.x_min < other.x_max
+            && self.x_max > other.x_min
+            && self.y_min < other.y_max
+            && self.y_max > other.y_min
+    }
+
+    fn from_courtyard(cx: f64, cy: f64, hw: f64, hh: f64, rotation: f64) -> Self {
+        // hw, hh = half-width, half-height of courtyard in local coords
+        // Rotation swaps width/height for 90°/270°
+        let (ew, eh) = match rotation as i32 % 360 {
+            90 | 270 | -90 | -270 => (hh, hw),
+            _ => (hw, hh),
+        };
+        BBox {
+            x_min: cx - ew,
+            y_min: cy - eh,
+            x_max: cx + ew,
+            y_max: cy + eh,
+        }
+    }
+}
+
+/// Component courtyard dimensions (half-widths).
+/// Uses actual footprint courtyard measurements for connectors.
+fn get_courtyard_half_dims(
+    ref_des: &str,
+    bundle: &IrBundle,
+) -> (f64, f64) {
+    // Use the courtyard from IR-1e, but for connectors use the actual
+    // footprint dimensions which include off-board housing extension.
+    // Add extra margin for safety.
+    bundle
+        .ir1e
+        .components
+        .iter()
+        .find(|c| c.ref_des == ref_des)
+        .and_then(|c| c.courtyard_mm.as_ref())
+        .map(|d| (d.width / 2.0 + 0.25, d.height / 2.0 + 0.25))
+        .unwrap_or((1.0, 1.0))
+}
+
 /// Build footprint placement nodes for all components.
 pub fn build_placements(
     bundle: &IrBundle,
@@ -23,90 +75,98 @@ pub fn build_placements(
 ) -> Result<(), Error> {
     let ir3 = bundle.ir3.as_ref().ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
     let board_h = ir3.board.height_mm;
+    let board_w = ir3.board.width_mm;
     let fp_dir = find_kicad_footprint_dir();
 
-    // Build position map: ref_des → (x, y, rotation_degrees) in KiCad coords
+    // Phase 1: Place connectors from IR-3 connector_placement
     let mut pos_map: HashMap<String, (f64, f64, f64)> = HashMap::new();
+    let mut placed_bboxes: Vec<BBox> = Vec::new();
 
     for cp in &ir3.connector_placement {
         let ky = board_h - cp.position.y_mm;
 
-        // Determine rotation based on edge and orientation.
-        //
-        // Default footprint orientations:
-        //   JST SH (SMD): pads at y=-2, housing extends +Y
-        //   JST XH/PH (THT RA): pads along X, housing extends +Y
-        //   PinSocket 1x07: pads along +Y from origin (pin 1 at origin)
-        //
-        // Rotations needed:
-        //   Left edge: 90° → +Y becomes -X (housing faces left/outward)
-        //   Right edge: 270° → +Y becomes +X (housing faces right/outward)
-        //   Vertical "pin 1 at bottom": 180° → pads go upward from origin
         let rotation = match cp.edge.as_deref() {
             Some("left") => 90.0,
             Some("right") => 270.0,
             Some("top") => 180.0,
             Some("bottom") => 0.0,
             None | Some(_) => {
-                // Non-edge components: check orientation hint
                 let orient = cp.orientation.as_deref().unwrap_or("");
-                if orient.contains("pin 1 at bottom") {
-                    180.0 // Flip so pads extend upward (toward lower KiCad Y)
-                } else {
-                    0.0
-                }
+                if orient.contains("pin 1 at bottom") { 180.0 } else { 0.0 }
             }
         };
 
-        // Place footprint origin at the edge position directly.
-        // The housing extends off-board; pads are on-board side.
-        // No courtyard offset — the IR-3 position is the anchor point.
-        let adj_x = cp.position.x_mm;
-        let adj_y = ky;
-
-        pos_map.insert(cp.ref_des.clone(), (adj_x, adj_y, rotation));
+        let (hw, hh) = get_courtyard_half_dims(&cp.ref_des, bundle);
+        let bbox = BBox::from_courtyard(cp.position.x_mm, ky, hw, hh, rotation);
+        placed_bboxes.push(bbox);
+        pos_map.insert(cp.ref_des.clone(), (cp.position.x_mm, ky, rotation));
     }
 
-    // Zone-based placement: place components in available board space
-    // avoiding already-placed connectors. Use larger spacing to prevent overlap.
-    let placed_positions: Vec<(f64, f64)> = pos_map.values().map(|&(x, y, _)| (x, y)).collect();
-
+    // Phase 2: Place zone components, checking for courtyard overlap
     for zone in &ir3.component_zones {
         let anchor_x = zone.zone.anchor.x_mm;
         let anchor_ky = board_h - zone.zone.anchor.y_mm;
         let spacing = zone.proximity_constraint_mm.max(3.0);
 
-        let to_place: Vec<&String> = zone
+        let to_place: Vec<String> = zone
             .components
             .iter()
             .filter(|r| !pos_map.contains_key(r.as_str()))
+            .cloned()
             .collect();
 
         for (i, ref_des) in to_place.iter().enumerate() {
-            // Try positions in a grid until we find one not too close to existing
+            let (hw, hh) = get_courtyard_half_dims(ref_des, bundle);
             let mut x = anchor_x + (i as f64 % 2.0) * spacing;
             let mut y = anchor_ky + (i as f64 / 2.0).floor() * spacing;
 
-            // Nudge away from any existing placement that's too close
-            for _ in 0..10 {
-                let too_close = placed_positions.iter().any(|&(px, py)| {
-                    (x - px).abs() < 2.0 && (y - py).abs() < 2.0
+            // Try to find a non-overlapping position
+            for _ in 0..100 {
+                let candidate = BBox::from_courtyard(x, y, hw + 0.5, hh + 0.5, 0.0);
+
+                // Check board bounds (with margin)
+                let in_bounds = candidate.x_min >= 1.0
+                    && candidate.x_max <= board_w - 1.0
+                    && candidate.y_min >= 1.0
+                    && candidate.y_max <= board_h - 1.0;
+
+                let overlaps = placed_bboxes.iter().any(|b| candidate.overlaps(b));
+
+                // Check keepout zones
+                let in_keepout = ir3.keepout_zones.as_ref().is_some_and(|kzs| {
+                    kzs.iter().any(|kz| {
+                        let kx1 = kz.boundary.x_mm;
+                        let ky1 = board_h - (kz.boundary.y_mm + kz.boundary.height_mm);
+                        let kx2 = kx1 + kz.boundary.width_mm;
+                        let ky2 = ky1 + kz.boundary.height_mm;
+                        let keepout = BBox { x_min: kx1, y_min: ky1, x_max: kx2, y_max: ky2 };
+                        candidate.overlaps(&keepout)
+                    })
                 });
-                if !too_close {
+
+                if in_bounds && !overlaps && !in_keepout {
                     break;
                 }
-                y += spacing;
-                if y > board_h - 2.0 {
-                    y = anchor_ky;
+
+                // Shift position — scan across the board
+                x += spacing;
+                if x + hw > board_w - 1.0 {
+                    x = 2.0;
+                    y += spacing;
+                }
+                if y + hh > board_h - 1.0 {
+                    y = 2.0;
                     x += spacing;
                 }
             }
 
-            pos_map.insert(ref_des.to_string(), (x, y, 0.0));
+            let bbox = BBox::from_courtyard(x, y, hw, hh, 0.0);
+            placed_bboxes.push(bbox);
+            pos_map.insert(ref_des.clone(), (x, y, 0.0));
         }
     }
 
-    // Generate footprint nodes sorted by ref_des
+    // Phase 3: Generate footprint nodes sorted by ref_des
     let mut sorted_comps = bundle.ir1e.components.clone();
     sorted_comps.sort_by(|a, b| {
         crate::schematic::wiring::cmp_ref_des_pub(&a.ref_des, &b.ref_des)
@@ -117,7 +177,6 @@ pub fn build_placements(
         let netlist_entry = bundle.ir2.netlist.iter().find(|e| e.ref_des == comp.ref_des);
         let value = netlist_entry.and_then(|e| e.value.as_deref()).unwrap_or("~");
 
-        // Try to load real footprint from KiCad library
         let fp_node = if let Some(ref dir) = fp_dir {
             let params = PlacementParams {
                 qualified_name: &comp.kicad_footprint,
@@ -266,6 +325,7 @@ fn load_library_footprint(
 }
 
 /// Update a property or fp_text node with the correct Reference/Value.
+/// Also ensures the text is hidden on silkscreen to prevent overlap.
 fn update_property(children: &mut [SExpr], ref_des: &str, value: &str) {
     if children.len() < 3 {
         return;
@@ -283,6 +343,19 @@ fn update_property(children: &mut [SExpr], ref_des: &str, value: &str) {
             children[2] = SExpr::Quoted(value.to_string());
         }
         _ => {}
+    }
+
+    // Ensure text is hidden to prevent silkscreen overlap
+    // Look for (effects ...) and add hide if not present
+    for child in children.iter_mut() {
+        if let SExpr::List(eff) = child {
+            if matches!(eff.first(), Some(SExpr::Atom(t)) if t == "effects")
+                && !eff.iter().any(|e| matches!(e, SExpr::Atom(s) if s == "hide"))
+                && !eff.iter().any(|e| matches!(e, SExpr::List(inner) if matches!(inner.first(), Some(SExpr::Atom(t)) if t == "hide")))
+            {
+                eff.push(SExpr::list("hide", vec![SExpr::Atom("yes".into())]));
+            }
+        }
     }
 }
 

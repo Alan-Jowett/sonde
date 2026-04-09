@@ -290,31 +290,48 @@ feasibility:
     '
 silkscreen:
   labels:
-  - text: sonde
-    location: top center of board, above XIAO module
-    layer: F.SilkS
-    requirement: REQ-HW-0704
+  - text: sonde rev_a
+    position:
+      x_mm: 5.0
+      y_mm: 1.5
+    layer: F.Fab
   - text: J1 I2C
-    location: adjacent to J1
-    requirement: REQ-HW-0704
+    position:
+      x_mm: 10.0
+      y_mm: 30.0
+    layer: F.Fab
   - text: J2 1W
-    location: adjacent to J2
-    requirement: REQ-HW-0704
+    position:
+      x_mm: 13.5
+      y_mm: 32.0
+    layer: F.Fab
   - text: J3 BATT
-    location: adjacent to J3
-    requirement: REQ-HW-0704
-  - text: + âˆ’
-    location: at J3 pin 1 and pin 2
-    requirement: REQ-HW-0704
+    position:
+      x_mm: 11.5
+      y_mm: 3.5
+    layer: F.Fab
+  - text: + -
+    position:
+      x_mm: 15.5
+      y_mm: 3.5
+    layer: F.Fab
   - text: J6
-    location: adjacent to J6 header
-    requirement: REQ-HW-0704
+    position:
+      x_mm: 6.5
+      y_mm: 24.0
+    layer: F.Fab
   - text: J7
-    location: adjacent to J7 header
-    requirement: REQ-HW-0704
-  - text: USB â†‘
-    location: near top edge
-    requirement: REQ-HW-0706
+    position:
+      x_mm: 18.5
+      y_mm: 24.0
+    layer: F.Fab
+  - text: USB ↑
+    position:
+      x_mm: 12.5
+      y_mm: 27.5
+    layer: F.Fab
   - text: ANT
-    location: near bottom edge antenna area
-    requirement: REQ-HW-0705
+    position:
+      x_mm: 11.0
+      y_mm: 6.0
+    layer: F.Fab

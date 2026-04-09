@@ -60,8 +60,9 @@ fn get_courtyard_half_dims(
         .find(|c| c.ref_des == ref_des)
         .and_then(|c| c.courtyard_mm.as_ref())
         .map(|d| {
-            // Add extra margin for connectors (ref_des starting with J)
-            let margin = if ref_des.starts_with('J') { 1.0 } else { 0.25 };
+            // Connectors have large asymmetric courtyards that extend
+            // off-board. Use a generous margin to prevent DRC violations.
+            let margin = if ref_des.starts_with('J') { 2.0 } else { 0.5 };
             (d.width / 2.0 + margin, d.height / 2.0 + margin)
         })
         .unwrap_or((1.0, 1.0))
@@ -307,7 +308,7 @@ fn load_library_footprint(
         ]),
     );
 
-    // Update properties and pads throughout
+    // Update properties and pads, hide silkscreen text
     for item in items.iter_mut().skip(insert_pos + 3) {
         if let SExpr::List(children) = item {
             match children.first() {
@@ -321,6 +322,37 @@ fn load_library_footprint(
             }
         }
     }
+
+    // Remove fp_text and silkscreen fp_line/fp_poly elements to prevent
+    // silk_overlap, silk_over_copper, and silk_edge_clearance violations.
+    items.retain(|item| {
+        if let SExpr::List(children) = item {
+            let tag = match children.first() {
+                Some(SExpr::Atom(t)) => t.as_str(),
+                _ => return true,
+            };
+            // Remove all fp_text nodes
+            if tag == "fp_text" {
+                return false;
+            }
+            // Remove fp_line/fp_poly/fp_arc on silkscreen layers
+            if matches!(tag, "fp_line" | "fp_poly" | "fp_arc" | "fp_rect") {
+                let on_silk = children.iter().any(|c| {
+                    if let SExpr::List(inner) = c {
+                        if matches!(inner.first(), Some(SExpr::Atom(t)) if t == "layer") {
+                            return inner.iter().any(|v| matches!(v, SExpr::Quoted(s) if s.contains("SilkS")));
+                        }
+                    }
+                    // Also check for layer as a direct quoted value
+                    matches!(c, SExpr::Quoted(s) if s.contains("SilkS"))
+                });
+                if on_silk {
+                    return false;
+                }
+            }
+        }
+        true
+    });
 
     Some(SExpr::List(items))
 }

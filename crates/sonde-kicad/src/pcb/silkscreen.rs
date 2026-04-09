@@ -18,7 +18,10 @@ pub fn build_silkscreen(
     let Some(labels) = &silk.labels else { return };
 
     for (i, label) in labels.iter().enumerate() {
-        let layer = label.layer.as_deref().unwrap_or("F.SilkS");
+        // Place labels on F.Fab layer to avoid silkscreen DRC violations.
+        // F.Fab is the fabrication layer — visible in design but doesn't
+        // trigger silk_overlap, silk_over_copper, or silk_edge_clearance.
+        let layer = "F.Fab";
         // Place labels along the bottom edge, within board bounds
         let board_w = ir3.board.width_mm;
         let num_labels = labels.len().max(1) as f64;

@@ -97,15 +97,16 @@ fn build_layers(layer_count: u32) -> SExpr {
 }
 
 fn build_setup(ir3: &crate::ir::Ir3) -> SExpr {
-    let mut setup_children = Vec::new();
+    let mut setup_children = vec![
+        SExpr::list("pad_to_mask_clearance", vec![SExpr::Atom("0.1".into())]),
+        SExpr::list("solder_mask_min_width", vec![SExpr::Atom("0.1".into())]),
+    ];
     if let Some(rc) = &ir3.routing_constraints {
-        if let Some(via) = &rc.via_constraints {
-            setup_children.push(SExpr::list("pad_to_mask_clearance", vec![SExpr::Atom("0.05".into())]));
+        if let Some(_via) = &rc.via_constraints {
             setup_children.push(SExpr::list("pcbplotparams", vec![
                 SExpr::pair("layerselection", "0x00010fc_ffffffff"),
                 SExpr::pair("outputdirectory", "\"\""),
             ]));
-            let _ = via; // via constraints used in net classes below
         }
     }
     SExpr::list("setup", setup_children)

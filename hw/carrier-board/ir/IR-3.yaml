@@ -43,9 +43,9 @@ edges:
     - J2
 connector_placement:
 - ref_des: J6
-  description: XIAO left header socket (1×7, 2.54mm)
+  description: XIAO left header socket (1Ã—7, 2.54mm)
   position:
-    x_mm: 3.8
+    x_mm: 3.75
     y_mm: 8.8
   orientation: vertical, pin 1 at bottom (D0), no rotation
   courtyard_mm:
@@ -58,9 +58,9 @@ connector_placement:
     max_y: 17.0
   mounting: THT
 - ref_des: J7
-  description: XIAO right header socket (1×7, 2.54mm)
+  description: XIAO right header socket (1Ã—7, 2.54mm)
   position:
-    x_mm: 21.2
+    x_mm: 21.25
     y_mm: 8.8
   orientation: vertical, pin 1 at bottom (D6), no rotation
   courtyard_mm:
@@ -78,7 +78,7 @@ connector_placement:
   position:
     x_mm: 4.0
     y_mm: 30.5
-  orientation: housing facing left (outward), rotated 90°
+  orientation: housing facing left (outward), rotated 90Â°
   courtyard_mm:
     width: 7.8
     height: 6.56
@@ -94,7 +94,7 @@ connector_placement:
   position:
     x_mm: 22.9
     y_mm: 4.5
-  orientation: housing facing right (outward), rotated 270°
+  orientation: housing facing right (outward), rotated 270Â°
   courtyard_mm:
     width: 6.9
     height: 8.6
@@ -110,7 +110,7 @@ connector_placement:
   position:
     x_mm: 22.9
     y_mm: 32.5
-  orientation: housing facing right (outward), rotated 270°
+  orientation: housing facing right (outward), rotated 270Â°
   courtyard_mm:
     width: 8.9
     height: 8.6
@@ -198,7 +198,7 @@ routing_constraints:
       0.5mm provides adequate margin.
 
       '
-    ir_pb_reference: IR-PB/operating_modes/Active — Peak TX + Sensors
+    ir_pb_reference: IR-PB/operating_modes/Active â€” Peak TX + Sensors
   - net: VBAT_FILT
     min_width_mm: 0.5
     rationale: Same current as VBAT (minus negligible ferrite bead drop).
@@ -234,8 +234,9 @@ routing_constraints:
   - net: VBAT_SENSE
     width_mm: 0.15
     max_length_mm: 10
-    notes: 'Analog signal — keep short to minimize noise pickup. Route directly from
-      voltage divider midpoint to J6 pin 1 (GPIO2 ADC). Guard with GND traces if possible.
+    notes: 'Analog signal â€” keep short to minimize noise pickup. Route directly
+      from voltage divider midpoint to J6 pin 1 (GPIO2 ADC). Guard with GND traces
+      if possible.
 
       '
   - net: SENSOR_EN
@@ -252,9 +253,9 @@ feasibility:
   utilization_pct: 32.0
   warning_threshold_pct: 70
   blocking_threshold_pct: 90
-  area_status: PASS — 32% utilization, well within 70% warning threshold
+  area_status: PASS â€” 32% utilization, well within 70% warning threshold
   pairwise_overlap_check:
-    status: PASS — no courtyard overlaps detected
+    status: PASS â€” no courtyard overlaps detected
     connector_pairs_checked:
     - pair:
       - J1
@@ -282,7 +283,7 @@ feasibility:
       clearance_mm: 13.95
       status: PASS
   notes: 'Corrected from previous version which had 7 courtyard overlaps. Pin headers
-    J6/J7 moved from y=8.11 to y=9.0 (0° rotation, pads extending upward). Edge connectors
+    J6/J7 moved from y=8.11 to y=9.0 (0Â° rotation, pads extending upward). Edge connectors
     J1/J2 moved to y=28.0 (above pin header range). J3 moved to y=6.0 (below pin header
     range). All zone anchors verified to clear connector courtyards.
 
@@ -302,7 +303,7 @@ silkscreen:
   - text: J3 BATT
     location: adjacent to J3
     requirement: REQ-HW-0704
-  - text: + −
+  - text: + âˆ’
     location: at J3 pin 1 and pin 2
     requirement: REQ-HW-0704
   - text: J6
@@ -311,7 +312,7 @@ silkscreen:
   - text: J7
     location: adjacent to J7 header
     requirement: REQ-HW-0704
-  - text: USB ↑
+  - text: USB â†‘
     location: near top edge
     requirement: REQ-HW-0706
   - text: ANT

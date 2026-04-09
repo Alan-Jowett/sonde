@@ -11,6 +11,8 @@ use crate::uuid_gen::UuidGenerator;
 pub fn build_silkscreen(
     ir3: &Ir3,
     board_height: f64,
+    ox: f64,
+    oy: f64,
     uuid_gen: &mut UuidGenerator,
     children: &mut Vec<SExpr>,
 ) {
@@ -25,8 +27,8 @@ pub fn build_silkscreen(
         // Place labels along the bottom edge, within board bounds
         let board_w = ir3.board.width_mm;
         let num_labels = labels.len().max(1) as f64;
-        let x = (board_w / (num_labels + 1.0)) * (i as f64 + 1.0);
-        let y = board_height - 1.5; // near bottom edge in KiCad coords (bottom = board_height)
+        let x = ox + (board_w / (num_labels + 1.0)) * (i as f64 + 1.0);
+        let y = oy + board_height - 1.5;// near bottom edge in KiCad coords (bottom = board_height)
         let _ = board_height;
 
         children.push(SExpr::list("gr_text", vec![

@@ -18,6 +18,12 @@ pub fn emit_pcb(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<Strin
     let ir3 = bundle.ir3.as_ref().ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
     let board = &ir3.board;
 
+    // Center the board on the A4 page (297 × 210 mm)
+    let page_w = 297.0;
+    let page_h = 210.0;
+    let offset_x = (page_w - board.width_mm) / 2.0;
+    let offset_y = (page_h - board.height_mm) / 2.0;
+
     let mut children = vec![
         SExpr::pair("version", "20240108"),
         SExpr::pair_quoted("generator", "sonde-kicad"),
@@ -39,21 +45,21 @@ pub fn emit_pcb(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<Strin
     let net_map = build_nets(&bundle.ir2, &mut children);
 
     // Board outline
-    build_outline(board, uuid_gen, &mut children);
+    build_outline(board, offset_x, offset_y, uuid_gen, &mut children);
 
     // Keep-out zones
     if let Some(keepouts) = &ir3.keepout_zones {
-        zones::build_keepout_zones(keepouts, board.height_mm, uuid_gen, &mut children);
+        zones::build_keepout_zones(keepouts, board.height_mm, offset_x, offset_y, uuid_gen, &mut children);
     }
 
     // Ground plane copper pour
-    zones::build_ground_pour(ir3, &net_map, uuid_gen, &mut children);
+    zones::build_ground_pour(ir3, &net_map, offset_x, offset_y, uuid_gen, &mut children);
 
     // Component footprints (placed)
-    placement::build_placements(bundle, &net_map, uuid_gen, &mut children)?;
+    placement::build_placements(bundle, &net_map, offset_x, offset_y, uuid_gen, &mut children)?;
 
     // Silkscreen labels
-    silkscreen::build_silkscreen(ir3, board.height_mm, uuid_gen, &mut children);
+    silkscreen::build_silkscreen(ir3, board.height_mm, offset_x, offset_y, uuid_gen, &mut children);
 
     let root = SExpr::list("kicad_pcb", children);
     Ok(root.serialize())
@@ -144,12 +150,19 @@ fn build_nets(
 
 fn build_outline(
     board: &crate::ir::ir3::Board,
+    ox: f64,
+    oy: f64,
     uuid_gen: &mut UuidGenerator,
     children: &mut Vec<SExpr>,
 ) {
     let w = board.width_mm;
     let h = board.height_mm;
-    let corners = [(0.0, 0.0, w, 0.0), (w, 0.0, w, h), (w, h, 0.0, h), (0.0, h, 0.0, 0.0)];
+    let corners = [
+        (ox, oy, ox + w, oy),
+        (ox + w, oy, ox + w, oy + h),
+        (ox + w, oy + h, ox, oy + h),
+        (ox, oy + h, ox, oy),
+    ];
 
     for (x1, y1, x2, y2) in &corners {
         children.push(SExpr::list("gr_line", vec![

@@ -152,6 +152,8 @@ fn extract_courtyard_bounds(content: &str) -> Option<(f64, f64, f64, f64)> {
 pub fn build_placements(
     bundle: &IrBundle,
     net_map: &HashMap<String, u32>,
+    offset_x: f64,
+    offset_y: f64,
     uuid_gen: &mut UuidGenerator,
     children: &mut Vec<SExpr>,
 ) -> Result<(), Error> {
@@ -254,6 +256,9 @@ pub fn build_placements(
 
     for comp in &sorted_comps {
         let (x, y, rotation) = pos_map.get(&comp.ref_des).copied().unwrap_or((12.5, 17.5, 0.0));
+        // Apply page offset for centered-on-A4 placement
+        let page_x = x + offset_x;
+        let page_y = y + offset_y;
         let netlist_entry = bundle.ir2.netlist.iter().find(|e| e.ref_des == comp.ref_des);
         let value = netlist_entry.and_then(|e| e.value.as_deref()).unwrap_or("~");
 
@@ -262,8 +267,8 @@ pub fn build_placements(
                 qualified_name: &comp.kicad_footprint,
                 ref_des: &comp.ref_des,
                 value,
-                x,
-                y,
+                x: page_x,
+                y: page_y,
                 rotation,
                 netlist_entry,
                 net_map,
@@ -277,7 +282,7 @@ pub fn build_placements(
             children.push(node);
         } else {
             children.push(build_stub_footprint(
-                comp, value, x, y, rotation, netlist_entry, net_map, uuid_gen,
+                comp, value, page_x, page_y, rotation, netlist_entry, net_map, uuid_gen,
             ));
         }
     }

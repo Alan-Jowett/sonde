@@ -13,12 +13,14 @@ use crate::uuid_gen::UuidGenerator;
 pub fn build_keepout_zones(
     keepouts: &[KeepoutZone],
     board_height: f64,
+    ox: f64,
+    oy: f64,
     uuid_gen: &mut UuidGenerator,
     children: &mut Vec<SExpr>,
 ) {
     for kz in keepouts {
-        let x1 = kz.boundary.x_mm;
-        let y1 = board_height - (kz.boundary.y_mm + kz.boundary.height_mm);
+        let x1 = ox + kz.boundary.x_mm;
+        let y1 = oy + board_height - (kz.boundary.y_mm + kz.boundary.height_mm);
         let x2 = x1 + kz.boundary.width_mm;
         let y2 = y1 + kz.boundary.height_mm;
         let layer = kz.layer.as_deref().unwrap_or("F.Cu");
@@ -54,6 +56,8 @@ pub fn build_keepout_zones(
 pub fn build_ground_pour(
     ir3: &Ir3,
     net_map: &HashMap<String, u32>,
+    ox: f64,
+    oy: f64,
     uuid_gen: &mut UuidGenerator,
     children: &mut Vec<SExpr>,
 ) {
@@ -82,7 +86,7 @@ pub fn build_ground_pour(
                 ]),
                 SExpr::list("polygon", vec![
                     SExpr::list("pts", vec![
-                        xy(0.0, 0.0), xy(w, 0.0), xy(w, h), xy(0.0, h),
+                        xy(ox, oy), xy(ox + w, oy), xy(ox + w, oy + h), xy(ox, oy + h),
                     ]),
                 ]),
             ]));

@@ -102,48 +102,43 @@ connector_placement:
     description: "Qwiic I2C connector (JST SH 4-pin SMD)"
     edge: left
     position:
-      x_mm: 0.0   # flush with left edge
-      y_mm: 32.0  # upper-left, above J6 top courtyard (27.50)
+      x_mm: 3.0   # inset from left edge so pads are routable
+      y_mm: 32.0  # upper-left, above J6 top courtyard
     orientation: "housing facing left (outward), rotated 90°"
     courtyard_mm: {width: 7.80, height: 6.56}
     courtyard_bounds: {min_x: -3.90, min_y: -3.28, max_x: 3.90, max_y: 3.28}
     mounting: SMD
     notes: >
-      At 90° rotation, courtyard: (-3.28, -3.90) to (3.28, 3.90).
-      Board coords: (-3.28, 26.10) to (3.28, 33.90).
-      Clears J6 top courtyard (27.50) by 1.40mm. ✓
+      Moved inward 3mm from board edge so SMD pads are fully on-board.
+      Housing extends off left edge for cable entry.
 
   - ref_des: J3
     description: "Battery connector (JST PH 2-pin THT RA)"
     edge: left
     position:
-      x_mm: 0.0   # flush with left edge
-      y_mm: 3.5   # lower-left, below J6 bottom courtyard (8.70)
+      x_mm: 3.0   # inset from left edge so pads are routable
+      y_mm: 3.5   # lower-left, below J6 bottom courtyard
     orientation: "housing facing left (outward), rotated 90°"
     courtyard_mm: {width: 6.90, height: 8.60}
     courtyard_bounds: {min_x: -2.45, min_y: -1.85, max_x: 4.45, max_y: 6.75}
     mounting: THT
     notes: >
-      At 90° rotation, courtyard: (-6.75, -2.45) to (1.85, 4.45).
-      Board coords: (-6.75, -0.95) to (1.85, 7.95).
-      Clears J6 bottom courtyard (8.70) by 0.75mm. ✓
+      Moved inward 3mm from board edge so THT pads are routable.
+      Housing extends off left edge.
 
   - ref_des: J2
     description: "1-Wire connector (JST PH 3-pin THT RA)"
     edge: right
     position:
-      x_mm: 25.0  # flush with right edge
+      x_mm: 22.0  # inset from right edge so pads are routable
       y_mm: 33.0  # upper-right, above J7 top courtyard
     orientation: "housing facing right (outward), rotated 270°"
     courtyard_mm: {width: 8.90, height: 8.60}
     courtyard_bounds: {min_x: -2.45, min_y: -1.85, max_x: 6.45, max_y: 6.75}
     mounting: THT
     notes: >
-      Changed from JST XH to JST PH — 30% smaller courtyard.
-      At 270° rotation, courtyard: (-6.75, -2.45) to (1.85, 6.45).
-      Board coords: (18.25, 24.55) to (26.85, 37.45).
-      Clears J7 top courtyard (27.50) — J2 bottom at 24.55.
-      On-board extent: x=18.25 to 25.0 (6.75mm into board).
+      Moved inward 3mm from board edge so THT pads are routable.
+      Housing extends off right edge. Clears J7 courtyard.
 
 # ===========================================================================
 # Component Grouping Zones

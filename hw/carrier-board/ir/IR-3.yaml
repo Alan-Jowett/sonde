@@ -102,7 +102,7 @@ connector_placement:
     description: "Qwiic I2C connector (JST SH 4-pin SMD)"
     edge: left
     position:
-      x_mm: 3.0   # inset from left edge so pads are routable
+      x_mm: 5.0   # inset 5mm so SMD mounting pads stay on board
       y_mm: 32.0  # upper-left, above J6 top courtyard
     orientation: "housing facing left (outward), rotated 90°"
     courtyard_mm: {width: 7.80, height: 6.56}
@@ -114,17 +114,14 @@ connector_placement:
 
   - ref_des: J3
     description: "Battery connector (JST PH 2-pin THT RA)"
-    edge: left
+    edge: right
     position:
-      x_mm: 3.0   # inset from left edge so pads are routable
-      y_mm: 3.5   # lower-left, below J6 bottom courtyard
-    orientation: "housing facing left (outward), rotated 90°"
+      x_mm: 20.0  # right edge, inset 5mm
+      y_mm: 3.0   # lower-right, below J7. No antenna keepout needed.
+    orientation: "housing facing right (outward), rotated 270°"
     courtyard_mm: {width: 6.90, height: 8.60}
     courtyard_bounds: {min_x: -2.45, min_y: -1.85, max_x: 4.45, max_y: 6.75}
     mounting: THT
-    notes: >
-      Moved inward 3mm from board edge so THT pads are routable.
-      Housing extends off left edge.
 
   - ref_des: J2
     description: "1-Wire connector (JST PH 3-pin THT RA)"
@@ -148,13 +145,10 @@ component_zones:
   - group: power-input
     components: [J3, FB1, C1]
     zone:
-      description: "Lower-left area, near battery connector"
-      anchor: {x_mm: 4.0, y_mm: 5.0}
-      extent_mm: {width: 6.0, height: 3.0}
+      description: "Center-bottom area, between pin headers"
+      anchor: {x_mm: 9.0, y_mm: 6.0}
+      extent_mm: {width: 6.0, height: 4.0}
     proximity_constraint_mm: 3.0
-    notes: >
-      FB1 and C1 placed near J3 (y=3.5). Zone between J3 on-board
-      pads (x up to 1.85) and J6 bottom (y=8.70).
 
   - group: power-gating
     components: [Q1, R4, C2]
@@ -171,7 +165,7 @@ component_zones:
     components: [J1, R1, R2]
     zone:
       description: "Upper area, near Qwiic connector"
-      anchor: {x_mm: 7.0, y_mm: 29.0}
+      anchor: {x_mm: 8.0, y_mm: 29.0}
       extent_mm: {width: 8.0, height: 4.0}
     proximity_constraint_mm: 3.0
     notes: >
@@ -202,24 +196,10 @@ component_zones:
 # ===========================================================================
 # Keep-Out Zones
 # ===========================================================================
-keepout_zones:
-
-  - name: "antenna-clearance"
-    description: "Clearance for XIAO u.FL antenna connector and cable"
-    boundary:
-      type: rectangle
-      x_mm: 8.0
-      y_mm: 0.0
-      width_mm: 9.0
-      height_mm: 5.0
-    restriction: "No copper pour, no components, no traces on F.Cu"
-    layer: "F.Cu"
-    rationale: >
-      REQ-HW-0705: clearance for u.FL connector at antenna end of XIAO.
-      The u.FL connector is centered on the XIAO module. Cable routes
-      downward/sideways from the connector. Keep area clear of copper
-      to avoid detuning.
-    requirement: REQ-HW-0705
+# NOTE: No keepout zones needed. The XIAO ESP32-C3 uses an external
+# u.FL antenna connector on the module itself — there is no PCB trace
+# antenna on the carrier board. The previous "antenna-clearance" keepout
+# was incorrectly generated based on a false assumption.
 
 # ===========================================================================
 # Routing Constraints

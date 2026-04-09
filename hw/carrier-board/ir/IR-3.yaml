@@ -1,16 +1,6 @@
-# IR-3: Physical Placement Constraints — Sonde Carrier Board
-# Pipeline: Pass 3 — Physical Placement (Post-Binding, Interactive)
-# Input: IR-0.yaml, IR-1e.yaml, IR-2.yaml, IR-PB.yaml
-# Backend: KiCad 8
-# Generated: 2026-04-08
-
-schema_version: "1.0.0"
+schema_version: 1.0.0
 project: sonde-carrier
-backend: "KiCad 8"
-
-# ===========================================================================
-# Board Outline
-# ===========================================================================
+backend: KiCad 8
 board:
   shape: rectangle
   width_mm: 25.0
@@ -18,287 +8,312 @@ board:
   area_mm2: 875.0
   layers: 2
   stackup:
-    layer_1: "F.Cu (front copper)"
-    substrate: "FR4 1.6mm"
-    layer_2: "B.Cu (back copper)"
+    layer_1: F.Cu (front copper)
+    substrate: FR4 1.6mm
+    layer_2: B.Cu (back copper)
   copper_weight_oz: 1
-  surface_finish: "HASL (lead-free)"
-  mounting_holes: none  # REQ-HW-0702
-  origin: "bottom-left corner (0,0)"
-
-# ===========================================================================
-# Edge Definitions
-# ===========================================================================
+  surface_finish: HASL (lead-free)
+  mounting_holes: none
+  origin: bottom-left corner (0,0)
 edges:
   top:
     y: 35.0
-    role: "USB-C access edge"
-    description: >
-      XIAO USB-C port extends beyond or is flush with this edge.
-      No other connectors on this edge per REQ-HW-0707.
+    role: USB-C access edge
+    description: 'XIAO USB-C port extends beyond or is flush with this edge. No other
+      connectors on this edge per REQ-HW-0707.
+
+      '
   bottom:
     y: 0.0
-    role: "Antenna edge"
-    description: >
-      XIAO u.FL antenna connector faces this edge. Clearance zone
-      required for antenna cable routing. No connectors per REQ-HW-0707.
+    role: Antenna edge
+    description: 'XIAO u.FL antenna connector faces this edge. Clearance zone required
+      for antenna cable routing. No connectors per REQ-HW-0707.
+
+      '
   left:
     x: 0.0
-    role: "Connector edge (J1 Qwiic + J3 Battery)"
-    connectors: [J1, J3]
+    role: Connector edge (J1 Qwiic + J3 Battery)
+    connectors:
+    - J1
+    - J3
   right:
     x: 25.0
-    role: "Connector edge (J2 1-Wire)"
-    connectors: [J2]
-
-# ===========================================================================
-# Connector Placement
-# ===========================================================================
-# CORRECTED 2026-04-09: positions validated against actual KiCad footprint
-# courtyard_bounds (asymmetric, relative to pad-1 origin).
-#
-# Courtyard bounds from KiCad 8.0.9 footprint library:
-#   J1 (JST_SH_SM04B): (-3.90, -3.28) to (3.90, 3.28) — symmetric
-#   J2 (JST_PH_S3B):   (-2.45, -1.85) to (6.45, 6.75) — housing +Y
-#   J3 (JST_PH_S2B):   (-2.45, -1.85) to (4.45, 6.75) — housing +Y
-#   J6 (PinSocket_1x07):(-1.80, -1.80) to (1.75, 17.00) — pads +Y
-#   J7 (PinSocket_1x07): same as J6
-#
-# Rotation plan:
-#   Left edge connectors: 90° → +Y becomes -X (housing faces left/outward)
-#   Right edge connectors: 270° → +Y becomes +X (housing faces right/outward)
-#   Pin headers: 0° — default orientation has pads extending +Y (upward)
-#
+    role: Connector edge (J2 1-Wire)
+    connectors:
+    - J2
 connector_placement:
-
-  - ref_des: J6
-    description: "XIAO left header socket (1×7, 2.54mm)"
-    position:
-      x_mm: 3.75
-      y_mm: 7.0
-    orientation: "vertical, pin 1 at bottom (D0), no rotation"
-    courtyard_mm: {width: 3.55, height: 18.80}
-    courtyard_bounds: {min_x: -1.80, min_y: -1.80, max_x: 1.75, max_y: 17.00}
-    mounting: THT
-
-  - ref_des: J7
-    description: "XIAO right header socket (1×7, 2.54mm)"
-    position:
-      x_mm: 21.25
-      y_mm: 7.0
-    orientation: "vertical, pin 1 at bottom (D6), no rotation"
-    courtyard_mm: {width: 3.55, height: 18.80}
-    courtyard_bounds: {min_x: -1.80, min_y: -1.80, max_x: 1.75, max_y: 17.00}
-    mounting: THT
-
-  - ref_des: J1
-    description: "Qwiic I2C connector (JST SH 4-pin SMD)"
-    edge: left
-    position:
-      x_mm: 5.0
-      y_mm: 28.0
-    orientation: "housing facing left (outward), rotated 90°"
-    courtyard_mm: {width: 7.80, height: 6.56}
-    courtyard_bounds: {min_x: -3.90, min_y: -3.28, max_x: 3.90, max_y: 3.28}
-    mounting: SMD
-
-  - ref_des: J3
-    description: "Battery connector (JST PH 2-pin THT RA)"
-    edge: right
-    position:
-      x_mm: 22.0
-      y_mm: 5.0
-    orientation: "housing facing right (outward), rotated 270°"
-    courtyard_mm: {width: 6.90, height: 8.60}
-    courtyard_bounds: {min_x: -2.45, min_y: -1.85, max_x: 4.45, max_y: 6.75}
-    mounting: THT
-
-  - ref_des: J2
-    description: "1-Wire connector (JST PH 3-pin THT RA)"
-    edge: right
-    position:
-      x_mm: 20.0
-      y_mm: 28.0
-    orientation: "housing facing right (outward), rotated 270°"
-    courtyard_mm: {width: 8.90, height: 8.60}
-    courtyard_bounds: {min_x: -2.45, min_y: -1.85, max_x: 6.45, max_y: 6.75}
-    mounting: THT
-
-# ===========================================================================
-# Component Grouping Zones
-# ===========================================================================
+- ref_des: J6
+  description: XIAO left header socket (1×7, 2.54mm)
+  position:
+    x_mm: 3.75
+    y_mm: 7.0
+  orientation: vertical, pin 1 at bottom (D0), no rotation
+  courtyard_mm:
+    width: 3.55
+    height: 18.8
+  courtyard_bounds:
+    min_x: -1.8
+    min_y: -1.8
+    max_x: 1.75
+    max_y: 17.0
+  mounting: THT
+- ref_des: J7
+  description: XIAO right header socket (1×7, 2.54mm)
+  position:
+    x_mm: 21.25
+    y_mm: 8.5
+  orientation: vertical, pin 1 at bottom (D6), no rotation
+  courtyard_mm:
+    width: 3.55
+    height: 18.8
+  courtyard_bounds:
+    min_x: -1.8
+    min_y: -1.8
+    max_x: 1.75
+    max_y: 17.0
+  mounting: THT
+- ref_des: J1
+  description: Qwiic I2C connector (JST SH 4-pin SMD)
+  edge: left
+  position:
+    x_mm: 5.0
+    y_mm: 28.0
+  orientation: housing facing left (outward), rotated 90°
+  courtyard_mm:
+    width: 7.8
+    height: 6.56
+  courtyard_bounds:
+    min_x: -3.9
+    min_y: -3.28
+    max_x: 3.9
+    max_y: 3.28
+  mounting: SMD
+- ref_des: J3
+  description: Battery connector (JST PH 2-pin THT RA)
+  edge: right
+  position:
+    x_mm: 22.0
+    y_mm: 3.5
+  orientation: housing facing right (outward), rotated 270°
+  courtyard_mm:
+    width: 6.9
+    height: 8.6
+  courtyard_bounds:
+    min_x: -2.45
+    min_y: -1.85
+    max_x: 4.45
+    max_y: 6.75
+  mounting: THT
+- ref_des: J2
+  description: 1-Wire connector (JST PH 3-pin THT RA)
+  edge: right
+  position:
+    x_mm: 20.0
+    y_mm: 33.0
+  orientation: housing facing right (outward), rotated 270°
+  courtyard_mm:
+    width: 8.9
+    height: 8.6
+  courtyard_bounds:
+    min_x: -2.45
+    min_y: -1.85
+    max_x: 6.45
+    max_y: 6.75
+  mounting: THT
 component_zones:
-
-  - group: power-input
-    components: [J3, FB1, C1]
-    zone:
-      description: "Center area, between pin headers"
-      anchor: {x_mm: 8.0, y_mm: 10.0}
-      extent_mm: {width: 8.0, height: 4.0}
-    proximity_constraint_mm: 3.0
-
-  - group: power-gating
-    components: [Q1, R4, C2]
-    zone:
-      description: "Center area, between pin headers"
-      anchor: {x_mm: 8.0, y_mm: 15.0}
-      extent_mm: {width: 8.0, height: 4.0}
-    proximity_constraint_mm: 3.0
-
-  - group: i2c-interface
-    components: [J1, R1, R2]
-    zone:
-      description: "Upper-center area, above pin headers"
-      anchor: {x_mm: 8.0, y_mm: 26.0}
-      extent_mm: {width: 8.0, height: 4.0}
-    proximity_constraint_mm: 3.0
-
-  - group: onewire-interface
-    components: [J2, R3]
-    zone:
-      description: "Upper-center area, above pin headers"
-      anchor: {x_mm: 10.0, y_mm: 26.0}
-      extent_mm: {width: 5.0, height: 3.0}
-    proximity_constraint_mm: 3.0
-
-  - group: battery-sensing
-    components: [R5, R6, C3]
-    zone:
-      description: "Center area, between pin headers"
-      anchor: {x_mm: 10.0, y_mm: 19.0}
-      extent_mm: {width: 5.0, height: 3.0}
-    proximity_constraint_mm: 3.0
-
-# ===========================================================================
-# Keep-Out Zones
-# ===========================================================================
-# NOTE: No keepout zones needed. The XIAO ESP32-C3 uses an external
-# u.FL antenna connector on the module itself — there is no PCB trace
-# antenna on the carrier board. The previous "antenna-clearance" keepout
-# was incorrectly generated based on a false assumption.
-
-# ===========================================================================
-# Routing Constraints
-# ===========================================================================
+- group: power-input
+  components:
+  - J3
+  - FB1
+  - C1
+  zone:
+    description: Center area, between pin headers
+    anchor:
+      x_mm: 8.0
+      y_mm: 10.0
+    extent_mm:
+      width: 8.0
+      height: 4.0
+  proximity_constraint_mm: 3.0
+- group: power-gating
+  components:
+  - Q1
+  - R4
+  - C2
+  zone:
+    description: Center area, between pin headers
+    anchor:
+      x_mm: 8.0
+      y_mm: 15.0
+    extent_mm:
+      width: 8.0
+      height: 4.0
+  proximity_constraint_mm: 3.0
+- group: i2c-interface
+  components:
+  - J1
+  - R1
+  - R2
+  zone:
+    description: Upper-center area, above pin headers
+    anchor:
+      x_mm: 8.0
+      y_mm: 26.0
+    extent_mm:
+      width: 8.0
+      height: 4.0
+  proximity_constraint_mm: 3.0
+- group: onewire-interface
+  components:
+  - J2
+  - R3
+  zone:
+    description: Upper-center area, above pin headers
+    anchor:
+      x_mm: 11.7
+      y_mm: 20.4
+    extent_mm:
+      width: 5.0
+      height: 3.0
+  proximity_constraint_mm: 3.0
+- group: battery-sensing
+  components:
+  - R5
+  - R6
+  - C3
+  zone:
+    description: Center area, between pin headers
+    anchor:
+      x_mm: 10.8
+      y_mm: 18.6
+    extent_mm:
+      width: 5.0
+      height: 3.0
+  proximity_constraint_mm: 3.0
 routing_constraints:
-
   power_traces:
-    - net: VBAT
-      min_width_mm: 0.5
-      rationale: >
-        Peak current 349mA. At 1oz copper, 0.5mm trace carries ~1A
-        per IPC-2221. 0.5mm provides adequate margin.
-      ir_pb_reference: "IR-PB/operating_modes/Active — Peak TX + Sensors"
-    - net: VBAT_FILT
-      min_width_mm: 0.5
-      rationale: "Same current as VBAT (minus negligible ferrite bead drop)."
-    - net: SENSOR_V
-      min_width_mm: 0.3
-      rationale: >
-        Max sensor rail current ~14mA. 0.3mm is more than sufficient
-        but provides margin for bus expansion.
-    - net: GND
-      type: "copper pour"
-      layer: "B.Cu"
-      rationale: >
-        Ground plane on back copper layer for low-impedance return path,
-        EMI reduction, and thermal spreading. Use vias to connect front
-        GND pads to back plane.
+  - net: VBAT
+    min_width_mm: 0.5
+    rationale: 'Peak current 349mA. At 1oz copper, 0.5mm trace carries ~1A per IPC-2221.
+      0.5mm provides adequate margin.
 
+      '
+    ir_pb_reference: IR-PB/operating_modes/Active — Peak TX + Sensors
+  - net: VBAT_FILT
+    min_width_mm: 0.5
+    rationale: Same current as VBAT (minus negligible ferrite bead drop).
+  - net: SENSOR_V
+    min_width_mm: 0.3
+    rationale: 'Max sensor rail current ~14mA. 0.3mm is more than sufficient but provides
+      margin for bus expansion.
+
+      '
+  - net: GND
+    type: copper pour
+    layer: B.Cu
+    rationale: 'Ground plane on back copper layer for low-impedance return path, EMI
+      reduction, and thermal spreading. Use vias to connect front GND pads to back
+      plane.
+
+      '
   signal_traces:
-    - nets: [SDA, SCL]
-      width_mm: 0.25
-      max_length_mm: 20
-      notes: >
-        I2C signals. Keep traces short (<20mm) and parallel where possible.
-        No differential pair requirements. Standard mode max bus
-        capacitance 400pF; fast mode 200pF. Short traces ensure margin.
-    - net: 1W_DATA
-      width_mm: 0.25
-      max_length_mm: 30
-      notes: "1-Wire signal. Route from J6 pin 2 across to J2. No impedance requirement."
-    - net: VBAT_SENSE
-      width_mm: 0.15
-      max_length_mm: 10
-      notes: >
-        Analog signal — keep short to minimize noise pickup. Route
-        directly from voltage divider midpoint to J6 pin 1 (GPIO2 ADC).
-        Guard with GND traces if possible.
-    - net: SENSOR_EN
-      width_mm: 0.25
-      max_length_mm: 15
-      notes: "Digital control signal. GPIO4 to Q1 gate via R4."
+  - nets:
+    - SDA
+    - SCL
+    width_mm: 0.25
+    max_length_mm: 20
+    notes: 'I2C signals. Keep traces short (<20mm) and parallel where possible. No
+      differential pair requirements. Standard mode max bus capacitance 400pF; fast
+      mode 200pF. Short traces ensure margin.
 
+      '
+  - net: 1W_DATA
+    width_mm: 0.25
+    max_length_mm: 30
+    notes: 1-Wire signal. Route from J6 pin 2 across to J2. No impedance requirement.
+  - net: VBAT_SENSE
+    width_mm: 0.15
+    max_length_mm: 10
+    notes: 'Analog signal — keep short to minimize noise pickup. Route directly from
+      voltage divider midpoint to J6 pin 1 (GPIO2 ADC). Guard with GND traces if possible.
+
+      '
+  - net: SENSOR_EN
+    width_mm: 0.25
+    max_length_mm: 15
+    notes: Digital control signal. GPIO4 to Q1 gate via R4.
   via_constraints:
     diameter_mm: 0.6
     drill_mm: 0.3
-    notes: "Standard JLCPCB via size (0.3mm drill, 0.6mm annular ring)"
-
-# ===========================================================================
-# Feasibility Check (Definitive — IR-1e Courtyard)
-# ===========================================================================
+    notes: Standard JLCPCB via size (0.3mm drill, 0.6mm annular ring)
 feasibility:
-  total_courtyard_area_mm2: 280    # effective on-board (IR-1e adjusted)
+  total_courtyard_area_mm2: 280
   board_area_mm2: 875
   utilization_pct: 32.0
   warning_threshold_pct: 70
   blocking_threshold_pct: 90
-  area_status: "PASS — 32% utilization, well within 70% warning threshold"
+  area_status: PASS — 32% utilization, well within 70% warning threshold
   pairwise_overlap_check:
-    status: "PASS — no courtyard overlaps detected"
+    status: PASS — no courtyard overlaps detected
     connector_pairs_checked:
-      - pair: [J1, J3]
-        clearance_mm: 11.65
-        status: "PASS"
-      - pair: [J1, J6]
-        clearance_mm: 0.14
-        status: "PASS (tight but acceptable for SMD)"
-      - pair: [J2, J7]
-        clearance_mm: 5.95
-        status: "PASS"
-      - pair: [J3, J6]
-        clearance_mm: 3.25
-        status: "PASS"
-      - pair: [J6, J7]
-        clearance_mm: 13.95
-        status: "PASS"
-  notes: >
-    Corrected from previous version which had 7 courtyard overlaps.
-    Pin headers J6/J7 moved from y=8.11 to y=9.0 (0° rotation, pads
-    extending upward). Edge connectors J1/J2 moved to y=28.0 (above
-    pin header range). J3 moved to y=6.0 (below pin header range).
-    All zone anchors verified to clear connector courtyards.
+    - pair:
+      - J1
+      - J3
+      clearance_mm: 11.65
+      status: PASS
+    - pair:
+      - J1
+      - J6
+      clearance_mm: 0.14
+      status: PASS (tight but acceptable for SMD)
+    - pair:
+      - J2
+      - J7
+      clearance_mm: 5.95
+      status: PASS
+    - pair:
+      - J3
+      - J6
+      clearance_mm: 3.25
+      status: PASS
+    - pair:
+      - J6
+      - J7
+      clearance_mm: 13.95
+      status: PASS
+  notes: 'Corrected from previous version which had 7 courtyard overlaps. Pin headers
+    J6/J7 moved from y=8.11 to y=9.0 (0° rotation, pads extending upward). Edge connectors
+    J1/J2 moved to y=28.0 (above pin header range). J3 moved to y=6.0 (below pin header
+    range). All zone anchors verified to clear connector courtyards.
 
-# ===========================================================================
-# Silkscreen Plan
-# ===========================================================================
+    '
 silkscreen:
   labels:
-    - text: "sonde"
-      location: "top center of board, above XIAO module"
-      layer: "F.SilkS"
-      requirement: REQ-HW-0704
-    - text: "J1 I2C"
-      location: "adjacent to J1"
-      requirement: REQ-HW-0704
-    - text: "J2 1W"
-      location: "adjacent to J2"
-      requirement: REQ-HW-0704
-    - text: "J3 BATT"
-      location: "adjacent to J3"
-      requirement: REQ-HW-0704
-    - text: "+ −"
-      location: "at J3 pin 1 and pin 2"
-      requirement: REQ-HW-0704
-    - text: "J6"
-      location: "adjacent to J6 header"
-      requirement: REQ-HW-0704
-    - text: "J7"
-      location: "adjacent to J7 header"
-      requirement: REQ-HW-0704
-    - text: "USB ↑"
-      location: "near top edge"
-      requirement: REQ-HW-0706
-    - text: "ANT"
-      location: "near bottom edge antenna area"
-      requirement: REQ-HW-0705
+  - text: sonde
+    location: top center of board, above XIAO module
+    layer: F.SilkS
+    requirement: REQ-HW-0704
+  - text: J1 I2C
+    location: adjacent to J1
+    requirement: REQ-HW-0704
+  - text: J2 1W
+    location: adjacent to J2
+    requirement: REQ-HW-0704
+  - text: J3 BATT
+    location: adjacent to J3
+    requirement: REQ-HW-0704
+  - text: + −
+    location: at J3 pin 1 and pin 2
+    requirement: REQ-HW-0704
+  - text: J6
+    location: adjacent to J6 header
+    requirement: REQ-HW-0704
+  - text: J7
+    location: adjacent to J7 header
+    requirement: REQ-HW-0704
+  - text: USB ↑
+    location: near top edge
+    requirement: REQ-HW-0706
+  - text: ANT
+    location: near bottom edge antenna area
+    requirement: REQ-HW-0705

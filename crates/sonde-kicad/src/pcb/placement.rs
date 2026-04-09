@@ -437,6 +437,40 @@ fn load_library_footprint(
         true
     });
 
+    // Deduplicate pads: if a pad number appears with and without a net,
+    // keep only the one with a net assignment.
+    let mut seen_pads_with_net: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in items.iter() {
+        if let SExpr::List(children) = item {
+            if matches!(children.first(), Some(SExpr::Atom(t)) if t == "pad") {
+                if let Some(SExpr::Quoted(num) | SExpr::Atom(num)) = children.get(1) {
+                    let has_net = children.iter().any(|c| {
+                        matches!(c, SExpr::List(inner) if matches!(inner.first(), Some(SExpr::Atom(t)) if t == "net"))
+                    });
+                    if has_net {
+                        seen_pads_with_net.insert(num.clone());
+                    }
+                }
+            }
+        }
+    }
+    items.retain(|item| {
+        if let SExpr::List(children) = item {
+            if matches!(children.first(), Some(SExpr::Atom(t)) if t == "pad") {
+                if let Some(SExpr::Quoted(num) | SExpr::Atom(num)) = children.get(1) {
+                    let has_net = children.iter().any(|c| {
+                        matches!(c, SExpr::List(inner) if matches!(inner.first(), Some(SExpr::Atom(t)) if t == "net"))
+                    });
+                    // If this pad has no net but another copy does, remove it
+                    if !has_net && seen_pads_with_net.contains(num) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    });
+
     Some(SExpr::List(items))
 }
 

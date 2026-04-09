@@ -40,18 +40,11 @@ pub fn build_placements(
             _ => 0.0,
         };
 
-        // For edge connectors, offset inward so pads are on-board
-        let (adj_x, adj_y) = match cp.edge.as_deref() {
-            Some("left") => {
-                let cw = cp.courtyard_mm.as_ref().map(|c| c.width).unwrap_or(0.0);
-                (cp.position.x_mm + cw / 2.0, ky)
-            }
-            Some("right") => {
-                let cw = cp.courtyard_mm.as_ref().map(|c| c.width).unwrap_or(0.0);
-                (cp.position.x_mm - cw / 2.0, ky)
-            }
-            _ => (cp.position.x_mm, ky),
-        };
+        // Place footprint origin at the edge position directly.
+        // The housing extends off-board; pads are on-board side.
+        // No courtyard offset — the IR-3 position is the anchor point.
+        let adj_x = cp.position.x_mm;
+        let adj_y = ky;
 
         pos_map.insert(cp.ref_des.clone(), (adj_x, adj_y, rotation));
     }

@@ -19,10 +19,13 @@ pub fn emit_pcb(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<Strin
     let board = &ir3.board;
 
     let mut children = vec![
-        SExpr::pair("version", "20231120"),
+        SExpr::pair("version", "20240108"),
         SExpr::pair_quoted("generator", "sonde-kicad"),
         SExpr::pair_quoted("generator_version", env!("CARGO_PKG_VERSION")),
-        SExpr::pair_quoted("uuid", &uuid_gen.next("pcb:root")),
+        SExpr::list("general", vec![
+            SExpr::list("thickness", vec![SExpr::Atom("1.6".into())]),
+            SExpr::pair("legacy_teardrops", "no"),
+        ]),
         SExpr::pair_quoted("paper", "A4"),
     ];
 
@@ -65,19 +68,30 @@ fn build_layers(layer_count: u32) -> SExpr {
         layers.insert(1, SExpr::List(vec![SExpr::Atom("1".into()), SExpr::Quoted("In1.Cu".into()), SExpr::Atom("signal".into())]));
         layers.insert(2, SExpr::List(vec![SExpr::Atom("2".into()), SExpr::Quoted("In2.Cu".into()), SExpr::Atom("signal".into())]));
     }
-    for &(id, name) in &[
-        ("34", "B.Paste"), ("35", "F.Paste"),
-        ("36", "B.SilkS"), ("37", "F.SilkS"),
-        ("38", "B.Mask"), ("39", "F.Mask"),
-        ("44", "Edge.Cuts"),
-        ("46", "B.CrtYd"), ("47", "F.CrtYd"),
-        ("48", "B.Fab"), ("49", "F.Fab"),
+    for &(id, name, display) in &[
+        ("32", "B.Adhes", "B.Adhesive"),
+        ("33", "F.Adhes", "F.Adhesive"),
+        ("34", "B.Paste", ""),
+        ("35", "F.Paste", ""),
+        ("36", "B.SilkS", "B.Silkscreen"),
+        ("37", "F.SilkS", "F.Silkscreen"),
+        ("38", "B.Mask", ""),
+        ("39", "F.Mask", ""),
+        ("44", "Edge.Cuts", ""),
+        ("46", "B.CrtYd", "B.Courtyard"),
+        ("47", "F.CrtYd", "F.Courtyard"),
+        ("48", "B.Fab", "B.Fabrication"),
+        ("49", "F.Fab", "F.Fabrication"),
     ] {
-        layers.push(SExpr::List(vec![
+        let mut items = vec![
             SExpr::Atom(id.into()),
             SExpr::Quoted(name.into()),
             SExpr::Atom("user".into()),
-        ]));
+        ];
+        if !display.is_empty() {
+            items.push(SExpr::Quoted(display.into()));
+        }
+        layers.push(SExpr::List(items));
     }
     SExpr::list("layers", layers)
 }

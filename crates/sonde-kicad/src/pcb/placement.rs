@@ -31,12 +31,18 @@ pub fn build_placements(
     for cp in &ir3.connector_placement {
         let ky = board_h - cp.position.y_mm;
 
-        // Determine rotation from edge placement
+        // Determine rotation to make housing face outward from the board edge.
+        // Default footprint orientations:
+        //   JST SH (SMD): pads at y=-2, housing extends +Y → cable enters from +Y
+        //   JST XH/PH (THT RA): pads along X, housing extends +Y → cable enters from +Y
+        // Rotations needed:
+        //   Left edge: rotate 90° → +Y becomes -X (housing faces left/outward)
+        //   Right edge: rotate 270° → +Y becomes +X (housing faces right/outward)
         let rotation = match cp.edge.as_deref() {
-            Some("left") => 180.0,  // Housing faces left (outward)
-            Some("right") => 0.0,   // Housing faces right (outward)
-            Some("top") => 90.0,
-            Some("bottom") => 270.0,
+            Some("left") => 90.0,
+            Some("right") => 270.0,
+            Some("top") => 180.0,
+            Some("bottom") => 0.0,
             _ => 0.0,
         };
 

@@ -45,18 +45,28 @@ pub fn build_silkscreen(
             at_items.push(SExpr::Atom(fmt(rot)));
         }
 
-        children.push(SExpr::list("gr_text", vec![
-            SExpr::Quoted(label.text.clone()),
-            SExpr::List(at_items),
-            SExpr::pair_quoted("layer", layer),
-            SExpr::pair_quoted("uuid", &uuid_gen.next(&format!("silk:{i}"))),
-            SExpr::list("effects", vec![
-                SExpr::list("font", vec![
-                    SExpr::list("size", vec![SExpr::Atom("1".into()), SExpr::Atom("1".into())]),
-                    SExpr::list("thickness", vec![SExpr::Atom("0.15".into())]),
-                ]),
-            ]),
-        ]));
+        children.push(SExpr::list(
+            "gr_text",
+            vec![
+                SExpr::Quoted(label.text.clone()),
+                SExpr::List(at_items),
+                SExpr::pair_quoted("layer", layer),
+                SExpr::pair_quoted("uuid", &uuid_gen.next(&format!("silk:{i}"))),
+                SExpr::list(
+                    "effects",
+                    vec![SExpr::list(
+                        "font",
+                        vec![
+                            SExpr::list(
+                                "size",
+                                vec![SExpr::Atom("1".into()), SExpr::Atom("1".into())],
+                            ),
+                            SExpr::list("thickness", vec![SExpr::Atom("0.15".into())]),
+                        ],
+                    )],
+                ),
+            ],
+        ));
     }
 }
 

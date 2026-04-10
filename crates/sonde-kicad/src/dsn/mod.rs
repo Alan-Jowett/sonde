@@ -10,7 +10,10 @@ use crate::ir::IrBundle;
 
 /// Generate a Specctra DSN file from an IR bundle.
 pub fn emit_dsn(bundle: &IrBundle) -> Result<String, Error> {
-    let ir3 = bundle.ir3.as_ref().ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
+    let ir3 = bundle
+        .ir3
+        .as_ref()
+        .ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
     let board = &ir3.board;
 
     // Use same page offset as PCB generation (A4 centered)
@@ -25,7 +28,10 @@ pub fn emit_dsn(bundle: &IrBundle) -> Result<String, Error> {
     dsn.push_str("    (string_quote \")\n");
     dsn.push_str("    (space_in_quoted_tokens on)\n");
     dsn.push_str("    (host_cad \"sonde-kicad\")\n");
-    dsn.push_str(&format!("    (host_version \"{}\")\n", env!("CARGO_PKG_VERSION")));
+    dsn.push_str(&format!(
+        "    (host_version \"{}\")\n",
+        env!("CARGO_PKG_VERSION")
+    ));
     dsn.push_str("  )\n");
     dsn.push_str("  (resolution um 10)\n");
     dsn.push_str("  (unit um)\n");
@@ -194,10 +200,7 @@ fn write_network(dsn: &mut String, bundle: &IrBundle, ir3: &crate::ir::Ir3) {
             .map(|w| mm_to_um(w) as i64)
             .unwrap_or(500);
 
-        dsn.push_str(&format!(
-            "    (class Power {}\n",
-            power_nets.join(" ")
-        ));
+        dsn.push_str(&format!("    (class Power {}\n", power_nets.join(" ")));
         dsn.push_str("      (circuit (use_via \"Via[0-1]_600:300_um\"))\n");
         dsn.push_str(&format!(
             "      (rule (width {power_width}) (clearance {default_clearance}))\n"

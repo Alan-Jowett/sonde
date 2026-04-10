@@ -63,6 +63,8 @@ pub fn write_structure(dsn: &mut String, ir3: &Ir3, ox: f64, oy: f64) {
         })
         .unwrap_or((250, 200));
 
-    dsn.push_str(&format!("    (rule (width {width}) (clearance {clearance}))\n"));
+    dsn.push_str(&format!(
+        "    (rule (width {width}) (clearance {clearance}))\n"
+    ));
     dsn.push_str("  )\n");
 }

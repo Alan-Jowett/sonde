@@ -15,7 +15,10 @@ use crate::uuid_gen::UuidGenerator;
 
 /// Generate a KiCad 8 PCB from an IR bundle.
 pub fn emit_pcb(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<String, Error> {
-    let ir3 = bundle.ir3.as_ref().ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
+    let ir3 = bundle
+        .ir3
+        .as_ref()
+        .ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
     let board = &ir3.board;
 
     // Center the board on the A4 page (297 × 210 mm)
@@ -28,10 +31,13 @@ pub fn emit_pcb(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<Strin
         SExpr::pair("version", "20240108"),
         SExpr::pair_quoted("generator", "sonde-kicad"),
         SExpr::pair_quoted("generator_version", env!("CARGO_PKG_VERSION")),
-        SExpr::list("general", vec![
-            SExpr::list("thickness", vec![SExpr::Atom("1.6".into())]),
-            SExpr::pair("legacy_teardrops", "no"),
-        ]),
+        SExpr::list(
+            "general",
+            vec![
+                SExpr::list("thickness", vec![SExpr::Atom("1.6".into())]),
+                SExpr::pair("legacy_teardrops", "no"),
+            ],
+        ),
         SExpr::pair_quoted("paper", "A4"),
     ];
 
@@ -49,17 +55,38 @@ pub fn emit_pcb(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<Strin
 
     // Keep-out zones
     if let Some(keepouts) = &ir3.keepout_zones {
-        zones::build_keepout_zones(keepouts, board.height_mm, offset_x, offset_y, uuid_gen, &mut children);
+        zones::build_keepout_zones(
+            keepouts,
+            board.height_mm,
+            offset_x,
+            offset_y,
+            uuid_gen,
+            &mut children,
+        );
     }
 
     // Ground plane copper pour
     zones::build_ground_pour(ir3, &net_map, offset_x, offset_y, uuid_gen, &mut children);
 
     // Component footprints (placed)
-    placement::build_placements(bundle, &net_map, offset_x, offset_y, uuid_gen, &mut children)?;
+    placement::build_placements(
+        bundle,
+        &net_map,
+        offset_x,
+        offset_y,
+        uuid_gen,
+        &mut children,
+    )?;
 
     // Silkscreen labels
-    silkscreen::build_silkscreen(ir3, board.height_mm, offset_x, offset_y, uuid_gen, &mut children);
+    silkscreen::build_silkscreen(
+        ir3,
+        board.height_mm,
+        offset_x,
+        offset_y,
+        uuid_gen,
+        &mut children,
+    );
 
     let root = SExpr::list("kicad_pcb", children);
     Ok(root.serialize())
@@ -67,12 +94,34 @@ pub fn emit_pcb(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<Strin
 
 fn build_layers(layer_count: u32) -> SExpr {
     let mut layers = vec![
-        SExpr::List(vec![SExpr::Atom("0".into()), SExpr::Quoted("F.Cu".into()), SExpr::Atom("signal".into())]),
-        SExpr::List(vec![SExpr::Atom("31".into()), SExpr::Quoted("B.Cu".into()), SExpr::Atom("signal".into())]),
+        SExpr::List(vec![
+            SExpr::Atom("0".into()),
+            SExpr::Quoted("F.Cu".into()),
+            SExpr::Atom("signal".into()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("31".into()),
+            SExpr::Quoted("B.Cu".into()),
+            SExpr::Atom("signal".into()),
+        ]),
     ];
     if layer_count >= 4 {
-        layers.insert(1, SExpr::List(vec![SExpr::Atom("1".into()), SExpr::Quoted("In1.Cu".into()), SExpr::Atom("signal".into())]));
-        layers.insert(2, SExpr::List(vec![SExpr::Atom("2".into()), SExpr::Quoted("In2.Cu".into()), SExpr::Atom("signal".into())]));
+        layers.insert(
+            1,
+            SExpr::List(vec![
+                SExpr::Atom("1".into()),
+                SExpr::Quoted("In1.Cu".into()),
+                SExpr::Atom("signal".into()),
+            ]),
+        );
+        layers.insert(
+            2,
+            SExpr::List(vec![
+                SExpr::Atom("2".into()),
+                SExpr::Quoted("In2.Cu".into()),
+                SExpr::Atom("signal".into()),
+            ]),
+        );
     }
     for &(id, name, display) in &[
         ("32", "B.Adhes", "B.Adhesive"),
@@ -109,10 +158,13 @@ fn build_setup(ir3: &crate::ir::Ir3) -> SExpr {
     ];
     if let Some(rc) = &ir3.routing_constraints {
         if let Some(_via) = &rc.via_constraints {
-            setup_children.push(SExpr::list("pcbplotparams", vec![
-                SExpr::pair("layerselection", "0x00010fc_ffffffff"),
-                SExpr::pair("outputdirectory", "\"\""),
-            ]));
+            setup_children.push(SExpr::list(
+                "pcbplotparams",
+                vec![
+                    SExpr::pair("layerselection", "0x00010fc_ffffffff"),
+                    SExpr::pair("outputdirectory", "\"\""),
+                ],
+            ));
         }
     }
     SExpr::list("setup", setup_children)
@@ -165,16 +217,22 @@ fn build_outline(
     ];
 
     for (x1, y1, x2, y2) in &corners {
-        children.push(SExpr::list("gr_line", vec![
-            SExpr::list("start", vec![SExpr::Atom(fmt(*x1)), SExpr::Atom(fmt(*y1))]),
-            SExpr::list("end", vec![SExpr::Atom(fmt(*x2)), SExpr::Atom(fmt(*y2))]),
-            SExpr::list("stroke", vec![
-                SExpr::pair("width", "0.05"),
-                SExpr::pair("type", "default"),
-            ]),
-            SExpr::pair_quoted("layer", "Edge.Cuts"),
-            SExpr::pair_quoted("uuid", &uuid_gen.next(&format!("outline:{x1}:{y1}:{x2}:{y2}"))),
-        ]));
+        children.push(SExpr::list(
+            "gr_line",
+            vec![
+                SExpr::list("start", vec![SExpr::Atom(fmt(*x1)), SExpr::Atom(fmt(*y1))]),
+                SExpr::list("end", vec![SExpr::Atom(fmt(*x2)), SExpr::Atom(fmt(*y2))]),
+                SExpr::list(
+                    "stroke",
+                    vec![SExpr::pair("width", "0.05"), SExpr::pair("type", "default")],
+                ),
+                SExpr::pair_quoted("layer", "Edge.Cuts"),
+                SExpr::pair_quoted(
+                    "uuid",
+                    &uuid_gen.next(&format!("outline:{x1}:{y1}:{x2}:{y2}")),
+                ),
+            ],
+        ));
     }
 }
 

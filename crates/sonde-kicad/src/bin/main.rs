@@ -111,9 +111,15 @@ fn run(cli: Cli) -> Result<(), sonde_kicad::Error> {
     }
 }
 
-fn make_uuid_gen(bundle: &sonde_kicad::IrBundle, ir_dir: &Path) -> Result<sonde_kicad::uuid_gen::UuidGenerator, sonde_kicad::Error> {
+fn make_uuid_gen(
+    bundle: &sonde_kicad::IrBundle,
+    ir_dir: &Path,
+) -> Result<sonde_kicad::uuid_gen::UuidGenerator, sonde_kicad::Error> {
     let ir_hash = ir::compute_ir_hash(ir_dir)?;
-    Ok(sonde_kicad::uuid_gen::UuidGenerator::new(&bundle.project, &ir_hash))
+    Ok(sonde_kicad::uuid_gen::UuidGenerator::new(
+        &bundle.project,
+        &ir_hash,
+    ))
 }
 
 fn cmd_schematic(ir_dir: &Path, output_dir: &Path) -> Result<(), sonde_kicad::Error> {
@@ -121,7 +127,11 @@ fn cmd_schematic(ir_dir: &Path, output_dir: &Path) -> Result<(), sonde_kicad::Er
     validate_cross_references(&bundle)?;
     let mut uuid_gen = make_uuid_gen(&bundle, ir_dir)?;
     let content = sonde_kicad::schematic::emit_schematic(&bundle, &mut uuid_gen)?;
-    write_output(output_dir, &format!("{}.kicad_sch", bundle.project), &content)
+    write_output(
+        output_dir,
+        &format!("{}.kicad_sch", bundle.project),
+        &content,
+    )
 }
 
 fn cmd_pcb(ir_dir: &Path, output_dir: &Path) -> Result<(), sonde_kicad::Error> {
@@ -129,7 +139,11 @@ fn cmd_pcb(ir_dir: &Path, output_dir: &Path) -> Result<(), sonde_kicad::Error> {
     validate_cross_references(&bundle)?;
     let mut uuid_gen = make_uuid_gen(&bundle, ir_dir)?;
     let content = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen)?;
-    write_output(output_dir, &format!("{}.kicad_pcb", bundle.project), &content)
+    write_output(
+        output_dir,
+        &format!("{}.kicad_pcb", bundle.project),
+        &content,
+    )
 }
 
 fn cmd_dsn(ir_dir: &Path, output_dir: &Path) -> Result<(), sonde_kicad::Error> {
@@ -139,7 +153,11 @@ fn cmd_dsn(ir_dir: &Path, output_dir: &Path) -> Result<(), sonde_kicad::Error> {
     write_output(output_dir, &format!("{}.dsn", bundle.project), &content)
 }
 
-fn cmd_import_ses(pcb_path: &Path, ses_path: &Path, output_path: &Path) -> Result<(), sonde_kicad::Error> {
+fn cmd_import_ses(
+    pcb_path: &Path,
+    ses_path: &Path,
+    output_path: &Path,
+) -> Result<(), sonde_kicad::Error> {
     let pcb_content = std::fs::read_to_string(pcb_path)?;
     let ses_content = std::fs::read_to_string(ses_path)?;
 
@@ -180,7 +198,11 @@ fn cmd_gerber(pcb_path: &Path, output_dir: &Path) -> Result<(), sonde_kicad::Err
     Ok(())
 }
 
-fn write_output(output_dir: &Path, filename: &str, content: &str) -> Result<(), sonde_kicad::Error> {
+fn write_output(
+    output_dir: &Path,
+    filename: &str,
+    content: &str,
+) -> Result<(), sonde_kicad::Error> {
     std::fs::create_dir_all(output_dir)?;
     let path = output_dir.join(filename);
     std::fs::write(&path, content)?;

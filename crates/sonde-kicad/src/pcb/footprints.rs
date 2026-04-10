@@ -68,10 +68,7 @@ impl FootprintRegistry {
             return Ok(0);
         }
         for entry in walkdir(dir)? {
-            if entry
-                .extension()
-                .is_some_and(|e| e == "kicad_mod")
-            {
+            if entry.extension().is_some_and(|e| e == "kicad_mod") {
                 if let Ok(fp) = parse_kicad_mod(&std::fs::read_to_string(&entry)?) {
                     self.footprints.insert(fp.name.clone(), fp);
                     count += 1;

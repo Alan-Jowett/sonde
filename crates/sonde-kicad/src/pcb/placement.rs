@@ -101,7 +101,12 @@ fn get_courtyard_bounds(
     let comp = bundle.ir1e.components.iter().find(|c| c.ref_des == ref_des);
     if let Some(comp) = comp {
         if let Some(d) = &comp.courtyard_mm {
-            return (-d.width / 2.0, -d.height / 2.0, d.width / 2.0, d.height / 2.0);
+            return (
+                -d.width / 2.0,
+                -d.height / 2.0,
+                d.width / 2.0,
+                d.height / 2.0,
+            );
         }
     }
     (-1.0, -1.0, 1.0, 1.0)
@@ -121,11 +126,16 @@ fn extract_courtyard_bounds(content: &str) -> Option<(f64, f64, f64, f64)> {
         }
         // Extract coordinates from (start X Y) and (end X Y)
         let mut pos = 0;
-        while let Some(idx) = line[pos..].find("(start ").or_else(|| line[pos..].find("(end ")) {
+        while let Some(idx) = line[pos..]
+            .find("(start ")
+            .or_else(|| line[pos..].find("(end "))
+        {
             let start = pos + idx;
             let after_paren = start + line[start..].find(' ').unwrap_or(0) + 1;
             let rest = &line[after_paren..];
-            let parts: Vec<&str> = rest.splitn(3, |c: char| c.is_whitespace() || c == ')').collect();
+            let parts: Vec<&str> = rest
+                .splitn(3, |c: char| c.is_whitespace() || c == ')')
+                .collect();
             if parts.len() >= 2 {
                 if let (Ok(x), Ok(y)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
                     xs.push(x);
@@ -157,7 +167,10 @@ pub fn build_placements(
     uuid_gen: &mut UuidGenerator,
     children: &mut Vec<SExpr>,
 ) -> Result<(), Error> {
-    let ir3 = bundle.ir3.as_ref().ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
+    let ir3 = bundle
+        .ir3
+        .as_ref()
+        .ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
     let board_h = ir3.board.height_mm;
     let board_w = ir3.board.width_mm;
     let fp_dir = find_kicad_footprint_dir();
@@ -176,7 +189,11 @@ pub fn build_placements(
             Some("bottom") => 0.0,
             None | Some(_) => {
                 let orient = cp.orientation.as_deref().unwrap_or("");
-                if orient.contains("pin 1 at bottom") { 180.0 } else { 0.0 }
+                if orient.contains("pin 1 at bottom") {
+                    180.0
+                } else {
+                    0.0
+                }
             }
         };
 
@@ -232,7 +249,12 @@ pub fn build_placements(
                         let ky1 = board_h - (kz.boundary.y_mm + kz.boundary.height_mm);
                         let kx2 = kx1 + kz.boundary.width_mm;
                         let ky2 = ky1 + kz.boundary.height_mm;
-                        let keepout = BBox { x_min: kx1, y_min: ky1, x_max: kx2, y_max: ky2 };
+                        let keepout = BBox {
+                            x_min: kx1,
+                            y_min: ky1,
+                            x_max: kx2,
+                            y_max: ky2,
+                        };
                         candidate.overlaps(&keepout)
                     })
                 });
@@ -261,17 +283,24 @@ pub fn build_placements(
 
     // Phase 3: Generate footprint nodes sorted by ref_des
     let mut sorted_comps = bundle.ir1e.components.clone();
-    sorted_comps.sort_by(|a, b| {
-        crate::schematic::wiring::cmp_ref_des_pub(&a.ref_des, &b.ref_des)
-    });
+    sorted_comps.sort_by(|a, b| crate::schematic::wiring::cmp_ref_des_pub(&a.ref_des, &b.ref_des));
 
     for comp in &sorted_comps {
-        let (x, y, rotation) = pos_map.get(&comp.ref_des).copied().unwrap_or((12.5, 17.5, 0.0));
+        let (x, y, rotation) = pos_map
+            .get(&comp.ref_des)
+            .copied()
+            .unwrap_or((12.5, 17.5, 0.0));
         // Apply page offset for centered-on-A4 placement
         let page_x = x + offset_x;
         let page_y = y + offset_y;
-        let netlist_entry = bundle.ir2.netlist.iter().find(|e| e.ref_des == comp.ref_des);
-        let value = netlist_entry.and_then(|e| e.value.as_deref()).unwrap_or("~");
+        let netlist_entry = bundle
+            .ir2
+            .netlist
+            .iter()
+            .find(|e| e.ref_des == comp.ref_des);
+        let value = netlist_entry
+            .and_then(|e| e.value.as_deref())
+            .unwrap_or("~");
 
         let fp_node = if let Some(ref dir) = fp_dir {
             let params = PlacementParams {
@@ -293,7 +322,14 @@ pub fn build_placements(
             children.push(node);
         } else {
             children.push(build_stub_footprint(
-                comp, value, page_x, page_y, rotation, netlist_entry, net_map, uuid_gen,
+                comp,
+                value,
+                page_x,
+                page_y,
+                rotation,
+                netlist_entry,
+                net_map,
+                uuid_gen,
             ));
         }
     }
@@ -323,7 +359,9 @@ fn find_kicad_footprint_dir() -> Option<PathBuf> {
 /// e.g., `Resistor_SMD:R_0402_1005Metric` → `<dir>/Resistor_SMD.pretty/R_0402_1005Metric.kicad_mod`
 fn resolve_footprint_path(fp_dir: &Path, qualified_name: &str) -> Option<PathBuf> {
     let (lib, name) = qualified_name.split_once(':')?;
-    let path = fp_dir.join(format!("{lib}.pretty")).join(format!("{name}.kicad_mod"));
+    let path = fp_dir
+        .join(format!("{lib}.pretty"))
+        .join(format!("{name}.kicad_mod"));
     if path.exists() {
         Some(path)
     } else {
@@ -358,7 +396,8 @@ fn load_library_footprint(
     };
 
     // Build a pad-number-to-net mapping from the netlist
-    let pad_nets: HashMap<String, (u32, String)> = params.netlist_entry
+    let pad_nets: HashMap<String, (u32, String)> = params
+        .netlist_entry
         .map(|entry| {
             entry
                 .pins
@@ -434,7 +473,9 @@ fn load_library_footprint(
                 let on_silk = children.iter().any(|c| {
                     if let SExpr::List(inner) = c {
                         if matches!(inner.first(), Some(SExpr::Atom(t)) if t == "layer") {
-                            return inner.iter().any(|v| matches!(v, SExpr::Quoted(s) if s.contains("SilkS")));
+                            return inner
+                                .iter()
+                                .any(|v| matches!(v, SExpr::Quoted(s) if s.contains("SilkS")));
                         }
                     }
                     // Also check for layer as a direct quoted value
@@ -450,7 +491,8 @@ fn load_library_footprint(
 
     // Deduplicate pads: if a pad number appears with and without a net,
     // keep only the one with a net assignment.
-    let mut seen_pads_with_net: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_pads_with_net: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for item in items.iter() {
         if let SExpr::List(children) = item {
             if matches!(children.first(), Some(SExpr::Atom(t)) if t == "pad") {
@@ -571,19 +613,52 @@ fn build_stub_footprint(
 
     if let Some(entry) = netlist_entry {
         for pin in &entry.pins {
-            let net_id = if pin.is_nc() { 0 } else { net_map.get(&pin.net).copied().unwrap_or(0) };
-            let net_name = if pin.is_nc() { String::new() } else { pin.net.clone() };
+            let net_id = if pin.is_nc() {
+                0
+            } else {
+                net_map.get(&pin.net).copied().unwrap_or(0)
+            };
+            let net_name = if pin.is_nc() {
+                String::new()
+            } else {
+                pin.net.clone()
+            };
             let pad_y = (pin.pin as f64 - 1.0) * 1.27;
-            fp_children.push(SExpr::list("pad", vec![
-                SExpr::Quoted(pin.pin.to_string()),
-                SExpr::Atom("smd".into()),
-                SExpr::Atom("rect".into()),
-                SExpr::List(vec![SExpr::Atom("at".into()), SExpr::Atom("0".into()), SExpr::Atom(fmt(pad_y))]),
-                SExpr::List(vec![SExpr::Atom("size".into()), SExpr::Atom("1.0".into()), SExpr::Atom("0.6".into())]),
-                SExpr::list("layers", vec![SExpr::Quoted("F.Cu".into()), SExpr::Quoted("F.Paste".into()), SExpr::Quoted("F.Mask".into())]),
-                SExpr::List(vec![SExpr::Atom("net".into()), SExpr::Atom(net_id.to_string()), SExpr::Quoted(net_name)]),
-                SExpr::pair_quoted("uuid", &uuid_gen.next(&format!("pad:{}:{}", comp.ref_des, pin.pin))),
-            ]));
+            fp_children.push(SExpr::list(
+                "pad",
+                vec![
+                    SExpr::Quoted(pin.pin.to_string()),
+                    SExpr::Atom("smd".into()),
+                    SExpr::Atom("rect".into()),
+                    SExpr::List(vec![
+                        SExpr::Atom("at".into()),
+                        SExpr::Atom("0".into()),
+                        SExpr::Atom(fmt(pad_y)),
+                    ]),
+                    SExpr::List(vec![
+                        SExpr::Atom("size".into()),
+                        SExpr::Atom("1.0".into()),
+                        SExpr::Atom("0.6".into()),
+                    ]),
+                    SExpr::list(
+                        "layers",
+                        vec![
+                            SExpr::Quoted("F.Cu".into()),
+                            SExpr::Quoted("F.Paste".into()),
+                            SExpr::Quoted("F.Mask".into()),
+                        ],
+                    ),
+                    SExpr::List(vec![
+                        SExpr::Atom("net".into()),
+                        SExpr::Atom(net_id.to_string()),
+                        SExpr::Quoted(net_name),
+                    ]),
+                    SExpr::pair_quoted(
+                        "uuid",
+                        &uuid_gen.next(&format!("pad:{}:{}", comp.ref_des, pin.pin)),
+                    ),
+                ],
+            ));
         }
     }
 
@@ -591,17 +666,31 @@ fn build_stub_footprint(
 }
 
 fn fp_property(name: &str, value: &str, dx: f64, dy: f64) -> SExpr {
-    SExpr::list("property", vec![
-        SExpr::Quoted(name.into()),
-        SExpr::Quoted(value.into()),
-        SExpr::List(vec![SExpr::Atom("at".into()), SExpr::Atom(fmt(dx)), SExpr::Atom(fmt(dy))]),
-        SExpr::list("effects", vec![
-            SExpr::list("font", vec![
-                SExpr::list("size", vec![SExpr::Atom("1".into()), SExpr::Atom("1".into())]),
-                SExpr::list("thickness", vec![SExpr::Atom("0.15".into())]),
+    SExpr::list(
+        "property",
+        vec![
+            SExpr::Quoted(name.into()),
+            SExpr::Quoted(value.into()),
+            SExpr::List(vec![
+                SExpr::Atom("at".into()),
+                SExpr::Atom(fmt(dx)),
+                SExpr::Atom(fmt(dy)),
             ]),
-        ]),
-    ])
+            SExpr::list(
+                "effects",
+                vec![SExpr::list(
+                    "font",
+                    vec![
+                        SExpr::list(
+                            "size",
+                            vec![SExpr::Atom("1".into()), SExpr::Atom("1".into())],
+                        ),
+                        SExpr::list("thickness", vec![SExpr::Atom("0.15".into())]),
+                    ],
+                )],
+            ),
+        ],
+    )
 }
 
 fn fmt(v: f64) -> String {

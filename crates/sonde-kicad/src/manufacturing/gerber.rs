@@ -34,15 +34,19 @@ pub fn export_gerber(pcb_path: &Path, output_dir: &Path) -> Result<(), Error> {
     // Drill export
     let drill_status = Command::new("kicad-cli")
         .args([
-            "pcb", "export", "drill",
+            "pcb",
+            "export",
+            "drill",
             &pcb_path.to_string_lossy(),
-            "--output", &output_dir.to_string_lossy(),
-            "--format", "excellon",
+            "--output",
+            &output_dir.to_string_lossy(),
+            "--format",
+            "excellon",
         ])
         .status()
-        .map_err(|e| Error::KicadCliNotFound(format!(
-            "failed to run kicad-cli for drill export: {e}"
-        )))?;
+        .map_err(|e| {
+            Error::KicadCliNotFound(format!("failed to run kicad-cli for drill export: {e}"))
+        })?;
 
     if !drill_status.success() {
         return Err(Error::KicadCliNotFound(format!(

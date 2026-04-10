@@ -42,26 +42,29 @@ pub fn import_ses(
                 let x2_mm = x2 as f64 / 10000.0;
                 let y2_mm = -(y2 as f64) / 10000.0;
 
-                items.push(SExpr::list("segment", vec![
-                    SExpr::list("start", vec![
-                        SExpr::Atom(fmt(x1_mm)),
-                        SExpr::Atom(fmt(y1_mm)),
-                    ]),
-                    SExpr::list("end", vec![
-                        SExpr::Atom(fmt(x2_mm)),
-                        SExpr::Atom(fmt(y2_mm)),
-                    ]),
-                    SExpr::list("width", vec![SExpr::Atom(fmt(width_mm))]),
-                    SExpr::pair_quoted("layer", &route.layer),
-                    SExpr::List(vec![
-                        SExpr::Atom("net".into()),
-                        SExpr::Atom(net_id.to_string()),
-                    ]),
-                    SExpr::pair_quoted("uuid", &uuid_gen.next(&format!(
-                        "seg:{}:{}:{}",
-                        route.net, x1, y1
-                    ))),
-                ]));
+                items.push(SExpr::list(
+                    "segment",
+                    vec![
+                        SExpr::list(
+                            "start",
+                            vec![SExpr::Atom(fmt(x1_mm)), SExpr::Atom(fmt(y1_mm))],
+                        ),
+                        SExpr::list(
+                            "end",
+                            vec![SExpr::Atom(fmt(x2_mm)), SExpr::Atom(fmt(y2_mm))],
+                        ),
+                        SExpr::list("width", vec![SExpr::Atom(fmt(width_mm))]),
+                        SExpr::pair_quoted("layer", &route.layer),
+                        SExpr::List(vec![
+                            SExpr::Atom("net".into()),
+                            SExpr::Atom(net_id.to_string()),
+                        ]),
+                        SExpr::pair_quoted(
+                            "uuid",
+                            &uuid_gen.next(&format!("seg:{}:{}:{}", route.net, x1, y1)),
+                        ),
+                    ],
+                ));
             }
         }
 
@@ -70,27 +73,30 @@ pub fn import_ses(
             let x_mm = via.x_um as f64 / 10000.0;
             let y_mm = -(via.y_um as f64) / 10000.0;
 
-            items.push(SExpr::list("via", vec![
-                SExpr::List(vec![
-                    SExpr::Atom("at".into()),
-                    SExpr::Atom(fmt(x_mm)),
-                    SExpr::Atom(fmt(y_mm)),
-                ]),
-                SExpr::list("size", vec![SExpr::Atom("0.6".into())]),
-                SExpr::list("drill", vec![SExpr::Atom("0.3".into())]),
-                SExpr::list("layers", vec![
-                    SExpr::Quoted("F.Cu".into()),
-                    SExpr::Quoted("B.Cu".into()),
-                ]),
-                SExpr::List(vec![
-                    SExpr::Atom("net".into()),
-                    SExpr::Atom(net_id.to_string()),
-                ]),
-                SExpr::pair_quoted("uuid", &uuid_gen.next(&format!(
-                    "via:{}:{}:{}",
-                    via.net, via.x_um, via.y_um
-                ))),
-            ]));
+            items.push(SExpr::list(
+                "via",
+                vec![
+                    SExpr::List(vec![
+                        SExpr::Atom("at".into()),
+                        SExpr::Atom(fmt(x_mm)),
+                        SExpr::Atom(fmt(y_mm)),
+                    ]),
+                    SExpr::list("size", vec![SExpr::Atom("0.6".into())]),
+                    SExpr::list("drill", vec![SExpr::Atom("0.3".into())]),
+                    SExpr::list(
+                        "layers",
+                        vec![SExpr::Quoted("F.Cu".into()), SExpr::Quoted("B.Cu".into())],
+                    ),
+                    SExpr::List(vec![
+                        SExpr::Atom("net".into()),
+                        SExpr::Atom(net_id.to_string()),
+                    ]),
+                    SExpr::pair_quoted(
+                        "uuid",
+                        &uuid_gen.next(&format!("via:{}:{}:{}", via.net, via.x_um, via.y_um)),
+                    ),
+                ],
+            ));
         }
     }
 
@@ -108,11 +114,8 @@ pub fn routing_report(
     let net_map = extract_net_map(&pcb_tree);
 
     let total_nets = net_map.len();
-    let routed_nets: std::collections::HashSet<&str> = routes
-        .wires
-        .iter()
-        .map(|w| w.net.as_str())
-        .collect();
+    let routed_nets: std::collections::HashSet<&str> =
+        routes.wires.iter().map(|w| w.net.as_str()).collect();
 
     let unrouted: Vec<String> = net_map
         .keys()

@@ -8,7 +8,9 @@ use crate::Error;
 
 /// Generate a JLCPCB-compatible BOM CSV from the IR bundle.
 pub fn emit_bom_csv(bundle: &IrBundle) -> Result<String, Error> {
-    let mut csv = String::from("Designator,Value,Footprint,Manufacturer,Part Number,LCSC Part Number,Quantity\n");
+    let mut csv = String::from(
+        "Designator,Value,Footprint,Manufacturer,Part Number,LCSC Part Number,Quantity\n",
+    );
 
     let mut rows: Vec<_> = bundle
         .ir1e

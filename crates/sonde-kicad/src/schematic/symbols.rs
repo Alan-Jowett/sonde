@@ -139,7 +139,9 @@ fn load_kicad_sym_file(content: &str, lib_name: &str, symbols: &mut HashMap<Stri
     let SExpr::List(items) = &tree else { return };
 
     for item in items {
-        let SExpr::List(children) = item else { continue };
+        let SExpr::List(children) = item else {
+            continue;
+        };
         let Some(SExpr::Atom(tag)) = children.first() else {
             continue;
         };

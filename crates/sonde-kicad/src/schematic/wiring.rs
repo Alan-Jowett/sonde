@@ -23,10 +23,8 @@ pub fn build_connectivity(
     uuid_gen: &mut UuidGenerator,
 ) -> Result<ConnectivityResult, Error> {
     let positions = layout::compute_layout(bundle);
-    let pos_map: std::collections::HashMap<&str, &layout::ComponentPosition> = positions
-        .iter()
-        .map(|p| (p.ref_des.as_str(), p))
-        .collect();
+    let pos_map: std::collections::HashMap<&str, &layout::ComponentPosition> =
+        positions.iter().map(|p| (p.ref_des.as_str(), p)).collect();
 
     let registry = crate::schematic::symbols::SymbolRegistry::new();
 
@@ -40,11 +38,9 @@ pub fn build_connectivity(
     sorted_components.sort_by(|a, b| cmp_ref_des(&a.ref_des, &b.ref_des));
 
     for comp in &sorted_components {
-        let pos = pos_map
-            .get(comp.ref_des.as_str())
-            .ok_or_else(|| Error::CrossValidation(format!(
-                "no layout position for `{}`", comp.ref_des
-            )))?;
+        let pos = pos_map.get(comp.ref_des.as_str()).ok_or_else(|| {
+            Error::CrossValidation(format!("no layout position for `{}`", comp.ref_des))
+        })?;
 
         // Find the netlist entry for this component
         let netlist_entry = bundle
@@ -77,12 +73,7 @@ pub fn build_connectivity(
         ));
 
         // Properties
-        inst_children.push(property(
-            "Reference",
-            &comp.ref_des,
-            pos.x + 2.54,
-            pos.y,
-        ));
+        inst_children.push(property("Reference", &comp.ref_des, pos.x + 2.54, pos.y));
         inst_children.push(property("Value", value, pos.x + 2.54, pos.y + 2.54));
         inst_children.push(property_hidden(
             "Footprint",
@@ -101,8 +92,7 @@ pub fn build_connectivity(
                 .collect();
 
             for pin in &entry.pins {
-                let pin_uuid =
-                    uuid_gen.next(&format!("pin:{}:{}", comp.ref_des, pin.pin));
+                let pin_uuid = uuid_gen.next(&format!("pin:{}:{}", comp.ref_des, pin.pin));
                 inst_children.push(SExpr::list(
                     "pin",
                     vec![
@@ -162,17 +152,11 @@ pub fn build_connectivity(
                             ),
                             SExpr::list(
                                 "stroke",
-                                vec![
-                                    SExpr::pair("width", "0"),
-                                    SExpr::pair("type", "default"),
-                                ],
+                                vec![SExpr::pair("width", "0"), SExpr::pair("type", "default")],
                             ),
                             SExpr::pair_quoted(
                                 "uuid",
-                                &uuid_gen.next(&format!(
-                                    "wire:{}:{}",
-                                    comp.ref_des, pin.pin
-                                )),
+                                &uuid_gen.next(&format!("wire:{}:{}", comp.ref_des, pin.pin)),
                             ),
                         ],
                     ));
@@ -203,10 +187,7 @@ pub fn build_connectivity(
                             ),
                             SExpr::pair_quoted(
                                 "uuid",
-                                &uuid_gen.next(&format!(
-                                    "label:{}:{}",
-                                    comp.ref_des, pin.pin
-                                )),
+                                &uuid_gen.next(&format!("label:{}:{}", comp.ref_des, pin.pin)),
                             ),
                         ],
                     ));
@@ -243,10 +224,7 @@ fn property(name: &str, value: &str, x: f64, y: f64) -> SExpr {
                     "font",
                     vec![SExpr::list(
                         "size",
-                        vec![
-                            SExpr::Atom("1.27".into()),
-                            SExpr::Atom("1.27".into()),
-                        ],
+                        vec![SExpr::Atom("1.27".into()), SExpr::Atom("1.27".into())],
                     )],
                 )],
             ),
@@ -273,10 +251,7 @@ fn property_hidden(name: &str, value: &str, x: f64, y: f64) -> SExpr {
                         "font",
                         vec![SExpr::list(
                             "size",
-                            vec![
-                                SExpr::Atom("1.27".into()),
-                                SExpr::Atom("1.27".into()),
-                            ],
+                            vec![SExpr::Atom("1.27".into()), SExpr::Atom("1.27".into())],
                         )],
                     ),
                     SExpr::Atom("hide".into()),
@@ -298,9 +273,7 @@ fn format_f64(v: f64) -> String {
 fn cmp_ref_des(a: &str, b: &str) -> std::cmp::Ordering {
     let (a_prefix, a_num) = split_ref_des(a);
     let (b_prefix, b_num) = split_ref_des(b);
-    a_prefix
-        .cmp(b_prefix)
-        .then(a_num.cmp(&b_num))
+    a_prefix.cmp(b_prefix).then(a_num.cmp(&b_num))
 }
 
 /// Public wrapper for cross-module use.

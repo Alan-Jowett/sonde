@@ -82,11 +82,10 @@ fn load_required<T: serde::de::DeserializeOwned + HasSchemaVersion>(
         return Err(Error::MissingIrFile(filename.to_string()));
     }
     let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
-    let value: T =
-        serde_yaml::from_str(&content).map_err(|source| Error::YamlParse {
-            file: filename.to_string(),
-            source,
-        })?;
+    let value: T = serde_yaml::from_str(&content).map_err(|source| Error::YamlParse {
+        file: filename.to_string(),
+        source,
+    })?;
     validate_schema_version(filename, value.schema_version())?;
     Ok(value)
 }
@@ -100,11 +99,10 @@ fn load_optional<T: serde::de::DeserializeOwned + HasSchemaVersion>(
         return Ok(None);
     }
     let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
-    let value: T =
-        serde_yaml::from_str(&content).map_err(|source| Error::YamlParse {
-            file: filename.to_string(),
-            source,
-        })?;
+    let value: T = serde_yaml::from_str(&content).map_err(|source| Error::YamlParse {
+        file: filename.to_string(),
+        source,
+    })?;
     validate_schema_version(filename, value.schema_version())?;
     Ok(Some(value))
 }

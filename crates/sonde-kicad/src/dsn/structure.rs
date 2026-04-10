@@ -20,7 +20,7 @@ pub fn write_structure(dsn: &mut String, ir3: &Ir3, ox: f64, oy: f64) {
 
     // Board boundary (µm, with page offset, Y negated for DSN)
     let x1 = (ox * 1000.0) as i64;
-    let y1 = -(oy as i64 * 1000 + (board.height_mm * 1000.0) as i64);
+    let y1 = -(((oy + board.height_mm) * 1000.0) as i64);
     let x2 = x1 + (board.width_mm * 1000.0) as i64;
     let y2 = -((oy * 1000.0) as i64);
     dsn.push_str("    (boundary\n");

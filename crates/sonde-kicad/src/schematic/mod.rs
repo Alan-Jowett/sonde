@@ -87,13 +87,18 @@ fn build_lib_symbols(bundle: &IrBundle) -> Result<SExpr, Error> {
     }
 
     // Also add power symbols for power nets
+    let mut power_names: Vec<String> = Vec::new();
     for net in &bundle.ir2.nets {
         if net.is_power() {
             let power_sym = symbols::power_symbol_name(&net.name);
-            if seen.insert(&*Box::leak(power_sym.clone().into_boxed_str())) {
-                if let Some(def) = registry.get(&power_sym) {
-                    sym_defs.push(def.clone());
-                }
+            power_names.push(power_sym);
+        }
+    }
+    for power_sym in &power_names {
+        if !seen.contains(power_sym.as_str()) {
+            seen.insert(power_sym);
+            if let Some(def) = registry.get(power_sym) {
+                sym_defs.push(def.clone());
             }
         }
     }

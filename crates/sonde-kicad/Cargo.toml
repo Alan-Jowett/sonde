@@ -11,8 +11,7 @@ path = "src/bin/main.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 sha2 = "0.10"
-uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"

@@ -158,15 +158,11 @@ fn extract_courtyard_bounds(content: &str) -> Option<(f64, f64, f64, f64)> {
     }
 }
 
-/// Build footprint placement nodes for all components.
-pub fn build_placements(
-    bundle: &IrBundle,
-    net_map: &HashMap<String, u32>,
-    offset_x: f64,
-    offset_y: f64,
-    uuid_gen: &mut UuidGenerator,
-    children: &mut Vec<SExpr>,
-) -> Result<(), Error> {
+/// Compute the component position map: ref_des → (x, y, rotation) in board coordinates.
+///
+/// This is the shared placement algorithm used by both PCB generation and CPL export.
+/// Coordinates are in board-local space (origin at top-left, Y-down).
+pub fn compute_position_map(bundle: &IrBundle) -> Result<HashMap<String, (f64, f64, f64)>, Error> {
     let ir3 = bundle
         .ir3
         .as_ref()
@@ -175,13 +171,12 @@ pub fn build_placements(
     let board_w = ir3.board.width_mm;
     let fp_dir = find_kicad_footprint_dir();
 
-    // Phase 1: Place connectors from IR-3 connector_placement
     let mut pos_map: HashMap<String, (f64, f64, f64)> = HashMap::new();
     let mut placed_bboxes: Vec<BBox> = Vec::new();
 
+    // Phase 1: connectors
     for cp in &ir3.connector_placement {
         let ky = board_h - cp.position.y_mm;
-
         let rotation = match cp.edge.as_deref() {
             Some("left") => 90.0,
             Some("right") => 270.0,
@@ -196,14 +191,13 @@ pub fn build_placements(
                 }
             }
         };
-
         let bounds = get_courtyard_bounds(&cp.ref_des, bundle, &fp_dir);
         let bbox = BBox::from_asymmetric(cp.position.x_mm, ky, bounds, rotation, 0.5);
         placed_bboxes.push(bbox);
         pos_map.insert(cp.ref_des.clone(), (cp.position.x_mm, ky, rotation));
     }
 
-    // Phase 1b: Apply explicit placements (hand-tuned positions from IR-3)
+    // Phase 1b: explicit placements
     if let Some(explicit) = &ir3.explicit_placement {
         for ep in explicit {
             if !pos_map.contains_key(&ep.ref_des) {
@@ -214,7 +208,7 @@ pub fn build_placements(
         }
     }
 
-    // Phase 2: Place zone components, checking for courtyard overlap
+    // Phase 2: zone components
     for zone in &ir3.component_zones {
         let anchor_x = zone.zone.anchor.x_mm;
         let anchor_ky = board_h - zone.zone.anchor.y_mm;
@@ -232,17 +226,13 @@ pub fn build_placements(
             let mut x = anchor_x + (i as f64 % 2.0) * spacing;
             let mut y = anchor_ky + (i as f64 / 2.0).floor() * spacing;
 
-            // Try to find a non-overlapping position
             for _ in 0..200 {
                 let candidate = BBox::from_asymmetric(x, y, bounds, 0.0, 0.5);
-
                 let in_bounds = candidate.x_min >= 0.5
                     && candidate.x_max <= board_w - 0.5
                     && candidate.y_min >= 0.5
                     && candidate.y_max <= board_h - 0.5;
-
                 let overlaps = placed_bboxes.iter().any(|b| candidate.overlaps(b));
-
                 let in_keepout = ir3.keepout_zones.as_ref().is_some_and(|kzs| {
                     kzs.iter().any(|kz| {
                         let kx1 = kz.boundary.x_mm;
@@ -258,12 +248,9 @@ pub fn build_placements(
                         candidate.overlaps(&keepout)
                     })
                 });
-
                 if in_bounds && !overlaps && !in_keepout {
                     break;
                 }
-
-                // Scan across the board in a grid pattern
                 x += spacing;
                 if x > board_w - 2.0 {
                     x = 2.0;
@@ -281,7 +268,22 @@ pub fn build_placements(
         }
     }
 
-    // Phase 3: Generate footprint nodes sorted by ref_des
+    Ok(pos_map)
+}
+
+/// Build footprint placement nodes for all components.
+pub fn build_placements(
+    bundle: &IrBundle,
+    net_map: &HashMap<String, u32>,
+    offset_x: f64,
+    offset_y: f64,
+    uuid_gen: &mut UuidGenerator,
+    children: &mut Vec<SExpr>,
+) -> Result<(), Error> {
+    let pos_map = compute_position_map(bundle)?;
+    let fp_dir = find_kicad_footprint_dir();
+
+    // Generate footprint nodes sorted by ref_des
     let mut sorted_comps = bundle.ir1e.components.clone();
     sorted_comps.sort_by(|a, b| crate::schematic::wiring::cmp_ref_des_pub(&a.ref_des, &b.ref_des));
 

@@ -148,7 +148,10 @@ fn emit_schematic_deterministic() {
     let mut gen2 = test_uuid_gen(&bundle, &dir);
     let sch2 = sonde_kicad::schematic::emit_schematic(&bundle, &mut gen2).unwrap();
 
-    assert_eq!(sch1, sch2, "same inputs should produce identical schematics");
+    assert_eq!(
+        sch1, sch2,
+        "same inputs should produce identical schematics"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -161,8 +164,7 @@ fn emit_pcb_structure() {
     let bundle = ir::load_ir(&dir).unwrap();
     let mut uuid_gen = test_uuid_gen(&bundle, &dir);
 
-    let pcb = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen)
-        .expect("emit_pcb should succeed");
+    let pcb = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen).expect("emit_pcb should succeed");
 
     // Must be a valid KiCad 8 PCB
     assert!(pcb.starts_with("(kicad_pcb"), "should start with kicad_pcb");
@@ -186,7 +188,10 @@ fn emit_pcb_structure() {
     assert!(pcb.contains("\"J2\""), "should place J2");
 
     // Must contain board outline
-    assert!(pcb.contains("\"Edge.Cuts\""), "should have board outline layer");
+    assert!(
+        pcb.contains("\"Edge.Cuts\""),
+        "should have board outline layer"
+    );
 }
 
 #[test]
@@ -234,7 +239,10 @@ fn emit_dsn_structure() {
         "DSN should start with pcb S-expression"
     );
     assert!(dsn.contains("(resolution"), "should contain resolution");
-    assert!(dsn.contains("(structure"), "should contain structure section");
+    assert!(
+        dsn.contains("(structure"),
+        "should contain structure section"
+    );
     assert!(dsn.contains("(network"), "should contain network section");
 }
 
@@ -315,13 +323,19 @@ fn emit_cpl_csv_format() {
     // Should have one row per component + header
     assert_eq!(lines.len(), 5, "header + 4 components");
 
-    // All on Top layer
-    for line in &lines[1..] {
-        assert!(line.ends_with(",Top,0"), "all components should be Top,0");
-    }
-
     // Sorted by ref_des
     assert!(lines[1].starts_with("C1,"), "first data row should be C1");
+
+    // Connectors should have rotation from edge placement
+    // Zone components (R1, C1) should have rotation 0
+    for line in &lines[1..] {
+        if line.starts_with("C1,") || line.starts_with("R1,") {
+            assert!(
+                line.ends_with(",Top,0"),
+                "zone components should have 0 rotation: {line}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -419,10 +433,7 @@ fn ses_routing_report_empty() {
     // No wires in SES, so signal nets should be unrouted
     assert!(!unrouted.is_empty(), "signal nets should be unrouted");
     // routed = total - unrouted (net 0 excluded from unrouted list)
-    assert!(
-        routed <= total,
-        "routed count should not exceed total"
-    );
+    assert!(routed <= total, "routed count should not exceed total");
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +467,10 @@ fn full_pipeline_minimal_board() {
     // Component count consistency
     let bom_count = bom.lines().count() - 1; // minus header
     let cpl_count = cpl.lines().count() - 1;
-    assert_eq!(bom_count, cpl_count, "BOM and CPL should have same component count");
+    assert_eq!(
+        bom_count, cpl_count,
+        "BOM and CPL should have same component count"
+    );
     assert_eq!(bom_count, bundle.ir1e.components.len());
 }
 
@@ -478,7 +492,10 @@ fn full_pipeline_carrier_board() {
     let cpl = sonde_kicad::manufacturing::cpl::emit_cpl_csv(&bundle).unwrap();
 
     // Carrier board specific assertions
-    assert!(sch.contains("sonde-carrier"), "schematic should reference project name");
+    assert!(
+        sch.contains("sonde-carrier"),
+        "schematic should reference project name"
+    );
 
     // BOM/CPL consistency
     let bom_count = bom.lines().count() - 1;

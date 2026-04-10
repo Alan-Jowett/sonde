@@ -9,7 +9,7 @@ use crate::schematic::symbols::SymbolRegistry;
 /// Grid spacing in mm (KiCad 1.27mm grid).
 const GRID: f64 = 1.27;
 
-/// Minimum spacing between components within a group (4 grid units).
+/// Minimum spacing between components within a group (8 grid units).
 const MIN_COMPONENT_SPACING: f64 = GRID * 8.0;
 
 /// Spacing between groups (8 grid units).

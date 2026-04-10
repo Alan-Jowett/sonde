@@ -162,7 +162,7 @@ fn build_setup(ir3: &crate::ir::Ir3) -> SExpr {
                 "pcbplotparams",
                 vec![
                     SExpr::pair("layerselection", "0x00010fc_ffffffff"),
-                    SExpr::pair("outputdirectory", "\"\""),
+                    SExpr::pair_quoted("outputdirectory", ""),
                 ],
             ));
         }

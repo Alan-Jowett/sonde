@@ -12,7 +12,7 @@ pub enum Error {
     #[error("YAML parse error in `{file}`: {source}")]
     YamlParse {
         file: String,
-        source: serde_yaml::Error,
+        source: serde_yaml_ng::Error,
     },
 
     #[error("missing required IR file: `{0}`")]
@@ -39,4 +39,7 @@ pub enum Error {
 
     #[error("kicad-cli not found: {0}")]
     KicadCliNotFound(String),
+
+    #[error("kicad-cli failed: {0}")]
+    KicadCliFailed(String),
 }

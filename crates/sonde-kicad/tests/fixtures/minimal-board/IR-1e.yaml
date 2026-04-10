@@ -1,0 +1,56 @@
+schema_version: "1.0.0"
+project: minimal-test-board
+backend: kicad8
+
+components:
+  - ref_des: R1
+    ir1_generic_footprint: "0402"
+    kicad_symbol: "Device:R"
+    kicad_footprint: "Resistor_SMD:R_0402_1005Metric"
+    library_status: FOUND
+    bbox_mm:
+      width: 1.0
+      height: 0.5
+    courtyard_mm:
+      width: 1.8
+      height: 1.0
+    courtyard_area_mm2: 1.8
+
+  - ref_des: C1
+    ir1_generic_footprint: "0402"
+    kicad_symbol: "Device:C"
+    kicad_footprint: "Capacitor_SMD:C_0402_1005Metric"
+    library_status: FOUND
+    bbox_mm:
+      width: 1.0
+      height: 0.5
+    courtyard_mm:
+      width: 1.8
+      height: 1.0
+    courtyard_area_mm2: 1.8
+
+  - ref_des: J1
+    ir1_generic_footprint: "JST_PH_2pin_2mm"
+    kicad_symbol: "Connector_Generic:Conn_01x02"
+    kicad_footprint: "Connector_JST:JST_PH_S2B-PH-K_1x02_P2.00mm_Horizontal"
+    library_status: FOUND
+    bbox_mm:
+      width: 6.7
+      height: 4.5
+    courtyard_mm:
+      width: 7.0
+      height: 5.0
+    courtyard_area_mm2: 35.0
+
+  - ref_des: J2
+    ir1_generic_footprint: "JST_PH_3pin_2mm"
+    kicad_symbol: "Connector_Generic:Conn_01x03"
+    kicad_footprint: "Connector_JST:JST_PH_S3B-PH-K_1x03_P2.00mm_Horizontal"
+    library_status: FOUND
+    bbox_mm:
+      width: 8.7
+      height: 4.5
+    courtyard_mm:
+      width: 9.0
+      height: 5.0
+    courtyard_area_mm2: 45.0

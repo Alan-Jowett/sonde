@@ -1,0 +1,91 @@
+schema_version: "1.0.0"
+project: minimal-test-board
+
+nets:
+  - name: VCC
+    description: 3.3V power rail
+    type: power
+    power_source: "IR-PB/VCC_3V3"
+  - name: GND
+    description: Ground
+    type: power
+  - name: SIG
+    description: Signal line
+    type: signal
+  - name: DATA
+    description: Data line
+    type: signal
+  - name: CLK
+    description: Clock line
+    type: signal
+
+functional_groups:
+  - name: power-supply
+    description: Power regulation
+    components: [R1, C1]
+    signal_flow: input
+  - name: connectors
+    description: External connectors
+    components: [J1, J2]
+    signal_flow: bidirectional
+
+netlist:
+  - ref_des: R1
+    component: Resistor 4.7k
+    group: power-supply
+    value: "4.7k"
+    pins:
+      - pin: 1
+        name: "~"
+        net: VCC
+        label: KNOWN
+      - pin: 2
+        name: "~"
+        net: SIG
+        label: KNOWN
+
+  - ref_des: C1
+    component: Capacitor 100nF
+    group: power-supply
+    value: "100nF"
+    pins:
+      - pin: 1
+        name: "~"
+        net: VCC
+        label: KNOWN
+      - pin: 2
+        name: "~"
+        net: GND
+        label: KNOWN
+
+  - ref_des: J1
+    component: 2-pin connector
+    group: connectors
+    value: "Conn_01x02"
+    pins:
+      - pin: 1
+        name: Pin_1
+        net: VCC
+        label: KNOWN
+      - pin: 2
+        name: Pin_2
+        net: GND
+        label: KNOWN
+
+  - ref_des: J2
+    component: 3-pin connector
+    group: connectors
+    value: "Conn_01x03"
+    pins:
+      - pin: 1
+        name: Pin_1
+        net: SIG
+        label: KNOWN
+      - pin: 2
+        name: Pin_2
+        net: DATA
+        label: KNOWN
+      - pin: 3
+        name: Pin_3
+        net: CLK
+        label: KNOWN

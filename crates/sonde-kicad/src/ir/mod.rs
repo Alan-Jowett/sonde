@@ -43,6 +43,30 @@ pub fn load_ir(dir: &Path) -> Result<IrBundle, Error> {
 
     let project = ir1e.project.clone();
 
+    // Cross-validate that all IR files belong to the same project.
+    if ir2.project != project {
+        return Err(Error::CrossValidation(format!(
+            "IR-2.yaml project `{}` does not match IR-1e.yaml project `{}`",
+            ir2.project, project
+        )));
+    }
+    if let Some(ref ir1_data) = ir1 {
+        if ir1_data.project != project {
+            return Err(Error::CrossValidation(format!(
+                "IR-1.yaml project `{}` does not match IR-1e.yaml project `{}`",
+                ir1_data.project, project
+            )));
+        }
+    }
+    if let Some(ref ir3_data) = ir3 {
+        if ir3_data.project != project {
+            return Err(Error::CrossValidation(format!(
+                "IR-3.yaml project `{}` does not match IR-1e.yaml project `{}`",
+                ir3_data.project, project
+            )));
+        }
+    }
+
     Ok(IrBundle {
         ir1,
         ir1e,

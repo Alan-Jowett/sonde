@@ -203,6 +203,9 @@ pub fn compute_position_map(bundle: &IrBundle) -> Result<HashMap<String, (f64, f
             if !pos_map.contains_key(&ep.ref_des) {
                 let ky = board_h - ep.position.y_mm;
                 let rot = ep.rotation.unwrap_or(0.0);
+                let bounds = get_courtyard_bounds(&ep.ref_des, bundle, &fp_dir);
+                let bbox = BBox::from_asymmetric(ep.position.x_mm, ky, bounds, rot, 0.5);
+                placed_bboxes.push(bbox);
                 pos_map.insert(ep.ref_des.clone(), (ep.position.x_mm, ky, rot));
             }
         }
@@ -531,7 +534,7 @@ fn load_library_footprint(
 
 /// Update a property or fp_text node with the correct Reference/Value.
 /// Also ensures the text is hidden on silkscreen to prevent overlap.
-fn update_property(children: &mut [SExpr], ref_des: &str, value: &str) {
+fn update_property(children: &mut Vec<SExpr>, ref_des: &str, value: &str) {
     if children.len() < 3 {
         return;
     }
@@ -550,17 +553,14 @@ fn update_property(children: &mut [SExpr], ref_des: &str, value: &str) {
         _ => {}
     }
 
-    // Ensure text is hidden to prevent silkscreen overlap
-    // Look for (effects ...) and add hide if not present
-    for child in children.iter_mut() {
-        if let SExpr::List(eff) = child {
-            if matches!(eff.first(), Some(SExpr::Atom(t)) if t == "effects")
-                && !eff.iter().any(|e| matches!(e, SExpr::Atom(s) if s == "hide"))
-                && !eff.iter().any(|e| matches!(e, SExpr::List(inner) if matches!(inner.first(), Some(SExpr::Atom(t)) if t == "hide")))
-            {
-                eff.push(SExpr::list("hide", vec![SExpr::Atom("yes".into())]));
-            }
-        }
+    // Ensure text is hidden to prevent silkscreen overlap.
+    // KiCad 8 expects `(hide yes)` as a direct child of the property node,
+    // not nested inside `(effects ...)`.
+    let has_hide = children.iter().any(|e| {
+        matches!(e, SExpr::List(inner) if matches!(inner.first(), Some(SExpr::Atom(t)) if t == "hide"))
+    });
+    if !has_hide {
+        children.push(SExpr::list("hide", vec![SExpr::Atom("yes".into())]));
     }
 }
 

@@ -20,7 +20,7 @@ pub fn build_silkscreen(
     let Some(labels) = &silk.labels else { return };
 
     for (i, label) in labels.iter().enumerate() {
-        let layer = label.layer.as_deref().unwrap_or("F.Fab");
+        let layer = label.layer.as_deref().unwrap_or("F.SilkS");
 
         // Use explicit position if provided, otherwise auto-distribute
         let (x, y) = if let Some(pos) = &label.position {

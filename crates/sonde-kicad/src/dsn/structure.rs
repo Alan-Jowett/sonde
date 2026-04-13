@@ -18,11 +18,12 @@ pub fn write_structure(dsn: &mut String, ir3: &Ir3, ox: f64, oy: f64) {
         dsn.push_str("    (layer In2.Cu (type signal) (property (index 3)))\n");
     }
 
-    // Board boundary (µm, with page offset, Y negated for DSN)
-    let x1 = (ox * 1000.0) as i64;
-    let y1 = -(((oy + board.height_mm) * 1000.0) as i64);
-    let x2 = x1 + (board.width_mm * 1000.0) as i64;
-    let y2 = -((oy * 1000.0) as i64);
+    // Board boundary (DSN units with page offset, Y negated for DSN)
+    // DSN resolution um 10 → 1 unit = 0.1µm → mm × 10000
+    let x1 = (ox * 10000.0) as i64;
+    let y1 = -(((oy + board.height_mm) * 10000.0) as i64);
+    let x2 = x1 + (board.width_mm * 10000.0) as i64;
+    let y2 = -((oy * 10000.0) as i64);
     dsn.push_str("    (boundary\n");
     dsn.push_str(&format!(
         "      (path signal 0 {x1} {y1} {x2} {y1} {x2} {y2} {x1} {y2} {x1} {y1})\n"
@@ -32,10 +33,10 @@ pub fn write_structure(dsn: &mut String, ir3: &Ir3, ox: f64, oy: f64) {
     // Keep-outs
     if let Some(keepouts) = &ir3.keepout_zones {
         for kz in keepouts {
-            let kx1 = ((kz.boundary.x_mm + ox) * 1000.0) as i64;
-            let ky1 = -(((kz.boundary.y_mm + kz.boundary.height_mm + oy) * 1000.0) as i64);
-            let kx2 = kx1 + (kz.boundary.width_mm * 1000.0) as i64;
-            let ky2 = -(((kz.boundary.y_mm + oy) * 1000.0) as i64);
+            let kx1 = ((kz.boundary.x_mm + ox) * 10000.0) as i64;
+            let ky1 = -(((kz.boundary.y_mm + kz.boundary.height_mm + oy) * 10000.0) as i64);
+            let kx2 = kx1 + (kz.boundary.width_mm * 10000.0) as i64;
+            let ky2 = -(((kz.boundary.y_mm + oy) * 10000.0) as i64);
             dsn.push_str(&format!("    (keepout \"{}\"\n", kz.name));
             dsn.push_str(&format!(
                 "      (polygon signal 0 {kx1} {ky1} {kx2} {ky1} {kx2} {ky2} {kx1} {ky2})\n"
@@ -56,7 +57,7 @@ pub fn write_structure(dsn: &mut String, ir3: &Ir3, ox: f64, oy: f64) {
                 .signal_traces
                 .as_ref()
                 .and_then(|st| st.first())
-                .map(|s| (s.width_mm * 1000.0) as i64)
+                .map(|s| (s.width_mm * 10000.0) as i64)
                 .unwrap_or(250);
             let c = 200i64; // default clearance
             (w, c)

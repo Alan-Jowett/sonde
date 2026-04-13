@@ -28,7 +28,7 @@ pub fn emit_cpl_csv(bundle: &IrBundle) -> Result<String, Error> {
     for (ref_des, x, y, rotation) in &rows {
         csv.push_str(&format!(
             "{},{:.4},{:.4},Top,{}\n",
-            ref_des, x, y, *rotation as i32
+            ref_des, x, y, rotation.round() as i32
         ));
     }
 

@@ -55,47 +55,30 @@ pub fn emit_dsn(bundle: &IrBundle) -> Result<String, Error> {
     Ok(dsn)
 }
 
-fn write_placement(dsn: &mut String, bundle: &IrBundle, board_height: f64, ox: f64, oy: f64) {
+fn write_placement(dsn: &mut String, bundle: &IrBundle, _board_height: f64, ox: f64, oy: f64) {
     dsn.push_str("  (placement\n");
 
     // Group components by footprint
     let mut by_footprint: std::collections::BTreeMap<&str, Vec<(&str, f64, f64)>> =
         std::collections::BTreeMap::new();
 
-    let ir3 = bundle.ir3.as_ref().unwrap();
-
-    // Build position map
-    let mut pos_map: std::collections::HashMap<String, (f64, f64)> =
-        std::collections::HashMap::new();
-    for cp in &ir3.connector_placement {
-        pos_map.insert(cp.ref_des.clone(), (cp.position.x_mm, cp.position.y_mm));
-    }
-    for zone in &ir3.component_zones {
-        let spacing = zone.proximity_constraint_mm;
-        for (i, ref_des) in zone.components.iter().enumerate() {
-            if !pos_map.contains_key(ref_des) {
-                let col = i % 3;
-                let row = i / 3;
-                let x = zone.zone.anchor.x_mm + col as f64 * spacing;
-                let y = zone.zone.anchor.y_mm + row as f64 * spacing;
-                pos_map.insert(ref_des.clone(), (x, y));
-            }
-        }
-    }
+    // Reuse the shared placement algorithm so DSN matches PCB/CPL.
+    let pos_map = crate::pcb::placement::compute_position_map(bundle).unwrap_or_default();
 
     for comp in &bundle.ir1e.components {
-        let (x, y) = pos_map.get(&comp.ref_des).copied().unwrap_or((10.0, 10.0));
-        // Convert IR-3 coords to KiCad page coords, then to DSN coords.
-        // KiCad page: x_kicad = x + ox, y_kicad = board_height - y + oy
+        let (x, y, _rotation) = pos_map.get(&comp.ref_des).copied().unwrap_or((10.0, 10.0, 0.0));
+        // Convert board coords to KiCad page coords, then to DSN coords.
+        // Board coords: (x, y) where y is already in KiCad Y-down space.
+        // KiCad page: x_kicad = x + ox, y_kicad = y + oy
         // DSN: same X as KiCad, but Y is negated (DSN Y-up vs KiCad Y-down)
         let kicad_x = x + ox;
-        let kicad_y = board_height - y + oy;
-        let x_um = mm_to_um(kicad_x);
-        let y_um = mm_to_um(-kicad_y); // negate Y for DSN
+        let kicad_y = y + oy;
+        let x_dsn = mm_to_dsn(kicad_x);
+        let y_dsn = mm_to_dsn(-kicad_y); // negate Y for DSN
         by_footprint
             .entry(comp.kicad_footprint.as_str())
             .or_default()
-            .push((comp.ref_des.as_str(), x_um, y_um));
+            .push((comp.ref_des.as_str(), x_dsn, y_dsn));
     }
 
     for (footprint, placements) in &by_footprint {
@@ -197,7 +180,7 @@ fn write_network(dsn: &mut String, bundle: &IrBundle, ir3: &crate::ir::Ir3) {
             .and_then(|rc| rc.power_traces.as_ref())
             .and_then(|pts| pts.first())
             .and_then(|pt| pt.min_width_mm)
-            .map(|w| mm_to_um(w) as i64)
+            .map(|w| mm_to_dsn(w) as i64)
             .unwrap_or(500);
 
         dsn.push_str(&format!("    (class Power {}\n", power_nets.join(" ")));
@@ -218,6 +201,10 @@ fn write_network(dsn: &mut String, bundle: &IrBundle, ir3: &crate::ir::Ir3) {
     dsn.push_str("  )\n");
 }
 
-fn mm_to_um(mm: f64) -> f64 {
-    mm * 1000.0
+/// Convert mm to DSN internal units.
+///
+/// DSN header declares `(resolution um 10)` → 10 units per µm → 1 unit = 0.1µm.
+/// So mm → DSN units = mm × 1000 µm/mm × 10 units/µm = mm × 10000.
+fn mm_to_dsn(mm: f64) -> f64 {
+    mm * 10000.0
 }

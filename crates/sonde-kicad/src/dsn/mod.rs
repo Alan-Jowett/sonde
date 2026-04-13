@@ -66,7 +66,10 @@ fn write_placement(dsn: &mut String, bundle: &IrBundle, _board_height: f64, ox: 
     let pos_map = crate::pcb::placement::compute_position_map(bundle).unwrap_or_default();
 
     for comp in &bundle.ir1e.components {
-        let (x, y, _rotation) = pos_map.get(&comp.ref_des).copied().unwrap_or((10.0, 10.0, 0.0));
+        let (x, y, _rotation) = pos_map
+            .get(&comp.ref_des)
+            .copied()
+            .unwrap_or((10.0, 10.0, 0.0));
         // Convert board coords to KiCad page coords, then to DSN coords.
         // Board coords: (x, y) where y is already in KiCad Y-down space.
         // KiCad page: x_kicad = x + ox, y_kicad = y + oy

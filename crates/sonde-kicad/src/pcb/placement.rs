@@ -291,10 +291,16 @@ pub fn build_placements(
     sorted_comps.sort_by(|a, b| crate::schematic::wiring::cmp_ref_des_pub(&a.ref_des, &b.ref_des));
 
     for comp in &sorted_comps {
-        let (x, y, rotation) = pos_map
-            .get(&comp.ref_des)
-            .copied()
-            .unwrap_or((12.5, 17.5, 0.0));
+        let (x, y, rotation) = match pos_map.get(&comp.ref_des) {
+            Some(pos) => *pos,
+            None => {
+                eprintln!(
+                    "warning: component {} has no IR-3 placement, using fallback position",
+                    comp.ref_des
+                );
+                (12.5, 17.5, 0.0)
+            }
+        };
         // Apply page offset for centered-on-A4 placement
         let page_x = x + offset_x;
         let page_y = y + offset_y;
@@ -429,6 +435,19 @@ fn load_library_footprint(
         items[1] = SExpr::Quoted(params.qualified_name.to_string());
     }
 
+    // Remove any existing layer, at, and uuid nodes from the library footprint
+    // to avoid duplicates when we insert our own below.
+    items.retain(|item| {
+        if let SExpr::List(inner) = item {
+            if let Some(SExpr::Atom(tag)) = inner.first() {
+                if matches!(tag.as_str(), "layer" | "at" | "uuid") {
+                    return false;
+                }
+            }
+        }
+        true
+    });
+
     // Insert position, layer, and UUID right after the name
     let insert_pos = 2; // after "footprint" and name
     items.insert(insert_pos, SExpr::pair_quoted("layer", "F.Cu"));
@@ -461,17 +480,30 @@ fn load_library_footprint(
         }
     }
 
-    // Remove fp_text and silkscreen fp_line/fp_poly elements to prevent
+    // Remove silkscreen fp_text and silkscreen fp_line/fp_poly elements to prevent
     // silk_overlap, silk_over_copper, and silk_edge_clearance violations.
+    // Preserve fp_text on fab layers (F.Fab, B.Fab) for assembly markings.
     items.retain(|item| {
         if let SExpr::List(children) = item {
             let tag = match children.first() {
                 Some(SExpr::Atom(t)) => t.as_str(),
                 _ => return true,
             };
-            // Remove all fp_text nodes
+            // Remove fp_text only on silkscreen layers
             if tag == "fp_text" {
-                return false;
+                let on_silk = children.iter().any(|c| {
+                    if let SExpr::List(inner) = c {
+                        if matches!(inner.first(), Some(SExpr::Atom(t)) if t == "layer") {
+                            return inner
+                                .iter()
+                                .any(|v| matches!(v, SExpr::Quoted(s) if s.contains("SilkS")));
+                        }
+                    }
+                    false
+                });
+                if on_silk {
+                    return false;
+                }
             }
             // Remove fp_line/fp_poly/fp_arc on silkscreen layers
             if matches!(tag, "fp_line" | "fp_poly" | "fp_arc" | "fp_rect") {

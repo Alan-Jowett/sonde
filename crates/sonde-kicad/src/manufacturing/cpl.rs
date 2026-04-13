@@ -18,7 +18,16 @@ pub fn emit_cpl_csv(bundle: &IrBundle) -> Result<String, Error> {
         .components
         .iter()
         .map(|c| {
-            let (x, y, rotation) = pos_map.get(&c.ref_des).copied().unwrap_or((0.0, 0.0, 0.0));
+            let (x, y, rotation) = match pos_map.get(&c.ref_des) {
+                Some(pos) => *pos,
+                None => {
+                    eprintln!(
+                        "warning: component {} has no IR-3 placement, CPL using origin",
+                        c.ref_des
+                    );
+                    (0.0, 0.0, 0.0)
+                }
+            };
             (c.ref_des.as_str(), x, y, rotation)
         })
         .collect();

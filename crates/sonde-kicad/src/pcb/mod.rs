@@ -186,6 +186,7 @@ fn build_nets(
 
     let mut net_names: Vec<&str> = ir2.nets.iter().map(|n| n.name.as_str()).collect();
     net_names.sort();
+    net_names.dedup();
 
     for (i, name) in net_names.iter().enumerate() {
         let id = (i + 1) as u32;

@@ -388,7 +388,7 @@ Send an `APP_DATA` message and block until `APP_DATA_REPLY` arrives or the timeo
 int send_async(const void *ptr, uint32_t len);
 ```
 
-Queue an opaque data blob for deferred delivery on the next wake cycle. Unlike `send()`, which transmits immediately, `send_async()` stores the blob in a RAM queue and returns immediately. The data is transmitted piggybacked on the next WAKE message (if a single message fits within the payload budget) or via APP_DATA (if multiple messages are queued or the blob is oversized). See [protocol.md §6.7](protocol.md) for the full store-and-forward data flow.
+Queue an opaque data blob for deferred delivery on the next wake cycle. Unlike `send()`, which transmits immediately, `send_async()` stores the blob in a sleep-retained queue (RTC slow SRAM on ESP32) and returns immediately. The queue survives deep sleep but is lost on reboot. The data is transmitted piggybacked on the next WAKE message (if a single message fits within the payload budget) or via APP_DATA (if multiple messages are queued or the blob is oversized). See [protocol.md §6.7](protocol.md) for the full store-and-forward data flow.
 
 | Parameter | Description |
 |---|---|
@@ -398,7 +398,7 @@ Queue an opaque data blob for deferred delivery on the next wake cycle. Unlike `
 **Returns:** `0` on success. `-1` if the queue is full (max 10 messages). `-2` if `len` exceeds the maximum blob size for APP_DATA (the same limit as `send()`: 223 bytes minus CBOR map overhead, see [protocol.md §3.3](protocol.md)).
 
 **Notes:**
-- The queue is RAM-only; data is lost if the node reboots before the next wake cycle.
+- The queue is stored in sleep-retained RAM (RTC slow SRAM on ESP32); data survives deep sleep but is lost on reboot.
 - The queue is cleared after all messages are sent (whether piggybacked or via APP_DATA).
 - The queue is also cleared on program load (UPDATE_PROGRAM or RUN_EPHEMERAL).
 - The handler receives this data as a normal `DATA` message. Non-zero-length replies to piggybacked data are deferred to the next cycle (best-case two-cycle round-trip latency). Zero-length replies produce no deferred delivery.
@@ -610,6 +610,7 @@ These values are specific to the ESP32-C3/S3 reference implementation. Other pla
 |---|---|---|
 | **Sleep-persistent memory** | 8 KB RTC slow SRAM | 8+8 KB RTC slow SRAM |
 | **Usable map storage** | ~4 KB | ~6 KB |
+| **Async queue** | ~2.2 KB (10 × 218 B slots) | ~2.2 KB (10 × 218 B slots) |
 | **RAM** | 400 KB (16 KB cache) | 512 KB |
 | **BPF execution** | Interpreter only | Interpreter only |
 | **Max resident program** | 4 KB | 4 KB |

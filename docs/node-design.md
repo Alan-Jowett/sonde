@@ -401,12 +401,12 @@ Each call increments the sequence number, ensuring independent replay protection
 
 `send_async()` enqueues a message for deferred transmission instead of sending it immediately. It is implemented by the wake cycle engine:
 
-1. Copy the blob into the async queue (a `Vec` in RAM, persisted across wake cycles by the caller).
+1. Copy the blob into the async queue (backed by RTC slow SRAM on ESP32; survives deep sleep).
 2. Return 0 on success, or a non-zero error code if the queue is full.
 
 The queued messages are drained at the start of the next wake cycle (§4.2 step 3 and step 6a). If exactly one message is queued and fits within the WAKE payload budget, it is piggybacked on the WAKE frame as `blob` (CBOR key 10), saving a round-trip. If multiple messages are queued or the single message exceeds the budget, all queued messages are sent as individual APP_DATA frames after COMMAND reception.
 
-The async queue is a RAM-only structure owned by the caller of `run_wake_cycle()` and passed in as `&mut AsyncQueue`. It persists across wake cycles within the main loop so that blobs queued in cycle N are available for piggybacking in cycle N+1's WAKE. It does not survive deep sleep or reboot on real hardware (RAM is lost). The queue is cleared when UPDATE_PROGRAM or RUN_EPHEMERAL is received, since a new program load invalidates blobs produced by the old program. The queue capacity is a compile-time constant.
+The async queue is backed by sleep-retained RAM (RTC slow SRAM on ESP32, heap-allocated in tests) and passed to `run_wake_cycle()` as `&mut AsyncQueue`. It survives deep sleep so that blobs queued in cycle N are available for piggybacking in cycle N+1's WAKE. It is lost on reboot (RTC SRAM is cleared on power-on reset). The queue is cleared when UPDATE_PROGRAM or RUN_EPHEMERAL is received, since a new program load invalidates blobs produced by the old program. The queue capacity is a compile-time constant (10 messages, ~2.2 KB of RTC SRAM).
 
 ---
 
@@ -549,7 +549,7 @@ All inbound protocol errors result in **silent discard** — the node does not s
 | Region | Total | Used by firmware | Available |
 |---|---|---|---|
 | RAM | 400 KB | ~100 KB (stack, ESP-IDF, wifi) | ~300 KB |
-| RTC slow SRAM | 8 KB | ~4 KB (firmware state, flags, layout record) | ~4 KB for maps |
+| RTC slow SRAM | 8 KB | ~1.8 KB (firmware state, flags, layout records) | ~4 KB maps + ~2.2 KB async queue |
 | Flash (program) | 8 KB (2 × 4 KB) | — | 4 KB per program image |
 | BPF stack | 4 KB | — | 512 B × 8 frames |
 | Ephemeral program | — | — | Allocated from heap (≤ 2 KB) |

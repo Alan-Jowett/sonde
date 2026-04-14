@@ -720,9 +720,9 @@ where
     let battery_mv = battery.battery_mv();
 
     // 5a. Check async queue for WAKE piggybacking.
-    // The queue persists across wake cycles (owned by the caller), so
-    // blobs queued by BPF in cycle N are available here in cycle N+1.
-    // On real hardware the queue is RAM-only and lost on deep sleep/reboot.
+    // The queue persists across wake cycles in RTC slow SRAM (ESP) or
+    // on the heap (tests), so blobs queued by BPF in cycle N are
+    // available here in cycle N+1. Survives deep sleep; lost on reboot.
     let wake_blob = {
         let candidate = async_queue.single_for_piggyback(sonde_protocol::MAX_PAYLOAD_SIZE);
         if let Some(blob) = candidate {
@@ -731,7 +731,7 @@ where
                 program_hash: program_hash.clone(),
                 battery_mv,
                 firmware_version: env!("CARGO_PKG_VERSION").into(),
-                blob: Some(blob.clone()),
+                blob: Some(blob.to_vec()),
             };
             match trial.encode() {
                 Ok(encoded) if encoded.len() <= sonde_protocol::MAX_PAYLOAD_SIZE => {

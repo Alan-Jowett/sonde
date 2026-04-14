@@ -503,7 +503,7 @@ The firmware MUST provide I2C (`i2c_read`, `i2c_write`, `i2c_write_read`), SPI (
 **Source:** bpf-environment.md §6.2
 
 **Description:**  
-The firmware MUST provide `send()` (fire-and-forget `APP_DATA`) and `send_recv()` (request-response `APP_DATA` / `APP_DATA_REPLY`) helpers. Each call emits an independent authenticated frame with an incrementing sequence number. The firmware MUST also provide `send_async()` (deferred APP_DATA via store-and-forward queue). `send_async()` queues data in RAM for transmission during the next wake cycle.
+The firmware MUST provide `send()` (fire-and-forget `APP_DATA`) and `send_recv()` (request-response `APP_DATA` / `APP_DATA_REPLY`) helpers. Each call emits an independent authenticated frame with an incrementing sequence number. The firmware MUST also provide `send_async()` (deferred APP_DATA via store-and-forward queue). `send_async()` queues data in sleep-retained RAM (RTC slow SRAM on ESP32) for transmission during the next wake cycle.
 
 **Acceptance criteria:**
 
@@ -629,14 +629,14 @@ The firmware MUST support configurable I2C bus GPIO pin assignments so that a si
 **Source:** bpf-environment.md §6.2
 
 **Description:**  
-The node MUST maintain a RAM-only queue of up to 10 data blobs for deferred transmission via `send_async()`. The queue MUST be cleared after all queued messages are sent (whether piggybacked on WAKE or via APP_DATA). The queue MUST also be cleared on reboot and on program load (UPDATE_PROGRAM or RUN_EPHEMERAL). The queue MUST NOT be persisted to flash.
+The node MUST maintain a queue of up to 10 data blobs in sleep-retained RAM (RTC slow SRAM on ESP32) for deferred transmission via `send_async()`. The queue MUST survive deep sleep so that blobs queued in cycle N are available for piggybacking on cycle N+1's WAKE. The queue MUST be cleared after all queued messages are sent (whether piggybacked on WAKE or via APP_DATA). The queue MUST also be cleared on reboot and on program load (UPDATE_PROGRAM or RUN_EPHEMERAL). The queue MUST NOT be persisted to flash.
 
 **Acceptance criteria:**
 
 1. Queue holds up to 10 messages.
 2. Queue is empty after all messages are transmitted.
 3. Queue is empty after program load.
-4. Queue is RAM-only (no flash writes).
+4. Queue uses sleep-retained RAM (no flash writes); survives deep sleep but lost on reboot.
 
 ---
 

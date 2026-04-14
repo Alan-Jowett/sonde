@@ -847,7 +847,7 @@ where
         } => {
             resident_image_bytes = None;
             // New program load invalidates any blobs queued by the old program.
-            let _ = async_queue.drain();
+            async_queue.clear();
 
             let max_image_size = if is_ephemeral {
                 MAX_EPHEMERAL_IMAGE_SIZE

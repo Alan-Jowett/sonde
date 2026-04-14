@@ -768,6 +768,157 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N621  send_async queues data
+
+**Validates:** ND-0602 (AC4), ND-0609
+
+**Procedure:**
+1. Install a BPF program that calls `send_async([0xCC, 0xDD])`.
+2. Run wake cycle.
+3. Assert: `send_async()` returns 0.
+4. Assert: no APP_DATA frame is transmitted during this wake cycle.
+5. Assert: data remains in queue.
+
+---
+
+### T-N622  send_async piggybacked on WAKE
+
+**Validates:** ND-0610
+
+**Procedure:**
+1. Install program that calls `send_async([0xCC, 0xDD])`.
+2. Complete wake cycle (data queued).
+3. On next wake cycle, capture WAKE frame.
+4. Assert: WAKE CBOR payload contains `blob` (key 10) with value `[0xCC, 0xDD]`.
+
+---
+
+### T-N623  send_async overflow to APP_DATA
+
+**Validates:** ND-0610, ND-0611
+
+**Procedure:**
+1. Install program that calls `send_async()` twice (2 messages queued).
+2. On next wake cycle, capture all frames.
+3. Assert: WAKE does NOT contain `blob`.
+4. Assert: 2 APP_DATA frames sent after COMMAND, each with correct sequence numbers.
+
+---
+
+### T-N624  send_async oversized falls back to APP_DATA
+
+**Validates:** ND-0610
+
+**Procedure:**
+1. Install program that calls `send_async()` with a blob that exceeds the WAKE payload budget.
+2. On next wake cycle, capture frames.
+3. Assert: WAKE does NOT contain `blob`.
+4. Assert: blob sent via APP_DATA after COMMAND.
+
+---
+
+### T-N625  send_async queue full returns error
+
+**Validates:** ND-0613
+
+**Procedure:**
+1. Install program that calls `send_async()` 11 times with small blobs.
+2. Assert: first 10 calls return 0.
+3. Assert: 11th call returns -1.
+
+---
+
+### T-N626  send_async queue cleared after send
+
+**Validates:** ND-0609
+
+**Procedure:**
+1. Call `send_async()` once.
+2. Complete two wake cycles.
+3. Assert: WAKE in second cycle has `blob`.
+4. Assert: WAKE in third cycle does NOT have `blob` (queue was cleared after send).
+
+---
+
+### T-N627  send_async queue cleared on program load
+
+**Validates:** ND-0609
+
+**Procedure:**
+1. Call `send_async()`.
+2. Before next WAKE, trigger UPDATE_PROGRAM.
+3. Assert: the new program's first WAKE does NOT contain the old program's queued `blob`.
+
+---
+
+### T-N627a  send_async rejects oversized blob with -2
+
+**Validates:** ND-0602 (AC4)
+
+**Procedure:**
+1. Compute the maximum APP_DATA blob length (same as `send()` — 223 bytes minus CBOR map overhead).
+2. Install a BPF program that calls `send_async()` with a blob of `max + 1` bytes.
+3. Assert: `send_async()` returns -2.
+4. Assert: the queue remains empty (no data piggybacked on next WAKE).
+
+---
+
+### T-N628  sonde_context downlink data populated
+
+**Validates:** ND-0612
+
+**Procedure:**
+1. Install BPF program that reads `ctx->data_start` to `ctx->data_end`.
+2. On the next WAKE, send NOP COMMAND with `blob` `[0xEE, 0xFF]`.
+3. Assert: in that wake cycle, the BPF program finds `[0xEE, 0xFF]`.
+
+---
+
+### T-N629  sonde_context no downlink data
+
+**Validates:** ND-0612
+
+**Procedure:**
+1. Install BPF program that reads `ctx->data_start` and `ctx->data_end`.
+2. On the next WAKE, send NOP COMMAND without `blob` field.
+3. Assert: BPF program's `ctx->data_start == 0` and `ctx->data_end == 0`.
+
+---
+
+### T-N630  Backward compatibility — send() unchanged
+
+**Validates:** ND-0614
+
+**Procedure:**
+1. Install `send_program` that calls `send([0xAA, 0xBB])`.
+2. Run wake cycle.
+3. Assert: APP_DATA sent immediately during wake cycle.
+4. Assert: existing behavior preserved exactly.
+
+---
+
+### T-N631  Backward compatibility — WAKE without blob accepted
+
+**Validates:** ND-0614
+
+**Procedure:**
+1. Send WAKE without `blob` field (existing format).
+2. Assert: gateway processes it normally and responds with COMMAND.
+
+---
+
+### T-N632  send_async from ephemeral program
+
+**Validates:** ND-0609
+
+**Procedure:**
+1. Run ephemeral program that calls `send_async([0x01])`.
+2. Assert: returns 0.
+3. Complete wake cycle.
+4. Assert: data piggybacked on next WAKE.
+
+---
+
 ## 9  Timing and retry tests
 
 ### T-N700  WAKE retry count and timing
@@ -1908,7 +2059,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0506 | T-N508, T-N510 |
 | ND-0600 | T-N930 |
 | ND-0601 | T-N600, T-N601, T-N602, T-N603, T-N931 |
-| ND-0602 | T-N604, T-N605, T-N606 |
+| ND-0602 | T-N604, T-N605, T-N606, T-N621, T-N627a |
 | ND-0603 | T-N607, T-N608, T-N609, T-N932 |
 | ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933 |
 | ND-0605 | T-N614, T-N615, T-N934 |
@@ -1939,6 +2090,12 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0917 | T-N906 |
 | ND-0918 | *(verified by sdkconfig.defaults setting)* |
 | ND-0608 | T-N0607a, T-N0607b, T-N0607c, T-N0607d, T-N0607e, T-N0607f |
+| ND-0609 | T-N621, T-N626, T-N627, T-N632 |
+| ND-0610 | T-N622, T-N623, T-N624 |
+| ND-0611 | T-N623 |
+| ND-0612 | T-N628, T-N629 |
+| ND-0613 | T-N625 |
+| ND-0614 | T-N630, T-N631 |
 | ND-1000 | T-N1000, T-N1001 |
 | ND-1001 | T-N1002 |
 | ND-1002 | T-N1003 |

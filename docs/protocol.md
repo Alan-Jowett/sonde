@@ -160,7 +160,7 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 7 | `chunk_size` | UPDATE_PROGRAM / RUN_EPHEMERAL |
 | 8 | `chunk_count` | UPDATE_PROGRAM / RUN_EPHEMERAL |
 | 9 | `interval_s` | UPDATE_SCHEDULE |
-| 10 | `blob` | APP_DATA, APP_DATA_REPLY |
+| 10 | `blob` | APP_DATA, APP_DATA_REPLY, WAKE (optional), COMMAND (NOP only, top-level) |
 | 11 | `chunk_index` | GET_CHUNK, CHUNK |
 | 12 | `chunk_data` | CHUNK |
 | 13 | `starting_seq` | COMMAND |
@@ -261,6 +261,7 @@ Sent at the start of each wake cycle (retransmitted up to 3 times if no COMMAND 
 | `program_hash` | bstr | Yes | Hash of the currently installed resident program. Zero-length if no program installed. |
 | `battery_mv` | uint | Yes | Battery voltage in millivolts. |
 | `firmware_version` | tstr | Yes | Firmware version string (e.g., `"0.4.0"`). ASCII-only, maximum 32 bytes. Derived from `CARGO_PKG_VERSION` at compile time. |
+| `blob` | bstr | No | Piggybacked uplink data from the previous wake cycle's `send_async()` call. Omitted when no data is queued, when multiple messages are queued, or when the blob would exceed the available payload budget. When present, the gateway routes this to the handler exactly like an APP_DATA blob (see §6.7). |
 
 `key_hint` and `nonce` are in the fixed header and are not duplicated in the payload. Both are already authenticated by the AEAD construction (the header is AAD).
 
@@ -274,6 +275,7 @@ Sent exactly once in response to a valid, authenticated `WAKE`.
 | `starting_seq` | uint | Yes | Random starting sequence number for this session. The node uses this value in the `nonce` header field of its next outbound message and increments for each subsequent message. |
 | `timestamp_ms` | uint | Yes | Gateway's current UTC time in milliseconds since Unix epoch. The node uses this as its time reference for `sonde_context.timestamp` and `get_time()`. |
 | `payload` | map | Depends on command | **Nested** CBOR map containing command-specific fields (see §5.2.1, §5.2.2). Omitted for `NOP` and `REBOOT`. |
+| `blob` | bstr | No | Piggybacked downlink data — a previously deferred handler reply. Used on `NOP` commands when the gateway has stored deferred data for this node (see §6.7). This is a top-level COMMAND field, NOT nested inside `payload`. Nodes MUST ignore `blob` unless `command_type` is `NOP`, even if key 10 is present on another command type. |
 
 The `nonce` in the fixed header echoes the WAKE nonce, binding the response to the request. The `starting_seq` is a CBOR payload field that tells the node where to begin its sequence counter for this wake cycle. The `timestamp_ms` provides the node with an accurate time reference — the node has no independent clock source across deep sleep.
 
@@ -566,6 +568,60 @@ The pairing tool uses the node as a **dumb radio relay** to measure the node→g
 The node retries the ESP-NOW broadcast up to **3 retries** with **200 ms** backoff between attempts, **2-second** listen window per attempt. If no `DIAG_REPLY` is received after all retries, the node returns a timeout status to the pairing tool. Total worst-case node-side duration is approximately **8.6 seconds** (4 broadcasts × 2 s listen + 3 × 200 ms backoff). The pairing tool applies a **10-second** overall timeout.
 
 The diagnostic step is **optional** and **repeatable** — the installer may run it multiple times to test different node positions before committing to provisioning.
+
+### 6.7  Store-and-forward data flow
+
+The store-and-forward mechanism piggybacks application data on the mandatory WAKE↔COMMAND exchange, reducing radio transmissions for the common sensor-read-and-report pattern.
+
+**Uplink (node → gateway):**
+
+1. BPF program calls `send_async(buf, len)` — data queued in RAM (max 10 messages).
+2. On next wake:
+   - If exactly 1 message queued AND it fits in the WAKE payload budget → include as `blob` (key 10) in WAKE.
+   - Otherwise → send all queued messages via APP_DATA after COMMAND (existing mechanism).
+3. Gateway receives WAKE, extracts `blob`, routes to handler as a `DATA` message.
+4. Handler reply is always deferred to next cycle.
+
+**Downlink (gateway → node):**
+
+1. Handler replies to the `DATA` message with a `DATA_REPLY`. For `DATA` originating from a WAKE `blob`, deferred delivery is always enforced by the gateway: the handler may omit `delivery`, and any handler-supplied `delivery` value is ignored for this path.
+2. Gateway stores the reply for this node (at most one per node; latest wins).
+3. On next NOP COMMAND → include stored reply as `blob` (key 10).
+4. Node's BPF program reads data via `sonde_context.data_start` / `data_end`.
+
+**Timing (best-case two-cycle delivery latency):**
+
+Delivery occurs on the next NOP COMMAND, which is the next wake cycle in the common case. If intervening cycles use non-NOP commands (UPDATE_PROGRAM, UPDATE_SCHEDULE, etc.), delivery is postponed until the next NOP.
+
+| Cycle | Node action | Gateway action |
+|---|---|---|
+| N | BPF calls `send_async(data)` → queued | — |
+| N+1 | WAKE carries `data` as blob | Routes to handler → handler replies → reply stored |
+| N+2+ | — | Next NOP COMMAND carries stored reply as blob → BPF reads via context |
+
+```
+    Node                          Gateway
+     │                               │
+     │── WAKE {blob: data_N} ──────►│  (routes data_N to handler)
+     │                               │  (retrieves deferred reply from
+     │                               │   data_N-1, stored last cycle)
+     │◄── COMMAND {NOP, blob: ───────│  (piggybacks reply to data_N-1)
+     │         reply_N-1}           │
+     │                               │
+     │  [BPF reads reply_N-1         │
+     │   via ctx->data_start/end]    │
+     │                               │
+     │  [BPF calls send_async(       │
+     │    data_N+1)]                 │
+     │                               │
+     │  [sleep]                      │
+```
+
+Note: The COMMAND blob (`reply_N-1`) is the handler's response to a *previous* cycle's WAKE blob, not the current one. The current WAKE's blob (`data_N`) will be replied to on the *next* NOP COMMAND.
+
+**Backward compatibility:** The `blob` field is optional in both WAKE and COMMAND. Nodes and gateways that predate this feature silently ignore unknown CBOR keys (forward compatibility). A new node talking to an old gateway functions normally — piggybacked data is silently dropped but the node remains operational.
+
+**Fallback:** When the async queue contains multiple messages or an oversized message, the node sends them as standard APP_DATA frames after receiving COMMAND, exactly as `send()` / `send_recv()` do today.
 
 ---
 

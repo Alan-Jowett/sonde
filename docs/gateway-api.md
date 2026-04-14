@@ -127,7 +127,7 @@ The application API has only **4 message types** — two in each direction.
 
 ### 4.1  DATA (Gateway → Handler)
 
-Sent when a node's BPF program calls `send()` or `send_recv()`. The handler processes the data and replies with a `DATA_REPLY`.
+Sent when a node's BPF program calls `send()` or `send_recv()`, or when a node's WAKE message contains a piggybacked `blob` (see [protocol.md §6.7](protocol.md)). The handler processes the data and replies with a `DATA_REPLY`. The handler does not need to distinguish between these sources — the `DATA` message format is identical in both cases.
 
 | Field | CBOR key | Type | Description |
 |---|---|---|---|
@@ -150,8 +150,8 @@ Sent when a node's BPF program calls `send()` or `send_recv()`. The handler proc
 
 Response to a `DATA` message. The handler **always** replies:
 
-- **Non-zero-length `data`**: The gateway sends an `APP_DATA_REPLY` to the node (the node's BPF program receives it via `send_recv()`).
-- **Zero-length `data`**: The gateway does not send anything to the node (used when the BPF program called `send()` fire-and-forget).
+- **Non-zero-length `data`**: The gateway sends an `APP_DATA_REPLY` to the node (the node's BPF program receives it via `send_recv()`), unless `delivery=1` in which case the reply is deferred.
+- **Zero-length `data`**: The gateway does not send anything to the node (used when the BPF program called `send()` fire-and-forget). The `delivery` field is ignored when `data` is zero-length.
 
 The handler and BPF program are written by the same developer — they agree a priori on which messages expect data back.
 
@@ -160,6 +160,7 @@ The handler and BPF program are written by the same developer — they agree a p
 | `msg_type` | 1 | uint | `0x81` |
 | `request_id` | 2 | uint | Must match the `DATA` message's `request_id`. |
 | `data` | 3 | bstr | Reply blob for the BPF program. Zero-length = no reply to node. |
+| `delivery` | 4 | uint | **Optional.** `0` (or absent) = immediate delivery via `APP_DATA_REPLY`. `1` = deferred delivery, piggybacked on the next NOP COMMAND (see §4.5). Default: `0`. |
 
 ---
 
@@ -194,6 +195,21 @@ Optional: the handler can emit log messages through the gateway's logging system
 | `msg_type` | 1 | uint | `0x82` |
 | `level` | 2 | tstr | `"debug"`, `"info"`, `"warn"`, `"error"` |
 | `message` | 3 | tstr | Log message text. |
+
+---
+
+### 4.5  Deferred delivery
+
+When a handler replies with `delivery=1`, the gateway stores the reply and piggybacks it on the next NOP COMMAND to that node instead of sending an immediate `APP_DATA_REPLY`.
+
+**Rules:**
+
+- At most one deferred reply is stored per node. If a new deferred reply arrives before the previous one is delivered, the new one replaces the old one (latest wins).
+- Storage is RAM-only (lost on gateway restart).
+- Deferred data is delivered only on NOP commands. If the next COMMAND is `UPDATE_PROGRAM`, `UPDATE_SCHEDULE`, `RUN_EPHEMERAL`, or `REBOOT`, the deferred data remains stored until a NOP cycle occurs.
+- For `DATA` messages originating from WAKE piggybacked blobs (see [protocol.md §6.7](protocol.md)), delivery is always deferred — the gateway enforces `delivery=1` regardless of the handler's response.
+
+This mechanism enables bidirectional store-and-forward data exchange piggybacked on the mandatory WAKE↔COMMAND traffic, reducing radio transmissions for the common sensor-read-and-report pattern. See [protocol.md §6.7](protocol.md) for the complete data flow.
 
 ---
 

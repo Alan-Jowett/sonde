@@ -79,13 +79,15 @@ All control-plane messages produced by the gateway MUST be encoded in CBOR.
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the fixed binary header; the CBOR payload contains `firmware_abi_version`, `program_hash`, `battery_mv`, and `firmware_version`.
+The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the fixed binary header; the CBOR payload contains `firmware_abi_version`, `program_hash`, `battery_mv`, and `firmware_version`. The WAKE message MAY also contain an optional `blob` field (CBOR key 10). If present, the gateway MUST route the blob to the handler as a `DATA` message, exactly as it does for APP_DATA blobs. Any non-zero-length handler reply is stored for deferred delivery regardless of handler-supplied `delivery` value; zero-length replies produce no deferred delivery.
 
 **Acceptance criteria:**
 
 1. The gateway extracts `key_hint` and `nonce` from the fixed header and the four CBOR payload fields from a valid `WAKE` message.
 2. The gateway rejects `WAKE` messages missing any required field.
 3. Parsed values are made available for command-selection logic.
+4. If the WAKE contains a `blob` field, the gateway extracts it and routes to the handler.
+5. The handler's `DATA_REPLY` for WAKE-piggybacked data is stored for deferred delivery regardless of the handler's `delivery` field value.
 
 ---
 
@@ -95,7 +97,7 @@ The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the f
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST respond to every valid, authenticated `WAKE` message with exactly one `COMMAND` message. The response MUST echo the WAKE nonce in the header's `nonce` field and MUST include `starting_seq` (a random starting sequence number) and `timestamp_ms` (current UTC time in milliseconds since Unix epoch) in the CBOR payload.
+The gateway MUST respond to every valid, authenticated `WAKE` message with exactly one `COMMAND` message. The response MUST echo the WAKE nonce in the header's `nonce` field and MUST include `starting_seq` (a random starting sequence number) and `timestamp_ms` (current UTC time in milliseconds since Unix epoch) in the CBOR payload. When a NOP COMMAND is generated and a deferred reply exists for this node, the gateway MUST include the deferred data as `blob` (CBOR key 10) in the COMMAND response. The `blob` is a top-level COMMAND field, not nested inside `payload` (key 5).
 
 **Acceptance criteria:**
 
@@ -104,6 +106,9 @@ The gateway MUST respond to every valid, authenticated `WAKE` message with exact
 3. The CBOR payload includes `starting_seq` (a random 64-bit value).
 4. The CBOR payload includes `timestamp_ms` (current UTC time in milliseconds since Unix epoch).
 5. The `command_type` field is one of the defined command types (see GW-0200–GW-0205).
+6. When deferred data exists for the node and the command is NOP, the COMMAND includes `blob` (key 10).
+7. When no deferred data exists, `blob` is omitted.
+8. After including deferred data in COMMAND, the stored data is cleared.
 
 ---
 
@@ -474,13 +479,15 @@ When forwarding `APP_DATA` to a handler, the gateway MUST send a `DATA` message 
 **Source:** gateway-api.md §4.2
 
 **Description:**  
-The gateway MUST accept `DATA_REPLY` messages from handlers. The `request_id` MUST match an outstanding `DATA` message. Non-zero-length `data` is forwarded to the node as `APP_DATA_REPLY`; zero-length `data` means no reply is sent to the node.
+The gateway MUST accept `DATA_REPLY` messages from handlers. The `request_id` MUST match an outstanding `DATA` message. Non-zero-length `data` is forwarded to the node as `APP_DATA_REPLY`; zero-length `data` means no reply is sent to the node. The `DATA_REPLY` MAY contain a `delivery` field (CBOR key 4). When `delivery=1`, the gateway stores the reply for deferred delivery on the next NOP COMMAND instead of sending an immediate `APP_DATA_REPLY`. When `delivery` is absent or `0`, existing behavior applies.
 
 **Acceptance criteria:**
 
 1. A `DATA_REPLY` with a `request_id` that does not match an outstanding request is logged and discarded.
-2. Non-zero-length `data` in the reply triggers an `APP_DATA_REPLY` to the node.
-3. Zero-length `data` results in no `APP_DATA_REPLY` to the node.
+2. Non-zero-length `data` in the reply triggers an immediate `APP_DATA_REPLY` to the node unless `delivery=1`.
+3. Zero-length `data` results in no `APP_DATA_REPLY` to the node, regardless of `delivery` value.
+4. `DATA_REPLY` with `delivery=1` and non-zero-length `data` causes the data to be stored for deferred delivery, not sent immediately.
+5. `DATA_REPLY` with `delivery=0` or absent `delivery` uses the default behavior: non-zero-length `data` triggers an immediate `APP_DATA_REPLY`.
 
 ---
 
@@ -513,6 +520,70 @@ The gateway SHOULD accept `LOG` messages from handlers and route them through th
 
 1. Handler LOG messages appear in the gateway's log output.
 2. The log level from the handler is preserved.
+
+---
+
+### GW-0509  Deferred reply storage
+
+**Priority:** Must  
+**Source:** gateway-api.md §4.2
+
+**Description:**  
+The gateway MUST store at most one deferred reply per node. If a new deferred reply arrives before the previous one is delivered, the new one replaces the old one (latest wins). Storage is RAM-only (lost on gateway restart).
+
+**Acceptance criteria:**
+
+1. At most one deferred reply stored per node.
+2. New deferred reply replaces old.
+3. Storage is RAM-only.
+
+---
+
+### GW-0510  WAKE blob routing
+
+**Priority:** Must  
+**Source:** gateway-api.md §4.2
+
+**Description:**  
+When a WAKE message contains a `blob` field, the gateway MUST route it to the handler as a `DATA` message with the same fields as APP_DATA-originated DATA (`msg_type`, `request_id`, `node_id`, `program_hash`, `data`, `timestamp`). The `delivery` field in the handler's `DATA_REPLY` for WAKE-originated data is overridden to `1` (deferred) by the gateway.
+
+**Acceptance criteria:**
+
+1. WAKE blob routed to handler as `DATA`.
+2. `DATA` message includes all required fields.
+3. Handler reply delivery is forced to deferred.
+
+---
+
+### GW-0511  COMMAND blob injection
+
+**Priority:** Must  
+**Source:** gateway-api.md §4.2
+
+**Description:**  
+When generating a NOP COMMAND for a node that has stored deferred data, the gateway MUST include the deferred data as `blob` (CBOR key 10) in the COMMAND. After including, the stored data MUST be cleared.
+
+**Acceptance criteria:**
+
+1. NOP COMMAND includes `blob` when deferred data exists.
+2. Stored data cleared after inclusion.
+3. `blob` is a top-level COMMAND field, not nested in `payload`.
+
+---
+
+### GW-0512  Deferred delivery only on NOP
+
+**Priority:** Must  
+**Source:** gateway-api.md §4.2
+
+**Description:**  
+Deferred data MUST only be piggybacked on NOP commands. If the next COMMAND is UPDATE_PROGRAM, RUN_EPHEMERAL, UPDATE_SCHEDULE, or REBOOT, the deferred data remains stored until a NOP cycle occurs.
+
+**Acceptance criteria:**
+
+1. Non-NOP commands do not include deferred `blob`.
+2. Deferred data persists across non-NOP cycles.
+3. Deferred data delivered on next NOP.
 
 ---
 

@@ -126,7 +126,7 @@ Each wake cycle MUST follow this structure: wake → send one or more `WAKE` mes
 **Source:** protocol.md §5.1
 
 **Description:**  
-The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 of the resident program, or zero-length if none installed), `battery_mv`, and `firmware_version` (semantic version string derived from `CARGO_PKG_VERSION` at compile time, e.g., `"0.4.0"`). The `nonce` header field MUST contain a fresh 64-bit random value from the hardware RNG.
+The `WAKE` message MUST include `firmware_abi_version`, `program_hash` (SHA-256 of the resident program, or zero-length if none installed), `battery_mv`, and `firmware_version` (semantic version string derived from `CARGO_PKG_VERSION` at compile time, e.g., `"0.4.0"`). The `nonce` header field MUST contain a fresh 64-bit random value from the hardware RNG. The WAKE message MAY include an optional `blob` field (CBOR key 10) containing a single piggybacked uplink data blob from a prior `send_async()` call. The blob is included only when exactly one message is queued and it fits within the available payload budget (223 bytes minus the space consumed by the four required fields and their CBOR encoding overhead). When the blob would not fit or multiple messages are queued, the `blob` field is omitted and data is sent via APP_DATA after receiving COMMAND.
 
 **Acceptance criteria:**
 
@@ -503,13 +503,16 @@ The firmware MUST provide I2C (`i2c_read`, `i2c_write`, `i2c_write_read`), SPI (
 **Source:** bpf-environment.md §6.2
 
 **Description:**  
-The firmware MUST provide `send()` (fire-and-forget `APP_DATA`) and `send_recv()` (request-response `APP_DATA` / `APP_DATA_REPLY`) helpers. Each call emits an independent authenticated frame with an incrementing sequence number.
+The firmware MUST provide `send()` (fire-and-forget `APP_DATA`) and `send_recv()` (request-response `APP_DATA` / `APP_DATA_REPLY`) helpers. Each call emits an independent authenticated frame with an incrementing sequence number. The firmware MUST also provide `send_async()` (deferred APP_DATA via store-and-forward queue). `send_async()` queues data in RAM for transmission during the next wake cycle.
 
 **Acceptance criteria:**
 
 1. `send()` initiates transmission of an `APP_DATA` frame as a fire-and-forget operation and MUST NOT wait for any `APP_DATA_REPLY` before returning (it may still block briefly while queuing or transmitting the frame).
 2. `send_recv()` transmits an `APP_DATA` frame and blocks until `APP_DATA_REPLY` or timeout.
 3. Each call increments the session sequence number.
+4. `send_async()` returns 0 on success, -1 when the queue is full (max 10 messages), or -2 when the blob exceeds the maximum APP_DATA blob size (same limit as `send()`: 223 bytes minus CBOR map overhead, see protocol.md §3.3).
+5. `send_async()` does not transmit immediately; queued data is sent on the next wake cycle.
+6. `send_async()` is available to both resident and ephemeral programs.
 
 ---
 
@@ -617,6 +620,103 @@ The firmware MUST support configurable I2C bus GPIO pin assignments so that a si
 4. Factory reset (ND-0917) does NOT erase pin config — the board hardware does not change.
 5. The NODE_PROVISION BLE message body may include optional pin config bytes after the encrypted payload; the node parses and persists them to NVS.
 6. Backward compatibility: a NODE_PROVISION body without pin config bytes (from an older pairing tool) is accepted without error.
+
+---
+
+### ND-0609  Async queue management
+
+**Priority:** Must  
+**Source:** bpf-environment.md §6.2
+
+**Description:**  
+The node MUST maintain a RAM-only queue of up to 10 data blobs for deferred transmission via `send_async()`. The queue MUST be cleared after all queued messages are sent (whether piggybacked on WAKE or via APP_DATA). The queue MUST also be cleared on reboot and on program load (UPDATE_PROGRAM or RUN_EPHEMERAL). The queue MUST NOT be persisted to flash.
+
+**Acceptance criteria:**
+
+1. Queue holds up to 10 messages.
+2. Queue is empty after all messages are transmitted.
+3. Queue is empty after program load.
+4. Queue is RAM-only (no flash writes).
+
+---
+
+### ND-0610  WAKE piggybacking
+
+**Priority:** Must  
+**Source:** protocol.md §5.1
+
+**Description:**  
+When exactly one message is in the async queue and it fits within the WAKE payload budget, the node MUST include it as `blob` (CBOR key 10) in the WAKE message. When multiple messages are queued or the single message exceeds the budget, the node MUST omit the `blob` from WAKE and send all queued messages as individual APP_DATA frames after receiving COMMAND.
+
+**Acceptance criteria:**
+
+1. Single fitting message is piggybacked on WAKE.
+2. Multiple messages sent as APP_DATA.
+3. Oversized single message sent as APP_DATA.
+
+---
+
+### ND-0611  Async queue overflow to APP_DATA
+
+**Priority:** Must  
+**Source:** protocol.md §5.1
+
+**Description:**  
+When the async queue contains messages that cannot be piggybacked on WAKE, the node MUST send each queued message as a separate APP_DATA frame after receiving the COMMAND response, using the standard sequence number mechanism. Messages MUST NOT be split or concatenated.
+
+**Acceptance criteria:**
+
+1. Each queued message becomes one APP_DATA frame.
+2. Sequence numbers increment correctly.
+3. No message splitting or concatenation.
+
+---
+
+### ND-0612  sonde_context downlink data
+
+**Priority:** Must  
+**Source:** bpf-environment.md §3.2
+
+**Description:**  
+The `sonde_context` structure passed to BPF programs MUST include `data_start` and `data_end` pointer fields. When a NOP COMMAND carries a piggybacked `blob` (key 10), the firmware MUST populate these fields to point to the blob data. When no blob is present, both fields MUST be zero.
+
+**Acceptance criteria:**
+
+1. `data_start` and `data_end` point to valid blob data when present.
+2. Both are zero when no blob is present.
+3. Data is read-only from the BPF program's perspective.
+
+---
+
+### ND-0613  Async queue capacity error
+
+**Priority:** Must  
+**Source:** bpf-environment.md §6.2
+
+**Description:**  
+When the async queue is full (10 messages) and a BPF program calls `send_async()`, the helper MUST return -1 without queuing the message.
+
+**Acceptance criteria:**
+
+1. 11th `send_async()` call returns -1.
+2. No data is lost from the existing queue.
+
+---
+
+### ND-0614  Store-and-forward backward compatibility
+
+**Priority:** Must  
+**Source:** protocol.md §5.1
+
+**Description:**  
+The existing `send()` and `send_recv()` helpers MUST continue to function identically to their behavior before this change. A WAKE without `blob` and a COMMAND without `blob` MUST be processed exactly as before.
+
+**Acceptance criteria:**
+
+1. `send()` transmits APP_DATA immediately.
+2. `send_recv()` transmits and waits for reply.
+3. WAKE without blob is accepted by gateway.
+4. NOP COMMAND without blob is accepted by node.
 
 ---
 
@@ -1451,6 +1551,12 @@ After a diagnostic relay completes (whether by receiving a reply or exhausting r
 | ND-0606 | Map memory budget enforcement | Must |
 | ND-0607 | Initial map data | Must |
 | ND-0608 | Configurable I2C pin assignments | Should |
+| ND-0609 | Async queue management | Must |
+| ND-0610 | WAKE piggybacking | Must |
+| ND-0611 | Async queue overflow to APP_DATA | Must |
+| ND-0612 | sonde_context downlink data | Must |
+| ND-0613 | Async queue capacity error | Must |
+| ND-0614 | Store-and-forward backward compatibility | Must |
 | ND-0700 | WAKE retry | Must |
 | ND-0701 | Chunk transfer retry | Must |
 | ND-0702 | Response timeout | Must |

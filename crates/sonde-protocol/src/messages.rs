@@ -354,8 +354,12 @@ impl GatewayMessage {
                 if let Some(pv) = payload_val {
                     p.push((KEY_PAYLOAD, pv));
                 }
-                if let Some(b) = blob {
-                    p.push((KEY_BLOB, Value::Bytes(b.clone())));
+                if matches!(payload, CommandPayload::Nop) {
+                    if let Some(b) = blob {
+                        p.push((KEY_BLOB, Value::Bytes(b.clone())));
+                    }
+                } else {
+                    debug_assert!(blob.is_none(), "blob is only valid for NOP commands");
                 }
                 p.push((KEY_STARTING_SEQ, uint_val(*starting_seq)));
                 p.push((KEY_TIMESTAMP_MS, uint_val(*timestamp_ms)));

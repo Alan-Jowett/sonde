@@ -512,7 +512,7 @@ fn test_p032() {
         blob: None,
     };
     let cbor = msg.encode().unwrap();
-    // Decode as generic CBORand check that keys are positive integers, not strings.
+    // Decode as generic CBOR and check that keys are positive integers, not strings.
     let val: ciborium::Value = ciborium::de::from_reader(&cbor[..]).unwrap();
     let map = match val {
         ciborium::Value::Map(m) => m,

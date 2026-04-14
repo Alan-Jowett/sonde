@@ -21,6 +21,7 @@ use sonde_gateway::sqlite_storage::SqliteStorage;
 use sonde_gateway::storage::Storage;
 use zeroize::Zeroizing;
 
+use sonde_node::async_queue::AsyncQueue;
 use sonde_node::bpf_helpers::SondeContext;
 use sonde_node::bpf_runtime::{BpfError, BpfInterpreter, HelperFn};
 use sonde_node::error::NodeResult;
@@ -141,6 +142,7 @@ pub struct NodeProxy {
     pub storage: MockNodeStorage,
     pub map_storage: MapStorage,
     rng: MockRng,
+    async_queue: AsyncQueue,
 }
 
 impl NodeProxy {
@@ -150,6 +152,7 @@ impl NodeProxy {
             storage: MockNodeStorage::new_paired(key_hint, psk, 60),
             map_storage: MapStorage::new(4096),
             rng: MockRng(0),
+            async_queue: AsyncQueue::new(),
         }
     }
 
@@ -160,6 +163,7 @@ impl NodeProxy {
             storage: MockNodeStorage::new_unpaired(),
             map_storage: MapStorage::new(4096),
             rng: MockRng(0),
+            async_queue: AsyncQueue::new(),
         }
     }
 
@@ -179,6 +183,7 @@ impl NodeProxy {
             storage: MockNodeStorage::new_ble_provisioned(key_hint, psk, channel, peer_payload),
             map_storage: MapStorage::new(4096),
             rng: MockRng(0),
+            async_queue: AsyncQueue::new(),
         }
     }
 
@@ -249,6 +254,7 @@ impl NodeProxy {
             &mut self.map_storage,
             &sha,
             &aead,
+            &mut self.async_queue,
         );
         WakeCycleStats {
             outcome,

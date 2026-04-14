@@ -703,6 +703,9 @@ pub fn helper_bpf_trace_printk(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -
 pub fn helper_send_async(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     let result = with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
+        if r2 > usize::MAX as u64 {
+            return (-2i64) as u64;
+        }
         let blob_len = r2 as usize;
         if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
             return (-2i64) as u64;

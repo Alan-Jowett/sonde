@@ -195,7 +195,18 @@ impl HandlerMessage {
                 let request_id =
                     get_uint(map, 2).ok_or_else(|| DecodeError("missing request_id".into()))?;
                 let data = get_bytes(map, 3).ok_or_else(|| DecodeError("missing data".into()))?;
-                let delivery = get_uint(map, 4).unwrap_or(0) as u8;
+                let delivery = match get_value(map, 4) {
+                    None => 0u8,
+                    Some(_) => {
+                        let v = get_uint(map, 4)
+                            .ok_or_else(|| DecodeError("delivery must be uint".into()))?;
+                        match v {
+                            0 => 0u8,
+                            1 => 1u8,
+                            _ => return Err(DecodeError(format!("invalid delivery value: {v}"))),
+                        }
+                    }
+                };
                 Ok(HandlerMessage::DataReply {
                     request_id,
                     data,

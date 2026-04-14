@@ -733,51 +733,6 @@ impl Gateway {
             "WAKE received"
         );
 
-        // 3. Route WAKE blob to handler (store reply for NEXT cycle)
-        if let Some(wake_data) = wake_blob {
-            if !wake_data.is_empty() {
-                if let Some(ref ph) = node.current_program_hash {
-                    let handler_result = {
-                        let router = self.handler_router.read().await;
-                        router.find_handler_cloned(ph)
-                    };
-                    if let Some((config, process_arc)) = handler_result {
-                        let timestamp = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let msg = crate::handler::HandlerMessage::Data {
-                            request_id: header.nonce,
-                            node_id: node.node_id.clone(),
-                            program_hash: ph.clone(),
-                            data: wake_data,
-                            timestamp,
-                        };
-                        info!(
-                            node_id = %node.node_id,
-                            command = %config.command,
-                            "WAKE blob routed to handler"
-                        );
-                        let mut process = process_arc.lock().await;
-                        if let Some(crate::handler::HandlerMessage::DataReply { data, .. }) =
-                            process.send_data(&msg).await
-                        {
-                            if !data.is_empty() {
-                                self.deferred_replies
-                                    .write()
-                                    .await
-                                    .insert(node.node_id.clone(), data);
-                                info!(
-                                    node_id = %node.node_id,
-                                    "deferred reply stored from WAKE blob handler response"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // 4. Retrieve previously stored deferred reply for THIS cycle's COMMAND
         // (checked after command selection below — only injected into NOP commands)
 
@@ -944,6 +899,54 @@ impl Gateway {
             msg_type: MSG_COMMAND,
             nonce: header.nonce,
         };
+
+        // 3. Route WAKE blob to handler (store reply for NEXT cycle).
+        // Spawned as a background task so it does not block COMMAND delivery.
+        if let Some(wake_data) = wake_blob {
+            if !wake_data.is_empty() && !program_hash.is_empty() {
+                let handler_router = Arc::clone(&self.handler_router);
+                let deferred_replies = Arc::clone(&self.deferred_replies);
+                let node_id = node.node_id.clone();
+                let program_hash = program_hash.clone();
+                let nonce = header.nonce;
+                tokio::spawn(async move {
+                    let handler_result = {
+                        let router = handler_router.read().await;
+                        router.find_handler_cloned(&program_hash)
+                    };
+                    if let Some((config, process_arc)) = handler_result {
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let msg = crate::handler::HandlerMessage::Data {
+                            request_id: nonce,
+                            node_id: node_id.clone(),
+                            program_hash: program_hash.clone(),
+                            data: wake_data,
+                            timestamp,
+                        };
+                        info!(
+                            node_id = %node_id,
+                            command = %config.command,
+                            "WAKE blob routed to handler"
+                        );
+                        let mut process = process_arc.lock().await;
+                        if let Some(crate::handler::HandlerMessage::DataReply { data, .. }) =
+                            process.send_data(&msg).await
+                        {
+                            if !data.is_empty() {
+                                deferred_replies.write().await.insert(node_id.clone(), data);
+                                info!(
+                                    node_id = %node_id,
+                                    "deferred reply stored from WAKE blob handler response"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        }
 
         Some((response_header, response_cbor))
     }

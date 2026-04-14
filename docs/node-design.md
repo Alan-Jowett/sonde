@@ -378,8 +378,8 @@ pub struct SondeContext {
     pub battery_mv: u16,             // current ADC reading
     pub firmware_abi_version: u16,   // firmware ABI
     pub wake_reason: u8,             // 0x00=scheduled, 0x01=early, 0x02=program_update
-    pub data_start: u32,             // pointer to downlink blob (0 if none)
-    pub data_end: u32,               // pointer past end of downlink blob (0 if none)
+    pub data_start: u64,             // pointer to downlink blob (0 if none)
+    pub data_end: u64,               // pointer past end of downlink blob (0 if none)
 }
 ```
 
@@ -401,12 +401,12 @@ Each call increments the sequence number, ensuring independent replay protection
 
 `send_async()` enqueues a message for deferred transmission instead of sending it immediately. It is implemented by the wake cycle engine:
 
-1. Copy the blob into the async queue (a fixed-capacity `heapless::Vec` in RAM, cleared each cycle).
+1. Copy the blob into the async queue (a fixed-capacity `heapless::Vec` in RAM, persisted across wake cycles by the caller).
 2. Return 0 on success, or a non-zero error code if the queue is full.
 
 The queued messages are drained at the start of the next wake cycle (§4.2 step 3 and step 6a). If exactly one message is queued and fits within the WAKE payload budget, it is piggybacked on the WAKE frame as `blob` (CBOR key 10), saving a round-trip. If multiple messages are queued or the single message exceeds the budget, all queued messages are sent as individual APP_DATA frames after COMMAND reception.
 
-The async queue is a RAM-only structure that does not survive deep sleep — it is populated during BPF execution and consumed during the same wake cycle's sleep→wake transition. The queue capacity is a compile-time constant.
+The async queue is a RAM-only structure owned by the caller of `run_wake_cycle()` and passed in as `&mut AsyncQueue`. It persists across wake cycles within the main loop so that blobs queued in cycle N are available for piggybacking in cycle N+1's WAKE. It does not survive deep sleep or reboot on real hardware (RAM is lost). The queue is cleared when UPDATE_PROGRAM or RUN_EPHEMERAL is received, since a new program load invalidates blobs produced by the old program. The queue capacity is a compile-time constant.
 
 ---
 

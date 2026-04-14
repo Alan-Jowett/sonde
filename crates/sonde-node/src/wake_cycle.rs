@@ -634,6 +634,7 @@ pub fn run_wake_cycle<T, S, I, A, H>(
     map_storage: &mut MapStorage,
     sha: &H,
     aead: &A,
+    async_queue: &mut AsyncQueue,
 ) -> WakeCycleOutcome
 where
     T: Transport + 'static,
@@ -708,9 +709,6 @@ where
         }
     }
 
-    // 4a. Create async send queue (RAM-only, fresh each wake cycle).
-    let mut async_queue = AsyncQueue::new();
-
     // 4. Load active resident program hash and raw bytes from NVS.
     let (program_hash, mut resident_image_bytes) = {
         let program_store = ProgramStore::new(storage);
@@ -722,8 +720,9 @@ where
     let battery_mv = battery.battery_mv();
 
     // 5a. Check async queue for WAKE piggybacking.
-    // The queue is RAM-only and normally empty at WAKE time (does not
-    // survive deep sleep). This path exists for completeness.
+    // The queue persists across wake cycles (owned by the caller), so
+    // blobs queued by BPF in cycle N are available here in cycle N+1.
+    // On real hardware the queue is RAM-only and lost on deep sleep/reboot.
     let wake_blob = {
         let candidate = async_queue.single_for_piggyback(sonde_protocol::MAX_PAYLOAD_SIZE);
         if let Some(blob) = candidate {
@@ -842,6 +841,8 @@ where
             ..
         } => {
             resident_image_bytes = None;
+            // New program load invalidates any blobs queued by the old program.
+            let _ = async_queue.drain();
 
             let max_image_size = if is_ephemeral {
                 MAX_EPHEMERAL_IMAGE_SIZE
@@ -976,7 +977,7 @@ where
                 &mut current_seq as *mut u64,
                 program_class,
                 &mut trace_log as *mut Vec<String>,
-                &mut async_queue as *mut AsyncQueue,
+                async_queue as *mut AsyncQueue,
                 timestamp_ms,
                 command_received_at,
                 battery_mv,
@@ -1766,6 +1767,7 @@ mod tests {
             let clock = MockClock;
             let mut interp = MockBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
 
             let outcome = run_wake_cycle(
                 &mut transport,
@@ -1778,6 +1780,7 @@ mod tests {
                 &mut map_storage,
                 &sha,
                 &aead,
+                &mut async_queue,
             );
 
             assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
@@ -1836,6 +1839,7 @@ mod tests {
             let clock = MockClock;
             let mut interp = MockBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
 
             let outcome = run_wake_cycle(
                 &mut transport,
@@ -1848,6 +1852,7 @@ mod tests {
                 &mut map_storage,
                 &sha,
                 &aead,
+                &mut async_queue,
             );
 
             assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
@@ -1892,6 +1897,7 @@ mod tests {
             let clock = MockClock;
             let mut interp = MockBpfInterpreter::new();
             let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
 
             let outcome = run_wake_cycle(
                 &mut transport,
@@ -1904,6 +1910,7 @@ mod tests {
                 &mut map_storage,
                 &sha,
                 &aead,
+                &mut async_queue,
             );
 
             assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });

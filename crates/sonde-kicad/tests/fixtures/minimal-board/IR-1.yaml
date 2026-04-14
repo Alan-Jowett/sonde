@@ -1,0 +1,45 @@
+schema_version: "1.0.0"
+project: minimal-test-board
+
+components:
+  - ref_des: R1
+    description: Pull-up resistor
+    manufacturer: Yageo
+    part_number: RC0402FR-074K7L
+    package: "0402"
+    generic_footprint: "0402"
+    sourcing:
+      lcsc_pn: C25900
+      unit_price_usd_qty100: 0.002
+      stock_units: 100000
+      lifecycle: active
+      date_verified: "2026-04-01"
+      verification_label: KNOWN
+
+  - ref_des: C1
+    description: Decoupling capacitor
+    manufacturer: Samsung
+    part_number: CL05B104KO5NNNC
+    package: "0402"
+    generic_footprint: "0402"
+    sourcing:
+      lcsc_pn: C1525
+      unit_price_usd_qty100: 0.003
+      stock_units: 500000
+      lifecycle: active
+      date_verified: "2026-04-01"
+      verification_label: KNOWN
+
+  - ref_des: J1
+    description: 2-pin connector
+    manufacturer: JST
+    part_number: S2B-PH-K-S
+    package: "JST_PH_2pin"
+    generic_footprint: "JST_PH_2pin_2mm"
+
+  - ref_des: J2
+    description: 3-pin connector
+    manufacturer: JST
+    part_number: S3B-PH-K-S
+    package: "JST_PH_3pin"
+    generic_footprint: "JST_PH_3pin_2mm"

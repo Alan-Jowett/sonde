@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 sonde contributors
+
+//! Specctra DSN export for Freerouter autorouting.
+
+pub mod structure;
+
+use crate::error::Error;
+use crate::ir::IrBundle;
+
+/// Generate a Specctra DSN file from an IR bundle.
+pub fn emit_dsn(bundle: &IrBundle) -> Result<String, Error> {
+    let ir3 = bundle
+        .ir3
+        .as_ref()
+        .ok_or(Error::MissingIrFile("IR-3.yaml".into()))?;
+    let board = &ir3.board;
+
+    // Use same page offset as PCB generation (A4 centered)
+    let page_w = 297.0;
+    let page_h = 210.0;
+    let offset_x = (page_w - board.width_mm) / 2.0;
+    let offset_y = (page_h - board.height_mm) / 2.0;
+
+    let mut dsn = String::new();
+    dsn.push_str(&format!("(pcb \"{}.dsn\"\n", bundle.project));
+    dsn.push_str("  (parser\n");
+    dsn.push_str("    (string_quote \")\n");
+    dsn.push_str("    (space_in_quoted_tokens on)\n");
+    dsn.push_str("    (host_cad \"sonde-kicad\")\n");
+    dsn.push_str(&format!(
+        "    (host_version \"{}\")\n",
+        env!("CARGO_PKG_VERSION")
+    ));
+    dsn.push_str("  )\n");
+    dsn.push_str("  (resolution um 10)\n");
+    dsn.push_str("  (unit um)\n");
+
+    // Structure (board boundary with page offset)
+    structure::write_structure(&mut dsn, ir3, offset_x, offset_y);
+
+    // Placement (component positions with page offset)
+    write_placement(&mut dsn, bundle, board.height_mm, offset_x, offset_y);
+
+    // Library (pad images)
+    write_library(&mut dsn, bundle);
+
+    // Network
+    write_network(&mut dsn, bundle, ir3);
+
+    // Empty wiring section
+    dsn.push_str("  (wiring)\n");
+    dsn.push_str(")\n");
+
+    Ok(dsn)
+}
+
+fn write_placement(dsn: &mut String, bundle: &IrBundle, _board_height: f64, ox: f64, oy: f64) {
+    dsn.push_str("  (placement\n");
+
+    // Group components by footprint
+    let mut by_footprint: std::collections::BTreeMap<&str, Vec<(&str, f64, f64, f64)>> =
+        std::collections::BTreeMap::new();
+
+    // Reuse the shared placement algorithm so DSN matches PCB/CPL.
+    let pos_map = crate::pcb::placement::compute_position_map(bundle).unwrap_or_default();
+
+    for comp in &bundle.ir1e.components {
+        let (x, y, rotation) = pos_map
+            .get(&comp.ref_des)
+            .copied()
+            .unwrap_or((10.0, 10.0, 0.0));
+        // Convert board coords to KiCad page coords, then to DSN coords.
+        // Board coords: (x, y) where y is already in KiCad Y-down space.
+        // KiCad page: x_kicad = x + ox, y_kicad = y + oy
+        // DSN: same X as KiCad, but Y is negated (DSN Y-up vs KiCad Y-down)
+        let kicad_x = x + ox;
+        let kicad_y = y + oy;
+        let x_dsn = mm_to_dsn(kicad_x);
+        let y_dsn = mm_to_dsn(-kicad_y); // negate Y for DSN
+        by_footprint
+            .entry(comp.kicad_footprint.as_str())
+            .or_default()
+            .push((comp.ref_des.as_str(), x_dsn, y_dsn, rotation));
+    }
+
+    for (footprint, placements) in &by_footprint {
+        dsn.push_str(&format!("    (component \"{footprint}\"\n"));
+        for (ref_des, x, y, rot) in placements {
+            dsn.push_str(&format!(
+                "      (place {ref_des} {x:.0} {y:.0} front {rot:.0})\n"
+            ));
+        }
+        dsn.push_str("    )\n");
+    }
+    dsn.push_str("  )\n");
+}
+
+fn write_library(dsn: &mut String, bundle: &IrBundle) {
+    dsn.push_str("  (library\n");
+
+    let mut seen_fps: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for comp in &bundle.ir1e.components {
+        if !seen_fps.insert(comp.kicad_footprint.as_str()) {
+            continue;
+        }
+        // Find pin count from IR-2
+        let pin_count = bundle
+            .ir2
+            .netlist
+            .iter()
+            .find(|e| e.ref_des == comp.ref_des)
+            .map(|e| e.pins.len())
+            .unwrap_or(2);
+
+        dsn.push_str(&format!("    (image \"{}\"\n", comp.kicad_footprint));
+        for i in 1..=pin_count {
+            let pad_y = (i as f64 - 1.0) * 1270.0; // 1.27mm in µm
+            dsn.push_str(&format!(
+                "      (pin Rect[T]Pad_600x600_um {i} 0 {pad_y:.0})\n"
+            ));
+        }
+        dsn.push_str("    )\n");
+    }
+
+    // Via padstack
+    dsn.push_str("    (padstack Via[0-1]_600:300_um\n");
+    dsn.push_str("      (shape (circle F.Cu 600 0 0))\n");
+    dsn.push_str("      (shape (circle B.Cu 600 0 0))\n");
+    dsn.push_str("      (attach off)\n");
+    dsn.push_str("    )\n");
+
+    // Pad padstack
+    dsn.push_str("    (padstack Rect[T]Pad_600x600_um\n");
+    dsn.push_str("      (shape (rect F.Cu -300 -300 300 300))\n");
+    dsn.push_str("      (attach off)\n");
+    dsn.push_str("    )\n");
+
+    dsn.push_str("  )\n");
+}
+
+fn write_network(dsn: &mut String, bundle: &IrBundle, ir3: &crate::ir::Ir3) {
+    dsn.push_str("  (network\n");
+
+    // Build pin lists per net
+    let mut net_pins: std::collections::BTreeMap<&str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for entry in &bundle.ir2.netlist {
+        for pin in &entry.pins {
+            if !pin.is_nc() {
+                net_pins
+                    .entry(pin.net.as_str())
+                    .or_default()
+                    .push(format!("{}-{}", entry.ref_des, pin.pin));
+            }
+        }
+    }
+
+    for (net, pins) in &net_pins {
+        dsn.push_str(&format!("    (net {net}\n"));
+        dsn.push_str(&format!("      (pins {})\n", pins.join(" ")));
+        dsn.push_str("    )\n");
+    }
+
+    // Net classes
+    let default_width = 250; // 0.25mm in µm
+    let default_clearance = 200;
+
+    // Power net class
+    let mut power_nets = Vec::new();
+    if let Some(rc) = &ir3.routing_constraints {
+        if let Some(pts) = &rc.power_traces {
+            for pt in pts {
+                if pt.trace_type.as_deref() != Some("copper pour") {
+                    power_nets.push(pt.net.as_str());
+                }
+            }
+        }
+    }
+
+    if !power_nets.is_empty() {
+        let power_width = ir3
+            .routing_constraints
+            .as_ref()
+            .and_then(|rc| rc.power_traces.as_ref())
+            .and_then(|pts| pts.first())
+            .and_then(|pt| pt.min_width_mm)
+            .map(|w| mm_to_dsn(w) as i64)
+            .unwrap_or(500);
+
+        dsn.push_str(&format!("    (class Power {}\n", power_nets.join(" ")));
+        dsn.push_str("      (circuit (use_via \"Via[0-1]_600:300_um\"))\n");
+        dsn.push_str(&format!(
+            "      (rule (width {power_width}) (clearance {default_clearance}))\n"
+        ));
+        dsn.push_str("    )\n");
+    }
+
+    dsn.push_str("    (class Default\n");
+    dsn.push_str("      (circuit (use_via \"Via[0-1]_600:300_um\"))\n");
+    dsn.push_str(&format!(
+        "      (rule (width {default_width}) (clearance {default_clearance}))\n"
+    ));
+    dsn.push_str("    )\n");
+
+    dsn.push_str("  )\n");
+}
+
+/// Convert mm to DSN internal units.
+///
+/// DSN header declares `(resolution um 10)` → 10 units per µm → 1 unit = 0.1µm.
+/// So mm → DSN units = mm × 1000 µm/mm × 10 units/µm = mm × 10000.
+fn mm_to_dsn(mm: f64) -> f64 {
+    mm * 10000.0
+}

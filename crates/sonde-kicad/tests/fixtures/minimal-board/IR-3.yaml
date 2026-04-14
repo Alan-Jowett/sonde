@@ -1,0 +1,47 @@
+schema_version: "1.0.0"
+project: minimal-test-board
+backend: kicad8
+
+board:
+  shape: rectangle
+  width_mm: 30.0
+  height_mm: 20.0
+  area_mm2: 600.0
+  layers: 2
+  copper_weight_oz: 1
+  surface_finish: HASL
+  origin: bottom-left
+
+connector_placement:
+  - ref_des: J1
+    description: 2-pin power connector
+    edge: bottom
+    position:
+      x_mm: 8.0
+      y_mm: 0.0
+    courtyard_mm:
+      width: 7.0
+      height: 5.0
+
+  - ref_des: J2
+    description: 3-pin signal connector
+    edge: bottom
+    position:
+      x_mm: 22.0
+      y_mm: 0.0
+    courtyard_mm:
+      width: 9.0
+      height: 5.0
+
+component_zones:
+  - group: power-supply
+    components: [R1, C1]
+    zone:
+      description: Power components
+      anchor:
+        x_mm: 8.0
+        y_mm: 12.0
+      extent_mm:
+        width: 14.0
+        height: 6.0
+    proximity_constraint_mm: 3.0

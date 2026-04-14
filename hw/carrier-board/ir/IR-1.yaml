@@ -368,16 +368,16 @@ components:
       verification_label: KNOWN
 
   - ref_des: J2
-    description: "1-Wire sensor connector (JST XH 3-pin, THT right-angle)"
+    description: "1-Wire sensor connector (JST PH 3-pin, THT right-angle)"
     manufacturer: "JST"
-    part_number: "S3B-XH-A(LF)(SN)"
-    package: "JST XH 3-pin THT right-angle"
-    generic_footprint: "JST-XH-3-pin-THT-RA"
+    part_number: "S3B-PH-K-S(LF)(SN)"
+    package: "JST PH 3-pin THT right-angle"
+    generic_footprint: "JST-PH-3-pin-THT-RA"
     electrical_specs:
       pin_count: 3
-      pitch_mm: 2.5
-      voltage_rating_V: 250
-      current_rating_A: 3.0
+      pitch_mm: 2.0
+      voltage_rating_V: 100
+      current_rating_A: 2.0
       mounting: "THT"
       operating_temp_C: [-25, 85]
     pin_assignment:
@@ -386,15 +386,16 @@ components:
       pin_3: {name: "3", net: "SENSOR_V"}
     satisfies: [REQ-HW-0203, REQ-HW-0204]
     rationale: >
-      JST XH 3-pin right-angle header for 1-Wire sensor connections.
-      2.5mm pitch provides robust mechanical connection. Multi-drop
-      1-Wire bus supports multiple sensors on one connector.
+      JST PH 3-pin right-angle header for 1-Wire sensor connections.
+      Changed from JST XH (2.5mm pitch, 10.9×12.5mm courtyard) to
+      JST PH (2.0mm pitch, 8.9×8.6mm courtyard) to reduce board space.
+      Same connector family as J3 (battery) for BOM simplification.
     sourcing:
-      lcsc_pn: "C157928"
-      unit_price_usd_qty100: 0.08
-      stock_units: 118700
+      lcsc_pn: "C157929"
+      unit_price_usd_qty100: 0.06
+      stock_units: 100000
       lifecycle: "active"
-      date_verified: "2026-04-08"
+      date_verified: "2026-04-09"
       verification_label: KNOWN
 
   - ref_des: J3

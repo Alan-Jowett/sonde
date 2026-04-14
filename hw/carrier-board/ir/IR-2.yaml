@@ -440,6 +440,7 @@ netlist:
     tolerance_pct: 10
 
   # --- J6: XIAO Left Header (mcu-socket) ---
+  # Physical pinout: USB at top, top-to-bottom
   - ref_des: J6
     component: "1×7 Female Header 2.54mm"
     group: mcu-socket
@@ -476,57 +477,58 @@ netlist:
         label: KNOWN
         citation: "REQ-HW-0202"
       - pin: 7
-        name: "3V3"
-        net: VBAT_FILT
+        name: "D6/TX (GPIO21)"
+        net: NC
+        status: "spare — not connected on carrier board"
         label: KNOWN
-        citation: "REQ-HW-0102 — power input to XIAO via 3V3 pin"
+        citation: "IR-0 GPIO pin map — GPIO21 spare"
 
   # --- J7: XIAO Right Header (mcu-socket) ---
+  # Physical pinout: USB at top, top-to-bottom
   - ref_des: J7
     component: "1×7 Female Header 2.54mm"
     group: mcu-socket
     pins:
       - pin: 1
-        name: "D6 (GPIO21)"
+        name: "5V/VUSB"
         net: NC
-        status: "spare — not connected on carrier board"
+        status: "NOT CONNECTED — per REQ-HW-0102"
         label: KNOWN
-        citation: "IR-0 GPIO pin map — GPIO21 spare"
+        citation: "REQ-HW-0102 — 5V/VIN NOT connected"
       - pin: 2
-        name: "D7 (GPIO20)"
-        net: NC
-        status: "spare — not connected on carrier board"
+        name: "GND"
+        net: GND
         label: KNOWN
-        citation: "IR-0 GPIO pin map — GPIO20 spare"
+        citation: "REQ-HW-0103"
       - pin: 3
-        name: "D8 (GPIO8)"
-        net: NC
-        status: "spare — not connected on carrier board"
+        name: "3V3"
+        net: VBAT_FILT
         label: KNOWN
-        citation: "IR-0 GPIO pin map — GPIO8 spare"
+        citation: "REQ-HW-0102 — power input to XIAO via 3V3 pin"
       - pin: 4
-        name: "D9 (GPIO9)"
-        net: NC
-        status: "spare — BOOT pin, avoid LOW at boot"
-        label: KNOWN
-        citation: "IR-0 GPIO pin map — GPIO9 spare"
-      - pin: 5
         name: "D10 (GPIO10)"
         net: NC
         status: "spare — not connected on carrier board"
         label: KNOWN
         citation: "IR-0 GPIO pin map — GPIO10 spare"
-      - pin: 6
-        name: "GND"
-        net: GND
-        label: KNOWN
-        citation: "REQ-HW-0103"
-      - pin: 7
-        name: "5V"
+      - pin: 5
+        name: "D9 (GPIO9)"
         net: NC
-        status: "NOT CONNECTED — per REQ-HW-0102"
+        status: "spare — BOOT pin, avoid LOW at boot"
         label: KNOWN
-        citation: "REQ-HW-0102 — 5V/VIN NOT connected"
+        citation: "IR-0 GPIO pin map — GPIO9 spare"
+      - pin: 6
+        name: "D8 (GPIO8)"
+        net: NC
+        status: "spare — not connected on carrier board"
+        label: KNOWN
+        citation: "IR-0 GPIO pin map — GPIO8 spare"
+      - pin: 7
+        name: "D7/RX (GPIO20)"
+        net: NC
+        status: "spare — not connected on carrier board"
+        label: KNOWN
+        citation: "IR-0 GPIO pin map — GPIO20 spare"
 
 # ===========================================================================
 # Net Connectivity Summary
@@ -543,7 +545,7 @@ net_summary:
     connected_pins:
       - "FB1.2"
       - "C1.1"
-      - "J6.7 (3V3)"
+      - "J7.3 (3V3)"
 
   - net: GND
     connected_pins:
@@ -554,7 +556,7 @@ net_summary:
       - "R6.2"
       - "J1.1"
       - "J2.1"
-      - "J7.6"
+      - "J7.2"
 
   - net: SENSOR_EN
     connected_pins:
@@ -602,12 +604,12 @@ net_summary:
     status: "Not connected — spare GPIO pins and XIAO 5V pin"
     pins:
       - "J6.4 (GPIO5 spare)"
-      - "J7.1 (GPIO21 spare)"
-      - "J7.2 (GPIO20 spare)"
-      - "J7.3 (GPIO8 spare)"
-      - "J7.4 (GPIO9 spare)"
-      - "J7.5 (GPIO10 spare)"
-      - "J7.7 (5V — NOT CONNECTED)"
+      - "J6.7 (GPIO21/TX spare)"
+      - "J7.1 (5V/VUSB — NOT CONNECTED)"
+      - "J7.4 (GPIO10 spare)"
+      - "J7.5 (GPIO9 spare)"
+      - "J7.6 (GPIO8 spare)"
+      - "J7.7 (GPIO20/RX spare)"
 
 # ===========================================================================
 # Cross-Validation

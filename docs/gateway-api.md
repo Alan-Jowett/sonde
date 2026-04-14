@@ -127,7 +127,7 @@ The application API has only **4 message types** — two in each direction.
 
 ### 4.1  DATA (Gateway → Handler)
 
-Sent when a node's BPF program calls `send()` or `send_recv()`. The handler processes the data and replies with a `DATA_REPLY`.
+Sent when a node's BPF program calls `send()` or `send_recv()`, or when a node's WAKE message contains a piggybacked `blob` (see [protocol.md §6.7](protocol.md)). The handler processes the data and replies with a `DATA_REPLY`. The handler does not need to distinguish between these sources — the `DATA` message format is identical in both cases.
 
 | Field | CBOR key | Type | Description |
 |---|---|---|---|

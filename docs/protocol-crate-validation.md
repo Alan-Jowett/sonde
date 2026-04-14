@@ -1057,7 +1057,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 
 ---
 
-## 13  Store-and-forward message encoding
+## 11  Store-and-forward message encoding
 
 ### T-P120  WAKE with optional blob round-trip
 

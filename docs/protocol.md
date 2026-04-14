@@ -160,7 +160,7 @@ All payload fields below are CBOR-encoded maps with **integer keys** for compact
 | 7 | `chunk_size` | UPDATE_PROGRAM / RUN_EPHEMERAL |
 | 8 | `chunk_count` | UPDATE_PROGRAM / RUN_EPHEMERAL |
 | 9 | `interval_s` | UPDATE_SCHEDULE |
-| 10 | `blob` | APP_DATA, APP_DATA_REPLY, WAKE (optional), COMMAND (optional) |
+| 10 | `blob` | APP_DATA, APP_DATA_REPLY, WAKE (optional), COMMAND (NOP only, top-level) |
 | 11 | `chunk_index` | GET_CHUNK, CHUNK |
 | 12 | `chunk_data` | CHUNK |
 | 13 | `starting_seq` | COMMAND |
@@ -275,7 +275,7 @@ Sent exactly once in response to a valid, authenticated `WAKE`.
 | `starting_seq` | uint | Yes | Random starting sequence number for this session. The node uses this value in the `nonce` header field of its next outbound message and increments for each subsequent message. |
 | `timestamp_ms` | uint | Yes | Gateway's current UTC time in milliseconds since Unix epoch. The node uses this as its time reference for `sonde_context.timestamp` and `get_time()`. |
 | `payload` | map | Depends on command | **Nested** CBOR map containing command-specific fields (see §5.2.1, §5.2.2). Omitted for `NOP` and `REBOOT`. |
-| `blob` | bstr | No | Piggybacked downlink data — a previously deferred handler reply. Present only on `NOP` commands when the gateway has stored deferred data for this node (see §6.7). This is a top-level COMMAND field, NOT nested inside `payload`. |
+| `blob` | bstr | No | Piggybacked downlink data — a previously deferred handler reply. Used on `NOP` commands when the gateway has stored deferred data for this node (see §6.7). This is a top-level COMMAND field, NOT nested inside `payload`. Nodes MUST ignore `blob` unless `command_type` is `NOP`, even if key 10 is present on another command type. |
 
 The `nonce` in the fixed header echoes the WAKE nonce, binding the response to the request. The `starting_seq` is a CBOR payload field that tells the node where to begin its sequence counter for this wake cycle. The `timestamp_ms` provides the node with an accurate time reference — the node has no independent clock source across deep sleep.
 
@@ -584,7 +584,7 @@ The store-and-forward mechanism piggybacks application data on the mandatory WAK
 
 **Downlink (gateway → node):**
 
-1. Handler replies to `DATA` with `delivery=1` (deferred) in the `DATA_REPLY`.
+1. Handler replies to the `DATA` message with a `DATA_REPLY`. For `DATA` originating from a WAKE `blob`, deferred delivery is always enforced by the gateway: the handler may omit `delivery`, and any handler-supplied `delivery` value is ignored for this path.
 2. Gateway stores the reply for this node (at most one per node; latest wins).
 3. On next NOP COMMAND → include stored reply as `blob` (key 10).
 4. Node's BPF program reads data via `sonde_context.data_start` / `data_end`.

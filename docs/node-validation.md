@@ -2059,7 +2059,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 | ND-0506 | T-N508, T-N510 |
 | ND-0600 | T-N930 |
 | ND-0601 | T-N600, T-N601, T-N602, T-N603, T-N931 |
-| ND-0602 | T-N604, T-N605, T-N606, T-N621 |
+| ND-0602 | T-N604, T-N605, T-N606, T-N621, T-N627a |
 | ND-0603 | T-N607, T-N608, T-N609, T-N932 |
 | ND-0604 | T-N610, T-N611, T-N612, T-N613, T-N933 |
 | ND-0605 | T-N614, T-N615, T-N934 |

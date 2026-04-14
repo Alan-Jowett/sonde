@@ -589,13 +589,15 @@ The store-and-forward mechanism piggybacks application data on the mandatory WAK
 3. On next NOP COMMAND → include stored reply as `blob` (key 10).
 4. Node's BPF program reads data via `sonde_context.data_start` / `data_end`.
 
-**Timing (two-cycle delivery latency):**
+**Timing (best-case two-cycle delivery latency):**
+
+Delivery occurs on the next NOP COMMAND, which is the next wake cycle in the common case. If intervening cycles use non-NOP commands (UPDATE_PROGRAM, UPDATE_SCHEDULE, etc.), delivery is postponed until the next NOP.
 
 | Cycle | Node action | Gateway action |
 |---|---|---|
 | N | BPF calls `send_async(data)` → queued | — |
 | N+1 | WAKE carries `data` as blob | Routes to handler → handler replies → reply stored |
-| N+2 | — | NOP COMMAND carries stored reply as blob → BPF reads via context |
+| N+2+ | — | Next NOP COMMAND carries stored reply as blob → BPF reads via context |
 
 ```
     Node                          Gateway

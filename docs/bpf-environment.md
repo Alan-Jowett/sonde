@@ -527,7 +527,7 @@ All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on
 | **Map access** | Read/write | Read-only |
 | **Instruction budget** | Larger | Small |
 | **Helper set** | Full | Limited (`send`, `send_recv`, `send_async`, `i2c_read`, `i2c_write`, `i2c_write_read`, `spi_transfer`, `gpio_read`, `gpio_write`, `adc_read`, `delay_us`, `map_lookup_elem`, `get_time`, `get_battery_mv`, `bpf_trace_printk`) |
-| **Side effects** | Allowed | No persistent node state changes (no map writes, no schedule changes) |
+| **Side effects** | Allowed | No persistent node state changes under program control (no map writes, no schedule changes); `send_async` may enqueue outbound data for transmission on the next wake cycle |
 
 A program that fails verification is rejected with a diagnostic explaining why. It never reaches the node.
 

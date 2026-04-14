@@ -851,14 +851,26 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ---
 
+### T-N627a  send_async rejects oversized blob with -2
+
+**Validates:** ND-0602 (AC4)
+
+**Procedure:**
+1. Compute the maximum APP_DATA blob length (same as `send()` — 223 bytes minus CBOR map overhead).
+2. Install a BPF program that calls `send_async()` with a blob of `max + 1` bytes.
+3. Assert: `send_async()` returns -2.
+4. Assert: the queue remains empty (no data piggybacked on next WAKE).
+
+---
+
 ### T-N628  sonde_context downlink data populated
 
 **Validates:** ND-0612
 
 **Procedure:**
-1. Send NOP COMMAND with `blob` `[0xEE, 0xFF]`.
-2. Install BPF program that reads `ctx->data_start` to `ctx->data_end`.
-3. Assert: BPF program finds `[0xEE, 0xFF]`.
+1. Install BPF program that reads `ctx->data_start` to `ctx->data_end`.
+2. On the next WAKE, send NOP COMMAND with `blob` `[0xEE, 0xFF]`.
+3. Assert: in that wake cycle, the BPF program finds `[0xEE, 0xFF]`.
 
 ---
 
@@ -867,8 +879,9 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 **Validates:** ND-0612
 
 **Procedure:**
-1. Send NOP COMMAND without `blob` field.
-2. Assert: BPF program's `ctx->data_start == 0` and `ctx->data_end == 0`.
+1. Install BPF program that reads `ctx->data_start` and `ctx->data_end`.
+2. On the next WAKE, send NOP COMMAND without `blob` field.
+3. Assert: BPF program's `ctx->data_start == 0` and `ctx->data_end == 0`.
 
 ---
 

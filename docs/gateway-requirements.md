@@ -484,10 +484,10 @@ The gateway MUST accept `DATA_REPLY` messages from handlers. The `request_id` MU
 **Acceptance criteria:**
 
 1. A `DATA_REPLY` with a `request_id` that does not match an outstanding request is logged and discarded.
-2. Non-zero-length `data` in the reply triggers an `APP_DATA_REPLY` to the node.
-3. Zero-length `data` results in no `APP_DATA_REPLY` to the node.
-4. `DATA_REPLY` with `delivery=1` causes the data to be stored for deferred delivery, not sent immediately.
-5. `DATA_REPLY` with `delivery=0` or absent `delivery` behaves as before (immediate `APP_DATA_REPLY`).
+2. Non-zero-length `data` in the reply triggers an immediate `APP_DATA_REPLY` to the node unless `delivery=1`.
+3. Zero-length `data` results in no `APP_DATA_REPLY` to the node, regardless of `delivery` value.
+4. `DATA_REPLY` with `delivery=1` and non-zero-length `data` causes the data to be stored for deferred delivery, not sent immediately.
+5. `DATA_REPLY` with `delivery=0` or absent `delivery` uses the default behavior: non-zero-length `data` triggers an immediate `APP_DATA_REPLY`.
 
 ---
 

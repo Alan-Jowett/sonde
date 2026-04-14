@@ -395,7 +395,7 @@ Queue an opaque data blob for deferred delivery on the next wake cycle. Unlike `
 | `ptr` | Pointer to the data buffer. |
 | `len` | Length of the data in bytes. |
 
-**Returns:** `0` on success. `-1` if the queue is full (max 10 messages). `-2` if `len` exceeds the maximum blob size.
+**Returns:** `0` on success. `-1` if the queue is full (max 10 messages). `-2` if `len` exceeds the maximum blob size for APP_DATA (the same limit as `send()`: 223 bytes minus CBOR map overhead, see [protocol.md §3.3](protocol.md)).
 
 **Notes:**
 - The queue is RAM-only; data is lost if the node reboots before the next wake cycle.

@@ -510,7 +510,7 @@ The firmware MUST provide `send()` (fire-and-forget `APP_DATA`) and `send_recv()
 1. `send()` initiates transmission of an `APP_DATA` frame as a fire-and-forget operation and MUST NOT wait for any `APP_DATA_REPLY` before returning (it may still block briefly while queuing or transmitting the frame).
 2. `send_recv()` transmits an `APP_DATA` frame and blocks until `APP_DATA_REPLY` or timeout.
 3. Each call increments the session sequence number.
-4. `send_async()` returns 0 on success, -1 when the queue is full (max 10 messages), or -2 when the blob exceeds the maximum size.
+4. `send_async()` returns 0 on success, -1 when the queue is full (max 10 messages), or -2 when the blob exceeds the maximum APP_DATA blob size (same limit as `send()`: 223 bytes minus CBOR map overhead, see protocol.md §3.3).
 5. `send_async()` does not transmit immediately; queued data is sent on the next wake cycle.
 6. `send_async()` is available to both resident and ephemeral programs.
 

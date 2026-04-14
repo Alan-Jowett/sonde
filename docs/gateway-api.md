@@ -151,7 +151,7 @@ Sent when a node's BPF program calls `send()` or `send_recv()`. The handler proc
 Response to a `DATA` message. The handler **always** replies:
 
 - **Non-zero-length `data`**: The gateway sends an `APP_DATA_REPLY` to the node (the node's BPF program receives it via `send_recv()`), unless `delivery=1` in which case the reply is deferred.
-- **Zero-length `data`**: The gateway does not send anything to the node (used when the BPF program called `send()` fire-and-forget).
+- **Zero-length `data`**: The gateway does not send anything to the node (used when the BPF program called `send()` fire-and-forget). The `delivery` field is ignored when `data` is zero-length.
 
 The handler and BPF program are written by the same developer — they agree a priori on which messages expect data back.
 

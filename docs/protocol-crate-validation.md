@@ -1096,4 +1096,4 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 1. Encode a `GatewayMessage::Command` with `command_type=UPDATE_SCHEDULE`, `starting_seq=1`, `timestamp_ms=1700000000000`, `interval_s=60`, and `blob=None`.
 2. Decode and assert: `blob` is `None`.
 3. Manually construct CBOR bytes for an UPDATE_SCHEDULE COMMAND that includes key 10 with value `[0xFF]`.
-4. Decode and assert: the decoder either ignores the blob (returns `None`) or accepts it — backward compatibility is preserved either way.
+4. Decode and assert: the decoder ignores key 10 for non-NOP commands and returns `blob=None`.

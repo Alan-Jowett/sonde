@@ -180,6 +180,7 @@ fn main() {
         .expect("failed to initialize ESP-NOW transport");
 
     let mut interpreter = SondeBpfInterpreter::new();
+    let mut async_queue = sonde_node::async_queue::AsyncQueue::new();
 
     info!("sonde-node ready");
 
@@ -194,6 +195,7 @@ fn main() {
         &mut map_storage,
         &sha,
         &aead,
+        &mut async_queue,
     );
 
     match outcome {

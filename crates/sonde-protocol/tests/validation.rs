@@ -2181,11 +2181,9 @@ fn test_p120_wake_blob_round_trip() {
     // Verify key 10 is absent in the decoded CBOR map
     let value: ciborium::Value = ciborium::from_reader(encoded_no_blob.as_slice()).unwrap();
     if let ciborium::Value::Map(pairs) = value {
-        let has_key_10 = pairs.iter().any(|(k, _)| {
-            k.as_integer()
-                .and_then(|i| u64::try_from(i).ok())
-                .map_or(false, |v| v == 10)
-        });
+        let has_key_10 = pairs
+            .iter()
+            .any(|(k, _)| k.as_integer().is_some_and(|i| u64::try_from(i) == Ok(10)));
         assert!(
             !has_key_10,
             "CBOR map should not contain key 10 when blob is None"
@@ -2223,11 +2221,9 @@ fn test_p121_command_nop_blob_round_trip() {
     // Verify key 10 absent in CBOR map
     let value: ciborium::Value = ciborium::from_reader(encoded_no_blob.as_slice()).unwrap();
     if let ciborium::Value::Map(pairs) = value {
-        let has_key_10 = pairs.iter().any(|(k, _)| {
-            k.as_integer()
-                .and_then(|i| u64::try_from(i).ok())
-                .map_or(false, |v| v == 10)
-        });
+        let has_key_10 = pairs
+            .iter()
+            .any(|(k, _)| k.as_integer().is_some_and(|i| u64::try_from(i) == Ok(10)));
         assert!(
             !has_key_10,
             "CBOR map should not contain key 10 when blob is None"

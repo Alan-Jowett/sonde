@@ -66,6 +66,7 @@ fn main() {
         let reply = HandlerMessage::DataReply {
             request_id,
             data: if no_reply { vec![] } else { vec![0xCC, 0xDD] },
+            delivery: 0,
         };
 
         let payload = match reply.encode() {

@@ -401,7 +401,7 @@ Queue an opaque data blob for deferred delivery on the next wake cycle. Unlike `
 - The queue is RAM-only; data is lost if the node reboots before the next wake cycle.
 - The queue is cleared after all messages are sent (whether piggybacked or via APP_DATA).
 - The queue is also cleared on program load (UPDATE_PROGRAM or RUN_EPHEMERAL).
-- The handler receives this data as a normal `DATA` message. Handler replies to piggybacked data are always deferred to the next cycle (two-cycle round-trip latency).
+- The handler receives this data as a normal `DATA` message. Non-zero-length replies to piggybacked data are deferred to the next cycle (best-case two-cycle round-trip latency). Zero-length replies produce no deferred delivery.
 - If the queue is full, the BPF program may fall back to `send()` or `send_recv()` for immediate delivery.
 
 **Availability:** Resident and ephemeral.

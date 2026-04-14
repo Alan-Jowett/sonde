@@ -602,18 +602,22 @@ Delivery occurs on the next NOP COMMAND, which is the next wake cycle in the com
 ```
     Node                          Gateway
      │                               │
-     │── WAKE {blob: prev_data} ───►│  (routes blob to handler)
-     │                               │  (retrieves stored deferred reply)
-     │◄── COMMAND {NOP, blob: ───────│  (piggybacks stored reply)
-     │         deferred_reply}       │
+     │── WAKE {blob: data_N} ──────►│  (routes data_N to handler)
+     │                               │  (retrieves deferred reply from
+     │                               │   data_N-1, stored last cycle)
+     │◄── COMMAND {NOP, blob: ───────│  (piggybacks reply to data_N-1)
+     │         reply_N-1}           │
      │                               │
-     │  [BPF reads deferred_reply    │
+     │  [BPF reads reply_N-1         │
      │   via ctx->data_start/end]    │
      │                               │
-     │  [BPF calls send_async(new)]  │
+     │  [BPF calls send_async(       │
+     │    data_N+1)]                 │
      │                               │
      │  [sleep]                      │
 ```
+
+Note: The COMMAND blob (`reply_N-1`) is the handler's response to a *previous* cycle's WAKE blob, not the current one. The current WAKE's blob (`data_N`) will be replied to on the *next* NOP COMMAND.
 
 **Backward compatibility:** The `blob` field is optional in both WAKE and COMMAND. Nodes and gateways that predate this feature silently ignore unknown CBOR keys (forward compatibility). A new node talking to an old gateway functions normally — piggybacked data is silently dropped but the node remains operational.
 

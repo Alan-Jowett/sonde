@@ -79,7 +79,7 @@ All control-plane messages produced by the gateway MUST be encoded in CBOR.
 **Source:** README § Wake handshake
 
 **Description:**  
-The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the fixed binary header; the CBOR payload contains `firmware_abi_version`, `program_hash`, `battery_mv`, and `firmware_version`. The WAKE message MAY also contain an optional `blob` field (CBOR key 10). If present, the gateway MUST route the blob to the handler as a `DATA` message, exactly as it does for APP_DATA blobs. The handler's reply to WAKE-piggybacked data is always deferred (delivery=1 enforced by the gateway).
+The gateway MUST accept `WAKE` messages. The `key_hint` and `nonce` are in the fixed binary header; the CBOR payload contains `firmware_abi_version`, `program_hash`, `battery_mv`, and `firmware_version`. The WAKE message MAY also contain an optional `blob` field (CBOR key 10). If present, the gateway MUST route the blob to the handler as a `DATA` message, exactly as it does for APP_DATA blobs. Any non-zero-length handler reply is stored for deferred delivery regardless of handler-supplied `delivery` value; zero-length replies produce no deferred delivery.
 
 **Acceptance criteria:**
 

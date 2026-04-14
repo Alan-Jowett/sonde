@@ -59,14 +59,14 @@ fn write_placement(dsn: &mut String, bundle: &IrBundle, _board_height: f64, ox: 
     dsn.push_str("  (placement\n");
 
     // Group components by footprint
-    let mut by_footprint: std::collections::BTreeMap<&str, Vec<(&str, f64, f64)>> =
+    let mut by_footprint: std::collections::BTreeMap<&str, Vec<(&str, f64, f64, f64)>> =
         std::collections::BTreeMap::new();
 
     // Reuse the shared placement algorithm so DSN matches PCB/CPL.
     let pos_map = crate::pcb::placement::compute_position_map(bundle).unwrap_or_default();
 
     for comp in &bundle.ir1e.components {
-        let (x, y, _rotation) = pos_map
+        let (x, y, rotation) = pos_map
             .get(&comp.ref_des)
             .copied()
             .unwrap_or((10.0, 10.0, 0.0));
@@ -81,13 +81,15 @@ fn write_placement(dsn: &mut String, bundle: &IrBundle, _board_height: f64, ox: 
         by_footprint
             .entry(comp.kicad_footprint.as_str())
             .or_default()
-            .push((comp.ref_des.as_str(), x_dsn, y_dsn));
+            .push((comp.ref_des.as_str(), x_dsn, y_dsn, rotation));
     }
 
     for (footprint, placements) in &by_footprint {
         dsn.push_str(&format!("    (component \"{footprint}\"\n"));
-        for (ref_des, x, y) in placements {
-            dsn.push_str(&format!("      (place {ref_des} {x:.0} {y:.0} front 0)\n"));
+        for (ref_des, x, y, rot) in placements {
+            dsn.push_str(&format!(
+                "      (place {ref_des} {x:.0} {y:.0} front {rot:.0})\n"
+            ));
         }
         dsn.push_str("    )\n");
     }

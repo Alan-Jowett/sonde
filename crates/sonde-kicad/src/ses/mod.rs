@@ -73,6 +73,9 @@ pub fn import_ses(
             let x_mm = via.x_um as f64 / 10000.0;
             let y_mm = -(via.y_um as f64) / 10000.0;
 
+            // Extract size/drill from padstack name (e.g., "Via[0-1]_600:300_um").
+            let (size_mm, drill_mm) = parse_via_padstack(&via.padstack).unwrap_or((0.6, 0.3));
+
             items.push(SExpr::list(
                 "via",
                 vec![
@@ -81,8 +84,8 @@ pub fn import_ses(
                         SExpr::Atom(fmt(x_mm)),
                         SExpr::Atom(fmt(y_mm)),
                     ]),
-                    SExpr::list("size", vec![SExpr::Atom("0.6".into())]),
-                    SExpr::list("drill", vec![SExpr::Atom("0.3".into())]),
+                    SExpr::list("size", vec![SExpr::Atom(fmt(size_mm))]),
+                    SExpr::list("drill", vec![SExpr::Atom(fmt(drill_mm))]),
                     SExpr::list(
                         "layers",
                         vec![SExpr::Quoted("F.Cu".into()), SExpr::Quoted("B.Cu".into())],
@@ -156,4 +159,22 @@ fn fmt(v: f64) -> String {
     let s = format!("{v:.4}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     s.to_string()
+}
+
+/// Parse via size and drill from a Specctra padstack name.
+///
+/// Expected format: `Via[0-1]_<size>:<drill>_um` where size/drill are in µm.
+/// Returns (size_mm, drill_mm) or None if the name doesn't match.
+fn parse_via_padstack(padstack: &str) -> Option<(f64, f64)> {
+    // Find the segment between '_' delimiters, e.g., "600:300" from "Via[0-1]_600:300_um"
+    let after_first = padstack.find('_')? + 1;
+    let rest = &padstack[after_first..];
+    let colon = rest.find(':')?;
+    let end = rest[colon + 1..]
+        .find('_')
+        .map(|i| colon + 1 + i)
+        .unwrap_or(rest.len());
+    let size_um: f64 = rest[..colon].parse().ok()?;
+    let drill_um: f64 = rest[colon + 1..end].parse().ok()?;
+    Some((size_um / 1000.0, drill_um / 1000.0))
 }

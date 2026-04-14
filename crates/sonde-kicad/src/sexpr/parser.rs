@@ -6,10 +6,18 @@
 use super::SExpr;
 
 /// Parse an S-expression string into an AST.
+///
+/// Returns an error if there are unconsumed tokens after the first expression.
 pub fn parse(input: &str) -> Result<SExpr, String> {
     let tokens = tokenize(input)?;
     let mut pos = 0;
     let result = parse_expr(&tokens, &mut pos)?;
+    if pos < tokens.len() {
+        return Err(format!(
+            "unexpected trailing tokens after position {pos} (parsed 1 expression, {} tokens remain)",
+            tokens.len() - pos
+        ));
+    }
     Ok(result)
 }
 

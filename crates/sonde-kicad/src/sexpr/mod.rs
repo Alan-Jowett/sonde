@@ -44,7 +44,11 @@ impl SExpr {
     pub fn serialize(&self) -> String {
         let mut buf = String::new();
         serialize_node(self, &mut buf, 0, true);
-        buf.push('\n');
+        // serialize_node adds a trailing newline for top-level Lists;
+        // only add one here for Atoms/Quoted which don't get one.
+        if !buf.ends_with('\n') {
+            buf.push('\n');
+        }
         buf
     }
 }

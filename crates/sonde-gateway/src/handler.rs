@@ -1031,6 +1031,51 @@ mod tests {
     }
 
     #[test]
+    fn test_data_reply_deferred_delivery_roundtrip() {
+        let msg = HandlerMessage::DataReply {
+            request_id: 99,
+            data: vec![0xAA],
+            delivery: 1,
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = HandlerMessage::decode(&encoded).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn test_data_reply_delivery_absent_defaults_to_zero() {
+        // Encode a DataReply with delivery=0 (key 4 omitted).
+        let msg = HandlerMessage::DataReply {
+            request_id: 1,
+            data: vec![0x42],
+            delivery: 0,
+        };
+        let encoded = msg.encode().unwrap();
+        // Verify key 4 is NOT in the encoded CBOR.
+        let decoded = HandlerMessage::decode(&encoded).unwrap();
+        if let HandlerMessage::DataReply { delivery, .. } = decoded {
+            assert_eq!(delivery, 0);
+        } else {
+            panic!("expected DataReply");
+        }
+    }
+
+    #[test]
+    fn test_data_reply_invalid_delivery_rejected() {
+        // Manually construct a DataReply with delivery=2 (invalid).
+        let map = Value::Map(vec![
+            (Value::Integer(1.into()), Value::Integer(0x81.into())),
+            (Value::Integer(2.into()), Value::Integer(42.into())),
+            (Value::Integer(3.into()), Value::Bytes(vec![0x42])),
+            (Value::Integer(4.into()), Value::Integer(2.into())),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&map, &mut buf).unwrap();
+        let result = HandlerMessage::decode(&buf);
+        assert!(result.is_err(), "delivery=2 should be rejected");
+    }
+
+    #[test]
     fn test_event_message_roundtrip() {
         let mut details = BTreeMap::new();
         details.insert("battery_mv".to_string(), Value::Integer(3300.into()));

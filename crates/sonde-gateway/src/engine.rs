@@ -895,14 +895,8 @@ impl Gateway {
             blob: command_blob,
         };
         let response_cbor = response_msg.encode().ok()?;
-        // Encoding succeeded — now remove the deferred reply so it's not sent again.
-        if has_deferred {
-            self.deferred_replies.write().await.remove(&node.node_id);
-            info!(
-                node_id = %node.node_id,
-                "deferred reply injected into COMMAND"
-            );
-        }
+        // NOTE: Deferred reply removal happens in handle_wake() after AEAD
+        // encoding succeeds, to prevent data loss if framing fails.
 
         // 6. Build response header (echoing wake nonce)
         let response_header = FrameHeader {
@@ -947,14 +941,14 @@ impl Gateway {
                             process.send_data(&msg).await
                         {
                             if !data.is_empty()
-                                && data.len() <= sonde_protocol::MAX_APP_DATA_BLOB_SIZE
+                                && data.len() <= sonde_protocol::MAX_COMMAND_BLOB_SIZE
                             {
                                 deferred_replies.write().await.insert(node_id.clone(), data);
                                 info!(
                                     node_id = %node_id,
                                     "deferred reply stored from WAKE blob handler response"
                                 );
-                            } else if data.len() > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
+                            } else if data.len() > sonde_protocol::MAX_COMMAND_BLOB_SIZE {
                                 warn!(
                                     node_id = %node_id,
                                     len = data.len(),
@@ -980,7 +974,21 @@ impl Gateway {
     ) -> Option<Vec<u8>> {
         let (response_header, response_cbor) =
             self.handle_wake_core(node, header, payload, peer).await?;
-        self.encode_response(&response_header, &response_cbor, &node.psk)
+        let frame = self.encode_response(&response_header, &response_cbor, &node.psk)?;
+        // AEAD framing succeeded — now safe to remove deferred reply.
+        if self
+            .deferred_replies
+            .write()
+            .await
+            .remove(&node.node_id)
+            .is_some()
+        {
+            info!(
+                node_id = %node.node_id,
+                "deferred reply delivered in COMMAND"
+            );
+        }
+        Some(frame)
     }
 
     /// Handle a post-WAKE message — dispatch + AES-256-GCM encoding.
@@ -1245,11 +1253,11 @@ impl Gateway {
                 } else if delivery == 1 {
                     // Deferred delivery: store reply for next WAKE cycle.
                     // Validate that the data would fit in a NOP COMMAND payload.
-                    if data.len() > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
+                    if data.len() > sonde_protocol::MAX_COMMAND_BLOB_SIZE {
                         warn!(
                             node_id = %node.node_id,
                             len = data.len(),
-                            max = sonde_protocol::MAX_APP_DATA_BLOB_SIZE,
+                            max = sonde_protocol::MAX_COMMAND_BLOB_SIZE,
                             "deferred reply too large — dropping"
                         );
                     } else {

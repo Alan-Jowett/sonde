@@ -16,8 +16,16 @@ pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE - AEAD_TAG_SIZE
 /// APP_DATA is encoded as `{10: bstr}` — a CBOR map with one entry.
 /// CBOR overhead: 1 (map header) + 1 (key 10) + 1–2 (bstr length prefix) = 3–4 bytes.
 /// We use 5 bytes of overhead as a conservative upper bound, giving a max blob of 218.
-/// This limit also applies to `send_async()` queued blobs and deferred reply storage.
+/// This limit applies to `send()`, `send_recv()`, and `send_async()` queued blobs.
 pub const MAX_APP_DATA_BLOB_SIZE: usize = MAX_PAYLOAD_SIZE - 5; // 218
+
+/// Maximum blob size that can be piggybacked on a NOP COMMAND.
+///
+/// NOP COMMAND is encoded as `{4: uint, 10: bstr, 13: uint64, 14: uint64}`.
+/// CBOR overhead is ~26 bytes (map header + command_type + starting_seq +
+/// timestamp_ms + blob key/length prefix). We use 30 bytes as a conservative
+/// upper bound. This limit applies to deferred reply storage in the gateway.
+pub const MAX_COMMAND_BLOB_SIZE: usize = MAX_PAYLOAD_SIZE - 30; // 193
 
 // Header offsets
 pub const OFFSET_KEY_HINT: usize = 0;

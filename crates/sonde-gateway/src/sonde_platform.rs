@@ -23,9 +23,9 @@ use EbpfReturnType as Ret;
 
 /// Context descriptor for `struct sonde_context` (16 bytes, no packet data/end pointers).
 static SONDE_CONTEXT: EbpfContextDescriptor = EbpfContextDescriptor {
-    size: 16,
-    data: -1,
-    end: -1,
+    size: 32,
+    data: 16,
+    end: 24,
     meta: -1,
 };
 
@@ -39,7 +39,7 @@ static UNSUPPORTED_HELPER: HelperPrototype = HelperPrototype {
     unsupported: true,
 };
 
-/// Helper prototypes for sonde BPF helpers 1–16.
+/// Helper prototypes for sonde BPF helpers 1–17.
 /// Signatures match `test-programs/include/sonde_helpers.h`.
 static SONDE_HELPERS: [HelperPrototype; 17] = [
     // 1: i2c_read(handle, *buf, buf_len) -> i32
@@ -428,7 +428,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_16_helpers_are_usable() {
+    fn all_17_helpers_are_usable() {
         let platform = SondePlatform::new();
         for id in 1..=17 {
             assert!(
@@ -483,7 +483,9 @@ mod tests {
         let ctx = pt
             .context_descriptor
             .expect("should have context descriptor");
-        assert_eq!(ctx.size, 16);
+        assert_eq!(ctx.size, 32);
+        assert_eq!(ctx.data, 16, "data_start offset");
+        assert_eq!(ctx.end, 24, "data_end offset");
     }
 
     #[test]

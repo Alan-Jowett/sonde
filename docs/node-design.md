@@ -401,7 +401,7 @@ Each call increments the sequence number, ensuring independent replay protection
 
 `send_async()` enqueues a message for deferred transmission instead of sending it immediately. It is implemented by the wake cycle engine:
 
-1. Copy the blob into the async queue (a fixed-capacity `heapless::Vec` in RAM, persisted across wake cycles by the caller).
+1. Copy the blob into the async queue (a `Vec` in RAM, persisted across wake cycles by the caller).
 2. Return 0 on success, or a non-zero error code if the queue is full.
 
 The queued messages are drained at the start of the next wake cycle (§4.2 step 3 and step 6a). If exactly one message is queued and fits within the WAKE payload budget, it is piggybacked on the WAKE frame as `blob` (CBOR key 10), saving a round-trip. If multiple messages are queued or the single message exceeds the budget, all queued messages are sent as individual APP_DATA frames after COMMAND reception.

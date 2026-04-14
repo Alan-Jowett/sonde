@@ -872,16 +872,19 @@ impl Gateway {
         );
 
         // 6. Encode GatewayMessage::Command response
-        // Inject deferred reply into NOP commands from a previous cycle.
-        let command_blob = if matches!(command_payload, CommandPayload::Nop) {
-            let removed = self.deferred_replies.write().await.remove(&node.node_id);
-            if removed.is_some() {
-                info!(
-                    node_id = %node.node_id,
-                    "deferred reply injected into COMMAND"
-                );
-            }
-            removed
+        // Peek at deferred reply for NOP commands; remove only after successful encode.
+        let has_deferred = matches!(command_payload, CommandPayload::Nop)
+            && self
+                .deferred_replies
+                .read()
+                .await
+                .contains_key(&node.node_id);
+        let command_blob = if has_deferred {
+            self.deferred_replies
+                .read()
+                .await
+                .get(&node.node_id)
+                .cloned()
         } else {
             None
         };
@@ -892,6 +895,14 @@ impl Gateway {
             blob: command_blob,
         };
         let response_cbor = response_msg.encode().ok()?;
+        // Encoding succeeded — now remove the deferred reply so it's not sent again.
+        if has_deferred {
+            self.deferred_replies.write().await.remove(&node.node_id);
+            info!(
+                node_id = %node.node_id,
+                "deferred reply injected into COMMAND"
+            );
+        }
 
         // 6. Build response header (echoing wake nonce)
         let response_header = FrameHeader {
@@ -935,11 +946,17 @@ impl Gateway {
                         if let Some(crate::handler::HandlerMessage::DataReply { data, .. }) =
                             process.send_data(&msg).await
                         {
-                            if !data.is_empty() {
+                            if !data.is_empty() && data.len() <= sonde_protocol::MAX_PAYLOAD_SIZE {
                                 deferred_replies.write().await.insert(node_id.clone(), data);
                                 info!(
                                     node_id = %node_id,
                                     "deferred reply stored from WAKE blob handler response"
+                                );
+                            } else if data.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+                                warn!(
+                                    node_id = %node_id,
+                                    len = data.len(),
+                                    "WAKE blob handler reply too large for deferred delivery — dropping"
                                 );
                             }
                         }
@@ -1225,15 +1242,25 @@ impl Gateway {
                     None
                 } else if delivery == 1 {
                     // Deferred delivery: store reply for next WAKE cycle.
-                    info!(
-                        node_id = %node.node_id,
-                        len = data.len(),
-                        "handler replied with deferred delivery — storing for next WAKE"
-                    );
-                    self.deferred_replies
-                        .write()
-                        .await
-                        .insert(node.node_id.clone(), data);
+                    // Validate that the data would fit in a NOP COMMAND payload.
+                    if data.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+                        warn!(
+                            node_id = %node.node_id,
+                            len = data.len(),
+                            max = sonde_protocol::MAX_PAYLOAD_SIZE,
+                            "deferred reply too large — dropping"
+                        );
+                    } else {
+                        info!(
+                            node_id = %node.node_id,
+                            len = data.len(),
+                            "handler replied with deferred delivery — storing for next WAKE"
+                        );
+                        self.deferred_replies
+                            .write()
+                            .await
+                            .insert(node.node_id.clone(), data);
+                    }
                     None
                 } else {
                     // GW-1308 AC4: handler replied with len.

@@ -872,14 +872,8 @@ impl Gateway {
         );
 
         // 6. Encode GatewayMessage::Command response
-        // Peek at deferred reply for NOP commands; remove only after successful encode.
-        let has_deferred = matches!(command_payload, CommandPayload::Nop)
-            && self
-                .deferred_replies
-                .read()
-                .await
-                .contains_key(&node.node_id);
-        let command_blob = if has_deferred {
+        // Peek at deferred reply for NOP commands; remove only after successful AEAD.
+        let command_blob = if matches!(command_payload, CommandPayload::Nop) {
             self.deferred_replies
                 .read()
                 .await
@@ -888,6 +882,7 @@ impl Gateway {
         } else {
             None
         };
+        let has_deferred = command_blob.is_some();
         let response_msg = GatewayMessage::Command {
             starting_seq,
             timestamp_ms,

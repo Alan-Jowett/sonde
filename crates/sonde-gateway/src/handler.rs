@@ -1051,7 +1051,7 @@ mod tests {
             delivery: 0,
         };
         let encoded = msg.encode().unwrap();
-        // Verify key 4 is NOT in the encoded CBOR.
+        // Verify that delivery=0 round-trips correctly (key 4 omitted on encode).
         let decoded = HandlerMessage::decode(&encoded).unwrap();
         if let HandlerMessage::DataReply { delivery, .. } = decoded {
             assert_eq!(delivery, 0);

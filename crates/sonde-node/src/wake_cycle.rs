@@ -12,6 +12,7 @@ use sonde_protocol::{
     MSG_WAKE,
 };
 
+use crate::async_queue::AsyncQueue;
 use crate::bpf_helpers::{ProgramClass, SondeContext};
 use crate::bpf_runtime::BpfInterpreter;
 use crate::error::{NodeError, NodeResult};
@@ -115,7 +116,9 @@ fn determine_wake_reason<S: PlatformStorage>(storage: &mut S) -> WakeReason {
 /// Per ND-0202, unknown command types are treated as NOP. The node
 /// still needs `starting_seq` and `timestamp_ms` from the CBOR map
 /// to maintain session sequencing and time reference.
-fn decode_command_as_nop(payload: &[u8]) -> NodeResult<(u64, u64, CommandPayload)> {
+fn decode_command_as_nop(
+    payload: &[u8],
+) -> NodeResult<(u64, u64, CommandPayload, Option<Vec<u8>>)> {
     // Parse the CBOR map to extract keys 13 (starting_seq) and 14 (timestamp_ms).
     // We use ciborium directly since GatewayMessage::decode rejected the command_type.
     let value: ciborium::Value = ciborium::from_reader(payload)
@@ -149,7 +152,7 @@ fn decode_command_as_nop(payload: &[u8]) -> NodeResult<(u64, u64, CommandPayload
         "missing timestamp_ms in unknown command",
     ))?;
 
-    Ok((starting_seq, timestamp_ms, CommandPayload::Nop))
+    Ok((starting_seq, timestamp_ms, CommandPayload::Nop, None))
 }
 
 use sonde_protocol::{decode_frame, encode_frame, open_frame, AeadProvider};
@@ -174,6 +177,9 @@ fn decode_verify_frame<A: AeadProvider + ?Sized, S: Sha256Provider + ?Sized>(
 ///
 /// Encodes the WAKE frame with AES-256-GCM and decodes the COMMAND
 /// response using AEAD authentication instead of HMAC-SHA256.
+///
+/// If `wake_blob` is `Some`, the blob is piggybacked on the WAKE message.
+/// The returned `Option<Vec<u8>>` is the downlink blob from the COMMAND.
 #[allow(clippy::too_many_arguments)]
 pub fn wake_command_exchange<T: Transport, A: AeadProvider, S: Sha256Provider>(
     transport: &mut T,
@@ -184,13 +190,14 @@ pub fn wake_command_exchange<T: Transport, A: AeadProvider, S: Sha256Provider>(
     clock: &dyn Clock,
     aead: &A,
     sha: &S,
-) -> NodeResult<(u64, u64, CommandPayload)> {
+    wake_blob: Option<Vec<u8>>,
+) -> NodeResult<(u64, u64, CommandPayload, Option<Vec<u8>>)> {
     let wake_msg = NodeMessage::Wake {
         firmware_abi_version: FIRMWARE_ABI_VERSION,
         program_hash: program_hash.to_vec(),
         battery_mv,
         firmware_version: env!("CARGO_PKG_VERSION").into(),
-        blob: None,
+        blob: wake_blob,
     };
     let payload_cbor = wake_msg
         .encode()
@@ -242,7 +249,7 @@ fn verify_and_decode_command<A: AeadProvider, S: Sha256Provider>(
     expected_nonce: u64,
     aead: &A,
     sha: &S,
-) -> NodeResult<(u64, u64, CommandPayload)> {
+) -> NodeResult<(u64, u64, CommandPayload, Option<Vec<u8>>)> {
     let (header, payload) = decode_verify_frame(raw, &identity.psk, aead, sha)?;
 
     if header.msg_type != MSG_COMMAND {
@@ -266,8 +273,8 @@ fn verify_and_decode_command<A: AeadProvider, S: Sha256Provider>(
             starting_seq,
             timestamp_ms,
             payload,
-            blob: _,
-        } => Ok((starting_seq, timestamp_ms, payload)),
+            blob,
+        } => Ok((starting_seq, timestamp_ms, payload, blob)),
         _ => Err(NodeError::UnexpectedMsgType(header.msg_type)),
     }
 }
@@ -701,6 +708,9 @@ where
         }
     }
 
+    // 4a. Create async send queue (RAM-only, fresh each wake cycle).
+    let mut async_queue = AsyncQueue::new();
+
     // 4. Load active resident program hash and raw bytes from NVS.
     let (program_hash, mut resident_image_bytes) = {
         let program_store = ProgramStore::new(storage);
@@ -710,6 +720,31 @@ where
     // 5. Generate WAKE nonce
     let wake_nonce = rng.random_u64();
     let battery_mv = battery.battery_mv();
+
+    // 5a. Check async queue for WAKE piggybacking.
+    // The queue is RAM-only and normally empty at WAKE time (does not
+    // survive deep sleep). This path exists for completeness.
+    let wake_blob = {
+        let candidate = async_queue.single_for_piggyback(sonde_protocol::MAX_PAYLOAD_SIZE);
+        if let Some(blob) = candidate {
+            let trial = NodeMessage::Wake {
+                firmware_abi_version: FIRMWARE_ABI_VERSION,
+                program_hash: program_hash.clone(),
+                battery_mv,
+                firmware_version: env!("CARGO_PKG_VERSION").into(),
+                blob: Some(blob.clone()),
+            };
+            match trial.encode() {
+                Ok(encoded) if encoded.len() <= sonde_protocol::MAX_PAYLOAD_SIZE => {
+                    Some(async_queue.drain().into_iter().next().unwrap())
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    };
+    let piggybacked = wake_blob.is_some();
 
     // 6. Send WAKE, await COMMAND (with retries) via AEAD
     let command_result = wake_command_exchange(
@@ -721,9 +756,10 @@ where
         clock,
         aead,
         sha,
+        wake_blob,
     );
 
-    let (starting_seq, timestamp_ms, command_payload) = match command_result {
+    let (starting_seq, timestamp_ms, command_payload, command_blob) = match command_result {
         Ok(cmd) => {
             // WAKE/COMMAND succeeded — erase peer_payload if still present (ND-0914).
             if storage.has_peer_payload() {
@@ -920,6 +956,10 @@ where
                 .expect("FIRMWARE_ABI_VERSION must fit in u16"),
             wake_reason: sleep_mgr.wake_reason() as u8,
             _padding: [0; 3],
+            data_start: command_blob.as_ref().map_or(0, |b| b.as_ptr() as u64),
+            data_end: command_blob
+                .as_ref()
+                .map_or(0, |b| unsafe { b.as_ptr().add(b.len()) } as u64),
         };
 
         let mut trace_log = Vec::new();
@@ -936,6 +976,7 @@ where
                 &mut current_seq as *mut u64,
                 program_class,
                 &mut trace_log as *mut Vec<String>,
+                &mut async_queue as *mut AsyncQueue,
                 timestamp_ms,
                 command_received_at,
                 battery_mv,
@@ -985,6 +1026,24 @@ where
         let _ = exec_result;
 
         flush_trace_log(&trace_log);
+    }
+
+    // 9b. Drain async queue — send queued blobs as APP_DATA.
+    // Piggybacked blobs were already consumed during WAKE; send the rest.
+    if !piggybacked || !async_queue.is_empty() {
+        for queued_blob in async_queue.drain() {
+            if let Err(e) = send_app_data(
+                transport,
+                &identity,
+                &mut current_seq,
+                &queued_blob,
+                aead,
+                sha,
+            ) {
+                log::warn!("async queue APP_DATA send failed: {}", e);
+                break;
+            }
+        }
     }
 
     // 10. Determine sleep duration
@@ -1336,10 +1395,11 @@ mod tests {
                 &clock,
                 &aead,
                 &sha,
+                None,
             );
 
             assert!(result.is_ok(), "AEAD wake/command exchange should succeed");
-            let (starting_seq, timestamp_ms, cmd) = result.unwrap();
+            let (starting_seq, timestamp_ms, cmd, _blob) = result.unwrap();
             assert_eq!(starting_seq, 1);
             assert_eq!(timestamp_ms, 1000);
             assert_eq!(cmd, CommandPayload::Nop);
@@ -1387,6 +1447,7 @@ mod tests {
                 &clock,
                 &aead,
                 &sha,
+                None,
             );
 
             assert!(result.is_ok(), "retry after timeout should succeed");
@@ -1496,6 +1557,7 @@ mod tests {
                 &clock,
                 &aead,
                 &sha,
+                None,
             );
 
             assert!(

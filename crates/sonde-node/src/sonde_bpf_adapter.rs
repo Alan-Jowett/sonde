@@ -279,6 +279,8 @@ mod tests {
             firmware_abi_version: 1,
             wake_reason: 0,
             _padding: [0; 3],
+            data_start: 0,
+            data_end: 0,
         };
         let ctx_ptr = &ctx as *const _ as u64;
         let result = interp.execute(ctx_ptr, 100_000).unwrap();
@@ -429,6 +431,8 @@ mod tests {
             firmware_abi_version: 1,
             wake_reason: 0,
             _padding: [0; 3],
+            data_start: 0,
+            data_end: 0,
         };
         let ctx_before = ctx;
         let ctx_ptr = &mut ctx as *mut _ as u64;

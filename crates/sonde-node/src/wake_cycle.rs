@@ -190,6 +190,7 @@ pub fn wake_command_exchange<T: Transport, A: AeadProvider, S: Sha256Provider>(
         program_hash: program_hash.to_vec(),
         battery_mv,
         firmware_version: env!("CARGO_PKG_VERSION").into(),
+        blob: None,
     };
     let payload_cbor = wake_msg
         .encode()
@@ -265,6 +266,7 @@ fn verify_and_decode_command<A: AeadProvider, S: Sha256Provider>(
             starting_seq,
             timestamp_ms,
             payload,
+            blob: _,
         } => Ok((starting_seq, timestamp_ms, payload)),
         _ => Err(NodeError::UnexpectedMsgType(header.msg_type)),
     }
@@ -1301,6 +1303,7 @@ mod tests {
                 starting_seq,
                 timestamp_ms,
                 payload: payload.clone(),
+                blob: None,
             };
             let payload_cbor = msg.encode().unwrap();
             let header = FrameHeader {

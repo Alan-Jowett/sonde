@@ -132,6 +132,7 @@ fn test_p020() {
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
         firmware_version: "0.4.0".into(),
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
     let decoded = NodeMessage::decode(MSG_WAKE, &cbor).unwrap();
@@ -141,6 +142,7 @@ fn test_p020() {
             program_hash,
             battery_mv,
             firmware_version,
+            blob: _,
         } => {
             assert_eq!(firmware_abi_version, 1);
             assert_eq!(program_hash, vec![0xAA; 32]);
@@ -158,6 +160,7 @@ fn test_p021() {
         program_hash: vec![],
         battery_mv: 3300,
         firmware_version: "0.4.0".into(),
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
     let decoded = NodeMessage::decode(MSG_WAKE, &cbor).unwrap();
@@ -175,6 +178,7 @@ fn test_p022() {
         starting_seq: 42,
         timestamp_ms: 1_710_000_000_000,
         payload: CommandPayload::Nop,
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
     let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
@@ -183,6 +187,7 @@ fn test_p022() {
             starting_seq,
             timestamp_ms,
             payload,
+            blob: _,
         } => {
             assert_eq!(starting_seq, 42);
             assert_eq!(timestamp_ms, 1_710_000_000_000);
@@ -204,6 +209,7 @@ fn test_p023() {
             chunk_size: 190,
             chunk_count: 22,
         },
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
     let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
@@ -218,6 +224,7 @@ fn test_p023() {
                     chunk_size,
                     chunk_count,
                 },
+            blob: _,
         } => {
             assert_eq!(starting_seq, 1);
             assert_eq!(timestamp_ms, 1_710_000_000_000);
@@ -236,6 +243,7 @@ fn test_p024() {
         starting_seq: 1,
         timestamp_ms: 0,
         payload: CommandPayload::UpdateSchedule { interval_s: 300 },
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
     let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
@@ -317,6 +325,7 @@ fn test_p029() {
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
         firmware_version: "0.4.0".into(),
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
 
@@ -340,6 +349,7 @@ fn test_p029() {
             program_hash,
             battery_mv,
             firmware_version,
+            blob: _,
         } => {
             assert_eq!(firmware_abi_version, 1);
             assert_eq!(program_hash, vec![0xAA; 32]);
@@ -480,6 +490,7 @@ fn test_p031() {
         program_hash: vec![],
         battery_mv: 3300,
         firmware_version: "0.4.0".into(),
+        blob: None,
     }
     .encode()
     .unwrap();
@@ -498,9 +509,10 @@ fn test_p032() {
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
         firmware_version: "0.4.0".into(),
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
-    // Decode as generic CBOR and check that keys are positive integers, not strings.
+    // Decode as generic CBORand check that keys are positive integers, not strings.
     let val: ciborium::Value = ciborium::de::from_reader(&cbor[..]).unwrap();
     let map = match val {
         ciborium::Value::Map(m) => m,
@@ -554,6 +566,7 @@ fn test_p034() {
             chunk_size: 190,
             chunk_count: 22,
         },
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
     let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
@@ -568,6 +581,7 @@ fn test_p034() {
                     chunk_size,
                     chunk_count,
                 },
+            blob: _,
         } => {
             assert_eq!(starting_seq, 100);
             assert_eq!(timestamp_ms, 1_710_000_000_000);
@@ -590,6 +604,7 @@ fn test_p035() {
         starting_seq: 1,
         timestamp_ms: 1_710_000_000_000,
         payload: CommandPayload::Reboot,
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
 
@@ -627,6 +642,7 @@ fn test_p035() {
             starting_seq,
             timestamp_ms,
             payload,
+            blob: _,
         } => {
             assert_eq!(starting_seq, 1);
             assert_eq!(timestamp_ms, 1_710_000_000_000);
@@ -765,6 +781,7 @@ fn test_p037() {
             starting_seq: 42,
             timestamp_ms: 1_710_000_000_000,
             payload: CommandPayload::Nop,
+            blob: None,
         };
         let cbor = orig.encode().unwrap();
         let modified = inject_unknown_key(&cbor);
@@ -847,6 +864,7 @@ fn test_p038() {
                 chunk_size: 190,
                 chunk_count: 22,
             },
+            blob: None,
         };
         let cbor = msg.encode().unwrap();
         let val: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
@@ -903,6 +921,7 @@ fn test_p038() {
             starting_seq: 1,
             timestamp_ms: 1_710_000_000_000,
             payload: CommandPayload::Nop,
+            blob: None,
         };
         let cbor = msg.encode().unwrap();
         let val: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
@@ -929,6 +948,7 @@ fn test_p038() {
             starting_seq: 1,
             timestamp_ms: 1_710_000_000_000,
             payload: CommandPayload::Reboot,
+            blob: None,
         };
         let cbor = msg.encode().unwrap();
         let val: ciborium::Value = ciborium::from_reader(cbor.as_slice()).expect("valid CBOR");
@@ -965,6 +985,7 @@ fn test_p039() {
             program_hash: vec![0xAA; 32],
             battery_mv: u32::MAX,
             firmware_version: "0.4.0".into(),
+            blob: None,
         };
         let cbor = msg.encode().unwrap();
         let decoded = NodeMessage::decode(MSG_WAKE, &cbor).unwrap();
@@ -1013,6 +1034,7 @@ fn test_p039() {
             starting_seq: u64::MAX,
             timestamp_ms: u64::MAX,
             payload: CommandPayload::Nop,
+            blob: None,
         };
         let cbor = msg.encode().unwrap();
         let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
@@ -1448,6 +1470,7 @@ fn test_p063() {
         program_hash: vec![0xAA; 32],
         battery_mv: 3300,
         firmware_version: "0.4.0".into(),
+        blob: None,
     }
     .encode()
     .unwrap();
@@ -1472,6 +1495,7 @@ fn test_p064() {
         starting_seq: 1,
         timestamp_ms: 1_710_000_000_000,
         payload: CommandPayload::Nop,
+        blob: None,
     }
     .encode()
     .unwrap();
@@ -1543,6 +1567,7 @@ fn test_p090_command_type_derived_from_payload() {
             starting_seq: 1,
             timestamp_ms: 1000,
             payload: payload.clone(),
+            blob: None,
         };
         let cbor = msg.encode().unwrap();
         let decoded = GatewayMessage::decode(MSG_COMMAND, &cbor).unwrap();
@@ -2117,5 +2142,133 @@ mod aead_tests {
         assert_eq!(MAX_PAYLOAD_SIZE, 223);
         assert_eq!(AEAD_TAG_SIZE, 16);
         assert_eq!(MIN_FRAME_SIZE, HEADER_SIZE + AEAD_TAG_SIZE);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 11  Store-and-forward message encoding
+// ---------------------------------------------------------------------------
+
+/// T-P120: WAKE with optional blob round-trip
+#[test]
+fn test_p120_wake_blob_round_trip() {
+    let hash = vec![0x42u8; 32];
+
+    // Encode with blob
+    let wake_with = NodeMessage::Wake {
+        firmware_abi_version: 1,
+        program_hash: hash.clone(),
+        battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
+        blob: Some(vec![0xAA, 0xBB]),
+    };
+    let encoded = wake_with.encode().unwrap();
+    let decoded = NodeMessage::decode(MSG_WAKE, &encoded).unwrap();
+    assert_eq!(decoded, wake_with);
+
+    // Encode without blob
+    let wake_without = NodeMessage::Wake {
+        firmware_abi_version: 1,
+        program_hash: hash,
+        battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
+        blob: None,
+    };
+    let encoded_no_blob = wake_without.encode().unwrap();
+    let decoded_no_blob = NodeMessage::decode(MSG_WAKE, &encoded_no_blob).unwrap();
+    assert_eq!(decoded_no_blob, wake_without);
+
+    // Verify key 10 is absent in the decoded CBOR map
+    let value: ciborium::Value = ciborium::from_reader(encoded_no_blob.as_slice()).unwrap();
+    if let ciborium::Value::Map(pairs) = value {
+        let has_key_10 = pairs.iter().any(|(k, _)| {
+            k.as_integer()
+                .and_then(|i| u64::try_from(i).ok())
+                .map_or(false, |v| v == 10)
+        });
+        assert!(
+            !has_key_10,
+            "CBOR map should not contain key 10 when blob is None"
+        );
+    } else {
+        panic!("expected CBOR map");
+    }
+}
+
+/// T-P121: COMMAND NOP with optional blob round-trip
+#[test]
+fn test_p121_command_nop_blob_round_trip() {
+    // Encode NOP with blob
+    let cmd_with = GatewayMessage::Command {
+        starting_seq: 42,
+        timestamp_ms: 1700000000000,
+        payload: CommandPayload::Nop,
+        blob: Some(vec![0xCC, 0xDD]),
+    };
+    let encoded = cmd_with.encode().unwrap();
+    let decoded = GatewayMessage::decode(MSG_COMMAND, &encoded).unwrap();
+    assert_eq!(decoded, cmd_with);
+
+    // Encode NOP without blob
+    let cmd_without = GatewayMessage::Command {
+        starting_seq: 42,
+        timestamp_ms: 1700000000000,
+        payload: CommandPayload::Nop,
+        blob: None,
+    };
+    let encoded_no_blob = cmd_without.encode().unwrap();
+    let decoded_no_blob = GatewayMessage::decode(MSG_COMMAND, &encoded_no_blob).unwrap();
+    assert_eq!(decoded_no_blob, cmd_without);
+
+    // Verify key 10 absent in CBOR map
+    let value: ciborium::Value = ciborium::from_reader(encoded_no_blob.as_slice()).unwrap();
+    if let ciborium::Value::Map(pairs) = value {
+        let has_key_10 = pairs.iter().any(|(k, _)| {
+            k.as_integer()
+                .and_then(|i| u64::try_from(i).ok())
+                .map_or(false, |v| v == 10)
+        });
+        assert!(
+            !has_key_10,
+            "CBOR map should not contain key 10 when blob is None"
+        );
+    } else {
+        panic!("expected CBOR map");
+    }
+}
+
+/// T-P122: Non-NOP COMMAND ignores blob field
+#[test]
+fn test_p122_non_nop_command_ignores_blob() {
+    // Encode UPDATE_SCHEDULE without blob
+    let cmd = GatewayMessage::Command {
+        starting_seq: 1,
+        timestamp_ms: 1700000000000,
+        payload: CommandPayload::UpdateSchedule { interval_s: 60 },
+        blob: None,
+    };
+    let encoded = cmd.encode().unwrap();
+    let decoded = GatewayMessage::decode(MSG_COMMAND, &encoded).unwrap();
+    match &decoded {
+        GatewayMessage::Command { blob, .. } => assert_eq!(*blob, None),
+        _ => panic!("expected Command"),
+    }
+
+    // Manually inject key 10 into an UPDATE_SCHEDULE COMMAND CBOR
+    let value: ciborium::Value = ciborium::from_reader(encoded.as_slice()).unwrap();
+    if let ciborium::Value::Map(mut pairs) = value {
+        pairs.push((
+            ciborium::Value::Integer(10.into()),
+            ciborium::Value::Bytes(vec![0xFF]),
+        ));
+        let mut injected = Vec::new();
+        ciborium::into_writer(&ciborium::Value::Map(pairs), &mut injected).unwrap();
+        let decoded_injected = GatewayMessage::decode(MSG_COMMAND, &injected).unwrap();
+        match &decoded_injected {
+            GatewayMessage::Command { blob, .. } => {
+                assert_eq!(*blob, None, "non-NOP COMMAND must ignore key 10");
+            }
+            _ => panic!("expected Command"),
+        }
     }
 }

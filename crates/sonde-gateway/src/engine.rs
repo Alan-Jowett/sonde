@@ -661,6 +661,7 @@ impl Gateway {
                     program_hash,
                     battery_mv,
                     firmware_version,
+                    blob: _,
                 }) => (
                     firmware_abi_version,
                     program_hash,
@@ -866,6 +867,7 @@ impl Gateway {
             starting_seq,
             timestamp_ms,
             payload: command_payload,
+            blob: None,
         };
         let response_cbor = response_msg.encode().ok()?;
 

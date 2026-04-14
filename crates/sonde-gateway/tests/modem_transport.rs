@@ -376,6 +376,7 @@ async fn t1108_e2e_wake_cycle_over_pty() {
         program_hash: vec![0u8; 32],
         battery_mv: 3300,
         firmware_version: "0.4.0".into(),
+        blob: None,
     };
     let cbor = wake_msg.encode().unwrap();
     let wake_frame = encode_frame(&header, &cbor, &psk, &GatewayAead, &RustCryptoSha256).unwrap();

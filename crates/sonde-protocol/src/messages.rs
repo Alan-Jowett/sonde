@@ -17,6 +17,7 @@ pub enum NodeMessage {
         program_hash: Vec<u8>,
         battery_mv: u32,
         firmware_version: String,
+        blob: Option<Vec<u8>>,
     },
     GetChunk {
         chunk_index: u32,
@@ -72,6 +73,7 @@ pub enum GatewayMessage {
         starting_seq: u64,
         timestamp_ms: u64,
         payload: CommandPayload,
+        blob: Option<Vec<u8>>,
     },
     Chunk {
         chunk_index: u32,
@@ -161,6 +163,16 @@ fn get_bytes(fields: &[(u64, Value)], key: u64) -> Result<Vec<u8>, DecodeError> 
         .ok_or(DecodeError::InvalidFieldType(key))
 }
 
+fn get_bytes_optional(fields: &[(u64, Value)], key: u64) -> Result<Option<Vec<u8>>, DecodeError> {
+    match fields.iter().find(|(k, _)| *k == key) {
+        None => Ok(None),
+        Some((_, val)) => val
+            .as_bytes()
+            .map(|b| Some(b.to_vec()))
+            .ok_or(DecodeError::InvalidFieldType(key)),
+    }
+}
+
 /// Maximum length for string fields decoded from the wire (e.g., firmware_version).
 /// Prevents unbounded allocation from malicious/buggy peers.
 const MAX_STRING_FIELD_LEN: usize = 32;
@@ -221,13 +233,18 @@ impl NodeMessage {
                 program_hash,
                 battery_mv,
                 firmware_version,
+                blob,
             } => {
-                alloc::vec![
+                let mut pairs = alloc::vec![
                     (KEY_FIRMWARE_ABI_VERSION, u32_val(*firmware_abi_version)),
                     (KEY_PROGRAM_HASH, Value::Bytes(program_hash.clone())),
                     (KEY_BATTERY_MV, u32_val(*battery_mv)),
-                    (KEY_FIRMWARE_VERSION, Value::Text(firmware_version.clone())),
-                ]
+                ];
+                if let Some(b) = blob {
+                    pairs.push((KEY_BLOB, Value::Bytes(b.clone())));
+                }
+                pairs.push((KEY_FIRMWARE_VERSION, Value::Text(firmware_version.clone())));
+                pairs
             }
             NodeMessage::GetChunk { chunk_index } => {
                 alloc::vec![(KEY_CHUNK_INDEX, u32_val(*chunk_index))]
@@ -253,6 +270,7 @@ impl NodeMessage {
                 program_hash: get_bytes(&fields, KEY_PROGRAM_HASH)?,
                 battery_mv: get_u32(&fields, KEY_BATTERY_MV)?,
                 firmware_version: get_string(&fields, KEY_FIRMWARE_VERSION)?,
+                blob: get_bytes_optional(&fields, KEY_BLOB)?,
             }),
             MSG_GET_CHUNK => Ok(NodeMessage::GetChunk {
                 chunk_index: get_u32(&fields, KEY_CHUNK_INDEX)?,
@@ -288,9 +306,11 @@ impl GatewayMessage {
                 starting_seq,
                 timestamp_ms,
                 payload,
+                blob,
             } => {
                 // Deterministic CBOR (RFC 8949 §4.2): keys present in the map must be in ascending order.
-                // KEY_COMMAND_TYPE=4, KEY_PAYLOAD=5 (optional for Nop/Reboot), KEY_STARTING_SEQ=13, KEY_TIMESTAMP_MS=14
+                // KEY_COMMAND_TYPE=4, KEY_PAYLOAD=5 (optional), KEY_BLOB=10 (optional, NOP only),
+                // KEY_STARTING_SEQ=13, KEY_TIMESTAMP_MS=14
                 let payload_val = match payload {
                     CommandPayload::Nop | CommandPayload::Reboot => None,
                     CommandPayload::UpdateProgram {
@@ -333,6 +353,9 @@ impl GatewayMessage {
                 let mut p = alloc::vec![(KEY_COMMAND_TYPE, u8_val(payload.command_type())),];
                 if let Some(pv) = payload_val {
                     p.push((KEY_PAYLOAD, pv));
+                }
+                if let Some(b) = blob {
+                    p.push((KEY_BLOB, Value::Bytes(b.clone())));
                 }
                 p.push((KEY_STARTING_SEQ, uint_val(*starting_seq)));
                 p.push((KEY_TIMESTAMP_MS, uint_val(*timestamp_ms)));
@@ -412,10 +435,18 @@ impl GatewayMessage {
                     _ => return Err(DecodeError::InvalidCommandType(command_type)),
                 };
 
+                // Extract blob only for NOP commands; ignore key 10 on other command types
+                let blob = if command_type == CMD_NOP {
+                    get_bytes_optional(&fields, KEY_BLOB)?
+                } else {
+                    None
+                };
+
                 Ok(GatewayMessage::Command {
                     starting_seq,
                     timestamp_ms,
                     payload,
+                    blob,
                 })
             }
             MSG_CHUNK => Ok(GatewayMessage::Chunk {

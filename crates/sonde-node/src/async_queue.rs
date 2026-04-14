@@ -31,7 +31,7 @@ impl AsyncQueue {
         if self.messages.len() >= MAX_MESSAGES {
             return -1;
         }
-        if blob.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+        if blob.len() > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
             return -2;
         }
         self.messages.push(blob);
@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn oversized_blob_returns_neg2() {
         let mut q = AsyncQueue::new();
-        let big = vec![0u8; sonde_protocol::MAX_PAYLOAD_SIZE + 1];
+        let big = vec![0u8; sonde_protocol::MAX_APP_DATA_BLOB_SIZE + 1];
         assert_eq!(q.push(big), -2);
         assert!(q.is_empty());
     }
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn max_size_blob_accepted() {
         let mut q = AsyncQueue::new();
-        let blob = vec![0x42u8; sonde_protocol::MAX_PAYLOAD_SIZE];
+        let blob = vec![0x42u8; sonde_protocol::MAX_APP_DATA_BLOB_SIZE];
         assert_eq!(q.push(blob), 0);
         assert_eq!(q.len(), 1);
     }

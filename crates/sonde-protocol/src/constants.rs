@@ -11,6 +11,14 @@ pub const GCM_NONCE_SIZE: usize = 12;
 pub const MIN_FRAME_SIZE: usize = HEADER_SIZE + AEAD_TAG_SIZE; // 27
 pub const MAX_PAYLOAD_SIZE: usize = MAX_FRAME_SIZE - HEADER_SIZE - AEAD_TAG_SIZE; // 223
 
+/// Maximum blob size that can be carried in a single APP_DATA frame.
+///
+/// APP_DATA is encoded as `{10: bstr}` — a CBOR map with one entry.
+/// CBOR overhead: 1 (map header) + 1 (key 10) + 1–2 (bstr length prefix) = 3–4 bytes.
+/// We use 5 bytes of overhead as a conservative upper bound, giving a max blob of 218.
+/// This limit also applies to `send_async()` queued blobs and deferred reply storage.
+pub const MAX_APP_DATA_BLOB_SIZE: usize = MAX_PAYLOAD_SIZE - 5; // 218
+
 // Header offsets
 pub const OFFSET_KEY_HINT: usize = 0;
 pub const OFFSET_MSG_TYPE: usize = 2;

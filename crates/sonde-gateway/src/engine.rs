@@ -946,13 +946,15 @@ impl Gateway {
                         if let Some(crate::handler::HandlerMessage::DataReply { data, .. }) =
                             process.send_data(&msg).await
                         {
-                            if !data.is_empty() && data.len() <= sonde_protocol::MAX_PAYLOAD_SIZE {
+                            if !data.is_empty()
+                                && data.len() <= sonde_protocol::MAX_APP_DATA_BLOB_SIZE
+                            {
                                 deferred_replies.write().await.insert(node_id.clone(), data);
                                 info!(
                                     node_id = %node_id,
                                     "deferred reply stored from WAKE blob handler response"
                                 );
-                            } else if data.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+                            } else if data.len() > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
                                 warn!(
                                     node_id = %node_id,
                                     len = data.len(),
@@ -1243,11 +1245,11 @@ impl Gateway {
                 } else if delivery == 1 {
                     // Deferred delivery: store reply for next WAKE cycle.
                     // Validate that the data would fit in a NOP COMMAND payload.
-                    if data.len() > sonde_protocol::MAX_PAYLOAD_SIZE {
+                    if data.len() > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
                         warn!(
                             node_id = %node.node_id,
                             len = data.len(),
-                            max = sonde_protocol::MAX_PAYLOAD_SIZE,
+                            max = sonde_protocol::MAX_APP_DATA_BLOB_SIZE,
                             "deferred reply too large — dropping"
                         );
                     } else {

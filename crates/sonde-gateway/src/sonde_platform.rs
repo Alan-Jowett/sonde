@@ -21,7 +21,7 @@ use prevail::spec::type_descriptors::{
 use EbpfArgumentType as Arg;
 use EbpfReturnType as Ret;
 
-/// Context descriptor for `struct sonde_context` (16 bytes, no packet data/end pointers).
+/// Context descriptor for `struct sonde_context` (32 bytes, with data_start/data_end pointers).
 static SONDE_CONTEXT: EbpfContextDescriptor = EbpfContextDescriptor {
     size: 32,
     data: 16,

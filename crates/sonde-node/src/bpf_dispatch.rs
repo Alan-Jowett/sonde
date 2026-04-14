@@ -462,7 +462,7 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     let result = with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
-        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
+        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
             return (-1i64) as u64;
         }
 
@@ -496,7 +496,7 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
         let reply_ptr = r3 as *mut u8;
         let reply_cap = r4 as usize;
         if blob_ptr.is_null()
-            || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE
+            || blob_len > sonde_protocol::MAX_APP_DATA_BLOB_SIZE
             || reply_ptr.is_null()
             || reply_cap == 0
         {
@@ -707,7 +707,7 @@ pub fn helper_send_async(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 
             return (-2i64) as u64;
         }
         let blob_len = r2 as usize;
-        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
+        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
             return (-2i64) as u64;
         }
 
@@ -2359,7 +2359,7 @@ mod tests {
         let mut seq = 0u64;
         let mut trace = Vec::new();
 
-        let big = vec![0x42u8; sonde_protocol::MAX_PAYLOAD_SIZE + 1];
+        let big = vec![0x42u8; sonde_protocol::MAX_APP_DATA_BLOB_SIZE + 1];
 
         with_test_context(
             &mut hal,

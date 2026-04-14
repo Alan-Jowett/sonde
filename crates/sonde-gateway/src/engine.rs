@@ -649,15 +649,15 @@ impl Gateway {
     /// Shared WAKE business logic: decode, session management, command
     /// selection, telemetry update, and response CBOR encoding.
     ///
-    /// Returns `(response_header, response_cbor)` so the caller can apply
-    /// the appropriate frame codec (HMAC or AEAD).
+    /// Returns `(response_header, response_cbor, deferred_delivered)` so the
+    /// caller can apply the appropriate frame codec and clean up deferred state.
     async fn handle_wake_core(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         payload: &[u8],
         peer: PeerAddress,
-    ) -> Option<(FrameHeader, Vec<u8>)> {
+    ) -> Option<(FrameHeader, Vec<u8>, bool)> {
         // 1. Decode NodeMessage::Wake from payload
         let (firmware_abi_version, program_hash, battery_mv, firmware_version, wake_blob) =
             match NodeMessage::decode(MSG_WAKE, payload) {
@@ -961,7 +961,7 @@ impl Gateway {
             }
         }
 
-        Some((response_header, response_cbor))
+        Some((response_header, response_cbor, has_deferred))
     }
 
     /// Handle a WAKE frame — business logic + AES-256-GCM response encoding.
@@ -972,17 +972,12 @@ impl Gateway {
         payload: &[u8],
         peer: PeerAddress,
     ) -> Option<Vec<u8>> {
-        let (response_header, response_cbor) =
+        let (response_header, response_cbor, deferred_delivered) =
             self.handle_wake_core(node, header, payload, peer).await?;
         let frame = self.encode_response(&response_header, &response_cbor, &node.psk)?;
-        // AEAD framing succeeded — now safe to remove deferred reply.
-        if self
-            .deferred_replies
-            .write()
-            .await
-            .remove(&node.node_id)
-            .is_some()
-        {
+        // Only remove deferred reply if it was actually included in this NOP COMMAND.
+        if deferred_delivered {
+            self.deferred_replies.write().await.remove(&node.node_id);
             info!(
                 node_id = %node.node_id,
                 "deferred reply delivered in COMMAND"

@@ -735,7 +735,8 @@ where
             };
             match trial.encode() {
                 Ok(encoded) if encoded.len() <= sonde_protocol::MAX_PAYLOAD_SIZE => {
-                    Some(async_queue.drain().into_iter().next().unwrap())
+                    // Clone the blob for WAKE; queue is cleared after successful send.
+                    Some(blob.to_vec())
                 }
                 _ => None,
             }
@@ -765,6 +766,10 @@ where
                 if let Err(e) = storage.erase_peer_payload() {
                     log::warn!("failed to erase peer_payload after WAKE success: {}", e);
                 }
+            }
+            // Clear async queue if blob was piggybacked on this WAKE.
+            if piggybacked {
+                async_queue.clear();
             }
             cmd
         }
@@ -1032,16 +1037,19 @@ where
     // 9b. Drain async queue — send queued blobs as APP_DATA.
     // Piggybacked blobs were already consumed during WAKE; send the rest.
     if !piggybacked || !async_queue.is_empty() {
-        for queued_blob in async_queue.drain() {
+        let pending = async_queue.drain();
+        for queued_blob in &pending {
             if let Err(e) = send_app_data(
                 transport,
                 &identity,
                 &mut current_seq,
-                &queued_blob,
+                queued_blob,
                 aead,
                 sha,
             ) {
                 log::warn!("async queue APP_DATA send failed: {}", e);
+                // On failure, remaining blobs are lost (radio may be down).
+                // Don't re-queue — the node is about to sleep.
                 break;
             }
         }

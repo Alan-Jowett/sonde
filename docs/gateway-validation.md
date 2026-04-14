@@ -741,6 +741,114 @@ A configurable stub handler process (or in-process mock) that:
 
 ---
 
+### T-0518  WAKE with piggybacked blob routed to handler
+
+**Validates:** GW-0510
+
+**Procedure:**
+1. Send WAKE containing `blob` `[0xAA]`.
+2. Assert: handler receives `DATA` message with `data=[0xAA]`, correct `node_id`, `program_hash`, `timestamp`.
+
+---
+
+### T-0519  WAKE blob handler reply is always deferred
+
+**Validates:** GW-0510, GW-0509
+
+**Procedure:**
+1. Send WAKE with `blob`.
+2. Handler replies with `data=[0xBB]`, `delivery=0`.
+3. Assert: no immediate `APP_DATA_REPLY` sent to node.
+4. Assert: deferred reply `[0xBB]` stored for the node.
+
+---
+
+### T-0520  Deferred reply piggybacked on NOP COMMAND
+
+**Validates:** GW-0511
+
+**Procedure:**
+1. Store deferred reply `[0xBB]` for a node.
+2. Node sends next WAKE.
+3. Assert: NOP COMMAND response contains `blob` `[0xBB]` (key 10).
+
+---
+
+### T-0521  Deferred reply cleared after delivery
+
+**Validates:** GW-0511
+
+**Procedure:**
+1. After deferred reply is delivered (per T-0520), node sends another WAKE.
+2. Assert: NOP COMMAND does NOT contain `blob`.
+
+---
+
+### T-0522  Deferred reply latest-wins
+
+**Validates:** GW-0509
+
+**Procedure:**
+1. Store deferred reply `[0x01]` for a node.
+2. Store another deferred reply `[0x02]` before delivery.
+3. Node sends WAKE.
+4. Assert: NOP COMMAND carries `blob` `[0x02]`, not `[0x01]`.
+
+---
+
+### T-0523  Deferred data not delivered on non-NOP command
+
+**Validates:** GW-0512
+
+**Procedure:**
+1. Store deferred reply for a node.
+2. Set pending program update for that node.
+3. Node sends WAKE.
+4. Assert: COMMAND is UPDATE_PROGRAM and does NOT contain `blob`.
+5. Assert: deferred data still stored.
+6. Clear pending update.
+7. Node sends next WAKE.
+8. Assert: NOP COMMAND now contains the deferred `blob`.
+
+---
+
+### T-0524  DATA_REPLY with delivery=1 stores data
+
+**Validates:** GW-0506 (AC4)
+
+**Procedure:**
+1. Complete WAKE handshake.
+2. Send APP_DATA.
+3. Handler replies with `delivery=1`, `data=[0xCC]`.
+4. Assert: no `APP_DATA_REPLY` sent to node.
+5. Assert: deferred data `[0xCC]` stored for the node.
+
+---
+
+### T-0525  DATA_REPLY with delivery=0 sends immediately
+
+**Validates:** GW-0506 (AC5)
+
+**Procedure:**
+1. Complete WAKE handshake.
+2. Send APP_DATA.
+3. Handler replies with `delivery=0`, `data=[0xCC]`.
+4. Assert: `APP_DATA_REPLY` sent to node with blob `[0xCC]` (existing behavior).
+
+---
+
+### T-0526  WAKE without blob — existing behavior preserved
+
+**Validates:** GW-0102
+
+**Procedure:**
+1. Send WAKE without `blob` field (existing format).
+2. Assert: gateway processes it normally.
+3. Assert: no `DATA` message sent to handler for the blob.
+4. Assert: COMMAND response is correct.
+
+---
+
 ## 8  Authentication and security tests
 
 ### T-0600  Valid AEAD accepted

@@ -112,7 +112,16 @@ struct sonde_context {
     uint16_t battery_mv;          // battery voltage in millivolts
     uint16_t firmware_abi_version; // firmware ABI version
     uint8_t  wake_reason;         // why the node woke (see below)
+    uint8_t  _padding[3];         // explicit padding; must be zero
+    uint64_t data_start;          // pointer to piggybacked downlink data, or 0
+    uint64_t data_end;            // pointer past end of downlink data, or 0
 };
+/* Total: 32 bytes, 8-byte aligned.
+ * data_start/data_end point to the piggybacked blob from the NOP COMMAND
+ * (see protocol.md §6.7). When no downlink data is present, both are 0.
+ * The BPF program accesses the data via bounded pointer arithmetic,
+ * similar to XDP's data/data_end pattern.
+ * NOTE: pointer width is uint64_t for BPF verifier compatibility. */
 ```
 
 The `timestamp` is derived from the gateway's `timestamp_ms` field in the COMMAND response (see [protocol.md §5.2](protocol.md)). The node has no independent clock source across deep sleep — the gateway is the authoritative time reference. Within a wake cycle, the firmware adds local elapsed time to the gateway-supplied value.
@@ -373,6 +382,30 @@ Send an `APP_DATA` message and block until `APP_DATA_REPLY` arrives or the timeo
 
 **Availability:** Resident and ephemeral.
 
+#### `send_async`
+
+```c
+int send_async(const void *ptr, uint32_t len);
+```
+
+Queue an opaque data blob for deferred delivery on the next wake cycle. Unlike `send()`, which transmits immediately, `send_async()` stores the blob in a RAM queue and returns immediately. The data is transmitted piggybacked on the next WAKE message (if a single message fits within the payload budget) or via APP_DATA (if multiple messages are queued or the blob is oversized). See [protocol.md §6.7](protocol.md) for the full store-and-forward data flow.
+
+| Parameter | Description |
+|---|---|
+| `ptr` | Pointer to the data buffer. |
+| `len` | Length of the data in bytes. |
+
+**Returns:** `0` on success. `-1` if the queue is full (max 10 messages). `-2` if `len` exceeds the maximum blob size.
+
+**Notes:**
+- The queue is RAM-only; data is lost if the node reboots before the next wake cycle.
+- The queue is cleared after all messages are sent (whether piggybacked or via APP_DATA).
+- The queue is also cleared on program load (UPDATE_PROGRAM or RUN_EPHEMERAL).
+- The handler receives this data as a normal `DATA` message. Handler replies to piggybacked data are always deferred to the next cycle (two-cycle round-trip latency).
+- If the queue is full, the BPF program may fall back to `send()` or `send_recv()` for immediate delivery.
+
+**Availability:** Resident and ephemeral.
+
 ---
 
 ### 6.3  Map operations
@@ -493,7 +526,7 @@ All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on
 | **Loops** | Bounded | None or tightly bounded |
 | **Map access** | Read/write | Read-only |
 | **Instruction budget** | Larger | Small |
-| **Helper set** | Full | Limited (`send`, `send_recv`, `i2c_read`, `i2c_write`, `i2c_write_read`, `spi_transfer`, `gpio_read`, `gpio_write`, `adc_read`, `delay_us`, `map_lookup_elem`, `get_time`, `get_battery_mv`, `bpf_trace_printk`) |
+| **Helper set** | Full | Limited (`send`, `send_recv`, `send_async`, `i2c_read`, `i2c_write`, `i2c_write_read`, `spi_transfer`, `gpio_read`, `gpio_write`, `adc_read`, `delay_us`, `map_lookup_elem`, `get_time`, `get_battery_mv`, `bpf_trace_printk`) |
 | **Side effects** | Allowed | No persistent node state changes (no map writes, no schedule changes) |
 
 A program that fails verification is rejected with a diagnostic explaining why. It never reaches the node.

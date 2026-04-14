@@ -1054,3 +1054,46 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 4. Decode and assert: `status` = 0x01, `payload_len` = 0.
 5. Encode `DIAG_RELAY_RESPONSE` with `status=0x02` and empty payload.
 6. Decode and assert: `status` = 0x02, `payload_len` = 0.
+
+---
+
+## 13  Store-and-forward message encoding
+
+### T-P120  WAKE with optional blob round-trip
+
+**Validates:** protocol.md §5.1
+
+**Procedure:**
+1. Encode a `NodeMessage::Wake` with `firmware_abi_version=1`, `program_hash=[0x42; 32]`, `battery_mv=3300`, `firmware_version="0.4.0"`, and `blob=Some([0xAA, 0xBB])`.
+2. Decode the CBOR bytes back to `NodeMessage::Wake`.
+3. Assert: all fields match, including `blob = Some([0xAA, 0xBB])`.
+4. Encode a `NodeMessage::Wake` with the same fields but `blob=None`.
+5. Decode and assert: `blob` is `None`.
+6. Assert: the CBOR bytes from step 4 do NOT contain key 10.
+
+---
+
+### T-P121  COMMAND NOP with optional blob round-trip
+
+**Validates:** protocol.md §5.2
+
+**Procedure:**
+1. Encode a `GatewayMessage::Command` with `command_type=NOP`, `starting_seq=42`, `timestamp_ms=1700000000000`, and `blob=Some([0xCC, 0xDD])`.
+2. Decode the CBOR bytes back to `GatewayMessage::Command`.
+3. Assert: all fields match, including `blob = Some([0xCC, 0xDD])`.
+4. Assert: `payload` is `CommandPayload::Nop` (key 5 omitted).
+5. Encode a `GatewayMessage::Command` with same fields but `blob=None`.
+6. Decode and assert: `blob` is `None`.
+7. Assert: the CBOR bytes from step 5 do NOT contain key 10.
+
+---
+
+### T-P122  Non-NOP COMMAND ignores blob field
+
+**Validates:** protocol.md §5.2
+
+**Procedure:**
+1. Encode a `GatewayMessage::Command` with `command_type=UPDATE_SCHEDULE`, `starting_seq=1`, `timestamp_ms=1700000000000`, `interval_s=60`, and `blob=None`.
+2. Decode and assert: `blob` is `None`.
+3. Manually construct CBOR bytes for an UPDATE_SCHEDULE COMMAND that includes key 10 with value `[0xFF]`.
+4. Decode and assert: the decoder either ignores the blob (returns `None`) or accepts it — backward compatibility is preserved either way.

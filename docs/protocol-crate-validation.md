@@ -1069,7 +1069,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 3. Assert: all fields match, including `blob = Some([0xAA, 0xBB])`.
 4. Encode a `NodeMessage::Wake` with the same fields but `blob=None`.
 5. Decode and assert: `blob` is `None`.
-6. Assert: the CBOR bytes from step 4 do NOT contain key 10.
+6. Decode the CBOR bytes from step 4 as a CBOR map and assert that integer key 10 is not present.
 
 ---
 
@@ -1084,7 +1084,7 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 4. Assert: `payload` is `CommandPayload::Nop` (key 5 omitted).
 5. Encode a `GatewayMessage::Command` with same fields but `blob=None`.
 6. Decode and assert: `blob` is `None`.
-7. Assert: the CBOR bytes from step 5 do NOT contain key 10.
+7. Decode the CBOR bytes from step 5 as a CBOR map and assert that integer key 10 is not present.
 
 ---
 

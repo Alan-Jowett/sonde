@@ -48,6 +48,7 @@ pub enum HandlerMessage {
     DataReply {
         request_id: u64,
         data: Vec<u8>,
+        delivery: u8,
     },
     Log {
         level: String,
@@ -107,17 +108,27 @@ impl HandlerMessage {
                     ),
                 ])
             }
-            HandlerMessage::DataReply { request_id, data } => Value::Map(vec![
-                (
-                    Value::Integer(1.into()),
-                    Value::Integer(MSG_TYPE_DATA_REPLY.into()),
-                ),
-                (
-                    Value::Integer(2.into()),
-                    Value::Integer((*request_id).into()),
-                ),
-                (Value::Integer(3.into()), Value::Bytes(data.clone())),
-            ]),
+            HandlerMessage::DataReply {
+                request_id,
+                data,
+                delivery,
+            } => {
+                let mut pairs = vec![
+                    (
+                        Value::Integer(1.into()),
+                        Value::Integer(MSG_TYPE_DATA_REPLY.into()),
+                    ),
+                    (
+                        Value::Integer(2.into()),
+                        Value::Integer((*request_id).into()),
+                    ),
+                    (Value::Integer(3.into()), Value::Bytes(data.clone())),
+                ];
+                if *delivery != 0 {
+                    pairs.push((Value::Integer(4.into()), Value::Integer((*delivery).into())));
+                }
+                Value::Map(pairs)
+            }
             HandlerMessage::Log { level, message } => Value::Map(vec![
                 (
                     Value::Integer(1.into()),
@@ -184,7 +195,12 @@ impl HandlerMessage {
                 let request_id =
                     get_uint(map, 2).ok_or_else(|| DecodeError("missing request_id".into()))?;
                 let data = get_bytes(map, 3).ok_or_else(|| DecodeError("missing data".into()))?;
-                Ok(HandlerMessage::DataReply { request_id, data })
+                let delivery = get_uint(map, 4).unwrap_or(0) as u8;
+                Ok(HandlerMessage::DataReply {
+                    request_id,
+                    data,
+                    delivery,
+                })
             }
             MSG_TYPE_LOG => {
                 let level = get_text(map, 2).ok_or_else(|| DecodeError("missing level".into()))?;
@@ -996,6 +1012,7 @@ mod tests {
         let msg = HandlerMessage::DataReply {
             request_id: 42,
             data: vec![0xDE, 0xAD],
+            delivery: 0,
         };
         let encoded = msg.encode().unwrap();
         let decoded = HandlerMessage::decode(&encoded).unwrap();
@@ -1071,6 +1088,7 @@ mod tests {
         let msg = HandlerMessage::DataReply {
             request_id: 99,
             data: vec![0x01, 0x02],
+            delivery: 0,
         };
 
         let (mut writer, mut reader) = tokio::io::duplex(4096);

@@ -186,6 +186,8 @@ pub struct Gateway {
     rssi_good_threshold: i8,
     /// RSSI threshold (dBm) below which signal is "bad".
     rssi_bad_threshold: i8,
+    /// Deferred handler replies awaiting delivery on the next WAKE cycle.
+    deferred_replies: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
 impl Gateway {
@@ -202,6 +204,7 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
+            deferred_replies: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -229,6 +232,7 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
+            deferred_replies: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -249,6 +253,7 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
+            deferred_replies: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -654,19 +659,20 @@ impl Gateway {
         peer: PeerAddress,
     ) -> Option<(FrameHeader, Vec<u8>)> {
         // 1. Decode NodeMessage::Wake from payload
-        let (firmware_abi_version, program_hash, battery_mv, firmware_version) =
+        let (firmware_abi_version, program_hash, battery_mv, firmware_version, wake_blob) =
             match NodeMessage::decode(MSG_WAKE, payload) {
                 Ok(NodeMessage::Wake {
                     firmware_abi_version,
                     program_hash,
                     battery_mv,
                     firmware_version,
-                    blob: _,
+                    blob,
                 }) => (
                     firmware_abi_version,
                     program_hash,
                     battery_mv,
                     firmware_version,
+                    blob,
                 ),
                 Ok(_) => return None,
                 Err(e) => {
@@ -727,7 +733,55 @@ impl Gateway {
             "WAKE received"
         );
 
-        // 3. Determine command
+        // 3. Route WAKE blob to handler (store reply for NEXT cycle)
+        if let Some(wake_data) = wake_blob {
+            if !wake_data.is_empty() {
+                if let Some(ref ph) = node.current_program_hash {
+                    let handler_result = {
+                        let router = self.handler_router.read().await;
+                        router.find_handler_cloned(ph)
+                    };
+                    if let Some((config, process_arc)) = handler_result {
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let msg = crate::handler::HandlerMessage::Data {
+                            request_id: header.nonce,
+                            node_id: node.node_id.clone(),
+                            program_hash: ph.clone(),
+                            data: wake_data,
+                            timestamp,
+                        };
+                        info!(
+                            node_id = %node.node_id,
+                            command = %config.command,
+                            "WAKE blob routed to handler"
+                        );
+                        let mut process = process_arc.lock().await;
+                        if let Some(crate::handler::HandlerMessage::DataReply { data, .. }) =
+                            process.send_data(&msg).await
+                        {
+                            if !data.is_empty() {
+                                self.deferred_replies
+                                    .write()
+                                    .await
+                                    .insert(node.node_id.clone(), data);
+                                info!(
+                                    node_id = %node.node_id,
+                                    "deferred reply stored from WAKE blob handler response"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Retrieve previously stored deferred reply for THIS cycle's COMMAND
+        // (checked after command selection below — only injected into NOP commands)
+
+        // 5. Determine command
         let command_payload = if reuse_chunked {
             // Re-send the same chunked transfer command from the existing session.
             let session = existing_session.unwrap();
@@ -862,12 +916,25 @@ impl Gateway {
             "COMMAND selected"
         );
 
-        // 5. Encode GatewayMessage::Command response
+        // 6. Encode GatewayMessage::Command response
+        // Inject deferred reply into NOP commands from a previous cycle.
+        let command_blob = if matches!(command_payload, CommandPayload::Nop) {
+            let removed = self.deferred_replies.write().await.remove(&node.node_id);
+            if removed.is_some() {
+                info!(
+                    node_id = %node.node_id,
+                    "deferred reply injected into COMMAND"
+                );
+            }
+            removed
+        } else {
+            None
+        };
         let response_msg = GatewayMessage::Command {
             starting_seq,
             timestamp_ms,
             payload: command_payload,
-            blob: None,
+            blob: command_blob,
         };
         let response_cbor = response_msg.encode().ok()?;
 
@@ -1150,8 +1217,20 @@ impl Gateway {
         let mut process = process_arc.lock().await;
         let reply = process.send_data(&msg).await?;
         match reply {
-            crate::handler::HandlerMessage::DataReply { data, .. } => {
+            crate::handler::HandlerMessage::DataReply { data, delivery, .. } => {
                 if data.is_empty() {
+                    None
+                } else if delivery == 1 {
+                    // Deferred delivery: store reply for next WAKE cycle.
+                    info!(
+                        node_id = %node.node_id,
+                        len = data.len(),
+                        "handler replied with deferred delivery — storing for next WAKE"
+                    );
+                    self.deferred_replies
+                        .write()
+                        .await
+                        .insert(node.node_id.clone(), data);
                     None
                 } else {
                     // GW-1308 AC4: handler replied with len.

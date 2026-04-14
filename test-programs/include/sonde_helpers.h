@@ -328,10 +328,11 @@ static int (*bpf_trace_printk)(const char *fmt, __u32 fmt_len, ...) = (void *)16
 /**
  * send_async — queue a data blob for deferred transmission.
  *
- * The blob is held in a RAM-only queue (max 10 entries) and transmitted
- * after BPF execution completes.  If exactly one blob is queued and it
- * fits, it will be piggybacked on the next WAKE frame; otherwise each
- * queued blob is sent as a separate APP_DATA frame.
+ * The blob is held in a sleep-retained queue (RTC slow SRAM on ESP32,
+ * max 10 entries).  Data survives deep sleep but is lost on reboot.
+ * If exactly one blob is queued and it fits, it will be piggybacked on
+ * the next WAKE frame; otherwise each queued blob is sent as a separate
+ * APP_DATA frame after BPF execution completes.
  *
  * @ptr: pointer to data blob
  * @len: length of the data blob in bytes

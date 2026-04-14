@@ -258,7 +258,7 @@ Sessions are reaped after a configurable timeout (default: 30 seconds). A backgr
 
 ### 6.3  Inbound frame processing
 
-Every inbound frame goes through a sequential pipeline. First the binary header is parsed (extracting `key_hint`, `msg_type`, and `nonce`). The `key_hint` is used to look up candidate node keys from the registry; if none are found the frame is silently discarded. The gateway tries AES-256-GCM-Open with each candidate key; if none succeed, the frame is discarded. Once the node is identified by its matching key, the frame is dispatched based on `msg_type`. A `WAKE` frame causes a new session to be created (or an existing one replaced), a `COMMAND` response to be encoded and sent back, and a `node_online` event to be emitted. Post-WAKE frames (`GET_CHUNK`, `PROGRAM_ACK`, `APP_DATA`) require an active session and a matching sequence number; they are then routed to the program library, node registry, or handler process as appropriate. Any error at any step results in a silent discard — no error response is ever sent to the node.
+Every inbound frame goes through a sequential pipeline. First the binary header is parsed (extracting `key_hint`, `msg_type`, and `nonce`). The `key_hint` is used to look up candidate node keys from the registry; if none are found the frame is silently discarded. The gateway tries AES-256-GCM-Open with each candidate key; if none succeed, the frame is discarded. Once the node is identified by its matching key, the frame is dispatched based on `msg_type`. A `WAKE` frame causes a new session to be created (or an existing one replaced), a `COMMAND` response to be encoded and sent back, and a `node_online` event to be emitted. If the WAKE contains a `blob` field (CBOR key 10), the gateway extracts it and routes it to the handler as a DATA message using the same flow as APP_DATA (§9.4); the handler's reply, if any, is always stored as deferred data for the next cycle (§6.3a) regardless of the `delivery` field in the reply. Post-WAKE frames (`GET_CHUNK`, `PROGRAM_ACK`, `APP_DATA`) require an active session and a matching sequence number; they are then routed to the program library, node registry, or handler process as appropriate. Any error at any step results in a silent discard — no error response is ever sent to the node.
 
 ```
 recv frame
@@ -279,9 +279,14 @@ recv frame
   │     ├── generate random starting_seq
   │     ├── get current UTC timestamp_ms
   │     ├── determine command (check program_hash, pending actions)
+  │     ├── if command is NOP and deferred data exists for node:
+  │     │     └── include deferred data as `blob` (key 10) in COMMAND, clear store
   │     ├── encode COMMAND response
   │     ├── send response (echoing wake nonce)
   │     ├── update node registry (battery_mv, firmware_abi_version, firmware_version)
+  │     ├── if WAKE contains `blob`:
+  │     │     ├── route to handler as DATA message (§9.4)
+  │     │     └── store handler reply as deferred data (§6.3a)
   │     └── emit EVENT to handler (node_online)
   │
   ├── if post-WAKE (GET_CHUNK, PROGRAM_ACK, APP_DATA):
@@ -298,6 +303,10 @@ recv frame
   │
   └── discard on any error (no error response sent)
 ```
+
+### 6.3a  Deferred reply storage
+
+The gateway maintains a RAM-only map of `node_id → Vec<u8>` for deferred replies. At most one reply is stored per node — if a new reply arrives before the previous one is delivered, the latest reply wins. The stored data is cleared after successful delivery (inclusion in a COMMAND `blob`). Deferred data is only delivered on NOP commands; if the node receives an `UPDATE_PROGRAM`, `UPDATE_SCHEDULE`, or other non-NOP command, the deferred data remains stored until the next NOP cycle. The map is not persisted — gateway restarts discard all pending deferred replies.
 
 ### 6.4  Command selection logic
 
@@ -510,6 +519,8 @@ Each handler config spawns a handler process (GW-0503):
 
 When an `APP_DATA` frame arrives from a node it is routed to the matching handler process by `program_hash`. The gateway constructs a DATA message (containing `request_id`, `node_id`, `program_hash`, the opaque data blob, and a Unix timestamp) and writes it as a length-prefixed CBOR message to the handler's stdin. The gateway then reads the handler's stdout for a `DATA_REPLY` message whose `request_id` matches the request. If the reply contains a non-empty data field, the gateway sends an `APP_DATA_REPLY` back to the node; an empty data field means no reply is sent. The handler may also write `LOG` messages at any time, which the gateway routes to its own log.
 
+The `DATA_REPLY` message supports an optional `delivery` field (CBOR key 4). When `delivery` = 1 and the data field is non-empty, the gateway stores the reply as deferred data (§6.3a) instead of sending an immediate `APP_DATA_REPLY`. The deferred data is delivered as a `blob` in the next NOP COMMAND. When `delivery` is absent or 0, the reply is sent immediately as before. For DATA messages originating from a WAKE `blob`, the gateway forces deferred delivery regardless of the `delivery` field in the reply — there is no active session to send an immediate reply to at WAKE time.
+
 ```
 APP_DATA from node
   │
@@ -527,8 +538,9 @@ APP_DATA from node
   │
   ├── read DATA_REPLY from handler stdout
   │     ├── request_id must match
-  │     ├── if data is non-zero-length → send APP_DATA_REPLY to node
-  │     └── if data is zero-length → do not send APP_DATA_REPLY
+  │     ├── if data is zero-length → do not send reply
+  │     ├── if delivery == 1 (or WAKE-originated) → store as deferred data (§6.3a)
+  │     └── otherwise → send APP_DATA_REPLY to node
   │
   └── (handler may also write LOG messages at any time → route to gateway log)
 ```

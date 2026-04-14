@@ -41,7 +41,7 @@ static UNSUPPORTED_HELPER: HelperPrototype = HelperPrototype {
 
 /// Helper prototypes for sonde BPF helpers 1–16.
 /// Signatures match `test-programs/include/sonde_helpers.h`.
-static SONDE_HELPERS: [HelperPrototype; 16] = [
+static SONDE_HELPERS: [HelperPrototype; 17] = [
     // 1: i2c_read(handle, *buf, buf_len) -> i32
     HelperPrototype {
         name: "i2c_read",
@@ -270,6 +270,21 @@ static SONDE_HELPERS: [HelperPrototype; 16] = [
         context_descriptor: None,
         unsupported: false,
     },
+    // 17: send_async(*ptr, len) -> i32
+    HelperPrototype {
+        name: "send_async",
+        return_type: Ret::Integer,
+        argument_type: [
+            Arg::PtrToReadableMem,
+            Arg::ConstSize,
+            Arg::DontCare,
+            Arg::DontCare,
+            Arg::DontCare,
+        ],
+        reallocate_packet: false,
+        context_descriptor: None,
+        unsupported: false,
+    },
 ];
 
 /// Sonde BPF verifier platform.
@@ -328,7 +343,7 @@ impl EbpfPlatform for SondePlatform {
     }
 
     fn get_helper_prototype(&self, n: i32) -> &HelperPrototype {
-        if (1..=16).contains(&n) {
+        if (1..=17).contains(&n) {
             &SONDE_HELPERS[(n - 1) as usize]
         } else {
             &UNSUPPORTED_HELPER
@@ -336,7 +351,7 @@ impl EbpfPlatform for SondePlatform {
     }
 
     fn is_helper_usable(&self, n: i32) -> bool {
-        (1..=16).contains(&n)
+        (1..=17).contains(&n)
     }
 
     fn map_record_size(&self) -> usize {
@@ -415,7 +430,7 @@ mod tests {
     #[test]
     fn all_16_helpers_are_usable() {
         let platform = SondePlatform::new();
-        for id in 1..=16 {
+        for id in 1..=17 {
             assert!(
                 platform.is_helper_usable(id),
                 "helper {id} should be usable"
@@ -434,10 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn helper_17_is_not_usable() {
+    fn helper_18_is_not_usable() {
         let platform = SondePlatform::new();
-        assert!(!platform.is_helper_usable(17));
-        assert!(platform.get_helper_prototype(17).unsupported);
+        assert!(!platform.is_helper_usable(18));
+        assert!(platform.get_helper_prototype(18).unsupported);
     }
 
     #[test]

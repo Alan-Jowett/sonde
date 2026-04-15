@@ -580,7 +580,7 @@ The redesign changes the `execute_program` public API.  This is an intentional b
 ### 10.1  `execute_program` signature
 
 ```rust
-// Current
+// Pre-tagged (historical — no longer available)
 pub fn execute_program(
     prog: &[u8],
     mem: &mut [u8],
@@ -607,7 +607,7 @@ The `mem` parameter is renamed to `ctx` and retains `&mut [u8]` so that both rea
 3. Provide a `maps: &[MapRegion]` slice with relocated pointer, value size, and backing storage bounds for each map.
 4. Add `read_only_ctx: true` for contexts that must be immutable (e.g., `sonde_context`), or `false` for writable input regions.
 5. Add `instruction_budget` (e.g., `UNLIMITED_BUDGET` to opt out).
-4. Update tests that rely on R1–R5 surviving helper calls (§4.6 behavioral change).
+6. Update tests that rely on R1–R5 surviving helper calls (§4.6 behavioral change).
 
 Where `MapRegion` provides the metadata needed to tag LD_DW_IMM relocations and `map_lookup_elem` returns:
 

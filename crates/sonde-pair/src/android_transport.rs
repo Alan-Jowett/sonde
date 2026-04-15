@@ -421,6 +421,7 @@ impl BleTransport for AndroidBleTransport {
         self.inner.pairing_method.store(0, Ordering::Release);
         // Clear previous connected address.
         *self.inner.connected_address.lock().unwrap() = None;
+        let device_for_closure = Some(device_str.clone());
         Box::pin(async move {
             let mtu = tokio::task::spawn_blocking(move || {
                 inner
@@ -481,7 +482,7 @@ impl BleTransport for AndroidBleTransport {
                     })
                     .map_err(|e| match e {
                         PairingError::JniError(msg) => PairingError::ConnectionFailed {
-                            device: None,
+                            device: device_for_closure.clone(),
                             reason: format!("attach_current_thread: {msg}"),
                         },
                         other => other,
@@ -537,6 +538,7 @@ impl BleTransport for AndroidBleTransport {
         let svc_str = uuid_to_string(service);
         let chr_str = uuid_to_string(characteristic);
         let data = data.to_vec();
+        let device_addr = self.inner.connected_address.lock().unwrap().clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 inner
@@ -564,7 +566,7 @@ impl BleTransport for AndroidBleTransport {
                     })
                     .map_err(|e| match e {
                         PairingError::JniError(msg) => PairingError::ConnectionFailed {
-                            device: None,
+                            device: device_addr.clone(),
                             reason: format!("attach_current_thread: {msg}"),
                         },
                         other => other,
@@ -584,6 +586,7 @@ impl BleTransport for AndroidBleTransport {
         let inner = self.inner.clone();
         let svc_str = uuid_to_string(service);
         let chr_str = uuid_to_string(characteristic);
+        let device_addr = self.inner.connected_address.lock().unwrap().clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 inner
@@ -607,7 +610,9 @@ impl BleTransport for AndroidBleTransport {
                                 let pe = jni_exception_or(env, "readIndication", e);
                                 if let PairingError::ConnectionFailed { ref reason, .. } = pe {
                                     if reason.contains("indication timeout") {
-                                        return PairingError::IndicationTimeout { device: None };
+                                        return PairingError::IndicationTimeout {
+                                            device: device_addr.clone(),
+                                        };
                                     }
                                 }
                                 pe
@@ -626,7 +631,7 @@ impl BleTransport for AndroidBleTransport {
                     })
                     .map_err(|e| match e {
                         PairingError::JniError(msg) => PairingError::ConnectionFailed {
-                            device: None,
+                            device: device_addr.clone(),
                             reason: format!("attach_current_thread: {msg}"),
                         },
                         other => other,

@@ -339,7 +339,8 @@ impl BleTransport for BtleplugTransport {
 
             // Post-connect setup — if any step fails, disconnect the
             // peripheral so we don't leak a GATT connection (PT-1001).
-            match Self::post_connect_setup(&peripheral, &Some(device_str.clone())).await {
+            let device = Some(device_str.clone());
+            match Self::post_connect_setup(&peripheral, &device).await {
                 Ok((notification_stream, service_count)) => {
                     debug!(
                         address = %target_addr,

@@ -1082,7 +1082,7 @@ TestNode {
 **Validates:** PT-1215 (AC 1, AC 2)
 
 **Procedure:**
-1. Configure a `MockBleTransport` that returns `ConnectionFailed` on `connect()`.
+1. Configure a `MockBleTransport` so `connect()` returns `ConnectionFailed` with `device: Some("AA:BB:CC:DD:EE:FF")`.
 2. Run `pair_with_gateway` with device address `[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]`.
 3. Assert: the error display string contains `"AA:BB:CC:DD:EE:FF"`.
 4. Assert: the error display string contains the failed operation and reason.

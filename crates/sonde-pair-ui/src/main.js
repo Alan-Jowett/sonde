@@ -577,8 +577,7 @@ btnToNode.addEventListener("click", () => navigator_.next());
 btnScanStartNode.addEventListener("click", startScan);
 btnScanStopNode.addEventListener("click", stopScan);
 btnToProvision.addEventListener("click", () => {
-  // Enable provision button when entering page 5
-  btnProvision.disabled = false;
+  btnProvision.disabled = !selectedAddressNode;
   navigator_.next();
 });
 

@@ -120,7 +120,6 @@ header h1 {
 /* Page visibility (PT-1217) */
 .page {
   display: none;
-  position: relative;
 }
 
 .page--active {
@@ -128,6 +127,14 @@ header h1 {
 }
 
 /* Page transition animations (PT-1222) */
+.slide-out-left,
+.slide-out-right {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
 @keyframes slideInRight {
   from { transform: translateX(100%); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
@@ -165,6 +172,7 @@ header h1 {
 }
 
 main {
+  position: relative;
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
@@ -173,7 +181,7 @@ main {
   margin: 0 auto;
   width: 100%;
   flex: 1;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 .card {

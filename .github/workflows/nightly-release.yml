@@ -72,7 +72,7 @@ jobs:
           bash installer/linux/build-deb.sh --version "${VERSION}"
 
       - name: Upload .deb
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonde-installer-linux
           path: "*.deb"
@@ -125,7 +125,7 @@ jobs:
             -out sonde-x86_64.msi
 
       - name: Upload MSI
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonde-installer-windows
           path: sonde-x86_64.msi

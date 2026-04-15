@@ -488,7 +488,7 @@ impl BleTransport for AndroidBleTransport {
                     })
             })
             .await
-            .map_err(join_err)?;
+            .map_err(join_err)??;
             // Store connected device address on success (PT-1215).
             *self.inner.connected_address.lock().unwrap() = Some(device_str);
             Ok(mtu)

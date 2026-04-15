@@ -236,7 +236,7 @@ At program start, three registers carry pointer provenance:
 
 | Register | Value | Region |
 |----------|-------|--------|
-| R1 | `ctx.as_ptr() as u64` | `Some(Region { tag: ctx_tag, ... })` where `ctx_tag` is `Context` when `read_only_ctx` is `true`, `Memory` when `false` (see §2.2) |
+| R1 | `ctx.as_ptr() as u64` | `None` when `ctx.is_empty()`, otherwise `Some(Region { tag: ctx_tag, ... })`, where `ctx_tag` is `Context` when `read_only_ctx` is `true`, `Memory` when `false` (see §2.2) |
 | R2 | `ctx.len() as u64` | `None` (scalar — length, not a pointer) |
 | R10 | `stack.as_ptr() as u64 + STACK_SIZE as u64` | `Some(Region { tag: Stack, base: stack.as_ptr() as u64, end: (stack.as_ptr() as u64).checked_add(STACK_SIZE as u64).unwrap() })` |
 | R0, R3–R9 | 0 | `None` (scalar) |

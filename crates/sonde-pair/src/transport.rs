@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
-use crate::error::PairingError;
+use crate::error::{format_device_address, PairingError};
 use crate::types::{PairingMethod, ScannedDevice};
 use std::collections::VecDeque;
 use std::future::Future;
@@ -88,6 +88,8 @@ pub struct MockBleTransport {
     /// If true, `connect()` returns `ConnectionFailed` (simulates Just Works
     /// rejection at the transport layer, per T-PT-109).
     pub fail_connect: bool,
+    /// Connected device address for error context (PT-1215).
+    pub connected_address: Option<String>,
 }
 
 impl MockBleTransport {
@@ -104,6 +106,7 @@ impl MockBleTransport {
             read_call_count: 0,
             pairing_method: None,
             fail_connect: false,
+            connected_address: None,
         }
     }
 
@@ -138,27 +141,35 @@ impl BleTransport for MockBleTransport {
 
     fn connect(
         &mut self,
-        _address: &[u8; 6],
+        address: &[u8; 6],
     ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
+        let device_str = format_device_address(address);
         if let Some(err) = self.connect_error.take() {
             self.connected = false;
+            self.connected_address = None;
             return Box::pin(async move { Err(err) });
         }
         if self.fail_connect {
-            return Box::pin(async {
-                Err(PairingError::ConnectionFailed(
-                    "Numeric Comparison pairing required but peripheral only supports Just Works"
-                        .into(),
-                ))
+            self.connected = false;
+            self.connected_address = None;
+            return Box::pin(async move {
+                Err(PairingError::ConnectionFailed {
+                    device: Some(device_str),
+                    reason:
+                        "Numeric Comparison pairing required but peripheral only supports Just Works"
+                            .into(),
+                })
             });
         }
         self.connected = true;
+        self.connected_address = Some(device_str);
         let mtu = self.mtu;
         Box::pin(async move { Ok(mtu) })
     }
 
     fn disconnect(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         self.connected = false;
+        self.connected_address = None;
         self.disconnect_count += 1;
         Box::pin(async { Ok(()) })
     }
@@ -186,10 +197,11 @@ impl BleTransport for MockBleTransport {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PairingError>> + '_>> {
         self.read_call_count += 1;
         let response = self.responses.pop_front();
+        let device = self.connected_address.clone();
         Box::pin(async move {
             match response {
                 Some(result) => result,
-                None => Err(PairingError::IndicationTimeout),
+                None => Err(PairingError::IndicationTimeout { device }),
             }
         })
     }

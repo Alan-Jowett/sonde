@@ -936,9 +936,10 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
             if address == expected_address {
                 Ok(247)
             } else {
-                Err(sonde_pair::error::PairingError::ConnectionFailed(
-                    "unexpected device address in e2e harness".into(),
-                ))
+                Err(sonde_pair::error::PairingError::ConnectionFailed {
+                    device: None,
+                    reason: "unexpected device address in e2e harness".into(),
+                })
             }
         })
     }
@@ -964,9 +965,10 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
             if service != sonde_pair::types::GATEWAY_SERVICE_UUID
                 || characteristic != sonde_pair::types::GATEWAY_COMMAND_UUID
             {
-                return Err(sonde_pair::error::PairingError::ConnectionFailed(
-                    "unexpected GATT service/characteristic in e2e harness".into(),
-                ));
+                return Err(sonde_pair::error::PairingError::ConnectionFailed {
+                    device: None,
+                    reason: "unexpected GATT service/characteristic in e2e harness".into(),
+                });
             }
             let mut window = self.window.lock().await;
             // Refresh the registration window if it has expired, so slow CI
@@ -1009,9 +1011,10 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
             if service != sonde_pair::types::GATEWAY_SERVICE_UUID
                 || characteristic != sonde_pair::types::GATEWAY_COMMAND_UUID
             {
-                return Err(sonde_pair::error::PairingError::ConnectionFailed(
-                    "unexpected GATT service/characteristic in e2e harness".into(),
-                ));
+                return Err(sonde_pair::error::PairingError::ConnectionFailed {
+                    device: None,
+                    reason: "unexpected GATT service/characteristic in e2e harness".into(),
+                });
             }
             let timeout_duration = Duration::from_millis(timeout_ms);
 
@@ -1032,7 +1035,7 @@ impl sonde_pair::transport::BleTransport for GatewayBleAdapter {
 
             match tokio::time::timeout(timeout_duration, wait_future).await {
                 Ok(response) => Ok(response),
-                Err(_) => Err(sonde_pair::error::PairingError::IndicationTimeout),
+                Err(_) => Err(sonde_pair::error::PairingError::IndicationTimeout { device: None }),
             }
         })
     }

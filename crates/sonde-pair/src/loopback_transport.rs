@@ -50,7 +50,10 @@ async fn read_envelope(stream: &mut TcpStream) -> Result<Vec<u8>, PairingError> 
     stream
         .read_exact(&mut header)
         .await
-        .map_err(|e| PairingError::GattReadFailed(format!("TCP read header: {e}")))?;
+        .map_err(|e| PairingError::GattReadFailed {
+            device: None,
+            reason: format!("TCP read header: {e}"),
+        })?;
 
     let body_len = u16::from_be_bytes([header[1], header[2]]) as usize;
     let mut envelope = Vec::with_capacity(3 + body_len);
@@ -60,7 +63,10 @@ async fn read_envelope(stream: &mut TcpStream) -> Result<Vec<u8>, PairingError> 
         stream
             .read_exact(&mut envelope[3..])
             .await
-            .map_err(|e| PairingError::GattReadFailed(format!("TCP read body: {e}")))?;
+            .map_err(|e| PairingError::GattReadFailed {
+                device: None,
+                reason: format!("TCP read body: {e}"),
+            })?;
     }
     Ok(envelope)
 }
@@ -95,9 +101,12 @@ impl BleTransport for LoopbackBleTransport {
         _address: &[u8; 6],
     ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
         Box::pin(async {
-            let stream = TcpStream::connect(&self.addr)
-                .await
-                .map_err(|e| PairingError::ConnectionFailed(format!("TCP connect: {e}")))?;
+            let stream = TcpStream::connect(&self.addr).await.map_err(|e| {
+                PairingError::ConnectionFailed {
+                    device: None,
+                    reason: format!("TCP connect: {e}"),
+                }
+            })?;
             self.stream = Some(stream);
             // Return a large MTU — TCP has no MTU constraint.
             Ok(512)
@@ -120,15 +129,21 @@ impl BleTransport for LoopbackBleTransport {
             let stream = self
                 .stream
                 .as_mut()
-                .ok_or(PairingError::ConnectionDropped)?;
+                .ok_or(PairingError::ConnectionDropped { device: None })?;
             stream
                 .write_all(&data)
                 .await
-                .map_err(|e| PairingError::GattWriteFailed(format!("TCP write: {e}")))?;
+                .map_err(|e| PairingError::GattWriteFailed {
+                    device: None,
+                    reason: format!("TCP write: {e}"),
+                })?;
             stream
                 .flush()
                 .await
-                .map_err(|e| PairingError::GattWriteFailed(format!("TCP flush: {e}")))?;
+                .map_err(|e| PairingError::GattWriteFailed {
+                    device: None,
+                    reason: format!("TCP flush: {e}"),
+                })?;
             Ok(())
         })
     }
@@ -143,11 +158,11 @@ impl BleTransport for LoopbackBleTransport {
             let stream = self
                 .stream
                 .as_mut()
-                .ok_or(PairingError::ConnectionDropped)?;
+                .ok_or(PairingError::ConnectionDropped { device: None })?;
             let timeout = tokio::time::Duration::from_millis(timeout_ms);
             match tokio::time::timeout(timeout, read_envelope(stream)).await {
                 Ok(result) => result,
-                Err(_) => Err(PairingError::IndicationTimeout),
+                Err(_) => Err(PairingError::IndicationTimeout { device: None }),
             }
         })
     }
@@ -188,7 +203,7 @@ mod tests {
             let mut transport = LoopbackBleTransport::new("127.0.0.1:1");
             let result = transport.connect(&[0; 6]).await;
             assert!(
-                matches!(result, Err(PairingError::ConnectionFailed(_))),
+                matches!(result, Err(PairingError::ConnectionFailed { .. })),
                 "expected ConnectionFailed, got {result:?}"
             );
         });
@@ -218,7 +233,7 @@ mod tests {
             let mut transport = LoopbackBleTransport::new("127.0.0.1:0");
             let result = transport.write_characteristic(0, 0, &[1, 2, 3]).await;
             assert!(
-                matches!(result, Err(PairingError::ConnectionDropped)),
+                matches!(result, Err(PairingError::ConnectionDropped { .. })),
                 "expected ConnectionDropped, got {result:?}"
             );
         });
@@ -234,7 +249,7 @@ mod tests {
             let mut transport = LoopbackBleTransport::new("127.0.0.1:0");
             let result = transport.read_indication(0, 0, 100).await;
             assert!(
-                matches!(result, Err(PairingError::ConnectionDropped)),
+                matches!(result, Err(PairingError::ConnectionDropped { .. })),
                 "expected ConnectionDropped, got {result:?}"
             );
         });

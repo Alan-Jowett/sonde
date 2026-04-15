@@ -63,8 +63,13 @@ The interpreter holds `reg: [TaggedReg; 11]` instead of `[u64; 11]`.  All arithm
 enum RegionTag {
     /// Pointer into the BPF stack (R10-derived).
     Stack,
-    /// Pointer into the input memory / context buffer (R1-derived).
+    /// Read-only view of the input memory / context buffer (R1-derived).
+    /// Used when `read_only_ctx` is `true`; writes are silently ignored
+    /// per ND-0505 AC6.
     Context,
+    /// Writable view of the same input memory / context buffer.
+    /// Used when `read_only_ctx` is `false`; stores are allowed.
+    Memory,
     /// Pointer into a map value returned by `map_lookup_elem`.
     /// `value_size` records the size of the individual value.
     MapValue { value_size: u32 },
@@ -83,7 +88,7 @@ At any point during execution, every register is in exactly one of three states:
 | State | `region` | Can be dereferenced? | Can be used in ALU? |
 |-------|----------|---------------------|---------------------|
 | **Scalar** | `None` | No | Yes (all ops) |
-| **Pointer** | `Some(Region { tag: Stack \| Context \| MapValue })` | Yes (within bounds) | Limited (see §4.3) |
+| **Pointer** | `Some(Region { tag: Stack \| Context \| Memory \| MapValue })` | Yes (within bounds) | Limited (see §4.3) |
 | **Handle** | `Some(Region { tag: MapDescriptor })` | No (opaque) | MOV only (see §4.3) |
 
 `Pointer` and `Handle` both use `Some(Region { .. })`, but they differ in what operations are allowed.  A `Handle` is an opaque value that can only be copied (MOV) and passed to helpers — it cannot be dereferenced or participate in arithmetic.
@@ -117,7 +122,7 @@ fn mem_load<const N: usize>(
         return Err(BpfError::NonDereferenceableAccess { pc });
     }
 
-    let addr = (base_reg.value as i64).wrapping_add(off as i64) as u64;
+    let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end  = addr.checked_add(N as u64)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: N })?;
 
@@ -171,17 +176,19 @@ fn mem_store<const N: usize>(
         return Err(BpfError::NonDereferenceableAccess { pc });
     }
 
-    // Context memory is read-only.
-    if matches!(region.tag, RegionTag::Context) {
-        return Err(BpfError::ReadOnlyWrite { pc });
-    }
-
-    let addr = (base_reg.value as i64).wrapping_add(off as i64) as u64;
+    // ND-0505 AC6: writes to read-only context are silently ignored;
+    // the program continues execution.  Bounds validation is still
+    // performed so that out-of-range stores are caught.
+    let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end  = addr.checked_add(N as u64)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: N })?;
 
     if addr < region.base || end > region.end {
         return Err(BpfError::MemoryAccessViolation { pc, addr, len: N });
+    }
+
+    if matches!(region.tag, RegionTag::Context) {
+        return Ok(());
     }
 
     // SAFETY: same argument as mem_load.
@@ -204,7 +211,7 @@ Atomic read-modify-write operations (ADD, OR, AND, XOR, XCHG, CMPXCHG) are route
 
 > **Concurrency model:** BPF programs execute single-threaded — only one program runs at a time on a given interpreter instance.  The "atomic" operations implement the RFC 9669 instruction semantics (RFC 9669 §5.3) but are emulated as non-atomic `read_unaligned` / `write_unaligned` sequences.  This is correct for single-threaded execution.  If a future interpreter needs to support concurrent BPF-to-BPF execution with shared map memory, these operations would need to use `core::sync::atomic` or equivalent hardware atomics.
 
-The same pre-checks apply as for `mem_store`: scalars and `MapDescriptor` are rejected via `NonDereferenceableAccess`, and `Context` (read-only) is rejected via `ReadOnlyWrite`.
+The same pre-checks apply as for `mem_store`: scalars and `MapDescriptor` are rejected via `NonDereferenceableAccess`.  For `Context` (read-only) regions, bounds validation and FETCH/CMPXCHG register-result semantics are preserved, but the actual write to memory is suppressed (ND-0505 AC6).
 
 ### 3.4  Unsafe budget
 
@@ -229,7 +236,7 @@ At program start, three registers carry pointer provenance:
 
 | Register | Value | Region |
 |----------|-------|--------|
-| R1 | `ctx.as_ptr() as u64` | `Some(Region { tag: Context, base: ctx.as_ptr() as u64, end: (ctx.as_ptr() as u64).checked_add(ctx.len() as u64).unwrap() })` |
+| R1 | `ctx.as_ptr() as u64` | `None` when `ctx.is_empty()`, otherwise `Some(Region { tag: ctx_tag, ... })`, where `ctx_tag` is `Context` when `read_only_ctx` is `true`, `Memory` when `false` (see §2.2) |
 | R2 | `ctx.len() as u64` | `None` (scalar — length, not a pointer) |
 | R10 | `stack.as_ptr() as u64 + STACK_SIZE as u64` | `Some(Region { tag: Stack, base: stack.as_ptr() as u64, end: (stack.as_ptr() as u64).checked_add(STACK_SIZE as u64).unwrap() })` |
 | R0, R3–R9 | 0 | `None` (scalar) |
@@ -247,7 +254,7 @@ For src=1, the interpreter resolves the map index and loads the relocated map po
 
 ### 4.3  ALU operations and pointer arithmetic
 
-BPF ALU instructions have the form `dst = dst OP src` (or `dst = dst OP imm`).  The table below defines how the **dst** and **src** tags interact to determine the result tag.  In this table, "pointer" means a dereferenceable pointer (`Stack`, `Context`, or `MapValue`).  Immediates are always scalar.
+BPF ALU instructions have the form `dst = dst OP src` (or `dst = dst OP imm`).  The table below defines how the **dst** and **src** tags interact to determine the result tag.  In this table, "pointer" means a dereferenceable pointer (`Stack`, `Context`, `Memory`, or `MapValue`).  Immediates are always scalar.
 
 | Operation | `dst` tag | `src` tag | Result tag written to `dst` |
 |-----------|-----------|-----------|----------------------------|
@@ -504,7 +511,10 @@ pub enum BpfError {
     /// calling `map_lookup_elem`.
     InvalidHelperArgument { pc: usize, arg: u8 },
 
-    /// Attempted to write to a read-only region (e.g., Context).
+    /// Attempted to write to a read-only region.
+    /// Note: Context writes are silently ignored (ND-0505 AC6) rather
+    /// than raising this error.  This variant is retained for regions
+    /// that may need hard write-rejection in future extensions.
     ReadOnlyWrite { pc: usize },
 
     /// Pointer arithmetic that violates provenance rules
@@ -570,30 +580,34 @@ The redesign changes the `execute_program` public API.  This is an intentional b
 ### 10.1  `execute_program` signature
 
 ```rust
-// Current
+// Pre-tagged (historical — no longer available)
 pub fn execute_program(
     prog: &[u8],
     mem: &mut [u8],
     helpers: &[(u32, Helper)],
 ) -> Result<u64, BpfError>;
 
-// Tagged — context is read-only; map definitions added
-pub fn execute_program(
+// Tagged — context mutability controlled by read_only_ctx; map definitions added
+pub unsafe fn execute_program(
     prog: &[u8],
-    ctx: &[u8],
+    ctx: &mut [u8],
     helpers: &[HelperDescriptor],
     maps: &[MapRegion],
+    read_only_ctx: bool,
+    instruction_budget: u64,
 ) -> Result<u64, BpfError>;
 ```
 
-The `mem` parameter is renamed to `ctx` and changed from `&mut [u8]` to `&[u8]`.  The tagged interpreter enforces Context as read-only (§3.2), so the API should reflect this.  If a future use case requires a mutable input region, a separate parameter (e.g., `scratch: &mut [u8]`) can be added with its own `RegionTag` variant.
+The `mem` parameter is renamed to `ctx` and retains `&mut [u8]` so that both read-only and writable contexts can be supported through a single entry point.  The `read_only_ctx` flag controls whether R1 is tagged `Context` (writes silently ignored per ND-0505 AC6) or `Memory` (writes allowed).  See §2.2 for the tag definitions.  The `instruction_budget` parameter limits the number of instructions executed before returning `InstructionBudgetExceeded`.
 
 **Migration steps for existing callers:**
 
-1. Change `mem: &mut [u8]` → `ctx: &[u8]` at call sites.
+1. Change `mem` → `ctx` at call sites (type remains `&mut [u8]`).
 2. Replace `&[(u32, Helper)]` with `&[HelperDescriptor]`, adding `ret: HelperReturn::Scalar` for most helpers and `ret: HelperReturn::MapValueOrNull { map_arg: 1 }` for `map_lookup_elem`.
 3. Provide a `maps: &[MapRegion]` slice with relocated pointer, value size, and backing storage bounds for each map.
-4. Update tests that rely on R1–R5 surviving helper calls (§4.6 behavioral change).
+4. Add `read_only_ctx: true` for contexts that must be immutable (e.g., `sonde_context`), or `false` for writable input regions.
+5. Add `instruction_budget` (e.g., `UNLIMITED_BUDGET` to opt out).
+6. Update tests that rely on R1–R5 surviving helper calls (§4.6 behavioral change).
 
 Where `MapRegion` provides the metadata needed to tag LD_DW_IMM relocations and `map_lookup_elem` returns:
 
@@ -636,7 +650,7 @@ The implementation should keep all existing interpreter tests passing.  Tests th
 
 ### 11.1  Read-only map enforcement
 
-Some program classes may require read-only map access.  With tagged regions, this is trivial: use a `MapValueReadOnly` tag variant.  `mem_store` rejects writes to read-only map regions, just as it rejects writes to Context.
+Some program classes may require read-only map access.  A future extension could add a `MapValueReadOnly` tag variant for such regions.  Unlike `Context`, whose writes are silently ignored, writes to a `MapValueReadOnly` region should return `BpfError::ReadOnlyWrite`, consistent with §5's retention of that error for future hard write-rejection.
 
 ### 11.2  Instruction metering
 
@@ -683,7 +697,7 @@ struct TaggedReg {
     value: u64,          // 8 bytes
     base: u64,           // 8 bytes (0 when scalar)
     end: u64,            // 8 bytes (0 when scalar)
-    tag: u8,             // 1 byte: 0=Scalar, 1=Stack, 2=Context, 3=MapValue, 4=MapDescriptor
+    tag: u8,             // 1 byte: 0=Scalar, 1=Stack, 2=Context, 3=Memory, 4=MapValue, 5=MapDescriptor
     _pad: [u8; 3],       // 3 bytes padding
     tag_data: u32,       // 4 bytes: value_size or map_index (tag-dependent)
 }

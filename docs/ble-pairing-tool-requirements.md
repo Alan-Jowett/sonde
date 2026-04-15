@@ -1195,7 +1195,7 @@ The page layout is:
 
 **Acceptance criteria:**
 
-1. The UI displays exactly one page at a time.
+1. The UI displays exactly one page at a time (during CSS transitions, both the outgoing and incoming pages may be briefly visible for up to 300 ms — see PT-1222).
 2. Each page is a `<section>` element with a unique `id` attribute.
 3. Navigation between pages is managed by a `Navigator` class in JavaScript.
 4. Navigation follows a linear forward/backward flow between adjacent pages, except that the navigator MAY skip ahead to the earliest valid page permitted by the current pairing state (e.g., page 1 → page 4 when the gateway is already paired).  Arbitrary random access to later pages is not allowed.

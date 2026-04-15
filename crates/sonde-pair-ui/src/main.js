@@ -71,7 +71,6 @@ const logPanel = document.getElementById("log-panel");
 
 let selectedAddressGw = null;
 let selectedAddressNode = null;
-let selectedRssi = null;
 let scanning = false;
 let pollTimer = null;
 let logTimer = null;
@@ -234,7 +233,6 @@ class Navigator {
     } else if (pageIndex === 3) {
       if (!preserveSelection) {
         selectedAddressNode = null;
-        selectedRssi = null;
         btnToProvision.disabled = true;
         rssiPanel.classList.add("hidden");
       }
@@ -357,7 +355,6 @@ function selectGatewayDevice(address) {
 
 function selectNodeDevice(address, rssi) {
   selectedAddressNode = address;
-  selectedRssi = rssi;
   for (const li of deviceListNode.children) {
     li.classList.toggle("selected", li.dataset.address === address);
   }
@@ -379,9 +376,13 @@ async function startScan() {
     const gen = scanGeneration;
     const onGwPage = navigator_.current === 1;
     if (onGwPage) {
+      selectedAddressGw = null;
       btnScanStartGw.disabled = true;
       btnScanStopGw.disabled = false;
     } else {
+      selectedAddressNode = null;
+      updateRssiIndicator(null);
+      btnToProvision.disabled = true;
       btnScanStartNode.disabled = true;
       btnScanStopNode.disabled = false;
     }
@@ -427,8 +428,9 @@ async function pollDevices(listEl, gen) {
     if (listEl === deviceListNode && selectedAddressNode) {
       const selected = devices.find(d => d.address === selectedAddressNode);
       if (selected) {
-        selectedRssi = selected.rssi;
         updateRssiIndicator(selected.rssi);
+      } else {
+        updateRssiIndicator(null);
       }
     }
   } catch (_) {
@@ -591,7 +593,6 @@ boardSelect.addEventListener("change", () => {
 btnProvisionAnother.addEventListener("click", () => {
   nodeId.value = "";
   selectedAddressNode = null;
-  selectedRssi = null;
   rssiPanel.classList.add("hidden");
   btnToProvision.disabled = true;
   renderDevices(deviceListNode, [], false);

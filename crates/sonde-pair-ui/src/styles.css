@@ -286,6 +286,16 @@ label {
   letter-spacing: 0.5px;
 }
 
+/* Status text (PT-0701 per-page status) */
+.status-text {
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 6px 0;
+  font-style: italic;
+}
+
+.status-text.hidden { display: none; }
+
 /* Device list */
 .device-list {
   list-style: none;

@@ -33,6 +33,7 @@ const btnScanStopGw = document.getElementById("btn-scan-stop-gw");
 const deviceListGw = document.getElementById("device-list-gw");
 const phoneLabel = document.getElementById("phone-label");
 const btnPair = document.getElementById("btn-pair");
+const pairStatus = document.getElementById("pair-status");
 
 // Page 3: Pairing Complete
 const pairDetails = document.getElementById("pair-details");
@@ -55,6 +56,7 @@ const customPins = document.getElementById("custom-pins");
 const customSda = document.getElementById("custom-sda");
 const customScl = document.getElementById("custom-scl");
 const btnProvision = document.getElementById("btn-provision");
+const provisionStatus = document.getElementById("provision-status");
 
 // Page 6: Done
 const provisionDetails = document.getElementById("provision-details");
@@ -259,6 +261,16 @@ function clearError() {
   errorBar.classList.add("hidden");
 }
 
+function showStatus(el, msg) {
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+function hideStatus(el) {
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
 function setBusy(b) {
   busy = b;
   // Disable action buttons on the current page while busy
@@ -447,11 +459,14 @@ async function pairGateway() {
   clearError();
   if (scanning) await stopScan();
   setBusy(true);
+  showStatus(pairStatus, "Connecting\u2026");
   try {
+    showStatus(pairStatus, "Pairing\u2026");
     await invoke("pair_gateway", {
       address: selectedAddressGw,
       phoneLabel: phoneLabel.value || "sonde-phone",
     });
+    showStatus(pairStatus, "Verifying\u2026");
     const status = await invoke("get_pairing_status");
     isPaired = !!status.paired;
     if (isPaired) {
@@ -460,8 +475,10 @@ async function pairGateway() {
       btnSkipToNode.classList.remove("hidden");
       pairDetails.textContent = "Gateway " + (status.gateway_id || "").substring(0, 8) + "\u2026";
     }
-    navigator_.next(); // → page 3 (Pairing Complete)
+    hideStatus(pairStatus);
+    navigator_.next();
   } catch (e) {
+    hideStatus(pairStatus);
     showError(e);
   } finally {
     setBusy(false);
@@ -481,16 +498,20 @@ async function provisionNode() {
   clearError();
   if (scanning) await stopScan();
   setBusy(true);
+  showStatus(provisionStatus, "Connecting to node\u2026");
   try {
+    showStatus(provisionStatus, "Provisioning\u2026");
     await invoke("provision_node", {
       address: selectedAddressNode,
       nodeId: nid,
       i2cSda: pins.sda,
       i2cScl: pins.scl,
     });
+    hideStatus(provisionStatus);
     provisionDetails.textContent = "Node \"" + nid + "\" provisioned.";
-    navigator_.next(); // → page 6 (Done)
+    navigator_.next();
   } catch (e) {
+    hideStatus(provisionStatus);
     showError(e);
   } finally {
     setBusy(false);

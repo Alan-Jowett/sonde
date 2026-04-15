@@ -270,7 +270,7 @@ impl AsyncQueue {
     pub fn single_for_piggyback(&self, wake_budget: usize) -> Option<&[u8]> {
         if self.read_count() == 1 {
             let len = self.read_item_len(0);
-            if len <= wake_budget {
+            if len <= wake_budget && len <= MAX_BLOB_SIZE {
                 return Some(self.read_item_data(0));
             }
         }

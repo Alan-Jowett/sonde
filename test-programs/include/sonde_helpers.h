@@ -337,7 +337,7 @@ static int (*bpf_trace_printk)(const char *fmt, __u32 fmt_len, ...) = (void *)16
  * @ptr: pointer to data blob
  * @len: length of the data blob in bytes
  * Returns: 0 on success, -1 if the queue is full, -2 if the blob is
- *          too large
+ *          too large or ptr is null
  */
 static int (*send_async)(const void *ptr, __u32 len) = (void *)17;
 

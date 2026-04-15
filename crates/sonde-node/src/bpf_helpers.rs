@@ -20,6 +20,7 @@ pub mod helper_ids {
     pub const DELAY_US: u32 = 14;
     pub const SET_NEXT_WAKE: u32 = 15;
     pub const BPF_TRACE_PRINTK: u32 = 16;
+    pub const SEND_ASYNC: u32 = 17;
 }
 
 /// Identifies whether the currently executing program is resident or ephemeral.
@@ -32,7 +33,7 @@ pub enum ProgramClass {
 
 /// The execution context structure passed to BPF programs as R1.
 ///
-/// This must match the C struct layout in bpf-environment.md §4:
+/// This must match the C struct layout in sonde_helpers.h:
 /// ```c
 /// struct sonde_context {
 ///     uint64_t timestamp;
@@ -40,6 +41,8 @@ pub enum ProgramClass {
 ///     uint16_t firmware_abi_version;
 ///     uint8_t  wake_reason;
 ///     uint8_t  _padding[3];
+///     uint64_t data_start;
+///     uint64_t data_end;
 /// };
 /// ```
 #[repr(C)]
@@ -51,6 +54,10 @@ pub struct SondeContext {
     pub wake_reason: u8,
     /// Explicit padding to match C struct layout (3 bytes trailing padding).
     pub _padding: [u8; 3],
+    /// Pointer to the start of downlink data from COMMAND blob, or 0 if none.
+    pub data_start: u64,
+    /// Pointer past the end of downlink data, or 0 if none.
+    pub data_end: u64,
 }
 
 impl SondeContext {
@@ -64,8 +71,9 @@ mod tests {
 
     #[test]
     fn test_sonde_context_size() {
-        // timestamp(8) + battery_mv(2) + firmware_abi_version(2) + wake_reason(1) + padding(3) = 16
-        assert_eq!(SondeContext::SIZE, 16);
+        // timestamp(8) + battery_mv(2) + firmware_abi_version(2) + wake_reason(1) + padding(3)
+        // + data_start(8) + data_end(8) = 32
+        assert_eq!(SondeContext::SIZE, 32);
     }
 
     #[test]
@@ -75,12 +83,12 @@ mod tests {
     }
 
     /// ND-0600: Helper ABI conformance — every helper ID matches its
-    /// documented value and the numbering is contiguous 1..=16.
+    /// documented value and the numbering is contiguous 1..=17.
     /// A firmware update must never renumber helpers; this test catches
     /// any accidental change.
     #[test]
     fn test_helper_abi_conformance() {
-        let expected: [(u32, &str); 16] = [
+        let expected: [(u32, &str); 17] = [
             (1, "I2C_READ"),
             (2, "I2C_WRITE"),
             (3, "I2C_WRITE_READ"),
@@ -97,6 +105,7 @@ mod tests {
             (14, "DELAY_US"),
             (15, "SET_NEXT_WAKE"),
             (16, "BPF_TRACE_PRINTK"),
+            (17, "SEND_ASYNC"),
         ];
 
         let actual = [
@@ -116,6 +125,7 @@ mod tests {
             helper_ids::DELAY_US,
             helper_ids::SET_NEXT_WAKE,
             helper_ids::BPF_TRACE_PRINTK,
+            helper_ids::SEND_ASYNC,
         ];
 
         for (i, ((expected_id, name), actual_id)) in expected.iter().zip(actual.iter()).enumerate()
@@ -126,8 +136,8 @@ mod tests {
             );
         }
 
-        // Verify contiguous range 1..=16 (no gaps).
-        assert_eq!(actual.len(), 16);
+        // Verify contiguous range 1..=17 (no gaps).
+        assert_eq!(actual.len(), 17);
         for (i, id) in actual.iter().enumerate() {
             assert_eq!(*id, (i + 1) as u32, "helper IDs must be contiguous 1..=N");
         }

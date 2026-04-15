@@ -192,6 +192,7 @@ fn main() {
                 let reply = HandlerMessage::DataReply {
                     request_id,
                     data: vec![],
+                    delivery: 0,
                 };
                 if write_message(&mut stdout, &reply).is_err() {
                     break;

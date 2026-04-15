@@ -21,6 +21,7 @@ use std::cell::RefCell;
 
 use sonde_protocol::{AeadProvider, Sha256Provider};
 
+use crate::async_queue::AsyncQueue;
 use crate::bpf_helpers::ProgramClass;
 use crate::hal::Hal;
 use crate::key_store::NodeIdentity;
@@ -126,6 +127,7 @@ struct DispatchContext {
     current_seq: *mut u64,
     program_class: ProgramClass,
     trace_log: *mut Vec<String>,
+    async_queue: *mut AsyncQueue,
     gateway_timestamp_ms: u64,
     command_received_at_ms: u64,
     battery_mv: u32,
@@ -175,6 +177,7 @@ pub unsafe fn install(
     current_seq: *mut u64,
     program_class: ProgramClass,
     trace_log: *mut Vec<String>,
+    async_queue: *mut AsyncQueue,
     gateway_timestamp_ms: u64,
     command_received_at_ms: u64,
     battery_mv: u32,
@@ -191,6 +194,7 @@ pub unsafe fn install(
         current_seq,
         program_class,
         trace_log,
+        async_queue,
         gateway_timestamp_ms,
         command_received_at_ms,
         battery_mv,
@@ -210,6 +214,7 @@ unsafe fn install_core(
     current_seq: *mut u64,
     program_class: ProgramClass,
     trace_log: *mut Vec<String>,
+    async_queue: *mut AsyncQueue,
     gateway_timestamp_ms: u64,
     command_received_at_ms: u64,
     battery_mv: u32,
@@ -266,6 +271,7 @@ unsafe fn install_core(
             current_seq,
             program_class,
             trace_log,
+            async_queue,
             gateway_timestamp_ms,
             command_received_at_ms,
             battery_mv,
@@ -456,7 +462,7 @@ pub fn helper_send(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
     let result = with_ctx(|ctx| {
         let blob_ptr = r1 as *const u8;
         let blob_len = r2 as usize;
-        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE {
+        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
             return (-1i64) as u64;
         }
 
@@ -490,7 +496,7 @@ pub fn helper_send_recv(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64 {
         let reply_ptr = r3 as *mut u8;
         let reply_cap = r4 as usize;
         if blob_ptr.is_null()
-            || blob_len > sonde_protocol::MAX_PAYLOAD_SIZE
+            || blob_len > sonde_protocol::MAX_APP_DATA_BLOB_SIZE
             || reply_ptr.is_null()
             || reply_cap == 0
         {
@@ -691,7 +697,32 @@ pub fn helper_bpf_trace_printk(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -
     .unwrap_or((-1i64) as u64)
 }
 
-/// Register all 16 helpers with the interpreter.
+/// Helper 17: send_async (queue blob for deferred transmission).
+/// Args: r1=blob_ptr, r2=blob_len.
+/// Returns: 0 on success, -1 if queue is full, -2 if blob is oversized.
+pub fn helper_send_async(r1: u64, r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
+    let result = with_ctx(|ctx| {
+        let blob_ptr = r1 as *const u8;
+        if r2 > usize::MAX as u64 {
+            return (-2i64) as u64;
+        }
+        let blob_len = r2 as usize;
+        if blob_ptr.is_null() || blob_len > sonde_protocol::MAX_APP_DATA_BLOB_SIZE {
+            return (-2i64) as u64;
+        }
+
+        unsafe {
+            let blob = core::slice::from_raw_parts(blob_ptr, blob_len);
+            let queue = &mut *ctx.async_queue;
+            queue.push(blob.to_vec()) as u64
+        }
+    })
+    .unwrap_or((-1i64) as u64);
+    log::debug!("bpf helper send_async: result={}", result as i64);
+    result
+}
+
+/// Register all 17 helpers with the interpreter.
 pub fn register_all(
     interpreter: &mut impl crate::bpf_runtime::BpfInterpreter,
 ) -> Result<(), crate::bpf_runtime::BpfError> {
@@ -712,6 +743,7 @@ pub fn register_all(
     interpreter.register_helper(DELAY_US, helper_delay_us)?;
     interpreter.register_helper(SET_NEXT_WAKE, helper_set_next_wake)?;
     interpreter.register_helper(BPF_TRACE_PRINTK, helper_bpf_trace_printk)?;
+    interpreter.register_helper(SEND_ASYNC, helper_send_async)?;
     Ok(())
 }
 
@@ -855,6 +887,7 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
+        let mut queue = AsyncQueue::new();
         let aead = crate::node_aead::NodeAead;
         let sha = crate::crypto::SoftwareSha256;
         unsafe {
@@ -868,6 +901,7 @@ mod tests {
                 seq as *mut u64,
                 program_class,
                 trace_log as *mut Vec<String>,
+                &mut queue as *mut AsyncQueue,
                 1_710_000_000_000,
                 100,
                 3300,
@@ -1230,6 +1264,7 @@ mod tests {
         // Expected get_time: 1_710_000_000_000 + (200 - 100) = 1_710_000_000_100
         let aead = crate::node_aead::NodeAead;
         let sha = crate::crypto::SoftwareSha256;
+        let mut queue = AsyncQueue::new();
         unsafe {
             install(
                 &mut hal as *mut TestHal as *mut dyn Hal,
@@ -1241,6 +1276,7 @@ mod tests {
                 &mut seq as *mut u64,
                 ProgramClass::Resident,
                 &mut trace as *mut Vec<String>,
+                &mut queue as *mut AsyncQueue,
                 1_710_000_000_000,
                 100,
                 3300,
@@ -1314,6 +1350,7 @@ mod tests {
 
         let aead = crate::node_aead::NodeAead;
         let sha_prov = crate::crypto::SoftwareSha256;
+        let mut queue = AsyncQueue::new();
         unsafe {
             install(
                 &mut hal as *mut TestHal as *mut dyn Hal,
@@ -1325,6 +1362,7 @@ mod tests {
                 &mut seq as *mut u64,
                 ProgramClass::Resident,
                 &mut trace as *mut Vec<String>,
+                &mut queue as *mut AsyncQueue,
                 1_710_000_000_000,
                 100,
                 3300,
@@ -2231,6 +2269,140 @@ mod tests {
             !has_debug_helper_log,
             "non-I/O helpers must not emit DEBUG 'bpf helper' logs, got: {:?}",
             records
+        );
+    }
+
+    #[test]
+    fn test_helper_send_async_success() {
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let data = [0x42u8; 10];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                let result = helper_send_async(data.as_ptr() as u64, data.len() as u64, 0, 0, 0);
+                assert_eq!(result, 0, "send_async should succeed");
+            },
+        );
+        // No outbound frames — data is queued, not sent immediately.
+        assert!(transport.outbound.is_empty());
+    }
+
+    #[test]
+    fn test_helper_send_async_queue_full() {
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        let mut queue = AsyncQueue::new();
+        // Pre-fill the queue to capacity.
+        for _ in 0..10 {
+            let _ = queue.push(vec![0x42]);
+        }
+
+        let aead = crate::node_aead::NodeAead;
+        let sha = crate::crypto::SoftwareSha256;
+        unsafe {
+            install(
+                &mut hal as *mut TestHal as *mut dyn Hal,
+                &mut transport as *mut TestTransport as *mut dyn Transport,
+                &mut maps as *mut MapStorage,
+                &mut sleep as *mut SleepManager,
+                &clock as *const TestClock as *const dyn Clock,
+                &identity as *const NodeIdentity,
+                &mut seq as *mut u64,
+                ProgramClass::Resident,
+                &mut trace as *mut Vec<String>,
+                &mut queue as *mut AsyncQueue,
+                1_710_000_000_000,
+                100,
+                3300,
+                &aead as *const _ as *const dyn sonde_protocol::AeadProvider,
+                &sha as *const _ as *const dyn sonde_protocol::Sha256Provider,
+            );
+        }
+        let _guard = DispatchGuard;
+
+        let data = [0x42u8; 4];
+        let result = helper_send_async(data.as_ptr() as u64, data.len() as u64, 0, 0, 0);
+        assert_eq!(result as i64, -1, "queue full should return -1");
+    }
+
+    #[test]
+    fn test_helper_send_async_oversized() {
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        let big = vec![0x42u8; sonde_protocol::MAX_APP_DATA_BLOB_SIZE + 1];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                let result = helper_send_async(big.as_ptr() as u64, big.len() as u64, 0, 0, 0);
+                assert_eq!(result as i64, -2, "oversized blob should return -2");
+            },
+        );
+    }
+
+    #[test]
+    fn test_helper_send_async_null_ptr() {
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Resident,
+            &mut trace,
+            || {
+                let result = helper_send_async(0, 10, 0, 0, 0);
+                assert_eq!(result as i64, -2, "null ptr should return -2");
+            },
         );
     }
 }

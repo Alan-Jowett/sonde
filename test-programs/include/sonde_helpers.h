@@ -78,8 +78,10 @@ struct sonde_context {
     __u16 firmware_abi_version;  /**< Current firmware ABI version               */
     __u8  wake_reason;           /**< Why the node woke (see WAKE_* constants)  */
     __u8  _padding[3];           /**< Explicit padding; must be zero            */
+    __u64 data_start;            /**< Pointer to downlink data from COMMAND, or 0 */
+    __u64 data_end;              /**< Pointer past end of downlink data, or 0     */
 };
-/* Total size: 8 + 2 + 2 + 1 + 3 = 16 bytes; 8-byte aligned.
+/* Total size: 8 + 2 + 2 + 1 + 3 + 8 + 8 = 32 bytes; 8-byte aligned.
  * The BPF interpreter bounds-checks R1 accesses against this size. */
 
 /** Normal scheduled wake. */
@@ -322,6 +324,22 @@ static int (*set_next_wake)(__u32 seconds) = (void *)15;
  * are used.
  */
 static int (*bpf_trace_printk)(const char *fmt, __u32 fmt_len, ...) = (void *)16;
+
+/**
+ * send_async — queue a data blob for deferred transmission.
+ *
+ * The blob is held in a sleep-retained queue (RTC slow SRAM on ESP32,
+ * max 10 entries).  Data survives deep sleep but is lost on reboot.
+ * If exactly one blob is queued and it fits, it will be piggybacked on
+ * the next WAKE frame; otherwise each queued blob is sent as a separate
+ * APP_DATA frame after BPF execution completes.
+ *
+ * @ptr: pointer to data blob
+ * @len: length of the data blob in bytes
+ * Returns: 0 on success, -1 if the queue is full, -2 if the blob is
+ *          too large or ptr is null
+ */
+static int (*send_async)(const void *ptr, __u32 len) = (void *)17;
 
 #pragma GCC diagnostic pop
 

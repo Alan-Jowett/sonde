@@ -83,6 +83,7 @@ fn test_command_cbor_key_order() {
             chunk_size: 190,
             chunk_count: 3,
         },
+        blob: None,
     };
     let cbor = cmd.encode().unwrap();
 

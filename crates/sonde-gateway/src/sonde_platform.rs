@@ -21,11 +21,11 @@ use prevail::spec::type_descriptors::{
 use EbpfArgumentType as Arg;
 use EbpfReturnType as Ret;
 
-/// Context descriptor for `struct sonde_context` (16 bytes, no packet data/end pointers).
+/// Context descriptor for `struct sonde_context` (32 bytes, with data_start/data_end pointers).
 static SONDE_CONTEXT: EbpfContextDescriptor = EbpfContextDescriptor {
-    size: 16,
-    data: -1,
-    end: -1,
+    size: 32,
+    data: 16,
+    end: 24,
     meta: -1,
 };
 
@@ -39,9 +39,9 @@ static UNSUPPORTED_HELPER: HelperPrototype = HelperPrototype {
     unsupported: true,
 };
 
-/// Helper prototypes for sonde BPF helpers 1–16.
+/// Helper prototypes for sonde BPF helpers 1–17.
 /// Signatures match `test-programs/include/sonde_helpers.h`.
-static SONDE_HELPERS: [HelperPrototype; 16] = [
+static SONDE_HELPERS: [HelperPrototype; 17] = [
     // 1: i2c_read(handle, *buf, buf_len) -> i32
     HelperPrototype {
         name: "i2c_read",
@@ -270,6 +270,21 @@ static SONDE_HELPERS: [HelperPrototype; 16] = [
         context_descriptor: None,
         unsupported: false,
     },
+    // 17: send_async(*ptr, len) -> i32
+    HelperPrototype {
+        name: "send_async",
+        return_type: Ret::Integer,
+        argument_type: [
+            Arg::PtrToReadableMem,
+            Arg::ConstSize,
+            Arg::DontCare,
+            Arg::DontCare,
+            Arg::DontCare,
+        ],
+        reallocate_packet: false,
+        context_descriptor: None,
+        unsupported: false,
+    },
 ];
 
 /// Sonde BPF verifier platform.
@@ -328,7 +343,7 @@ impl EbpfPlatform for SondePlatform {
     }
 
     fn get_helper_prototype(&self, n: i32) -> &HelperPrototype {
-        if (1..=16).contains(&n) {
+        if (1..=17).contains(&n) {
             &SONDE_HELPERS[(n - 1) as usize]
         } else {
             &UNSUPPORTED_HELPER
@@ -336,7 +351,7 @@ impl EbpfPlatform for SondePlatform {
     }
 
     fn is_helper_usable(&self, n: i32) -> bool {
-        (1..=16).contains(&n)
+        (1..=17).contains(&n)
     }
 
     fn map_record_size(&self) -> usize {
@@ -413,9 +428,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_16_helpers_are_usable() {
+    fn all_17_helpers_are_usable() {
         let platform = SondePlatform::new();
-        for id in 1..=16 {
+        for id in 1..=17 {
             assert!(
                 platform.is_helper_usable(id),
                 "helper {id} should be usable"
@@ -434,10 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn helper_17_is_not_usable() {
+    fn helper_18_is_not_usable() {
         let platform = SondePlatform::new();
-        assert!(!platform.is_helper_usable(17));
-        assert!(platform.get_helper_prototype(17).unsupported);
+        assert!(!platform.is_helper_usable(18));
+        assert!(platform.get_helper_prototype(18).unsupported);
     }
 
     #[test]
@@ -468,7 +483,9 @@ mod tests {
         let ctx = pt
             .context_descriptor
             .expect("should have context descriptor");
-        assert_eq!(ctx.size, 16);
+        assert_eq!(ctx.size, 32);
+        assert_eq!(ctx.data, 16, "data_start offset");
+        assert_eq!(ctx.end, 24, "data_end offset");
     }
 
     #[test]

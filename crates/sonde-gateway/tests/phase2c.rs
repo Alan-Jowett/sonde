@@ -63,6 +63,7 @@ impl TestNode {
             program_hash: program_hash.to_vec(),
             battery_mv,
             firmware_version: "0.4.0".into(),
+            blob: None,
         };
         let cbor = msg.encode().unwrap();
         encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
@@ -107,6 +108,7 @@ async fn do_wake(
             starting_seq,
             timestamp_ms,
             payload,
+            blob: _,
         } => (starting_seq, timestamp_ms, payload),
         other => panic!("expected Command, got {:?}", other),
     }

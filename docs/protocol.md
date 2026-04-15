@@ -575,7 +575,7 @@ The store-and-forward mechanism piggybacks application data on the mandatory WAK
 
 **Uplink (node → gateway):**
 
-1. BPF program calls `send_async(buf, len)` — data queued in RAM (max 10 messages).
+1. BPF program calls `send_async(buf, len)` — data queued in sleep-retained RAM (max 10 messages).
 2. On next wake:
    - If exactly 1 message queued AND it fits in the WAKE payload budget → include as `blob` (key 10) in WAKE.
    - Otherwise → send all queued messages via APP_DATA after COMMAND (existing mechanism).

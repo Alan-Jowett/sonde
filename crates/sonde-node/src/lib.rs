@@ -8,6 +8,7 @@ compile_error!(
      use `--features esp,verbose --no-default-features` for verbose builds"
 );
 
+pub mod async_queue;
 pub mod ble_pairing;
 pub mod bpf_dispatch;
 pub mod bpf_helpers;

@@ -66,6 +66,7 @@ impl TestNode {
             program_hash: program_hash.to_vec(),
             battery_mv,
             firmware_version: "0.4.0".into(),
+            blob: None,
         };
         let cbor = msg.encode().unwrap();
         encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
@@ -192,6 +193,7 @@ async fn do_wake_with_abi(
             starting_seq,
             timestamp_ms,
             payload,
+            blob: _,
         } => (starting_seq, timestamp_ms, payload),
         other => panic!("expected Command, got {:?}", other),
     }
@@ -357,6 +359,7 @@ async fn t0105_command_response_structure() {
             starting_seq,
             timestamp_ms,
             payload,
+            blob: _,
         } => {
             // starting_seq is a valid random u64 — just verify we decoded successfully
             let _ = starting_seq;
@@ -932,6 +935,7 @@ async fn t0602_wrong_key_rejected() {
         program_hash: vec![0u8; 32],
         battery_mv: 3300,
         firmware_version: "0.4.0".into(),
+        blob: None,
     };
     let cbor = msg.encode().unwrap();
     let frame = encode_frame(&header, &cbor, &wrong_psk, &GatewayAead, &RustCryptoSha256).unwrap();

@@ -186,6 +186,8 @@ pub struct Gateway {
     rssi_good_threshold: i8,
     /// RSSI threshold (dBm) below which signal is "bad".
     rssi_bad_threshold: i8,
+    /// Deferred handler replies awaiting delivery on the next WAKE cycle.
+    deferred_replies: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
 impl Gateway {
@@ -202,6 +204,7 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
+            deferred_replies: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -229,6 +232,7 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
+            deferred_replies: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -249,6 +253,7 @@ impl Gateway {
             identity_cache: RwLock::new(None),
             rssi_good_threshold: -60,
             rssi_bad_threshold: -75,
+            deferred_replies: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -644,28 +649,30 @@ impl Gateway {
     /// Shared WAKE business logic: decode, session management, command
     /// selection, telemetry update, and response CBOR encoding.
     ///
-    /// Returns `(response_header, response_cbor)` so the caller can apply
-    /// the appropriate frame codec (HMAC or AEAD).
+    /// Returns `(response_header, response_cbor, deferred_delivered)` so the
+    /// caller can apply the appropriate frame codec and clean up deferred state.
     async fn handle_wake_core(
         &self,
         node: &NodeRecord,
         header: &FrameHeader,
         payload: &[u8],
         peer: PeerAddress,
-    ) -> Option<(FrameHeader, Vec<u8>)> {
+    ) -> Option<(FrameHeader, Vec<u8>, bool)> {
         // 1. Decode NodeMessage::Wake from payload
-        let (firmware_abi_version, program_hash, battery_mv, firmware_version) =
+        let (firmware_abi_version, program_hash, battery_mv, firmware_version, wake_blob) =
             match NodeMessage::decode(MSG_WAKE, payload) {
                 Ok(NodeMessage::Wake {
                     firmware_abi_version,
                     program_hash,
                     battery_mv,
                     firmware_version,
+                    blob,
                 }) => (
                     firmware_abi_version,
                     program_hash,
                     battery_mv,
                     firmware_version,
+                    blob,
                 ),
                 Ok(_) => return None,
                 Err(e) => {
@@ -726,7 +733,10 @@ impl Gateway {
             "WAKE received"
         );
 
-        // 3. Determine command
+        // 4. Retrieve previously stored deferred reply for THIS cycle's COMMAND
+        // (checked after command selection below — only injected into NOP commands)
+
+        // 5. Determine command
         let command_payload = if reuse_chunked {
             // Re-send the same chunked transfer command from the existing session.
             let session = existing_session.unwrap();
@@ -861,13 +871,27 @@ impl Gateway {
             "COMMAND selected"
         );
 
-        // 5. Encode GatewayMessage::Command response
+        // 6. Encode GatewayMessage::Command response
+        // Peek at deferred reply for NOP commands; remove only after successful AEAD.
+        let command_blob = if matches!(command_payload, CommandPayload::Nop) {
+            self.deferred_replies
+                .read()
+                .await
+                .get(&node.node_id)
+                .cloned()
+        } else {
+            None
+        };
+        let has_deferred = command_blob.is_some();
         let response_msg = GatewayMessage::Command {
             starting_seq,
             timestamp_ms,
             payload: command_payload,
+            blob: command_blob,
         };
         let response_cbor = response_msg.encode().ok()?;
+        // NOTE: Deferred reply removal happens in handle_wake() after AEAD
+        // encoding succeeds, to prevent data loss if framing fails.
 
         // 6. Build response header (echoing wake nonce)
         let response_header = FrameHeader {
@@ -876,7 +900,63 @@ impl Gateway {
             nonce: header.nonce,
         };
 
-        Some((response_header, response_cbor))
+        // 3. Route WAKE blob to handler (store reply for NEXT cycle).
+        // Spawned as a background task so it does not block COMMAND delivery.
+        if let Some(wake_data) = wake_blob {
+            if !wake_data.is_empty() && !program_hash.is_empty() {
+                let handler_router = Arc::clone(&self.handler_router);
+                let deferred_replies = Arc::clone(&self.deferred_replies);
+                let node_id = node.node_id.clone();
+                let program_hash = program_hash.clone();
+                let nonce = header.nonce;
+                tokio::spawn(async move {
+                    let handler_result = {
+                        let router = handler_router.read().await;
+                        router.find_handler_cloned(&program_hash)
+                    };
+                    if let Some((config, process_arc)) = handler_result {
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let msg = crate::handler::HandlerMessage::Data {
+                            request_id: nonce,
+                            node_id: node_id.clone(),
+                            program_hash: program_hash.clone(),
+                            data: wake_data,
+                            timestamp,
+                        };
+                        info!(
+                            node_id = %node_id,
+                            command = %config.command,
+                            "WAKE blob routed to handler"
+                        );
+                        let mut process = process_arc.lock().await;
+                        if let Some(crate::handler::HandlerMessage::DataReply { data, .. }) =
+                            process.send_data(&msg).await
+                        {
+                            if !data.is_empty()
+                                && data.len() <= sonde_protocol::MAX_COMMAND_BLOB_SIZE
+                            {
+                                deferred_replies.write().await.insert(node_id.clone(), data);
+                                info!(
+                                    node_id = %node_id,
+                                    "deferred reply stored from WAKE blob handler response"
+                                );
+                            } else if data.len() > sonde_protocol::MAX_COMMAND_BLOB_SIZE {
+                                warn!(
+                                    node_id = %node_id,
+                                    len = data.len(),
+                                    "WAKE blob handler reply too large for deferred delivery — dropping"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        Some((response_header, response_cbor, has_deferred))
     }
 
     /// Handle a WAKE frame — business logic + AES-256-GCM response encoding.
@@ -887,9 +967,18 @@ impl Gateway {
         payload: &[u8],
         peer: PeerAddress,
     ) -> Option<Vec<u8>> {
-        let (response_header, response_cbor) =
+        let (response_header, response_cbor, deferred_delivered) =
             self.handle_wake_core(node, header, payload, peer).await?;
-        self.encode_response(&response_header, &response_cbor, &node.psk)
+        let frame = self.encode_response(&response_header, &response_cbor, &node.psk)?;
+        // Only remove deferred reply if it was actually included in this NOP COMMAND.
+        if deferred_delivered {
+            self.deferred_replies.write().await.remove(&node.node_id);
+            info!(
+                node_id = %node.node_id,
+                "deferred reply delivered in COMMAND"
+            );
+        }
+        Some(frame)
     }
 
     /// Handle a post-WAKE message — dispatch + AES-256-GCM encoding.
@@ -1148,8 +1237,30 @@ impl Gateway {
         let mut process = process_arc.lock().await;
         let reply = process.send_data(&msg).await?;
         match reply {
-            crate::handler::HandlerMessage::DataReply { data, .. } => {
+            crate::handler::HandlerMessage::DataReply { data, delivery, .. } => {
                 if data.is_empty() {
+                    None
+                } else if delivery == 1 {
+                    // Deferred delivery: store reply for next WAKE cycle.
+                    // Validate that the data would fit in a NOP COMMAND payload.
+                    if data.len() > sonde_protocol::MAX_COMMAND_BLOB_SIZE {
+                        warn!(
+                            node_id = %node.node_id,
+                            len = data.len(),
+                            max = sonde_protocol::MAX_COMMAND_BLOB_SIZE,
+                            "deferred reply too large — dropping"
+                        );
+                    } else {
+                        info!(
+                            node_id = %node.node_id,
+                            len = data.len(),
+                            "handler replied with deferred delivery — storing for next WAKE"
+                        );
+                        self.deferred_replies
+                            .write()
+                            .await
+                            .insert(node.node_id.clone(), data);
+                    }
                     None
                 } else {
                     // GW-1308 AC4: handler replied with len.

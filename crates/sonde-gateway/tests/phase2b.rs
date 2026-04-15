@@ -25,6 +25,8 @@ use tracing_test::traced_test;
 
 // ─── Test helpers ──────────────────────────────────────────────────────
 
+const TEST_FIRMWARE_VERSION: &str = "0.4.0";
+
 struct TestNode {
     node_id: String,
     key_hint: u16,
@@ -65,7 +67,7 @@ impl TestNode {
             firmware_abi_version,
             program_hash: program_hash.to_vec(),
             battery_mv,
-            firmware_version: "0.4.0".into(),
+            firmware_version: TEST_FIRMWARE_VERSION.into(),
             blob: None,
         };
         let cbor = msg.encode().unwrap();
@@ -286,20 +288,20 @@ async fn t0103_wake_reception_and_field_extraction() {
     let updated = storage.get_node("node-03").await.unwrap().unwrap();
     assert_eq!(updated.firmware_abi_version, Some(1));
     assert_eq!(updated.last_battery_mv, Some(3300));
+    assert_eq!(updated.firmware_version, Some(TEST_FIRMWARE_VERSION.into()));
 }
 
-/// T-0104: WAKE with missing fields rejected.
+/// T-0104: WAKE with missing `battery_mv` rejected.
 #[tokio::test]
-async fn t0104_wake_missing_fields_rejected() {
+async fn t0104_wake_missing_battery_mv_rejected() {
     let storage = Arc::new(InMemoryStorage::new());
     let gw = make_gateway(storage.clone());
 
     let node = TestNode::new("node-04", 0x0004, [0xDD; 32]);
     storage.upsert_node(&node.to_record()).await.unwrap();
 
-    // Build a WAKE with missing battery_mv by encoding raw CBOR manually
-    // We'll send a CBOR map with only firmware_abi_version and program_hash
-    use sonde_protocol::{KEY_FIRMWARE_ABI_VERSION, KEY_PROGRAM_HASH};
+    // CBOR with firmware_abi_version, program_hash, firmware_version — but no battery_mv
+    use sonde_protocol::{KEY_FIRMWARE_ABI_VERSION, KEY_FIRMWARE_VERSION, KEY_PROGRAM_HASH};
     let pairs: Vec<(ciborium::Value, ciborium::Value)> = vec![
         (
             ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
@@ -308,6 +310,10 @@ async fn t0104_wake_missing_fields_rejected() {
         (
             ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
             ciborium::Value::Bytes(vec![0u8; 32]),
+        ),
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
+            ciborium::Value::Text(TEST_FIRMWARE_VERSION.into()),
         ),
     ];
     let value = ciborium::Value::Map(pairs);
@@ -329,7 +335,60 @@ async fn t0104_wake_missing_fields_rejected() {
     .unwrap();
 
     let resp = gw.process_frame(&frame, node.peer_address()).await;
-    assert!(resp.is_none(), "WAKE with missing fields must be discarded");
+    assert!(
+        resp.is_none(),
+        "WAKE with missing battery_mv must be discarded"
+    );
+}
+
+/// T-0104: WAKE with missing `firmware_version` rejected.
+#[tokio::test]
+async fn t0104_wake_missing_firmware_version_rejected() {
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let node = TestNode::new("node-04", 0x0004, [0xDD; 32]);
+    storage.upsert_node(&node.to_record()).await.unwrap();
+
+    // CBOR with firmware_abi_version, program_hash, battery_mv — but no firmware_version
+    use sonde_protocol::{KEY_BATTERY_MV, KEY_FIRMWARE_ABI_VERSION, KEY_PROGRAM_HASH};
+    let pairs: Vec<(ciborium::Value, ciborium::Value)> = vec![
+        (
+            ciborium::Value::Integer(KEY_FIRMWARE_ABI_VERSION.into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Integer(KEY_PROGRAM_HASH.into()),
+            ciborium::Value::Bytes(vec![0u8; 32]),
+        ),
+        (
+            ciborium::Value::Integer(KEY_BATTERY_MV.into()),
+            ciborium::Value::Integer(3300.into()),
+        ),
+    ];
+    let value = ciborium::Value::Map(pairs);
+    let mut cbor_buf = Vec::new();
+    ciborium::into_writer(&value, &mut cbor_buf).unwrap();
+
+    let header = FrameHeader {
+        key_hint: 0x0004,
+        msg_type: MSG_WAKE,
+        nonce: 200,
+    };
+    let frame = encode_frame(
+        &header,
+        &cbor_buf,
+        &node.psk,
+        &GatewayAead,
+        &RustCryptoSha256,
+    )
+    .unwrap();
+
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
+    assert!(
+        resp.is_none(),
+        "WAKE with missing firmware_version must be discarded"
+    );
 }
 
 /// T-0105: COMMAND response structure (echoed nonce, starting_seq, timestamp_ms).

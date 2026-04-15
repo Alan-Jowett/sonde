@@ -782,7 +782,7 @@ The pairing tool UI uses a multi-page wizard flow instead of a single-page layou
 
 ### Page structure
 
-Each wizard page is a `<section class="page" id="page-N">` element in `index.html`.  Only one page is visible at a time; the rest have `display: none`.
+Each wizard page is a `<section class="page">` element in `index.html` with a page-specific `id` such as `page-welcome` or `page-gateway-scan`.  Only one page is visible at a time; the rest have `display: none`.
 
 | Page | ID | Content | Stepper Phase |
 |------|-----|---------|---------------|
@@ -795,7 +795,7 @@ Each wizard page is a `<section class="page" id="page-N">` element in `index.htm
 
 ### Navigator class
 
-A `Navigator` class in `main.js` manages page visibility and transitions.  It maintains a `currentPage` index (0-based internally, 1-based in `localStorage`).
+A `Navigator` class in `main.js` manages page visibility and transitions.  It maintains a `currentPage` index that is 0-based internally and when persisted in `localStorage`.
 
 **Public API:**
 

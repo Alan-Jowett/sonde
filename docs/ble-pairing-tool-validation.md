@@ -1267,9 +1267,9 @@ TestNode {
 1. Set `localStorage.setItem('sonde-pair-page', '2')` and ensure pairing artifacts exist.
 2. Reload the app.
 3. Assert: page 3 (Pairing Complete) is visible.
-4. Set `localStorage.setItem('sonde-pair-page', '99')`.
+4. Leave pairing artifacts in place and set `localStorage.setItem('sonde-pair-page', '99')`.
 5. Reload the app.
-6. Assert: page 1 (Welcome) is visible (invalid index defaults to earliest valid page).
+6. Assert: page 4 (Node Scan) is visible (invalid index defaults to the earliest valid page for an already paired state).
 7. Clear pairing artifacts and set `localStorage.setItem('sonde-pair-page', '4')`.
 8. Reload the app.
 9. Assert: page 1 (Welcome) is visible (prerequisites not met, redirects to earliest valid page).

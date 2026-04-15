@@ -147,7 +147,6 @@ class Navigator {
 
     // Apply transition classes (PT-1222)
     if (oldPage !== newPage) {
-      oldPage.classList.remove("page--active");
       if (direction === "forward") {
         oldPage.classList.add("slide-out-left");
         newPage.classList.add("slide-in-right");
@@ -157,9 +156,9 @@ class Navigator {
       }
       newPage.classList.add("page--active");
 
-      // Clean up animation classes after transition
+      // Remove old page and clean up animation classes after transition
       setTimeout(() => {
-        oldPage.classList.remove("slide-out-left", "slide-out-right");
+        oldPage.classList.remove("page--active", "slide-out-left", "slide-out-right");
         newPage.classList.remove("slide-in-right", "slide-in-left");
       }, 300);
     }
@@ -182,22 +181,23 @@ class Navigator {
   back() { this.goTo(this.currentPage - 1); }
 
   restore() {
-    // Seed history with two entries so page-1 back pops the sentinel (PT-1220):
-    // Entry 0: sentinel { page: 0 } — popping this stays on page 0
-    // Entry 1: actual starting page
+    // Seed history with sentinel so page-1 back stays put (PT-1220)
     history.replaceState({ page: 0, sentinel: true }, "", "");
-    history.pushState({ page: 0 }, "", "");
 
     const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
-    let target = 0;
+    const earliestValid = isPaired ? 3 : 0;
+    let target = earliestValid;
     if (!isNaN(saved) && saved >= 0 && saved < pages.length) {
       target = saved;
     }
 
-    // Validate prerequisites: pages 2–5 require pairing for pages 3+
+    // Validate prerequisites: pages 2+ require pairing
     if (target >= 2 && !isPaired) {
       target = 0;
     }
+
+    // Push the actual target page into history so state is in sync
+    history.pushState({ page: target }, "", "");
 
     this._skipPush = true;
     this.goTo(target, { push: false });
@@ -263,6 +263,14 @@ function clearError() {
 
 function setBusy(b) {
   busy = b;
+  // Disable action buttons on the current page while busy
+  btnPair.disabled = b || !selectedAddressGw;
+  btnProvision.disabled = b || !selectedAddressNode;
+  btnScanStartGw.disabled = b || scanning;
+  btnScanStopGw.disabled = b || !scanning;
+  btnScanStartNode.disabled = b || scanning;
+  btnScanStopNode.disabled = b || !scanning;
+  btnToProvision.disabled = b || !selectedAddressNode;
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +404,7 @@ async function stopScan() {
     showError(e);
   }
   scanning = false;
+  scanGeneration++;
   const onGwPage = navigator_.current === 1;
   if (onGwPage) {
     btnScanStartGw.disabled = false;
@@ -441,9 +450,12 @@ async function pairGateway() {
       address: selectedAddressGw,
       phoneLabel: phoneLabel.value || "sonde-phone",
     });
-    isPaired = true;
     const status = await invoke("get_pairing_status");
-    if (status.paired) {
+    isPaired = !!status.paired;
+    if (isPaired) {
+      pairingStatus.textContent = "Paired \u2014 Gateway " + (status.gateway_id || "").substring(0, 8) + "\u2026";
+      btnGetStarted.classList.add("hidden");
+      btnSkipToNode.classList.remove("hidden");
       pairDetails.textContent = "Gateway " + (status.gateway_id || "").substring(0, 8) + "\u2026";
     }
     navigator_.next(); // → page 3 (Pairing Complete)
@@ -578,10 +590,12 @@ boardSelect.addEventListener("change", () => {
 
 // Page 6: Done
 btnProvisionAnother.addEventListener("click", () => {
-  // Reset node-specific state and go back to node scan
   nodeId.value = "";
   selectedAddressNode = null;
   selectedRssi = null;
+  rssiPanel.classList.add("hidden");
+  btnToProvision.disabled = true;
+  renderDevices(deviceListNode, [], false);
   navigator_.goTo(3);
 });
 

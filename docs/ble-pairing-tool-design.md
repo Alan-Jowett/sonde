@@ -776,6 +776,100 @@ When both `i2cSda` and `i2cScl` are provided, the backend constructs `Some(PinCo
 
 ---
 
+## 12.2  Multi-page wizard navigation (PT-1217–PT-1222)
+
+The pairing tool UI uses a multi-page wizard flow instead of a single-page layout.  All navigation is client-side — no server-side routing or SPA framework.
+
+### Page structure
+
+Each wizard page is a `<section class="page" id="page-N">` element in `index.html`.  Only one page is visible at a time; the rest have `display: none`.
+
+| Page | ID | Content | Stepper Phase |
+|------|-----|---------|---------------|
+| 1 | `page-welcome` | Pairing status; "Get Started" or "Provision Node" | Gateway |
+| 2 | `page-gateway-scan` | Scan controls, device list, phone label, pair button | Gateway |
+| 3 | `page-gateway-done` | Pairing success, channel/key hint info | Gateway |
+| 4 | `page-node-scan` | Scan controls, device list, RSSI indicator | Node |
+| 5 | `page-node-provision` | Node ID, board selector, provision button | Node |
+| 6 | `page-done` | Success summary, "Provision Another" button | Done |
+
+### Navigator class
+
+A `Navigator` class in `main.js` manages page visibility and transitions.  It maintains a `currentPage` index (0-based internally, 1-based in `localStorage`).
+
+**Public API:**
+
+```javascript
+class Navigator {
+  constructor(pages, stepper)  // pages: HTMLElement[], stepper: StepperBar
+  goTo(pageIndex)              // show page, hide others, update stepper, persist
+  next()                       // goTo(currentPage + 1), clamped
+  back()                       // goTo(currentPage - 1), clamped at 0
+  restore()                    // read localStorage, goTo saved page (or 0)
+  get current()                // returns currentPage index
+}
+```
+
+**Page transitions:** `goTo()` applies CSS classes (`slide-in-right` for forward, `slide-in-left` for back) to animate the transition.  Transitions are ≤ 300 ms.  The previous page gets `slide-out-left` or `slide-out-right` respectively.
+
+**Persistence:** `goTo()` saves `currentPage` (0-based) to `localStorage` key `sonde-pair-page`.  `restore()` reads this key on startup, validates that the saved page's prerequisites are met (e.g., pairing artifacts exist for pages 3–6), and navigates to the saved page or the earliest valid page if prerequisites are missing.  Invalid values default to page 0.
+
+### Stepper bar
+
+A horizontal stepper bar in `<header>` with three steps:
+
+1. **Gateway** — active during pages 1–3
+2. **Node** — active during pages 4–5
+3. **Done** — active on page 6
+
+Each step element uses CSS classes:
+- `step--active` — currently active phase (filled/highlighted)
+- `step--done` — completed phase (checkmark icon)
+- (no class) — future phase (dimmed)
+
+The stepper is non-interactive (no click handlers).
+
+### Back navigation
+
+Back navigation uses the History API (`history.pushState` / `popstate`).  Each `goTo()` call pushes a state entry `{ page: N }`.  On startup, an initial sentinel state `{ page: 0 }` is pushed via `history.replaceState` so that `popstate` on page 1 replays the sentinel (staying on page 1) rather than exiting the app.
+
+The `popstate` listener reads `event.state.page` and calls `navigator.goTo()` without pushing another history entry (to avoid infinite loops).
+
+On Android, the Tauri WebView dispatches hardware-back as a browser back event, which triggers `popstate`.  The sentinel state ensures the app does not exit on page 1.
+
+### Scan lifecycle on page transitions
+
+When navigating away from a scan page (page 2 or page 4):
+- Any active BLE scan is stopped (`stop_scan()`).
+- RSSI polling is stopped (if applicable).
+- The selected device is cleared.
+
+When navigating to a scan page, the scan does NOT auto-start — the user must explicitly press "Start Scan".  This prevents unexpected BLE activity and battery drain.
+
+### RSSI signal quality indicator
+
+Page 4 (Node Scan) displays a visual signal quality indicator for the selected device.  The indicator is a `<div class="rssi-indicator">` element that updates on each device poll (1.5 s interval).
+
+RSSI thresholds (per protocol):
+
+| Quality | Range | CSS class | Color |
+|---------|-------|-----------|-------|
+| Good | ≥ −60 dBm | `rssi--good` | Green (`#2ecc71`) |
+| Marginal | −75 ≤ RSSI < −60 | `rssi--marginal` | Amber (`#f39c12`) |
+| Bad | < −75 dBm | `rssi--bad` | Red (`#e74c3c`) |
+
+The indicator shows the numeric RSSI value and a text label ("Good", "Marginal", "Bad").
+
+### Verbose diagnostic mode
+
+The verbose diagnostic toggle and log panel are placed in a persistent footer visible on all pages, below the main content area.  This ensures diagnostics are accessible regardless of the current wizard step.
+
+### Error display
+
+The error bar remains a global element positioned between the main content and the footer.  Errors are cleared on page transitions.
+
+---
+
 ## 13  Module-by-module implementation order
 
 Following the pattern established in [implementation-guide.md](implementation-guide.md), the `sonde-pair` crate is built in three sub-phases.  Each step produces a testable artifact before proceeding to the next.
@@ -908,5 +1002,6 @@ No log event at any level may include key material: PSKs, ephemeral private keys
 | §11 RNG provider | PT-0901, PT-0903 |
 | §12 Input validation | PT-0403, PT-0406, PT-0409 |
 | §12.1 Board selector UI | PT-1216, PT-1214, PT-0700 |
+| §12.2 Multi-page wizard navigation | PT-0700, PT-0701, PT-1217–PT-1222 |
 | §13 Implementation order | PT-0700, PT-0701, PT-0702, PT-1200–PT-1206 |
 | §14 Diagnostic logging | PT-0702, PT-0900, PT-1207–PT-1212 |

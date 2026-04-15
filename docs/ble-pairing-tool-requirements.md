@@ -537,30 +537,32 @@ The tool SHOULD check local state before initiating Phase 1 and warn the operato
 ### PT-0700  Minimum UI surface
 
 **Priority:** Must  
-**Source:** Product requirements §5.2
+**Source:** Product requirements §5.2, pairing-tool-ui-redesign.md §Phase A
 
 **Description:**  
-The UI MUST provide at least: scan toggle (start/stop), device list (with service type and name), device select, pair action, node ID input (Phase 2 only), board selector (Phase 2 only — see PT-1216), status area (current phase and progress), and error display (actionable messages).
+The UI MUST provide at least: scan toggle (start/stop), device list (with service type and name), device select, pair action, node ID input (Phase 2 only), board selector (Phase 2 only — see PT-1216), status area (current phase and progress), and error display (actionable messages).  These elements MUST be organized across a multi-page wizard flow (see PT-1217) rather than a single page.
 
 **Acceptance criteria:**
 
 1. All listed UI elements are present and functional.
 2. The UI does not include features beyond what is listed here (no management, monitoring, or telemetry).
+3. UI elements are distributed across the wizard pages defined in PT-1217.
 
 ---
 
 ### PT-0701  Phase indication
 
 **Priority:** Must  
-**Source:** Product requirements §5.3
+**Source:** Product requirements §5.3, pairing-tool-ui-redesign.md §Navigation Principles
 
 **Description:**  
-The UI MUST clearly indicate the current phase at all times: idle ("Ready to scan"), scanning, connecting, authenticating (Phase 1), registering (Phase 1), provisioning (Phase 2), complete, or error.
+The UI MUST clearly indicate the current phase at all times via a stepper progress bar (see PT-1218).  The stepper shows three phases — Gateway, Node, Done — and highlights the currently active phase.  Within each phase, per-page status (scanning, connecting, provisioning, error) is shown in the page content area.
 
 **Acceptance criteria:**
 
-1. The current phase is displayed at all times.
-2. Phase transitions are immediate and unambiguous.
+1. A stepper bar is visible at the top of every page showing three phases: Gateway, Node, Done.
+2. The currently active phase is visually highlighted; completed phases are marked as done.
+3. Phase transitions are immediate and unambiguous.
 
 ---
 
@@ -1170,6 +1172,130 @@ A "Custom" option MUST also be available, which reveals two numeric input fields
 
 ---
 
+## 16  Multi-page wizard navigation (Phase A)
+
+### PT-1217  Multi-page wizard navigation
+
+**Priority:** Must  
+**Source:** pairing-tool-ui-redesign.md §Phase A, issue #673
+
+**Description:**  
+The UI MUST be organized as a multi-page wizard with 6 pages, each implemented as a `<section>` element.  Client-side routing uses show/hide logic managed by a `Navigator` class.  No server-side routing or SPA framework is required.
+
+The page layout is:
+
+| Page | Title | Content | Stepper Phase |
+|------|-------|---------|---------------|
+| 1 | Welcome / Status | Pairing status check; "Get Started" (unpaired) or "Provision Node" (paired) | Gateway |
+| 2 | Gateway Scan & Pair | Scan controls, device list, phone label input, pair button | Gateway |
+| 3 | Pairing Complete | Success confirmation, channel and key hint info | Gateway |
+| 4 | Node Scan & RSSI | Scan for nodes, device list, live RSSI indicator | Node |
+| 5 | Node Provision | Node ID input, board selector, provision button, progress | Node |
+| 6 | Done | Success summary, "Provision Another" button | Done |
+
+**Acceptance criteria:**
+
+1. The UI displays exactly one page at a time.
+2. Each page is a `<section>` element with a unique `id` attribute.
+3. Navigation between pages is managed by a `Navigator` class in JavaScript.
+4. Only forward/backward transitions between adjacent pages are allowed (linear flow).
+5. All existing functionality (scan, pair, provision, status, diagnostics) works through the multi-page flow.
+
+---
+
+### PT-1218  Stepper progress bar
+
+**Priority:** Must  
+**Source:** pairing-tool-ui-redesign.md §Navigation Principles, issue #673
+
+**Description:**  
+The UI MUST display a stepper bar at the top of every page showing three phases: **Gateway**, **Node**, **Done**.  The stepper indicates the current phase and marks completed phases.  The stepper is non-clickable (the flow is linear and does not support random access).
+
+**Acceptance criteria:**
+
+1. The stepper bar is visible on all 6 pages.
+2. The stepper shows exactly three steps: Gateway, Node, Done.
+3. The currently active phase is visually distinct (highlighted).
+4. Completed phases are visually marked as done (e.g., checkmark).
+5. The stepper is not clickable — users cannot jump between phases.
+
+---
+
+### PT-1219  Wizard page persistence
+
+**Priority:** Must  
+**Source:** pairing-tool-ui-redesign.md §Navigation Principles, issue #673
+
+**Description:**  
+The UI MUST persist the current page index to `localStorage` so that the wizard state survives app restarts.  On launch, the app MUST restore the last active page.
+
+**Acceptance criteria:**
+
+1. On page transition, the current page index (0-based) is saved to `localStorage`.
+2. On app launch, the saved page index is read and the corresponding page is displayed, provided the page's prerequisites are met (e.g., pairing artifacts for pages 3–6).
+3. If `localStorage` is empty, contains an invalid page index, or the saved page's prerequisites are not met, the app navigates to the earliest valid page (page 1 if unpaired, page 4 if already paired).
+
+---
+
+### PT-1220  Back navigation
+
+**Priority:** Must  
+**Source:** pairing-tool-ui-redesign.md §Navigation Principles, issue #673
+
+**Description:**  
+The UI MUST support back navigation via the browser/platform back action (hardware back button on Android, browser back on desktop).  Back navigation returns to the previous wizard page.  On page 1, back navigation does nothing (no exit).
+
+**Acceptance criteria:**
+
+1. Pressing back on pages 2–6 navigates to the previous page.
+2. Pressing back on page 1 does nothing (the app does not exit).
+3. Back navigation uses the History API (`pushState`/`popstate`) with a sentinel state on page 1.
+4. The stepper bar updates correctly on back navigation.
+5. Navigating back from a scan page stops any active scan and clears the selected device.
+
+---
+
+### PT-1221  RSSI signal quality indicator
+
+**Priority:** Must  
+**Source:** pairing-tool-ui-redesign.md §Step 4, issue #673
+
+**Description:**  
+The Node Scan page (page 4) MUST display a visual RSSI signal quality indicator for the selected BLE device.  The indicator uses three quality levels based on protocol-defined thresholds:
+
+| Level | RSSI Range | Visual |
+|-------|-----------|--------|
+| Good | ≥ −60 dBm | Green indicator |
+| Marginal | −75 ≤ RSSI < −60 dBm | Yellow/amber indicator |
+| Bad | < −75 dBm | Red indicator |
+
+**Acceptance criteria:**
+
+1. The RSSI indicator is displayed on page 4 when a device is selected.
+2. Good signal (≥ −60 dBm) shows a green indicator.
+3. Marginal signal (−75 ≤ RSSI < −60 dBm) shows a yellow/amber indicator.
+4. Bad signal (< −75 dBm) shows a red indicator.
+5. The indicator updates on each device list poll (every 1.5 s per existing scan poll interval).
+
+---
+
+### PT-1222  Page transition animations
+
+**Priority:** Should  
+**Source:** pairing-tool-ui-redesign.md §Technical Implementation Notes, issue #673
+
+**Description:**  
+The UI SHOULD use CSS transitions for page changes.  Forward navigation slides the new page in from the right; back navigation slides from the left.  Transitions MUST NOT block user interaction or delay navigation by more than 300 ms.
+
+**Acceptance criteria:**
+
+1. Forward navigation animates the page sliding in from the right.
+2. Back navigation animates the page sliding in from the left.
+3. The transition duration is ≤ 300 ms.
+4. Navigation remains functional if CSS transitions are disabled (graceful degradation).
+
+---
+
 ## Appendix A  Requirement index
 
 | ID | Title | Status |
@@ -1245,3 +1371,9 @@ A "Custom" option MUST also be available, which reveals two numeric input fields
 | PT-1214 | Board pin configuration in NODE_PROVISION | Active |
 | PT-1215 | Error diagnostic observability (extends PT-1212) | Active |
 | PT-1216 | Board selector UI for node provisioning | Active |
+| PT-1217 | Multi-page wizard navigation | Active |
+| PT-1218 | Stepper progress bar | Active |
+| PT-1219 | Wizard page persistence | Active |
+| PT-1220 | Back navigation | Active |
+| PT-1221 | RSSI signal quality indicator | Active |
+| PT-1222 | Page transition animations | Active |

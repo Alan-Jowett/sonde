@@ -262,26 +262,30 @@ TestNode {
 
 ### T-PT-110  Minimum UI elements present
 
-**Validates:** PT-0700  
+**Validates:** PT-0700, PT-1217  
 **Type:** Manual / platform test
 
 **Procedure:**
 1. Launch the pairing tool.
-2. Assert: all required UI elements are present: scan toggle, device list, device select, pair action, node ID input, status area, error display.
-3. Assert: the UI does not include management, monitoring, or telemetry features.
+2. Assert: the UI shows a multi-page wizard flow with 6 pages.
+3. Navigate through all pages and assert: scan toggle, device list, device select, pair action, node ID input, board selector, status area, and error display are present on the appropriate pages.
+4. Assert: the UI does not include management, monitoring, or telemetry features.
 
 ---
 
 ### T-PT-111  Phase indication updates
 
-**Validates:** PT-0701
+**Validates:** PT-0701, PT-1218
 
 **Procedure:**
-1. Start a mock BLE scan.
-2. Assert: status shows "Scanning".
-3. Select a gateway device and initiate pairing.
-4. Assert: status transitions through "Connecting" → "Registering" → "Complete" (or "Error" on failure).
-5. Assert: phase transitions are immediate and unambiguous.
+1. Launch the pairing tool.
+2. Assert: a stepper bar is visible with three steps: Gateway, Node, Done.
+3. Assert: Gateway step is active on pages 1–3.
+4. Navigate to page 4.
+5. Assert: Gateway step is marked done; Node step is active.
+6. Navigate to page 6.
+7. Assert: Gateway and Node steps are marked done; Done step is active.
+8. Assert: stepper steps are not clickable.
 
 ---
 
@@ -1175,6 +1179,224 @@ TestNode {
 
 ---
 
+## 13  Multi-page wizard navigation tests
+
+### T-PT-1217a  Six pages rendered and only one visible at a time
+
+**Validates:** PT-1217 (AC 1, 2)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Launch the pairing tool.
+2. Assert: 6 `<section>` elements with IDs `page-welcome`, `page-gateway-scan`, `page-gateway-done`, `page-node-scan`, `page-node-provision`, `page-done` exist in the DOM.
+3. Assert: exactly one page is visible; the other 5 are hidden.
+
+---
+
+### T-PT-1217b  Forward navigation through all pages
+
+**Validates:** PT-1217 (AC 3, 4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Launch the pairing tool on page 1.
+2. Complete gateway pairing (or simulate via mock) and navigate forward through each page.
+3. Assert: each page becomes visible in order (1 → 2 → 3 → 4 → 5 → 6).
+4. Assert: the previous page is hidden when the next page becomes visible.
+
+---
+
+### T-PT-1217c  Existing functionality works through wizard flow
+
+**Validates:** PT-1217 (AC 5)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Launch the pairing tool.
+2. Complete a full workflow: check status (page 1) → scan and pair gateway (page 2) → confirm pairing (page 3) → scan and select node (page 4) → provision node (page 5) → view success (page 6).
+3. Assert: all Tauri commands (`start_scan`, `pair_gateway`, `provision_node`, `get_pairing_status`) are invoked correctly and produce the expected results.
+
+---
+
+### T-PT-1218a  Stepper bar shows three phases
+
+**Validates:** PT-1218 (AC 1, 2, 5)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Launch the pairing tool.
+2. Assert: the stepper bar contains exactly three labeled steps: "Gateway", "Node", "Done".
+3. Click on each stepper step.
+4. Assert: no navigation occurs (stepper is not interactive).
+
+---
+
+### T-PT-1218b  Stepper highlights current phase
+
+**Validates:** PT-1218 (AC 3, 4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 1 (Welcome).
+2. Assert: Gateway step has `step--active` class; Node and Done are dimmed.
+3. Navigate to page 4 (Node Scan).
+4. Assert: Gateway step has `step--done` class; Node step has `step--active` class; Done is dimmed.
+5. Navigate to page 6 (Done).
+6. Assert: Gateway and Node steps have `step--done` class; Done step has `step--active` class.
+
+---
+
+### T-PT-1219a  Page index persisted to localStorage
+
+**Validates:** PT-1219 (AC 1)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 4 (Node Scan).
+2. Read `localStorage.getItem('sonde-pair-page')`.
+3. Assert: the value is `"3"` (0-based index for page 4).
+
+---
+
+### T-PT-1219b  Page restored on app restart
+
+**Validates:** PT-1219 (AC 2, 3)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Set `localStorage.setItem('sonde-pair-page', '2')` and ensure pairing artifacts exist.
+2. Reload the app.
+3. Assert: page 3 (Pairing Complete) is visible.
+4. Set `localStorage.setItem('sonde-pair-page', '99')`.
+5. Reload the app.
+6. Assert: page 1 (Welcome) is visible (invalid index defaults to earliest valid page).
+7. Clear pairing artifacts and set `localStorage.setItem('sonde-pair-page', '4')`.
+8. Reload the app.
+9. Assert: page 1 (Welcome) is visible (prerequisites not met, redirects to earliest valid page).
+
+---
+
+### T-PT-1220a  Back navigation returns to previous page
+
+**Validates:** PT-1220 (AC 1, 4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 3 (Pairing Complete).
+2. Trigger back navigation (browser back or hardware back button).
+3. Assert: page 2 (Gateway Scan) is visible.
+4. Assert: stepper bar still shows Gateway phase as active.
+
+---
+
+### T-PT-1220b  Back navigation on page 1 does nothing
+
+**Validates:** PT-1220 (AC 2)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 1 (Welcome).
+2. Trigger back navigation.
+3. Assert: page 1 is still visible; the app does not exit or navigate away.
+
+---
+
+### T-PT-1221a  RSSI indicator shows correct quality level
+
+**Validates:** PT-1221 (AC 1–4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 4 (Node Scan) and start a scan.
+2. Mock a device with RSSI = −50 dBm and select it.
+3. Assert: RSSI indicator shows "Good" with green styling (`rssi--good` class).
+4. Update mock device RSSI to −65 dBm.
+5. Assert: RSSI indicator shows "Marginal" with amber styling (`rssi--marginal` class).
+6. Update mock device RSSI to −80 dBm.
+7. Assert: RSSI indicator shows "Bad" with red styling (`rssi--bad` class).
+
+---
+
+### T-PT-1221b  RSSI indicator updates on poll interval
+
+**Validates:** PT-1221 (AC 5)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 4, start a scan, and select a device.
+2. Change the mock device RSSI from −50 to −80 dBm.
+3. Wait for 1 device poll cycle (≤ 1.5 s).
+4. Assert: the RSSI indicator updates from "Good" to "Bad".
+
+---
+
+### T-PT-1221c  RSSI boundary values classified correctly
+
+**Validates:** PT-1221 (AC 2, 3, 4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 4, start a scan, and select a device.
+2. Set mock device RSSI to exactly −60 dBm.
+3. Assert: RSSI indicator shows "Good" (≥ −60 threshold is inclusive).
+4. Set mock device RSSI to exactly −75 dBm.
+5. Assert: RSSI indicator shows "Marginal" (−75 ≤ x < −60, −75 is inclusive).
+6. Set mock device RSSI to −76 dBm.
+7. Assert: RSSI indicator shows "Bad".
+
+---
+
+### T-PT-1220c  Scan stopped when navigating away from scan page
+
+**Validates:** PT-1220 (AC 5)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Navigate to page 4 (Node Scan) and start a scan.
+2. Navigate back to page 3.
+3. Assert: the BLE scan is stopped.
+4. Assert: the selected device is cleared.
+5. Navigate forward to page 4 again.
+6. Assert: the page shows "No devices found" (scan does not auto-restart).
+
+---
+
+### T-PT-1222a  Page transition animation (forward)
+
+**Validates:** PT-1222 (AC 1, 3)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. On page 1, trigger forward navigation.
+2. Observe: the new page slides in from the right.
+3. Assert: the transition completes within 300 ms.
+
+---
+
+### T-PT-1222b  Page transition animation (back)
+
+**Validates:** PT-1222 (AC 2)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. On page 3, trigger back navigation.
+2. Observe: the previous page slides in from the left.
+3. Assert: the transition completes within 300 ms.
+
+---
+
+### T-PT-1222c  Navigation works without CSS transitions
+
+**Validates:** PT-1222 (AC 4)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Disable CSS transitions (e.g., via `* { transition: none !important; }`).
+2. Navigate forward and backward through all pages.
+3. Assert: all pages display correctly; no visual glitches or stuck states.
+
+---
+
 ## Appendix A  Test-to-requirement traceability
 
 | Test ID | Requirement | Title |
@@ -1191,8 +1413,8 @@ TestNode {
 | T-PT-109 | PT-0106, PT-0904 | Just Works fallback rejected |
 | T-PT-109a | PT-0904 | OS-enforced pairing (`None`) accepted by `enforce_lesc` |
 | T-PT-109b | PT-0904 | Unknown pairing method rejected by `enforce_lesc` |
-| T-PT-110 | PT-0700 | Minimum UI elements present |
-| T-PT-111 | PT-0701 | Phase indication updates |
+| T-PT-110 | PT-0700, PT-1217 | Minimum UI elements present |
+| T-PT-111 | PT-0701, PT-1218 | Phase indication updates |
 | T-PT-112 | PT-0702 | Verbose diagnostic mode |
 | T-PT-113 | PT-0107 | Android activity lifecycle disconnect |
 | T-PT-114 | PT-0108 | JNI classloader caching on background threads |
@@ -1272,3 +1494,19 @@ TestNode {
 | T-PT-1216c | PT-1216 | Custom board with valid GPIOs |
 | T-PT-1216d | PT-1216, PT-0409 | Custom board with invalid GPIOs rejected |
 | T-PT-1216e | PT-1216 | Provision with only one pin parameter rejected |
+| T-PT-1217a | PT-1217 | Six pages rendered and only one visible at a time |
+| T-PT-1217b | PT-1217 | Forward navigation through all pages |
+| T-PT-1217c | PT-1217 | Existing functionality works through wizard flow |
+| T-PT-1218a | PT-1218 | Stepper bar shows three phases |
+| T-PT-1218b | PT-1218 | Stepper highlights current phase |
+| T-PT-1219a | PT-1219 | Page index persisted to localStorage |
+| T-PT-1219b | PT-1219 | Page restored on app restart |
+| T-PT-1220a | PT-1220 | Back navigation returns to previous page |
+| T-PT-1220b | PT-1220 | Back navigation on page 1 does nothing |
+| T-PT-1220c | PT-1220 | Scan stopped when navigating away from scan page |
+| T-PT-1221a | PT-1221 | RSSI indicator shows correct quality level |
+| T-PT-1221b | PT-1221 | RSSI indicator updates on poll interval |
+| T-PT-1221c | PT-1221 | RSSI boundary values classified correctly |
+| T-PT-1222a | PT-1222 | Page transition animation (forward) |
+| T-PT-1222b | PT-1222 | Page transition animation (back) |
+| T-PT-1222c | PT-1222 | Navigation works without CSS transitions |

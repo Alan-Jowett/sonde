@@ -8,20 +8,59 @@ const { invoke } = window.__TAURI__.core;
 // DOM references
 // ---------------------------------------------------------------------------
 
-const btnScanStart = document.getElementById("btn-scan-start");
-const btnScanStop = document.getElementById("btn-scan-stop");
-const deviceList = document.getElementById("device-list");
+// Pages (PT-1217)
+const pages = [
+  document.getElementById("page-welcome"),
+  document.getElementById("page-gateway-scan"),
+  document.getElementById("page-gateway-done"),
+  document.getElementById("page-node-scan"),
+  document.getElementById("page-node-provision"),
+  document.getElementById("page-done"),
+];
+
+// Stepper (PT-1218)
+const stepperSteps = document.querySelectorAll("#stepper .step");
+
+// Page 1: Welcome
+const pairingStatus = document.getElementById("pairing-status");
+const btnGetStarted = document.getElementById("btn-get-started");
+const btnSkipToNode = document.getElementById("btn-skip-to-node");
+const btnClear = document.getElementById("btn-clear");
+
+// Page 2: Gateway Scan
+const btnScanStartGw = document.getElementById("btn-scan-start-gw");
+const btnScanStopGw = document.getElementById("btn-scan-stop-gw");
+const deviceListGw = document.getElementById("device-list-gw");
 const phoneLabel = document.getElementById("phone-label");
 const btnPair = document.getElementById("btn-pair");
+
+// Page 3: Pairing Complete
+const pairDetails = document.getElementById("pair-details");
+const btnToNode = document.getElementById("btn-to-node");
+
+// Page 4: Node Scan
+const btnScanStartNode = document.getElementById("btn-scan-start-node");
+const btnScanStopNode = document.getElementById("btn-scan-stop-node");
+const deviceListNode = document.getElementById("device-list-node");
+const rssiPanel = document.getElementById("rssi-panel");
+const rssiValue = document.getElementById("rssi-value");
+const rssiLabel = document.getElementById("rssi-label");
+const rssiIndicator = document.getElementById("rssi-indicator");
+const btnToProvision = document.getElementById("btn-to-provision");
+
+// Page 5: Node Provision
 const nodeId = document.getElementById("node-id");
 const boardSelect = document.getElementById("board-select");
 const customPins = document.getElementById("custom-pins");
 const customSda = document.getElementById("custom-sda");
 const customScl = document.getElementById("custom-scl");
 const btnProvision = document.getElementById("btn-provision");
-const pairingStatus = document.getElementById("pairing-status");
-const btnClear = document.getElementById("btn-clear");
-const phaseBar = document.getElementById("phase-bar");
+
+// Page 6: Done
+const provisionDetails = document.getElementById("provision-details");
+const btnProvisionAnother = document.getElementById("btn-provision-another");
+
+// Global
 const errorBar = document.getElementById("error-bar");
 const verboseToggle = document.getElementById("verbose-toggle");
 const logPanel = document.getElementById("log-panel");
@@ -30,12 +69,15 @@ const logPanel = document.getElementById("log-panel");
 // App state
 // ---------------------------------------------------------------------------
 
-let selectedAddress = null;
-let selectedType = null;
+let selectedAddressGw = null;
+let selectedAddressNode = null;
+let selectedRssi = null;
 let scanning = false;
 let pollTimer = null;
 let logTimer = null;
 let busy = false;
+let isPaired = false;
+let scanGeneration = 0;
 
 // ---------------------------------------------------------------------------
 // Board presets (PT-1216)
@@ -46,7 +88,6 @@ const BOARD_PRESETS = {
   sparkfun: { label: "SparkFun ESP32-C3 Pro Micro",   sda: 5, scl: 6 },
 };
 
-/** Populate the board selector from BOARD_PRESETS (single source of truth). */
 function initBoardSelect() {
   const customOption = boardSelect.querySelector('option[value="custom"]');
   boardSelect.textContent = "";
@@ -60,7 +101,6 @@ function initBoardSelect() {
   customPins.classList.toggle("hidden", boardSelect.value !== "custom");
 }
 
-/** Resolve the current board selection to { sda, scl } or null on error. */
 function resolveI2cPins() {
   const board = boardSelect.value;
   if (board === "custom") {
@@ -77,6 +117,137 @@ function resolveI2cPins() {
 }
 
 // ---------------------------------------------------------------------------
+// Navigator (PT-1217, PT-1218, PT-1219, PT-1220, PT-1222)
+// ---------------------------------------------------------------------------
+
+// Maps page index → stepper phase index (0=Gateway, 1=Node, 2=Done)
+const PAGE_TO_PHASE = [0, 0, 0, 1, 1, 2];
+const STORAGE_KEY = "sonde-pair-page";
+
+class Navigator {
+  constructor() {
+    this.currentPage = 0;
+    this._skipPush = false;
+  }
+
+  goTo(pageIndex, { push = true } = {}) {
+    if (pageIndex < 0 || pageIndex >= pages.length) return;
+
+    // Scan lifecycle: stop scan when leaving a scan page (pages 1=gw, 3=node)
+    // but preserve node selection when advancing from page 3→4 (node scan → provision)
+    const leavingPage = this.currentPage;
+    if (leavingPage === 1 || leavingPage === 3) {
+      const advancingToProvision = leavingPage === 3 && pageIndex === 4;
+      this._cleanupScanPage(leavingPage, { preserveSelection: advancingToProvision });
+    }
+
+    const direction = pageIndex >= this.currentPage ? "forward" : "back";
+    const oldPage = pages[this.currentPage];
+    const newPage = pages[pageIndex];
+
+    // Apply transition classes (PT-1222)
+    if (oldPage !== newPage) {
+      oldPage.classList.remove("page--active");
+      if (direction === "forward") {
+        oldPage.classList.add("slide-out-left");
+        newPage.classList.add("slide-in-right");
+      } else {
+        oldPage.classList.add("slide-out-right");
+        newPage.classList.add("slide-in-left");
+      }
+      newPage.classList.add("page--active");
+
+      // Clean up animation classes after transition
+      setTimeout(() => {
+        oldPage.classList.remove("slide-out-left", "slide-out-right");
+        newPage.classList.remove("slide-in-right", "slide-in-left");
+      }, 300);
+    }
+
+    this.currentPage = pageIndex;
+    this._updateStepper();
+    clearError();
+
+    // Persist (PT-1219)
+    localStorage.setItem(STORAGE_KEY, String(pageIndex));
+
+    // History (PT-1220)
+    if (push && !this._skipPush) {
+      history.pushState({ page: pageIndex }, "", "");
+    }
+  }
+
+  next() { this.goTo(this.currentPage + 1); }
+
+  back() { this.goTo(this.currentPage - 1); }
+
+  restore() {
+    // Seed history with two entries so page-1 back pops the sentinel (PT-1220):
+    // Entry 0: sentinel { page: 0 } — popping this stays on page 0
+    // Entry 1: actual starting page
+    history.replaceState({ page: 0, sentinel: true }, "", "");
+    history.pushState({ page: 0 }, "", "");
+
+    const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
+    let target = 0;
+    if (!isNaN(saved) && saved >= 0 && saved < pages.length) {
+      target = saved;
+    }
+
+    // Validate prerequisites: pages 2–5 require pairing for pages 3+
+    if (target >= 2 && !isPaired) {
+      target = 0;
+    }
+
+    this._skipPush = true;
+    this.goTo(target, { push: false });
+    this._skipPush = false;
+  }
+
+  get current() { return this.currentPage; }
+
+  _updateStepper() {
+    const activePhase = PAGE_TO_PHASE[this.currentPage];
+    stepperSteps.forEach((el, i) => {
+      el.classList.remove("step--active", "step--done");
+      if (i < activePhase) {
+        el.classList.add("step--done");
+      } else if (i === activePhase) {
+        el.classList.add("step--active");
+      }
+    });
+  }
+
+  _cleanupScanPage(pageIndex, { preserveSelection = false } = {}) {
+    if (scanning) {
+      invoke("stop_scan").catch(() => {});
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      scanning = false;
+      scanGeneration++;
+    }
+    if (pageIndex === 1) {
+      selectedAddressGw = null;
+      btnPair.disabled = true;
+      btnScanStartGw.disabled = false;
+      btnScanStopGw.disabled = true;
+      renderDevices(deviceListGw, [], false);
+    } else if (pageIndex === 3) {
+      if (!preserveSelection) {
+        selectedAddressNode = null;
+        selectedRssi = null;
+        btnToProvision.disabled = true;
+        rssiPanel.classList.add("hidden");
+      }
+      btnScanStartNode.disabled = false;
+      btnScanStopNode.disabled = true;
+      renderDevices(deviceListNode, [], false);
+    }
+  }
+}
+
+const navigator_ = new Navigator();
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -90,57 +261,61 @@ function clearError() {
   errorBar.classList.add("hidden");
 }
 
-function setPhase(text) {
-  phaseBar.textContent = text;
-  const lower = text.toLowerCase();
-  phaseBar.className = "phase";
-  if (lower.startsWith("error"))       phaseBar.classList.add("error");
-  else if (lower === "idle")           phaseBar.classList.add("idle");
-  else if (lower === "scanning")       phaseBar.classList.add("scanning");
-  else if (lower === "pairing")        phaseBar.classList.add("pairing");
-  else if (lower === "provisioning")   phaseBar.classList.add("provisioning");
-  else if (lower === "complete")       phaseBar.classList.add("complete");
-}
-
 function setBusy(b) {
   busy = b;
-  btnPair.disabled = b || !selectedAddress;
-  btnProvision.disabled = b || !selectedAddress;
-  btnScanStart.disabled = b || scanning;
-  btnScanStop.disabled = b || !scanning;
 }
 
-function selectDevice(address, serviceType) {
-  selectedAddress = address;
-  selectedType = serviceType;
-  // Update selection UI
-  for (const li of deviceList.children) {
-    li.classList.toggle("selected", li.dataset.address === address);
+// ---------------------------------------------------------------------------
+// RSSI quality classification (PT-1221)
+// ---------------------------------------------------------------------------
+
+function classifyRssi(rssi) {
+  if (rssi >= -60) return { level: "good", label: "Good", cls: "rssi--good" };
+  if (rssi >= -75) return { level: "marginal", label: "Marginal", cls: "rssi--marginal" };
+  return { level: "bad", label: "Bad", cls: "rssi--bad" };
+}
+
+function updateRssiIndicator(rssi) {
+  if (rssi == null) {
+    rssiPanel.classList.add("hidden");
+    return;
   }
-  btnPair.disabled = busy || !address;
-  btnProvision.disabled = busy || !address;
+  rssiPanel.classList.remove("hidden");
+  const q = classifyRssi(rssi);
+  rssiValue.textContent = rssi + " dBm";
+  rssiLabel.textContent = q.label;
+  rssiIndicator.className = "rssi-indicator " + q.cls;
 }
 
 // ---------------------------------------------------------------------------
 // Device list rendering
 // ---------------------------------------------------------------------------
 
-function renderDevices(devices) {
-  deviceList.innerHTML = "";
+function renderDevices(listEl, devices, isScanning) {
+  listEl.innerHTML = "";
 
   if (devices.length === 0) {
     const li = document.createElement("li");
     li.className = "placeholder";
-    li.textContent = scanning ? "Scanning\u2026" : "No devices found";
-    deviceList.appendChild(li);
+    li.textContent = isScanning ? "Scanning\u2026" : "No devices found";
+    listEl.appendChild(li);
     return;
   }
+
+  const isGw = listEl === deviceListGw;
+  const selectedAddr = isGw ? selectedAddressGw : selectedAddressNode;
 
   for (const d of devices) {
     const li = document.createElement("li");
     li.dataset.address = d.address;
-    if (d.address === selectedAddress) li.classList.add("selected");
-    li.onclick = () => selectDevice(d.address, d.service_type);
+    if (d.address === selectedAddr) li.classList.add("selected");
+    li.onclick = () => {
+      if (isGw) {
+        selectGatewayDevice(d.address);
+      } else {
+        selectNodeDevice(d.address, d.rssi);
+      }
+    };
 
     const name = document.createElement("span");
     name.className = "device-name";
@@ -153,15 +328,33 @@ function renderDevices(devices) {
     badge.className = "badge " + d.service_type.toLowerCase();
     badge.textContent = d.service_type;
 
-    const rssi = document.createElement("span");
-    rssi.textContent = d.rssi + " dBm";
+    const rssiSpan = document.createElement("span");
+    rssiSpan.textContent = d.rssi + " dBm";
 
     meta.appendChild(badge);
-    meta.appendChild(rssi);
+    meta.appendChild(rssiSpan);
     li.appendChild(name);
     li.appendChild(meta);
-    deviceList.appendChild(li);
+    listEl.appendChild(li);
   }
+}
+
+function selectGatewayDevice(address) {
+  selectedAddressGw = address;
+  for (const li of deviceListGw.children) {
+    li.classList.toggle("selected", li.dataset.address === address);
+  }
+  btnPair.disabled = busy || !address;
+}
+
+function selectNodeDevice(address, rssi) {
+  selectedAddressNode = address;
+  selectedRssi = rssi;
+  for (const li of deviceListNode.children) {
+    li.classList.toggle("selected", li.dataset.address === address);
+  }
+  updateRssiIndicator(rssi);
+  btnToProvision.disabled = busy || !address;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,14 +367,19 @@ async function startScan() {
   try {
     await invoke("start_scan");
     scanning = true;
-    btnScanStart.disabled = true;
-    btnScanStop.disabled = false;
-    setPhase("Scanning");
-    selectedAddress = null;
-    selectedType = null;
-    renderDevices([]);
-    // Poll for devices every 1.5 s.
-    pollTimer = setInterval(pollDevices, 1500);
+    scanGeneration++;
+    const gen = scanGeneration;
+    const onGwPage = navigator_.current === 1;
+    if (onGwPage) {
+      btnScanStartGw.disabled = true;
+      btnScanStopGw.disabled = false;
+    } else {
+      btnScanStartNode.disabled = true;
+      btnScanStopNode.disabled = false;
+    }
+    const listEl = onGwPage ? deviceListGw : deviceListNode;
+    renderDevices(listEl, [], true);
+    pollTimer = setInterval(() => pollDevices(listEl, gen), 1500);
   } catch (e) {
     showError(e);
   } finally {
@@ -198,15 +396,32 @@ async function stopScan() {
     showError(e);
   }
   scanning = false;
-  btnScanStart.disabled = false;
-  btnScanStop.disabled = true;
-  setPhase("Idle");
+  const onGwPage = navigator_.current === 1;
+  if (onGwPage) {
+    btnScanStartGw.disabled = false;
+    btnScanStopGw.disabled = true;
+  } else {
+    btnScanStartNode.disabled = false;
+    btnScanStopNode.disabled = true;
+  }
 }
 
-async function pollDevices() {
+async function pollDevices(listEl, gen) {
+  if (gen !== scanGeneration) return;
   try {
     const devices = await invoke("get_devices");
-    renderDevices(devices);
+    if (gen !== scanGeneration) return;
+    const isScanning = scanning;
+    renderDevices(listEl, devices, isScanning);
+
+    // Update RSSI for selected node device (PT-1221)
+    if (listEl === deviceListNode && selectedAddressNode) {
+      const selected = devices.find(d => d.address === selectedAddressNode);
+      if (selected) {
+        selectedRssi = selected.rssi;
+        updateRssiIndicator(selected.rssi);
+      }
+    }
   } catch (_) {
     // Ignore transient poll errors.
   }
@@ -217,21 +432,23 @@ async function pollDevices() {
 // ---------------------------------------------------------------------------
 
 async function pairGateway() {
-  if (!selectedAddress) return;
+  if (!selectedAddressGw) return;
   clearError();
   if (scanning) await stopScan();
   setBusy(true);
-  setPhase("Pairing");
   try {
     await invoke("pair_gateway", {
-      address: selectedAddress,
+      address: selectedAddressGw,
       phoneLabel: phoneLabel.value || "sonde-phone",
     });
-    setPhase("Complete");
-    await refreshPairingStatus();
+    isPaired = true;
+    const status = await invoke("get_pairing_status");
+    if (status.paired) {
+      pairDetails.textContent = "Gateway " + (status.gateway_id || "").substring(0, 8) + "\u2026";
+    }
+    navigator_.next(); // → page 3 (Pairing Complete)
   } catch (e) {
     showError(e);
-    setPhase("Error: " + e);
   } finally {
     setBusy(false);
   }
@@ -242,7 +459,7 @@ async function pairGateway() {
 // ---------------------------------------------------------------------------
 
 async function provisionNode() {
-  if (!selectedAddress) return;
+  if (!selectedAddressNode) return;
   const nid = nodeId.value.trim();
   if (!nid) { showError("Enter a Node ID"); return; }
   const pins = resolveI2cPins();
@@ -250,19 +467,17 @@ async function provisionNode() {
   clearError();
   if (scanning) await stopScan();
   setBusy(true);
-  setPhase("Provisioning");
   try {
-    const status = await invoke("provision_node", {
-      address: selectedAddress,
+    await invoke("provision_node", {
+      address: selectedAddressNode,
       nodeId: nid,
       i2cSda: pins.sda,
       i2cScl: pins.scl,
     });
-    setPhase("Complete");
-    // status is a human-readable string from NodeAckStatus
+    provisionDetails.textContent = "Node \"" + nid + "\" provisioned.";
+    navigator_.next(); // → page 6 (Done)
   } catch (e) {
     showError(e);
-    setPhase("Error: " + e);
   } finally {
     setBusy(false);
   }
@@ -276,9 +491,15 @@ async function refreshPairingStatus() {
   try {
     const s = await invoke("get_pairing_status");
     if (s.paired) {
+      isPaired = true;
       pairingStatus.textContent = "Paired \u2014 Gateway " + (s.gateway_id || "").substring(0, 8) + "\u2026";
+      btnGetStarted.classList.add("hidden");
+      btnSkipToNode.classList.remove("hidden");
     } else {
+      isPaired = false;
       pairingStatus.textContent = "Not paired";
+      btnGetStarted.classList.remove("hidden");
+      btnSkipToNode.classList.add("hidden");
     }
   } catch (e) {
     pairingStatus.textContent = "Error: " + e;
@@ -289,8 +510,9 @@ async function clearPairing() {
   clearError();
   try {
     await invoke("clear_pairing");
-    setPhase("Idle");
+    isPaired = false;
     await refreshPairingStatus();
+    navigator_.goTo(0);
   } catch (e) {
     showError(e);
   }
@@ -326,16 +548,63 @@ async function pollLogs() {
 // Event bindings
 // ---------------------------------------------------------------------------
 
-btnScanStart.addEventListener("click", startScan);
-btnScanStop.addEventListener("click", stopScan);
-btnPair.addEventListener("click", pairGateway);
-btnProvision.addEventListener("click", provisionNode);
+// Page 1: Welcome
+btnGetStarted.addEventListener("click", () => navigator_.next());
+btnSkipToNode.addEventListener("click", () => navigator_.goTo(3));
 btnClear.addEventListener("click", clearPairing);
-verboseToggle.addEventListener("change", toggleVerbose);
+
+// Page 2: Gateway Scan
+btnScanStartGw.addEventListener("click", startScan);
+btnScanStopGw.addEventListener("click", stopScan);
+btnPair.addEventListener("click", pairGateway);
+
+// Page 3: Pairing Complete
+btnToNode.addEventListener("click", () => navigator_.next());
+
+// Page 4: Node Scan
+btnScanStartNode.addEventListener("click", startScan);
+btnScanStopNode.addEventListener("click", stopScan);
+btnToProvision.addEventListener("click", () => {
+  // Enable provision button when entering page 5
+  btnProvision.disabled = false;
+  navigator_.next();
+});
+
+// Page 5: Node Provision
+btnProvision.addEventListener("click", provisionNode);
 boardSelect.addEventListener("change", () => {
   customPins.classList.toggle("hidden", boardSelect.value !== "custom");
 });
 
-// Initial state
+// Page 6: Done
+btnProvisionAnother.addEventListener("click", () => {
+  // Reset node-specific state and go back to node scan
+  nodeId.value = "";
+  selectedAddressNode = null;
+  selectedRssi = null;
+  navigator_.goTo(3);
+});
+
+// Diagnostics
+verboseToggle.addEventListener("change", toggleVerbose);
+
+// Back navigation (PT-1220)
+window.addEventListener("popstate", (e) => {
+  if (e.state && e.state.sentinel) {
+    // Re-push so the sentinel remains for next back press
+    history.pushState({ page: 0 }, "", "");
+    return;
+  }
+  if (e.state && typeof e.state.page === "number") {
+    navigator_.goTo(e.state.page, { push: false });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Initialization
+// ---------------------------------------------------------------------------
+
 initBoardSelect();
-refreshPairingStatus();
+refreshPairingStatus().then(() => {
+  navigator_.restore();
+});

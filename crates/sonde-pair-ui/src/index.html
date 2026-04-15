@@ -9,65 +9,141 @@
 <body>
   <header>
     <h1>Sonde Pairing Tool</h1>
-    <div id="phase-bar" class="phase idle">Idle</div>
+    <!-- Stepper bar (PT-1218): 3 phases, non-clickable -->
+    <div id="stepper" class="stepper">
+      <div class="step step--active" data-step="0">
+        <span class="step-number">1</span>
+        <span class="step-label">Gateway</span>
+      </div>
+      <div class="step-connector"></div>
+      <div class="step" data-step="1">
+        <span class="step-number">2</span>
+        <span class="step-label">Node</span>
+      </div>
+      <div class="step-connector"></div>
+      <div class="step" data-step="2">
+        <span class="step-number">3</span>
+        <span class="step-label">Done</span>
+      </div>
+    </div>
   </header>
 
   <main>
-    <!-- Scan controls -->
-    <section class="card">
-      <h2>Device Scan</h2>
-      <div class="btn-row">
-        <button id="btn-scan-start">Start Scan</button>
-        <button id="btn-scan-stop" disabled>Stop Scan</button>
+    <!-- Page 1: Welcome / Status (PT-1217) -->
+    <section class="page page--active" id="page-welcome">
+      <div class="card">
+        <h2>Welcome</h2>
+        <div id="pairing-status">Checking&hellip;</div>
+        <div class="btn-row">
+          <button id="btn-get-started">Get Started</button>
+          <button id="btn-skip-to-node" class="hidden">Provision Node</button>
+        </div>
+        <button id="btn-clear" class="btn-danger">Clear Pairing</button>
       </div>
-      <ul id="device-list" class="device-list">
-        <li class="placeholder">No devices found</li>
-      </ul>
     </section>
 
-    <!-- Phase 1: Gateway Pairing -->
-    <section class="card">
-      <h2>Phase 1 &mdash; Gateway Pairing</h2>
-      <label for="phone-label">Phone Label</label>
-      <input id="phone-label" type="text" placeholder="my-phone" maxlength="64" />
-      <button id="btn-pair" disabled>Pair with Gateway</button>
+    <!-- Page 2: Gateway Scan & Pair (PT-1217) -->
+    <section class="page" id="page-gateway-scan">
+      <div class="card">
+        <h2>Gateway Scan</h2>
+        <div class="btn-row">
+          <button id="btn-scan-start-gw">Start Scan</button>
+          <button id="btn-scan-stop-gw" disabled>Stop Scan</button>
+        </div>
+        <ul id="device-list-gw" class="device-list">
+          <li class="placeholder">No devices found</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>Gateway Pairing</h2>
+        <label for="phone-label">Phone Label</label>
+        <input id="phone-label" type="text" placeholder="my-phone" maxlength="64" />
+        <button id="btn-pair" disabled>Pair with Gateway</button>
+        <div id="pair-status" class="status-text hidden"></div>
+      </div>
     </section>
 
-    <!-- Phase 2: Node Provisioning -->
-    <section class="card">
-      <h2>Phase 2 &mdash; Node Provisioning</h2>
-      <label for="node-id">Node ID</label>
-      <input id="node-id" type="text" placeholder="sensor-01" maxlength="64" />
-      <label for="board-select">Board</label>
-      <select id="board-select">
-        <option value="custom">Custom</option>
-      </select>
-      <div id="custom-pins" class="custom-pins hidden">
-        <div class="pin-row">
-          <div class="pin-field">
-            <label for="custom-sda">I2C SDA GPIO</label>
-            <input id="custom-sda" type="number" min="0" max="21" placeholder="0" />
-          </div>
-          <div class="pin-field">
-            <label for="custom-scl">I2C SCL GPIO</label>
-            <input id="custom-scl" type="number" min="0" max="21" placeholder="1" />
-          </div>
+    <!-- Page 3: Pairing Complete (PT-1217) -->
+    <section class="page" id="page-gateway-done">
+      <div class="card">
+        <h2>Pairing Complete</h2>
+        <div id="pair-success-info" class="success-info">
+          <p>&#10004; Gateway paired successfully.</p>
+          <div id="pair-details"></div>
+        </div>
+        <button id="btn-to-node">Continue to Node Provisioning</button>
+      </div>
+    </section>
+
+    <!-- Page 4: Node Scan & RSSI (PT-1217, PT-1221) -->
+    <section class="page" id="page-node-scan">
+      <div class="card">
+        <h2>Node Scan</h2>
+        <div class="btn-row">
+          <button id="btn-scan-start-node">Start Scan</button>
+          <button id="btn-scan-stop-node" disabled>Stop Scan</button>
+        </div>
+        <ul id="device-list-node" class="device-list">
+          <li class="placeholder">No devices found</li>
+        </ul>
+      </div>
+      <div id="rssi-panel" class="card hidden">
+        <h2>Signal Quality</h2>
+        <div class="rssi-indicator" id="rssi-indicator">
+          <span class="rssi-value" id="rssi-value">--</span>
+          <span class="rssi-label" id="rssi-label">--</span>
         </div>
       </div>
-      <button id="btn-provision" disabled>Provision Node</button>
+      <button id="btn-to-provision" disabled>Continue to Provision</button>
     </section>
 
-    <!-- Status -->
-    <section class="card">
-      <h2>Pairing Status</h2>
-      <div id="pairing-status">Checking&hellip;</div>
-      <button id="btn-clear" class="btn-danger">Clear Pairing</button>
+    <!-- Page 5: Node Provision (PT-1217) -->
+    <section class="page" id="page-node-provision">
+      <div class="card">
+        <h2>Node Provisioning</h2>
+        <label for="node-id">Node ID</label>
+        <input id="node-id" type="text" placeholder="sensor-01" maxlength="64" />
+        <label for="board-select">Board</label>
+        <select id="board-select">
+          <option value="custom">Custom</option>
+        </select>
+        <div id="custom-pins" class="custom-pins hidden">
+          <div class="pin-row">
+            <div class="pin-field">
+              <label for="custom-sda">I2C SDA GPIO</label>
+              <input id="custom-sda" type="number" min="0" max="21" placeholder="0" />
+            </div>
+            <div class="pin-field">
+              <label for="custom-scl">I2C SCL GPIO</label>
+              <input id="custom-scl" type="number" min="0" max="21" placeholder="1" />
+            </div>
+          </div>
+        </div>
+        <button id="btn-provision" disabled>Provision Node</button>
+        <div id="provision-status" class="status-text hidden"></div>
+      </div>
     </section>
 
-    <!-- Error display -->
+    <!-- Page 6: Done (PT-1217) -->
+    <section class="page" id="page-done">
+      <div class="card">
+        <h2>Provisioning Complete</h2>
+        <div id="provision-success-info" class="success-info">
+          <p>&#10004; Node provisioned successfully.</p>
+          <div id="provision-details"></div>
+        </div>
+        <div class="btn-row">
+          <button id="btn-provision-another">Provision Another Node</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Error display (global, visible on all pages) -->
     <div id="error-bar" class="error-bar hidden"></div>
+  </main>
 
-    <!-- Verbose diagnostic mode -->
+  <!-- Persistent footer for diagnostics (PT-0702) -->
+  <footer>
     <section class="card">
       <label class="toggle">
         <input id="verbose-toggle" type="checkbox" />
@@ -75,7 +151,7 @@
       </label>
       <pre id="log-panel" class="log-panel hidden"></pre>
     </section>
-  </main>
+  </footer>
 
   <script src="main.js"></script>
 </body>

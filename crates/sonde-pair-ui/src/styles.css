@@ -9,9 +9,11 @@
   --text: #eee;
   --text-dim: #999;
   --success: #2ecc71;
+  --warning: #f39c12;
   --error: #e74c3c;
   --border: #2a2a4a;
   --radius: 8px;
+  --transition-duration: 300ms;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -22,16 +24,17 @@ body {
   color: var(--text);
   min-height: 100vh;
   padding: 0;
-  /* Respect mobile safe areas (notch, status bar). */
   padding-top: env(safe-area-inset-top);
+  display: flex;
+  flex-direction: column;
 }
 
 header {
   background: var(--primary);
   padding: 16px 20px;
   display: flex;
-  align-items: center;
-  gap: 16px;
+  flex-direction: column;
+  gap: 12px;
 }
 
 header h1 {
@@ -40,27 +43,146 @@ header h1 {
   white-space: nowrap;
 }
 
-.phase {
-  font-size: 13px;
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-weight: 500;
+/* Stepper bar (PT-1218) */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  justify-content: center;
 }
 
-.phase.idle       { background: var(--border); color: var(--text-dim); }
-.phase.scanning   { background: #2980b9; }
-.phase.pairing    { background: #8e44ad; }
-.phase.provisioning { background: #d35400; }
-.phase.complete   { background: var(--success); color: #111; }
-.phase.error      { background: var(--error); }
+.step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--border);
+  cursor: default;
+  user-select: none;
+  transition: background var(--transition-duration), color var(--transition-duration);
+}
+
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--bg);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.step-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.step--active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.step--active .step-number {
+  background: rgba(255,255,255,0.2);
+  color: #fff;
+}
+
+.step--done {
+  background: var(--success);
+  color: #111;
+}
+
+.step--done .step-number {
+  background: rgba(0,0,0,0.15);
+  color: #111;
+  font-size: 0;
+}
+
+.step--done .step-number::after {
+  content: "\2713";
+  font-size: 11px;
+}
+
+.step-connector {
+  width: 24px;
+  height: 2px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* Page visibility (PT-1217) */
+.page {
+  display: none;
+}
+
+.page--active {
+  display: block;
+}
+
+/* Page transition animations (PT-1222) */
+.slide-out-left,
+.slide-out-right {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideOutLeft {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(-100%); opacity: 0; }
+}
+
+@keyframes slideOutRight {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(100%); opacity: 0; }
+}
+
+.slide-in-right {
+  animation: slideInRight var(--transition-duration) ease-out;
+}
+
+.slide-in-left {
+  animation: slideInLeft var(--transition-duration) ease-out;
+}
+
+.slide-out-left {
+  animation: slideOutLeft var(--transition-duration) ease-out;
+}
+
+.slide-out-right {
+  animation: slideOutRight var(--transition-duration) ease-out;
+}
 
 main {
+  position: relative;
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-width: 520px;
   margin: 0 auto;
+  width: 100%;
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .card {
@@ -68,6 +190,7 @@ main {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px 16px;
+  margin-bottom: 12px;
 }
 
 .card h2 {
@@ -163,6 +286,16 @@ label {
   letter-spacing: 0.5px;
 }
 
+/* Status text (PT-0701 per-page status) */
+.status-text {
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 6px 0;
+  font-style: italic;
+}
+
+.status-text.hidden { display: none; }
+
 /* Device list */
 .device-list {
   list-style: none;
@@ -215,6 +348,60 @@ label {
 .badge.node    { background: #27ae60; }
 .badge.unknown { background: var(--border); }
 
+/* RSSI signal quality indicator (PT-1221) */
+.rssi-indicator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  transition: background var(--transition-duration);
+}
+
+.rssi-value {
+  font-size: 20px;
+  font-weight: 700;
+  font-family: "Cascadia Code", "Fira Code", monospace;
+}
+
+.rssi-label {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.rssi--good {
+  background: rgba(46, 204, 113, 0.15);
+  color: var(--success);
+  border: 1px solid var(--success);
+}
+
+.rssi--marginal {
+  background: rgba(243, 156, 18, 0.15);
+  color: var(--warning);
+  border: 1px solid var(--warning);
+}
+
+.rssi--bad {
+  background: rgba(231, 76, 60, 0.15);
+  color: var(--error);
+  border: 1px solid var(--error);
+}
+
+/* Success info */
+.success-info {
+  padding: 10px 0;
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+
+.success-info p {
+  color: var(--success);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
 /* Error bar */
 .error-bar {
   background: var(--error);
@@ -232,6 +419,14 @@ label {
   font-size: 13px;
   margin-bottom: 10px;
   padding: 6px 0;
+}
+
+/* Footer (persistent diagnostics) */
+footer {
+  padding: 0 16px 12px;
+  max-width: 520px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 /* Verbose log panel */
@@ -263,6 +458,9 @@ label {
 }
 
 .log-panel.hidden { display: none; }
+
+/* Utility */
+.hidden { display: none !important; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }

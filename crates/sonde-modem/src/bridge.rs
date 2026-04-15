@@ -1858,12 +1858,13 @@ mod tests {
     // state machine (deferral, buffering, timeouts) lives in ble.rs; these
     // tests validate the bridge correctly processes the resulting events.
 
-    /// Validates: MD-0416 AC1 — full pairing accept flow.
+    /// Validates: MD-0416 AC1 — pairing accept event sequence at the bridge.
     ///
     /// Sequence: PairingConfirm → gateway reply(accept) → Connected.
-    /// After the operator accepts, the BLE stack emits Connected (deferred
-    /// by ble.rs until operator approval).  Verify the bridge forwards the
-    /// complete sequence as BLE_PAIRING_CONFIRM → BLE_CONNECTED.
+    /// Verifies the bridge forwards the complete sequence as
+    /// BLE_PAIRING_CONFIRM → BLE_PAIRING_CONFIRM_REPLY dispatch → BLE_CONNECTED.
+    /// Note: deferral of Connected until operator approval is implemented in
+    /// ble.rs and requires the real BLE state machine or ESP hardware to test.
     #[test]
     fn ble_pairing_accept_full_flow() {
         let mut bridge = make_bridge_with_ble();
@@ -1954,12 +1955,13 @@ mod tests {
         }
     }
 
-    /// Validates: MD-0409 AC5 — pre-auth GATT write buffered until auth.
+    /// Validates: MD-0409 AC5 — bridge forwards buffered Recv before Connected.
     ///
-    /// When a GATT write arrives before LESC authentication completes,
-    /// ble.rs buffers it and emits Recv immediately before Connected once
-    /// the operator accepts.  Verify the bridge forwards both BLE_RECV
-    /// and BLE_CONNECTED in the correct order.
+    /// When ble.rs flushes a buffered pre-auth GATT write, it emits Recv
+    /// immediately before Connected.  Verify the bridge preserves this
+    /// ordering: BLE_RECV is forwarded before BLE_CONNECTED.
+    /// Note: the actual buffering (suppressing Recv until auth) is implemented
+    /// in ble.rs; this test validates bridge ordering of the resulting events.
     #[test]
     fn ble_pre_auth_gatt_write_buffered() {
         let mut bridge = make_bridge_with_ble();
@@ -1991,8 +1993,13 @@ mod tests {
 
         // Decode both messages from the TX buffer.
         let tx = bridge.usb.take_tx();
-        let (msg1, consumed) = decode_modem_frame(&tx).unwrap();
-        let (msg2, _) = decode_modem_frame(&tx[consumed..]).unwrap();
+        let (msg1, consumed1) = decode_modem_frame(&tx).unwrap();
+        let (msg2, consumed2) = decode_modem_frame(&tx[consumed1..]).unwrap();
+        assert_eq!(
+            consumed1 + consumed2,
+            tx.len(),
+            "exactly two messages expected in TX buffer"
+        );
 
         // BLE_RECV must arrive before BLE_CONNECTED (buffered write flushed first).
         match msg1 {
@@ -2041,8 +2048,8 @@ mod tests {
             bridge.ble.pairing_replies.is_empty(),
             "bridge must not auto-reply"
         );
-        // check_pairing_timeout must have been called each poll cycle.
-        assert!(bridge.ble.check_pairing_timeout_count.get() >= 6);
+        // check_pairing_timeout must have been called exactly once per poll cycle.
+        assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 6);
 
         // 3. BLE stack eventually emits Disconnected (timeout triggered in ble.rs).
         bridge.ble.inject_event(BleEvent::Disconnected {
@@ -2082,8 +2089,8 @@ mod tests {
         for _ in 0..10 {
             bridge.poll();
         }
-        // check_pairing_timeout called each cycle (also handles idle timeout).
-        assert!(bridge.ble.check_pairing_timeout_count.get() >= 10);
+        // check_pairing_timeout called exactly once per cycle.
+        assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 10);
         // No serial output during idle period.
         assert!(bridge.usb.take_tx().is_empty());
 
@@ -2150,8 +2157,13 @@ mod tests {
         bridge.poll();
 
         let tx = bridge.usb.take_tx();
-        let (msg1, consumed) = decode_modem_frame(&tx).unwrap();
-        let (msg2, _) = decode_modem_frame(&tx[consumed..]).unwrap();
+        let (msg1, consumed1) = decode_modem_frame(&tx).unwrap();
+        let (msg2, consumed2) = decode_modem_frame(&tx[consumed1..]).unwrap();
+        assert_eq!(
+            consumed1 + consumed2,
+            tx.len(),
+            "exactly two messages expected in TX buffer"
+        );
 
         match msg1 {
             ModemMessage::BleRecv(r) => assert_eq!(r.ble_data, gatt_payload),

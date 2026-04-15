@@ -1878,7 +1878,8 @@ mod tests {
 
         // Verify BLE_PAIRING_CONFIRM forwarded.
         let tx = bridge.usb.take_tx();
-        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(consumed, tx.len(), "only one message expected");
         match msg {
             ModemMessage::BlePairingConfirm(p) => assert_eq!(p.passkey, 123456),
             _ => panic!("expected BlePairingConfirm"),
@@ -1899,7 +1900,8 @@ mod tests {
         bridge.poll();
 
         let tx = bridge.usb.take_tx();
-        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(consumed, tx.len(), "only one message expected");
         match msg {
             ModemMessage::BleConnected(c) => {
                 assert_eq!(c.peer_addr, peer);
@@ -1946,7 +1948,8 @@ mod tests {
         bridge.poll();
 
         let tx = bridge.usb.take_tx();
-        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(consumed, tx.len(), "only BleDisconnected expected");
         match msg {
             ModemMessage::BleDisconnected(d) => {
                 assert_eq!(d.peer_addr, peer);
@@ -1956,8 +1959,7 @@ mod tests {
     }
 
     /// Validates: MD-0409 AC5 — bridge forwards buffered Recv before Connected.
-    ///
-    /// When ble.rs flushes a buffered pre-auth GATT write, it emits Recv
+    ///    /// When ble.rs flushes a buffered pre-auth GATT write, it emits Recv
     /// immediately before Connected.  Verify the bridge preserves this
     /// ordering: BLE_RECV is forwarded before BLE_CONNECTED.
     /// Note: the actual buffering (suppressing Recv until auth) is implemented
@@ -2015,13 +2017,14 @@ mod tests {
         }
     }
 
-    /// Validates: MD-0414 AC4 / T-0622 — pairing timeout flow.
+    /// Validates: MD-0414 AC4 / T-0622 — pairing confirm without reply.
     ///
-    /// After BLE_PAIRING_CONFIRM is sent and no reply arrives within 30 s,
-    /// ble.rs times out and disconnects the client.  Verify the bridge
-    /// forwards BLE_DISCONNECTED and never emits BLE_CONNECTED.
+    /// After BLE_PAIRING_CONFIRM is forwarded and no reply is sent by the
+    /// bridge, repeated poll cycles must not auto-send a pairing reply.
+    /// If the BLE layer later emits BLE_DISCONNECTED, the bridge must
+    /// forward it and must not emit BLE_CONNECTED.
     #[test]
-    fn ble_pairing_timeout_disconnects() {
+    fn ble_pairing_confirm_without_reply_forwards_later_disconnect() {
         let mut bridge = make_bridge_with_ble();
         let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
 
@@ -2074,11 +2077,11 @@ mod tests {
         );
     }
 
-    /// Validates: MD-0415 — idle timeout disconnects unfinished pairing.
+    /// Validates: MD-0415 — bridge stays silent while BLE is idle and forwards disconnects.
     ///
-    /// A client connects but never initiates LESC pairing.  After 60 s,
-    /// ble.rs disconnects the client.  Verify the bridge forwards
-    /// BLE_DISCONNECTED.
+    /// Repeated poll cycles with no BLE events produce no serial output.
+    /// When the BLE layer later emits `Disconnected`, verify the bridge
+    /// forwards `BLE_DISCONNECTED`.
     #[test]
     fn ble_idle_timeout_disconnects() {
         let mut bridge = make_bridge_with_ble();
@@ -2102,7 +2105,8 @@ mod tests {
         bridge.poll();
 
         let tx = bridge.usb.take_tx();
-        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(consumed, tx.len(), "only BleDisconnected expected");
         match msg {
             ModemMessage::BleDisconnected(d) => {
                 assert_eq!(d.peer_addr, peer);

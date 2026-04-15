@@ -1959,7 +1959,8 @@ mod tests {
     }
 
     /// Validates: MD-0409 AC5 — bridge forwards buffered Recv before Connected.
-    ///    /// When ble.rs flushes a buffered pre-auth GATT write, it emits Recv
+    ///
+    /// When ble.rs flushes a buffered pre-auth GATT write, it emits Recv
     /// immediately before Connected.  Verify the bridge preserves this
     /// ordering: BLE_RECV is forwarded before BLE_CONNECTED.
     /// Note: the actual buffering (suppressing Recv until auth) is implemented

@@ -25,6 +25,8 @@ use tracing_test::traced_test;
 
 // ─── Test helpers ──────────────────────────────────────────────────────
 
+const TEST_FIRMWARE_VERSION: &str = "0.4.0";
+
 struct TestNode {
     node_id: String,
     key_hint: u16,
@@ -65,7 +67,7 @@ impl TestNode {
             firmware_abi_version,
             program_hash: program_hash.to_vec(),
             battery_mv,
-            firmware_version: "0.4.0".into(),
+            firmware_version: TEST_FIRMWARE_VERSION.into(),
             blob: None,
         };
         let cbor = msg.encode().unwrap();
@@ -286,7 +288,7 @@ async fn t0103_wake_reception_and_field_extraction() {
     let updated = storage.get_node("node-03").await.unwrap().unwrap();
     assert_eq!(updated.firmware_abi_version, Some(1));
     assert_eq!(updated.last_battery_mv, Some(3300));
-    assert_eq!(updated.firmware_version, Some("0.4.0".into()));
+    assert_eq!(updated.firmware_version, Some(TEST_FIRMWARE_VERSION.into()));
 }
 
 /// T-0104: WAKE with missing `battery_mv` rejected.
@@ -311,7 +313,7 @@ async fn t0104_wake_missing_battery_mv_rejected() {
         ),
         (
             ciborium::Value::Integer(KEY_FIRMWARE_VERSION.into()),
-            ciborium::Value::Text("0.4.0".into()),
+            ciborium::Value::Text(TEST_FIRMWARE_VERSION.into()),
         ),
     ];
     let value = ciborium::Value::Map(pairs);

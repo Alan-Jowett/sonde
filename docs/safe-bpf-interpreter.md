@@ -63,11 +63,12 @@ The interpreter holds `reg: [TaggedReg; 11]` instead of `[u64; 11]`.  All arithm
 enum RegionTag {
     /// Pointer into the BPF stack (R10-derived).
     Stack,
-    /// Read-only input memory / context buffer (R1-derived).
-    /// Writes are silently ignored per ND-0505 AC6.
+    /// Read-only view of the input memory / context buffer (R1-derived).
+    /// Used when `read_only_ctx` is `true`; writes are silently ignored
+    /// per ND-0505 AC6.
     Context,
-    /// Writable input memory — same layout as Context but allows stores.
-    /// Used when the caller provides a mutable input region.
+    /// Writable view of the same input memory / context buffer.
+    /// Used when `read_only_ctx` is `false`; stores are allowed.
     Memory,
     /// Pointer into a map value returned by `map_lookup_elem`.
     /// `value_size` records the size of the individual value.

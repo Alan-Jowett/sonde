@@ -544,7 +544,7 @@ pub enum PairingError {
     ConnectionDropped { device: Option<String> },
 
     // PT-1215: includes device address + reason.
-    #[error("BLE connection failed ({}): {reason} — check that \
+    #[error("BLE connection to {} failed: {reason} — check that \
              the modem is powered on and not paired to another device",
             OptionalDevice(device))]
     ConnectionFailed { device: Option<String>, reason: String },

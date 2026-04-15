@@ -150,6 +150,7 @@ impl BleTransport for MockBleTransport {
             return Box::pin(async move { Err(err) });
         }
         if self.fail_connect {
+            self.connected = false;
             self.connected_address = None;
             return Box::pin(async move {
                 Err(PairingError::ConnectionFailed {

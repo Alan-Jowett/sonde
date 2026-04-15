@@ -51,7 +51,7 @@ pub enum PairingError {
     DeviceOutOfRange { device: Option<String> },
 
     // Transport errors (PT-1215: include device context)
-    #[error("BLE connection failed ({}): {reason} — check that the modem is powered on and not paired to another device", OptionalDevice(device))]
+    #[error("BLE connection to {} failed: {reason} — check that the modem is powered on and not paired to another device", OptionalDevice(device))]
     ConnectionFailed {
         device: Option<String>,
         reason: String,

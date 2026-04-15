@@ -2150,10 +2150,13 @@ mod tests {
         bridge.usb.take_tx(); // discard
 
         // 4. ble.rs flushes buffered write + Connected.
-        bridge.ble.inject_event(BleEvent::Recv(gatt_payload.clone()));
         bridge
             .ble
-            .inject_event(BleEvent::Connected { peer_addr: peer, mtu: 512 });
+            .inject_event(BleEvent::Recv(gatt_payload.clone()));
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 512,
+        });
         bridge.poll();
 
         let tx = bridge.usb.take_tx();

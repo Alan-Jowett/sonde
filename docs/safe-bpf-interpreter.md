@@ -236,7 +236,7 @@ At program start, three registers carry pointer provenance:
 
 | Register | Value | Region |
 |----------|-------|--------|
-| R1 | `ctx.as_ptr() as u64` | `Some(Region { tag: Context, base: ctx.as_ptr() as u64, end: (ctx.as_ptr() as u64).checked_add(ctx.len() as u64).unwrap() })` |
+| R1 | `ctx.as_ptr() as u64` | `Some(Region { tag: ctx_tag, ... })` where `ctx_tag` is `Context` when `read_only_ctx` is `true`, `Memory` when `false` (see §2.2) |
 | R2 | `ctx.len() as u64` | `None` (scalar — length, not a pointer) |
 | R10 | `stack.as_ptr() as u64 + STACK_SIZE as u64` | `Some(Region { tag: Stack, base: stack.as_ptr() as u64, end: (stack.as_ptr() as u64).checked_add(STACK_SIZE as u64).unwrap() })` |
 | R0, R3–R9 | 0 | `None` (scalar) |
@@ -650,7 +650,7 @@ The implementation should keep all existing interpreter tests passing.  Tests th
 
 ### 11.1  Read-only map enforcement
 
-Some program classes may require read-only map access.  With tagged regions, this is trivial: use a `MapValueReadOnly` tag variant.  `mem_store` silently ignores writes to read-only map regions, just as it ignores writes to `Context`.
+Some program classes may require read-only map access.  A future extension could add a `MapValueReadOnly` tag variant for such regions.  Unlike `Context`, whose writes are silently ignored, writes to a `MapValueReadOnly` region should return `BpfError::ReadOnlyWrite`, consistent with §5's retention of that error for future hard write-rejection.
 
 ### 11.2  Instruction metering
 

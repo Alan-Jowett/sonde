@@ -1849,7 +1849,6 @@ mod tests {
         );
     }
 
-    // --- T-0628: RESET clears peer table (MD-0300) ---
 
     // --- BLE pairing state machine flow tests (MD-0414/MD-0416/MD-0409/MD-0415) ---
     //

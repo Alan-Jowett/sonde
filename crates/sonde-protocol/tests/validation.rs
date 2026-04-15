@@ -2030,12 +2030,19 @@ mod aead_tests {
 
     #[test] // T-P060: Complete frame encode → decrypt → decode message
     fn aead_round_trip() {
+        let wake = NodeMessage::Wake {
+            firmware_abi_version: 1,
+            program_hash: vec![0x42u8; 32],
+            battery_mv: 3300,
+            firmware_version: "0.4.0".into(),
+            blob: None,
+        };
+        let payload = wake.encode().unwrap();
         let hdr = FrameHeader {
             key_hint: 1,
             msg_type: MSG_WAKE,
             nonce: 42,
         };
-        let payload = vec![0xA1, 0x01, 0x02];
         let psk = [0x42u8; 32];
 
         let raw = encode_frame(&hdr, &payload, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
@@ -2046,6 +2053,9 @@ mod aead_tests {
 
         let plaintext = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
         assert_eq!(plaintext, payload);
+
+        let decoded_msg = NodeMessage::decode(MSG_WAKE, &plaintext).unwrap();
+        assert_eq!(decoded_msg, wake);
     }
 
     #[test] // T-P012: AES-256-GCM rejects wrong key
@@ -2102,7 +2112,7 @@ mod aead_tests {
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
-    #[test] // T-P015: GCM tag tampered → rejected
+    #[test] // T-P015: GCM tag tampered → rejected (also covers T-P066 tag verification)
     fn aead_tampered_tag() {
         let hdr = FrameHeader {
             key_hint: 1,
@@ -2137,7 +2147,7 @@ mod aead_tests {
         assert_eq!(&nonce[4..12], &frame_nonce);
     }
 
-    #[test] // T-P066: AES-256-GCM constants and capacity verification
+    #[test]
     fn aead_payload_capacity() {
         assert_eq!(MAX_PAYLOAD_SIZE, 223);
         assert_eq!(AEAD_TAG_SIZE, 16);

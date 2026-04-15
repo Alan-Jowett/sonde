@@ -420,7 +420,11 @@ impl BleTransport for AndroidBleTransport {
         // Reset pairing method before new connection attempt.
         self.inner.pairing_method.store(0, Ordering::Release);
         // Clear previous connected address.
-        *self.inner.connected_address.lock().unwrap() = None;
+        *self
+            .inner
+            .connected_address
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
         let device_for_closure = Some(device_str.clone());
         Box::pin(async move {
             let mtu = tokio::task::spawn_blocking(move || {
@@ -498,7 +502,11 @@ impl BleTransport for AndroidBleTransport {
             .await
             .map_err(join_err)??;
             // Store connected device address on success (PT-1215).
-            *self.inner.connected_address.lock().unwrap() = Some(device_str);
+            *self
+                .inner
+                .connected_address
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(device_str);
             Ok(mtu)
         })
     }
@@ -506,7 +514,11 @@ impl BleTransport for AndroidBleTransport {
     fn disconnect(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         let inner = self.inner.clone();
         // Clear connected address on disconnect (PT-1215).
-        *self.inner.connected_address.lock().unwrap() = None;
+        *self
+            .inner
+            .connected_address
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 inner
@@ -545,7 +557,12 @@ impl BleTransport for AndroidBleTransport {
         let svc_str = uuid_to_string(service);
         let chr_str = uuid_to_string(characteristic);
         let data = data.to_vec();
-        let device_addr = self.inner.connected_address.lock().unwrap().clone();
+        let device_addr = self
+            .inner
+            .connected_address
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 inner
@@ -600,7 +617,12 @@ impl BleTransport for AndroidBleTransport {
         let inner = self.inner.clone();
         let svc_str = uuid_to_string(service);
         let chr_str = uuid_to_string(characteristic);
-        let device_addr = self.inner.connected_address.lock().unwrap().clone();
+        let device_addr = self
+            .inner
+            .connected_address
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 inner

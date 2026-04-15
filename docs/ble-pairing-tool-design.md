@@ -640,10 +640,11 @@ pub enum PairingError {
 }
 ```
 
-`Some`, or as the literal text `"(unknown device)"` when `None`.  Each
-transport implementation stores the connected device address internally
-(set on successful `connect()`, cleared on `disconnect()`) so that error
-variants constructed during GATT operations can include the peer address.
+The peer address is rendered as the address from `Some(addr)`, or as the
+literal text `"(unknown device)"` when `None`.  Each transport
+implementation stores the connected device address internally (set on
+successful `connect()`, cleared on `disconnect()`) so that error variants
+constructed during GATT operations can include the peer address.
 
 Every variant includes an actionable message for the operator (PT-0501).  No error message consists solely of a code or internal identifier.
 

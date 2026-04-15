@@ -63,8 +63,12 @@ The interpreter holds `reg: [TaggedReg; 11]` instead of `[u64; 11]`.  All arithm
 enum RegionTag {
     /// Pointer into the BPF stack (R10-derived).
     Stack,
-    /// Pointer into the input memory / context buffer (R1-derived).
+    /// Read-only input memory / context buffer (R1-derived).
+    /// Writes are silently ignored per ND-0505 AC6.
     Context,
+    /// Writable input memory — same layout as Context but allows stores.
+    /// Used when the caller provides a mutable input region.
+    Memory,
     /// Pointer into a map value returned by `map_lookup_elem`.
     /// `value_size` records the size of the individual value.
     MapValue { value_size: u32 },
@@ -171,17 +175,19 @@ fn mem_store<const N: usize>(
         return Err(BpfError::NonDereferenceableAccess { pc });
     }
 
-    // Context memory is read-only.
-    if matches!(region.tag, RegionTag::Context) {
-        return Err(BpfError::ReadOnlyWrite { pc });
-    }
-
-    let addr = (base_reg.value as i64).wrapping_add(off as i64) as u64;
+    // ND-0505 AC6: writes to read-only context are silently ignored;
+    // the program continues execution.  Bounds validation is still
+    // performed so that out-of-range stores are caught.
+    let addr = base_reg.value.wrapping_add_signed(off as i64);
     let end  = addr.checked_add(N as u64)
         .ok_or(BpfError::MemoryAccessViolation { pc, addr, len: N })?;
 
     if addr < region.base || end > region.end {
         return Err(BpfError::MemoryAccessViolation { pc, addr, len: N });
+    }
+
+    if matches!(region.tag, RegionTag::Context) {
+        return Ok(());
     }
 
     // SAFETY: same argument as mem_load.
@@ -204,7 +210,7 @@ Atomic read-modify-write operations (ADD, OR, AND, XOR, XCHG, CMPXCHG) are route
 
 > **Concurrency model:** BPF programs execute single-threaded — only one program runs at a time on a given interpreter instance.  The "atomic" operations implement the RFC 9669 instruction semantics (RFC 9669 §5.3) but are emulated as non-atomic `read_unaligned` / `write_unaligned` sequences.  This is correct for single-threaded execution.  If a future interpreter needs to support concurrent BPF-to-BPF execution with shared map memory, these operations would need to use `core::sync::atomic` or equivalent hardware atomics.
 
-The same pre-checks apply as for `mem_store`: scalars and `MapDescriptor` are rejected via `NonDereferenceableAccess`, and `Context` (read-only) is rejected via `ReadOnlyWrite`.
+The same pre-checks apply as for `mem_store`: scalars and `MapDescriptor` are rejected via `NonDereferenceableAccess`.  For `Context` (read-only) regions, bounds validation and FETCH/CMPXCHG register-result semantics are preserved, but the actual write to memory is suppressed (ND-0505 AC6).
 
 ### 3.4  Unsafe budget
 
@@ -504,7 +510,10 @@ pub enum BpfError {
     /// calling `map_lookup_elem`.
     InvalidHelperArgument { pc: usize, arg: u8 },
 
-    /// Attempted to write to a read-only region (e.g., Context).
+    /// Attempted to write to a read-only region.
+    /// Note: Context writes are silently ignored (ND-0505 AC6) rather
+    /// than raising this error.  This variant is retained for regions
+    /// that may need hard write-rejection in future extensions.
     ReadOnlyWrite { pc: usize },
 
     /// Pointer arithmetic that violates provenance rules
@@ -586,7 +595,7 @@ pub fn execute_program(
 ) -> Result<u64, BpfError>;
 ```
 
-The `mem` parameter is renamed to `ctx` and changed from `&mut [u8]` to `&[u8]`.  The tagged interpreter enforces Context as read-only (§3.2), so the API should reflect this.  If a future use case requires a mutable input region, a separate parameter (e.g., `scratch: &mut [u8]`) can be added with its own `RegionTag` variant.
+The `mem` parameter is renamed to `ctx` and changed from `&mut [u8]` to `&[u8]`.  The tagged interpreter enforces Context as read-only (§3.2), so the API should reflect this.  For callers that need a writable input region, the `Memory` tag variant (§2.2) provides the same layout as `Context` but permits stores.
 
 **Migration steps for existing callers:**
 

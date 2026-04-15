@@ -510,7 +510,9 @@ any device is targeted), and `String` (non-optional) where the address is
 always known at the call site (e.g., `MtuTooLow`, `DeviceNotFound`).
 
 A helper function `format_device_address(&[u8; 6]) -> String` produces the
-canonical colon-separated hex representation.
+canonical colon-separated hex representation.  A private `OptionalDevice`
+newtype wraps `&Option<String>` for use in `thiserror` format strings,
+rendering `Some(addr)` as the address and `None` as `"(unknown device)"`.
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -528,19 +530,23 @@ pub enum PairingError {
     DeviceNotFound { device: String },
 
     // PT-1215: includes device address when available.
-    #[error("device {device} out of range — move closer and retry")]
+    // OptionalDevice renders None as "(unknown device)".
+    #[error("device {} out of range — move closer and retry",
+            OptionalDevice(device))]
     DeviceOutOfRange { device: Option<String> },
 
     // ── Transport-level errors ──
     // PT-1215: includes device address and stale-pairing hint (AC3).
-    #[error("BLE connection to {device} dropped — check that the modem \
+    #[error("BLE connection to {} dropped — check that the modem \
              is powered on and in range; if this persists, delete the \
-             stale Bluetooth pairing in OS settings and retry")]
+             stale Bluetooth pairing in OS settings and retry",
+            OptionalDevice(device))]
     ConnectionDropped { device: Option<String> },
 
     // PT-1215: includes device address + reason.
-    #[error("BLE connection failed ({device}): {reason} — check that \
-             the modem is powered on and not paired to another device")]
+    #[error("BLE connection failed ({}): {reason} — check that \
+             the modem is powered on and not paired to another device",
+            OptionalDevice(device))]
     ConnectionFailed { device: Option<String>, reason: String },
 
     // PT-1215: includes device address.
@@ -550,21 +556,23 @@ pub enum PairingError {
     MtuTooLow { device: String, negotiated: u16, required: u16 },
 
     // PT-1215: includes device address when available.
-    #[error("GATT write to {device} failed: {reason} — check the BLE \
-             connection and retry")]
+    #[error("GATT write to {} failed: {reason} — check the BLE \
+             connection and retry", OptionalDevice(device))]
     GattWriteFailed { device: Option<String>, reason: String },
 
     // PT-1215: includes device address when available.
-    #[error("GATT read from {device} failed: {reason} — check the BLE \
-             connection and retry")]
+    #[error("GATT read from {} failed: {reason} — check the BLE \
+             connection and retry", OptionalDevice(device))]
     GattReadFailed { device: Option<String>, reason: String },
 
     // PT-1215: includes device address when available.
-    #[error("indication from {device} not received before timeout — \
-             check that the modem is powered on and in range")]
+    #[error("indication from {} not received before timeout — \
+             check that the modem is powered on and in range",
+            OptionalDevice(device))]
     IndicationTimeout { device: Option<String> },
 
-    #[error("{operation} timed out after {timeout_secs}s — {suggestion}")]
+    #[error("{operation} on {} timed out after {timeout_secs}s — \
+             {suggestion}", OptionalDevice(device))]
     Timeout {
         device: Option<String>,
         operation: &'static str,

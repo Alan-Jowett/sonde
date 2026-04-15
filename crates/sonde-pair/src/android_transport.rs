@@ -485,6 +485,13 @@ impl BleTransport for AndroidBleTransport {
                             device: device_for_closure.clone(),
                             reason: format!("attach_current_thread: {msg}"),
                         },
+                        PairingError::ConnectionFailed {
+                            device: None,
+                            reason,
+                        } => PairingError::ConnectionFailed {
+                            device: device_for_closure.clone(),
+                            reason,
+                        },
                         other => other,
                     })
             })
@@ -569,6 +576,13 @@ impl BleTransport for AndroidBleTransport {
                             device: device_addr.clone(),
                             reason: format!("attach_current_thread: {msg}"),
                         },
+                        PairingError::ConnectionFailed {
+                            device: None,
+                            reason,
+                        } => PairingError::ConnectionFailed {
+                            device: device_addr.clone(),
+                            reason,
+                        },
                         other => other,
                     })
             })
@@ -634,6 +648,18 @@ impl BleTransport for AndroidBleTransport {
                             device: device_addr.clone(),
                             reason: format!("attach_current_thread: {msg}"),
                         },
+                        PairingError::ConnectionFailed {
+                            device: None,
+                            reason,
+                        } => PairingError::ConnectionFailed {
+                            device: device_addr.clone(),
+                            reason,
+                        },
+                        PairingError::IndicationTimeout { device: None } => {
+                            PairingError::IndicationTimeout {
+                                device: device_addr.clone(),
+                            }
+                        }
                         other => other,
                     })
             })

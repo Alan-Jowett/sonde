@@ -1849,6 +1849,341 @@ mod tests {
         );
     }
 
+    // --- BLE pairing state machine flow tests (MD-0414/MD-0416/MD-0409/MD-0415) ---
+    //
+    // These tests inject realistic BLE event sequences into the bridge via
+    // MockBle to verify end-to-end handling of pairing flows.  The actual
+    // state machine (deferral, buffering, timeouts) lives in ble.rs; these
+    // tests validate the bridge correctly processes the resulting events.
+
+    /// Validates: MD-0416 AC1 — pairing accept event sequence at the bridge.
+    ///
+    /// Sequence: PairingConfirm → gateway reply(accept) → Connected.
+    /// Verifies the bridge forwards the complete sequence as
+    /// BLE_PAIRING_CONFIRM → BLE_PAIRING_CONFIRM_REPLY dispatch → BLE_CONNECTED.
+    /// Note: deferral of Connected until operator approval is implemented in
+    /// ble.rs and requires the real BLE state machine or ESP hardware to test.
+    #[test]
+    fn ble_pairing_accept_full_flow() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+
+        // 1. BLE stack emits PairingConfirm.
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 123456 });
+        bridge.poll();
+
+        // Verify BLE_PAIRING_CONFIRM forwarded.
+        let tx = bridge.usb.take_tx();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(consumed, tx.len(), "only one message expected");
+        match msg {
+            ModemMessage::BlePairingConfirm(p) => assert_eq!(p.passkey, 123456),
+            _ => panic!("expected BlePairingConfirm"),
+        }
+
+        // 2. Gateway sends BLE_PAIRING_CONFIRM_REPLY(accept).
+        let reply = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: true });
+        let frame = encode_modem_frame(&reply).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert_eq!(bridge.ble.pairing_replies, vec![true]);
+
+        // 3. BLE stack emits Connected (deferred until operator accepted).
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 247,
+        });
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(consumed, tx.len(), "only one message expected");
+        match msg {
+            ModemMessage::BleConnected(c) => {
+                assert_eq!(c.peer_addr, peer);
+                assert_eq!(c.mtu, 247);
+            }
+            _ => panic!("expected BleConnected"),
+        }
+    }
+
+    /// Validates: MD-0416 AC4 — pairing reject flow.
+    ///
+    /// Sequence: PairingConfirm → gateway reply(reject) → Disconnected.
+    /// After the operator rejects, the BLE stack disconnects the client.
+    /// Verify no BLE_CONNECTED is ever sent.
+    #[test]
+    fn ble_pairing_reject_full_flow() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+
+        // 1. BLE stack emits PairingConfirm.
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 654321 });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        assert!(
+            matches!(msg, ModemMessage::BlePairingConfirm(_)),
+            "expected BlePairingConfirm"
+        );
+
+        // 2. Gateway sends BLE_PAIRING_CONFIRM_REPLY(reject).
+        let reply = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: false });
+        let frame = encode_modem_frame(&reply).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        assert_eq!(bridge.ble.pairing_replies, vec![false]);
+
+        // 3. BLE stack disconnects the client.
+        bridge.ble.inject_event(BleEvent::Disconnected {
+            peer_addr: peer,
+            reason: 0x13,
+        });
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(consumed, tx.len(), "only BleDisconnected expected");
+        match msg {
+            ModemMessage::BleDisconnected(d) => {
+                assert_eq!(d.peer_addr, peer);
+            }
+            _ => panic!("expected BleDisconnected"),
+        }
+    }
+
+    /// Validates: MD-0409 AC5 — bridge forwards buffered Recv before Connected.
+    ///
+    /// When ble.rs flushes a buffered pre-auth GATT write, it emits Recv
+    /// immediately before Connected.  Verify the bridge preserves this
+    /// ordering: BLE_RECV is forwarded before BLE_CONNECTED.
+    /// Note: the actual buffering (suppressing Recv until auth) is implemented
+    /// in ble.rs; this test validates bridge ordering of the resulting events.
+    #[test]
+    fn ble_pre_auth_gatt_write_buffered() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        let gatt_data = vec![0x01, 0x00, 0x03, 0xCA, 0xFE];
+
+        // 1. PairingConfirm arrives.
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 111111 });
+        bridge.poll();
+        bridge.usb.take_tx(); // discard PairingConfirm serial msg
+
+        // 2. Gateway accepts.
+        let reply = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: true });
+        let frame = encode_modem_frame(&reply).unwrap();
+        bridge.usb.inject(&frame);
+        bridge.poll();
+        bridge.usb.take_tx(); // discard any output
+
+        // 3. BLE stack emits the buffered GATT write (Recv) followed by Connected
+        //    — this is the order ble.rs produces when flushing a pending_write.
+        bridge.ble.inject_event(BleEvent::Recv(gatt_data.clone()));
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 247,
+        });
+        bridge.poll();
+
+        // Decode both messages from the TX buffer.
+        let tx = bridge.usb.take_tx();
+        let (msg1, consumed1) = decode_modem_frame(&tx).unwrap();
+        let (msg2, consumed2) = decode_modem_frame(&tx[consumed1..]).unwrap();
+        assert_eq!(
+            consumed1 + consumed2,
+            tx.len(),
+            "exactly two messages expected in TX buffer"
+        );
+
+        // BLE_RECV must arrive before BLE_CONNECTED (buffered write flushed first).
+        match msg1 {
+            ModemMessage::BleRecv(r) => assert_eq!(r.ble_data, gatt_data),
+            _ => panic!("expected BleRecv first"),
+        }
+        match msg2 {
+            ModemMessage::BleConnected(c) => {
+                assert_eq!(c.peer_addr, peer);
+                assert_eq!(c.mtu, 247);
+            }
+            _ => panic!("expected BleConnected second"),
+        }
+    }
+
+    /// Validates: MD-0414 AC4 / T-0622 — pairing confirm without reply.
+    ///
+    /// After BLE_PAIRING_CONFIRM is forwarded and no reply is sent by the
+    /// bridge, repeated poll cycles must not auto-send a pairing reply.
+    /// If the BLE layer later emits BLE_DISCONNECTED, the bridge must
+    /// forward it and must not emit BLE_CONNECTED.
+    #[test]
+    fn ble_pairing_confirm_without_reply_forwards_later_disconnect() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+
+        // 1. PairingConfirm arrives.
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 999999 });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        assert!(
+            matches!(
+                decode_modem_frame(&tx).unwrap().0,
+                ModemMessage::BlePairingConfirm(_)
+            ),
+            "PairingConfirm must be forwarded"
+        );
+
+        // 2. No reply sent.  Multiple polls pass (simulating time passing).
+        for _ in 0..5 {
+            bridge.poll();
+        }
+        // No pairing reply should have been sent by the bridge.
+        assert!(
+            bridge.ble.pairing_replies.is_empty(),
+            "bridge must not auto-reply"
+        );
+        // check_pairing_timeout must have been called exactly once per poll cycle.
+        assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 6);
+
+        // 3. BLE stack eventually emits Disconnected (timeout triggered in ble.rs).
+        bridge.ble.inject_event(BleEvent::Disconnected {
+            peer_addr: peer,
+            reason: 0x13,
+        });
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BleDisconnected(d) => {
+                assert_eq!(d.peer_addr, peer);
+            }
+            _ => panic!("expected BleDisconnected"),
+        }
+        // No BLE_CONNECTED should have been sent at any point.
+        assert_eq!(
+            consumed,
+            tx.len(),
+            "no additional messages expected after disconnect"
+        );
+    }
+
+    /// Validates: MD-0415 — bridge stays silent while BLE is idle and forwards disconnects.
+    ///
+    /// Repeated poll cycles with no BLE events produce no serial output.
+    /// When the BLE layer later emits `Disconnected`, verify the bridge
+    /// forwards `BLE_DISCONNECTED`.
+    #[test]
+    fn ble_idle_timeout_disconnects() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01];
+
+        // 1. Multiple polls with no BLE events (client connected but idle
+        //    at the BLE stack level — no events emitted to bridge).
+        for _ in 0..10 {
+            bridge.poll();
+        }
+        // check_pairing_timeout called exactly once per cycle.
+        assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 10);
+        // No serial output during idle period.
+        assert!(bridge.usb.take_tx().is_empty());
+
+        // 2. BLE stack disconnects the idle client.
+        bridge.ble.inject_event(BleEvent::Disconnected {
+            peer_addr: peer,
+            reason: 0x08, // connection timeout
+        });
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg, consumed) = decode_modem_frame(&tx).unwrap();
+        assert_eq!(consumed, tx.len(), "only BleDisconnected expected");
+        match msg {
+            ModemMessage::BleDisconnected(d) => {
+                assert_eq!(d.peer_addr, peer);
+                assert_eq!(d.reason, 0x08);
+            }
+            _ => panic!("expected BleDisconnected"),
+        }
+    }
+
+    /// Validates: MD-0416 AC1/AC2 combined — deferred Connected with buffered write.
+    ///
+    /// Full flow: PairingConfirm → pre-auth GATT write → operator accept →
+    /// buffered Recv + Connected emitted.  Tests the complete MD-0416/MD-0409
+    /// interaction at the bridge level.
+    #[test]
+    fn ble_deferred_connected_with_buffered_write() {
+        let mut bridge = make_bridge_with_ble();
+        let peer = [0x42, 0x42, 0x42, 0x42, 0x42, 0x42];
+        let gatt_payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
+
+        // 1. PairingConfirm arrives → forwarded.
+        bridge
+            .ble
+            .inject_event(BleEvent::PairingConfirm { passkey: 222333 });
+        bridge.poll();
+        let tx = bridge.usb.take_tx();
+        let (msg, _) = decode_modem_frame(&tx).unwrap();
+        match msg {
+            ModemMessage::BlePairingConfirm(p) => assert_eq!(p.passkey, 222333),
+            _ => panic!("expected BlePairingConfirm"),
+        }
+
+        // 2. No Connected yet (deferred in ble.rs).
+        bridge.poll();
+        assert!(
+            bridge.usb.take_tx().is_empty(),
+            "no serial output before operator decision"
+        );
+
+        // 3. Operator accepts.
+        let reply = ModemMessage::BlePairingConfirmReply(BlePairingConfirmReply { accept: true });
+        bridge.usb.inject(&encode_modem_frame(&reply).unwrap());
+        bridge.poll();
+        assert_eq!(bridge.ble.pairing_replies, vec![true]);
+        bridge.usb.take_tx(); // discard
+
+        // 4. ble.rs flushes buffered write + Connected.
+        bridge
+            .ble
+            .inject_event(BleEvent::Recv(gatt_payload.clone()));
+        bridge.ble.inject_event(BleEvent::Connected {
+            peer_addr: peer,
+            mtu: 512,
+        });
+        bridge.poll();
+
+        let tx = bridge.usb.take_tx();
+        let (msg1, consumed1) = decode_modem_frame(&tx).unwrap();
+        let (msg2, consumed2) = decode_modem_frame(&tx[consumed1..]).unwrap();
+        assert_eq!(
+            consumed1 + consumed2,
+            tx.len(),
+            "exactly two messages expected in TX buffer"
+        );
+
+        match msg1 {
+            ModemMessage::BleRecv(r) => assert_eq!(r.ble_data, gatt_payload),
+            _ => panic!("expected BleRecv"),
+        }
+        match msg2 {
+            ModemMessage::BleConnected(c) => {
+                assert_eq!(c.peer_addr, peer);
+                assert_eq!(c.mtu, 512);
+            }
+            _ => panic!("expected BleConnected"),
+        }
+    }
+
     // --- T-0628: RESET clears peer table (MD-0300) ---
 
     /// Validates: T-0628 (peer table gap)

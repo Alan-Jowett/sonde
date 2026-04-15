@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 use crate::envelope::{build_envelope, parse_envelope, parse_error_body};
-use crate::error::PairingError;
+use crate::error::{format_device_address, PairingError};
 use crate::rng::RngProvider;
 use crate::transport::{enforce_lesc, BleTransport};
 use crate::types::*;
@@ -57,6 +57,7 @@ pub async fn pair_with_gateway(
     if mtu < BLE_MTU_MIN {
         transport.disconnect().await.ok();
         return Err(PairingError::MtuTooLow {
+            device: format_device_address(device_address),
             negotiated: mtu,
             required: BLE_MTU_MIN,
         });

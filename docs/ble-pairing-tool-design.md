@@ -500,7 +500,17 @@ The `save()` operation is atomic: write to a temporary file, then rename over th
 
 ### 8.1  Error categories
 
-The `PairingError` enum distinguishes three categories (PT-0500):
+The `PairingError` enum distinguishes three categories (PT-0500).
+
+Per PT-1215, device/transport-level error variants include the peer device
+address (formatted as `"AA:BB:CC:DD:EE:FF"`) so users can diagnose root
+causes without source code access.  The `device` field is `Option<String>`
+where the address may not be available (e.g., adapter-level failures before
+any device is targeted), and `String` (non-optional) where the address is
+always known at the call site (e.g., `MtuTooLow`, `DeviceNotFound`).
+
+A helper function `format_device_address(&[u8; 6]) -> String` produces the
+canonical colon-separated hex representation.
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -512,21 +522,51 @@ pub enum PairingError {
     #[error("Bluetooth is disabled — enable Bluetooth in system settings")]
     BluetoothDisabled,
 
-    #[error("device out of range — move closer and retry")]
-    DeviceOutOfRange,
+    // PT-1215: includes device address being searched for.
+    #[error("target device {device} not found during scan — check that \
+             the modem is powered on and in range")]
+    DeviceNotFound { device: String },
+
+    // PT-1215: includes device address when available.
+    #[error("device {device} out of range — move closer and retry")]
+    DeviceOutOfRange { device: Option<String> },
 
     // ── Transport-level errors ──
-    #[error("BLE connection dropped — retry the operation")]
-    ConnectionDropped,
+    // PT-1215: includes device address and stale-pairing hint (AC3).
+    #[error("BLE connection to {device} dropped — check that the modem \
+             is powered on and in range; if this persists, delete the \
+             stale Bluetooth pairing in OS settings and retry")]
+    ConnectionDropped { device: Option<String> },
 
-    #[error("MTU too low ({actual}) — device requires MTU ≥ 247")]
-    MtuTooLow { actual: u16 },
+    // PT-1215: includes device address + reason.
+    #[error("BLE connection failed ({device}): {reason} — check that \
+             the modem is powered on and not paired to another device")]
+    ConnectionFailed { device: Option<String>, reason: String },
 
-    #[error("GATT write failed — retry the operation")]
-    GattWriteFailed,
+    // PT-1215: includes device address.
+    #[error("negotiated MTU {negotiated} for {device} is below required \
+             minimum {required} — the BLE adapter or modem firmware \
+             may need updating")]
+    MtuTooLow { device: String, negotiated: u16, required: u16 },
+
+    // PT-1215: includes device address when available.
+    #[error("GATT write to {device} failed: {reason} — check the BLE \
+             connection and retry")]
+    GattWriteFailed { device: Option<String>, reason: String },
+
+    // PT-1215: includes device address when available.
+    #[error("GATT read from {device} failed: {reason} — check the BLE \
+             connection and retry")]
+    GattReadFailed { device: Option<String>, reason: String },
+
+    // PT-1215: includes device address when available.
+    #[error("indication from {device} not received before timeout — \
+             check that the modem is powered on and in range")]
+    IndicationTimeout { device: Option<String> },
 
     #[error("{operation} timed out after {timeout_secs}s — {suggestion}")]
     Timeout {
+        device: Option<String>,
         operation: &'static str,
         timeout_secs: u64,
         suggestion: &'static str,
@@ -591,6 +631,12 @@ pub enum PairingError {
     RngFailed,
 }
 ```
+
+The `Option<String>` device field renders as the formatted address when
+`Some`, or is omitted from the error message when `None`.  Each transport
+implementation stores the connected device address internally (set on
+successful `connect()`, cleared on `disconnect()`) so that error variants
+constructed during GATT operations can include the peer address.
 
 Every variant includes an actionable message for the operator (PT-0501).  No error message consists solely of a code or internal identifier.
 

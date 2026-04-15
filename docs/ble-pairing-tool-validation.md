@@ -1077,6 +1077,64 @@ TestNode {
 
 ---
 
+### T-PT-1215a  Connection error includes device address
+
+**Validates:** PT-1215 (AC 1, AC 2)
+
+**Procedure:**
+1. Configure a `MockBleTransport` that returns `ConnectionFailed` on `connect()`.
+2. Run `pair_with_gateway` with device address `[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]`.
+3. Assert: the error display string contains `"AA:BB:CC:DD:EE:FF"`.
+4. Assert: the error display string contains the failed operation and reason.
+
+---
+
+### T-PT-1215b  MTU error includes device address
+
+**Validates:** PT-1215 (AC 1, AC 2)
+
+**Procedure:**
+1. Configure a `MockBleTransport` with MTU 100 (below `BLE_MTU_MIN`).
+2. Run `pair_with_gateway` with device address `[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]`.
+3. Assert: the error is `PairingError::MtuTooLow { .. }`.
+4. Assert: the error display string contains `"11:22:33:44:55:66"`.
+5. Assert: the error display string contains `100` (negotiated) and `247` (required).
+
+---
+
+### T-PT-1215c  Connection dropped includes stale pairing hint
+
+**Validates:** PT-1215 (AC 3)
+
+**Procedure:**
+1. Construct `PairingError::ConnectionDropped { device: Some("AA:BB:CC:DD:EE:FF".into()) }`.
+2. Assert: the error display string contains `"AA:BB:CC:DD:EE:FF"`.
+3. Assert: the error display string contains `"stale"` or `"Bluetooth pairing"`.
+
+---
+
+### T-PT-1215d  Indication timeout includes device address
+
+**Validates:** PT-1215 (AC 1, AC 2)
+
+**Procedure:**
+1. Configure a `MockBleTransport` with no queued responses (causes `IndicationTimeout`).
+2. Run `pair_with_gateway` with device address `[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]`.
+3. Assert: the error is `PairingError::IndicationTimeout { .. }`.
+4. Assert: the error display string contains `"AA:BB:CC:DD:EE:FF"`.
+
+---
+
+### T-PT-1215e  format_device_address produces canonical format
+
+**Validates:** PT-1215 (AC 2)
+
+**Procedure:**
+1. Call `format_device_address(&[0x00, 0x0A, 0xFF, 0x10, 0x0B, 0xAC])`.
+2. Assert: result is `"00:0A:FF:10:0B:AC"`.
+
+---
+
 ### T-PT-1214a  Pin config included in NODE_PROVISION when provided
 
 **Validates:** PT-1214 (AC 1, 2, 4)
@@ -1485,6 +1543,11 @@ TestNode {
 | T-PT-1210 | PT-1210 | Phase transition events logged |
 | T-PT-1211 | PT-1211 | LESC pairing method logged |
 | T-PT-1212 | PT-1212 | Error context in log output |
+| T-PT-1215a | PT-1215 | Connection error includes device address |
+| T-PT-1215b | PT-1215 | MTU error includes device address |
+| T-PT-1215c | PT-1215 | Connection dropped includes stale pairing hint |
+| T-PT-1215d | PT-1215 | Indication timeout includes device address |
+| T-PT-1215e | PT-1215 | `format_device_address` produces canonical format |
 | T-PT-1214a | PT-1214 | Pin config included in NODE_PROVISION when provided |
 | T-PT-1214b | PT-1214 | No pin config in NODE_PROVISION — backward compatible |
 | T-PT-1214c | PT-1214 | Pin config with out-of-range GPIO rejected |

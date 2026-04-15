@@ -35,7 +35,7 @@ use futures::stream::StreamExt;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::error::PairingError;
+use crate::error::{format_device_address, PairingError};
 use crate::transport::BleTransport;
 use crate::types::{PairingMethod, ScannedDevice, BLE_MTU_MIN};
 
@@ -61,6 +61,8 @@ const DEFAULT_REPORTED_MTU: u16 = BLE_MTU_MIN;
 pub struct BtleplugTransport {
     adapter: Adapter,
     connected: Option<ConnectedState>,
+    /// Device address of the current connection (PT-1215).
+    connected_address: Option<String>,
 }
 
 /// State for an active BLE connection.
@@ -77,12 +79,18 @@ impl BtleplugTransport {
     pub async fn new() -> Result<Self, PairingError> {
         let manager = Manager::new()
             .await
-            .map_err(|e| PairingError::ConnectionFailed(format!("BLE manager init failed: {e}")))?;
+            .map_err(|e| PairingError::ConnectionFailed {
+                device: None,
+                reason: format!("BLE manager init failed: {e}"),
+            })?;
 
         let adapters = manager
             .adapters()
             .await
-            .map_err(|e| PairingError::ConnectionFailed(format!("failed to list adapters: {e}")))?;
+            .map_err(|e| PairingError::ConnectionFailed {
+                device: None,
+                reason: format!("failed to list adapters: {e}"),
+            })?;
 
         let adapter = adapters
             .into_iter()
@@ -92,6 +100,7 @@ impl BtleplugTransport {
         Ok(Self {
             adapter,
             connected: None,
+            connected_address: None,
         })
     }
 
@@ -101,6 +110,7 @@ impl BtleplugTransport {
     /// if any post-connect step fails (PT-1001).
     async fn post_connect_setup(
         peripheral: &Peripheral,
+        device: &Option<String>,
     ) -> Result<
         (
             Pin<Box<dyn futures::stream::Stream<Item = ValueNotification> + Send>>,
@@ -108,14 +118,23 @@ impl BtleplugTransport {
         ),
         PairingError,
     > {
-        peripheral.discover_services().await.map_err(|e| {
-            PairingError::ConnectionFailed(format!("service discovery failed: {e}"))
-        })?;
+        peripheral
+            .discover_services()
+            .await
+            .map_err(|e| PairingError::ConnectionFailed {
+                device: device.clone(),
+                reason: format!("service discovery failed: {e}"),
+            })?;
         let service_count = peripheral.services().len();
 
-        let notification_stream = peripheral.notifications().await.map_err(|e| {
-            PairingError::ConnectionFailed(format!("failed to obtain notification stream: {e}"))
-        })?;
+        let notification_stream =
+            peripheral
+                .notifications()
+                .await
+                .map_err(|e| PairingError::ConnectionFailed {
+                    device: device.clone(),
+                    reason: format!("failed to obtain notification stream: {e}"),
+                })?;
 
         Ok((notification_stream, service_count))
     }
@@ -125,6 +144,7 @@ impl BtleplugTransport {
     /// Used internally before connecting to a new device and in `Drop`.
     async fn disconnect_inner(&mut self) {
         if let Some(state) = self.connected.take() {
+            self.connected_address = None;
             for uuid in &state.subscribed {
                 if let Some(chr) = state
                     .peripheral
@@ -150,15 +170,15 @@ fn find_characteristic(
     peripheral: &Peripheral,
     service_uuid: Uuid,
     char_uuid: Uuid,
+    device: &Option<String>,
 ) -> Result<BtleCharacteristic, PairingError> {
     peripheral
         .characteristics()
         .into_iter()
         .find(|c| c.service_uuid == service_uuid && c.uuid == char_uuid)
-        .ok_or_else(|| {
-            PairingError::ConnectionFailed(format!(
-                "characteristic {char_uuid} not found in service {service_uuid}"
-            ))
+        .ok_or_else(|| PairingError::ConnectionFailed {
+            device: device.clone(),
+            reason: format!("characteristic {char_uuid} not found in service {service_uuid}"),
         })
 }
 
@@ -176,7 +196,10 @@ impl BleTransport for BtleplugTransport {
             self.adapter
                 .start_scan(filter)
                 .await
-                .map_err(|e| PairingError::ConnectionFailed(format!("scan start failed: {e}")))?;
+                .map_err(|e| PairingError::ConnectionFailed {
+                    device: None,
+                    reason: format!("scan start failed: {e}"),
+                })?;
             debug!(services = ?uuids, "BLE scan started (filter applied in discovery layer)");
             Ok(())
         })
@@ -187,7 +210,10 @@ impl BleTransport for BtleplugTransport {
             self.adapter
                 .stop_scan()
                 .await
-                .map_err(|e| PairingError::ConnectionFailed(format!("scan stop failed: {e}")))?;
+                .map_err(|e| PairingError::ConnectionFailed {
+                    device: None,
+                    reason: format!("scan stop failed: {e}"),
+                })?;
             debug!("BLE scan stopped");
             Ok(())
         })
@@ -197,9 +223,14 @@ impl BleTransport for BtleplugTransport {
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ScannedDevice>, PairingError>> + '_>> {
         Box::pin(async move {
-            let peripherals = self.adapter.peripherals().await.map_err(|e| {
-                PairingError::ConnectionFailed(format!("failed to list peripherals: {e}"))
-            })?;
+            let peripherals =
+                self.adapter
+                    .peripherals()
+                    .await
+                    .map_err(|e| PairingError::ConnectionFailed {
+                        device: None,
+                        reason: format!("failed to list peripherals: {e}"),
+                    })?;
 
             let mut devices = Vec::new();
             debug!(
@@ -257,42 +288,58 @@ impl BleTransport for BtleplugTransport {
             // If the adapter has no cached peripherals (e.g. a freshly
             // created transport), run a short scan first so WinRT populates
             // its internal device list.
-            let mut peripherals = self.adapter.peripherals().await.map_err(|e| {
-                PairingError::ConnectionFailed(format!("failed to list peripherals: {e}"))
-            })?;
+            let device_str = format_device_address(&addr);
+            let mut peripherals =
+                self.adapter
+                    .peripherals()
+                    .await
+                    .map_err(|e| PairingError::ConnectionFailed {
+                        device: Some(device_str.clone()),
+                        reason: format!("failed to list peripherals: {e}"),
+                    })?;
 
             if !peripherals.iter().any(|p| p.address() == target_addr) {
                 debug!("target not in cached peripherals, running short scan");
                 self.adapter
                     .start_scan(ScanFilter::default())
                     .await
-                    .map_err(|e| {
-                        PairingError::ConnectionFailed(format!("pre-connect scan failed: {e}"))
+                    .map_err(|e| PairingError::ConnectionFailed {
+                        device: Some(device_str.clone()),
+                        reason: format!("pre-connect scan failed: {e}"),
                     })?;
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 self.adapter.stop_scan().await.ok();
                 peripherals = self.adapter.peripherals().await.map_err(|e| {
-                    PairingError::ConnectionFailed(format!("failed to list peripherals: {e}"))
+                    PairingError::ConnectionFailed {
+                        device: Some(device_str.clone()),
+                        reason: format!("failed to list peripherals: {e}"),
+                    }
                 })?;
             }
 
             let peripheral = peripherals
                 .into_iter()
                 .find(|p| p.address() == target_addr)
-                .ok_or(PairingError::DeviceNotFound)?;
+                .ok_or(PairingError::DeviceNotFound {
+                    device: device_str.clone(),
+                })?;
 
             // Connect with a timeout (PT-1002: 30 s).
             tokio::time::timeout(CONNECT_TIMEOUT, peripheral.connect())
                 .await
                 .map_err(|_| PairingError::Timeout {
+                    device: Some(device_str.clone()),
                     operation: "BLE connect",
                     duration_secs: CONNECT_TIMEOUT.as_secs(),
                 })?
-                .map_err(|e| PairingError::ConnectionFailed(format!("connect failed: {e}")))?;
+                .map_err(|e| PairingError::ConnectionFailed {
+                    device: Some(device_str.clone()),
+                    reason: format!("connect failed: {e}"),
+                })?;
 
             // Post-connect setup — if any step fails, disconnect the
             // peripheral so we don't leak a GATT connection (PT-1001).
-            match Self::post_connect_setup(&peripheral).await {
+            match Self::post_connect_setup(&peripheral, &Some(device_str.clone())).await {
                 Ok((notification_stream, service_count)) => {
                     debug!(
                         address = %target_addr,
@@ -304,6 +351,7 @@ impl BleTransport for BtleplugTransport {
                         notification_stream,
                         subscribed: HashSet::new(),
                     });
+                    self.connected_address = Some(device_str);
                 }
                 Err(e) => {
                     let _ = peripheral.disconnect().await;
@@ -337,13 +385,20 @@ impl BleTransport for BtleplugTransport {
     ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         let data = data.to_vec();
         Box::pin(async move {
+            let device_addr = self.connected_address.clone();
             let state = self
                 .connected
                 .as_ref()
-                .ok_or(PairingError::ConnectionDropped)?;
+                .ok_or(PairingError::ConnectionDropped {
+                    device: device_addr.clone(),
+                })?;
 
-            let chr =
-                find_characteristic(&state.peripheral, to_uuid(service), to_uuid(characteristic))?;
+            let chr = find_characteristic(
+                &state.peripheral,
+                to_uuid(service),
+                to_uuid(characteristic),
+                &device_addr,
+            )?;
 
             // First write may fail with "requires authentication" on WinRT if
             // the characteristic has WRITE_ENC/WRITE_AUTHEN permissions.  This
@@ -374,14 +429,18 @@ impl BleTransport for BtleplugTransport {
                                     debug!(error = %retry_err, "retry failed, will try again");
                                 }
                                 Err(retry_err) => {
-                                    return Err(PairingError::GattWriteFailed(
-                                        retry_err.to_string(),
-                                    ));
+                                    return Err(PairingError::GattWriteFailed {
+                                        device: device_addr.clone(),
+                                        reason: retry_err.to_string(),
+                                    });
                                 }
                             }
                         }
                     } else {
-                        return Err(PairingError::GattWriteFailed(msg));
+                        return Err(PairingError::GattWriteFailed {
+                            device: device_addr.clone(),
+                            reason: msg,
+                        });
                     }
                 }
             }
@@ -402,21 +461,30 @@ impl BleTransport for BtleplugTransport {
         timeout_ms: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PairingError>> + '_>> {
         Box::pin(async move {
+            let device_addr = self.connected_address.clone();
             let state = self
                 .connected
                 .as_mut()
-                .ok_or(PairingError::ConnectionDropped)?;
+                .ok_or(PairingError::ConnectionDropped {
+                    device: device_addr.clone(),
+                })?;
 
             let char_uuid = to_uuid(characteristic);
 
             // Subscribe to indications/notifications lazily on first read.
             if !state.subscribed.contains(&char_uuid) {
-                let chr = find_characteristic(&state.peripheral, to_uuid(service), char_uuid)?;
-                state
-                    .peripheral
-                    .subscribe(&chr)
-                    .await
-                    .map_err(|e| PairingError::GattReadFailed(format!("subscribe failed: {e}")))?;
+                let chr = find_characteristic(
+                    &state.peripheral,
+                    to_uuid(service),
+                    char_uuid,
+                    &device_addr,
+                )?;
+                state.peripheral.subscribe(&chr).await.map_err(|e| {
+                    PairingError::GattReadFailed {
+                        device: device_addr.clone(),
+                        reason: format!("subscribe failed: {e}"),
+                    }
+                })?;
                 state.subscribed.insert(char_uuid);
                 debug!(characteristic = %char_uuid, "subscribed to indications");
             }
@@ -435,7 +503,11 @@ impl BleTransport for BtleplugTransport {
                             return Ok(notif.value);
                         }
                         Some(_) => continue,
-                        None => return Err(PairingError::ConnectionDropped),
+                        None => {
+                            return Err(PairingError::ConnectionDropped {
+                                device: device_addr.clone(),
+                            })
+                        }
                     }
                 }
             })
@@ -443,7 +515,9 @@ impl BleTransport for BtleplugTransport {
 
             match result {
                 Ok(inner) => inner,
-                Err(_) => Err(PairingError::IndicationTimeout),
+                Err(_) => Err(PairingError::IndicationTimeout {
+                    device: device_addr,
+                }),
             }
         })
     }

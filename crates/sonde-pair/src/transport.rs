@@ -146,10 +146,12 @@ impl BleTransport for MockBleTransport {
         }
         if self.fail_connect {
             return Box::pin(async {
-                Err(PairingError::ConnectionFailed(
-                    "Numeric Comparison pairing required but peripheral only supports Just Works"
-                        .into(),
-                ))
+                Err(PairingError::ConnectionFailed {
+                    device: None,
+                    reason:
+                        "Numeric Comparison pairing required but peripheral only supports Just Works"
+                            .into(),
+                })
             });
         }
         self.connected = true;
@@ -189,7 +191,7 @@ impl BleTransport for MockBleTransport {
         Box::pin(async move {
             match response {
                 Some(result) => result,
-                None => Err(PairingError::IndicationTimeout),
+                None => Err(PairingError::IndicationTimeout { device: None }),
             }
         })
     }

@@ -4,7 +4,7 @@
 use crate::cbor::encode_pairing_request;
 use crate::crypto;
 use crate::envelope::{build_envelope, parse_envelope, parse_error_body, parse_node_ack};
-use crate::error::PairingError;
+use crate::error::{format_device_address, PairingError};
 use crate::rng::RngProvider;
 use crate::transport::{enforce_lesc, BleTransport};
 use crate::types::*;
@@ -87,6 +87,7 @@ pub async fn provision_node(
     if mtu < BLE_MTU_MIN {
         transport.disconnect().await.ok();
         return Err(PairingError::MtuTooLow {
+            device: format_device_address(device_address),
             negotiated: mtu,
             required: BLE_MTU_MIN,
         });

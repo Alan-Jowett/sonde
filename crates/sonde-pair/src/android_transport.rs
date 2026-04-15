@@ -30,7 +30,7 @@ use jni::refs::Global;
 use jni::{jni_sig, jni_str, Env, JavaVM};
 use tracing::debug;
 
-use crate::error::PairingError;
+use crate::error::{format_device_address, PairingError};
 use crate::transport::BleTransport;
 use crate::types::{PairingMethod, ScannedDevice};
 
@@ -75,6 +75,8 @@ struct JniState {
     /// Pairing method reported by Java `BleHelper.getPairingMethod()`.
     /// 0 = Unknown, 1 = NumericComparison, 2 = JustWorks.
     pairing_method: AtomicU8,
+    /// Device address of the current BLE connection (PT-1215).
+    connected_address: std::sync::Mutex<Option<String>>,
 }
 
 // SAFETY: JavaVM is Send+Sync and GlobalRef is Send.  We only access the
@@ -98,13 +100,14 @@ impl AndroidBleTransport {
         // Use the cached class ref (resolved on the main thread which has the
         // application classloader).  Natively-attached threads only see the
         // system classloader, so find_class() for app classes would fail.
-        let cached = CACHED_HELPER_CLASS.get().ok_or_else(|| {
-            PairingError::ConnectionFailed(
-                "BleHelper class not cached — call cache_helper_class() \
-                 from JNI_OnLoad before using the transport"
+        let cached = CACHED_HELPER_CLASS
+            .get()
+            .ok_or_else(|| PairingError::ConnectionFailed {
+                device: None,
+                reason: "BleHelper class not cached — call cache_helper_class() \
+                         from JNI_OnLoad before using the transport"
                     .into(),
-            )
-        })?;
+            })?;
 
         let helper = env
             .new_object(
@@ -123,6 +126,7 @@ impl AndroidBleTransport {
                 vm,
                 helper: helper_ref,
                 pairing_method: AtomicU8::new(0),
+                connected_address: std::sync::Mutex::new(None),
             }),
         })
     }
@@ -143,11 +147,12 @@ impl AndroidBleTransport {
     pub fn cache_helper_class(env: &mut Env<'_>) -> Result<(), PairingError> {
         let cls = env
             .find_class(jni_str!("io/sonde/pair/BleHelper"))
-            .map_err(|e| {
-                PairingError::ConnectionFailed(format!(
+            .map_err(|e| PairingError::ConnectionFailed {
+                device: None,
+                reason: format!(
                     "BleHelper class not found — ensure io.sonde.pair.BleHelper \
                  is compiled into the APK: {e}"
-                ))
+                ),
             })?;
         let global = env.new_global_ref(cls).map_err(jni_err)?;
         let _ = CACHED_HELPER_CLASS.set(global);
@@ -160,17 +165,21 @@ impl AndroidBleTransport {
     /// `JNI_OnLoad`).  The application context is obtained via
     /// `ActivityThread.currentApplication()`.
     pub fn from_cached_vm() -> Result<Self, PairingError> {
-        let vm = CACHED_VM.get().ok_or_else(|| {
-            PairingError::ConnectionFailed("JavaVM not cached — call cache_vm() first".into())
-        })?;
+        let vm = CACHED_VM
+            .get()
+            .ok_or_else(|| PairingError::ConnectionFailed {
+                device: None,
+                reason: "JavaVM not cached — call cache_vm() first".into(),
+            })?;
         vm.attach_current_thread(|env| {
             let context = get_application_context(env)?;
             Self::new(env, &context)
         })
         .map_err(|e| match e {
-            PairingError::JniError(msg) => {
-                PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-            }
+            PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                device: None,
+                reason: format!("attach_current_thread: {msg}"),
+            },
             other => other,
         })
     }
@@ -193,9 +202,10 @@ impl AndroidBleTransport {
                 Ok(())
             })
             .map_err(|e| match e {
-                PairingError::JniError(msg) => {
-                    PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-                }
+                PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                    device: None,
+                    reason: format!("attach_current_thread: {msg}"),
+                },
                 other => other,
             })
     }
@@ -227,9 +237,10 @@ impl BleTransport for AndroidBleTransport {
                         Ok(())
                     })
                     .map_err(|e| match e {
-                        PairingError::JniError(msg) => {
-                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-                        }
+                        PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                            device: None,
+                            reason: format!("attach_current_thread: {msg}"),
+                        },
                         other => other,
                     })
             })
@@ -256,9 +267,10 @@ impl BleTransport for AndroidBleTransport {
                         Ok(())
                     })
                     .map_err(|e| match e {
-                        PairingError::JniError(msg) => {
-                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-                        }
+                        PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                            device: None,
+                            reason: format!("attach_current_thread: {msg}"),
+                        },
                         other => other,
                     })
             })
@@ -331,7 +343,10 @@ impl BleTransport for AndroidBleTransport {
                                 })
                                 .map_err(jni_err)?;
                             let address: [u8; 6] = addr_bytes.try_into().map_err(|_| {
-                                PairingError::ConnectionFailed("bad address length".into())
+                                PairingError::ConnectionFailed {
+                                    device: None,
+                                    reason: "bad address length".into(),
+                                }
                             })?;
 
                             // RSSI
@@ -383,9 +398,10 @@ impl BleTransport for AndroidBleTransport {
                         Ok(devices)
                     })
                     .map_err(|e| match e {
-                        PairingError::JniError(msg) => {
-                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-                        }
+                        PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                            device: None,
+                            reason: format!("attach_current_thread: {msg}"),
+                        },
                         other => other,
                     })
             })
@@ -400,10 +416,13 @@ impl BleTransport for AndroidBleTransport {
     ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>> {
         let inner = self.inner.clone();
         let addr = *address;
+        let device_str = format_device_address(&addr);
         // Reset pairing method before new connection attempt.
         self.inner.pairing_method.store(0, Ordering::Release);
+        // Clear previous connected address.
+        *self.inner.connected_address.lock().unwrap() = None;
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
+            let mtu = tokio::task::spawn_blocking(move || {
                 inner
                     .vm
                     .attach_current_thread(|env| {
@@ -461,19 +480,25 @@ impl BleTransport for AndroidBleTransport {
                         Ok(mtu as u16)
                     })
                     .map_err(|e| match e {
-                        PairingError::JniError(msg) => {
-                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-                        }
+                        PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                            device: None,
+                            reason: format!("attach_current_thread: {msg}"),
+                        },
                         other => other,
                     })
             })
             .await
-            .map_err(join_err)?
+            .map_err(join_err)?;
+            // Store connected device address on success (PT-1215).
+            *self.inner.connected_address.lock().unwrap() = Some(device_str);
+            Ok(mtu)
         })
     }
 
     fn disconnect(&mut self) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>> {
         let inner = self.inner.clone();
+        // Clear connected address on disconnect (PT-1215).
+        *self.inner.connected_address.lock().unwrap() = None;
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 inner
@@ -490,9 +515,10 @@ impl BleTransport for AndroidBleTransport {
                         Ok(())
                     })
                     .map_err(|e| match e {
-                        PairingError::JniError(msg) => {
-                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-                        }
+                        PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                            device: None,
+                            reason: format!("attach_current_thread: {msg}"),
+                        },
                         other => other,
                     })
             })
@@ -537,9 +563,10 @@ impl BleTransport for AndroidBleTransport {
                         Ok(())
                     })
                     .map_err(|e| match e {
-                        PairingError::JniError(msg) => {
-                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-                        }
+                        PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                            device: None,
+                            reason: format!("attach_current_thread: {msg}"),
+                        },
                         other => other,
                     })
             })
@@ -578,9 +605,9 @@ impl BleTransport for AndroidBleTransport {
                             )
                             .map_err(|e| {
                                 let pe = jni_exception_or(env, "readIndication", e);
-                                if let PairingError::ConnectionFailed(ref msg) = pe {
-                                    if msg.contains("indication timeout") {
-                                        return PairingError::IndicationTimeout;
+                                if let PairingError::ConnectionFailed { ref reason, .. } = pe {
+                                    if reason.contains("indication timeout") {
+                                        return PairingError::IndicationTimeout { device: None };
                                     }
                                 }
                                 pe
@@ -598,9 +625,10 @@ impl BleTransport for AndroidBleTransport {
                         Ok(bytes)
                     })
                     .map_err(|e| match e {
-                        PairingError::JniError(msg) => {
-                            PairingError::ConnectionFailed(format!("attach_current_thread: {msg}"))
-                        }
+                        PairingError::JniError(msg) => PairingError::ConnectionFailed {
+                            device: None,
+                            reason: format!("attach_current_thread: {msg}"),
+                        },
                         other => other,
                     })
             })
@@ -687,21 +715,28 @@ fn get_application_context<'a>(env: &mut Env<'a>) -> Result<JObject<'a>, Pairing
         .and_then(|v| v.l())
         .map_err(|e| jni_exception_or(env, "currentApplication", e))?;
     if app.is_null() {
-        return Err(PairingError::ConnectionFailed(
-            "ActivityThread.currentApplication() returned null".into(),
-        ));
+        return Err(PairingError::ConnectionFailed {
+            device: None,
+            reason: "ActivityThread.currentApplication() returned null".into(),
+        });
     }
     Ok(app)
 }
 
 /// Map a plain JNI error (not a Java exception) to [`PairingError`].
 fn jni_err(e: jni::errors::Error) -> PairingError {
-    PairingError::ConnectionFailed(format!("JNI error: {e}"))
+    PairingError::ConnectionFailed {
+        device: None,
+        reason: format!("JNI error: {e}"),
+    }
 }
 
 /// Map a [`tokio::task::JoinError`] to [`PairingError`].
 fn join_err(e: tokio::task::JoinError) -> PairingError {
-    PairingError::ConnectionFailed(format!("blocking task panicked: {e}"))
+    PairingError::ConnectionFailed {
+        device: None,
+        reason: format!("blocking task panicked: {e}"),
+    }
 }
 
 /// Attempt to extract the Java exception message; fall back to the raw
@@ -713,7 +748,10 @@ fn jni_exception_or(env: &mut Env<'_>, context: &str, err: jni::errors::Error) -
         }
         other => other.to_string(),
     };
-    PairingError::ConnectionFailed(format!("{context}: {detail}"))
+    PairingError::ConnectionFailed {
+        device: None,
+        reason: format!("{context}: {detail}"),
+    }
 }
 
 /// Read and clear the pending Java exception message, if any.

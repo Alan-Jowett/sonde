@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `AeadProvider` and `Sha256Provider`. There are 90 test entries with IDs up to `T-P122` across 9 sections: header, frame codec, CBOR messages, program images, integration, modem protocol, BLE envelope, diagnostics, and store-and-forward.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `AeadProvider` and `Sha256Provider`. There are 94 test entries with IDs up to `T-P126` across 9 sections: header, frame codec, CBOR messages, program images, integration, modem protocol, BLE envelope, diagnostics, and store-and-forward.
 
 ### Traceability note
 
@@ -1097,3 +1097,55 @@ impl Sha256Provider for SoftwareSha256 { /* RustCrypto sha2 */ }
 2. Decode and assert: `blob` is `None`.
 3. Manually construct CBOR bytes for an UPDATE_SCHEDULE COMMAND that includes key 10 with value `[0xFF]`.
 4. Decode and assert: the decoder ignores key 10 for non-NOP commands and returns `blob=None`.
+
+---
+
+### T-P123  APP_DATA blob at maximum size succeeds
+
+**Validates:** protocol-crate-design.md §3 (`MAX_APP_DATA_BLOB_SIZE` = 218)
+
+**Procedure:**
+1. Create `NodeMessage::AppData { blob: vec![0xAA; 218] }` (exactly `MAX_APP_DATA_BLOB_SIZE`).
+2. Encode with `encode()`.
+3. Frame with `encode_frame()`.
+4. Assert: `encode_frame()` succeeds (total ≤ 250 bytes).
+5. Decode and open the frame.
+6. Assert: decoded blob matches the original 218-byte payload.
+
+---
+
+### T-P124  APP_DATA blob exceeding frame capacity fails
+
+**Validates:** protocol-crate-design.md §3 (MAX_FRAME_SIZE = 250)
+
+**Procedure:**
+1. Create `NodeMessage::AppData { blob: vec![0xAA; MAX_PAYLOAD_SIZE] }` (223 bytes — the entire payload budget before CBOR overhead).
+2. Encode with `encode()`.
+3. Frame with `encode_frame()`.
+4. Assert: `encode_frame()` returns `EncodeError::FrameTooLarge` (CBOR map overhead pushes the frame beyond 250 bytes).
+
+---
+
+### T-P125  COMMAND NOP blob at maximum size succeeds
+
+**Validates:** protocol-crate-design.md §3 (`MAX_COMMAND_BLOB_SIZE` = 193)
+
+**Procedure:**
+1. Create `GatewayMessage::Command` with `CommandPayload::Nop`, `starting_seq=1`, `timestamp_ms=1700000000000`, and `blob=Some(vec![0xBB; 193])` (exactly `MAX_COMMAND_BLOB_SIZE`).
+2. Encode with `encode()`.
+3. Frame with `encode_frame()`.
+4. Assert: `encode_frame()` succeeds (total ≤ 250 bytes).
+5. Decode and open the frame.
+6. Assert: decoded blob matches the original 193-byte payload.
+
+---
+
+### T-P126  COMMAND NOP blob exceeding frame capacity fails
+
+**Validates:** protocol-crate-design.md §3 (MAX_FRAME_SIZE = 250)
+
+**Procedure:**
+1. Create `GatewayMessage::Command` with `CommandPayload::Nop`, `starting_seq=1`, `timestamp_ms=1700000000000`, and `blob=Some(vec![0xBB; MAX_PAYLOAD_SIZE])` (223 bytes — the entire payload budget before CBOR overhead).
+2. Encode with `encode()`.
+3. Frame with `encode_frame()`.
+4. Assert: `encode_frame()` returns `EncodeError::FrameTooLarge` (CBOR map overhead for command fields pushes the frame beyond 250 bytes).

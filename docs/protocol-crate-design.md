@@ -200,36 +200,37 @@ Returns `EncodeError::FrameTooLarge` if the result exceeds `MAX_FRAME_SIZE`.
 ### 5.3  Decoding
 
 ```rust
-#[derive(Debug)]
-pub struct DecodedFrame {
+#[derive(Debug, Clone)]
+pub struct DecodedFrame<'a> {
     pub header: FrameHeader,
-    pub ciphertext: Vec<u8>,  // encrypted CBOR bytes
-    pub tag: [u8; 16],        // AES-256-GCM authentication tag
+    pub ciphertext_and_tag: &'a [u8],  // borrowed ciphertext + 16-byte GCM tag
 }
 
-pub fn decode_frame(raw: &[u8]) -> Result<DecodedFrame, DecodeError>
+pub fn decode_frame(raw: &[u8]) -> Result<DecodedFrame<'_>, DecodeError>
 ```
 
 1. Validate `raw.len() >= MIN_FRAME_SIZE`, otherwise return `DecodeError::TooShort`.
 2. Validate `raw.len() <= MAX_FRAME_SIZE`, otherwise return `DecodeError::TooLong`.
-3. Split into header (11), ciphertext (middle), tag (last 16).
-4. Parse header.
-5. Return `DecodedFrame`. Ciphertext is **not** decrypted — caller does that after AES-GCM verification.
+3. Parse the first 11 bytes as the header.
+4. Borrow the remaining bytes (`raw[HEADER_SIZE..]`) as `ciphertext_and_tag`.
+5. Return `DecodedFrame`. The ciphertext and GCM tag are **not** split or copied — the caller passes the combined slice to [`open_frame`] for authenticated decryption.
+
+> **Design note:** `DecodedFrame` borrows directly from the input buffer (zero-copy) to avoid a heap allocation on every received frame. The lifetime parameter `'a` ties the decoded frame to the raw buffer.
 
 ### 5.4  Authenticated decryption
 
 ```rust
 pub fn open_frame(
-    frame: &DecodedFrame,
-    psk: &[u8],
-    aead: &impl AeadProvider,
-    sha: &impl Sha256Provider,
+    frame: &DecodedFrame<'_>,
+    psk: &[u8; 32],
+    aead: &(impl AeadProvider + ?Sized),
+    sha: &(impl Sha256Provider + ?Sized),
 ) -> Result<Vec<u8>, DecodeError>
 ```
 
 1. Construct the 12-byte GCM nonce: `SHA-256(psk)[0..3] ‖ frame.header.msg_type ‖ frame.header.nonce`.
 2. Serialize the header to 11 bytes (AAD).
-3. Call `aead.open(psk, &gcm_nonce, &header_bytes, &[ciphertext ‖ tag])`.
+3. Call `aead.open(psk, &gcm_nonce, &header_bytes, frame.ciphertext_and_tag)`.
 4. On success, return the decrypted plaintext CBOR bytes.
 5. On failure (tag mismatch), return `DecodeError::AuthenticationFailed`.
 
@@ -272,9 +273,6 @@ pub enum NodeMessage {
     },
     DiagRequest {
         diagnostic_type: u8,
-    },
-    PeerRequest {
-        payload: Vec<u8>,
     },
 }
 
@@ -327,10 +325,6 @@ pub enum GatewayMessage {
         rssi_dbm: i8,
         signal_quality: u8,
     },
-    PeerAck {
-        status: u8,
-        proof: Vec<u8>,
-    },
 }
 
 impl GatewayMessage {
@@ -360,6 +354,14 @@ Acknowledges a peer request.
 
 These message types use a **separate CBOR keyspace** scoped to `msg_type` 0x05/0x84 — the same pattern as diagnostic messages (§12).
 
+> **Codec bypass:** `PEER_REQUEST` and `PEER_ACK` are **not** decoded through `NodeMessage::decode()` / `GatewayMessage::decode()`. They intentionally bypass the standard message codec because:
+>
+> 1. `PEER_REQUEST` is encrypted with `phone_psk` (the BLE pairing key), not `node_psk` — the gateway must try a different PSK for these messages. `PEER_ACK` is encrypted with `node_psk` but is handled in the same pre-registration code path.
+> 2. They are pre-registration messages exchanged during BLE-mediated onboarding — the gateway handles them in a separate code path before normal session lookup.
+> 3. Consumers (gateway `engine.rs`, node `peer_request.rs`, pair `crypto.rs`) encode and decode the CBOR payload inline via raw `msg_type` check + direct AEAD/CBOR operations.
+>
+> The `sonde-protocol` crate provides the constants (`MSG_PEER_REQUEST`, `MSG_PEER_ACK`, `PEER_REQ_KEY_PAYLOAD`, `PEER_ACK_KEY_STATUS`, `PEER_ACK_KEY_PROOF`) and the frame-level AEAD codec (`encode_frame` / `decode_frame` / `open_frame`), but not typed encode/decode methods.
+
 ### 6.4  `command_type` / `CommandPayload` consistency invariant
 
 The `command_type` field (CBOR key 4) in the COMMAND payload is the authoritative wire-format discriminator. It MUST match the `CommandPayload` variant in `GatewayMessage::Command`:
@@ -382,6 +384,7 @@ Because `command_type` is fully determined by the `CommandPayload` variant, the 
 - All payloads are CBOR maps with integer keys (§3 constants).
 - Unknown keys in inbound messages are ignored (forward compatibility).
 - Missing required keys produce `DecodeError::MissingField`.
+- String fields (e.g., `firmware_version`) are validated to be ASCII-only and at most `MAX_STRING_FIELD_LEN` (32) bytes. Strings exceeding this limit or containing non-ASCII bytes produce `DecodeError::InvalidFieldType`. This limit prevents unbounded allocation from malicious or buggy peers.
 
 ---
 
@@ -458,6 +461,7 @@ Gateway uses RustCrypto `sha2`; node uses ESP-IDF hardware SHA.
 pub enum EncodeError {
     FrameTooLarge,
     CborError(String),
+    InvalidParameter(String),  // semantically invalid input (e.g., invalid BLE envelope channel)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -470,6 +474,7 @@ pub enum DecodeError {
     MissingField(u64),     // CBOR key that was expected
     InvalidFieldType(u64), // CBOR key with wrong type
     CborError(String),
+    InvalidParameter(String),  // semantically invalid input (e.g., invalid BLE envelope field)
 }
 ```
 

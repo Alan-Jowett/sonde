@@ -2316,11 +2316,130 @@ mod aead_tests {
             }
         }
     }
-}
 
-// ---------------------------------------------------------------------------
-// 11  Store-and-forward message encoding
-// ---------------------------------------------------------------------------
+    /// T-P017: Frame exactly minimum size — empty payload round-trips through
+    /// encode_frame / decode_frame / open_frame and produces a 27-byte frame.
+    #[test]
+    fn test_p017_frame_exactly_min_size() {
+        let psk = [0x42u8; 32];
+        let hdr = FrameHeader {
+            key_hint: key_hint_from_psk(&psk, &SoftwareSha256),
+            msg_type: MSG_WAKE,
+            nonce: 1,
+        };
+        let raw = encode_frame(&hdr, &[], &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        assert_eq!(
+            raw.len(),
+            MIN_FRAME_SIZE,
+            "frame with empty payload must be exactly MIN_FRAME_SIZE (27) bytes"
+        );
+        let decoded = decode_frame(&raw).unwrap();
+        let plaintext = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        assert!(plaintext.is_empty(), "decrypted payload must be empty");
+    }
+
+    /// T-P123: APP_DATA blob at MAX_APP_DATA_BLOB_SIZE (218) succeeds.
+    #[test]
+    fn test_p123_app_data_blob_at_max_succeeds() {
+        let psk = [0x42u8; 32];
+        let blob = vec![0xAA; MAX_APP_DATA_BLOB_SIZE];
+        let msg = NodeMessage::AppData { blob: blob.clone() };
+        let encoded = msg.encode().unwrap();
+        let hdr = FrameHeader {
+            key_hint: key_hint_from_psk(&psk, &SoftwareSha256),
+            msg_type: MSG_APP_DATA,
+            nonce: 1,
+        };
+        let raw = encode_frame(&hdr, &encoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        assert!(raw.len() <= MAX_FRAME_SIZE);
+        let decoded = decode_frame(&raw).unwrap();
+        let plaintext = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let decoded_msg = NodeMessage::decode(MSG_APP_DATA, &plaintext).unwrap();
+        match decoded_msg {
+            NodeMessage::AppData { blob: b } => assert_eq!(b, blob),
+            _ => panic!("expected AppData"),
+        }
+    }
+
+    /// T-P124: APP_DATA blob at MAX_PAYLOAD_SIZE (223) fails — CBOR overhead
+    /// pushes the frame beyond MAX_FRAME_SIZE.
+    #[test]
+    fn test_p124_app_data_blob_exceeding_frame_fails() {
+        let psk = [0x42u8; 32];
+        let blob = vec![0xAA; MAX_PAYLOAD_SIZE];
+        let msg = NodeMessage::AppData { blob };
+        let encoded = msg.encode().unwrap();
+        let hdr = FrameHeader {
+            key_hint: key_hint_from_psk(&psk, &SoftwareSha256),
+            msg_type: MSG_APP_DATA,
+            nonce: 1,
+        };
+        let result = encode_frame(&hdr, &encoded, &psk, &SoftwareAead, &SoftwareSha256);
+        assert!(
+            matches!(result, Err(EncodeError::FrameTooLarge)),
+            "APP_DATA blob of MAX_PAYLOAD_SIZE bytes must overflow the frame: {:?}",
+            result
+        );
+    }
+
+    /// T-P125: COMMAND NOP blob at MAX_COMMAND_BLOB_SIZE (193) succeeds.
+    #[test]
+    fn test_p125_command_nop_blob_at_max_succeeds() {
+        let psk = [0x42u8; 32];
+        let blob = vec![0xBB; MAX_COMMAND_BLOB_SIZE];
+        let msg = GatewayMessage::Command {
+            starting_seq: 1,
+            timestamp_ms: 1700000000000,
+            payload: CommandPayload::Nop,
+            blob: Some(blob.clone()),
+        };
+        let encoded = msg.encode().unwrap();
+        let hdr = FrameHeader {
+            key_hint: key_hint_from_psk(&psk, &SoftwareSha256),
+            msg_type: MSG_COMMAND,
+            nonce: 1,
+        };
+        let raw = encode_frame(&hdr, &encoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        assert!(raw.len() <= MAX_FRAME_SIZE);
+        let decoded = decode_frame(&raw).unwrap();
+        let plaintext = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let decoded_msg = GatewayMessage::decode(MSG_COMMAND, &plaintext).unwrap();
+        match decoded_msg {
+            GatewayMessage::Command {
+                blob: Some(b),
+                payload: CommandPayload::Nop,
+                ..
+            } => assert_eq!(b, blob),
+            _ => panic!("expected Command/Nop with blob"),
+        }
+    }
+
+    /// T-P126: COMMAND NOP blob at MAX_PAYLOAD_SIZE (223) fails — CBOR overhead
+    /// pushes the frame beyond MAX_FRAME_SIZE.
+    #[test]
+    fn test_p126_command_nop_blob_exceeding_frame_fails() {
+        let psk = [0x42u8; 32];
+        let blob = vec![0xBB; MAX_PAYLOAD_SIZE];
+        let msg = GatewayMessage::Command {
+            starting_seq: 1,
+            timestamp_ms: 1700000000000,
+            payload: CommandPayload::Nop,
+            blob: Some(blob),
+        };
+        let encoded = msg.encode().unwrap();
+        let hdr = FrameHeader {
+            key_hint: key_hint_from_psk(&psk, &SoftwareSha256),
+            msg_type: MSG_COMMAND,
+            nonce: 1,
+        };
+        let result = encode_frame(&hdr, &encoded, &psk, &SoftwareAead, &SoftwareSha256);
+        assert!(
+            matches!(result, Err(EncodeError::FrameTooLarge)),
+            "COMMAND NOP blob of MAX_PAYLOAD_SIZE bytes must overflow the frame: {:?}",
+            result
+        );
+    }
+}
 
 /// T-P120: WAKE with optional blob round-trip
 #[test]

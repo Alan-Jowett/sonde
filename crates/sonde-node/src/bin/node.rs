@@ -223,9 +223,8 @@ fn main() {
     // The wake cycle completed normally — no need for watchdog protection
     // during the sleep/reboot path.
     unsafe {
-        let _ = esp_idf_svc::sys::esp_task_wdt_delete(
-            esp_idf_svc::sys::xTaskGetCurrentTaskHandle(),
-        );
+        let _ =
+            esp_idf_svc::sys::esp_task_wdt_delete(esp_idf_svc::sys::xTaskGetCurrentTaskHandle());
     }
 
     match outcome {

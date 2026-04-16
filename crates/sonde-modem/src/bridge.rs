@@ -2396,7 +2396,7 @@ mod tests {
     ///   `awaiting_confirm` is false (i.e. the ATT confirmation arrived).
     /// - `simulate_confirm()` clears the flag, as `on_notify_tx` would.
 
-    /// Maximum queued indication chunks (mirrors `ble.rs::MAX_INDICATION_CHUNKS`).
+    // Maximum queued indication chunks (mirrors `ble.rs::MAX_INDICATION_CHUNKS`).
     const MOCK_MAX_INDICATION_CHUNKS: usize = 64;
 
     struct FragmentingMockBle {

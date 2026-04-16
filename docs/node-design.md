@@ -417,7 +417,7 @@ on ESP32) using a fixed-size layout:
 |-------|--------|------|-------------|
 | `magic` | 0 | 4 B | Validation sentinel `0x5155_4555` ("QUEU") |
 | `count` | 4 | 4 B | Number of occupied slots (0–10) |
-| `items[0..10]` | 8 | 10 × 224 B | Fixed-size message slots |
+| `items[0..9]` | 8 | 10 × 224 B | Fixed-size message slots |
 
 Each item slot contains a `len: u32` (4 B) followed by
 `data: [u8; 218]` (`MAX_APP_DATA_BLOB_SIZE`). Because `RtcQueueItem` uses
@@ -430,7 +430,8 @@ magic does not match or any length exceeds the maximum, the queue is
 discarded and a fresh empty queue is returned. This provides corruption
 recovery after unexpected resets without risking use of inconsistent data.
 
-The `count` field is committed last (volatile write + fence) so that a
+The `count` field is committed last (fence + volatile write) so that
+prior item writes are visible before publishing the new count, and a
 reset mid-push never leaves the queue in a valid-looking but inconsistent
 state — the same commit pattern used by `MapStorage`.
 

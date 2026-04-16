@@ -274,17 +274,18 @@ Write bytes then read bytes in a single I2C transaction (repeated start). This i
 #### `spi_transfer`
 
 ```c
-int spi_transfer(uint32_t handle, const void *tx, void *rx, uint32_t len);
+int spi_transfer(uint32_t handle, void *buf, uint32_t len);
 ```
 
-Full-duplex SPI transfer. Simultaneously transmits and receives `len` bytes.
+In-place full-duplex SPI transfer.  The buffer is read for transmit data,
+then overwritten with received data.  For receive-only transfers, fill
+the buffer with zeros before calling.
 
 | Parameter | Description |
 |---|---|
 | `handle` | SPI handle: `(bus << 16)`. |
-| `tx` | Transmit buffer (can be NULL for read-only). |
-| `rx` | Receive buffer (can be NULL for write-only). |
-| `len` | Number of bytes to transfer. |
+| `buf` | In-place buffer: read for TX, overwritten with RX. |
+| `len` | Number of bytes to transfer (1–4096). |
 
 **Returns:** `0` on success, negative on failure.
 

@@ -387,29 +387,27 @@ pub fn helper_i2c_write_read(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64
     result
 }
 
-/// Helper 4: SPI full-duplex transfer.
-/// Args: r1=handle, r2=tx_ptr (0=none), r3=rx_ptr (0=none), r4=len.
-pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 {
+/// Helper 4: In-place SPI full-duplex transfer.
+/// Args: r1=handle, r2=buf_ptr, r3=len.
+/// The buffer is read for TX, then overwritten with RX.
+pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
     let result = with_ctx(|ctx| {
         let handle = r1 as u32;
-        let tx_ptr = r2 as *const u8;
-        let rx_ptr = r3 as *mut u8;
-        let len = r4 as usize;
+        let buf_ptr = r2 as *mut u8;
+        let len = r3 as usize;
         if len == 0 || len > MAX_BUS_TRANSFER_LEN {
             return (-1i64) as u64;
         }
+        if buf_ptr.is_null() {
+            return (-1i64) as u64;
+        }
+        // SAFETY: buf_ptr is non-null (checked above), len is capped to
+        // MAX_BUS_TRANSFER_LEN, and the BPF verifier guarantees the
+        // argument points to a writable region of at least len bytes
+        // via its PtrToWritableMem + ConstSize checks.
         unsafe {
-            let tx = if tx_ptr.is_null() {
-                None
-            } else {
-                Some(core::slice::from_raw_parts(tx_ptr, len))
-            };
-            let rx = if rx_ptr.is_null() {
-                None
-            } else {
-                Some(core::slice::from_raw_parts_mut(rx_ptr, len))
-            };
-            (*ctx.hal).spi_transfer(handle, tx, rx, len) as i64 as u64
+            let buf = core::slice::from_raw_parts_mut(buf_ptr, len);
+            (*ctx.hal).spi_transfer(handle, buf) as i64 as u64
         }
     })
     .unwrap_or((-1i64) as u64);
@@ -770,7 +768,6 @@ mod tests {
         i2c_return: i32,
         gpio_states: [i32; 32],
         adc_values: [i32; 8],
-        spi_echo: bool,
     }
 
     impl TestHal {
@@ -780,7 +777,6 @@ mod tests {
                 i2c_return: 0,
                 gpio_states: [0; 32],
                 adc_values: [0; 8],
-                spi_echo: true,
             }
         }
     }
@@ -805,18 +801,12 @@ mod tests {
             buf[..copy_len].copy_from_slice(&self.i2c_read_data[..copy_len]);
             0
         }
-        fn spi_transfer(
-            &mut self,
-            _handle: u32,
-            tx: Option<&[u8]>,
-            rx: Option<&mut [u8]>,
-            _len: usize,
-        ) -> i32 {
-            if self.spi_echo {
-                if let (Some(tx_data), Some(rx_buf)) = (tx, rx) {
-                    let n = tx_data.len().min(rx_buf.len());
-                    rx_buf[..n].copy_from_slice(&tx_data[..n]);
-                }
+        fn spi_transfer(&mut self, _handle: u32, buf: &mut [u8]) -> i32 {
+            // Simulate SPI RX by flipping all bits.  This proves the helper
+            // passes the correct slice to the HAL and that the caller
+            // observes the overwritten contents.
+            for b in buf.iter_mut() {
+                *b ^= 0xFF;
             }
             0
         }
@@ -1076,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_helper_spi_transfer() {
-        // T-N602: SPI echo — rx matches tx.
+        // T-N602: SPI in-place transfer — mock XORs buffer with 0xFF.
         let mut hal = TestHal::new();
         let mut transport = TestTransport::new();
         let mut maps = MapStorage::new(4096);
@@ -1085,8 +1075,8 @@ mod tests {
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
-        let tx = [0xDE, 0xAD, 0xBE, 0xEF];
-        let mut rx = [0u8; 4];
+        let mut buf = [0xDE, 0xAD, 0xBE, 0xEF];
+        let expected_rx: [u8; 4] = [0xDE ^ 0xFF, 0xAD ^ 0xFF, 0xBE ^ 0xFF, 0xEF ^ 0xFF];
 
         with_test_context(
             &mut hal,
@@ -1102,15 +1092,16 @@ mod tests {
                 let handle = crate::hal::spi_handle(0);
                 let result = helper_spi_transfer(
                     handle as u64,
-                    tx.as_ptr() as u64,
-                    rx.as_mut_ptr() as u64,
-                    tx.len() as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                    0,
                     0,
                 );
                 assert_eq!(result, 0);
             },
         );
-        assert_eq!(rx, tx);
+        // Mock XORs each byte with 0xFF — proves HAL received the buffer.
+        assert_eq!(buf, expected_rx);
     }
 
     #[test]
@@ -1768,8 +1759,8 @@ mod tests {
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
-        let tx = [0xCA, 0xFE];
-        let mut rx = [0u8; 2];
+        let mut buf = [0xCA, 0xFE];
+        let expected: [u8; 2] = [0xCA ^ 0xFF, 0xFE ^ 0xFF];
 
         with_test_context(
             &mut hal,
@@ -1785,15 +1776,15 @@ mod tests {
                 let handle = crate::hal::spi_handle(0);
                 let result = helper_spi_transfer(
                     handle as u64,
-                    tx.as_ptr() as u64,
-                    rx.as_mut_ptr() as u64,
-                    tx.len() as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                    0,
                     0,
                 );
                 assert_eq!(result, 0, "spi_transfer must work for ephemeral programs");
             },
         );
-        assert_eq!(rx, tx);
+        assert_eq!(buf, expected, "mock XORs buffer, proving in-place write");
     }
 
     // ===================================================================
@@ -1931,8 +1922,8 @@ mod tests {
         let mut read_buf = [0u8; 2];
         let write_data = [0x55u8; 2];
         let mut wr_buf = [0u8; 2];
-        let mut spi_rx = [0u8; 2];
-        let spi_tx = [0xAA, 0xBB];
+        let mut spi_buf = [0xAA, 0xBB];
+        let spi_expected: [u8; 2] = [0xAA ^ 0xFF, 0xBB ^ 0xFF];
 
         with_test_context(
             &mut hal,
@@ -1980,17 +1971,20 @@ mod tests {
                 assert_eq!(r, 0, "i2c_write_read should succeed for ephemeral");
                 assert_eq!(wr_buf, [0x1A, 0x2B], "i2c_write_read must fill read buf");
 
-                // SPI transfer — verify echo (rx = tx)
+                // SPI transfer — verify in-place mutation
                 let spi_h = crate::hal::spi_handle(0) as u64;
                 let r = helper_spi_transfer(
                     spi_h,
-                    spi_tx.as_ptr() as u64,
-                    spi_rx.as_mut_ptr() as u64,
-                    spi_tx.len() as u64,
+                    spi_buf.as_mut_ptr() as u64,
+                    spi_buf.len() as u64,
+                    0,
                     0,
                 );
                 assert_eq!(r, 0, "spi_transfer should succeed for ephemeral");
-                assert_eq!(spi_rx, spi_tx, "spi_transfer must echo tx into rx");
+                assert_eq!(
+                    spi_buf, spi_expected,
+                    "spi_transfer: mock XORs buffer, proving HAL received correct slice"
+                );
 
                 // GPIO read — verify pin state returned
                 let r = helper_gpio_read(5, 0, 0, 0, 0);

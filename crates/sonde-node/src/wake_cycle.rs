@@ -1236,13 +1236,7 @@ mod tests {
         fn i2c_write_read(&mut self, _h: u32, _w: &[u8], _r: &mut [u8]) -> i32 {
             0
         }
-        fn spi_transfer(
-            &mut self,
-            _h: u32,
-            _tx: Option<&[u8]>,
-            _rx: Option<&mut [u8]>,
-            _l: usize,
-        ) -> i32 {
+        fn spi_transfer(&mut self, _h: u32, _buf: &mut [u8]) -> i32 {
             0
         }
         fn gpio_read(&self, _pin: u32) -> i32 {

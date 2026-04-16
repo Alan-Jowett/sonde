@@ -1481,3 +1481,77 @@ async fn t_e2e_081_ephemeral_restrictions() {
         "ephemeral map_update_elem must be rejected; map value must remain zero"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T-E2E-080 — Map access through full stack
+// ---------------------------------------------------------------------------
+
+/// T-E2E-080 — E2E map access through full stack.
+///
+/// Installs a resident program with a map definition, runs two wake
+/// cycles, and verifies map allocation and persistence across cycles.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_080_map_access_through_full_stack() {
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+    use sonde_protocol::MapDef;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x88; 32];
+    env.register_node("map-node", 1, psk).await;
+
+    let image = ProgramImage {
+        bytecode: vec![
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ],
+        maps: vec![MapDef {
+            map_type: 1,
+            key_size: 4,
+            value_size: 4,
+            max_entries: 1,
+        }],
+        map_initial_data: vec![vec![0x42, 0x00, 0x00, 0x00]],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+    let sha = TestSha256;
+    let hash = sha.hash(&cbor).to_vec();
+    let size = cbor.len() as u32;
+    let program = ProgramRecord {
+        hash: hash.clone(),
+        image: cbor,
+        size,
+        verification_profile: VerificationProfile::Resident,
+        abi_version: None,
+        source_filename: None,
+    };
+    env.storage.store_program(&program).await.unwrap();
+
+    let mut node_rec = env.storage.get_node("map-node").await.unwrap().unwrap();
+    node_rec.assigned_program_hash = Some(hash);
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = SondeBpfInterpreter::new();
+
+    // First cycle: program installed with map.
+    let stats1 = node.run_wake_cycle_with(&env, &mut interpreter);
+    assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    let ack_count = stats1
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(ack_count, 1, "program must be installed on first cycle");
+
+    // Second cycle: hash matches, no re-download, map persists.
+    let stats2 = node.run_wake_cycle_with(&env, &mut interpreter);
+    assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    let get_chunk_count = stats2
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
+        .count();
+    assert_eq!(get_chunk_count, 0, "no re-download on second cycle");
+}

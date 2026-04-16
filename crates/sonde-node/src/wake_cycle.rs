@@ -1983,7 +1983,10 @@ mod tests {
 
             // Queue must be empty after the cycle because the piggybacked
             // WAKE path consumes and clears the queued blob before step 9b.
-            assert!(async_queue.is_empty(), "queue must be empty after piggyback clear");
+            assert!(
+                async_queue.is_empty(),
+                "queue must be empty after piggyback clear"
+            );
 
             // Piggybacked blob must NOT be resent as APP_DATA.
             // Only 1 WAKE frame should be sent (no APP_DATA frames).

@@ -1092,7 +1092,7 @@ mod tests {
                 assert_eq!(result, 0);
             },
         );
-        // In-place echo: buf should still contain original data
+        // Echo mock: buffer should contain echoed RX data (RX == TX)
         assert_eq!(buf, expected);
     }
 
@@ -1975,7 +1975,7 @@ mod tests {
                 assert_eq!(r, 0, "spi_transfer should succeed for ephemeral");
                 assert_eq!(
                     spi_buf, spi_expected,
-                    "spi_transfer must preserve data in-place"
+                    "spi_transfer echo: buffer must contain echoed RX data (RX == TX)"
                 );
 
                 // GPIO read — verify pin state returned

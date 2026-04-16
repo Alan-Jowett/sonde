@@ -732,9 +732,9 @@ mod tests {
         // Verify keys are in ascending order (deterministic CBOR §4.2).
         let decoded: ciborium::Value = ciborium::from_reader(buf.as_slice()).unwrap();
         if let ciborium::Value::Map(pairs) = decoded {
-            let keys: Vec<i128> = pairs
+            let keys: Vec<u64> = pairs
                 .iter()
-                .map(|(k, _)| i128::from(k.as_integer().unwrap()))
+                .map(|(k, _)| u64::try_from(k.as_integer().unwrap()).unwrap())
                 .collect();
             assert_eq!(keys, vec![1, 2], "keys must be in ascending order");
         } else {

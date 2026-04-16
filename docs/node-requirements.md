@@ -600,7 +600,7 @@ The program image format MUST support optional initial data for each map definit
 1. A program image with `initial_data` (CBOR key 5) in a map definition is accepted and decoded correctly.
 2. After map allocation, entry 0 of each map with non-empty initial data contains the specified bytes.
 3. Maps without initial data (empty or absent key 5) remain zero-filled after allocation.
-4. Initial data whose length does not match `value_size` is silently ignored (map remains zero-filled).
+4. Initial data whose length does not match `value_size` is silently ignored (map remains zero-filled). A `debug!()` log MAY be emitted for diagnostic purposes; this log is compiled out in release builds.
 
 ---
 

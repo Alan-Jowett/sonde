@@ -301,7 +301,7 @@ If the USB-CDC connection is lost, the modem firmware MUST continue running, dis
 2. The modem does not crash or require a power cycle after USB disconnection.
 3. ESP-NOW frames arriving during USB disconnection are silently discarded (not queued and flushed on reconnect).
 
-> **Known limitation:** USB disconnection is detected reactively via I/O failure on the next `write()` or `is_connected()` check, not by a hardware interrupt. There may be a brief window between physical disconnection and detection during which a small number of ESP-NOW frames are buffered in the poll loop. These frames are discarded on the next poll cycle once the disconnection is detected.
+> **Known limitation:** USB disconnection is detected reactively via I/O failure on the next `write()` or `is_connected()` check, not by a hardware interrupt. There may be a brief window between physical disconnection and detection during which a small number of ESP-NOW frames are buffered in the ESP-NOW receive ring before `Bridge::poll()` drains it. These frames are discarded on the next poll cycle once the disconnection is detected.
 
 ---
 

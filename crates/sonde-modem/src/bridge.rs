@@ -2473,7 +2473,8 @@ mod tests {
             {
                 let mut queue = self.indication_queue.borrow_mut();
                 if queue.len() + num_chunks > MOCK_MAX_INDICATION_CHUNKS {
-                    return; // silently drop (mirrors EspBleDriver)
+                    return; // Drop the payload to mirror EspBleDriver's queue-full behavior;
+                            // the production warning log is intentionally not simulated here.
                 }
                 for chunk in data.chunks(chunk_size) {
                     queue.push_back(chunk.to_vec());

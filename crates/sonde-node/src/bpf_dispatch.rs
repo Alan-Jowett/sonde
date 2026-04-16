@@ -2297,6 +2297,41 @@ mod tests {
         assert!(transport.outbound.is_empty());
     }
 
+    /// T-N632: send_async from ephemeral program (ND-0602 AC6).
+    #[test]
+    fn test_helper_send_async_ephemeral() {
+        let mut hal = TestHal::new();
+        let mut transport = TestTransport::new();
+        let mut maps = MapStorage::new(4096);
+        let mut sleep = SleepManager::new(60, WakeReason::Scheduled);
+        let clock = TestClock(0);
+        let identity = default_identity();
+        let mut seq = 0u64;
+        let mut trace = Vec::new();
+        let data = [0x42u8; 10];
+
+        with_test_context(
+            &mut hal,
+            &mut transport,
+            &mut maps,
+            &mut sleep,
+            &clock,
+            &identity,
+            &mut seq,
+            ProgramClass::Ephemeral,
+            &mut trace,
+            || {
+                let result = helper_send_async(data.as_ptr() as u64, data.len() as u64, 0, 0, 0);
+                assert_eq!(
+                    result, 0,
+                    "send_async should succeed from ephemeral program"
+                );
+            },
+        );
+        // No outbound frames — data is queued, not sent immediately.
+        assert!(transport.outbound.is_empty());
+    }
+
     #[test]
     fn test_helper_send_async_queue_full() {
         let mut hal = TestHal::new();

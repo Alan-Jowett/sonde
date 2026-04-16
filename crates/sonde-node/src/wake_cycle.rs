@@ -767,10 +767,7 @@ where
                     log::warn!("failed to erase peer_payload after WAKE success: {}", e);
                 }
             }
-            // Clear async queue if blob was piggybacked on this WAKE.
-            if piggybacked {
-                async_queue.clear();
-            }
+            // Queue is cleared by drain() after BPF execution (step 9b).
             cmd
         }
         Err(e) => {
@@ -1917,6 +1914,148 @@ mod tests {
 
             assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
             assert!(!interp.loaded, "BPF must not run on invalid COMMAND");
+        }
+
+        /// T-N622: When one message is queued and fits, it is piggybacked on WAKE.
+        ///
+        /// Pre-loads the async queue with a single small blob, runs a NOP wake
+        /// cycle, and verifies the outbound WAKE frame contains the blob.
+        #[test]
+        fn t_n622_piggyback_verification() {
+            let psk = [0x42u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let command_frame = make_command(&psk, 1, &CommandPayload::Nop);
+            let mut transport = MockTransport::new();
+            transport.queue_response(Some(command_frame));
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let clock = MockClock;
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
+
+            // Pre-load the queue with a small blob that fits in WAKE.
+            let queued_blob = vec![0xAB; 10];
+            assert_eq!(async_queue.push(queued_blob.clone()), 0);
+
+            let outcome = run_wake_cycle(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &MockBattery,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+            // The first outbound frame is the WAKE. Decode it and verify blob.
+            assert!(!transport.outbound.is_empty(), "WAKE frame must be sent");
+            let decoded = decode_frame(&transport.outbound[0]).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_WAKE);
+            let payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
+            let wake_msg = sonde_protocol::NodeMessage::decode(MSG_WAKE, &payload).unwrap();
+            match wake_msg {
+                sonde_protocol::NodeMessage::Wake { blob, .. } => {
+                    assert_eq!(
+                        blob,
+                        Some(queued_blob),
+                        "piggybacked blob must appear in WAKE frame"
+                    );
+                }
+                _ => panic!("expected Wake message"),
+            }
+
+            // Queue must be empty after the cycle (drained in step 9b).
+            assert!(async_queue.is_empty(), "queue must be empty after drain");
+        }
+
+        /// T-N626: Async queue is cleared after send (drain empties queue).
+        ///
+        /// Pre-loads the queue with multiple messages so piggybacking is
+        /// skipped, then verifies all messages are sent as APP_DATA and the
+        /// queue is empty afterward.
+        #[test]
+        fn t_n626_queue_cleared_after_send() {
+            let psk = [0x42u8; 32];
+            let sha = crate::crypto::SoftwareSha256;
+            let aead = NodeAead;
+            let key_hint = sonde_protocol::key_hint_from_psk(&psk, &sha);
+
+            let command_frame = make_command(&psk, 1, &CommandPayload::Nop);
+            let mut transport = MockTransport::new();
+            transport.queue_response(Some(command_frame));
+
+            let mut storage = MockStorage::new().with_key(key_hint, psk);
+            let mut hal = MockHal;
+            let mut rng = MockRng(0);
+            let clock = MockClock;
+            let mut interp = MockBpfInterpreter::new();
+            let mut map_storage = MapStorage::new(DEFAULT_MAP_BUDGET);
+            let mut async_queue = AsyncQueue::new();
+
+            // Push 3 blobs — more than 1 means no piggybacking.
+            for i in 0u8..3 {
+                assert_eq!(async_queue.push(vec![i; 5]), 0);
+            }
+
+            let outcome = run_wake_cycle(
+                &mut transport,
+                &mut storage,
+                &mut hal,
+                &mut rng,
+                &clock,
+                &MockBattery,
+                &mut interp,
+                &mut map_storage,
+                &sha,
+                &aead,
+                &mut async_queue,
+            );
+
+            assert_eq!(outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+            // Outbound: 1 WAKE + 3 APP_DATA frames from the drain.
+            assert_eq!(
+                transport.outbound.len(),
+                4,
+                "expected 1 WAKE + 3 APP_DATA frames"
+            );
+
+            // Verify the WAKE frame has no piggybacked blob.
+            let decoded = decode_frame(&transport.outbound[0]).unwrap();
+            assert_eq!(decoded.header.msg_type, MSG_WAKE);
+            let payload = open_frame(&decoded, &psk, &aead, &sha).unwrap();
+            let wake_msg = sonde_protocol::NodeMessage::decode(MSG_WAKE, &payload).unwrap();
+            match wake_msg {
+                sonde_protocol::NodeMessage::Wake { blob, .. } => {
+                    assert!(blob.is_none(), "multiple queued blobs must not piggyback");
+                }
+                _ => panic!("expected Wake message"),
+            }
+
+            // Verify the 3 APP_DATA frames.
+            for idx in 1..=3 {
+                let decoded = decode_frame(&transport.outbound[idx]).unwrap();
+                assert_eq!(
+                    decoded.header.msg_type, MSG_APP_DATA,
+                    "frame {} must be APP_DATA",
+                    idx
+                );
+            }
+
+            // Queue must be empty after the cycle.
+            assert!(async_queue.is_empty(), "queue must be empty after drain");
         }
     }
 }

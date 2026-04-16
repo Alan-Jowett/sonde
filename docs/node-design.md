@@ -408,6 +408,29 @@ The queued messages are drained at the start of the next wake cycle (§4.2 step 
 
 The async queue is backed by sleep-retained RAM (RTC slow SRAM on ESP32, heap-allocated in tests) and passed to `run_wake_cycle()` as `&mut AsyncQueue`. It survives deep sleep so that blobs queued in cycle N are available for piggybacking in cycle N+1's WAKE. It is lost on reboot (RTC SRAM is cleared on power-on reset). The queue is cleared when UPDATE_PROGRAM or RUN_EPHEMERAL is received, since a new program load invalidates blobs produced by the old program. The queue capacity is a compile-time constant (10 messages, ~2.2 KB of RTC SRAM).
 
+#### RTC layout
+
+The async queue is stored in RTC slow SRAM (`#[link_section = ".rtc.data"]`
+on ESP32) using a fixed-size layout:
+
+| Field | Offset | Size | Description |
+|-------|--------|------|-------------|
+| `magic` | 0 | 4 B | Validation sentinel `0x5155_4555` ("QUEU") |
+| `count` | 4 | 4 B | Number of occupied slots (0–10) |
+| `items[0..10]` | 8 | 10 × 227 B | Fixed-size message slots |
+
+Each item slot contains a `len: u32` (4 B) followed by `data: [u8; 223]`
+(MAX_APP_DATA_BLOB_SIZE). Total layout: ~2,278 bytes.
+
+On boot, `from_rtc()` validates the magic value and item lengths. If the
+magic does not match or any length exceeds the maximum, the queue is
+discarded and a fresh empty queue is returned. This provides corruption
+recovery after unexpected resets without risking use of inconsistent data.
+
+The `count` field is committed last (volatile write + fence) so that a
+reset mid-push never leaves the queue in a valid-looking but inconsistent
+state — the same commit pattern used by `MapStorage`.
+
 ---
 
 ## 9  Map storage

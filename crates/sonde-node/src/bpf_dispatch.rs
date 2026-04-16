@@ -764,7 +764,6 @@ mod tests {
         i2c_return: i32,
         gpio_states: [i32; 32],
         adc_values: [i32; 8],
-        spi_echo: bool,
     }
 
     impl TestHal {
@@ -774,7 +773,6 @@ mod tests {
                 i2c_return: 0,
                 gpio_states: [0; 32],
                 adc_values: [0; 8],
-                spi_echo: true,
             }
         }
     }
@@ -799,12 +797,9 @@ mod tests {
             buf[..copy_len].copy_from_slice(&self.i2c_read_data[..copy_len]);
             0
         }
-        fn spi_transfer(&mut self, _handle: u32, buf: &mut [u8]) -> i32 {
-            if self.spi_echo {
-                // Echo: buf already contains tx data; for the mock, the
-                // "received" data is a copy of tx.  Since buf is in-place,
-                // the data is already there — nothing to do.
-            }
+        fn spi_transfer(&mut self, _handle: u32, _buf: &mut [u8]) -> i32 {
+            // In-place echo: buf already contains tx data and the mock
+            // treats "received" data as identical to tx, so nothing to do.
             0
         }
         fn gpio_read(&self, pin: u32) -> i32 {

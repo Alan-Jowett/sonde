@@ -18,21 +18,31 @@ use sonde_gateway::program::{ProgramError, ProgramLibrary, VerificationProfile};
 #[test]
 fn t1304_version_string_format() {
     let version = env!("CARGO_PKG_VERSION");
+    let major = env!("CARGO_PKG_VERSION_MAJOR");
+    let minor = env!("CARGO_PKG_VERSION_MINOR");
+    let patch = env!("CARGO_PKG_VERSION_PATCH");
     let commit = env!("SONDE_GIT_COMMIT");
     let full = format!("{version} ({commit})");
 
-    // Semver portion must have at least major.minor.patch.
-    let parts: Vec<&str> = version.split('.').collect();
+    // Semver core (major.minor.patch) must be numeric.
     assert!(
-        parts.len() >= 3,
-        "version must be semver (major.minor.patch), got: {version}"
+        major.chars().all(|c| c.is_ascii_digit()),
+        "major must be numeric, got: {major}"
     );
-    for part in &parts {
-        assert!(
-            part.chars().all(|c| c.is_ascii_digit()),
-            "version component must be numeric, got: {part}"
-        );
-    }
+    assert!(
+        minor.chars().all(|c| c.is_ascii_digit()),
+        "minor must be numeric, got: {minor}"
+    );
+    assert!(
+        patch.chars().all(|c| c.is_ascii_digit()),
+        "patch must be numeric, got: {patch}"
+    );
+
+    let core = format!("{major}.{minor}.{patch}");
+    assert!(
+        version.starts_with(&core),
+        "version must start with semver core {core}, got: {version}"
+    );
 
     // Commit hash must be 7 hex chars or "unknown".
     assert!(

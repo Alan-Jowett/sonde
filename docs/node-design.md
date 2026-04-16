@@ -560,20 +560,20 @@ All inbound protocol errors result in **silent discard** — the node does not s
 ## 14  Boot sequence
 
 1. ESP-IDF initialization (clocks, peripherals, wifi/ESP-NOW).
-2. Task watchdog timer is active from boot (ND-0919): `CONFIG_ESP_TASK_WDT_EN=y`, 20 s timeout, panic-on-expiry. Protects against firmware hangs (I²C lockup, radio deadlock, blocking calls) that would otherwise drain the battery indefinitely.
+2. Task watchdog timer is configured and the main task is registered (ND-0919): `CONFIG_ESP_TASK_WDT_EN=y`, 20 s timeout, panic-on-expiry. The main task calls `esp_task_wdt_add()` at startup and `esp_task_wdt_delete()` after the wake cycle completes. If the wake cycle hangs, the watchdog triggers a hardware reset.
 3. Sample pairing button GPIO for 500 ms (ND-0901).
-3. Read key partition: check magic bytes and load credentials if present. Read NVS `reg_complete` flag (§6.1a).
-4. Determine boot path (ND-0900):
+4. Read key partition: check magic bytes and load credentials if present. Read NVS `reg_complete` flag (§6.1a).
+5. Determine boot path (ND-0900):
    a. No valid PSK in key partition OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.
    b. PSK present in key partition, `reg_complete` NOT set in NVS → enter PEER_REQUEST registration (§15.7). Does not return (sleeps after listen window).
-   c. PSK present in key partition, `reg_complete` set in NVS → continue to step 5 (normal WAKE cycle).
-5. Read schedule partition: load base interval and active program partition flag.
-6. Read active program partition: decode CBOR image header, extract program hash.
+   c. PSK present in key partition, `reg_complete` set in NVS → continue to step 6 (normal WAKE cycle).
+6. Read schedule partition: load base interval and active program partition flag.
+7. Read active program partition: decode CBOR image header, extract program hash.
    - No program → set `program_hash` to zero-length.
-7. Initialize HAL (I2C buses, SPI buses, GPIO, ADC).
-8. Allocate map storage in RTC SRAM from program's map definitions (if maps survived sleep, data is preserved; if new program, zero-initialize).
-9. Resolve LDDW `src=1` instructions in bytecode to runtime map pointers.
-10. Enter wake cycle engine.
+8. Initialize HAL (I2C buses, SPI buses, GPIO, ADC).
+9. Allocate map storage in RTC SRAM from program's map definitions (if maps survived sleep, data is preserved; if new program, zero-initialize).
+10. Resolve LDDW `src=1` instructions in bytecode to runtime map pointers.
+11. Enter wake cycle engine.
 
 ---
 

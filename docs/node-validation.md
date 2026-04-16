@@ -1831,8 +1831,11 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 2. Assert: `CONFIG_ESP_TASK_WDT_EN=y` is present.
 3. Assert: `CONFIG_ESP_TASK_WDT_TIMEOUT_S=20` is present.
 4. Assert: `CONFIG_ESP_TASK_WDT_PANIC=y` is present.
+5. Inspect `node.rs` main function.
+6. Assert: `esp_task_wdt_add()` is called at startup to register the main task.
+7. Assert: `esp_task_wdt_delete()` is called after the wake cycle completes.
 
-> **Note:** Verifying that the watchdog triggers on a stalled main loop requires a special test firmware build and real hardware (similar to modem T-0304). This test validates configuration only.
+> **Note:** Verifying that the watchdog triggers on a stalled main loop requires a special test firmware build and real hardware (similar to modem T-0304). This test validates configuration and registration code only.
 
 ---
 

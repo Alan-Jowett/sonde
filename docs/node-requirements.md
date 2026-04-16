@@ -1140,7 +1140,9 @@ The node firmware MUST enable the ESP-IDF task watchdog timer on the main task. 
 1. `CONFIG_ESP_TASK_WDT_EN=y` is set in `sdkconfig.defaults`.
 2. `CONFIG_ESP_TASK_WDT_TIMEOUT_S` is set to 20 seconds.
 3. `CONFIG_ESP_TASK_WDT_PANIC=y` is set so watchdog expiry triggers a reset.
-4. The node completes a normal wake cycle (including maximum WAKE retries and chunked transfer) without triggering the watchdog.
+4. The main task is explicitly registered with the task watchdog at startup via `esp_task_wdt_add()`.
+5. The main task is deregistered from the task watchdog after the wake cycle completes, before entering deep sleep.
+6. The node completes a normal wake cycle (including maximum WAKE retries and chunked transfer) without triggering the watchdog.
 
 ---
 

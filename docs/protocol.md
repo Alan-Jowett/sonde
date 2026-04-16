@@ -582,6 +582,8 @@ The store-and-forward mechanism piggybacks application data on the mandatory WAK
 3. Gateway receives WAKE, extracts `blob`, routes to handler as a `DATA` message.
 4. Handler reply is always deferred to next cycle.
 
+> **Note:** Async blobs are opaque — the protocol does not automatically stamp them with a collection timestamp. BPF programs should embed `ctx->timestamp` in the payload so handlers can distinguish collection time from delivery time. See [bpf-environment.md §6.2](bpf-environment.md) for the recommended pattern.
+
 **Downlink (gateway → node):**
 
 1. Handler replies to the `DATA` message with a `DATA_REPLY`. For `DATA` originating from a WAKE `blob`, deferred delivery is always enforced by the gateway: the handler may omit `delivery`, and any handler-supplied `delivery` value is ignored for this path.

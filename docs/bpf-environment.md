@@ -405,6 +405,26 @@ Queue an opaque data blob for deferred delivery on the next wake cycle. Unlike `
 - The handler receives this data as a normal `DATA` message. Non-zero-length replies to piggybacked data are deferred to the next cycle (best-case two-cycle round-trip latency). Zero-length replies produce no deferred delivery.
 - If the queue is full, the BPF program may fall back to `send()` or `send_recv()` for immediate delivery.
 
+**Best practice — embed `ctx->timestamp` in async payloads:**
+
+The store-and-forward queue does not automatically stamp blobs with a collection timestamp. Delivery may be delayed across multiple wake cycles (e.g., due to RF interference or non-NOP command priority). To allow handlers to correlate measurements to when they were taken rather than when they were received, always include `ctx->timestamp` in the payload:
+
+```c
+SEC("sonde")
+int program(struct sonde_context *ctx) {
+    /* BPF is little-endian; handlers must parse accordingly. */
+    struct {
+        __u64 timestamp;
+        __u16 reading;
+    } payload = {
+        .timestamp = ctx->timestamp,
+        .reading   = /* sensor value */,
+    };
+    send_async(&payload, sizeof(payload));
+    return 0;
+}
+```
+
 **Availability:** Resident and ephemeral.
 
 ---

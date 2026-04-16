@@ -54,12 +54,12 @@ crates/sonde-pair/
     ├── discovery.rs            # BLE scan logic, device filtering, scan lifecycle
     ├── phase1.rs               # Phase 1 state machine (gateway pairing)
     ├── phase2.rs               # Phase 2 state machine (node provisioning)
-    ├── crypto.rs               # Ed25519 verification, AES-GCM, SHA-256
+    ├── crypto.rs               # AES-256-GCM, SHA-256, pairing AEAD codec
     ├── envelope.rs             # BLE message envelope (TYPE + LEN + BODY) encode/decode
     ├── cbor.rs                 # PairingRequest CBOR construction (deterministic encoding)
     ├── validation.rs           # Input validation (node_id, rf_channel, label, payload size)
     ├── transport.rs            # BleTransport trait definition
-    ├── store.rs                # PairingStore trait definition
+    ├── store.rs                # (reserved — persistence is caller-managed, see §7.1)
     └── rng.rs                  # RngProvider trait (injectable CSPRNG for testing)
 ```
 
@@ -72,7 +72,7 @@ crates/sonde-pair/
 | `sonde-node` | ❌ No node dependency (PT-0103) |
 | `sonde-modem` | ❌ No modem dependency (PT-0103) |
 | Platform BLE APIs | ❌ Not in `sonde-pair` — injected via `BleTransport` trait |
-| Platform storage APIs | ❌ Not in `sonde-pair` — injected via `PairingStore` trait |
+| Platform storage APIs | ❌ Not in `sonde-pair` — persistence is caller-managed (see §7.1) |
 
 ### 3.2  Cargo.toml dependencies
 
@@ -113,7 +113,7 @@ tracing-test = "0.2"
 │  BleTransport trait (platform-specific implementations)   │
 ├──────────────────────────────────────────────────────────┤
 │                   Persistence Layer                       │
-│  PairingStore trait (platform-specific implementations)   │
+│  Caller-managed persistence (see §7.1)                    │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -205,7 +205,7 @@ The Phase 2 state machine implements the node provisioning flow from [ble-pairin
 
 - All validation and payload construction happen *before* the BLE write.  The tool rejects invalid inputs (empty `node_id`, `rf_channel` out of range, payload > 202 bytes) without touching BLE (PT-0403, PT-0406).
 - `node_psk` is never persisted to disk.  It exists only in memory during provisioning and is zeroed via `Zeroizing` after the `NODE_PROVISION` write succeeds (PT-0408, PT-0804).
-- A fresh ephemeral X25519 keypair is generated for each provisioning attempt (PT-0405).
+- The pairing request payload is encrypted with `phone_psk` (AES-256-GCM, AAD = `"sonde-pairing-v2"`) and wrapped in a complete ESP-NOW `PEER_REQUEST` frame (PT-0402).
 
 ### 4.1  NODE_PROVISION body wire format
 
@@ -240,63 +240,84 @@ The node persists these to NVS. If the map is absent (older pairing tool), the n
 All platform-specific BLE operations are abstracted behind the `BleTransport` trait (PT-0102).  The core `sonde-pair` crate calls only this trait — no platform BLE APIs appear in protocol logic.
 
 ```rust
-/// A discovered BLE device.
+/// A BLE device discovered during scanning.
 pub struct ScannedDevice {
-    /// Opaque platform handle for connecting to this device.
-    pub id: DeviceId,
     /// BLE advertising name (e.g., "sonde-ABCD").
-    pub name: Option<String>,
-    /// Which Sonde service this device advertises.
-    pub service_type: ServiceType,
-    /// Signal strength in dBm, if available.
-    pub rssi: Option<i16>,
+    pub name: String,
+    /// 6-byte BLE device address.
+    pub address: [u8; 6],
+    /// Signal strength in dBm.
+    pub rssi: i8,
+    /// BLE service UUIDs advertised by this device.
+    pub service_uuids: Vec<u128>,
 }
 
-pub enum ServiceType {
-    GatewayPairing,
-    NodeProvisioning,
-}
-
-/// Opaque device identifier — platform-specific.
-pub type DeviceId = Vec<u8>;
-
-#[async_trait]
-pub trait BleTransport: Send + Sync {
+pub trait BleTransport {
     /// Start scanning for Sonde BLE services.
-    /// Returns a stream of discovered devices.
-    /// Filters to Gateway Pairing Service (0000FE60-…)
-    /// and Node Provisioning Service (0000FE50-…) UUIDs.
-    async fn start_scan(&self) -> Result<(), PairingError>;
+    /// `service_uuids` filters to the requested service UUIDs
+    /// (e.g., Gateway Pairing Service 0000FE60-… or
+    /// Node Provisioning Service 0000FE50-…).
+    fn start_scan(
+        &mut self,
+        service_uuids: &[u128],
+    ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>>;
 
     /// Stop an active scan.
-    async fn stop_scan(&self) -> Result<(), PairingError>;
+    fn stop_scan(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>>;
 
     /// Get the current list of discovered devices.
-    async fn get_scan_results(&self) -> Result<Vec<ScannedDevice>, PairingError>;
+    fn get_discovered_devices(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ScannedDevice>, PairingError>> + '_>>;
 
-    /// Connect to a device. Returns the negotiated ATT MTU.
-    /// The implementation handles LESC pairing: Numeric Comparison
-    /// is required for gateway connections (PT-0300) — a Just Works
-    /// fallback MUST be treated as a connection failure.  Just Works
-    /// is acceptable only for node provisioning connections.
+    /// Connect to the device at the given 6-byte BLE address.
+    /// Returns the negotiated ATT MTU.
     /// Connection establishment MUST time out after 30 seconds (PT-1002).
-    async fn connect(&self, device: &DeviceId) -> Result<u16, PairingError>;
+    fn connect(
+        &mut self,
+        address: &[u8; 6],
+    ) -> Pin<Box<dyn Future<Output = Result<u16, PairingError>> + '_>>;
 
     /// Disconnect from the currently connected device.
-    async fn disconnect(&self) -> Result<(), PairingError>;
+    fn disconnect(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>>;
 
-    /// Write data to the characteristic (Gateway Command or Node Command).
-    /// The implementation selects the correct characteristic UUID
-    /// based on the connected device's service type.
+    /// Write data to a GATT characteristic identified by service and
+    /// characteristic UUIDs.
     /// Handles Write Long fragmentation if data exceeds (MTU - 3).
-    async fn write(&self, data: &[u8]) -> Result<(), PairingError>;
+    fn write_characteristic(
+        &mut self,
+        service: u128,
+        characteristic: u128,
+        data: &[u8],
+    ) -> Pin<Box<dyn Future<Output = Result<(), PairingError>> + '_>>;
 
-    /// Wait for an indication from the connected device.
+    /// Wait for an indication on a GATT characteristic.
     /// Handles reassembly of multi-indication messages per §3.4.
     /// Returns the complete reassembled envelope.
-    async fn read_indication(&self, timeout: Duration) -> Result<Vec<u8>, PairingError>;
+    fn read_indication(
+        &mut self,
+        service: u128,
+        characteristic: u128,
+        timeout_ms: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PairingError>> + '_>>;
+
+    /// Returns the BLE pairing method observed during the last connection.
+    ///
+    /// Platform transports that can observe the negotiated pairing method
+    /// MUST return the actual method.  The application layer rejects any
+    /// method other than `NumericComparison` (PT-0904).
+    ///
+    /// Return `None` only when the OS BLE stack guarantees LESC and refuses
+    /// Just Works without app intervention (treated as "OS-enforced LESC").
+    fn pairing_method(&self) -> Option<PairingMethod>;
 }
 ```
+
+> **Note:** The trait uses `Pin<Box<dyn Future>>` return types instead of `async_trait` to avoid the `Send` bound imposed by `#[async_trait]`, which is not required for single-threaded BLE platform integrations.  Methods take `&mut self` (not `&self`) because BLE transport state is inherently mutable (connection state, scan state).
 
 ### 5.2  GATT service discovery
 
@@ -414,7 +435,7 @@ All intermediate cryptographic material is explicitly zeroed after use:
 | Material | Lifetime | Zeroed when |
 |---|---|---|
 | Node PSK (Phase 2) | Generated → `NODE_PROVISION` written | After `NODE_ACK(0x00)` received |
-| Phone PSK (Phase 1) | Received over BLE LESC → persisted | After write to PairingStore completes |
+| Phone PSK (Phase 1) | Received over BLE LESC → persisted | After caller persistence completes |
 
 All values above are wrapped in `Zeroizing<[u8; N]>` to ensure zeroing on drop even in error paths.
 
@@ -937,12 +958,12 @@ Core types, traits, and standalone modules.  Each module is testable in isolatio
 | P1.1 | `types.rs` | `PairingArtifacts`, `NodeProvisionResult`, `ScannedDevice`, `ServiceType`, `DeviceId` | Compile check |
 | P1.2 | `error.rs` | `PairingError` enum with all variants and actionable messages | Compile check |
 | P1.3 | `transport.rs` | `BleTransport` trait + `MockBleTransport` with scan results, MTU config, indication queue, write capture, error injection | T-PT-100 to T-PT-104 |
-| P1.4 | `store.rs` | `PairingStore` trait + `MockPairingStore` (in-memory, corruption simulation) | T-PT-600 to T-PT-603 |
+| P1.4 | Storage helpers | `FilePairingStore`, `DpapiPskProtector`, `SecretServicePskProtector` (concrete types, no trait — see §7.1) | T-PT-600 to T-PT-603 |
 | P1.5 | `rng.rs` | `RngProvider` trait + `OsRng` + `MockRng` for testing | T-PT-702 |
 | P1.6 | `envelope.rs` | BLE message envelope encode/decode (TYPE + LEN + BODY) | Unit tests |
 | P1.7 | `validation.rs` | `node_id`, `rf_channel`, `phone_label` validation functions | T-PT-305, T-PT-306, T-PT-208a |
 
-**Exit criteria (P1):** All foundation modules compile.  MockBleTransport, MockPairingStore, and MockRng are functional.  Validation tests pass.
+**Exit criteria (P1):** All foundation modules compile.  MockBleTransport and MockRng are functional.  Validation tests pass.
 
 ### Phase P2: Cryptography and CBOR (steps P2.1–P2.4)
 
@@ -966,7 +987,7 @@ Connect foundation and crypto into the Phase 1 and Phase 2 state machines.
 | P3.3 | `phase2.rs` | Phase 2 state machine: prerequisite check → connect → build payload → provision → ACK | T-PT-300 to T-PT-315 |
 | P3.4 | Integration | Error handling, idempotency, security, non-functional tests | T-PT-400 to T-PT-402, T-PT-500 to T-PT-502, T-PT-700 to T-PT-703, T-PT-800 to T-PT-802 |
 
-**Exit criteria (P3):** `cargo test -p sonde-pair` — all validation tests pass (T-PT-100 through T-PT-903).  Full Phase 1 and Phase 2 flows execute against MockBleTransport and MockPairingStore.  No key material appears in logs.  All error paths produce actionable messages.
+**Exit criteria (P3):** `cargo test -p sonde-pair` — all validation tests pass (T-PT-100 through T-PT-903).  Full Phase 1 and Phase 2 flows execute against MockBleTransport.  No key material appears in logs.  All error paths produce actionable messages.
 
 ### Phase P4: Platform implementations and UI (steps P4.1–P4.3)
 
@@ -1048,7 +1069,7 @@ No log event at any level may include key material: PSKs, ephemeral private keys
 | §3 Crate structure | PT-0102, PT-0103, PT-0104, PT-1004 |
 | §4 Architecture | PT-0301, PT-0303, PT-0304, PT-0400–PT-0409, PT-0502, PT-0600, PT-0601, PT-1002 |
 | §5 BLE transport | PT-0102, PT-0200–PT-0202, PT-0300, PT-0401, PT-0904, PT-1001, PT-1200 |
-| §6 Cryptographic operations | PT-0301, PT-0304, PT-0402, PT-0404, PT-0405, PT-0408, PT-0900, PT-0901, PT-0902, PT-1100–PT-1103 |
+| §6 Cryptographic operations | PT-0301, PT-0304, PT-0402, PT-0408, PT-0900, PT-0901, PT-0902, PT-1100–PT-1103 |
 | §7 Persistence | PT-0800–PT-0804 |
 | §8 Error handling | PT-0500–PT-0502, PT-1000, PT-1003 |
 | §9 Platform-specific | PT-0100, PT-0105, PT-0106, PT-0107, PT-0108, PT-0300, PT-0801, PT-0904 |

@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sonde contributors
 
+//! Cryptographic primitives for BLE pairing.
+//!
+//! This module provides AES-256-GCM encryption/decryption, SHA-256 hashing,
+//! and the two-layer AEAD codec used by the pairing protocol:
+//!
+//! - **Inner layer**: encrypts the `PairingRequest` CBOR with `phone_psk`
+//!   (AAD = `"sonde-pairing-v2"`) for domain separation.
+//! - **Outer layer**: wraps the inner ciphertext in a standard ESP-NOW AEAD
+//!   frame (header + AES-256-GCM with `phone_psk`, AAD = 11-byte header).
+//!
+//! The combined output is a complete `PEER_REQUEST` frame that the node
+//! stores and forwards verbatim over ESP-NOW to the gateway.
+//!
+//! Historical note: this module previously used HMAC-SHA256 (PT-0404) and
+//! X25519 ECDH key agreement (PT-0405) for authentication and encryption.
+//! Both were replaced by the two-layer AES-256-GCM AEAD design in issue #495.
+
 use crate::error::PairingError;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
@@ -534,5 +551,36 @@ mod aead_tests {
             sonde_protocol::encode_frame(&header, &cbor, &psk, &PairAead, &PairSha256).unwrap();
 
         assert!(decrypt_diag_reply(&frame, &wrong, 0xDEAD).is_err());
+    }
+
+    /// F-054: Verify diagnostic frame AAD binding — tampering with the header
+    /// (which serves as AAD) must cause decryption to fail.
+    #[test]
+    fn diag_reply_tampered_header_rejected() {
+        let psk = [0x42u8; 32];
+        let nonce: u64 = 0xCAFE;
+        let reply = sonde_protocol::GatewayMessage::DiagReply {
+            diagnostic_type: sonde_protocol::DIAG_TYPE_RSSI,
+            rssi_dbm: -40,
+            signal_quality: sonde_protocol::SIGNAL_QUALITY_GOOD,
+        };
+        let cbor = reply.encode().unwrap();
+        let header = sonde_protocol::FrameHeader {
+            key_hint: sonde_protocol::key_hint_from_psk(&psk, &PairSha256),
+            msg_type: sonde_protocol::MSG_DIAG_REPLY,
+            nonce,
+        };
+        let mut frame =
+            sonde_protocol::encode_frame(&header, &cbor, &psk, &PairAead, &PairSha256).unwrap();
+
+        // Tamper with the key_hint bytes in the header (bytes 0..2 of the 11-byte header).
+        // key_hint is not validated before open_frame(), so this exercises the AAD
+        // authentication path — the 11-byte header serves as AAD for AES-256-GCM.
+        frame[0] ^= 0xFF;
+
+        assert!(
+            decrypt_diag_reply(&frame, &psk, nonce).is_err(),
+            "tampered key_hint (AAD) must cause decryption failure"
+        );
     }
 }

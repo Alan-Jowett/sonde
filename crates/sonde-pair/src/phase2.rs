@@ -378,6 +378,41 @@ mod tests {
         let (_svc, _chr, data) = &transport.written[0];
         // First byte of envelope is NODE_PROVISION msg type
         assert_eq!(data[0], NODE_PROVISION);
+
+        // T-PT-311: Verify NODE_PROVISION wire format:
+        //   envelope header (TYPE[1] + LEN[2]) + body
+        //   body = node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2] ‖ encrypted_payload
+        let body = &data[3..]; // skip envelope header
+        assert!(
+            body.len() >= 37,
+            "body must be at least 37 bytes (2+32+1+2 prefix), got {}",
+            body.len()
+        );
+
+        // bytes 0..2: node_key_hint (BE u16) — derived from MockRng seed [0x42; 32]
+        let written_key_hint = u16::from_be_bytes([body[0], body[1]]);
+        let expected_key_hint = compute_key_hint(&[0x42u8; 32]);
+        assert_eq!(
+            written_key_hint, expected_key_hint,
+            "node_key_hint mismatch"
+        );
+
+        // bytes 2..34: node_psk (32 bytes from MockRng)
+        assert_eq!(&body[2..34], &[0x42u8; 32], "node_psk mismatch");
+
+        // byte 34: rf_channel
+        assert_eq!(body[34], 6, "rf_channel mismatch");
+
+        // bytes 35..37: payload_len (BE u16)
+        let payload_len = u16::from_be_bytes([body[35], body[36]]) as usize;
+        assert!(payload_len > 0, "encrypted payload must be non-empty");
+
+        // body length = 37 + payload_len (no pin config)
+        assert_eq!(
+            body.len(),
+            37 + payload_len,
+            "body length must be exactly 37 + payload_len when no pin config"
+        );
     }
 
     #[tokio::test]

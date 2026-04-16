@@ -640,6 +640,7 @@ pub fn execute_program_no_maps(
 /// # Zero-allocation guarantee
 /// All interpreter state (registers, call stack, BPF stack) lives on the
 /// Rust call stack. No `Vec`, `Box`, or heap allocation occurs.
+#[allow(unknown_lints, clippy::manual_checked_ops)] // BPF division-by-zero returns 0 per RFC 9669 §5.2
 pub unsafe fn execute_program(
     prog: &[u8],
     ctx: &mut [u8],
@@ -1122,15 +1123,14 @@ pub unsafe fn execute_program(
                 reg[dst] =
                     TaggedReg::scalar((reg[dst].value as u32 ^ reg[src].value as u32) as u64);
             }
+            ebpf::MOV32_IMM if insn.off == 0 => {
+                reg[dst] = TaggedReg::scalar(insn.imm as u32 as u64);
+            }
             ebpf::MOV32_IMM => {
-                if insn.off == 0 {
-                    reg[dst] = TaggedReg::scalar(insn.imm as u32 as u64);
-                } else {
-                    return Err(BpfError::UnknownOpcode {
-                        pc: pc - 1,
-                        opc: insn.opc,
-                    });
-                }
+                return Err(BpfError::UnknownOpcode {
+                    pc: pc - 1,
+                    opc: insn.opc,
+                });
             }
             ebpf::MOV32_REG => {
                 if insn.off == 0 {

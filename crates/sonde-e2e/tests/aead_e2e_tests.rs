@@ -680,3 +680,322 @@ async fn t_e2e_034_live_reload_handler_remove() {
         "cycle 2: no APP_DATA_REPLY expected (handler was live-removed)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T-E2E-002 — AEAD authentication round-trip (base case)
+// ---------------------------------------------------------------------------
+
+/// T-E2E-002 — AEAD authentication round-trip.
+///
+/// Validates that AES-256-GCM authentication works correctly across
+/// gateway (RustCryptoAead) and node (NodeAead) for a single wake cycle.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_002_aead_authentication_round_trip() {
+    let env = E2eTestEnv::new();
+    let psk = [0xAA; 32];
+    env.register_node("aead-002", 1, psk).await;
+
+    let mut node = NodeProxy::new(1, psk);
+    let stats = node.run_wake_cycle(&env);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert!(
+        stats.response_count > 0,
+        "gateway must respond to valid AEAD frame"
+    );
+    let rec = env.storage.get_node("aead-002").await.unwrap().unwrap();
+    assert_eq!(rec.last_battery_mv, Some(3300));
+}
+
+// ---------------------------------------------------------------------------
+// T-E2E-010 — Full program update cycle
+// ---------------------------------------------------------------------------
+
+/// T-E2E-010 — Full program update cycle with chunked transfer.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_010_full_program_update_cycle() {
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x10; 32];
+    env.register_node("prog-update", 1, psk).await;
+
+    let (program, hash) = make_send_program();
+    env.storage.store_program(&program).await.unwrap();
+
+    let mut node_rec = env.storage.get_node("prog-update").await.unwrap().unwrap();
+    node_rec.assigned_program_hash = Some(hash.clone());
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = SondeBpfInterpreter::new();
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    let get_chunk_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
+        .count();
+    assert!(get_chunk_count > 0, "node must send GET_CHUNK requests");
+
+    let ack_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(ack_count, 1, "node must send exactly one PROGRAM_ACK");
+
+    let updated = env.storage.get_node("prog-update").await.unwrap().unwrap();
+    assert_eq!(updated.current_program_hash, Some(hash));
+}
+
+// ---------------------------------------------------------------------------
+// T-E2E-011 — Program already current → NOP
+// ---------------------------------------------------------------------------
+
+/// T-E2E-011 — Program already current → NOP (no chunked transfer).
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_011_program_already_current_nop() {
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x11; 32];
+    env.register_node("prog-current", 1, psk).await;
+
+    let (program, hash) = make_send_program();
+    env.storage.store_program(&program).await.unwrap();
+
+    let mut node_rec = env.storage.get_node("prog-current").await.unwrap().unwrap();
+    node_rec.assigned_program_hash = Some(hash.clone());
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    // First cycle: node downloads and installs the program.
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = SondeBpfInterpreter::new();
+    let stats1 = node.run_wake_cycle_with(&env, &mut interpreter);
+    assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    let ack_count = stats1
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(ack_count, 1, "first cycle must install program");
+
+    // Second cycle: hashes match → NOP.
+    let stats2 = node.run_wake_cycle_with(&env, &mut interpreter);
+    assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    let get_chunk_count = stats2
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
+        .count();
+    assert_eq!(get_chunk_count, 0, "no GET_CHUNK when program is current");
+}
+
+// ---------------------------------------------------------------------------
+// T-E2E-020 — UPDATE_SCHEDULE via admin
+// ---------------------------------------------------------------------------
+
+/// T-E2E-020 — UPDATE_SCHEDULE via admin command queue.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_020_update_schedule_via_admin() {
+    use sonde_gateway::engine::PendingCommand;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x20; 32];
+    env.register_node("sched-node", 1, psk).await;
+
+    env.gateway
+        .queue_command(
+            "sched-node",
+            PendingCommand::UpdateSchedule { interval_s: 120 },
+        )
+        .await;
+
+    let mut node = NodeProxy::new(1, psk);
+    let stats = node.run_wake_cycle(&env);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 120 });
+}
+
+// ---------------------------------------------------------------------------
+// T-E2E-021 — REBOOT via admin
+// ---------------------------------------------------------------------------
+
+/// T-E2E-021 — REBOOT via admin command queue.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_021_reboot_via_admin() {
+    use sonde_gateway::engine::PendingCommand;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x21; 32];
+    env.register_node("reboot-node", 1, psk).await;
+
+    env.gateway
+        .queue_command("reboot-node", PendingCommand::Reboot)
+        .await;
+
+    let mut node = NodeProxy::new(1, psk);
+    let stats = node.run_wake_cycle(&env);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Reboot);
+}
+
+// ---------------------------------------------------------------------------
+// T-E2E-022 — RUN_EPHEMERAL via admin
+// ---------------------------------------------------------------------------
+
+/// T-E2E-022 — RUN_EPHEMERAL via admin command queue.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_022_run_ephemeral_via_admin() {
+    use sonde_gateway::engine::PendingCommand;
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x22; 32];
+    env.register_node("eph-node", 1, psk).await;
+
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = SondeBpfInterpreter::new();
+
+    // First cycle: NOP (establish session).
+    let _stats0 = node.run_wake_cycle_with(&env, &mut interpreter);
+
+    // Queue ephemeral program for second cycle.
+    let nop_bytecode = [
+        0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+        0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+    ];
+    let eph_image = ProgramImage {
+        bytecode: nop_bytecode.to_vec(),
+        maps: vec![],
+        map_initial_data: vec![],
+    };
+    let eph_cbor = eph_image.encode_deterministic().unwrap();
+    let sha = TestSha256;
+    let eph_hash = sha.hash(&eph_cbor).to_vec();
+    let eph_program = ProgramRecord {
+        hash: eph_hash.clone(),
+        image: eph_cbor.clone(),
+        size: eph_cbor.len() as u32,
+        verification_profile: VerificationProfile::Ephemeral,
+        abi_version: None,
+        source_filename: None,
+    };
+    env.storage.store_program(&eph_program).await.unwrap();
+
+    env.gateway
+        .queue_command(
+            "eph-node",
+            PendingCommand::RunEphemeral {
+                program_hash: eph_hash,
+            },
+        )
+        .await;
+
+    // Second cycle: RunEphemeral command dispatched.
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    let get_chunk_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
+        .count();
+    assert!(get_chunk_count > 0, "ephemeral program must be downloaded");
+
+    // Verify PROGRAM_ACK sent (transfer completed).
+    let ack_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(
+        ack_count, 1,
+        "ephemeral transfer must complete with PROGRAM_ACK"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T-E2E-040 — Unknown node silent discard
+// ---------------------------------------------------------------------------
+
+/// T-E2E-040 — Unknown node silent discard.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_040_unknown_node_silent_discard() {
+    let env = E2eTestEnv::new();
+    let psk = [0x40; 32];
+    let mut node = NodeProxy::new(99, psk);
+    let stats = node.run_wake_cycle(&env);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    assert_eq!(stats.response_count, 0, "gateway must not respond");
+}
+
+// ---------------------------------------------------------------------------
+// T-E2E-041 — Sequence number enforcement
+// ---------------------------------------------------------------------------
+
+/// T-E2E-041 — Sequence number enforcement in chunked transfer.
+#[tokio::test(flavor = "multi_thread")]
+async fn t_e2e_041_sequence_number_enforcement() {
+    use sonde_node::sonde_bpf_adapter::SondeBpfInterpreter;
+
+    let env = E2eTestEnv::new();
+    let psk = [0x41; 32];
+    env.register_node("seq-node", 1, psk).await;
+
+    // Use a large program (200 instructions: 199 NOPs + exit = 1600 bytes)
+    // to force multiple chunks. DEFAULT_CHUNK_SIZE is 128 bytes.
+    let mut large_bytecode = Vec::new();
+    for _ in 0..199 {
+        // mov r0, 0 (NOP-equivalent)
+        large_bytecode.extend_from_slice(&[0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    }
+    // exit
+    large_bytecode.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+    let (program, hash) = make_program_from_bytecode(&large_bytecode);
+    env.storage.store_program(&program).await.unwrap();
+
+    let mut node_rec = env.storage.get_node("seq-node").await.unwrap().unwrap();
+    node_rec.assigned_program_hash = Some(hash);
+    env.storage.upsert_node(&node_rec).await.unwrap();
+
+    let mut node = NodeProxy::new(1, psk);
+    let mut interpreter = SondeBpfInterpreter::new();
+    let stats = node.run_wake_cycle_with(&env, &mut interpreter);
+
+    assert_eq!(stats.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+
+    let get_chunk_nonces: Vec<u64> = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
+        .map(|(_, n)| *n)
+        .collect();
+    assert!(
+        get_chunk_nonces.len() >= 2,
+        "program must require at least 2 chunks, got {}",
+        get_chunk_nonces.len()
+    );
+    for window in get_chunk_nonces.windows(2) {
+        assert_eq!(
+            window[1],
+            window[0] + 1,
+            "GET_CHUNK nonces must increment: {:?}",
+            get_chunk_nonces
+        );
+    }
+
+    let ack_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(ack_count, 1, "transfer must complete with PROGRAM_ACK");
+}

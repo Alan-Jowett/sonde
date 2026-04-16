@@ -12,7 +12,7 @@ use clap::Subcommand;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-use sonde_gateway::engine::{Gateway, PendingCommand};
+use sonde_gateway::engine::{resolve_espnow_channel, Gateway, PendingCommand};
 use sonde_gateway::handler::{load_handler_configs, HandlerRouter};
 use sonde_gateway::key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeyProviderError};
 use sonde_gateway::modem::UsbEspNowTransport;
@@ -289,17 +289,9 @@ async fn run_gateway(
     // 2b. Seed or load persisted ESP-NOW channel (GW-0808).
     //     If the database already has a channel, use it (ignoring --channel).
     //     Otherwise, seed the database with the CLI --channel value.
-    let persisted_channel: u8 = match storage.get_config("espnow_channel").await? {
-        Some(v) => v
-            .parse::<u8>()
-            .map_err(|e| format!("invalid persisted espnow_channel `{v}`: {e}"))?,
-        None => {
-            storage
-                .set_config("espnow_channel", &cli.channel.to_string())
-                .await?;
-            cli.channel
-        }
-    };
+    let persisted_channel: u8 = resolve_espnow_channel(&*storage, cli.channel)
+        .await
+        .map_err(|e| format!("ESP-NOW channel resolution failed: {e}"))?;
     info!(
         persisted_channel,
         cli_channel = cli.channel,

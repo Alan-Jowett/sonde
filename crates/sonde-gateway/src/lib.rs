@@ -23,7 +23,7 @@ pub mod transport;
 pub use admin::AdminService;
 pub use aead::GatewayAead;
 pub use crypto::RustCryptoSha256;
-pub use engine::{Gateway, PendingCommand};
+pub use engine::{resolve_espnow_channel, Gateway, PendingCommand};
 pub use gateway_identity::{GatewayIdentity, IdentityError};
 pub use handler::{
     load_handler_configs, HandlerConfig, HandlerConfigError, HandlerMessage, HandlerRouter,

@@ -75,6 +75,7 @@ pub async fn modem_startup(server: &mut DuplexStream, channel: u8) {
 }
 
 /// Create a transport + mock modem server with completed startup handshake.
+#[allow(dead_code)]
 pub async fn create_transport_and_server(channel: u8) -> (UsbEspNowTransport, DuplexStream) {
     let (client, mut server) = duplex(4096);
 

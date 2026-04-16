@@ -1544,6 +1544,18 @@ async fn t_e2e_080_map_access_through_full_stack() {
         .count();
     assert_eq!(ack_count, 1, "program must be installed on first cycle");
 
+    // Verify map was allocated with initial data.
+    assert!(
+        node.map_storage.get(0).is_some(),
+        "map 0 must be allocated after program install"
+    );
+    let map = node.map_storage.get(0).unwrap();
+    assert_eq!(
+        map.lookup(0).unwrap(),
+        &[0x42, 0x00, 0x00, 0x00],
+        "map 0 entry 0 must contain initial data"
+    );
+
     // Second cycle: hash matches, no re-download, map persists.
     let stats2 = node.run_wake_cycle_with(&env, &mut interpreter);
     assert_eq!(stats2.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
@@ -1554,4 +1566,16 @@ async fn t_e2e_080_map_access_through_full_stack() {
         .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
         .count();
     assert_eq!(get_chunk_count, 0, "no re-download on second cycle");
+
+    // Map data persists across cycles.
+    assert!(
+        node.map_storage.get(0).is_some(),
+        "map 0 must persist across wake cycles"
+    );
+    let map2 = node.map_storage.get(0).unwrap();
+    assert_eq!(
+        map2.lookup(0).unwrap(),
+        &[0x42, 0x00, 0x00, 0x00],
+        "map initial data must persist across cycles"
+    );
 }

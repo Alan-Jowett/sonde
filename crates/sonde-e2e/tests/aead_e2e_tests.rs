@@ -932,7 +932,17 @@ async fn t_e2e_041_sequence_number_enforcement() {
     let psk = [0x41; 32];
     env.register_node("seq-node", 1, psk).await;
 
-    let (program, hash) = make_send_program();
+    // Use a large program (200+ NOP instructions) to force multiple chunks.
+    // DEFAULT_CHUNK_SIZE is 128 bytes; this bytecode is 200*8 = 1600 bytes.
+    let mut large_bytecode = Vec::new();
+    for _ in 0..199 {
+        // mov r0, 0 (NOP-equivalent)
+        large_bytecode.extend_from_slice(&[0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    }
+    // exit
+    large_bytecode.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+    let (program, hash) = make_program_from_bytecode(&large_bytecode);
     env.storage.store_program(&program).await.unwrap();
 
     let mut node_rec = env.storage.get_node("seq-node").await.unwrap().unwrap();
@@ -951,7 +961,11 @@ async fn t_e2e_041_sequence_number_enforcement() {
         .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
         .map(|(_, n)| *n)
         .collect();
-    assert!(!get_chunk_nonces.is_empty(), "must have GET_CHUNK frames");
+    assert!(
+        get_chunk_nonces.len() >= 2,
+        "program must require at least 2 chunks, got {}",
+        get_chunk_nonces.len()
+    );
     for window in get_chunk_nonces.windows(2) {
         assert_eq!(
             window[1],

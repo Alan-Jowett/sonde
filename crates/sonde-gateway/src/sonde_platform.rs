@@ -532,4 +532,27 @@ mod tests {
         assert_eq!(found.value_size, 128);
         assert_eq!(found.map_type, 0);
     }
+
+    /// Verify `spi_transfer` (helper #4) has a verifiable ptr+size pairing.
+    ///
+    /// The old signature `(handle, *tx, *rx, len)` was unverifiable because
+    /// `ConstSize` only binds to the immediately preceding pointer, leaving
+    /// `*tx` unchecked.  The new in-place signature `(handle, *buf, len)`
+    /// places `PtrToWritableMem` immediately before `ConstSize`.
+    #[test]
+    fn spi_transfer_prototype_has_ptr_size_pair() {
+        let platform = SondePlatform::new();
+        let proto = platform.get_helper_prototype(4);
+        assert_eq!(proto.name, "spi_transfer");
+        assert_eq!(
+            proto.argument_type[1],
+            Arg::PtrToWritableMem,
+            "arg 2 must be PtrToWritableMem (in-place buffer)"
+        );
+        assert_eq!(
+            proto.argument_type[2],
+            Arg::ConstSize,
+            "arg 3 must be ConstSize (bound to preceding ptr)"
+        );
+    }
 }

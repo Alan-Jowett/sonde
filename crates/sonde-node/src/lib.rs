@@ -37,7 +37,7 @@ pub mod traits;
 pub mod wake_cycle;
 
 /// Firmware ABI version. Bumped when the helper API changes.
-pub const FIRMWARE_ABI_VERSION: u32 = 1;
+pub const FIRMWARE_ABI_VERSION: u32 = 2;
 
 /// Shared log-capture utility for tests (ND-1006, ND-1010).
 ///

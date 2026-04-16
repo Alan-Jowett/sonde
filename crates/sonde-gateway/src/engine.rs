@@ -174,17 +174,32 @@ pub enum PendingCommand {
 ///
 /// # Errors
 ///
-/// Returns an error if storage I/O fails or the persisted value is not a
-/// valid `u8`.
+/// Returns an error if storage I/O fails, if the CLI-supplied default is
+/// outside the valid WiFi channel range `1..=14`, if the persisted value is
+/// not a valid `u8`, or if the persisted value is outside `1..=14`.
 pub async fn resolve_espnow_channel(storage: &dyn Storage, cli_channel: u8) -> Result<u8, String> {
+    if !(1..=14).contains(&cli_channel) {
+        return Err(format!(
+            "invalid CLI espnow_channel `{cli_channel}`: expected 1..=14"
+        ));
+    }
+
     match storage
         .get_config("espnow_channel")
         .await
         .map_err(|e| format!("failed to read espnow_channel: {e}"))?
     {
-        Some(v) => v
-            .parse::<u8>()
-            .map_err(|e| format!("invalid persisted espnow_channel `{v}`: {e}")),
+        Some(v) => {
+            let channel = v
+                .parse::<u8>()
+                .map_err(|e| format!("invalid persisted espnow_channel `{v}`: {e}"))?;
+            if !(1..=14).contains(&channel) {
+                return Err(format!(
+                    "persisted espnow_channel `{channel}` out of range: expected 1..=14"
+                ));
+            }
+            Ok(channel)
+        }
         None => {
             storage
                 .set_config("espnow_channel", &cli_channel.to_string())

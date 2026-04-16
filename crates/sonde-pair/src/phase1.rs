@@ -110,7 +110,10 @@ async fn do_pair_with_gateway(
         .await?;
 
     // Step 4: Read indication (timeout per PT-1002)
-    trace!("waiting for PHONE_REGISTERED indication (30 s timeout)");
+    trace!(
+        timeout_ms = PHONE_REGISTERED_TIMEOUT_MS,
+        "waiting for PHONE_REGISTERED indication"
+    );
     let response = transport
         .read_indication(
             GATEWAY_SERVICE_UUID,

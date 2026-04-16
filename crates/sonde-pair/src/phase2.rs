@@ -184,7 +184,10 @@ async fn do_provision_node(
         .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &message)
         .await?;
 
-    trace!("waiting for NODE_ACK indication (5 s timeout)");
+    trace!(
+        timeout_ms = NODE_ACK_TIMEOUT_MS,
+        "waiting for NODE_ACK indication"
+    );
     let response = transport
         .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, NODE_ACK_TIMEOUT_MS)
         .await?;

@@ -241,7 +241,9 @@ At program start, three registers carry pointer provenance:
 | R10 | `stack.as_ptr() as u64 + STACK_SIZE as u64` | `Some(Region { tag: Stack, base: stack.as_ptr() as u64, end: (stack.as_ptr() as u64).checked_add(STACK_SIZE as u64).unwrap() })` |
 | R0, R3–R9 | 0 | `None` (scalar) |
 
-> **Overflow safety:** All region `end` values must be computed with `checked_add`.  An overflow indicates a logic error in the caller (impossible memory layout) and should panic or return an error before execution begins.
+> **Overflow safety:** All region `end` values must be computed with `checked_add`.  An overflow indicates a logic error in the caller (impossible memory layout) and the interpreter panics via `.expect()` / `.unwrap()` before execution begins.  This is intentional — a memory layout that wraps past `u64::MAX` violates fundamental safety invariants and cannot be handled gracefully.
+
+> **Empty context:** When `ctx.is_empty()`, R1 is tagged `None` (scalar).  A `None`-tagged register is non-dereferenceable — any load or store through R1 will return `BpfError::NonDereferenceableAccess`.  Programs that need context data must be provided a non-empty context buffer.
 
 ### 4.2  LD_DW_IMM (64-bit immediate load)
 
@@ -251,6 +253,20 @@ At program start, three registers carry pointer provenance:
 | 1 | Map descriptor relocation | `MapDescriptor { map_index: imm as u32 }` (after rejecting negative `imm`) |
 
 For src=1, the interpreter resolves the map index and loads the relocated map pointer.  The `imm` field is a signed `i32` in the instruction encoding (see `ebpf.rs`); negative values are invalid and must be rejected with `InvalidMapIndex` before any cast or indexing.  After validation, the non-negative `imm` is used as the index into the `maps` slice.  The result is tagged `MapDescriptor` — it is an opaque handle, valid only as an argument to `map_lookup_elem` or `map_update_elem`.  It is **not dereferenceable**.
+
+**Bounds-check pseudocode for src=1:**
+
+```
+let imm = insn.imm;                          // i32 from instruction encoding
+if imm < 0 {
+    return Err(InvalidMapIndex { pc, index: imm as i64 });
+}
+let index = imm as usize;
+if index >= maps.len() {
+    return Err(InvalidMapIndex { pc, index: imm as i64 });
+}
+// index is valid — proceed with relocation
+```
 
 ### 4.3  ALU operations and pointer arithmetic
 
@@ -280,7 +296,7 @@ BPF ALU instructions have the form `dst = dst OP src` (or `dst = dst OP imm`).  
 
 When a pointer participates in a valid ADD or SUB, the result inherits the same `region` (same `tag`, `base`, and `end`).  The `value` changes but the valid bounds do not — so a subsequent dereference will still be checked against the original region.
 
-**32-bit ALU (ALU32):** 32-bit operations always produce scalars.  A pointer that passes through a 32-bit ALU instruction loses its tag because the upper 32 bits are zeroed, invalidating the address.
+**32-bit ALU (ALU32):** All 32-bit ALU operations unconditionally clear the pointer tag on the destination register and produce a scalar result.  This applies regardless of the operation type or the tags of the operands — even `MOV32` clears the tag.  A pointer that passes through a 32-bit ALU instruction loses its tag because the upper 32 bits are zeroed, invalidating the address.
 
 ### 4.4  Load and store instructions
 
@@ -330,7 +346,7 @@ Jump instructions compare `reg[dst].value` against `reg[src].value` (or an immed
 **BPF-to-BPF call (src=1):**
 
 1. Save R6–R9 values *and* tags in the call frame (see §7).
-2. R1–R5 are **retained** — they are the callee's arguments and must keep their provenance.  (The caller treats them as clobbered by convention, but the interpreter does not force-clear them on entry.)
+2. R1–R5 values **and tags** are **retained** — they are the callee's arguments and must keep their provenance (including any pointer region metadata).  The caller treats them as clobbered by convention, but the interpreter does not force-clear them on entry.
 3. Adjust R10 (frame pointer) — the Stack tag is preserved with the same `base`/`end` (the entire stack is one region).
 
 **EXIT:**

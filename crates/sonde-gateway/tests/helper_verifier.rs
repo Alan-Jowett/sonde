@@ -147,12 +147,10 @@ fn verify_helper(helper_id: i32, helper_name: &str, insns: &[[u8; 8]]) {
     let bytecode = assemble(insns);
     let elf = make_sonde_elf(&bytecode);
     let lib = ProgramLibrary::new();
-    let result = lib.ingest_elf(&elf, VerificationProfile::Resident);
-    assert!(
-        result.is_ok(),
-        "helper {helper_id} ({helper_name}) verification failed: {:?}",
-        result.err()
-    );
+    match lib.ingest_elf(&elf, VerificationProfile::Resident) {
+        Ok(_) => {}
+        Err(err) => panic!("helper {helper_id} ({helper_name}) verification failed: {err:?}"),
+    }
 }
 
 // ===========================================================================

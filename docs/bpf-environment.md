@@ -407,11 +407,12 @@ Queue an opaque data blob for deferred delivery on the next wake cycle. Unlike `
 
 **Best practice — embed `ctx->timestamp` in async payloads:**
 
-The store-and-forward queue does not automatically stamp blobs with a collection timestamp. Delivery may be delayed across multiple wake cycles (e.g., due to RF interference or non-NOP command priority). To allow handlers to correlate measurements to when they were taken rather than when they were received, always include `ctx->timestamp` in the serialized payload:
+The store-and-forward queue does not automatically stamp blobs with a collection timestamp. Delivery may be delayed across multiple wake cycles (e.g., due to RF interference or non-NOP command priority). To allow handlers to correlate measurements to when they were taken rather than when they were received, always include `ctx->timestamp` in the payload:
 
 ```c
 SEC("sonde")
 int program(struct sonde_context *ctx) {
+    /* BPF is little-endian; handlers must parse accordingly. */
     struct {
         __u64 timestamp;
         __u16 reading;

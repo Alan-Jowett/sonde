@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_helper_spi_transfer() {
-        // T-N602: SPI echo — rx matches tx.
+        // T-N602: SPI in-place transfer — mock XORs buffer with 0xFF.
         let mut hal = TestHal::new();
         let mut transport = TestTransport::new();
         let mut maps = MapStorage::new(4096);
@@ -1971,7 +1971,7 @@ mod tests {
                 assert_eq!(r, 0, "i2c_write_read should succeed for ephemeral");
                 assert_eq!(wr_buf, [0x1A, 0x2B], "i2c_write_read must fill read buf");
 
-                // SPI transfer — verify in-place echo
+                // SPI transfer — verify in-place mutation
                 let spi_h = crate::hal::spi_handle(0) as u64;
                 let r = helper_spi_transfer(
                     spi_h,

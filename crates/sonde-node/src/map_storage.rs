@@ -528,6 +528,13 @@ impl MapStorage {
             if let Some(map) = self.maps.get_mut(i) {
                 if data.len() == map.def.value_size as usize {
                     let _ = map.update(0, data);
+                } else {
+                    log::debug!(
+                        "map[{}]: skipping initial data (got {} bytes, expected {})",
+                        i,
+                        data.len(),
+                        map.def.value_size
+                    );
                 }
             }
         }

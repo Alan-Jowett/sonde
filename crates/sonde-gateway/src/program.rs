@@ -1309,6 +1309,124 @@ mod tests {
         assert!(sections.is_empty());
     }
 
+    /// GW-0405 criterion 5: explicit `.maps` sections have no initial data.
+    ///
+    /// `extract_global_section_data` only captures global variable sections
+    /// (`.rodata`, `.data`, `.bss`).  An explicit `.maps` section MUST NOT
+    /// appear in the result — map definitions carry structure, not initial
+    /// data.
+    #[test]
+    fn extract_global_section_data_maps_no_initial_data() {
+        // Build an ELF with both `.maps` and `.rodata` sections.
+        // Only `.rodata` should appear in the extracted initial data.
+        let rodata_content = vec![0xDE, 0xAD];
+        let bpf_code: [u8; 16] = [
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ];
+
+        // One BPF_MAP_TYPE_ARRAY map definition (7 × u32 LE = 28 bytes).
+        let mut map_def = Vec::with_capacity(28);
+        map_def.extend_from_slice(&1u32.to_le_bytes()); // map_type = ARRAY
+        map_def.extend_from_slice(&4u32.to_le_bytes()); // key_size
+        map_def.extend_from_slice(&4u32.to_le_bytes()); // value_size
+        map_def.extend_from_slice(&1u32.to_le_bytes()); // max_entries
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // map_flags
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // inner_map_idx
+        map_def.extend_from_slice(&0u32.to_le_bytes()); // numa_node
+
+        // shstrtab: "\0.text\0.maps\0.rodata\0.shstrtab\0"
+        //   offsets:  0  1     7     13      21
+        let shstrtab: &[u8] = b"\0.text\0.maps\0.rodata\0.shstrtab\0"; // 31 bytes
+
+        let text_offset: u64 = 64;
+        let maps_offset: u64 = text_offset + bpf_code.len() as u64;
+        let rodata_offset: u64 = maps_offset + map_def.len() as u64;
+        let shstrtab_offset: u64 = rodata_offset + rodata_content.len() as u64;
+        let shdr_offset: u64 = shstrtab_offset + shstrtab.len() as u64;
+
+        let mut elf = Vec::new();
+
+        // ELF header (64 bytes)
+        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf.push(2);
+        elf.push(1);
+        elf.push(1);
+        elf.extend_from_slice(&[0; 9]);
+        elf.extend_from_slice(&1u16.to_le_bytes()); // e_type = ET_REL
+        elf.extend_from_slice(&247u16.to_le_bytes()); // e_machine = EM_BPF
+        elf.extend_from_slice(&1u32.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&0u64.to_le_bytes());
+        elf.extend_from_slice(&shdr_offset.to_le_bytes());
+        elf.extend_from_slice(&0u32.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&0u16.to_le_bytes());
+        elf.extend_from_slice(&64u16.to_le_bytes());
+        elf.extend_from_slice(&5u16.to_le_bytes()); // 5 sections
+        elf.extend_from_slice(&4u16.to_le_bytes()); // shstrndx = 4
+        assert_eq!(elf.len(), 64);
+
+        elf.extend_from_slice(&bpf_code);
+        elf.extend_from_slice(&map_def);
+        elf.extend_from_slice(&rodata_content);
+        elf.extend_from_slice(shstrtab);
+
+        // [0] Null
+        elf.extend_from_slice(&[0u8; 64]);
+
+        // [1] .text
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&1u32.to_le_bytes());
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x6u64.to_le_bytes());
+        sh[24..32].copy_from_slice(&text_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(bpf_code.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&8u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [2] .maps (SHT_PROGBITS — explicit map definition, not global data)
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&7u32.to_le_bytes()); // offset of ".maps"
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x2u64.to_le_bytes()); // SHF_ALLOC
+        sh[24..32].copy_from_slice(&maps_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(map_def.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&4u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [3] .rodata (SHT_PROGBITS — global data section with initial data)
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&13u32.to_le_bytes()); // offset of ".rodata"
+        sh[4..8].copy_from_slice(&1u32.to_le_bytes()); // SHT_PROGBITS
+        sh[8..16].copy_from_slice(&0x2u64.to_le_bytes()); // SHF_ALLOC
+        sh[24..32].copy_from_slice(&rodata_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(rodata_content.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&4u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        // [4] .shstrtab
+        let mut sh = [0u8; 64];
+        sh[0..4].copy_from_slice(&21u32.to_le_bytes()); // offset of ".shstrtab"
+        sh[4..8].copy_from_slice(&3u32.to_le_bytes()); // SHT_STRTAB
+        sh[24..32].copy_from_slice(&shstrtab_offset.to_le_bytes());
+        sh[32..40].copy_from_slice(&(shstrtab.len() as u64).to_le_bytes());
+        sh[48..56].copy_from_slice(&1u64.to_le_bytes());
+        elf.extend_from_slice(&sh);
+
+        let sections = extract_global_section_data(&elf);
+        assert_eq!(
+            sections.len(),
+            1,
+            "only .rodata should produce initial data; .maps must be excluded"
+        );
+        assert_eq!(
+            sections[0], rodata_content,
+            "the single initial data entry should match .rodata content"
+        );
+    }
+
     /// GW-0405 criterion 6: prefix matching captures `.rodata.str1.1` etc.
     #[test]
     fn extract_global_section_data_rodata_prefix() {

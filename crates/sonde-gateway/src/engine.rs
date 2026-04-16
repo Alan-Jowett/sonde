@@ -167,6 +167,37 @@ pub enum PendingCommand {
     Reboot,
 }
 
+/// Resolve the ESP-NOW channel from storage, seeding the database with the
+/// CLI-supplied default if no value is persisted yet (GW-0808).
+///
+/// Returns the channel to use for the modem startup handshake.
+///
+/// # Errors
+///
+/// Returns an error if storage I/O fails or the persisted value is not a
+/// valid `u8`.
+pub async fn resolve_espnow_channel(
+    storage: &dyn Storage,
+    cli_channel: u8,
+) -> Result<u8, String> {
+    match storage
+        .get_config("espnow_channel")
+        .await
+        .map_err(|e| format!("failed to read espnow_channel: {e}"))?
+    {
+        Some(v) => v
+            .parse::<u8>()
+            .map_err(|e| format!("invalid persisted espnow_channel `{v}`: {e}")),
+        None => {
+            storage
+                .set_config("espnow_channel", &cli_channel.to_string())
+                .await
+                .map_err(|e| format!("failed to seed espnow_channel: {e}"))?;
+            Ok(cli_channel)
+        }
+    }
+}
+
 /// The core protocol engine. Ties together authentication, session management,
 /// program library, command dispatch, and handler routing.
 pub struct Gateway {

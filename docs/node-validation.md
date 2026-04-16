@@ -1345,6 +1345,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 ### T-N1014  bpf_trace_printk emitted at INFO level
 
+> **Naming note:** This test validates ND-1006. The ID T-N1014 follows the
+> sequential allocation order in which it was added; a future renumbering
+> pass may rename it to T-N1006 for consistency.
+
 **Validates:** ND-1006
 
 **Procedure:**
@@ -1356,6 +1360,10 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 ---
 
 ### T-N1015  BPF helper I/O logging at DEBUG level
+
+> **Naming note:** This test validates ND-1010. The ID T-N1015 follows the
+> sequential allocation order in which it was added; a future renumbering
+> pass may rename it to T-N1010 for consistency.
 
 **Validates:** ND-1010
 

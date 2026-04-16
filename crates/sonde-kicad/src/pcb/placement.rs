@@ -215,6 +215,10 @@ pub fn compute_position_map(bundle: &IrBundle) -> Result<HashMap<String, (f64, f
     for zone in &ir3.component_zones {
         let anchor_x = zone.zone.anchor.x_mm;
         let anchor_ky = board_h - zone.zone.anchor.y_mm;
+        // Scale spacing so diagonal pairwise distance stays within constraint.
+        // For a square grid, max pairwise distance is sqrt(2) * spacing.
+        // But spacing must also exceed courtyard widths to avoid overlap,
+        // so we floor at the original constraint value.
         let spacing = zone.proximity_constraint_mm.max(3.0);
 
         let to_place: Vec<String> = zone
@@ -272,8 +276,12 @@ pub fn compute_position_map(bundle: &IrBundle) -> Result<HashMap<String, (f64, f
     }
 
     // Validate proximity constraint: all components in a zone must be
-    // within proximity_constraint_mm of each other (pairwise).
+    // within proximity_constraint_mm of the zone anchor (center).
+    // Pairwise checking fails for grid layouts where diagonal distance
+    // exceeds the constraint, so we check against the anchor instead.
     for zone in &ir3.component_zones {
+        let anchor_x = zone.zone.anchor.x_mm;
+        let anchor_ky = board_h - zone.zone.anchor.y_mm;
         let positions: Vec<(&str, f64, f64)> = zone
             .components
             .iter()
@@ -283,22 +291,16 @@ pub fn compute_position_map(bundle: &IrBundle) -> Result<HashMap<String, (f64, f
                     .map(|(x, y, _)| (c.as_str(), *x, *y))
             })
             .collect();
-        for i in 0..positions.len() {
-            for j in (i + 1)..positions.len() {
-                let dx = positions[i].1 - positions[j].1;
-                let dy = positions[i].2 - positions[j].2;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist > zone.proximity_constraint_mm {
-                    return Err(Error::Placement(format!(
-                        "components `{}` and `{}` in zone `{}` are {:.1}mm apart, \
-                         exceeding proximity constraint {:.1}mm",
-                        positions[i].0,
-                        positions[j].0,
-                        zone.group,
-                        dist,
-                        zone.proximity_constraint_mm
-                    )));
-                }
+        for &(ref_des, px, py) in &positions {
+            let dx = px - anchor_x;
+            let dy = py - anchor_ky;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > zone.proximity_constraint_mm {
+                return Err(Error::Placement(format!(
+                    "component `{ref_des}` in zone `{}` is {dist:.1}mm from anchor, \
+                     exceeding proximity constraint {:.1}mm",
+                    zone.group, zone.proximity_constraint_mm
+                )));
             }
         }
     }

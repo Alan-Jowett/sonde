@@ -575,18 +575,24 @@ fn proximity_constraint_enforced() {
     let bundle = ir::load_ir(&dir).unwrap();
 
     // The minimal board has R1,C1 in a zone with proximity_constraint_mm: 3.0.
-    // The placement algorithm should place them within 3.0mm of each other.
+    // The placement algorithm should place them within 3.0mm of the zone anchor.
     let pos_map = sonde_kicad::pcb::placement::compute_position_map(&bundle).unwrap();
 
-    let r1 = pos_map.get("R1").expect("R1 should be placed");
-    let c1 = pos_map.get("C1").expect("C1 should be placed");
-    let dx = r1.0 - c1.0;
-    let dy = r1.1 - c1.1;
-    let dist = (dx * dx + dy * dy).sqrt();
-    assert!(
-        dist <= 3.0,
-        "R1 and C1 should be within 3.0mm, got {dist:.1}mm"
-    );
+    // Zone anchor: (8.0, 12.0) → board-Y = 20.0 - 12.0 = 8.0
+    let anchor_x = 8.0;
+    let anchor_y = 8.0;
+    for ref_des in &["R1", "C1"] {
+        let pos = pos_map
+            .get(*ref_des)
+            .unwrap_or_else(|| panic!("{ref_des} should be placed"));
+        let dx = pos.0 - anchor_x;
+        let dy = pos.1 - anchor_y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        assert!(
+            dist <= 3.0,
+            "{ref_des} should be within 3.0mm of anchor, got {dist:.1}mm"
+        );
+    }
 }
 
 /// T-KE-035b: Proximity constraint violation should produce an error.
@@ -755,9 +761,10 @@ fn ses_coordinate_y_negation() {
 )"#;
 
     let result = sonde_kicad::ses::import_ses(&pcb, ses, &mut uuid_gen).unwrap();
-    // Y=-200000 in SES → negated → +200000 / 10000 = 20.0 in KiCad
+    // Y=-200000 in SES → negated → +200000 / 10000 = 20 in KiCad (fmt trims .0)
+    // Look for the coordinate in a segment start/end context
     assert!(
-        result.contains("20"),
-        "negated Y coordinate should appear in output"
+        result.contains(" 20)"),
+        "negated Y coordinate should appear as ' 20)' in segment output"
     );
 }

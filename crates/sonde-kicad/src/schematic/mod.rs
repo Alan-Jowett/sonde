@@ -40,11 +40,10 @@ fn build_schematic(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<SE
     Ok(SExpr::list("kicad_sch", children))
 }
 
-fn build_title_block(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> SExpr {
-    // Derive a deterministic date from the UUID generator seed.
-    // Use a dedicated path so the date is stable across regenerations with
-    // the same IR content.
-    let hash_str = uuid_gen.next("title_block:date");
+fn build_title_block(bundle: &IrBundle, _uuid_gen: &mut UuidGenerator) -> SExpr {
+    // Derive a deterministic date from the project name directly, without
+    // consuming a UUID counter slot (which would shift all subsequent UUIDs).
+    let hash_str = project_date_hash(&bundle.project);
     let date = deterministic_date_from_hash(&hash_str);
 
     SExpr::list(
@@ -80,7 +79,7 @@ fn deterministic_date_from_hash(uuid: &str) -> String {
         .map(|c| c.to_digit(16).unwrap_or(0) as u8)
         .collect();
 
-    // Combine first 4 nibbles for year, next 2 for month, next 2 for day.
+    // Combine nibbles 0–1 for year, nibble 2 for month, nibbles 4–5 for day.
     let year_raw = (hex_bytes.first().copied().unwrap_or(0) as u32) << 4
         | hex_bytes.get(1).copied().unwrap_or(0) as u32;
     let month_raw = hex_bytes.get(2).copied().unwrap_or(0) as u32;
@@ -92,6 +91,23 @@ fn deterministic_date_from_hash(uuid: &str) -> String {
     let day = (day_raw % 28) + 1; // 1..28
 
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Produce a deterministic hex string from the project name for date derivation.
+///
+/// This avoids consuming a UUID counter slot, keeping downstream UUIDs stable.
+fn project_date_hash(project: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"title_block:date:");
+    hasher.update(project.as_bytes());
+    let hash = hasher.finalize();
+    // Format first 16 bytes as a UUID-like hex string for compatibility
+    // with deterministic_date_from_hash (which extracts 8 hex nibbles).
+    hash.iter()
+        .take(16)
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 fn build_lib_symbols(bundle: &IrBundle) -> Result<SExpr, Error> {

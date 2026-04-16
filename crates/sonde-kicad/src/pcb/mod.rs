@@ -162,8 +162,13 @@ fn build_setup(ir3: &crate::ir::Ir3) -> SExpr {
         // Default net class (always present)
         let mut default_width = "0.25".to_string();
         if let Some(signal_traces) = &rc.signal_traces {
-            if let Some(first) = signal_traces.first() {
-                default_width = fmt(first.width_mm);
+            // Use the minimum signal trace width (most conservative)
+            let min_width = signal_traces
+                .iter()
+                .map(|st| st.width_mm)
+                .fold(f64::INFINITY, f64::min);
+            if min_width.is_finite() {
+                default_width = fmt(min_width);
             }
         }
         let mut default_nc = vec![
@@ -204,8 +209,11 @@ fn build_setup(ir3: &crate::ir::Ir3) -> SExpr {
                         vec![SExpr::Atom(fmt(via.drill_mm))],
                     ));
                 }
-                // Add net assignments for each power trace
+                // Add net assignments for each power trace (skip copper pours)
                 for pt in power_traces {
+                    if pt.trace_type.as_deref() == Some("copper pour") {
+                        continue; // copper pours handled separately, not as net class traces
+                    }
                     power_nc.push(SExpr::list("add_net", vec![SExpr::Quoted(pt.net.clone())]));
                 }
                 setup_children.push(SExpr::list("net_class", power_nc));

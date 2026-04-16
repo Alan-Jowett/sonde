@@ -417,10 +417,13 @@ on ESP32) using a fixed-size layout:
 |-------|--------|------|-------------|
 | `magic` | 0 | 4 B | Validation sentinel `0x5155_4555` ("QUEU") |
 | `count` | 4 | 4 B | Number of occupied slots (0–10) |
-| `items[0..10]` | 8 | 10 × 227 B | Fixed-size message slots |
+| `items[0..10]` | 8 | 10 × 224 B | Fixed-size message slots |
 
-Each item slot contains a `len: u32` (4 B) followed by `data: [u8; 223]`
-(MAX_APP_DATA_BLOB_SIZE). Total layout: ~2,278 bytes.
+Each item slot contains a `len: u32` (4 B) followed by
+`data: [u8; 218]` (`MAX_APP_DATA_BLOB_SIZE`). Because `RtcQueueItem` uses
+`#[repr(C)]`, each slot is padded to 4-byte alignment, so
+`size_of::<RtcQueueItem>() == 224` rather than `4 + 218 = 222`. Total
+layout: 2,248 bytes.
 
 On boot, `from_rtc()` validates the magic value and item lengths. If the
 magic does not match or any length exceeds the maximum, the queue is

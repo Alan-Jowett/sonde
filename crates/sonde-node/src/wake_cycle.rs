@@ -767,7 +767,12 @@ where
                     log::warn!("failed to erase peer_payload after WAKE success: {}", e);
                 }
             }
-            // Queue is cleared by drain() after BPF execution (step 9b).
+            // Consume the piggybacked async blob so step 9b does not
+            // resend it as APP_DATA.  single_for_piggyback() only reads
+            // without removing, so clear() is required here.
+            if piggybacked {
+                async_queue.clear();
+            }
             cmd
         }
         Err(e) => {
@@ -1978,6 +1983,14 @@ mod tests {
 
             // Queue must be empty after the cycle (drained in step 9b).
             assert!(async_queue.is_empty(), "queue must be empty after drain");
+
+            // Piggybacked blob must NOT be resent as APP_DATA.
+            // Only 1 WAKE frame should be sent (no APP_DATA frames).
+            assert_eq!(
+                transport.outbound.len(),
+                1,
+                "only WAKE frame expected — piggybacked blob must not be resent as APP_DATA"
+            );
         }
 
         /// T-N626: Async queue is cleared after send (drain empties queue).

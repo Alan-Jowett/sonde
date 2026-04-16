@@ -557,8 +557,8 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 
 **Procedure:**
 1. Configure mock SPI to echo transmitted bytes.
-2. Install program that calls `spi_transfer()`.
-3. Assert: received data matches expected echo.
+2. Fill a buffer with test data, call `spi_transfer()` with the buffer.
+3. Assert: buffer contents after the call match the original test data (echo).
 
 ---
 

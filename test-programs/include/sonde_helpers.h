@@ -172,20 +172,18 @@ static int (*i2c_write_read)(__u32 handle,
                              void *read_ptr, __u32 read_len) = (void *)3;
 
 /**
- * spi_transfer — full-duplex SPI transfer.
+ * spi_transfer — in-place full-duplex SPI transfer.
  *
- * Simultaneously transmits and receives @len bytes.  Pass NULL for @tx to
- * perform a receive-only transfer; pass NULL for @rx to perform a
- * transmit-only transfer.
+ * The buffer is read for transmit data, then overwritten with received
+ * data.  For receive-only transfers, fill the buffer with zeros.
  *
  * @handle: SPI_HANDLE(bus)
- * @tx:     transmit buffer (NULL for receive-only)
- * @rx:     receive buffer  (NULL for transmit-only)
- * @len:    number of bytes
+ * @buf:    in-place buffer (read for TX, overwritten with RX)
+ * @len:    number of bytes (1–4096)
  * Returns: 0 on success, negative on error
  */
 static int (*spi_transfer)(__u32 handle,
-                           const void *tx, void *rx,
+                           void *buf,
                            __u32 len) = (void *)4;
 
 /**

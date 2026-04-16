@@ -87,15 +87,15 @@ static SONDE_HELPERS: [HelperPrototype; 17] = [
         context_descriptor: None,
         unsupported: false,
     },
-    // 4: spi_transfer(handle, *tx, *rx, len) -> i32
+    // 4: spi_transfer(handle, *buf, len) -> i32
     HelperPrototype {
         name: "spi_transfer",
         return_type: Ret::Integer,
         argument_type: [
             Arg::Anything,
-            Arg::PtrToReadableMemOrNull,
-            Arg::PtrToWritableMemOrNull,
+            Arg::PtrToWritableMem,
             Arg::ConstSize,
+            Arg::DontCare,
             Arg::DontCare,
         ],
         reallocate_packet: false,

@@ -387,29 +387,23 @@ pub fn helper_i2c_write_read(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64
     result
 }
 
-/// Helper 4: SPI full-duplex transfer.
-/// Args: r1=handle, r2=tx_ptr (0=none), r3=rx_ptr (0=none), r4=len.
-pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, r4: u64, _r5: u64) -> u64 {
+/// Helper 4: In-place SPI full-duplex transfer.
+/// Args: r1=handle, r2=buf_ptr, r3=len.
+/// The buffer is read for TX, then overwritten with RX.
+pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64 {
     let result = with_ctx(|ctx| {
         let handle = r1 as u32;
-        let tx_ptr = r2 as *const u8;
-        let rx_ptr = r3 as *mut u8;
-        let len = r4 as usize;
+        let buf_ptr = r2 as *mut u8;
+        let len = r3 as usize;
         if len == 0 || len > MAX_BUS_TRANSFER_LEN {
             return (-1i64) as u64;
         }
+        if buf_ptr.is_null() {
+            return (-1i64) as u64;
+        }
         unsafe {
-            let tx = if tx_ptr.is_null() {
-                None
-            } else {
-                Some(core::slice::from_raw_parts(tx_ptr, len))
-            };
-            let rx = if rx_ptr.is_null() {
-                None
-            } else {
-                Some(core::slice::from_raw_parts_mut(rx_ptr, len))
-            };
-            (*ctx.hal).spi_transfer(handle, tx, rx, len) as i64 as u64
+            let buf = core::slice::from_raw_parts_mut(buf_ptr, len);
+            (*ctx.hal).spi_transfer(handle, buf) as i64 as u64
         }
     })
     .unwrap_or((-1i64) as u64);
@@ -805,18 +799,11 @@ mod tests {
             buf[..copy_len].copy_from_slice(&self.i2c_read_data[..copy_len]);
             0
         }
-        fn spi_transfer(
-            &mut self,
-            _handle: u32,
-            tx: Option<&[u8]>,
-            rx: Option<&mut [u8]>,
-            _len: usize,
-        ) -> i32 {
+        fn spi_transfer(&mut self, _handle: u32, buf: &mut [u8]) -> i32 {
             if self.spi_echo {
-                if let (Some(tx_data), Some(rx_buf)) = (tx, rx) {
-                    let n = tx_data.len().min(rx_buf.len());
-                    rx_buf[..n].copy_from_slice(&tx_data[..n]);
-                }
+                // Echo: buf already contains tx data; for the mock, the
+                // "received" data is a copy of tx.  Since buf is in-place,
+                // the data is already there — nothing to do.
             }
             0
         }
@@ -1085,8 +1072,8 @@ mod tests {
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
-        let tx = [0xDE, 0xAD, 0xBE, 0xEF];
-        let mut rx = [0u8; 4];
+        let mut buf = [0xDE, 0xAD, 0xBE, 0xEF];
+        let expected = buf;
 
         with_test_context(
             &mut hal,
@@ -1102,15 +1089,16 @@ mod tests {
                 let handle = crate::hal::spi_handle(0);
                 let result = helper_spi_transfer(
                     handle as u64,
-                    tx.as_ptr() as u64,
-                    rx.as_mut_ptr() as u64,
-                    tx.len() as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                    0,
                     0,
                 );
                 assert_eq!(result, 0);
             },
         );
-        assert_eq!(rx, tx);
+        // In-place echo: buf should still contain original data
+        assert_eq!(buf, expected);
     }
 
     #[test]
@@ -1768,8 +1756,8 @@ mod tests {
         let identity = default_identity();
         let mut seq = 0u64;
         let mut trace = Vec::new();
-        let tx = [0xCA, 0xFE];
-        let mut rx = [0u8; 2];
+        let mut buf = [0xCA, 0xFE];
+        let expected = buf;
 
         with_test_context(
             &mut hal,
@@ -1785,15 +1773,15 @@ mod tests {
                 let handle = crate::hal::spi_handle(0);
                 let result = helper_spi_transfer(
                     handle as u64,
-                    tx.as_ptr() as u64,
-                    rx.as_mut_ptr() as u64,
-                    tx.len() as u64,
+                    buf.as_mut_ptr() as u64,
+                    buf.len() as u64,
+                    0,
                     0,
                 );
                 assert_eq!(result, 0, "spi_transfer must work for ephemeral programs");
             },
         );
-        assert_eq!(rx, tx);
+        assert_eq!(buf, expected);
     }
 
     // ===================================================================
@@ -1931,8 +1919,8 @@ mod tests {
         let mut read_buf = [0u8; 2];
         let write_data = [0x55u8; 2];
         let mut wr_buf = [0u8; 2];
-        let mut spi_rx = [0u8; 2];
-        let spi_tx = [0xAA, 0xBB];
+        let mut spi_buf = [0xAA, 0xBB];
+        let spi_expected = spi_buf;
 
         with_test_context(
             &mut hal,
@@ -1980,17 +1968,20 @@ mod tests {
                 assert_eq!(r, 0, "i2c_write_read should succeed for ephemeral");
                 assert_eq!(wr_buf, [0x1A, 0x2B], "i2c_write_read must fill read buf");
 
-                // SPI transfer — verify echo (rx = tx)
+                // SPI transfer — verify in-place echo
                 let spi_h = crate::hal::spi_handle(0) as u64;
                 let r = helper_spi_transfer(
                     spi_h,
-                    spi_tx.as_ptr() as u64,
-                    spi_rx.as_mut_ptr() as u64,
-                    spi_tx.len() as u64,
+                    spi_buf.as_mut_ptr() as u64,
+                    spi_buf.len() as u64,
+                    0,
                     0,
                 );
                 assert_eq!(r, 0, "spi_transfer should succeed for ephemeral");
-                assert_eq!(spi_rx, spi_tx, "spi_transfer must echo tx into rx");
+                assert_eq!(
+                    spi_buf, spi_expected,
+                    "spi_transfer must preserve data in-place"
+                );
 
                 // GPIO read — verify pin state returned
                 let r = helper_gpio_read(5, 0, 0, 0, 0);

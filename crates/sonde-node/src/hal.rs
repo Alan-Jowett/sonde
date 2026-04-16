@@ -35,14 +35,11 @@ pub trait Hal {
     /// Combined I2C write-then-read in a single transaction (repeated start).
     fn i2c_write_read(&mut self, handle: u32, write_data: &[u8], read_buf: &mut [u8]) -> i32;
 
-    /// Full-duplex SPI transfer.
-    fn spi_transfer(
-        &mut self,
-        handle: u32,
-        tx: Option<&[u8]>,
-        rx: Option<&mut [u8]>,
-        len: usize,
-    ) -> i32;
+    /// In-place full-duplex SPI transfer.
+    ///
+    /// The buffer is read for transmit data, then overwritten with received
+    /// data.  For receive-only transfers, fill the buffer with zeros.
+    fn spi_transfer(&mut self, handle: u32, buf: &mut [u8]) -> i32;
 
     /// Read the state of a GPIO pin. Returns 0 (low), 1 (high), or negative on error.
     fn gpio_read(&self, pin: u32) -> i32;

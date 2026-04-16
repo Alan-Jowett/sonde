@@ -243,13 +243,7 @@ impl hal::Hal for EspHal {
         }
     }
 
-    fn spi_transfer(
-        &mut self,
-        _handle: u32,
-        _tx: Option<&[u8]>,
-        _rx: Option<&mut [u8]>,
-        _len: usize,
-    ) -> i32 {
+    fn spi_transfer(&mut self, _handle: u32, _buf: &mut [u8]) -> i32 {
         -1 // SPI requires device-specific CS pin configuration
     }
 

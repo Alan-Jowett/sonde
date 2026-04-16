@@ -507,7 +507,7 @@ When a phone writes to the Gateway Command characteristic, the modem MUST forwar
 4. Empty GATT writes are silently discarded.
 5. If a GATT write arrives before server-initiated LESC pairing completes (i.e. `authenticated` is still `false`), the modem MUST buffer the write and forward it as `BLE_RECV` once authentication succeeds, rather than discarding it.
 6. The pre-authentication write buffer holds at most one write (single-slot). If a second GATT write arrives before authentication completes, it replaces the previously buffered write. The client should not send more than one write before receiving a response.
-7. The BLE event queue is bounded at 32 entries. GATT writes arriving when the queue is full MUST be silently dropped with a warning log.
+7. For normal BLE event enqueueing, the modem uses a 32-entry BLE event queue. A newly arriving GATT write that would be enqueued while that queue is already full MUST be silently dropped with a warning log. Forwarding the single buffered pre-authentication write after authentication succeeds is exempt from this drop rule.
 
 ---
 

@@ -123,7 +123,7 @@ to avoid collisions when tests run in parallel.
 
 **Procedure:**
 1. Run `sonde-admin --version`.
-2. Assert: output matches pattern `<version> (<7-char-hex-or-unknown>)`.
+2. Assert: output matches pattern `<version> (<1-7-char-hex-or-unknown>)`.
 
 ---
 

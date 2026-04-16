@@ -153,7 +153,7 @@ The CLI validates the following inputs before sending RPCs:
 | Input | Validation | Requirement |
 |-------|-----------|-------------|
 | `psk-hex` | `hex::decode` + length == 32 bytes | ADMIN-0202 |
-| `program-hash` | `hex::decode` (or `*` for handler catch-all) | ADMIN-0302, ADMIN-0800 |
+| `program-hash` | `hex::decode` for commands that send a binary hash (`program assign`, `program remove`, `ephemeral`); handler commands pass through `*` or the provided string without local validation (gateway enforces) | ADMIN-0302, ADMIN-0800 |
 | `channel` | clap `value_parser!(u32).range(1..=14)` | ADMIN-0601 |
 | `passphrase` | Non-empty check | ADMIN-0502 |
 

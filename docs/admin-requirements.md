@@ -176,7 +176,7 @@ The CLI MUST display the crate version and a short git commit SHA in its
 
 **Acceptance criteria:**
 
-1. `sonde-admin --version` outputs a string containing the crate version and a 7-character git SHA (or `unknown` if git is not available).
+1. `sonde-admin --version` outputs a string containing the crate version and a short git SHA (up to 7 characters, or `unknown` if git is not available).
 
 ---
 

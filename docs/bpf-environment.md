@@ -45,7 +45,7 @@ Ephemeral programs are one-shot diagnostics pushed by the gateway.
 | **Lifetime** | Single execution |
 | **Execution** | Runs once immediately after transfer |
 | **Map access** | Read-only |
-| **Helper set** | Limited (no `map_update_elem`, no `set_next_wake`) |
+| **Helper set** | Limited — no `map_update_elem`, no `set_next_wake` (see §7) |
 | **Side effects** | None (cannot modify node state) |
 | **Max size** | 2 KB (enforced by firmware; see ND-0500) |
 
@@ -524,10 +524,32 @@ All programs are verified by [Prevail](https://github.com/vbpf/ebpf-verifier) on
 | Property | Resident | Ephemeral |
 |---|---|---|
 | **Loops** | Bounded | None or tightly bounded |
-| **Map access** | Read/write | Read-only |
+| **Map access** | Read/write | Read-only (`map_lookup_elem` only) |
 | **Instruction budget** | Larger | Small |
-| **Helper set** | Full | Limited (`send`, `send_recv`, `send_async`, `i2c_read`, `i2c_write`, `i2c_write_read`, `spi_transfer`, `gpio_read`, `gpio_write`, `adc_read`, `delay_us`, `map_lookup_elem`, `get_time`, `get_battery_mv`, `bpf_trace_printk`) |
-| **Side effects** | Allowed | No persistent node state changes under program control (no map writes, no schedule changes); `send_async` may enqueue outbound data for transmission on the next wake cycle |
+| **Helper set** | Full (all 17 helpers) | Limited — see table below |
+| **Side effects** | Allowed | No persistent node state changes under program control; `send_async` may enqueue outbound data for transmission on the next wake cycle |
+
+#### Ephemeral helper availability
+
+| Helper | Available | Notes |
+|---|---|---|
+| `i2c_read` | ✅ | |
+| `i2c_write` | ✅ | |
+| `i2c_write_read` | ✅ | |
+| `spi_transfer` | ✅ | |
+| `gpio_read` | ✅ | |
+| `gpio_write` | ✅ | |
+| `adc_read` | ✅ | |
+| `send` | ✅ | |
+| `send_recv` | ✅ | |
+| `map_lookup_elem` | ✅ | Read-only map access |
+| `map_update_elem` | ❌ | Blocked — ephemeral programs cannot modify maps (ND-0602 AC2) |
+| `get_time` | ✅ | |
+| `get_battery_mv` | ✅ | |
+| `delay_us` | ✅ | |
+| `set_next_wake` | ❌ | Blocked — ephemeral programs cannot modify the schedule (ND-0602 AC3) |
+| `bpf_trace_printk` | ✅ | |
+| `send_async` | ✅ | Enqueues data for next wake cycle (ND-0602 AC6) |
 
 A program that fails verification is rejected with a diagnostic explaining why. It never reaches the node.
 

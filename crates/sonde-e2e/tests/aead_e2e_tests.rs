@@ -769,13 +769,19 @@ async fn t_e2e_011_program_already_current_nop() {
 
     let mut node_rec = env.storage.get_node("prog-current").await.unwrap().unwrap();
     node_rec.assigned_program_hash = Some(hash.clone());
-    node_rec.current_program_hash = Some(hash);
     env.storage.upsert_node(&node_rec).await.unwrap();
 
-    // First cycle installs program into node storage.
+    // First cycle: node downloads and installs the program.
     let mut node = NodeProxy::new(1, psk);
     let mut interpreter = SondeBpfInterpreter::new();
-    let _stats1 = node.run_wake_cycle_with(&env, &mut interpreter);
+    let stats1 = node.run_wake_cycle_with(&env, &mut interpreter);
+    assert_eq!(stats1.outcome, WakeCycleOutcome::Sleep { seconds: 60 });
+    let ack_count = stats1
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(ack_count, 1, "first cycle must install program");
 
     // Second cycle: hashes match → NOP.
     let stats2 = node.run_wake_cycle_with(&env, &mut interpreter);
@@ -943,8 +949,8 @@ async fn t_e2e_041_sequence_number_enforcement() {
     let psk = [0x41; 32];
     env.register_node("seq-node", 1, psk).await;
 
-    // Use a large program (200+ NOP instructions) to force multiple chunks.
-    // DEFAULT_CHUNK_SIZE is 128 bytes; this bytecode is 200*8 = 1600 bytes.
+    // Use a large program (200 instructions: 199 NOPs + exit = 1600 bytes)
+    // to force multiple chunks. DEFAULT_CHUNK_SIZE is 128 bytes.
     let mut large_bytecode = Vec::new();
     for _ in 0..199 {
         // mov r0, 0 (NOP-equivalent)

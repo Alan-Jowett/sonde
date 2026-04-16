@@ -45,6 +45,14 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
 
+# --- Watchdog (ND-0919) ---
+# Enable task watchdog with 20 s timeout and panic-on-expiry.
+# Covers worst-case wake cycle (WAKE retries + chunked transfer + BPF + APP_DATA)
+# while recovering from firmware hangs before excessive battery drain.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=20
+CONFIG_ESP_TASK_WDT_PANIC=y
+
 # --- Bluetooth / NimBLE (ND-0902) ---
 # Use NimBLE (BLE-only, lightweight) instead of Bluedroid.
 # esp32-nimble requires CONFIG_BT_NIMBLE_ENABLED=y so that esp-idf-sys

@@ -560,7 +560,8 @@ All inbound protocol errors result in **silent discard** — the node does not s
 ## 14  Boot sequence
 
 1. ESP-IDF initialization (clocks, peripherals, wifi/ESP-NOW).
-2. Sample pairing button GPIO for 500 ms (ND-0901).
+2. Task watchdog timer is active from boot (ND-0919): `CONFIG_ESP_TASK_WDT_EN=y`, 20 s timeout, panic-on-expiry. Protects against firmware hangs (I²C lockup, radio deadlock, blocking calls) that would otherwise drain the battery indefinitely.
+3. Sample pairing button GPIO for 500 ms (ND-0901).
 3. Read key partition: check magic bytes and load credentials if present. Read NVS `reg_complete` flag (§6.1a).
 4. Determine boot path (ND-0900):
    a. No valid PSK in key partition OR pairing button held ≥ 500 ms → enter BLE pairing mode (§15). Does not return.

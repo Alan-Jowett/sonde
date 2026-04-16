@@ -10,6 +10,9 @@ use crate::validation::validate_rf_channel;
 use tracing::{debug, info, trace};
 use zeroize::Zeroizing;
 
+/// PHONE_REGISTERED indication timeout in milliseconds (PT-1002).
+const PHONE_REGISTERED_TIMEOUT_MS: u64 = 30_000;
+
 /// Callback for reporting Phase 1 sub-phase progress (PT-0701).
 ///
 /// ## AEAD flow (`pair_with_gateway`)
@@ -106,10 +109,14 @@ async fn do_pair_with_gateway(
         .write_characteristic(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, &register)
         .await?;
 
-    // Step 4: Read indication (timeout 30s)
+    // Step 4: Read indication (timeout per PT-1002)
     trace!("waiting for PHONE_REGISTERED indication (30 s timeout)");
     let response = transport
-        .read_indication(GATEWAY_SERVICE_UUID, GATEWAY_COMMAND_UUID, 30_000)
+        .read_indication(
+            GATEWAY_SERVICE_UUID,
+            GATEWAY_COMMAND_UUID,
+            PHONE_REGISTERED_TIMEOUT_MS,
+        )
         .await?;
     let (msg_type, payload) = parse_envelope(&response)?;
     trace!(

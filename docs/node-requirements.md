@@ -734,7 +734,7 @@ If the node sends `WAKE` and receives no `COMMAND` response within the transport
 
 1. The node sends up to 4 WAKE frames (1 initial + up to 3 retries).
 2. The backoff delay after each response timeout is 400 ms.
-3. After 3 failures, the node sleeps without executing BPF.
+3. After all retries are exhausted, the node sleeps without executing BPF.
 
 ---
 

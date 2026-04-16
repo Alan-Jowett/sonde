@@ -19,7 +19,7 @@ use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
     decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
-    NodeMessage, ProgramImage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_WAKE,
+    NodeMessage, ProgramImage, MAX_COMMAND_BLOB_SIZE, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_WAKE,
 };
 
 // ─── Test helpers ──────────────────────────────────────────────────────
@@ -2762,10 +2762,66 @@ async fn t0518_wake_blob_forwarded_to_handler() {
     );
 }
 
-/// T-0519: WAKE blob with empty data is NOT forwarded to handler.
+/// T-0519: WAKE blob handler reply is always deferred — even when the handler
+/// returns `delivery=0` (normally immediate), the reply is stored as deferred
+/// and delivered on the next NOP WAKE, never as an immediate APP_DATA_REPLY.
 #[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
-async fn t0519_wake_empty_blob_not_forwarded() {
+async fn t0519_wake_blob_reply_always_deferred() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    // Use the echo handler which returns delivery=0 (immediate) by default.
+    let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x19; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-0519", 0x0519, [0x19; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE with non-empty blob — handler returns data with delivery=0.
+    // Even though delivery=0 normally means immediate, WAKE blob replies
+    // are ALWAYS deferred.
+    let wake_blob = vec![0xDE, 0xAD];
+    let (_seq, _, _payload, blob1) =
+        do_wake_with_blob(&gw, &node, 1000, &program_hash, &wake_blob).await;
+    // First COMMAND must NOT carry the reply (it's deferred, not immediate).
+    assert!(
+        blob1.is_none(),
+        "WAKE blob handler reply must be deferred, not immediate"
+    );
+
+    // Second WAKE (NOP) should carry the deferred blob.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut wake_nonce = 2000;
+    let blob2 = loop {
+        let (_, _, _, candidate_blob) = do_wake_full(&gw, &node, wake_nonce, &program_hash).await;
+        if candidate_blob.is_some() {
+            break candidate_blob;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for deferred blob from WAKE blob handler"
+        );
+        wake_nonce += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(
+        blob2.as_deref(),
+        Some(wake_blob.as_slice()),
+        "deferred WAKE blob reply must be delivered on next NOP COMMAND"
+    );
+}
+
+/// T-0519 variant: WAKE blob with empty data is NOT forwarded to handler.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0519_variant_empty_blob_not_forwarded() {
     require_python!();
     let tmp = tempfile::tempdir().unwrap();
     let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
@@ -2961,15 +3017,17 @@ async fn t0522_deferred_reply_latest_wins() {
     );
 }
 
-/// T-0523: Deferred data not delivered on non-NOP command — store deferred,
-/// trigger program update, COMMAND is UPDATE_PROGRAM without blob, deferred
-/// data persists, next NOP WAKE delivers it.
+/// T-0523: Deferred data not delivered on non-NOP command — store deferred
+/// reply synchronously via APP_DATA with `delivery=1`, trigger program update,
+/// assert COMMAND is UPDATE_PROGRAM without blob, clear update, then assert
+/// next NOP WAKE delivers the deferred data.
 #[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
 #[tokio::test]
 async fn t0523_deferred_not_delivered_on_non_nop() {
     require_python!();
     let tmp = tempfile::tempdir().unwrap();
-    let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
+    // Use the deferred handler (delivery=1) so APP_DATA stores deterministically.
+    let script = write_handler_script(tmp.path(), "deferred_echo.py", MULTI_DEFERRED_HANDLER_PY);
 
     let program_hash = vec![0x53; 32];
     let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
@@ -2982,41 +3040,18 @@ async fn t0523_deferred_not_delivered_on_non_nop() {
     let node = TestNode::new("node-t0523", 0x0523, [0x53; 32]);
     setup_node_with_program(&storage, &node, &program_hash).await;
 
-    // WAKE 1: piggybacked blob → handler stores deferred reply.
-    let wake_blob = vec![0xBE, 0xEF];
-    do_wake_with_blob(&gw, &node, 1000, &program_hash, &wake_blob).await;
+    // WAKE 1: establish session (no blob).
+    let (starting_seq, _, _) = do_wake(&gw, &node, 1000, &program_hash).await;
 
-    // Poll until handler has stored the deferred reply (confirmed via NOP peek).
-    // We don't consume it yet — we need to set up UpdateProgram first.
-    // Wait a fixed time for the async handler to complete.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        // Peek by trying a WAKE; if blob appears the handler finished.
-        // But we can't consume it this way (delivery removes it). Instead just
-        // wait for the handler task to complete.
-        if tokio::time::Instant::now() >= deadline {
-            panic!("timed out waiting for handler to store deferred reply");
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        // Check if deferred reply is stored by attempting a NOP WAKE that would
-        // show the blob. Since we're about to test non-NOP suppression, we need
-        // to confirm the deferred data exists first.
-        let (_, _, _, peek_blob) = do_wake_full(&gw, &node, 1500, &program_hash).await;
-        if peek_blob.is_some() {
-            // Deferred was delivered by this NOP WAKE — re-store it via another
-            // WAKE blob so we can test the non-NOP suppression path.
-            do_wake_with_blob(&gw, &node, 1600, &program_hash, &wake_blob).await;
-            // Wait for handler again.
-            let inner_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-            loop {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-                if tokio::time::Instant::now() >= inner_deadline {
-                    break;
-                }
-            }
-            break;
-        }
-    }
+    // APP_DATA with delivery=1 → handler stores deferred reply [0xDD]
+    // synchronously (no async handler race).
+    let deferred_data = vec![0xDD];
+    let app_frame = node.build_app_data(starting_seq, &deferred_data);
+    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
+    assert!(
+        resp.is_none(),
+        "deferred delivery (delivery=1) must suppress immediate APP_DATA_REPLY"
+    );
 
     // Assign a different program so the next WAKE triggers UpdateProgram, not NOP.
     let lib = ProgramLibrary::new();
@@ -3069,7 +3104,7 @@ async fn t0523_deferred_not_delivered_on_non_nop() {
         storage.upsert_node(&record).await.unwrap();
     }
 
-    // WAKE 3: NOP COMMAND should now deliver the deferred blob.
+    // WAKE 3: NOP COMMAND should now deliver the deferred blob [0xDD].
     let (_, _, payload3, blob3) = do_wake_full(&gw, &node, 3000, &program_hash).await;
     assert!(
         matches!(payload3, CommandPayload::Nop),
@@ -3077,7 +3112,7 @@ async fn t0523_deferred_not_delivered_on_non_nop() {
     );
     assert_eq!(
         blob3.as_deref(),
-        Some(wake_blob.as_slice()),
+        Some(deferred_data.as_slice()),
         "deferred reply must be delivered in NOP COMMAND after non-NOP suppression"
     );
 }
@@ -3129,8 +3164,16 @@ async fn t0518_variant_no_handler() {
 #[tokio::test]
 async fn t0518_variant_oversized_reply() {
     require_python!();
+    // Validate that the Python handler's hardcoded 200-byte reply actually
+    // exceeds the protocol limit. If MAX_COMMAND_BLOB_SIZE changes, this
+    // assertion will fire and remind us to update OVERSIZE_REPLY_HANDLER_PY.
+    assert_eq!(
+        200,
+        MAX_COMMAND_BLOB_SIZE + 7,
+        "update OVERSIZE_REPLY_HANDLER_PY if MAX_COMMAND_BLOB_SIZE changes"
+    );
     let tmp = tempfile::tempdir().unwrap();
-    // Handler returns 200 bytes (> MAX_COMMAND_BLOB_SIZE=193), which should be dropped.
+    // Handler returns 200 bytes (> MAX_COMMAND_BLOB_SIZE), which should be dropped.
     let script = write_handler_script(tmp.path(), "oversize.py", OVERSIZE_REPLY_HANDLER_PY);
 
     let program_hash = vec![0x23; 32];

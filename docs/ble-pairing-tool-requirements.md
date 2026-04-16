@@ -409,7 +409,7 @@ The encrypted payload MUST NOT exceed 202 bytes (the ESP-NOW frame budget). The 
 **Source:** ble-pairing-protocol.md §6.6, §6.7
 
 **Description:**  
-The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s). The `encrypted_payload` is a complete ESP-NOW `PEER_REQUEST` frame (see ble-pairing-protocol.md §7.1) built by the phone using `phone_psk` for AES-256-GCM encryption with AAD = `"sonde-pairing-v2"`. The node stores and forwards this frame verbatim — it does not decrypt or interpret the contents.
+The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s). The `encrypted_payload` is a complete ESP-NOW `PEER_REQUEST` frame (see ble-pairing-protocol.md §7.1) built by the phone in two AES-256-GCM layers using `phone_psk`: first, the inner PairingRequest CBOR is encrypted with AAD = `"sonde-pairing-v2"`; then that result is wrapped in the outer ESP-NOW `PEER_REQUEST` frame, whose AEAD AAD is the 11-byte ESP-NOW frame header. The node stores and forwards this frame verbatim — it does not decrypt or interpret the contents.
 
 **Acceptance criteria:**
 

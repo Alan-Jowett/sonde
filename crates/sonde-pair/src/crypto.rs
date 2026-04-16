@@ -573,13 +573,14 @@ mod aead_tests {
         let mut frame =
             sonde_protocol::encode_frame(&header, &cbor, &psk, &PairAead, &PairSha256).unwrap();
 
-        // Tamper with the msg_type byte in the header (byte 2 of the 11-byte header).
-        // The header is used as AAD, so any modification must cause authentication failure.
-        frame[2] ^= 0x01;
+        // Tamper with the key_hint bytes in the header (bytes 0..2 of the 11-byte header).
+        // key_hint is not validated before open_frame(), so this exercises the AAD
+        // authentication path — the 11-byte header serves as AAD for AES-256-GCM.
+        frame[0] ^= 0xFF;
 
         assert!(
             decrypt_diag_reply(&frame, &psk, nonce).is_err(),
-            "tampered header (AAD) must cause decryption failure"
+            "tampered key_hint (AAD) must cause decryption failure"
         );
     }
 }

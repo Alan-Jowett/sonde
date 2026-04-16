@@ -416,7 +416,8 @@ nodes:
         std::fs::write(dir.join("bpf").join("test.elf"), &elf).unwrap();
     }
 
-    /// T-SB-0800: Create valid bundle + T-SB-0200: Valid archive extraction.
+    /// T-SB-0800: Create valid bundle.
+    /// T-SB-0200: Valid archive extraction.
     #[test]
     fn test_create_and_extract_round_trip() {
         let src = tempfile::tempdir().unwrap();
@@ -469,7 +470,7 @@ nodes:
         assert!(!info.files.is_empty());
     }
 
-    /// T-SB-1002: CLI validate — valid bundle + T-SB-1003: CLI validate — invalid bundle.
+    /// T-SB-1002: CLI validate — valid bundle.
     #[test]
     fn test_validate_bundle() {
         let src = tempfile::tempdir().unwrap();
@@ -613,7 +614,7 @@ nodes:
         );
     }
 
-    /// T-SB-0201/T-SB-0202: Archive safety — hardlink rejected.
+    /// T-SB-0201: Archive safety — hardlink rejected.
     #[test]
     fn test_hardlink_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -643,7 +644,7 @@ nodes:
         );
     }
 
-    /// T-SB-0201/T-SB-0202: Archive safety — FIFO entry rejected.
+    /// T-SB-0201: Archive safety — FIFO entry rejected.
     #[test]
     fn test_fifo_entry_rejected() {
         let dir = tempfile::tempdir().unwrap();

@@ -581,7 +581,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.rule == "name"));
     }
 
-    /// T-SB-0100: Valid manifest parsing (single-char name edge case).
+    /// T-SB-0100 variant: Valid manifest parsing (single-char name edge case).
     #[test]
     fn test_single_char_app_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -955,7 +955,7 @@ mod tests {
             .any(|e| e.message.contains("must not be empty")));
     }
 
-    /// T-SB-0500: Validates no false-positive on handler unknown program.
+    /// T-SB-0500 variant: Validates no false-positive on handler unknown program.
     #[test]
     fn test_multiple_handlers_same_program_allowed() {
         let dir = tempfile::tempdir().unwrap();

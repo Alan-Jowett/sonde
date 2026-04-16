@@ -66,9 +66,10 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 **Validates:** safe-bpf-interpreter.md §3.3, ND-0505 AC6
 
 **Procedure:**
-1. Construct bytecode that executes an atomic ADD on R1 (Context pointer) at offset 0: `ATOMIC_DW r1, r0, ADD`, followed by `EXIT`.
-2. Execute with `execute_program_no_maps(...)` with `read_only_ctx = true`.
-3. Assert: result is `Ok(0)` — the write is silently ignored per ND-0505 AC6, the context buffer is unchanged, and the program continues to completion.
+1. Seed the context buffer with a known non-zero pattern (e.g., `[0xAA; 8]` in the first 8 bytes).
+2. Construct bytecode that loads a non-zero value into R0 (`MOV64_IMM r0, 0x42`), then executes an atomic ADD on R1 (Context pointer) at offset 0: `ATOMIC_DW r1, r0, ADD`, followed by `EXIT`.
+3. Execute with `execute_program_no_maps(...)` with `read_only_ctx = true`.
+4. Assert: result is `Ok(0)` — the write is silently ignored per ND-0505 AC6, the context buffer retains its original pattern, and the program continues to completion.
 
 ---
 
@@ -425,9 +426,10 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 **E2E coverage:** Context write rejection is unit-tested in `crates/sonde-node/src/sonde_bpf_adapter.rs` (`t_n929_write_to_read_only_context_silently_ignored`), which validates that writes to the read-only Context region are silently ignored. T-E2E-081 (`t_e2e_081_ephemeral_restrictions`) exercises related ephemeral-program restrictions (map writes, `set_next_wake`) at the E2E level.
 
 **Procedure:**
-1. Deploy a BPF program that attempts to write to the `sonde_context` structure via `STX_DW [r1 + 0], r0` (R1 = Context pointer), followed by `EXIT`.
-2. Execute a full wake cycle with `read_only_ctx = true`.
-3. Assert: the program completes successfully — the write to the read-only Context region is silently ignored per ND-0505 AC6, the `sonde_context` fields are unchanged, and the program continues to completion.
+1. Populate `sonde_context` with known non-zero field values (e.g., `timestamp = 1710000000000`, `battery_mv = 3300`).
+2. Deploy a BPF program that loads a distinct non-zero value into R0 (`MOV64_IMM r0, 0xFF`), then attempts to write to the `sonde_context` structure via `STX_DW [r1 + 0], r0` (R1 = Context pointer), followed by `EXIT`.
+3. Execute a full wake cycle with `read_only_ctx = true`.
+4. Assert: the program completes successfully — the write to the read-only Context region is silently ignored per ND-0505 AC6, and the `sonde_context` fields retain their original values.
 
 ---
 

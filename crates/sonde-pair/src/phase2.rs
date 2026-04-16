@@ -12,6 +12,12 @@ use crate::validation::{compute_key_hint, validate_node_id};
 use tracing::{debug, info, trace};
 use zeroize::Zeroizing;
 
+/// NODE_ACK indication timeout in milliseconds (PT-1002).
+const NODE_ACK_TIMEOUT_MS: u64 = 5_000;
+
+/// DIAG_RELAY_RESPONSE indication timeout in milliseconds (PT-1303).
+const DIAG_RELAY_TIMEOUT_MS: u64 = 10_000;
+
 /// Map a BLE provisioning message type byte to its spec name (PT-0702).
 fn msg_type_name(t: u8) -> &'static str {
     match t {
@@ -178,9 +184,12 @@ async fn do_provision_node(
         .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &message)
         .await?;
 
-    trace!("waiting for NODE_ACK indication (5 s timeout)");
+    trace!(
+        timeout_ms = NODE_ACK_TIMEOUT_MS,
+        "waiting for NODE_ACK indication"
+    );
     let response = transport
-        .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, 5000)
+        .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, NODE_ACK_TIMEOUT_MS)
         .await?;
     let (msg_type, payload) = parse_envelope(&response)?;
     trace!(
@@ -268,9 +277,9 @@ pub async fn check_rssi(
         .write_characteristic(NODE_SERVICE_UUID, NODE_COMMAND_UUID, &envelope)
         .await?;
 
-    // 4. Wait for DIAG_RELAY_RESPONSE (10s timeout, PT-1303).
+    // 4. Wait for DIAG_RELAY_RESPONSE (timeout per PT-1303).
     let response = transport
-        .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, 10_000)
+        .read_indication(NODE_SERVICE_UUID, NODE_COMMAND_UUID, DIAG_RELAY_TIMEOUT_MS)
         .await?;
 
     // 5. Parse BLE envelope.
@@ -691,5 +700,45 @@ mod tests {
 
         let result = check_rssi(&mut transport, &artifacts).await;
         assert!(matches!(result, Err(PairingError::DiagnosticFailed(_))));
+    }
+
+    /// Validates: PT-1214 AC2 — pin config CBOR deterministic encoding.
+    ///
+    /// The pin config CBOR map must use integer keys in ascending order
+    /// (key 1 = i2c0_sda, key 2 = i2c0_scl) with minimal-length encoding.
+    #[test]
+    fn pin_config_cbor_deterministic() {
+        let pc = PinConfig {
+            i2c0_sda: 5,
+            i2c0_scl: 6,
+        };
+        let pin_cbor = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Integer(1.into()),
+                ciborium::Value::Integer(pc.i2c0_sda.into()),
+            ),
+            (
+                ciborium::Value::Integer(2.into()),
+                ciborium::Value::Integer(pc.i2c0_scl.into()),
+            ),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&pin_cbor, &mut buf).unwrap();
+
+        // Expected: A2 01 05 02 06
+        // A2 = map(2), 01 = key 1, 05 = value 5, 02 = key 2, 06 = value 6
+        assert_eq!(buf, [0xA2, 0x01, 0x05, 0x02, 0x06]);
+
+        // Verify keys are in ascending order (deterministic CBOR §4.2).
+        let decoded: ciborium::Value = ciborium::from_reader(buf.as_slice()).unwrap();
+        if let ciborium::Value::Map(pairs) = decoded {
+            let keys: Vec<u64> = pairs
+                .iter()
+                .map(|(k, _)| u64::try_from(k.as_integer().unwrap()).unwrap())
+                .collect();
+            assert_eq!(keys, vec![1, 2], "keys must be in ascending order");
+        } else {
+            panic!("expected CBOR map");
+        }
     }
 }

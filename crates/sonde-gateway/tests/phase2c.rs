@@ -11,6 +11,7 @@ use std::time::Duration;
 use sonde_gateway::crypto::RustCryptoSha256;
 use sonde_gateway::engine::Gateway;
 use sonde_gateway::handler::{HandlerConfig, HandlerRouter, ProgramMatcher};
+use sonde_gateway::program::{ProgramLibrary, VerificationProfile};
 use sonde_gateway::registry::NodeRecord;
 use sonde_gateway::storage::{InMemoryStorage, Storage};
 use sonde_gateway::transport::PeerAddress;
@@ -18,7 +19,7 @@ use sonde_gateway::GatewayAead;
 
 use sonde_protocol::{
     decode_frame, encode_frame, open_frame, CommandPayload, FrameHeader, GatewayMessage,
-    NodeMessage, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_WAKE,
+    NodeMessage, ProgramImage, MAX_COMMAND_BLOB_SIZE, MSG_APP_DATA, MSG_APP_DATA_REPLY, MSG_WAKE,
 };
 
 // ─── Test helpers ──────────────────────────────────────────────────────
@@ -69,6 +70,30 @@ impl TestNode {
         encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
     }
 
+    fn build_wake_with_blob(
+        &self,
+        nonce: u64,
+        firmware_abi_version: u32,
+        program_hash: &[u8],
+        battery_mv: u32,
+        blob: &[u8],
+    ) -> Vec<u8> {
+        let header = FrameHeader {
+            key_hint: self.key_hint,
+            msg_type: MSG_WAKE,
+            nonce,
+        };
+        let msg = NodeMessage::Wake {
+            firmware_abi_version,
+            program_hash: program_hash.to_vec(),
+            battery_mv,
+            firmware_version: "0.4.0".into(),
+            blob: Some(blob.to_vec()),
+        };
+        let cbor = msg.encode().unwrap();
+        encode_frame(&header, &cbor, &self.psk, &GatewayAead, &RustCryptoSha256).unwrap()
+    }
+
     fn build_app_data(&self, seq: u64, blob: &[u8]) -> Vec<u8> {
         let header = FrameHeader {
             key_hint: self.key_hint,
@@ -110,6 +135,56 @@ async fn do_wake(
             payload,
             blob: _,
         } => (starting_seq, timestamp_ms, payload),
+        other => panic!("expected Command, got {:?}", other),
+    }
+}
+
+/// Send a WAKE with a piggybacked blob and return
+/// `(starting_seq, timestamp_ms, CommandPayload, Option<blob>)`.
+async fn do_wake_with_blob(
+    gw: &Gateway,
+    node: &TestNode,
+    nonce: u64,
+    program_hash: &[u8],
+    blob_data: &[u8],
+) -> (u64, u64, CommandPayload, Option<Vec<u8>>) {
+    let frame = node.build_wake_with_blob(nonce, 1, program_hash, 3300, blob_data);
+    let resp = gw
+        .process_frame(&frame, node.peer_address())
+        .await
+        .expect("expected COMMAND response");
+    let (_hdr, msg) = decode_response(&resp, &node.psk);
+    match msg {
+        GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload,
+            blob,
+        } => (starting_seq, timestamp_ms, payload, blob),
+        other => panic!("expected Command, got {:?}", other),
+    }
+}
+
+/// Send a WAKE and return `(starting_seq, timestamp_ms, CommandPayload, Option<blob>)`.
+async fn do_wake_full(
+    gw: &Gateway,
+    node: &TestNode,
+    nonce: u64,
+    program_hash: &[u8],
+) -> (u64, u64, CommandPayload, Option<Vec<u8>>) {
+    let frame = node.build_wake(nonce, 1, program_hash, 3300);
+    let resp = gw
+        .process_frame(&frame, node.peer_address())
+        .await
+        .expect("expected COMMAND response");
+    let (_hdr, msg) = decode_response(&resp, &node.psk);
+    match msg {
+        GatewayMessage::Command {
+            starting_seq,
+            timestamp_ms,
+            payload,
+            blob,
+        } => (starting_seq, timestamp_ms, payload, blob),
         other => panic!("expected Command, got {:?}", other),
     }
 }
@@ -2222,4 +2297,1031 @@ async fn gw0504_many_to_one_routing() {
         }
         other => panic!("expected AppDataReply for Y, got {:?}", other),
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  T-0518..T-0526: Store-and-Forward Integration Tests
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Echo handler for WAKE blob: reads one DATA message (the forwarded WAKE blob),
+/// replies with DATA_REPLY containing the same data.
+/// The gateway stores this reply for deferred delivery on the next WAKE.
+const WAKE_BLOB_ECHO_HANDLER_PY: &str = r#"
+import sys, struct
+
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
+def read_msg():
+    raw = read_exact(4)
+    length = struct.unpack('>I', raw)[0]
+    data = read_exact(length)
+    return data
+
+def write_msg(payload):
+    sys.stdout.buffer.write(struct.pack('>I', len(payload)))
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
+
+def decode_cbor_map(data):
+    result = {}
+    idx = 0
+    if data[idx] & 0xe0 != 0xa0 and data[idx] != 0xbf:
+        raise ValueError(f"expected map, got {data[idx]:#x}")
+    if data[idx] == 0xbf:
+        idx += 1
+        while data[idx] != 0xff:
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        idx += 1
+    else:
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+    return result
+
+def decode_item(data, idx):
+    major = (data[idx] >> 5) & 0x07
+    info = data[idx] & 0x1f
+    idx += 1
+    if major == 0:
+        val, idx = decode_uint(info, data, idx)
+        return val, idx
+    elif major == 2:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length], idx + length
+    elif major == 3:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length].decode('utf-8'), idx + length
+    elif major == 5:
+        count, idx = decode_uint(info, data, idx)
+        m = {}
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            m[k] = v
+        return m, idx
+    else:
+        raise ValueError(f"unsupported major type {major}")
+
+def decode_uint(info, data, idx):
+    if info < 24:
+        return info, idx
+    elif info == 24:
+        return data[idx], idx + 1
+    elif info == 25:
+        return struct.unpack('>H', data[idx:idx+2])[0], idx + 2
+    elif info == 26:
+        return struct.unpack('>I', data[idx:idx+4])[0], idx + 4
+    elif info == 27:
+        return struct.unpack('>Q', data[idx:idx+8])[0], idx + 8
+    else:
+        raise ValueError(f"unsupported additional info {info}")
+
+def encode_uint(major, val):
+    major_bits = major << 5
+    if val < 24:
+        return bytes([major_bits | val])
+    elif val < 256:
+        return bytes([major_bits | 24, val])
+    elif val < 65536:
+        return bytes([major_bits | 25]) + struct.pack('>H', val)
+    elif val < 2**32:
+        return bytes([major_bits | 26]) + struct.pack('>I', val)
+    else:
+        return bytes([major_bits | 27]) + struct.pack('>Q', val)
+
+def encode_cbor_map(pairs):
+    out = encode_uint(5, len(pairs))
+    for k, v in pairs:
+        out += encode_item(k)
+        out += encode_item(v)
+    return out
+
+def encode_item(val):
+    if isinstance(val, int):
+        return encode_uint(0, val)
+    elif isinstance(val, bytes):
+        return encode_uint(2, len(val)) + val
+    elif isinstance(val, str):
+        encoded = val.encode('utf-8')
+        return encode_uint(3, len(encoded)) + encoded
+    else:
+        raise ValueError(f"unsupported type {type(val)}")
+
+# Read messages in a loop to handle EVENT messages before DATA
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — no reply expected
+        continue
+    break
+
+request_id = msg[2]
+node_id = msg[3]
+program_hash = msg[4]
+payload_data = msg[5]
+timestamp = msg[6]
+
+# Validate handler DATA message fields
+assert isinstance(node_id, str), f"node_id (key 3) must be a string, got {type(node_id)}"
+assert isinstance(program_hash, bytes), f"program_hash (key 4) must be bytes, got {type(program_hash)}"
+assert isinstance(timestamp, int) and timestamp > 0, f"timestamp (key 6) must be a positive integer, got {timestamp}"
+
+# Reply with the same data (echo)
+reply = encode_cbor_map([
+    (1, 0x81),       # msg_type = DATA_REPLY
+    (2, request_id), # request_id
+    (3, payload_data),  # data (echo back)
+])
+write_msg(reply)
+"#;
+
+/// Multi-message deferred delivery handler: reads DATA messages in a loop,
+/// replies with DATA_REPLY with `delivery=1` each time.
+const MULTI_DEFERRED_HANDLER_PY: &str = r#"
+import sys, struct
+
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
+def read_msg():
+    raw = read_exact(4)
+    length = struct.unpack('>I', raw)[0]
+    data = read_exact(length)
+    return data
+
+def write_msg(payload):
+    sys.stdout.buffer.write(struct.pack('>I', len(payload)))
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
+
+def decode_cbor_map(data):
+    result = {}
+    idx = 0
+    if data[idx] & 0xe0 != 0xa0 and data[idx] != 0xbf:
+        raise ValueError(f"expected map, got {data[idx]:#x}")
+    if data[idx] == 0xbf:
+        idx += 1
+        while data[idx] != 0xff:
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        idx += 1
+    else:
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+    return result
+
+def decode_item(data, idx):
+    major = (data[idx] >> 5) & 0x07
+    info = data[idx] & 0x1f
+    idx += 1
+    if major == 0:
+        val, idx = decode_uint(info, data, idx)
+        return val, idx
+    elif major == 2:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length], idx + length
+    elif major == 3:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length].decode('utf-8'), idx + length
+    elif major == 5:
+        count, idx = decode_uint(info, data, idx)
+        m = {}
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            m[k] = v
+        return m, idx
+    else:
+        raise ValueError(f"unsupported major type {major}")
+
+def decode_uint(info, data, idx):
+    if info < 24:
+        return info, idx
+    elif info == 24:
+        return data[idx], idx + 1
+    elif info == 25:
+        return struct.unpack('>H', data[idx:idx+2])[0], idx + 2
+    elif info == 26:
+        return struct.unpack('>I', data[idx:idx+4])[0], idx + 4
+    elif info == 27:
+        return struct.unpack('>Q', data[idx:idx+8])[0], idx + 8
+    else:
+        raise ValueError(f"unsupported additional info {info}")
+
+def encode_uint(major, val):
+    major_bits = major << 5
+    if val < 24:
+        return bytes([major_bits | val])
+    elif val < 256:
+        return bytes([major_bits | 24, val])
+    elif val < 65536:
+        return bytes([major_bits | 25]) + struct.pack('>H', val)
+    elif val < 2**32:
+        return bytes([major_bits | 26]) + struct.pack('>I', val)
+    else:
+        return bytes([major_bits | 27]) + struct.pack('>Q', val)
+
+def encode_cbor_map(pairs):
+    out = encode_uint(5, len(pairs))
+    for k, v in pairs:
+        out += encode_item(k)
+        out += encode_item(v)
+    return out
+
+def encode_item(val):
+    if isinstance(val, int):
+        return encode_uint(0, val)
+    elif isinstance(val, bytes):
+        return encode_uint(2, len(val)) + val
+    elif isinstance(val, str):
+        encoded = val.encode('utf-8')
+        return encode_uint(3, len(encoded)) + encoded
+    else:
+        raise ValueError(f"unsupported type {type(val)}")
+
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:  # EVENT — no reply expected
+        continue
+    request_id = msg[2]
+    payload_data = msg[5]
+
+    reply = encode_cbor_map([
+        (1, 0x81),
+        (2, request_id),
+        (3, payload_data),
+        (4, 1),  # delivery = 1 (deferred)
+    ])
+    write_msg(reply)
+"#;
+
+/// Oversized-reply handler: reads one DATA message, replies with DATA_REPLY
+/// containing data that exceeds `MAX_COMMAND_BLOB_SIZE` (193 bytes).
+const OVERSIZE_REPLY_HANDLER_PY: &str = r#"
+import sys, struct
+
+def read_exact(n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            sys.exit(0)
+        buf.extend(chunk)
+    return bytes(buf)
+
+def read_msg():
+    raw = read_exact(4)
+    length = struct.unpack('>I', raw)[0]
+    data = read_exact(length)
+    return data
+
+def write_msg(payload):
+    sys.stdout.buffer.write(struct.pack('>I', len(payload)))
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
+
+def decode_cbor_map(data):
+    result = {}
+    idx = 0
+    if data[idx] & 0xe0 != 0xa0 and data[idx] != 0xbf:
+        raise ValueError(f"expected map, got {data[idx]:#x}")
+    if data[idx] == 0xbf:
+        idx += 1
+        while data[idx] != 0xff:
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+        idx += 1
+    else:
+        count, idx = decode_uint(data[idx] & 0x1f, data, idx + 1)
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            result[k] = v
+    return result
+
+def decode_item(data, idx):
+    major = (data[idx] >> 5) & 0x07
+    info = data[idx] & 0x1f
+    idx += 1
+    if major == 0:
+        val, idx = decode_uint(info, data, idx)
+        return val, idx
+    elif major == 2:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length], idx + length
+    elif major == 3:
+        length, idx = decode_uint(info, data, idx)
+        return data[idx:idx+length].decode('utf-8'), idx + length
+    elif major == 5:
+        count, idx = decode_uint(info, data, idx)
+        m = {}
+        for _ in range(count):
+            k, idx = decode_item(data, idx)
+            v, idx = decode_item(data, idx)
+            m[k] = v
+        return m, idx
+    else:
+        raise ValueError(f"unsupported major type {major}")
+
+def decode_uint(info, data, idx):
+    if info < 24:
+        return info, idx
+    elif info == 24:
+        return data[idx], idx + 1
+    elif info == 25:
+        return struct.unpack('>H', data[idx:idx+2])[0], idx + 2
+    elif info == 26:
+        return struct.unpack('>I', data[idx:idx+4])[0], idx + 4
+    elif info == 27:
+        return struct.unpack('>Q', data[idx:idx+8])[0], idx + 8
+    else:
+        raise ValueError(f"unsupported additional info {info}")
+
+def encode_uint(major, val):
+    major_bits = major << 5
+    if val < 24:
+        return bytes([major_bits | val])
+    elif val < 256:
+        return bytes([major_bits | 24, val])
+    elif val < 65536:
+        return bytes([major_bits | 25]) + struct.pack('>H', val)
+    elif val < 2**32:
+        return bytes([major_bits | 26]) + struct.pack('>I', val)
+    else:
+        return bytes([major_bits | 27]) + struct.pack('>Q', val)
+
+def encode_cbor_map(pairs):
+    out = encode_uint(5, len(pairs))
+    for k, v in pairs:
+        out += encode_item(k)
+        out += encode_item(v)
+    return out
+
+def encode_item(val):
+    if isinstance(val, int):
+        return encode_uint(0, val)
+    elif isinstance(val, bytes):
+        return encode_uint(2, len(val)) + val
+    elif isinstance(val, str):
+        encoded = val.encode('utf-8')
+        return encode_uint(3, len(encoded)) + encoded
+    else:
+        raise ValueError(f"unsupported type {type(val)}")
+
+# Read messages, skipping EVENTs
+while True:
+    cbor_data = read_msg()
+    msg = decode_cbor_map(cbor_data)
+    if msg[1] == 2:
+        continue
+    break
+
+request_id = msg[2]
+
+# Reply with 200 bytes of data (exceeds MAX_COMMAND_BLOB_SIZE=193)
+reply = encode_cbor_map([
+    (1, 0x81),
+    (2, request_id),
+    (3, b"\xBB" * 200),
+])
+write_msg(reply)
+"#;
+
+/// T-0518: WAKE blob is forwarded to the handler as a DATA message and the
+/// handler reply is stored as a deferred reply for the next WAKE cycle.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0518_wake_blob_forwarded_to_handler() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x18; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-0518", 0x0518, [0x18; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // First WAKE with piggybacked blob — handler reply is stored for deferred delivery.
+    let wake_blob = vec![0xDE, 0xAD];
+    let (_seq, _, _payload, blob1) =
+        do_wake_with_blob(&gw, &node, 1000, &program_hash, &wake_blob).await;
+    // The first COMMAND should NOT contain the blob yet (handler runs async).
+    assert!(
+        blob1.is_none(),
+        "first COMMAND must not contain deferred blob"
+    );
+
+    // Poll until the background handler stores the deferred reply.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut wake_nonce = 2000;
+    let blob2 = loop {
+        let (_, _, _, candidate_blob) = do_wake_full(&gw, &node, wake_nonce, &program_hash).await;
+        if candidate_blob.is_some() {
+            break candidate_blob;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for deferred blob"
+        );
+        wake_nonce += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(
+        blob2.as_deref(),
+        Some(wake_blob.as_slice()),
+        "COMMAND must contain the deferred blob from WAKE blob handler"
+    );
+}
+
+/// T-0519: WAKE blob handler reply is always deferred — even when the handler
+/// returns `delivery=0` (normally immediate), the reply is stored as deferred
+/// and delivered on the next NOP WAKE, never as an immediate APP_DATA_REPLY.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0519_wake_blob_reply_always_deferred() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    // Use the echo handler which returns delivery=0 (immediate) by default.
+    let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x19; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-0519", 0x0519, [0x19; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE with non-empty blob — handler returns data with delivery=0.
+    // Even though delivery=0 normally means immediate, WAKE blob replies
+    // are ALWAYS deferred.
+    let wake_blob = vec![0xDE, 0xAD];
+    let (_seq, _, _payload, blob1) =
+        do_wake_with_blob(&gw, &node, 1000, &program_hash, &wake_blob).await;
+    // First COMMAND must NOT carry the reply (it's deferred, not immediate).
+    assert!(
+        blob1.is_none(),
+        "WAKE blob handler reply must be deferred, not immediate"
+    );
+
+    // Second WAKE (NOP) should carry the deferred blob.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut wake_nonce = 2000;
+    let blob2 = loop {
+        let (_, _, _, candidate_blob) = do_wake_full(&gw, &node, wake_nonce, &program_hash).await;
+        if candidate_blob.is_some() {
+            break candidate_blob;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for deferred blob from WAKE blob handler"
+        );
+        wake_nonce += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(
+        blob2.as_deref(),
+        Some(wake_blob.as_slice()),
+        "deferred WAKE blob reply must be delivered on next NOP COMMAND"
+    );
+}
+
+/// T-0519 variant: WAKE blob with empty data is NOT forwarded to handler.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0519_variant_empty_blob_not_forwarded() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x19; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-0519", 0x0519, [0x19; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE with empty blob — handler must NOT be invoked.
+    let empty_blob: Vec<u8> = vec![];
+    let (_, _, _, blob1) = do_wake_with_blob(&gw, &node, 1000, &program_hash, &empty_blob).await;
+    assert!(
+        blob1.is_none(),
+        "empty WAKE blob must not produce deferred reply"
+    );
+
+    // Poll briefly to confirm handler did NOT store a deferred reply.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+    let mut wake_nonce = 2000;
+    loop {
+        let (_, _, _, candidate_blob) = do_wake_full(&gw, &node, wake_nonce, &program_hash).await;
+        assert!(
+            candidate_blob.is_none(),
+            "no deferred reply expected when WAKE blob was empty"
+        );
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        wake_nonce += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// T-0520: Deferred reply is delivered exactly once — consumed after delivery.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0520_deferred_reply_consumed_after_delivery() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x20; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-0520", 0x0520, [0x20; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE 1: piggybacked blob → handler stores deferred reply.
+    let wake_blob = vec![0xCA, 0xFE];
+    do_wake_with_blob(&gw, &node, 1000, &program_hash, &wake_blob).await;
+
+    // Poll until the deferred reply is delivered.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut wake_nonce = 2000;
+    let blob2 = loop {
+        let (_, _, _, candidate_blob) = do_wake_full(&gw, &node, wake_nonce, &program_hash).await;
+        if candidate_blob.is_some() {
+            break candidate_blob;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for deferred blob"
+        );
+        wake_nonce += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(
+        blob2.as_deref(),
+        Some(wake_blob.as_slice()),
+        "deferred reply must be delivered on second WAKE"
+    );
+
+    // WAKE 3: deferred reply consumed — no blob.
+    let (_, _, _, blob3) = do_wake_full(&gw, &node, wake_nonce + 1, &program_hash).await;
+    assert!(
+        blob3.is_none(),
+        "deferred reply must be consumed after delivery (third WAKE should have no blob)"
+    );
+}
+
+/// T-0521: Deferred reply cleared after delivery — after deferred reply is
+/// delivered, next WAKE COMMAND has no blob.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0521_deferred_reply_cleared_after_delivery() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x51; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-t0521", 0x0521, [0x51; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE 1: piggybacked blob → handler stores deferred reply.
+    let wake_blob = vec![0xAA, 0xBB];
+    do_wake_with_blob(&gw, &node, 1000, &program_hash, &wake_blob).await;
+
+    // Poll until the deferred reply is delivered (WAKE 2).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut wake_nonce = 2000;
+    loop {
+        let (_, _, _, candidate_blob) = do_wake_full(&gw, &node, wake_nonce, &program_hash).await;
+        if candidate_blob.is_some() {
+            assert_eq!(
+                candidate_blob.as_deref(),
+                Some(wake_blob.as_slice()),
+                "deferred reply must match sent blob"
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for deferred blob"
+        );
+        wake_nonce += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // WAKE 3: deferred reply must be cleared — no blob.
+    let (_, _, _, blob3) = do_wake_full(&gw, &node, wake_nonce + 1, &program_hash).await;
+    assert!(
+        blob3.is_none(),
+        "deferred reply must be cleared after delivery (third WAKE should have no blob)"
+    );
+}
+
+/// T-0522: Deferred reply latest-wins — store [0x01], store [0x02], WAKE
+/// delivers [0x02].
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0522_deferred_reply_latest_wins() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "deferred_echo.py", MULTI_DEFERRED_HANDLER_PY);
+
+    let program_hash = vec![0x52; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-t0522", 0x0522, [0x52; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE 1: establish session.
+    let (starting_seq, _, _) = do_wake(&gw, &node, 1000, &program_hash).await;
+
+    // APP_DATA 1 with delivery=1 → stores deferred [0x01].
+    let blob1 = vec![0x01];
+    let app1 = node.build_app_data(starting_seq, &blob1);
+    let resp1 = gw.process_frame(&app1, node.peer_address()).await;
+    assert!(
+        resp1.is_none(),
+        "deferred delivery (delivery=1) must suppress immediate APP_DATA_REPLY"
+    );
+
+    // APP_DATA 2 with delivery=1 → stores deferred [0x02], overwriting [0x01].
+    let blob2 = vec![0x02];
+    let app2 = node.build_app_data(starting_seq + 1, &blob2);
+    let resp2 = gw.process_frame(&app2, node.peer_address()).await;
+    assert!(
+        resp2.is_none(),
+        "deferred delivery (delivery=1) must suppress immediate APP_DATA_REPLY"
+    );
+
+    // WAKE 2: NOP COMMAND must carry [0x02] (latest wins), not [0x01].
+    let (_, _, _, deferred_blob) = do_wake_full(&gw, &node, 2000, &program_hash).await;
+    assert_eq!(
+        deferred_blob.as_deref(),
+        Some([0x02].as_slice()),
+        "deferred reply must be latest-wins: expected [0x02], not [0x01]"
+    );
+}
+
+/// T-0523: Deferred data not delivered on non-NOP command — store deferred
+/// reply synchronously via APP_DATA with `delivery=1`, trigger program update,
+/// assert COMMAND is UPDATE_PROGRAM without blob, clear update, then assert
+/// next NOP WAKE delivers the deferred data.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0523_deferred_not_delivered_on_non_nop() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    // Use the deferred handler (delivery=1) so APP_DATA stores deterministically.
+    let script = write_handler_script(tmp.path(), "deferred_echo.py", MULTI_DEFERRED_HANDLER_PY);
+
+    let program_hash = vec![0x53; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-t0523", 0x0523, [0x53; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE 1: establish session (no blob).
+    let (starting_seq, _, _) = do_wake(&gw, &node, 1000, &program_hash).await;
+
+    // APP_DATA with delivery=1 → handler stores deferred reply [0xDD]
+    // synchronously (no async handler race).
+    let deferred_data = vec![0xDD];
+    let app_frame = node.build_app_data(starting_seq, &deferred_data);
+    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
+    assert!(
+        resp.is_none(),
+        "deferred delivery (delivery=1) must suppress immediate APP_DATA_REPLY"
+    );
+
+    // Assign a different program so the next WAKE triggers UpdateProgram, not NOP.
+    let lib = ProgramLibrary::new();
+    let image = ProgramImage {
+        bytecode: vec![
+            0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+        ],
+        maps: vec![],
+        map_initial_data: vec![],
+    };
+    let cbor = image.encode_deterministic().unwrap();
+    let prog_record = lib
+        .ingest_unverified(cbor, VerificationProfile::Resident)
+        .unwrap();
+    let new_program_hash = prog_record.hash.clone();
+    storage.store_program(&prog_record).await.unwrap();
+    {
+        let mut record = storage.get_node("node-t0523").await.unwrap().unwrap();
+        record.assigned_program_hash = Some(new_program_hash.clone());
+        storage.upsert_node(&record).await.unwrap();
+    }
+
+    // WAKE 2: Should get UpdateProgram (not NOP) — blob must NOT be injected.
+    let frame2 = node.build_wake(2000, 1, &program_hash, 3300);
+    let resp2 = gw
+        .process_frame(&frame2, node.peer_address())
+        .await
+        .expect("expected COMMAND response");
+    let (_hdr2, msg2) = decode_response(&resp2, &node.psk);
+    match msg2 {
+        GatewayMessage::Command { payload, blob, .. } => {
+            assert!(
+                matches!(payload, CommandPayload::UpdateProgram { .. }),
+                "expected UpdateProgram command"
+            );
+            assert!(
+                blob.is_none(),
+                "deferred reply must NOT be injected into non-NOP COMMAND"
+            );
+        }
+        other => panic!("expected Command, got {:?}", other),
+    }
+
+    // Clear the pending update so next WAKE is NOP.
+    {
+        let mut record = storage.get_node("node-t0523").await.unwrap().unwrap();
+        record.assigned_program_hash = Some(program_hash.to_vec());
+        record.current_program_hash = Some(program_hash.to_vec());
+        storage.upsert_node(&record).await.unwrap();
+    }
+
+    // WAKE 3: NOP COMMAND should now deliver the deferred blob [0xDD].
+    let (_, _, payload3, blob3) = do_wake_full(&gw, &node, 3000, &program_hash).await;
+    assert!(
+        matches!(payload3, CommandPayload::Nop),
+        "expected NOP command after clearing pending update"
+    );
+    assert_eq!(
+        blob3.as_deref(),
+        Some(deferred_data.as_slice()),
+        "deferred reply must be delivered in NOP COMMAND after non-NOP suppression"
+    );
+}
+
+/// Extra coverage: WAKE blob with no matching handler — no crash, no deferred reply.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0518_variant_no_handler() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    // Handler only matches a different program hash.
+    let handler_hash = vec![0xFF; 32];
+    let script = write_handler_script(tmp.path(), "wake_echo.py", WAKE_BLOB_ECHO_HANDLER_PY);
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(handler_hash)], script),
+    ])));
+
+    let program_hash = vec![0x22; 32];
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-nh", 0x0522, [0x22; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE with blob but no matching handler.
+    let wake_blob = vec![0x01, 0x02, 0x03];
+    let (_, _, _, blob1) = do_wake_with_blob(&gw, &node, 1000, &program_hash, &wake_blob).await;
+    assert!(blob1.is_none(), "no deferred reply on first WAKE");
+
+    // Poll briefly to confirm no deferred reply was stored.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+    let mut wake_nonce = 2000;
+    loop {
+        let (_, _, _, candidate_blob) = do_wake_full(&gw, &node, wake_nonce, &program_hash).await;
+        assert!(
+            candidate_blob.is_none(),
+            "no deferred reply when no handler matches the program hash"
+        );
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        wake_nonce += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Extra coverage: WAKE blob handler reply exceeding `MAX_COMMAND_BLOB_SIZE` is dropped.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0518_variant_oversized_reply() {
+    require_python!();
+    // Validate that the Python handler's hardcoded 200-byte reply actually
+    // exceeds the protocol limit. If MAX_COMMAND_BLOB_SIZE changes, this
+    // assertion will fire and remind us to update OVERSIZE_REPLY_HANDLER_PY.
+    assert_eq!(
+        200,
+        MAX_COMMAND_BLOB_SIZE + 7,
+        "update OVERSIZE_REPLY_HANDLER_PY if MAX_COMMAND_BLOB_SIZE changes"
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    // Handler returns 200 bytes (> MAX_COMMAND_BLOB_SIZE), which should be dropped.
+    let script = write_handler_script(tmp.path(), "oversize.py", OVERSIZE_REPLY_HANDLER_PY);
+
+    let program_hash = vec![0x23; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-os", 0x0523, [0x23; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // Send a small WAKE blob — handler will amplify into oversized reply.
+    let wake_blob = vec![0x01];
+    do_wake_with_blob(&gw, &node, 1000, &program_hash, &wake_blob).await;
+
+    // Poll briefly to confirm oversized reply was dropped.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+    let mut wake_nonce = 2000;
+    loop {
+        let (_, _, _, candidate_blob) = do_wake_full(&gw, &node, wake_nonce, &program_hash).await;
+        assert!(
+            candidate_blob.is_none(),
+            "oversized WAKE blob handler reply must be dropped"
+        );
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        wake_nonce += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// T-0524: APP_DATA handler reply with `delivery=1` stores deferred reply.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0524_app_data_deferred_delivery() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "deferred_echo.py", MULTI_DEFERRED_HANDLER_PY);
+
+    let program_hash = vec![0x24; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-0524", 0x0524, [0x24; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE 1: establish session.
+    let (starting_seq, _, _) = do_wake(&gw, &node, 1000, &program_hash).await;
+
+    // Send APP_DATA — handler replies with delivery=1 (deferred).
+    let blob = vec![0xD0, 0xD1, 0xD2];
+    let app_frame = node.build_app_data(starting_seq, &blob);
+    let resp = gw.process_frame(&app_frame, node.peer_address()).await;
+    // Deferred delivery means no immediate APP_DATA_REPLY.
+    assert!(
+        resp.is_none(),
+        "deferred delivery (delivery=1) must suppress immediate APP_DATA_REPLY"
+    );
+
+    // WAKE 2: NOP COMMAND should carry the deferred reply.
+    let (_, _, _, deferred_blob) = do_wake_full(&gw, &node, 2000, &program_hash).await;
+    assert_eq!(
+        deferred_blob.as_deref(),
+        Some(blob.as_slice()),
+        "deferred reply must be delivered in next NOP COMMAND"
+    );
+}
+
+/// T-0525: APP_DATA handler reply with `delivery=0` (immediate) returns
+/// APP_DATA_REPLY directly.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0525_app_data_immediate_delivery() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x25; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-0525", 0x0525, [0x25; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    let (starting_seq, _, _) = do_wake(&gw, &node, 1000, &program_hash).await;
+
+    let blob = vec![0xE0, 0xE1];
+    let app_frame = node.build_app_data(starting_seq, &blob);
+    let resp = gw
+        .process_frame(&app_frame, node.peer_address())
+        .await
+        .expect("immediate delivery must produce APP_DATA_REPLY");
+
+    let (hdr, msg) = decode_response(&resp, &node.psk);
+    assert_eq!(hdr.msg_type, MSG_APP_DATA_REPLY);
+    match msg {
+        GatewayMessage::AppDataReply { blob: reply_blob } => {
+            assert_eq!(reply_blob, blob, "immediate delivery must echo data back");
+        }
+        other => panic!("expected AppDataReply, got {:?}", other),
+    }
+
+    // Verify no deferred reply was stored.
+    let (_, _, _, deferred_blob) = do_wake_full(&gw, &node, 2000, &program_hash).await;
+    assert!(
+        deferred_blob.is_none(),
+        "immediate delivery must not store deferred reply"
+    );
+}
+
+/// T-0526: WAKE without blob — NOP COMMAND has no blob field.
+#[cfg_attr(not(feature = "python-tests"), ignore = "requires Python runtime")]
+#[tokio::test]
+async fn t0526_wake_no_blob_nop_command_clean() {
+    require_python!();
+    let tmp = tempfile::tempdir().unwrap();
+    let script = write_handler_script(tmp.path(), "echo.py", ECHO_HANDLER_PY);
+
+    let program_hash = vec![0x26; 32];
+    let router = Arc::new(tokio::sync::RwLock::new(HandlerRouter::new(vec![
+        python_handler_config(vec![ProgramMatcher::Hash(program_hash.clone())], script),
+    ])));
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway_with_handler(storage.clone(), router);
+
+    let node = TestNode::new("node-0526", 0x0526, [0x26; 32]);
+    setup_node_with_program(&storage, &node, &program_hash).await;
+
+    // WAKE without blob — standard NOP COMMAND expected with no blob.
+    let (_, _, payload, blob) = do_wake_full(&gw, &node, 1000, &program_hash).await;
+    assert!(
+        matches!(payload, CommandPayload::Nop),
+        "expected NOP command"
+    );
+    assert!(
+        blob.is_none(),
+        "NOP COMMAND without prior deferred reply must have no blob"
+    );
 }

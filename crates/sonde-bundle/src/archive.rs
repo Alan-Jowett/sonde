@@ -416,6 +416,8 @@ nodes:
         std::fs::write(dir.join("bpf").join("test.elf"), &elf).unwrap();
     }
 
+    /// T-SB-0800: Create valid bundle.
+    /// T-SB-0200 variant: Valid archive extraction (round-trip).
     #[test]
     fn test_create_and_extract_round_trip() {
         let src = tempfile::tempdir().unwrap();
@@ -436,6 +438,7 @@ nodes:
         assert!(extract_dir.path().join("bpf").join("test.elf").exists());
     }
 
+    /// T-SB-0801: Create fails on invalid manifest.
     #[test]
     fn test_create_fails_on_invalid_manifest() {
         let src = tempfile::tempdir().unwrap();
@@ -452,6 +455,7 @@ nodes:
         assert!(!bundle_path.exists());
     }
 
+    /// T-SB-0900: Inspect valid bundle.
     #[test]
     fn test_inspect_bundle() {
         let src = tempfile::tempdir().unwrap();
@@ -466,6 +470,7 @@ nodes:
         assert!(!info.files.is_empty());
     }
 
+    /// T-SB-1002: CLI validate — valid bundle.
     #[test]
     fn test_validate_bundle() {
         let src = tempfile::tempdir().unwrap();
@@ -479,6 +484,7 @@ nodes:
         assert!(result.is_valid(), "expected valid: {:?}", result.errors);
     }
 
+    /// T-SB-0204: Archive missing app.yaml.
     #[test]
     fn test_missing_manifest() {
         let src = tempfile::tempdir().unwrap();
@@ -495,6 +501,7 @@ nodes:
         assert!(matches!(result, Err(BundleError::MissingManifest)));
     }
 
+    /// T-SB-0203: Non-gzip file rejection.
     #[test]
     fn test_non_gzip_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -504,6 +511,7 @@ nodes:
         assert!(result.is_err());
     }
 
+    /// T-SB-0802: Create excludes unreferenced files.
     #[test]
     fn test_create_excludes_unreferenced_files() {
         let src = tempfile::tempdir().unwrap();
@@ -531,6 +539,7 @@ nodes:
             .any(|f| f.path.contains("unreferenced")));
     }
 
+    /// T-SB-0201: Archive with path traversal.
     #[test]
     fn test_path_traversal_rejected() {
         // Build a tgz with a path-traversal entry by writing raw tar headers
@@ -574,6 +583,7 @@ nodes:
         );
     }
 
+    /// T-SB-0202: Archive with symlink.
     #[test]
     fn test_symlink_rejected() {
         // Create a tgz with a symlink entry
@@ -604,6 +614,7 @@ nodes:
         );
     }
 
+    /// T-SB-0201 variant: Archive safety — hardlink rejected.
     #[test]
     fn test_hardlink_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -633,6 +644,7 @@ nodes:
         );
     }
 
+    /// T-SB-0201 variant: Archive safety — FIFO entry rejected.
     #[test]
     fn test_fifo_entry_rejected() {
         let dir = tempfile::tempdir().unwrap();

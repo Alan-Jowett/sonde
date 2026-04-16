@@ -505,6 +505,7 @@ mod tests {
         std::fs::write(bpf_dir.join("test.elf"), &elf).unwrap();
     }
 
+    /// T-SB-0100: Valid manifest parsing.
     #[test]
     fn test_valid_manifest() {
         let dir = tempfile::tempdir().unwrap();
@@ -514,6 +515,7 @@ mod tests {
         assert!(r.is_valid(), "expected valid: {:?}", r.errors);
     }
 
+    /// T-SB-0105: Schema version validation — unsupported.
     #[test]
     fn test_unsupported_schema_version() {
         let dir = tempfile::tempdir().unwrap();
@@ -528,6 +530,7 @@ mod tests {
             .any(|e| e.message.contains("unsupported schema version")));
     }
 
+    /// T-SB-0106: Schema version validation — zero.
     #[test]
     fn test_schema_version_zero() {
         let dir = tempfile::tempdir().unwrap();
@@ -539,6 +542,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.message.contains(">= 1")));
     }
 
+    /// T-SB-0107: Schema version validation — missing.
     #[test]
     fn test_schema_version_missing() {
         let dir = tempfile::tempdir().unwrap();
@@ -553,6 +557,7 @@ mod tests {
             .any(|e| e.message.contains("missing required field")));
     }
 
+    /// T-SB-0301: Invalid name — uppercase.
     #[test]
     fn test_invalid_app_name_uppercase() {
         let dir = tempfile::tempdir().unwrap();
@@ -564,6 +569,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.rule == "name"));
     }
 
+    /// T-SB-0302: Invalid name — leading hyphen.
     #[test]
     fn test_invalid_app_name_leading_hyphen() {
         let dir = tempfile::tempdir().unwrap();
@@ -575,6 +581,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.rule == "name"));
     }
 
+    /// T-SB-0100 variant: Valid manifest parsing (single-char name edge case).
     #[test]
     fn test_single_char_app_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -589,6 +596,7 @@ mod tests {
         );
     }
 
+    /// T-SB-0303: Invalid version — not semver.
     #[test]
     fn test_invalid_semver() {
         let dir = tempfile::tempdir().unwrap();
@@ -600,6 +608,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.message.contains("semver")));
     }
 
+    /// T-SB-0304: Empty programs list.
     #[test]
     fn test_empty_programs() {
         let dir = tempfile::tempdir().unwrap();
@@ -613,6 +622,7 @@ mod tests {
             .any(|e| e.message.contains("programs must not be empty")));
     }
 
+    /// T-SB-0305: Empty nodes list.
     #[test]
     fn test_empty_nodes() {
         let dir = tempfile::tempdir().unwrap();
@@ -627,6 +637,7 @@ mod tests {
             .any(|e| e.message.contains("nodes must not be empty")));
     }
 
+    /// T-SB-0306: Description exceeds max length.
     #[test]
     fn test_description_too_long() {
         let dir = tempfile::tempdir().unwrap();
@@ -638,6 +649,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.message.contains("256")));
     }
 
+    /// T-SB-0400: Program file not found.
     #[test]
     fn test_program_file_not_found() {
         let dir = tempfile::tempdir().unwrap();
@@ -651,6 +663,7 @@ mod tests {
             .any(|e| e.message.contains("program file not found")));
     }
 
+    /// T-SB-0401: Invalid ELF magic.
     #[test]
     fn test_invalid_elf_magic() {
         let dir = tempfile::tempdir().unwrap();
@@ -663,6 +676,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.message.contains("invalid ELF")));
     }
 
+    /// T-SB-0402: Duplicate program names.
     #[test]
     fn test_duplicate_program_names() {
         let dir = tempfile::tempdir().unwrap();
@@ -681,6 +695,7 @@ mod tests {
             .any(|e| e.message.contains("duplicate program name")));
     }
 
+    /// T-SB-0404: Invalid program name.
     #[test]
     fn test_invalid_program_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -696,6 +711,7 @@ mod tests {
             .any(|e| e.rule == "program.name" && e.message.contains("pattern")));
     }
 
+    /// T-SB-0500: Handler references unknown program.
     #[test]
     fn test_handler_unknown_program() {
         let dir = tempfile::tempdir().unwrap();
@@ -716,6 +732,7 @@ mod tests {
             .any(|e| e.message.contains("unknown program")));
     }
 
+    /// T-SB-0501: Valid catch-all handler.
     #[test]
     fn test_handler_catch_all() {
         let dir = tempfile::tempdir().unwrap();
@@ -736,6 +753,7 @@ mod tests {
         );
     }
 
+    /// T-SB-0502: Duplicate catch-all handlers.
     #[test]
     fn test_duplicate_catch_all() {
         let dir = tempfile::tempdir().unwrap();
@@ -758,6 +776,7 @@ mod tests {
             .any(|e| e.message.contains("duplicate catch-all")));
     }
 
+    /// T-SB-0503: Handler with empty command.
     #[test]
     fn test_handler_empty_command() {
         let dir = tempfile::tempdir().unwrap();
@@ -778,6 +797,7 @@ mod tests {
             .any(|e| e.message.contains("must not be empty")));
     }
 
+    /// T-SB-0504: Handler with invalid reply_timeout_ms.
     #[test]
     fn test_handler_zero_timeout() {
         let dir = tempfile::tempdir().unwrap();
@@ -798,6 +818,7 @@ mod tests {
             .any(|e| e.message.contains("positive integer")));
     }
 
+    /// T-SB-0600: Node references unknown program.
     #[test]
     fn test_node_unknown_program() {
         let dir = tempfile::tempdir().unwrap();
@@ -816,6 +837,7 @@ mod tests {
             .any(|e| e.message.contains("unknown program")));
     }
 
+    /// T-SB-0601: Duplicate node names.
     #[test]
     fn test_duplicate_node_names() {
         let dir = tempfile::tempdir().unwrap();
@@ -834,6 +856,7 @@ mod tests {
             .any(|e| e.message.contains("duplicate node name")));
     }
 
+    /// T-SB-0603: RF channel out of range.
     #[test]
     fn test_rf_channel_out_of_range() {
         let dir = tempfile::tempdir().unwrap();
@@ -849,6 +872,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.message.contains("rf_channel")));
     }
 
+    /// T-SB-0604: Sensor label exceeds max length.
     #[test]
     fn test_sensor_label_too_long() {
         let dir = tempfile::tempdir().unwrap();
@@ -871,6 +895,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.message.contains("64 bytes")));
     }
 
+    /// T-SB-0700: Unreferenced program warning.
     #[test]
     fn test_unreferenced_program_warning() {
         let dir = tempfile::tempdir().unwrap();
@@ -896,6 +921,7 @@ mod tests {
         assert!(r.warnings.iter().any(|w| w.message.contains("extra-prog")));
     }
 
+    /// T-SB-0201 variant: Archive with path traversal (dotdot in filename, not path component).
     #[test]
     fn test_dotdot_in_filename_not_path_component() {
         let dir = tempfile::tempdir().unwrap();
@@ -914,6 +940,7 @@ mod tests {
         );
     }
 
+    /// T-SB-0300: Missing required field — empty node name.
     #[test]
     fn test_empty_node_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -928,6 +955,7 @@ mod tests {
             .any(|e| e.message.contains("must not be empty")));
     }
 
+    /// T-SB-0500 variant: Validates no false-positive on handler unknown program.
     #[test]
     fn test_multiple_handlers_same_program_allowed() {
         let dir = tempfile::tempdir().unwrap();
@@ -950,6 +978,7 @@ mod tests {
         );
     }
 
+    /// T-SB-0500 variant: Handler working_dir validation — directory not found.
     #[test]
     fn test_handler_working_dir_not_found() {
         let dir = tempfile::tempdir().unwrap();
@@ -970,6 +999,7 @@ mod tests {
             .any(|e| e.message.contains("working directory not found")));
     }
 
+    /// T-SB-0500 variant: Handler working_dir validation — path is a file.
     #[test]
     fn test_handler_working_dir_is_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -992,6 +1022,7 @@ mod tests {
             .any(|e| e.message.contains("must be a directory")));
     }
 
+    /// T-SB-0500 variant: Handler working_dir validation — valid directory.
     #[test]
     fn test_handler_working_dir_valid() {
         let dir = tempfile::tempdir().unwrap();
@@ -1013,6 +1044,7 @@ mod tests {
         );
     }
 
+    /// T-SB-0605: Pins required when I2C sensor declared.
     #[test]
     fn test_pins_required_when_i2c_sensor_declared() {
         let dir = tempfile::tempdir().unwrap();
@@ -1035,6 +1067,7 @@ mod tests {
             .any(|e| e.message.contains("pins") && e.message.contains("I2C")));
     }
 
+    /// T-SB-0606: Pin SDA equals SCL rejected.
     #[test]
     fn test_pin_sda_equals_scl_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -1060,6 +1093,7 @@ mod tests {
             .any(|e| e.message.contains("different GPIO pins")));
     }
 
+    /// T-SB-0607: Pin GPIO out of range rejected.
     #[test]
     fn test_pin_gpio_out_of_range_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -1082,6 +1116,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.message.contains("out of range")));
     }
 
+    /// T-SB-0605 variant: Pins required when I2C sensor declared (positive case).
     #[test]
     fn test_pins_valid_with_i2c_sensor() {
         let dir = tempfile::tempdir().unwrap();
@@ -1107,6 +1142,7 @@ mod tests {
         );
     }
 
+    /// T-SB-0605 variant: Pins required when I2C sensor declared (no-pin-needed case).
     #[test]
     fn test_pins_without_i2c_sensor_allowed() {
         let dir = tempfile::tempdir().unwrap();
@@ -1128,6 +1164,7 @@ mod tests {
         );
     }
 
+    /// T-SB-0608: Partial pin spec rejected (SDA without SCL).
     #[test]
     fn test_partial_pins_missing_scl_rejected_at_parse() {
         let yaml = r#"

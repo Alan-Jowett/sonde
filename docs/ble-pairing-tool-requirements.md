@@ -394,7 +394,7 @@ The tool MUST build a PairingRequest as a deterministic CBOR map (RFC 8949 §4.2
 **Source:** ble-pairing-protocol.md §11
 
 **Description:**  
-The encrypted payload MUST NOT exceed 202 bytes (the ESP-NOW frame budget). The encrypted payload overhead is 28 bytes: `nonce[12] + GCM tag[16]`. This leaves approximately 174 bytes for the CBOR ciphertext, yielding ~190 bytes of usable CBOR plaintext space (accounting for `phone_key_hint[2]` in the outer `NODE_PROVISION` frame). If the PairingRequest CBOR is too large, the tool MUST reject the request and report the size constraint to the operator **before** attempting BLE transmission.
+The encrypted payload MUST NOT exceed 202 bytes (the ESP-NOW frame budget). The encrypted payload is a complete ESP-NOW `PEER_REQUEST` frame built from the PairingRequest CBOR via two-layer AES-256-GCM encryption (see PT-0407). If the resulting frame exceeds 202 bytes, the tool MUST reject the request and report the size constraint to the operator **before** attempting BLE transmission.
 
 **Acceptance criteria:**
 
@@ -409,7 +409,7 @@ The encrypted payload MUST NOT exceed 202 bytes (the ESP-NOW frame budget). The 
 **Source:** ble-pairing-protocol.md §6.6, §6.7
 
 **Description:**  
-The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ phone_key_hint[2] ‖ phone_psk[32] ‖ payload_len[2, BE u16] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s). The `encrypted_payload` format is `nonce[12] ‖ ciphertext ‖ tag[16]` (AES-256-GCM with `phone_psk` as key and AAD = `"sonde-pairing-v2"`).
+The tool MUST assemble the `NODE_PROVISION` body as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload`, write it to the Node Command characteristic, and wait for `NODE_ACK` (timeout: 5 s). The `encrypted_payload` is a complete ESP-NOW `PEER_REQUEST` frame (see ble-pairing-protocol.md §7.1) built by the phone using `phone_psk` for AES-256-GCM encryption with AAD = `"sonde-pairing-v2"`. The node stores and forwards this frame verbatim — it does not decrypt or interpret the contents.
 
 **Acceptance criteria:**
 

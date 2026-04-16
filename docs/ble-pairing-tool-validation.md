@@ -586,7 +586,7 @@ TestNode {
 1. Pre-load pairing store with valid Phase 1 artifacts.
 2. Configure mock transport to return `NODE_ACK(0x00)` after `NODE_PROVISION` write.
 3. Initiate Phase 2 with `node_id = "sensor-01"`.
-4. Assert: tool writes `NODE_PROVISION` as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ phone_key_hint[2] ‖ phone_psk[32] ‖ payload_len[2, BE u16] ‖ encrypted_payload`.
+4. Assert: tool writes `NODE_PROVISION` as `node_key_hint[2] ‖ node_psk[32] ‖ rf_channel[1] ‖ payload_len[2, BE u16] ‖ encrypted_payload` (37-byte prefix + payload).
 5. Assert: success output includes `node_id`, `node_key_hint`, and `rf_channel`.
 
 ---

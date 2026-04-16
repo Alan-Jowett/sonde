@@ -156,6 +156,71 @@ fn build_setup(ir3: &crate::ir::Ir3) -> SExpr {
         SExpr::list("pad_to_mask_clearance", vec![SExpr::Atom("0.1".into())]),
         SExpr::list("solder_mask_min_width", vec![SExpr::Atom("0.1".into())]),
     ];
+
+    // Emit net-class definitions from IR-3 routing constraints.
+    if let Some(rc) = &ir3.routing_constraints {
+        // Default net class (always present)
+        let mut default_width = "0.25".to_string();
+        if let Some(signal_traces) = &rc.signal_traces {
+            // Use the minimum signal trace width (most conservative)
+            let min_width = signal_traces
+                .iter()
+                .map(|st| st.width_mm)
+                .fold(f64::INFINITY, f64::min);
+            if min_width.is_finite() {
+                default_width = fmt(min_width);
+            }
+        }
+        let mut default_nc = vec![
+            SExpr::Quoted("Default".into()),
+            SExpr::pair_quoted("description", "Default net class"),
+            SExpr::list("clearance", vec![SExpr::Atom("0.2".into())]),
+            SExpr::list("trace_width", vec![SExpr::Atom(default_width)]),
+        ];
+        if let Some(via) = &rc.via_constraints {
+            default_nc.push(SExpr::list(
+                "via_dia",
+                vec![SExpr::Atom(fmt(via.diameter_mm))],
+            ));
+            default_nc.push(SExpr::list(
+                "via_drill",
+                vec![SExpr::Atom(fmt(via.drill_mm))],
+            ));
+        }
+        setup_children.push(SExpr::list("net_class", default_nc));
+
+        // Power net class from power_traces
+        if let Some(power_traces) = &rc.power_traces {
+            if let Some(first) = power_traces.first() {
+                let pw = first.min_width_mm.unwrap_or(0.5);
+                let mut power_nc = vec![
+                    SExpr::Quoted("Power".into()),
+                    SExpr::pair_quoted("description", "Power net class"),
+                    SExpr::list("clearance", vec![SExpr::Atom("0.2".into())]),
+                    SExpr::list("trace_width", vec![SExpr::Atom(fmt(pw))]),
+                ];
+                if let Some(via) = &rc.via_constraints {
+                    power_nc.push(SExpr::list(
+                        "via_dia",
+                        vec![SExpr::Atom(fmt(via.diameter_mm))],
+                    ));
+                    power_nc.push(SExpr::list(
+                        "via_drill",
+                        vec![SExpr::Atom(fmt(via.drill_mm))],
+                    ));
+                }
+                // Add net assignments for each power trace (skip copper pours)
+                for pt in power_traces {
+                    if pt.trace_type.as_deref() == Some("copper pour") {
+                        continue; // copper pours handled separately, not as net class traces
+                    }
+                    power_nc.push(SExpr::list("add_net", vec![SExpr::Quoted(pt.net.clone())]));
+                }
+                setup_children.push(SExpr::list("net_class", power_nc));
+            }
+        }
+    }
+
     if let Some(rc) = &ir3.routing_constraints {
         if let Some(_via) = &rc.via_constraints {
             setup_children.push(SExpr::list(

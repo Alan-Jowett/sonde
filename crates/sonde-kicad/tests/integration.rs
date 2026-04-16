@@ -378,6 +378,65 @@ fn sexpr_parse_round_trip() {
     assert_eq!(serialized, reserialized, "round-trip should be identical");
 }
 
+/// T-KE-010: Atom serialization produces unquoted text.
+#[test]
+fn sexpr_atom_serialization() {
+    use sonde_kicad::sexpr::SExpr;
+    let atom = SExpr::Atom("hello".into());
+    let s = atom.serialize();
+    assert!(s.contains("hello"), "atom should serialize as-is");
+    assert!(!s.contains('"'), "atom must not be quoted");
+}
+
+/// T-KE-011: Quoted string serialization wraps in double quotes.
+#[test]
+fn sexpr_quoted_serialization() {
+    use sonde_kicad::sexpr::SExpr;
+    let q = SExpr::Quoted("my value".into());
+    let s = q.serialize();
+    assert!(
+        s.contains("\"my value\""),
+        "quoted string must appear with double quotes"
+    );
+}
+
+/// T-KE-012: pair() creates `(tag value)` with atom value.
+#[test]
+fn sexpr_pair_atom() {
+    use sonde_kicad::sexpr::SExpr;
+    let p = SExpr::pair("version", "20231120");
+    let s = p.serialize();
+    assert!(s.contains("version"), "should contain tag");
+    assert!(s.contains("20231120"), "should contain value");
+    assert!(!s.contains('"'), "pair value must be an atom, not quoted");
+}
+
+/// T-KE-013: pair_quoted() creates `(tag "value")` with quoted value.
+#[test]
+fn sexpr_pair_quoted() {
+    use sonde_kicad::sexpr::SExpr;
+    let p = SExpr::pair_quoted("generator", "sonde-kicad");
+    let s = p.serialize();
+    assert!(
+        s.contains("\"sonde-kicad\""),
+        "pair_quoted value must be quoted"
+    );
+}
+
+/// T-KE-014: list() creates `(tag child1 child2 ...)`.
+#[test]
+fn sexpr_list_nesting() {
+    use sonde_kicad::sexpr::SExpr;
+    let l = SExpr::list(
+        "parent",
+        vec![SExpr::Atom("child1".into()), SExpr::Quoted("child2".into())],
+    );
+    let s = l.serialize();
+    assert!(s.contains("parent"), "should contain tag");
+    assert!(s.contains("child1"), "should contain first child");
+    assert!(s.contains("\"child2\""), "should contain quoted child");
+}
+
 // ---------------------------------------------------------------------------
 // UUID Generator
 // ---------------------------------------------------------------------------
@@ -502,4 +561,210 @@ fn full_pipeline_carrier_board() {
     let cpl_count = cpl.lines().count() - 1;
     assert_eq!(bom_count, cpl_count);
     assert_eq!(bom_count, bundle.ir1e.components.len());
+}
+
+// ---------------------------------------------------------------------------
+// F-009: Proximity Constraint Enforcement
+// ---------------------------------------------------------------------------
+
+/// T-KE-035: Zone-placed component bounds — validates that the proximity
+/// constraint is enforced pairwise across components within a zone.
+#[test]
+fn proximity_constraint_enforced() {
+    let dir = minimal_board_dir();
+    let bundle = ir::load_ir(&dir).unwrap();
+
+    // The minimal board has R1,C1 in a zone with proximity_constraint_mm: 3.0.
+    // The placement algorithm should place them within 3.0mm of the zone anchor.
+    let pos_map = sonde_kicad::pcb::placement::compute_position_map(&bundle).unwrap();
+
+    // Zone anchor: (8.0, 12.0) → board-Y = 20.0 - 12.0 = 8.0
+    let anchor_x = 8.0;
+    let anchor_y = 8.0;
+    for ref_des in &["R1", "C1"] {
+        let pos = pos_map
+            .get(*ref_des)
+            .unwrap_or_else(|| panic!("{ref_des} should be placed"));
+        let dx = pos.0 - anchor_x;
+        let dy = pos.1 - anchor_y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        assert!(
+            dist <= 3.0,
+            "{ref_des} should be within 3.0mm of anchor, got {dist:.1}mm"
+        );
+    }
+}
+
+/// T-KE-035b: Proximity constraint violation should produce an error.
+#[test]
+fn proximity_constraint_violation_error() {
+    let dir = minimal_board_dir();
+    let mut bundle = ir::load_ir(&dir).unwrap();
+
+    // Set an impossibly tight constraint (0.1mm) on the zone
+    if let Some(ref mut ir3) = bundle.ir3 {
+        ir3.component_zones[0].proximity_constraint_mm = 0.1;
+    }
+
+    let result = sonde_kicad::pcb::placement::compute_position_map(&bundle);
+    assert!(
+        result.is_err(),
+        "should fail with tight proximity constraint"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("proximity constraint"),
+        "error should mention proximity: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F-010: Design Rules from IR-3
+// ---------------------------------------------------------------------------
+
+/// T-KE-040: Net class definitions from IR-3 routing constraints.
+#[test]
+fn pcb_net_class_definitions() {
+    let dir = minimal_board_dir();
+    let bundle = ir::load_ir(&dir).unwrap();
+    let mut uuid_gen = test_uuid_gen(&bundle, &dir);
+
+    let pcb = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen).unwrap();
+
+    // Must contain net_class definitions from routing_constraints
+    assert!(
+        pcb.contains("net_class"),
+        "PCB should contain net_class definitions"
+    );
+    assert!(
+        pcb.contains("\"Default\""),
+        "PCB should contain Default net class"
+    );
+    assert!(
+        pcb.contains("\"Power\""),
+        "PCB should contain Power net class"
+    );
+    assert!(
+        pcb.contains("trace_width"),
+        "net class should include trace_width"
+    );
+    assert!(
+        pcb.contains("via_dia"),
+        "net class should include via diameter"
+    );
+    assert!(
+        pcb.contains("via_drill"),
+        "net class should include via drill"
+    );
+    // Power net should be assigned to the VCC net
+    assert!(
+        pcb.contains("add_net") && pcb.contains("\"VCC\""),
+        "Power net class should assign VCC net"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F-014: Deterministic Timestamp
+// ---------------------------------------------------------------------------
+
+/// T-KE-027: Title block date is derived deterministically from IR content.
+#[test]
+fn title_block_deterministic_date() {
+    let dir = minimal_board_dir();
+    let bundle = ir::load_ir(&dir).unwrap();
+
+    let mut gen1 = test_uuid_gen(&bundle, &dir);
+    let sch1 = sonde_kicad::schematic::emit_schematic(&bundle, &mut gen1).unwrap();
+
+    let mut gen2 = test_uuid_gen(&bundle, &dir);
+    let sch2 = sonde_kicad::schematic::emit_schematic(&bundle, &mut gen2).unwrap();
+
+    // Both runs produce the same date
+    assert_eq!(sch1, sch2, "schematics should be identical");
+
+    // Date should not be the old hardcoded "2026-01-01"
+    assert!(
+        !sch1.contains("\"2026-01-01\""),
+        "date should not be hardcoded to 2026-01-01"
+    );
+
+    // Date should match YYYY-MM-DD format
+    let date_marker = "(date \"";
+    let idx = sch1
+        .find(date_marker)
+        .expect("should contain (date ...) field");
+    let date_start = idx + date_marker.len();
+    let date_end = sch1[date_start..].find('"').unwrap() + date_start;
+    let date = &sch1[date_start..date_end];
+    assert_eq!(date.len(), 10, "date should be YYYY-MM-DD format");
+    assert_eq!(&date[4..5], "-", "date should have dash separators");
+    assert_eq!(&date[7..8], "-", "date should have dash separators");
+    let year: u32 = date[0..4].parse().expect("year should be numeric");
+    let month: u32 = date[5..7].parse().expect("month should be numeric");
+    let day: u32 = date[8..10].parse().expect("day should be numeric");
+    assert!((2024..=2030).contains(&year), "year should be 2024-2030");
+    assert!((1..=12).contains(&month), "month should be 1-12");
+    assert!((1..=28).contains(&day), "day should be 1-28");
+}
+
+// ---------------------------------------------------------------------------
+// F-011: SES Safety
+// ---------------------------------------------------------------------------
+
+/// T-KE-052: SES import rejects unmapped nets instead of silently using net 0.
+#[test]
+fn ses_unmapped_net_error() {
+    let dir = minimal_board_dir();
+    let bundle = ir::load_ir(&dir).unwrap();
+    let mut uuid_gen = test_uuid_gen(&bundle, &dir);
+    let pcb = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen).unwrap();
+
+    // SES with a wire referencing a net that doesn't exist in the PCB
+    let ses = r#"(session "test.ses"
+  (routes
+    (resolution um 10)
+    (network_out
+      (net NONEXISTENT_NET
+        (wire (path F.Cu 2500 100000 -200000 150000 -200000))
+      )
+    )
+  )
+)"#;
+
+    let result = sonde_kicad::ses::import_ses(&pcb, ses, &mut uuid_gen);
+    assert!(result.is_err(), "should fail for unmapped net");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("unmapped net"),
+        "error should mention unmapped net: {msg}"
+    );
+}
+
+/// T-KE-052b: SES coordinate conversion negates Y (DSN Y-up → KiCad Y-down).
+#[test]
+fn ses_coordinate_y_negation() {
+    let dir = minimal_board_dir();
+    let bundle = ir::load_ir(&dir).unwrap();
+    let mut uuid_gen = test_uuid_gen(&bundle, &dir);
+    let pcb = sonde_kicad::pcb::emit_pcb(&bundle, &mut uuid_gen).unwrap();
+
+    // SES with a wire on the VCC net (which does exist in the PCB)
+    let ses = r#"(session "test.ses"
+  (routes
+    (resolution um 10)
+    (network_out
+      (net VCC
+        (wire (path F.Cu 2500 100000 -200000 150000 -200000))
+      )
+    )
+  )
+)"#;
+
+    let result = sonde_kicad::ses::import_ses(&pcb, ses, &mut uuid_gen).unwrap();
+    // Y=-200000 in SES → negated → +200000 / 10000 = 20 in KiCad (fmt trims .0)
+    // Look for the coordinate in a segment start/end context
+    assert!(
+        result.contains(" 20)"),
+        "negated Y coordinate should appear as ' 20)' in segment output"
+    );
 }

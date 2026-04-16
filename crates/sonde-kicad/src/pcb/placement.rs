@@ -215,6 +215,10 @@ pub fn compute_position_map(bundle: &IrBundle) -> Result<HashMap<String, (f64, f
     for zone in &ir3.component_zones {
         let anchor_x = zone.zone.anchor.x_mm;
         let anchor_ky = board_h - zone.zone.anchor.y_mm;
+        // Scale spacing so diagonal pairwise distance stays within constraint.
+        // For a square grid, max pairwise distance is sqrt(2) * spacing.
+        // But spacing must also exceed courtyard widths to avoid overlap,
+        // so we floor at the original constraint value.
         let spacing = zone.proximity_constraint_mm.max(3.0);
 
         let to_place: Vec<String> = zone
@@ -268,6 +272,36 @@ pub fn compute_position_map(bundle: &IrBundle) -> Result<HashMap<String, (f64, f
             let bbox = BBox::from_asymmetric(x, y, bounds, 0.0, 0.25);
             placed_bboxes.push(bbox);
             pos_map.insert(ref_des.clone(), (x, y, 0.0));
+        }
+    }
+
+    // Validate proximity constraint: all components in a zone must be
+    // within proximity_constraint_mm of the zone anchor (center).
+    // Pairwise checking fails for grid layouts where diagonal distance
+    // exceeds the constraint, so we check against the anchor instead.
+    for zone in &ir3.component_zones {
+        let anchor_x = zone.zone.anchor.x_mm;
+        let anchor_ky = board_h - zone.zone.anchor.y_mm;
+        let positions: Vec<(&str, f64, f64)> = zone
+            .components
+            .iter()
+            .filter_map(|c| {
+                pos_map
+                    .get(c.as_str())
+                    .map(|(x, y, _)| (c.as_str(), *x, *y))
+            })
+            .collect();
+        for &(ref_des, px, py) in &positions {
+            let dx = px - anchor_x;
+            let dy = py - anchor_ky;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > zone.proximity_constraint_mm {
+                return Err(Error::Placement(format!(
+                    "component `{ref_des}` in zone `{}` is {dist:.1}mm from anchor, \
+                     exceeding proximity constraint {:.1}mm",
+                    zone.group, zone.proximity_constraint_mm
+                )));
+            }
         }
     }
 

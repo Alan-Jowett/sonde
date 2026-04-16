@@ -40,13 +40,17 @@ fn build_schematic(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> Result<SE
     Ok(SExpr::list("kicad_sch", children))
 }
 
-fn build_title_block(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> SExpr {
-    let _ = uuid_gen; // used for future deterministic date
+fn build_title_block(bundle: &IrBundle, _uuid_gen: &mut UuidGenerator) -> SExpr {
+    // Derive a deterministic date from the project name directly, without
+    // consuming a UUID counter slot (which would shift all subsequent UUIDs).
+    let hash_str = project_date_hash(&bundle.project);
+    let date = deterministic_date_from_hash(&hash_str);
+
     SExpr::list(
         "title_block",
         vec![
             SExpr::pair_quoted("title", &bundle.project),
-            SExpr::pair_quoted("date", "2026-01-01"),
+            SExpr::pair_quoted("date", &date),
             SExpr::pair_quoted("rev", "1.0.0"),
             SExpr::list(
                 "comment",
@@ -60,6 +64,50 @@ fn build_title_block(bundle: &IrBundle, uuid_gen: &mut UuidGenerator) -> SExpr {
             ),
         ],
     )
+}
+
+/// Derive a deterministic YYYY-MM-DD date string from a UUID hash string.
+///
+/// Extracts hex digits from the UUID and maps them to a date in the range
+/// 2024-01-01 .. 2030-12-28. The result is fully deterministic — identical
+/// IR content always produces the same date.
+fn deterministic_date_from_hash(uuid: &str) -> String {
+    let hex_bytes: Vec<u8> = uuid
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(8)
+        .map(|c| c.to_digit(16).unwrap_or(0) as u8)
+        .collect();
+
+    // Combine nibbles 0–1 for year, nibble 2 for month, nibbles 4–5 for day.
+    let year_raw = (hex_bytes.first().copied().unwrap_or(0) as u32) << 4
+        | hex_bytes.get(1).copied().unwrap_or(0) as u32;
+    let month_raw = hex_bytes.get(2).copied().unwrap_or(0) as u32;
+    let day_raw = (hex_bytes.get(4).copied().unwrap_or(0) as u32) << 4
+        | hex_bytes.get(5).copied().unwrap_or(0) as u32;
+
+    let year = 2024 + (year_raw % 7); // 2024..2030
+    let month = (month_raw % 12) + 1; // 1..12
+    let day = (day_raw % 28) + 1; // 1..28
+
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Produce a deterministic hex string from the project name for date derivation.
+///
+/// This avoids consuming a UUID counter slot, keeping downstream UUIDs stable.
+fn project_date_hash(project: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"title_block:date:");
+    hasher.update(project.as_bytes());
+    let hash = hasher.finalize();
+    // Format first 16 bytes as a UUID-like hex string for compatibility
+    // with deterministic_date_from_hash (which extracts 8 hex nibbles).
+    hash.iter()
+        .take(16)
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 fn build_lib_symbols(bundle: &IrBundle) -> Result<SExpr, Error> {

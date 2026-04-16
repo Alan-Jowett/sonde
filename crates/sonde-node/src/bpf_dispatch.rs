@@ -401,6 +401,10 @@ pub fn helper_spi_transfer(r1: u64, r2: u64, r3: u64, _r4: u64, _r5: u64) -> u64
         if buf_ptr.is_null() {
             return (-1i64) as u64;
         }
+        // SAFETY: buf_ptr is non-null (checked above), len is capped to
+        // MAX_BUS_TRANSFER_LEN, and the BPF verifier guarantees the
+        // argument points to a writable region of at least len bytes
+        // via its PtrToWritableMem + ConstSize checks.
         unsafe {
             let buf = core::slice::from_raw_parts_mut(buf_ptr, len);
             (*ctx.hal).spi_transfer(handle, buf) as i64 as u64
@@ -797,9 +801,13 @@ mod tests {
             buf[..copy_len].copy_from_slice(&self.i2c_read_data[..copy_len]);
             0
         }
-        fn spi_transfer(&mut self, _handle: u32, _buf: &mut [u8]) -> i32 {
-            // In-place echo: buf already contains tx data and the mock
-            // treats "received" data as identical to tx, so nothing to do.
+        fn spi_transfer(&mut self, _handle: u32, buf: &mut [u8]) -> i32 {
+            // Simulate SPI RX by flipping all bits.  This proves the helper
+            // passes the correct slice to the HAL and that the caller
+            // observes the overwritten contents.
+            for b in buf.iter_mut() {
+                *b ^= 0xFF;
+            }
             0
         }
         fn gpio_read(&self, pin: u32) -> i32 {
@@ -1068,7 +1076,7 @@ mod tests {
         let mut seq = 0u64;
         let mut trace = Vec::new();
         let mut buf = [0xDE, 0xAD, 0xBE, 0xEF];
-        let expected = buf;
+        let expected_rx: [u8; 4] = [0xDE ^ 0xFF, 0xAD ^ 0xFF, 0xBE ^ 0xFF, 0xEF ^ 0xFF];
 
         with_test_context(
             &mut hal,
@@ -1092,8 +1100,8 @@ mod tests {
                 assert_eq!(result, 0);
             },
         );
-        // Echo mock: buffer should contain echoed RX data (RX == TX)
-        assert_eq!(buf, expected);
+        // Mock XORs each byte with 0xFF — proves HAL received the buffer.
+        assert_eq!(buf, expected_rx);
     }
 
     #[test]
@@ -1752,7 +1760,7 @@ mod tests {
         let mut seq = 0u64;
         let mut trace = Vec::new();
         let mut buf = [0xCA, 0xFE];
-        let expected = buf;
+        let expected: [u8; 2] = [0xCA ^ 0xFF, 0xFE ^ 0xFF];
 
         with_test_context(
             &mut hal,
@@ -1776,7 +1784,7 @@ mod tests {
                 assert_eq!(result, 0, "spi_transfer must work for ephemeral programs");
             },
         );
-        assert_eq!(buf, expected);
+        assert_eq!(buf, expected, "mock XORs buffer, proving in-place write");
     }
 
     // ===================================================================
@@ -1915,7 +1923,7 @@ mod tests {
         let write_data = [0x55u8; 2];
         let mut wr_buf = [0u8; 2];
         let mut spi_buf = [0xAA, 0xBB];
-        let spi_expected = spi_buf;
+        let spi_expected: [u8; 2] = [0xAA ^ 0xFF, 0xBB ^ 0xFF];
 
         with_test_context(
             &mut hal,
@@ -1975,7 +1983,7 @@ mod tests {
                 assert_eq!(r, 0, "spi_transfer should succeed for ephemeral");
                 assert_eq!(
                     spi_buf, spi_expected,
-                    "spi_transfer echo: buffer must contain echoed RX data (RX == TX)"
+                    "spi_transfer: mock XORs buffer, proving HAL received correct slice"
                 );
 
                 // GPIO read — verify pin state returned

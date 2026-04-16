@@ -69,7 +69,7 @@ Use clearly non-zero test keys (e.g., `[0x42u8; 32]`) and non-trivial buffer con
 1. Seed the context buffer with a known non-zero pattern (e.g., `[0xAA; 8]` in the first 8 bytes).
 2. Construct bytecode that loads a non-zero value into R0 (`MOV64_IMM r0, 0x42`), then executes an atomic ADD on R1 (Context pointer) at offset 0: `ATOMIC_DW r1, r0, ADD`, followed by `EXIT`.
 3. Execute with `execute_program_no_maps(...)` with `read_only_ctx = true`.
-4. Assert: result is `Ok(0)` — the write is silently ignored per ND-0505 AC6, the context buffer retains its original pattern, and the program continues to completion.
+4. Assert: result is `Ok(0x42)` — the write is silently ignored per ND-0505 AC6, the context buffer retains its original pattern, and the program continues to completion.
 
 ---
 

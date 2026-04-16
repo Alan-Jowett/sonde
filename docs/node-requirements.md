@@ -600,7 +600,7 @@ The program image format MUST support optional initial data for each map definit
 1. A program image with `initial_data` (CBOR key 5) in a map definition is accepted and decoded correctly.
 2. After map allocation, entry 0 of each map with non-empty initial data contains the specified bytes.
 3. Maps without initial data (empty or absent key 5) remain zero-filled after allocation.
-4. Initial data whose length does not match `value_size` is silently ignored (map remains zero-filled). A `debug!()` log MAY be emitted for diagnostic purposes; this log is compiled out in release builds.
+4. Initial data whose length does not match `value_size` is ignored without error (map remains zero-filled). A `debug!()` log may be emitted for diagnostic purposes; visibility depends on build features and log level configuration (see ND-1012).
 
 ---
 
@@ -728,7 +728,7 @@ The existing `send()` and `send_recv()` helpers MUST continue to function identi
 **Source:** protocol.md §9.1
 
 **Description:**  
-If the node sends `WAKE` and receives no `COMMAND` response within the transport timeout (ND-0702), the node MUST retry up to 3 times with a 400 ms backoff delay after each timeout. On a timeout-only path, successive WAKE transmissions are ~600 ms apart (200 ms response timeout + 400 ms backoff). After max retries, the node MUST sleep until the next scheduled wake interval.
+If the node sends `WAKE` and receives no `COMMAND` response within the transport timeout (ND-0702), the node MUST send up to 4 WAKE frames (1 initial + up to 3 retries) with a 400 ms backoff delay after each timeout. On a timeout-only path, successive WAKE transmissions are ~600 ms apart (200 ms response timeout + 400 ms backoff). After all retries are exhausted, the node MUST sleep until the next scheduled wake interval.
 
 **Acceptance criteria:**
 

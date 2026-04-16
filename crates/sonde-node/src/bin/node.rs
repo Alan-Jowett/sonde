@@ -59,6 +59,27 @@ fn main() {
     };
     info!("boot_reason={} (ND-1000)", boot_reason);
 
+    // Register the main task with the ESP-IDF task watchdog (ND-0919).
+    // The watchdog timeout (CONFIG_ESP_TASK_WDT_TIMEOUT_S=20) covers the
+    // entire wake cycle. No periodic feeding is needed because the node
+    // runs a single wake cycle and then sleeps; if the cycle completes
+    // normally, we deregister before sleeping. If it hangs, the watchdog
+    // triggers a panic/reset.
+    unsafe {
+        let wdt_config = esp_idf_svc::sys::esp_task_wdt_config_t {
+            timeout_ms: 20_000,
+            idle_core_mask: 0,
+            trigger_panic: true,
+        };
+        esp_idf_svc::sys::esp!(esp_idf_svc::sys::esp_task_wdt_reconfigure(&wdt_config))
+            .expect("failed to configure watchdog");
+        esp_idf_svc::sys::esp!(esp_idf_svc::sys::esp_task_wdt_add(
+            esp_idf_svc::sys::xTaskGetCurrentTaskHandle()
+        ))
+        .expect("failed to add task to watchdog");
+    }
+    info!("task watchdog registered (20 s timeout, ND-0919)");
+
     // --- Initialize platform ---
     let peripherals = Peripherals::take().expect("failed to take peripherals");
     let sysloop = EspSystemEventLoop::take().expect("failed to take event loop");
@@ -197,6 +218,14 @@ fn main() {
         &aead,
         &mut async_queue,
     );
+
+    // Deregister from the task watchdog before sleeping (ND-0919).
+    // The wake cycle completed normally — no need for watchdog protection
+    // during the sleep/reboot path.
+    unsafe {
+        let _ =
+            esp_idf_svc::sys::esp_task_wdt_delete(esp_idf_svc::sys::xTaskGetCurrentTaskHandle());
+    }
 
     match outcome {
         WakeCycleOutcome::Sleep { seconds } => {

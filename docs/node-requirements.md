@@ -1127,6 +1127,25 @@ The ESP-IDF main task stack MUST be at least 16 KB (`CONFIG_ESP_MAIN_TASK_STACK_
 
 ---
 
+### ND-0919  Task watchdog timer
+
+**Priority:** Must  
+**Source:** issue #721
+
+**Description:**  
+The node firmware MUST enable the ESP-IDF task watchdog timer on the main task. The timeout MUST be long enough to cover a full wake cycle (WAKE retries + chunked program transfer + BPF execution + APP_DATA exchanges) but short enough to recover from firmware hangs before excessive battery drain. On expiry, the watchdog MUST trigger a panic/reset so the node reboots into the next scheduled wake cycle.
+
+**Acceptance criteria:**
+
+1. `CONFIG_ESP_TASK_WDT_EN=y` is set in `sdkconfig.defaults`.
+2. `CONFIG_ESP_TASK_WDT_TIMEOUT_S` is set to 20 seconds.
+3. `CONFIG_ESP_TASK_WDT_PANIC=y` is set so watchdog expiry triggers a reset.
+4. The main task is explicitly registered with the task watchdog at startup via `esp_task_wdt_add()`.
+5. The main task is deregistered from the task watchdog after the wake cycle completes, before entering deep sleep.
+6. The node completes a normal wake cycle (including maximum WAKE retries and chunked transfer) without triggering the watchdog.
+
+---
+
 ## 10  Operational logging
 
 > **Build-type scope (ND-1012):** The logging requirements in this section (ND-1000–ND-1011) specify log levels for debug and verbose firmware builds. In release firmware builds (without the `verbose` feature), INFO and below are stripped at compile time — those requirements are satisfied by the `verbose` build variant producing the specified output. Release builds emit only WARN and above.

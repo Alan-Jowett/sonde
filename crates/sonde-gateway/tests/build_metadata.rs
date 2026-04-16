@@ -177,7 +177,8 @@ fn t1305a_verification_failure_includes_diagnostics() {
 /// T-1305b: Successful verification produces no diagnostics.
 ///
 /// Ingest a valid BPF program, assert success with no error messages,
-/// and verify the program is stored and retrievable by hash.
+/// and verify the returned program record has a valid hash and
+/// decodable image.
 #[test]
 fn t1305b_successful_verification_no_diagnostics() {
     // BPF: mov r0, 0; exit — minimal valid program.

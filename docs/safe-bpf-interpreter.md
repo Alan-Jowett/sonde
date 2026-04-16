@@ -268,6 +268,8 @@ if index >= maps.len() {
 // index is valid — proceed with relocation
 ```
 
+> **Note:** `LD_DW_IMM` is a wide instruction occupying two instruction slots.  In the implementation, the `pc` reported in `InvalidMapIndex` refers to the first slot of the pair (i.e., `pc - 2` relative to the loop counter after consuming both slots).  The pseudocode above uses `pc` abstractly; implementations must adjust for their PC tracking convention.
+
 ### 4.3  ALU operations and pointer arithmetic
 
 BPF ALU instructions have the form `dst = dst OP src` (or `dst = dst OP imm`).  The table below defines how the **dst** and **src** tags interact to determine the result tag.  In this table, "pointer" means a dereferenceable pointer (`Stack`, `Context`, `Memory`, or `MapValue`).  Immediates are always scalar.
@@ -296,7 +298,7 @@ BPF ALU instructions have the form `dst = dst OP src` (or `dst = dst OP imm`).  
 
 When a pointer participates in a valid ADD or SUB, the result inherits the same `region` (same `tag`, `base`, and `end`).  The `value` changes but the valid bounds do not — so a subsequent dereference will still be checked against the original region.
 
-**32-bit ALU (ALU32):** All 32-bit ALU operations unconditionally clear the pointer tag on the destination register and produce a scalar result.  This applies regardless of the operation type or the tags of the operands — even `MOV32` clears the tag.  A pointer that passes through a 32-bit ALU instruction loses its tag because the upper 32 bits are zeroed, invalidating the address.
+**32-bit ALU (ALU32):** All 32-bit ALU operations unconditionally clear the pointer tag on the destination register and produce a scalar result.  This applies regardless of the operation type or the tags of the operands — even `MOV32` clears the tag.  A pointer that passes through a 32-bit ALU instruction loses its tag because ALU32 operations discard pointer provenance, so the interpreter treats the result as a scalar.
 
 ### 4.4  Load and store instructions
 

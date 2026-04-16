@@ -24,7 +24,7 @@
 |------|------------|
 | **Gateway** | The `sonde-gateway` service exposing the gRPC admin API. |
 | **Admin API** | The local gRPC service defined in [gateway-requirements.md](gateway-requirements.md) §9A. |
-| **Destructive command** | A CLI command that deletes data or overwrites state (e.g., `node remove`, `state import`, `factory-reset`). |
+| **Destructive command** | A CLI command that requires explicit user confirmation before execution because it may irreversibly delete data or overwrite state (e.g., `node remove`, `state import`, `factory-reset`). The complete list is defined in ADMIN-0103. |
 | **PSK** | Pre-shared key — a 32-byte AES-256-GCM key used for node authentication. |
 
 ---
@@ -118,6 +118,9 @@ Destructive commands MUST prompt the user for confirmation before executing.
 The `--yes` / `-y` global flag MUST skip the prompt (auto-confirm). The
 following commands are destructive: `node remove`, `node factory-reset`,
 `program remove`, `state import`, `pairing stop`, `pairing revoke-phone`.
+
+Commands that delete easily-recreated configuration without cryptographic
+material (e.g., `handler remove`) are intentionally exempt.
 
 **Acceptance criteria:**
 

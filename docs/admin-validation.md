@@ -379,36 +379,36 @@ to avoid collisions when tests run in parallel.
 
 ## 8  Modem management tests
 
-### T-0600  Modem status
+### T-0600  Modem status — no modem configured
 
 **Validates:** ADMIN-0600
 **Category:** New automated
 
 **Procedure:**
-1. Call `get_modem_status()`.
-2. Assert: returns a `ModemStatus` with default values (no modem attached in test harness — gateway may return an error or default status depending on implementation).
+1. Call `get_modem_status()` against the default test harness (no modem transport configured).
+2. Assert: returns a gRPC `UNAVAILABLE` error with message containing "no modem transport configured".
 
 ---
 
-### T-0601  Set modem channel — valid
+### T-0601  Set modem channel — no modem configured
 
 **Validates:** ADMIN-0601
 **Category:** New automated
 
 **Procedure:**
-1. Call `set_modem_channel(6)`.
-2. Assert: call succeeds or returns a modem-not-connected error (acceptable in test harness without physical modem).
+1. Call `set_modem_channel(6)` against the default test harness (no modem transport configured).
+2. Assert: returns a gRPC `UNAVAILABLE` error.
 
 ---
 
-### T-0602  Modem scan
+### T-0602  Modem scan — no modem configured
 
 **Validates:** ADMIN-0602
 **Category:** New automated
 
 **Procedure:**
-1. Call `scan_modem_channels()`.
-2. Assert: returns a list (possibly empty if no modem is attached).
+1. Call `scan_modem_channels()` against the default test harness (no modem transport configured).
+2. Assert: returns a gRPC `UNAVAILABLE` error.
 
 ---
 
@@ -451,18 +451,25 @@ to avoid collisions when tests run in parallel.
 ### T-0703  Pairing start — event streaming
 
 **Validates:** ADMIN-0700
-**Category:** New automated (CLI process test)
+**Category:** Structural/manual until a BLE-pairing CLI test harness is documented
 
 **Procedure:**
-1. Start an admin server with a modem mock that supports BLE pairing.
-2. Invoke `sonde-admin pairing start --duration-s 5`.
-3. Assert: stdout contains "BLE pairing window opened".
-4. Wait for the window to close.
-5. Assert: stdout contains "BLE pairing window closed".
-6. Assert: exit code is 0.
+1. Perform structural verification of the pairing-start CLI path.
+2. Assert: the implementation uses the `OpenBlePairing` server-streaming RPC
+   and iterates over `BlePairingEvent` variants.
+3. Assert: when a `WindowOpened` event is received, the CLI prints
+   "BLE pairing window opened".
+4. Assert: when a `WindowClosed` event is received, the CLI prints
+   "BLE pairing window closed" and exits the event loop.
+5. If a manual BLE-capable modem setup is available, invoke
+   `sonde-admin pairing start --duration-s 5` against it and verify the same
+   user-visible messages end-to-end.
 
-**Note:** Full interactive passkey confirmation testing requires a BLE peer
-simulator. Structural verification that the passkey prompt calls
+**Note:** Do not implement this as an automated CLI process test until this
+document defines a BLE-pairing harness, including where the modem mock lives,
+how it is wired into the admin server, and which deterministic open/close
+events it emits. Full interactive passkey confirmation testing requires a BLE
+peer simulator. Structural verification that the passkey prompt calls
 `ConfirmBlePairing` is acceptable as an interim measure.
 
 ---

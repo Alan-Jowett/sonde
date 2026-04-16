@@ -921,7 +921,7 @@ mod tests {
         assert!(r.warnings.iter().any(|w| w.message.contains("extra-prog")));
     }
 
-    /// T-SB-0201: Archive with path traversal (dotdot in filename, not path component).
+    /// T-SB-0201 variant: Archive with path traversal (dotdot in filename, not path component).
     #[test]
     fn test_dotdot_in_filename_not_path_component() {
         let dir = tempfile::tempdir().unwrap();
@@ -978,7 +978,7 @@ mod tests {
         );
     }
 
-    /// T-SB-0500: Handler working_dir validation — directory not found.
+    /// T-SB-0500 variant: Handler working_dir validation — directory not found.
     #[test]
     fn test_handler_working_dir_not_found() {
         let dir = tempfile::tempdir().unwrap();
@@ -999,7 +999,7 @@ mod tests {
             .any(|e| e.message.contains("working directory not found")));
     }
 
-    /// T-SB-0500: Handler working_dir validation — path is a file.
+    /// T-SB-0500 variant: Handler working_dir validation — path is a file.
     #[test]
     fn test_handler_working_dir_is_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1022,7 +1022,7 @@ mod tests {
             .any(|e| e.message.contains("must be a directory")));
     }
 
-    /// T-SB-0500: Handler working_dir validation — valid directory.
+    /// T-SB-0500 variant: Handler working_dir validation — valid directory.
     #[test]
     fn test_handler_working_dir_valid() {
         let dir = tempfile::tempdir().unwrap();
@@ -1116,7 +1116,7 @@ mod tests {
         assert!(r.errors.iter().any(|e| e.message.contains("out of range")));
     }
 
-    /// T-SB-0605: Pins required when I2C sensor declared (positive case).
+    /// T-SB-0605 variant: Pins required when I2C sensor declared (positive case).
     #[test]
     fn test_pins_valid_with_i2c_sensor() {
         let dir = tempfile::tempdir().unwrap();
@@ -1142,7 +1142,7 @@ mod tests {
         );
     }
 
-    /// T-SB-0605: Pins required when I2C sensor declared (no-pin-needed case).
+    /// T-SB-0605 variant: Pins required when I2C sensor declared (no-pin-needed case).
     #[test]
     fn test_pins_without_i2c_sensor_allowed() {
         let dir = tempfile::tempdir().unwrap();

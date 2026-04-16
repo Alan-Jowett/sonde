@@ -417,7 +417,7 @@ nodes:
     }
 
     /// T-SB-0800: Create valid bundle.
-    /// T-SB-0200: Valid archive extraction.
+    /// T-SB-0200 variant: Valid archive extraction (round-trip).
     #[test]
     fn test_create_and_extract_round_trip() {
         let src = tempfile::tempdir().unwrap();
@@ -614,7 +614,7 @@ nodes:
         );
     }
 
-    /// T-SB-0201: Archive safety — hardlink rejected.
+    /// T-SB-0201 variant: Archive safety — hardlink rejected.
     #[test]
     fn test_hardlink_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -644,7 +644,7 @@ nodes:
         );
     }
 
-    /// T-SB-0201: Archive safety — FIFO entry rejected.
+    /// T-SB-0201 variant: Archive safety — FIFO entry rejected.
     #[test]
     fn test_fifo_entry_rejected() {
         let dir = tempfile::tempdir().unwrap();

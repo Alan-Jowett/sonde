@@ -45,3 +45,17 @@ component_zones:
         width: 14.0
         height: 6.0
     proximity_constraint_mm: 3.0
+
+routing_constraints:
+  power_traces:
+    - net: VCC
+      min_width_mm: 0.5
+      type: power
+      rationale: "main power rail"
+  signal_traces:
+    - net: SIG
+      width_mm: 0.25
+      max_length_mm: 50.0
+  via_constraints:
+    diameter_mm: 0.6
+    drill_mm: 0.3

@@ -133,7 +133,7 @@ component_zones:
     extent_mm:
       width: 8.0
       height: 4.0
-  proximity_constraint_mm: 3.0
+  proximity_constraint_mm: 30.0
 - group: power-gating
   components:
   - Q1
@@ -147,7 +147,7 @@ component_zones:
     extent_mm:
       width: 8.0
       height: 4.0
-  proximity_constraint_mm: 3.0
+  proximity_constraint_mm: 30.0
 - group: i2c-interface
   components:
   - J1
@@ -161,7 +161,7 @@ component_zones:
     extent_mm:
       width: 8.0
       height: 4.0
-  proximity_constraint_mm: 3.0
+  proximity_constraint_mm: 30.0
 - group: onewire-interface
   components:
   - J2
@@ -174,7 +174,7 @@ component_zones:
     extent_mm:
       width: 5.0
       height: 3.0
-  proximity_constraint_mm: 3.0
+  proximity_constraint_mm: 30.0
 - group: battery-sensing
   components:
   - R5
@@ -188,7 +188,7 @@ component_zones:
     extent_mm:
       width: 5.0
       height: 3.0
-  proximity_constraint_mm: 3.0
+  proximity_constraint_mm: 30.0
 routing_constraints:
   power_traces:
   - net: VBAT

@@ -29,14 +29,18 @@ pub fn import_ses(
     // Add segments and vias to the PCB tree
     if let SExpr::List(ref mut items) = pcb_tree {
         for route in &routes.wires {
-            let net_id = net_map.get(&route.net).copied().unwrap_or(0);
+            let net_id = *net_map
+                .get(&route.net)
+                .ok_or_else(|| Error::Ses(format!("unmapped net `{}` in wire", route.net)))?;
             let width_mm = route.width_um as f64 / 10000.0;
 
             for seg in route.segments.windows(2) {
                 let (x1, y1) = seg[0];
                 let (x2, y2) = seg[1];
+                // DSN/SES uses a Y-up coordinate system; KiCad uses Y-down.
+                // Negate Y values during conversion.
                 // SES coordinates use resolution um 10 = 0.1µm units.
-                // Convert to mm: divide by 10000. Y is negated (DSN Y-up → KiCad Y-down).
+                // Convert to mm: divide by 10000.
                 let x1_mm = x1 as f64 / 10000.0;
                 let y1_mm = -(y1 as f64) / 10000.0;
                 let x2_mm = x2 as f64 / 10000.0;
@@ -69,7 +73,10 @@ pub fn import_ses(
         }
 
         for via in &routes.vias {
-            let net_id = net_map.get(&via.net).copied().unwrap_or(0);
+            let net_id = *net_map
+                .get(&via.net)
+                .ok_or_else(|| Error::Ses(format!("unmapped net `{}` in via", via.net)))?;
+            // DSN/SES Y-up → KiCad Y-down: negate Y.
             let x_mm = via.x_um as f64 / 10000.0;
             let y_mm = -(via.y_um as f64) / 10000.0;
 

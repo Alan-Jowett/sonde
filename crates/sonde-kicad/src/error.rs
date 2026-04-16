@@ -37,6 +37,12 @@ pub enum Error {
     #[error("SES parse error: {0}")]
     SesParse(String),
 
+    #[error("SES import error: {0}")]
+    Ses(String),
+
+    #[error("placement error: {0}")]
+    Placement(String),
+
     #[error("kicad-cli not found: {0}")]
     KicadCliNotFound(String),
 

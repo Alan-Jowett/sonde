@@ -271,6 +271,38 @@ pub fn compute_position_map(bundle: &IrBundle) -> Result<HashMap<String, (f64, f
         }
     }
 
+    // Validate proximity constraint: all components in a zone must be
+    // within proximity_constraint_mm of each other (pairwise).
+    for zone in &ir3.component_zones {
+        let positions: Vec<(&str, f64, f64)> = zone
+            .components
+            .iter()
+            .filter_map(|c| {
+                pos_map
+                    .get(c.as_str())
+                    .map(|(x, y, _)| (c.as_str(), *x, *y))
+            })
+            .collect();
+        for i in 0..positions.len() {
+            for j in (i + 1)..positions.len() {
+                let dx = positions[i].1 - positions[j].1;
+                let dy = positions[i].2 - positions[j].2;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist > zone.proximity_constraint_mm {
+                    return Err(Error::Placement(format!(
+                        "components `{}` and `{}` in zone `{}` are {:.1}mm apart, \
+                         exceeding proximity constraint {:.1}mm",
+                        positions[i].0,
+                        positions[j].0,
+                        zone.group,
+                        dist,
+                        zone.proximity_constraint_mm
+                    )));
+                }
+            }
+        }
+    }
+
     Ok(pos_map)
 }
 

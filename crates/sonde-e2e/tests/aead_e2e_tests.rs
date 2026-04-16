@@ -901,6 +901,17 @@ async fn t_e2e_022_run_ephemeral_via_admin() {
         .filter(|(t, _)| *t == sonde_protocol::MSG_GET_CHUNK)
         .count();
     assert!(get_chunk_count > 0, "ephemeral program must be downloaded");
+
+    // Verify PROGRAM_ACK sent (transfer completed).
+    let ack_count = stats
+        .sent_frames
+        .iter()
+        .filter(|(t, _)| *t == sonde_protocol::MSG_PROGRAM_ACK)
+        .count();
+    assert_eq!(
+        ack_count, 1,
+        "ephemeral transfer must complete with PROGRAM_ACK"
+    );
 }
 
 // ---------------------------------------------------------------------------

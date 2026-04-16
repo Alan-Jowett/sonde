@@ -176,10 +176,7 @@ pub enum PendingCommand {
 ///
 /// Returns an error if storage I/O fails or the persisted value is not a
 /// valid `u8`.
-pub async fn resolve_espnow_channel(
-    storage: &dyn Storage,
-    cli_channel: u8,
-) -> Result<u8, String> {
+pub async fn resolve_espnow_channel(storage: &dyn Storage, cli_channel: u8) -> Result<u8, String> {
     match storage
         .get_config("espnow_channel")
         .await

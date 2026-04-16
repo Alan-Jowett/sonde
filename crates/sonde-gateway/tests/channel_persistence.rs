@@ -53,9 +53,8 @@ async fn t0815a_channel_persisted_after_set_modem_channel() {
 
     // Call SetModemChannel(7) — the admin service sends SET_CHANNEL to the modem
     // and persists the new value after receiving SET_CHANNEL_ACK.
-    let set_channel_fut = admin.set_modem_channel(Request::new(SetModemChannelRequest {
-        channel: 7,
-    }));
+    let set_channel_fut =
+        admin.set_modem_channel(Request::new(SetModemChannelRequest { channel: 7 }));
 
     // Handle the mock modem's SET_CHANNEL / SET_CHANNEL_ACK exchange.
     let mut decoder = FrameDecoder::new();
@@ -90,9 +89,8 @@ async fn t0815b_modem_reconnect_restores_persisted_channel() {
     let (admin, mut server, _controller, storage) = build_admin_with_modem(1).await;
 
     // Persist channel 7 via SetModemChannel.
-    let set_channel_fut = admin.set_modem_channel(Request::new(SetModemChannelRequest {
-        channel: 7,
-    }));
+    let set_channel_fut =
+        admin.set_modem_channel(Request::new(SetModemChannelRequest { channel: 7 }));
     let mut decoder = FrameDecoder::new();
     let mut buf = [0u8; 256];
     let (result, _) = tokio::join!(
@@ -156,9 +154,16 @@ async fn t0815c_ble_pairing_uses_persisted_channel() {
     body.extend_from_slice(label);
 
     let envelope = encode_ble_envelope(BLE_MSG_REGISTER_PHONE, &body).unwrap();
-    let resp = handle_ble_recv(&envelope, &identity, &storage, &mut window, rf_channel, None)
-        .await
-        .expect("REGISTER_PHONE must produce a response");
+    let resp = handle_ble_recv(
+        &envelope,
+        &identity,
+        &storage,
+        &mut window,
+        rf_channel,
+        None,
+    )
+    .await
+    .expect("REGISTER_PHONE must produce a response");
 
     let (msg_type, resp_body) = parse_ble_envelope(&resp).unwrap();
     assert_eq!(msg_type, BLE_MSG_PHONE_REGISTERED);
@@ -191,7 +196,10 @@ async fn t0815d_cli_channel_seeds_database_on_first_startup() {
         .await
         .expect("resolve must succeed");
 
-    assert_eq!(startup_channel, 3, "startup must use CLI channel on fresh DB");
+    assert_eq!(
+        startup_channel, 3,
+        "startup must use CLI channel on fresh DB"
+    );
 
     // Assert: the database now contains "3".
     assert_eq!(

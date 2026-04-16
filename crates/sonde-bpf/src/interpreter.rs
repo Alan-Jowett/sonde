@@ -640,6 +640,7 @@ pub fn execute_program_no_maps(
 /// # Zero-allocation guarantee
 /// All interpreter state (registers, call stack, BPF stack) lives on the
 /// Rust call stack. No `Vec`, `Box`, or heap allocation occurs.
+#[allow(clippy::manual_checked_ops)] // BPF division-by-zero returns 0 per RFC 9669 §5.2
 pub unsafe fn execute_program(
     prog: &[u8],
     ctx: &mut [u8],

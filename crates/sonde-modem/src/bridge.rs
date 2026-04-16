@@ -2384,6 +2384,9 @@ mod tests {
     // GAP 1: MD-0403 AC3 — Indication fragmentation flow control
     // ---------------------------------------------------------------
 
+    // Maximum queued indication chunks (mirrors `ble.rs::MAX_INDICATION_CHUNKS`).
+    const MOCK_MAX_INDICATION_CHUNKS: usize = 64;
+
     /// Mock BLE driver that simulates ATT indication fragmentation and
     /// flow control, mirroring the real `EspBleDriver` pacing logic.
     ///
@@ -2464,9 +2467,14 @@ mod tests {
             if chunk_size == 0 {
                 return;
             }
+            let num_chunks = data.len().div_ceil(chunk_size);
             let was_empty = self.indication_queue.borrow().is_empty();
             {
                 let mut queue = self.indication_queue.borrow_mut();
+                if queue.len() + num_chunks > MOCK_MAX_INDICATION_CHUNKS {
+                    return; // Drop the payload to mirror EspBleDriver's queue-full behavior;
+                            // the production warning log is intentionally not simulated here.
+                }
                 for chunk in data.chunks(chunk_size) {
                     queue.push_back(chunk.to_vec());
                 }
@@ -2678,6 +2686,37 @@ mod tests {
         bridge.ble.indicate(&[]);
         assert!(bridge.ble.chunks_sent().is_empty());
         assert!(!bridge.ble.is_awaiting_confirm());
+    }
+
+    /// Validates: MD-0403 AC5 — indication fragment queue bounded at 64 chunks.
+    ///
+    /// Sends a payload that would produce 65 chunks (exceeding the 64-chunk
+    /// limit).  The indication MUST be silently dropped — no chunks sent.
+    #[test]
+    fn t0605_indication_queue_overflow_rejected() {
+        // MTU 247 → chunk_size = 244. 65 chunks × 244 bytes = 15,860 bytes.
+        let mut bridge = make_bridge_with_fragmenting_ble(247);
+        let chunk_size = (247 - ATT_HEADER_BYTES) as usize; // 244
+        let payload_65_chunks = vec![0x42u8; chunk_size * 65];
+        bridge.ble.indicate(&payload_65_chunks);
+        // All 65 chunks should be rejected (exceeds MOCK_MAX_INDICATION_CHUNKS=64).
+        assert!(
+            bridge.ble.chunks_sent().is_empty(),
+            "indication exceeding 64-chunk limit must be silently dropped"
+        );
+        assert_eq!(bridge.ble.pending_chunks(), 0);
+    }
+
+    /// Validates: MD-0403 AC5 — indication exactly at 64-chunk limit accepted.
+    #[test]
+    fn t0605_indication_queue_at_boundary_accepted() {
+        let mut bridge = make_bridge_with_fragmenting_ble(247);
+        let chunk_size = (247 - ATT_HEADER_BYTES) as usize; // 244
+        let payload_64_chunks = vec![0x42u8; chunk_size * 64];
+        bridge.ble.indicate(&payload_64_chunks);
+        // Exactly 64 chunks — first chunk sent immediately, 63 queued.
+        assert_eq!(bridge.ble.chunks_sent().len(), 1, "first chunk sent");
+        assert_eq!(bridge.ble.pending_chunks(), 63, "remaining 63 queued");
     }
 
     // ---------------------------------------------------------------

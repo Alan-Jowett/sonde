@@ -2384,6 +2384,9 @@ mod tests {
     // GAP 1: MD-0403 AC3 — Indication fragmentation flow control
     // ---------------------------------------------------------------
 
+    // Maximum queued indication chunks (mirrors `ble.rs::MAX_INDICATION_CHUNKS`).
+    const MOCK_MAX_INDICATION_CHUNKS: usize = 64;
+
     /// Mock BLE driver that simulates ATT indication fragmentation and
     /// flow control, mirroring the real `EspBleDriver` pacing logic.
     ///
@@ -2395,10 +2398,6 @@ mod tests {
     /// - `advance_indication()` sends the next queued chunk **only** when
     ///   `awaiting_confirm` is false (i.e. the ATT confirmation arrived).
     /// - `simulate_confirm()` clears the flag, as `on_notify_tx` would.
-
-    // Maximum queued indication chunks (mirrors `ble.rs::MAX_INDICATION_CHUNKS`).
-    const MOCK_MAX_INDICATION_CHUNKS: usize = 64;
-
     struct FragmentingMockBle {
         mtu: u16,
         indication_queue: RefCell<VecDeque<Vec<u8>>>,

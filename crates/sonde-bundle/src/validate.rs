@@ -1113,7 +1113,19 @@ mod tests {
         });
         let r = validate_manifest(&m, dir.path());
         assert!(!r.is_valid());
-        assert!(r.errors.iter().any(|e| e.message.contains("out of range")));
+        let msg = &r.errors[0].message;
+        assert!(
+            msg.contains("GPIO pin number out of range (0–21)"),
+            "expected full spec message 'GPIO pin number out of range (0–21)', got: {msg}"
+        );
+        assert!(
+            msg.starts_with("node `"),
+            "expected node name prefix per T-SB-0607, got: {msg}"
+        );
+        assert!(
+            msg.contains("got sda=22, scl=5"),
+            "expected actual values per T-SB-0607, got: {msg}"
+        );
     }
 
     /// T-SB-0605 variant: Pins required when I2C sensor declared (positive case).
@@ -1191,6 +1203,10 @@ nodes:
             "partial pins (missing i2c0_scl) should fail deserialization"
         );
         let err = result.unwrap_err().to_string();
+        assert!(
+            err.starts_with("YAML parse error:"),
+            "expected deserialization error, not a validation error: {err}"
+        );
         assert!(
             err.contains("i2c0_scl"),
             "error should mention missing field i2c0_scl, got: {err}"

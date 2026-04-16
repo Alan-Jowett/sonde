@@ -11,7 +11,7 @@
 
 ## 1  Overview
 
-All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `AeadProvider` and `Sha256Provider`. There are 61 test cases total.
+All tests in this document are pure Rust `#[test]` cases — no hardware, no async runtime, no mocks. The protocol crate is fully testable in isolation using a software `AeadProvider` and `Sha256Provider`. There are 90 test entries with IDs up to `T-P122` across 9 sections: header, frame codec, CBOR messages, program images, integration, modem protocol, BLE envelope, diagnostics, and store-and-forward.
 
 ### Traceability note
 

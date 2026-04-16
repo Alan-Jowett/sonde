@@ -2028,14 +2028,21 @@ mod aead_tests {
         }
     }
 
-    #[test]
+    #[test] // T-P060: Complete frame encode → decrypt → decode message
     fn aead_round_trip() {
+        let wake = NodeMessage::Wake {
+            firmware_abi_version: 1,
+            program_hash: vec![0x42u8; 32],
+            battery_mv: 3300,
+            firmware_version: "0.4.0".into(),
+            blob: None,
+        };
+        let payload = wake.encode().unwrap();
         let hdr = FrameHeader {
             key_hint: 1,
             msg_type: MSG_WAKE,
             nonce: 42,
         };
-        let payload = vec![0xA1, 0x01, 0x02];
         let psk = [0x42u8; 32];
 
         let raw = encode_frame(&hdr, &payload, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
@@ -2046,9 +2053,12 @@ mod aead_tests {
 
         let plaintext = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
         assert_eq!(plaintext, payload);
+
+        let decoded_msg = NodeMessage::decode(MSG_WAKE, &plaintext).unwrap();
+        assert_eq!(decoded_msg, wake);
     }
 
-    #[test]
+    #[test] // T-P012: AES-256-GCM rejects wrong key
     fn aead_wrong_key() {
         let hdr = FrameHeader {
             key_hint: 1,
@@ -2063,7 +2073,7 @@ mod aead_tests {
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
-    #[test]
+    #[test] // T-P013: Payload tampered → GCM tag mismatch → rejected
     fn aead_tampered_ciphertext() {
         let hdr = FrameHeader {
             key_hint: 1,
@@ -2086,7 +2096,7 @@ mod aead_tests {
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
-    #[test]
+    #[test] // T-P014: Header tampered → GCM tag mismatch → rejected
     fn aead_tampered_header() {
         let hdr = FrameHeader {
             key_hint: 1,
@@ -2102,7 +2112,7 @@ mod aead_tests {
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
-    #[test]
+    #[test] // T-P015: GCM tag tampered → rejected (also covers T-P066 tag verification)
     fn aead_tampered_tag() {
         let hdr = FrameHeader {
             key_hint: 1,
@@ -2119,7 +2129,7 @@ mod aead_tests {
         assert_eq!(result, Err(DecodeError::AuthenticationFailed));
     }
 
-    #[test]
+    #[test] // T-P019d: GCM nonce construction
     fn aead_nonce_construction() {
         let psk = [0x42u8; 32];
         let frame_nonce: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -2142,6 +2152,169 @@ mod aead_tests {
         assert_eq!(MAX_PAYLOAD_SIZE, 223);
         assert_eq!(AEAD_TAG_SIZE, 16);
         assert_eq!(MIN_FRAME_SIZE, HEADER_SIZE + AEAD_TAG_SIZE);
+    }
+
+    #[test] // T-P019b: Invalid CBOR payload — decrypted bytes are not valid CBOR
+    fn aead_invalid_cbor_payload() {
+        let psk = [0x42u8; 32];
+        let invalid_cbor = [0xFF, 0xFF]; // not valid CBOR
+        let hdr = FrameHeader {
+            key_hint: 1,
+            msg_type: MSG_WAKE,
+            nonce: 1,
+        };
+        let raw = encode_frame(&hdr, &invalid_cbor, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let decoded = decode_frame(&raw).unwrap();
+        let plaintext = open_frame(&decoded, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let result = NodeMessage::decode(MSG_WAKE, &plaintext);
+        assert!(
+            matches!(result, Err(DecodeError::CborError(_))),
+            "invalid CBOR payload must produce DecodeError::CborError"
+        );
+    }
+
+    #[test] // T-P019e: Per-message PSK assignment — PEER_REQUEST vs node messages
+    fn aead_per_message_psk_assignment() {
+        let phone_psk = [0xAAu8; 32];
+        let node_psk = [0xBBu8; 32];
+
+        // PEER_REQUEST encrypted with phone_psk
+        let peer_payload = vec![0xA1, 0x01, 0x42, 0xDE, 0xAD];
+        let peer_hdr = FrameHeader {
+            key_hint: 1,
+            msg_type: MSG_PEER_REQUEST,
+            nonce: 1,
+        };
+        let peer_raw = encode_frame(
+            &peer_hdr,
+            &peer_payload,
+            &phone_psk,
+            &SoftwareAead,
+            &SoftwareSha256,
+        )
+        .unwrap();
+        let peer_decoded = decode_frame(&peer_raw).unwrap();
+        let peer_plain =
+            open_frame(&peer_decoded, &phone_psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        assert_eq!(peer_plain, peer_payload);
+        let wrong = open_frame(&peer_decoded, &node_psk, &SoftwareAead, &SoftwareSha256);
+        assert_eq!(wrong, Err(DecodeError::AuthenticationFailed));
+
+        // WAKE encrypted with node_psk
+        let wake = NodeMessage::Wake {
+            firmware_abi_version: 1,
+            program_hash: vec![0x42u8; 32],
+            battery_mv: 3300,
+            firmware_version: "0.4.0".into(),
+            blob: None,
+        };
+        let wake_cbor = wake.encode().unwrap();
+        let wake_hdr = FrameHeader {
+            key_hint: 2,
+            msg_type: MSG_WAKE,
+            nonce: 1,
+        };
+        let wake_raw = encode_frame(
+            &wake_hdr,
+            &wake_cbor,
+            &node_psk,
+            &SoftwareAead,
+            &SoftwareSha256,
+        )
+        .unwrap();
+        let wake_decoded = decode_frame(&wake_raw).unwrap();
+        let wake_plain =
+            open_frame(&wake_decoded, &node_psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        assert_eq!(wake_plain, wake_cbor);
+        let wrong2 = open_frame(&wake_decoded, &phone_psk, &SoftwareAead, &SoftwareSha256);
+        assert_eq!(wrong2, Err(DecodeError::AuthenticationFailed));
+    }
+
+    #[test] // T-P061: Gateway Command full round-trip (encode → encrypt → decrypt → decode)
+    fn aead_gateway_command_full_round_trip() {
+        let psk = [0x42u8; 32];
+        let prog_hash = vec![0xABu8; 32];
+        let cmd = GatewayMessage::Command {
+            starting_seq: 100,
+            timestamp_ms: 1700000000000,
+            payload: CommandPayload::UpdateProgram {
+                program_hash: prog_hash.clone(),
+                program_size: 1000,
+                chunk_size: 200,
+                chunk_count: 5,
+            },
+            blob: None,
+        };
+        let cbor = cmd.encode().unwrap();
+        let hdr = FrameHeader {
+            key_hint: 1,
+            msg_type: MSG_COMMAND,
+            nonce: 42,
+        };
+        let raw = encode_frame(&hdr, &cbor, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let decoded_frame = decode_frame(&raw).unwrap();
+        assert_eq!(decoded_frame.header.msg_type, MSG_COMMAND);
+        assert_eq!(decoded_frame.header.nonce, 42);
+        let plaintext = open_frame(&decoded_frame, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+        let decoded_msg = GatewayMessage::decode(MSG_COMMAND, &plaintext).unwrap();
+        match decoded_msg {
+            GatewayMessage::Command {
+                starting_seq,
+                timestamp_ms,
+                payload,
+                blob,
+            } => {
+                assert_eq!(starting_seq, 100);
+                assert_eq!(timestamp_ms, 1700000000000);
+                assert_eq!(blob, None);
+                match payload {
+                    CommandPayload::UpdateProgram {
+                        program_hash: h,
+                        program_size,
+                        chunk_size,
+                        chunk_count,
+                    } => {
+                        assert_eq!(h, prog_hash);
+                        assert_eq!(program_size, 1000);
+                        assert_eq!(chunk_size, 200);
+                        assert_eq!(chunk_count, 5);
+                    }
+                    _ => panic!("expected UpdateProgram"),
+                }
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test] // T-P065: Multiple APP_DATA with incrementing sequences
+    fn aead_app_data_incrementing_sequences() {
+        let psk = [0x42u8; 32];
+        let blobs: Vec<Vec<u8>> = vec![vec![0x01], vec![0x02, 0x03], vec![0x04, 0x05, 0x06]];
+
+        for (i, blob) in blobs.iter().enumerate() {
+            let seq = (i + 1) as u64;
+            let msg = NodeMessage::AppData { blob: blob.clone() };
+            let cbor = msg.encode().unwrap();
+            let hdr = FrameHeader {
+                key_hint: 1,
+                msg_type: MSG_APP_DATA,
+                nonce: seq,
+            };
+            let raw = encode_frame(&hdr, &cbor, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+            let decoded_frame = decode_frame(&raw).unwrap();
+            assert_eq!(
+                decoded_frame.header.nonce, seq,
+                "frame {} nonce mismatch",
+                i
+            );
+            let plaintext =
+                open_frame(&decoded_frame, &psk, &SoftwareAead, &SoftwareSha256).unwrap();
+            let decoded_msg = NodeMessage::decode(MSG_APP_DATA, &plaintext).unwrap();
+            match decoded_msg {
+                NodeMessage::AppData { blob: b } => assert_eq!(b, *blob),
+                _ => panic!("expected AppData"),
+            }
+        }
     }
 }
 
@@ -2267,4 +2440,19 @@ fn test_p122_non_nop_command_ignores_blob() {
             _ => panic!("expected Command"),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 12  Orphaned T-P entry implementations
+// ---------------------------------------------------------------------------
+
+/// T-P019a: decode_frame with >250 raw bytes
+#[test]
+fn test_p019a_decode_frame_too_long() {
+    let buf = vec![0u8; 251];
+    let result = decode_frame(&buf);
+    assert!(
+        matches!(result, Err(DecodeError::TooLong)),
+        "decode_frame must return DecodeError::TooLong for frames exceeding 250 bytes"
+    );
 }

@@ -68,6 +68,8 @@ For tests that do not require real radio hardware, a PTY pair replaces the USB-C
 4. Assert: `firmware_version` is a valid 4-byte value.
 5. Assert: `mac_address` is a valid 6-byte MAC (not all zeros).
 
+> **Implementation note:** The current `device_tests.rs` implementation (`t0101_modem_ready_after_reset`) verifies field values but does not assert the 2-second timing constraint from MD-0104. A future update should record `Instant::now()` before `reset_and_wait()` and assert `elapsed < Duration::from_secs(2)` on return.
+
 ---
 
 ### T-0102  Serial framing — valid frame and max length

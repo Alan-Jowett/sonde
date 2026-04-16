@@ -301,6 +301,8 @@ If the USB-CDC connection is lost, the modem firmware MUST continue running, dis
 2. The modem does not crash or require a power cycle after USB disconnection.
 3. ESP-NOW frames arriving during USB disconnection are silently discarded (not queued and flushed on reconnect).
 
+> **Known limitation:** USB disconnection is detected reactively via I/O failure on the next `write()` or `is_connected()` check, not by a hardware interrupt. There may be a brief window between physical disconnection and detection during which a small number of ESP-NOW frames are buffered in the poll loop. These frames are discarded on the next poll cycle once the disconnection is detected.
+
 ---
 
 ### MD-0302  Watchdog timer
@@ -410,6 +412,7 @@ When sending indications larger than (MTU − 3) bytes, the modem MUST fragment 
 2. Each indication payload is ≤ (MTU − 3) bytes.
 3. The modem waits for ATT Handle Value Confirmation between chunks.
 4. The reassembled message on the client matches the original.
+5. The indication fragment queue is bounded at 64 chunks. `BLE_INDICATE` messages whose fragments would exceed this limit MUST be silently dropped with a warning log.
 
 ---
 
@@ -503,6 +506,8 @@ When a phone writes to the Gateway Command characteristic, the modem MUST forwar
 3. The payload is forwarded unmodified.
 4. Empty GATT writes are silently discarded.
 5. If a GATT write arrives before server-initiated LESC pairing completes (i.e. `authenticated` is still `false`), the modem MUST buffer the write and forward it as `BLE_RECV` once authentication succeeds, rather than discarding it.
+6. The pre-authentication write buffer holds at most one write (single-slot). If a second GATT write arrives before authentication completes, it replaces the previously buffered write. The client should not send more than one write before receiving a response.
+7. The BLE event queue is bounded at 32 entries. GATT writes arriving when the queue is full MUST be silently dropped with a warning log.
 
 ---
 

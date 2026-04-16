@@ -259,11 +259,11 @@ For src=1, the interpreter resolves the map index and loads the relocated map po
 ```
 let imm = insn.imm;                          // i32 from instruction encoding
 if imm < 0 {
-    return Err(InvalidMapIndex { pc, index: imm as i64 });
+    return Err(InvalidMapIndex { pc, index: imm });
 }
 let index = imm as usize;
 if index >= maps.len() {
-    return Err(InvalidMapIndex { pc, index: imm as i64 });
+    return Err(InvalidMapIndex { pc, index: imm });
 }
 // index is valid — proceed with relocation
 ```

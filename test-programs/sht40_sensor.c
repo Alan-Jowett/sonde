@@ -22,10 +22,11 @@
  *   T_C  = -45 + 175 * (T_raw / 65535)
  *   RH%  = -6  + 125 * (RH_raw / 65535)
  *
- * Payload (14 bytes):
- *   [0..5]   raw frame (T + CRC + RH + CRC)
- *   [6..9]   temp_mC (little-endian i32)
- *   [10..13] rh_mpermille (little-endian i32)  // milli-%RH
+ * Payload (22 bytes, store-and-forward via send_async):
+ *   [0..7]   timestamp (little-endian u64, ms since epoch)
+ *   [8..13]  raw frame (T + CRC + RH + CRC)
+ *   [14..17] temp_mC (little-endian i32)
+ *   [18..21] rh_mpermille (little-endian i32)  // milli-%RH
  */
 
 #include "include/sonde_helpers.h"

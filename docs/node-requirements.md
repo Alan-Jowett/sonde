@@ -662,13 +662,15 @@ When exactly one message is in the async queue and it fits within the WAKE paylo
 **Source:** protocol.md §5.1
 
 **Description:**  
-When the async queue contains messages that cannot be piggybacked on WAKE, the node MUST send each queued message as a separate APP_DATA frame after receiving the COMMAND response, using the standard sequence number mechanism. Messages MUST NOT be split or concatenated.
+When the async queue contains messages that cannot be piggybacked on WAKE and the gateway responds with a NOP command, the node MUST send each queued message as a separate APP_DATA frame before BPF execution, using the standard sequence number mechanism. Messages MUST NOT be split or concatenated. On non-NOP cycles (UpdateProgram, RunEphemeral, UpdateSchedule, Reboot), the overflow drain is skipped — queued blobs remain in the queue for the next cycle to avoid contending for radio time with command-specific traffic.
 
 **Acceptance criteria:**
 
 1. Each queued message becomes one APP_DATA frame.
 2. Sequence numbers increment correctly.
 3. No message splitting or concatenation.
+4. Overflow drain occurs only on NOP cycles, before BPF execution.
+5. Non-NOP commands do not drain the queue (blobs are retried on the next NOP cycle).
 
 ---
 

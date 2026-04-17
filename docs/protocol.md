@@ -623,7 +623,7 @@ Note: The COMMAND blob (`reply_N-1`) is the handler's response to a *previous* c
 
 **Backward compatibility:** The `blob` field is optional in both WAKE and COMMAND. Nodes and gateways that predate this feature silently ignore unknown CBOR keys (forward compatibility). A new node talking to an old gateway functions normally — piggybacked data is silently dropped but the node remains operational.
 
-**Fallback:** When the async queue contains multiple messages or an oversized message, the node sends them as standard APP_DATA frames after receiving COMMAND, exactly as `send()` / `send_recv()` do today.
+**Fallback:** When the async queue contains multiple messages or an oversized message, the node sends them as standard APP_DATA frames before BPF execution on the next NOP cycle. Non-NOP commands (UpdateProgram, RunEphemeral, UpdateSchedule, Reboot) skip the overflow drain to avoid contending for radio time with command-specific traffic; queued blobs remain for the next NOP cycle.
 
 ---
 

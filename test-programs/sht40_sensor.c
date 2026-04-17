@@ -160,9 +160,9 @@ int program(struct sonde_context *ctx)
     payload[21] = (__u8)(rh_bits >> 24);
 
     /* Store-and-forward: queue for delivery on next wake cycle.
-     * Falls back to send() if the async queue is full. */
+     * Falls back to send() only if the async queue is full. */
     rc = send_async(payload, sizeof(payload));
-    if (rc < 0) {
+    if (rc == -1) {
         send(payload, sizeof(payload));
     }
     return 0;

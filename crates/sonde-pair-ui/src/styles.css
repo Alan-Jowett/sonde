@@ -56,7 +56,6 @@ header {
 }
 
 .btn-back:hover { background: rgba(255,255,255,0.1); }
-.btn-back.hidden { display: none; }
 
 header h1 {
   font-size: 18px;

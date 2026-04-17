@@ -1245,6 +1245,8 @@ The UI MUST persist the current page index to `localStorage` so that the wizard 
 **Description:**  
 The UI MUST support back navigation via the browser/platform back action (hardware back button on Android, browser back on desktop).  Back navigation returns to the previous wizard page.  On page 1, back navigation does nothing (no exit).
 
+Additionally, a visible back arrow button MUST be rendered in the header bar on all pages except page 1 (Welcome).  This ensures desktop platforms (Windows, Linux) that lack a hardware back button still provide a discoverable back-navigation affordance.  Clicking the back arrow triggers the same navigation as the platform back action.
+
 **Acceptance criteria:**
 
 1. Pressing back on pages 2–6 navigates to the previous page.
@@ -1252,6 +1254,9 @@ The UI MUST support back navigation via the browser/platform back action (hardwa
 3. Back navigation uses the History API (`pushState`/`popstate`) with a sentinel state on page 1.
 4. The stepper bar updates correctly on back navigation.
 5. Navigating back from a scan page stops any active scan and clears the selected device.
+6. A back arrow button is visible in the header on pages 2–6.
+7. The back arrow button is hidden on page 1 (Welcome).
+8. Clicking the back arrow navigates to the previous page (same behavior as AC 1).
 
 ---
 

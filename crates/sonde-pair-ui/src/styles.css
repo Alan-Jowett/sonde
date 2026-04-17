@@ -37,6 +37,27 @@ header {
   gap: 12px;
 }
 
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-back {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 20px;
+  padding: 4px 8px;
+  cursor: pointer;
+  line-height: 1;
+  border-radius: var(--radius);
+  transition: background 0.15s;
+}
+
+.btn-back:hover { background: rgba(255,255,255,0.1); }
+.btn-back.hidden { display: none; }
+
 header h1 {
   font-size: 18px;
   font-weight: 600;

@@ -912,6 +912,16 @@ The `popstate` listener reads `event.state.page` and calls `navigator.goTo()` wi
 
 On Android, the Tauri WebView dispatches hardware-back as a browser back event, which triggers `popstate`.  The sentinel state ensures the app does not exit on page 1.
 
+#### Visible back button (PT-1220 AC 6–8)
+
+A `←` back arrow button is rendered inside the `<header>` element, to the left of the app title.  The button:
+
+- Is hidden on page 1 (Welcome) and visible on pages 2–6.
+- Calls `navigator.back()` (which invokes `goTo(currentPage - 1)`) on click.
+- Uses `id="btn-back"` and is styled as a borderless icon button that blends with the header.
+
+The `Navigator.goTo()` method updates the button's visibility: hidden when `pageIndex === 0`, visible otherwise.
+
 ### Scan lifecycle on page transitions
 
 When navigating away from a scan page (page 2 or page 4):

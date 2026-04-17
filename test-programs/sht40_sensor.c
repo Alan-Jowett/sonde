@@ -63,8 +63,6 @@ crc8_sensirion_2bytes(const __u8 *data)
 SEC("sonde")
 int program(struct sonde_context *ctx)
 {
-    (void)ctx;
-
     /* 1) Send measurement command */
     __u8 cmd = SHT4X_CMD_MEASURE_HIGH;
     int rc = i2c_write(SHT40_HANDLE, &cmd, 1);
@@ -117,31 +115,55 @@ int program(struct sonde_context *ctx)
     __s32 rh_mpermille = -6000;
     rh_mpermille += (__s32)(((__u64)125000u * (__u64)rh_raw) / 65535u);
 
-    /* Build payload, avoiding unaligned access. */
-    __u8 payload[14];
+    /* Build payload (22 bytes), avoiding unaligned access.
+     *
+     * Layout:
+     *   [0..7]   timestamp (little-endian u64, ms since epoch)
+     *   [8..13]  raw frame (T_msb, T_lsb, CRC_T, RH_msb, RH_lsb, CRC_RH)
+     *   [14..17] temp_mC (little-endian i32)
+     *   [18..21] rh_mpermille (little-endian i32)
+     */
+    __u8 payload[22];
+
+    /* Embed ctx->timestamp per bpf-environment.md best practice:
+     * async delivery may be delayed; handlers need collection time. */
+    __u64 ts = ctx->timestamp;
+    payload[0]  = (__u8)(ts);
+    payload[1]  = (__u8)(ts >> 8);
+    payload[2]  = (__u8)(ts >> 16);
+    payload[3]  = (__u8)(ts >> 24);
+    payload[4]  = (__u8)(ts >> 32);
+    payload[5]  = (__u8)(ts >> 40);
+    payload[6]  = (__u8)(ts >> 48);
+    payload[7]  = (__u8)(ts >> 56);
 
     /* Raw frame */
-    payload[0] = buf[0];
-    payload[1] = buf[1];
-    payload[2] = buf[2];
-    payload[3] = buf[3];
-    payload[4] = buf[4];
-    payload[5] = buf[5];
+    payload[8]  = buf[0];
+    payload[9]  = buf[1];
+    payload[10] = buf[2];
+    payload[11] = buf[3];
+    payload[12] = buf[4];
+    payload[13] = buf[5];
 
     /* temp_mC little-endian i32 */
     __u32 t_bits = (__u32)temp_mC;
-    payload[6]  = (__u8)(t_bits);
-    payload[7]  = (__u8)(t_bits >> 8);
-    payload[8]  = (__u8)(t_bits >> 16);
-    payload[9]  = (__u8)(t_bits >> 24);
+    payload[14] = (__u8)(t_bits);
+    payload[15] = (__u8)(t_bits >> 8);
+    payload[16] = (__u8)(t_bits >> 16);
+    payload[17] = (__u8)(t_bits >> 24);
 
     /* rh_mpermille little-endian i32 */
     __u32 rh_bits = (__u32)rh_mpermille;
-    payload[10] = (__u8)(rh_bits);
-    payload[11] = (__u8)(rh_bits >> 8);
-    payload[12] = (__u8)(rh_bits >> 16);
-    payload[13] = (__u8)(rh_bits >> 24);
+    payload[18] = (__u8)(rh_bits);
+    payload[19] = (__u8)(rh_bits >> 8);
+    payload[20] = (__u8)(rh_bits >> 16);
+    payload[21] = (__u8)(rh_bits >> 24);
 
-    send(payload, sizeof(payload));
+    /* Store-and-forward: queue for delivery on next wake cycle.
+     * Falls back to send() if the async queue is full. */
+    rc = send_async(payload, sizeof(payload));
+    if (rc < 0) {
+        send(payload, sizeof(payload));
+    }
     return 0;
 }

@@ -4,8 +4,9 @@
 //! Sleep-retained async send queue for store-and-forward.
 //!
 //! BPF programs call `send_async` (helper #17) to enqueue data blobs
-//! that are transmitted after BPF execution completes — either
-//! piggybacked on the next WAKE or sent as individual APP_DATA frames.
+//! for deferred transmission on the next wake cycle — either
+//! piggybacked on the next WAKE or sent as individual APP_DATA frames
+//! before BPF execution (NOP cycles only).
 //!
 //! On ESP32, the queue is backed by RTC slow SRAM (`.rtc.data`) and
 //! survives deep sleep (ND-0609). On host/test builds, a heap-allocated

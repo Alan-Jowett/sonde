@@ -330,7 +330,7 @@ static int (*bpf_trace_printk)(const char *fmt, __u32 fmt_len, ...) = (void *)16
  * max 10 entries).  Data survives deep sleep but is lost on reboot.
  * If exactly one blob is queued and it fits, it will be piggybacked on
  * the next WAKE frame; otherwise each queued blob is sent as a separate
- * APP_DATA frame after BPF execution completes.
+ * APP_DATA frame on the next NOP cycle, before BPF execution.
  *
  * @ptr: pointer to data blob
  * @len: length of the data blob in bytes

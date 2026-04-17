@@ -310,9 +310,8 @@ fn main() {
         let mut record = serde_json::Map::new();
 
         // Use embedded collection timestamp (V2) if available, else wall-clock
-        match &decoded {
-            Ok(reading) if reading.collection_timestamp_ms.is_some() => {
-                let ts_ms = reading.collection_timestamp_ms.unwrap();
+        if let Ok(reading) = &decoded {
+            if let Some(ts_ms) = reading.collection_timestamp_ms {
                 record.insert(
                     "timestamp".into(),
                     serde_json::Value::String(format_utc_secs(ts_ms / 1000)),
@@ -321,13 +320,17 @@ fn main() {
                     "timestamp_ms".into(),
                     serde_json::Value::Number(serde_json::Number::from(ts_ms)),
                 );
-            }
-            _ => {
+            } else {
                 record.insert(
                     "timestamp".into(),
                     serde_json::Value::String(format_utc_now()),
                 );
             }
+        } else {
+            record.insert(
+                "timestamp".into(),
+                serde_json::Value::String(format_utc_now()),
+            );
         }
         record.insert(
             "device".into(),

@@ -917,7 +917,7 @@ On Android, the Tauri WebView dispatches hardware-back as a browser back event, 
 A `←` back arrow button is rendered inside the `<header>` element, to the left of the app title.  The button:
 
 - Is hidden on page 1 (Welcome) and visible on pages 2–6.
-- Calls `navigator.back()` (which invokes `goTo(currentPage - 1)`) on click.
+- Calls `history.back()` on click, which triggers the existing `popstate` handler and correctly pops the history stack (matching PT-1220's "same as platform back action" semantics).
 - Uses `id="btn-back"` and is styled as a borderless icon button that blends with the header.
 
 The `Navigator.goTo()` method updates the button's visibility: hidden when `pageIndex === 0`, visible otherwise.

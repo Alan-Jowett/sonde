@@ -589,7 +589,7 @@ async function pollLogs() {
 // ---------------------------------------------------------------------------
 
 // Header back button (PT-1220 AC 8)
-btnBack.addEventListener("click", () => navigator_.back());
+btnBack.addEventListener("click", () => history.back());
 
 // Page 1: Welcome
 btnGetStarted.addEventListener("click", () => navigator_.next());

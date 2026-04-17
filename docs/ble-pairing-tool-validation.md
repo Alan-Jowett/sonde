@@ -1371,10 +1371,11 @@ TestNode {
 4. Assert: a back arrow button (`←`) is visible in the header, to the left of the title.
 5. Click the back arrow button.
 6. Assert: page 1 (Welcome) is visible; stepper shows Gateway phase active.
-7. Navigate forward to page 4 (Node Scan).
-8. Assert: the back arrow button is visible.
-9. Click the back arrow button.
-10. Assert: page 3 (Pairing Complete) is visible.
+7. From this fresh state, complete gateway pairing until page 3 (Pairing Complete) is visible.
+8. Navigate forward to page 4 (Node Scan).
+9. Assert: the back arrow button is visible.
+10. Click the back arrow button.
+11. Assert: page 3 (Pairing Complete) is visible.
 
 ---
 

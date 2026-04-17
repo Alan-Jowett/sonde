@@ -131,15 +131,14 @@ The state machine has five main states plus two alternate boot paths. Starting f
 
 1. **Boot/wake**: Initialize hardware. Determine boot path per ND-0900: (1) no PSK or button held → BLE pairing mode, (2) PSK + no `reg_complete` → PEER_REQUEST registration, (3) PSK + `reg_complete` → proceed to step 2.
 2. **Generate nonce**: Hardware RNG produces a 64-bit random nonce.
-3. **Drain async queue**: Check the async queue (§8.6) from the previous cycle. If exactly 1 message is queued and it fits in the WAKE payload budget, include it as `blob` (CBOR key 10) in the WAKE message. Otherwise, `blob` is omitted and the queue is left intact for overflow drain in step 6a.
+3. **Drain async queue**: Check the async queue (§8.6) from the previous cycle. If exactly 1 message is queued and it fits in the WAKE payload budget, include it as `blob` (CBOR key 10) in the WAKE message. Otherwise, `blob` is omitted and the queue is left intact for overflow drain in step 7 (NOP only).
 4. **Send WAKE**: Construct WAKE frame (`firmware_abi_version`, `program_hash`, `battery_mv`, `firmware_version`, and optionally `blob`). The `firmware_version` string is derived from `CARGO_PKG_VERSION` at compile time. AEAD-encrypt with PSK. Transmit via ESP-NOW.
 5. **Await COMMAND**: Wait up to 200 ms for a response. On timeout, back off for 400 ms before retrying, up to 4 total attempts. If all attempts fail, sleep.
 6. **Verify COMMAND**: Decrypt via AES-256-GCM. Verify echoed nonce matches. Decode CBOR. Extract `starting_seq` and `timestamp_ms`.
-6a. **Async queue overflow drain** (after BPF execution, before sleep): If the async queue has messages that were NOT piggybacked on WAKE (either because there were multiple messages, or the single message exceeded the WAKE payload budget), each is sent as an individual APP_DATA frame. The queue is cleared after all messages are sent. The sequence counter advances past the drained messages.
 6b. **Downlink data extraction**: If the COMMAND is NOP and contains a `blob` field (CBOR key 10), the firmware copies the blob into a RAM buffer and sets `sonde_context.data_start` / `data_end` to point to it. If no `blob` is present, both fields are set to 0.
 7. **Dispatch command**:
-   - `NOP` → proceed to BPF execution.
-   - `UPDATE_PROGRAM` / `RUN_EPHEMERAL` → enter chunked transfer.
+   - `NOP` → drain remaining async queue (previous-cycle blobs not piggybacked on WAKE) as individual APP_DATA frames, then proceed to BPF execution. Blobs queued by BPF in the current cycle remain in the queue for piggybacking on the next WAKE.
+   - `UPDATE_PROGRAM` / `RUN_EPHEMERAL` → clear async queue (old program's blobs are invalid), enter chunked transfer.
    - `UPDATE_SCHEDULE` → store new base interval, proceed to BPF execution.
    - `REBOOT` → restart firmware.
    - Unknown → treat as NOP.
@@ -404,7 +403,7 @@ Each call increments the sequence number, ensuring independent replay protection
 1. Copy the blob into the async queue (backed by RTC slow SRAM on ESP32; survives deep sleep).
 2. Return 0 on success, or a non-zero error code if the queue is full.
 
-The queued messages are drained at the start of the next wake cycle (§4.2 step 3 and step 6a). If exactly one message is queued and fits within the WAKE payload budget, it is piggybacked on the WAKE frame as `blob` (CBOR key 10), saving a round-trip. If multiple messages are queued or the single message exceeds the budget, all queued messages are sent as individual APP_DATA frames after COMMAND reception.
+The queued messages are drained at the start of the next wake cycle (§4.2 step 3 and step 7). If exactly one message is queued and fits within the WAKE payload budget, it is piggybacked on the WAKE frame as `blob` (CBOR key 10), saving a round-trip. If multiple messages are queued or the single message exceeds the budget, all queued messages are sent as individual APP_DATA frames before BPF execution, but only on NOP cycles — non-NOP commands (UpdateProgram, RunEphemeral, Reboot) skip the overflow drain to avoid contending for radio time with command-specific traffic.
 
 The async queue is backed by sleep-retained RAM (RTC slow SRAM on ESP32, heap-allocated in tests) and passed to `run_wake_cycle()` as `&mut AsyncQueue`. It survives deep sleep so that blobs queued in cycle N are available for piggybacking in cycle N+1's WAKE. It is lost on reboot (RTC SRAM is cleared on power-on reset). The queue is cleared when UPDATE_PROGRAM or RUN_EPHEMERAL is received, since a new program load invalidates blobs produced by the old program. The queue capacity is a compile-time constant (10 messages, ~2.2 KB of RTC SRAM).
 

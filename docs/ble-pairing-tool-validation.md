@@ -1359,6 +1359,26 @@ TestNode {
 
 ---
 
+### T-PT-1220d  Visible back button in header (desktop)
+
+**Validates:** PT-1220 (AC 6, 7, 8)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. Launch the app on a desktop platform (Windows or Linux).
+2. Assert: on page 1 (Welcome), the back arrow button is not visible.
+3. Navigate to page 2 (Gateway Scan).
+4. Assert: a back arrow button (`←`) is visible in the header, to the left of the title.
+5. Click the back arrow button.
+6. Assert: page 1 (Welcome) is visible; stepper shows Gateway phase active.
+7. From this fresh state, complete gateway pairing until page 3 (Pairing Complete) is visible.
+8. Navigate forward to page 4 (Node Scan).
+9. Assert: the back arrow button is visible.
+10. Click the back arrow button.
+11. Assert: page 3 (Pairing Complete) is visible.
+
+---
+
 ### T-PT-1221a  RSSI indicator shows correct quality level
 
 **Validates:** PT-1221 (AC 1–4)  
@@ -1567,6 +1587,7 @@ TestNode {
 | T-PT-1220a | PT-1220 | Back navigation returns to previous page |
 | T-PT-1220b | PT-1220 | Back navigation on page 1 does nothing |
 | T-PT-1220c | PT-1220 | Scan stopped when navigating away from scan page |
+| T-PT-1220d | PT-1220 | Visible back button in header (desktop) |
 | T-PT-1221a | PT-1221 | RSSI indicator shows correct quality level |
 | T-PT-1221b | PT-1221 | RSSI indicator updates on poll interval |
 | T-PT-1221c | PT-1221 | RSSI boundary values classified correctly |

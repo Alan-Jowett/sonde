@@ -21,6 +21,9 @@ const pages = [
 // Stepper (PT-1218)
 const stepperSteps = document.querySelectorAll("#stepper .step");
 
+// Back button (PT-1220 AC 6–8)
+const btnBack = document.getElementById("btn-back");
+
 // Page 1: Welcome
 const pairingStatus = document.getElementById("pairing-status");
 const btnGetStarted = document.getElementById("btn-get-started");
@@ -217,6 +220,8 @@ class Navigator {
         el.classList.add("step--active");
       }
     });
+    // PT-1220 AC 6–7: show back button on pages 2–6, hide on page 1
+    btnBack.classList.toggle("hidden", this.currentPage === 0);
   }
 
   _cleanupScanPage(pageIndex, { preserveSelection = false } = {}) {
@@ -582,6 +587,9 @@ async function pollLogs() {
 // ---------------------------------------------------------------------------
 // Event bindings
 // ---------------------------------------------------------------------------
+
+// Header back button (PT-1220 AC 8)
+btnBack.addEventListener("click", () => history.back());
 
 // Page 1: Welcome
 btnGetStarted.addEventListener("click", () => navigator_.next());

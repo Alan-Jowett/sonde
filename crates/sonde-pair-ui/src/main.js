@@ -185,7 +185,7 @@ class Navigator {
   back() { this.goTo(this.currentPage - 1); }
 
   restore() {
-    // Seed history with sentinel so page-1 back stays put (PT-1220)
+    // Seed history with sentinel at the bottom so back on page 1 is a no-op (PT-1220 AC 3)
     history.replaceState({ page: 0, sentinel: true }, "", "");
 
     const saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
@@ -200,12 +200,23 @@ class Navigator {
       target = 0;
     }
 
-    // Push the actual target page into history so state is in sync
-    history.pushState({ page: target }, "", "");
+    // Pages 5–6 require ephemeral state (selected node / provisioning-success context)
+    // that cannot survive a restart — fall back to Node Scan (PT-1219 AC 4)
+    if (target >= 4) {
+      target = isPaired ? 3 : 0;
+    }
+
+    // Push all intermediate pages so back navigation traverses each step (PT-1220 AC 3)
+    for (let i = 0; i <= target; i++) {
+      history.pushState({ page: i }, "", "");
+    }
 
     this._skipPush = true;
-    this.goTo(target, { push: false });
-    this._skipPush = false;
+    try {
+      this.goTo(target, { push: false });
+    } finally {
+      this._skipPush = false;
+    }
   }
 
   get current() { return this.currentPage; }
@@ -532,9 +543,11 @@ async function refreshPairingStatus() {
     const s = await invoke("get_pairing_status");
     if (s.paired) {
       isPaired = true;
-      pairingStatus.textContent = "Paired \u2014 Gateway " + (s.gateway_id || "").substring(0, 8) + "\u2026";
+      const gwLabel = "Gateway " + (s.gateway_id || "").substring(0, 8) + "\u2026";
+      pairingStatus.textContent = "Paired \u2014 " + gwLabel;
       btnGetStarted.classList.add("hidden");
       btnSkipToNode.classList.remove("hidden");
+      pairDetails.textContent = gwLabel;
     } else {
       isPaired = false;
       pairingStatus.textContent = "Not paired";
@@ -603,6 +616,7 @@ btnPair.addEventListener("click", pairGateway);
 
 // Page 3: Pairing Complete
 btnToNode.addEventListener("click", () => navigator_.next());
+document.getElementById("btn-clear-gw-done").addEventListener("click", clearPairing);
 
 // Page 4: Node Scan
 btnScanStartNode.addEventListener("click", startScan);
@@ -634,8 +648,10 @@ verboseToggle.addEventListener("change", toggleVerbose);
 // Back navigation (PT-1220)
 window.addEventListener("popstate", (e) => {
   if (e.state && e.state.sentinel) {
-    // Re-push so the sentinel remains for next back press
+    // At the bottom of the history stack — navigate to page 1 and re-establish
+    // a no-exit floor so further back presses stay on page 1 (PT-1220 AC 2, 3)
     history.pushState({ page: 0 }, "", "");
+    navigator_.goTo(0, { push: false });
     return;
   }
   if (e.state && typeof e.state.page === "number") {

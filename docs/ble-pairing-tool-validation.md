@@ -1318,7 +1318,7 @@ TestNode {
 
 ### T-PT-1219b  Page restored on app restart
 
-**Validates:** PT-1219 (AC 2, 3)  
+**Validates:** PT-1219 (AC 2, 3, 4)  
 **Type:** Manual / platform test
 
 **Procedure:**
@@ -1331,6 +1331,12 @@ TestNode {
 7. Clear pairing artifacts and set `localStorage.setItem('sonde-pair-page', '4')`.
 8. Reload the app.
 9. Assert: page 1 (Welcome) is visible (prerequisites not met, redirects to earliest valid page).
+10. With pairing artifacts present, set `localStorage.setItem('sonde-pair-page', '4')` (0-based index for Node Provision page).
+11. Reload the app.
+12. Assert: page 4 (Node Scan) is visible — the provision page requires an ephemeral selected-node address; the app falls back to the node scan page (PT-1219 AC 4).
+13. With pairing artifacts present, set `localStorage.setItem('sonde-pair-page', '5')` (0-based index for Done page).
+14. Reload the app.
+15. Assert: page 4 (Node Scan) is visible — the done page requires ephemeral provisioning-success context; the app falls back to the node scan page (PT-1219 AC 4).
 
 ---
 
@@ -1379,7 +1385,27 @@ TestNode {
 
 ---
 
-### T-PT-1221a  RSSI indicator shows correct quality level
+### T-PT-1220e  Back navigation works after app restore to mid-flow page
+
+**Validates:** PT-1220 (AC 1, 3)  
+**Type:** Manual / platform test
+
+**Procedure:**
+1. With pairing artifacts present, set `localStorage.setItem('sonde-pair-page', '3')` (0-based index for Node Scan page).
+2. Reload the app.
+3. Assert: page 4 (Node Scan) is displayed.
+4. Press back (browser back or back arrow button).
+5. Assert: page 3 (Pairing Complete) is displayed.
+6. Press back.
+7. Assert: page 2 (Gateway Scan) is displayed.
+8. Press back.
+9. Assert: page 1 (Welcome) is displayed.
+10. Press back.
+11. Assert: page 1 (Welcome) is still displayed; the app does not navigate away.
+
+---
+
+
 
 **Validates:** PT-1221 (AC 1–4)  
 **Type:** Manual / platform test
@@ -1588,6 +1614,7 @@ TestNode {
 | T-PT-1220b | PT-1220 | Back navigation on page 1 does nothing |
 | T-PT-1220c | PT-1220 | Scan stopped when navigating away from scan page |
 | T-PT-1220d | PT-1220 | Visible back button in header (desktop) |
+| T-PT-1220e | PT-1220 | Back navigation works after app restore to mid-flow page |
 | T-PT-1221a | PT-1221 | RSSI indicator shows correct quality level |
 | T-PT-1221b | PT-1221 | RSSI indicator updates on poll interval |
 | T-PT-1221c | PT-1221 | RSSI boundary values classified correctly |

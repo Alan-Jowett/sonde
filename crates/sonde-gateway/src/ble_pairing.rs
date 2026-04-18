@@ -207,7 +207,8 @@ impl BlePairingController {
         }
         // Await graceful exit; the task sends WindowClosed before returning
         // so we must not abort it here.
-        if let Some(handle) = self.event_task.lock().await.take() {
+        let handle = self.event_task.lock().await.take();
+        if let Some(handle) = handle {
             let _ = handle.await;
         }
     }

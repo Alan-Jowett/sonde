@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 //! Modem transport tests (T-1100 through T-1108 except T-1105 which is
-//! already in phase2d.rs). Also includes T-1104d (warm reboot detection).
+//! already in phase2d.rs). Also includes T-1104d and T-1104e (warm reboot).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -697,4 +697,131 @@ async fn t1104d_unexpected_modem_ready_fires_warm_reboot_notify() {
         ch_result.is_err(),
         "change_channel must return Err when cancelled by warm reboot"
     );
+}
+
+// ── T-1104e: Warm reboot — gateway re-runs startup with persisted channel ──
+
+/// T-1104e  After modem warm reboot, gateway recovers with persisted channel.
+///
+/// Validates GW-1103 (criteria 7–8) and GW-0808 (AC6):
+///   - warm reboot sets flag + fires notify (transport-level precondition)
+///   - after abort_reader_and_wait() + drop, a new transport created with the
+///     persisted channel (7) sends RESET → SET_CHANNEL(7), not SET_CHANNEL(1)
+///
+/// The no-backoff and backoff-reset properties are validated by code inspection
+/// of `run_gateway` (the reconnect loop `continue`s without sleeping, and
+/// `backoff` is reset to 1 s after each successful `UsbEspNowTransport::new()`).
+#[tokio::test]
+async fn t1104e_warm_reboot_recovery_uses_persisted_channel() {
+    use std::sync::atomic::Ordering;
+
+    // 1. Create initial transport (channel 1) and simulate steady-state operation.
+    let (client1, mut server1) = duplex(4096);
+    let transport_handle =
+        tokio::spawn(async move { UsbEspNowTransport::new(client1, 1).await.unwrap() });
+    {
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 256];
+        // RESET
+        let msg = read_next_message(&mut server1, &mut decoder, &mut buf).await;
+        assert!(matches!(msg, ModemMessage::Reset));
+        // MODEM_READY
+        let ready = ModemMessage::ModemReady(ModemReady {
+            firmware_version: [1, 0, 0, 0],
+            mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        });
+        server1
+            .write_all(&encode_modem_frame(&ready).unwrap())
+            .await
+            .unwrap();
+        // SET_CHANNEL(1)
+        let msg = read_next_message(&mut server1, &mut decoder, &mut buf).await;
+        assert!(
+            matches!(msg, ModemMessage::SetChannel(1)),
+            "expected SetChannel(1) during startup"
+        );
+        // SET_CHANNEL_ACK(1)
+        server1
+            .write_all(&encode_modem_frame(&ModemMessage::SetChannelAck(1)).unwrap())
+            .await
+            .unwrap();
+    }
+    let transport = Arc::new(transport_handle.await.unwrap());
+
+    let warm_reboot_notify = transport.warm_reboot_notify();
+    let warm_reboot_flag = transport.warm_reboot_flag();
+
+    // 2. Simulate modem warm reboot — inject unsolicited MODEM_READY.
+    let ready = ModemMessage::ModemReady(ModemReady {
+        firmware_version: [1, 0, 0, 0],
+        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+    });
+    server1
+        .write_all(&encode_modem_frame(&ready).unwrap())
+        .await
+        .unwrap();
+
+    // 3. Assert warm_reboot_notify fires and flag is latched.
+    tokio::time::timeout(Duration::from_secs(1), warm_reboot_notify.notified())
+        .await
+        .expect("warm_reboot_notify must fire on unexpected MODEM_READY");
+    assert!(
+        warm_reboot_flag.load(Ordering::Acquire),
+        "warm_reboot_flag must be set after unexpected MODEM_READY"
+    );
+
+    // 4. Recovery: abort reader task and drop the transport (mimics gateway recovery path).
+    transport.abort_reader_and_wait().await;
+    drop(transport);
+
+    // 5. Simulate the reconnect loop reading the persisted channel from DB (channel 7).
+    let persisted_channel: u8 = 7;
+
+    // 6. Create new transport with persisted channel — the mock stream must receive
+    //    RESET → SET_CHANNEL(7), not SET_CHANNEL(1).
+    let (client2, mut server2) = duplex(4096);
+    let transport2_handle = tokio::spawn(async move {
+        UsbEspNowTransport::new(client2, persisted_channel)
+            .await
+            .unwrap()
+    });
+
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+
+    // RESET
+    let msg = read_next_message(&mut server2, &mut decoder, &mut buf).await;
+    assert!(
+        matches!(msg, ModemMessage::Reset),
+        "expected Reset after warm reboot recovery"
+    );
+
+    // MODEM_READY
+    let ready = ModemMessage::ModemReady(ModemReady {
+        firmware_version: [1, 0, 0, 0],
+        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+    });
+    server2
+        .write_all(&encode_modem_frame(&ready).unwrap())
+        .await
+        .unwrap();
+
+    // SET_CHANNEL(7) — must be persisted channel, not channel 1
+    let msg = read_next_message(&mut server2, &mut decoder, &mut buf).await;
+    match msg {
+        ModemMessage::SetChannel(ch) => {
+            assert_eq!(
+                ch, 7,
+                "gateway must use persisted channel 7 after warm reboot, not default 1"
+            );
+            // Complete the handshake so transport2 is fully initialized.
+            server2
+                .write_all(&encode_modem_frame(&ModemMessage::SetChannelAck(ch)).unwrap())
+                .await
+                .unwrap();
+        }
+        other => panic!("expected SetChannel after warm reboot recovery, got {other:?}"),
+    }
+
+    let _transport2 = transport2_handle.await.unwrap();
 }

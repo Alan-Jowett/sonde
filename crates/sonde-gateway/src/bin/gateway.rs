@@ -490,8 +490,8 @@ async fn run_gateway(
         let warm_reboot_notify = transport.warm_reboot_notify();
         let warm_reboot_flag = transport.warm_reboot_flag();
 
-        // 7. Start gRPC admin server (only on first iteration)
-        // Re-create the admin service with the new transport reference each time.
+        // Re-create the admin service and spawn a fresh gRPC server on each
+        // reconnect iteration to bind to the new transport reference.
         let ble_controller = Arc::new(sonde_gateway::ble_pairing::BlePairingController::new());
         let admin_service = AdminService::new(
             storage.clone(),

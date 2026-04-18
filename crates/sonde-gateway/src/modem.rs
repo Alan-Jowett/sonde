@@ -110,10 +110,12 @@ pub struct UsbEspNowTransport {
 
 impl Drop for UsbEspNowTransport {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.reader_handle.lock() {
-            if let Some(h) = guard.take() {
-                h.abort();
-            }
+        let mut guard = match self.reader_handle.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(h) = guard.take() {
+            h.abort();
         }
     }
 }
@@ -142,8 +144,7 @@ impl UsbEspNowTransport {
         let scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>> =
             Arc::new(std::sync::Mutex::new(None));
 
-        let warm_reboot_notify: Arc<tokio::sync::Notify> =
-            Arc::new(tokio::sync::Notify::new());
+        let warm_reboot_notify: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
         let warm_reboot_flag: Arc<std::sync::atomic::AtomicBool> =
             Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -321,10 +322,7 @@ impl UsbEspNowTransport {
     /// next `UsbEspNowTransport::new()` call opens the port.
     pub async fn abort_reader_and_wait(&self) {
         let handle = {
-            let mut guard = self
-                .reader_handle
-                .lock()
-                .expect("reader_handle poisoned");
+            let mut guard = self.reader_handle.lock().unwrap_or_else(|e| e.into_inner());
             guard.take()
         };
         if let Some(h) = handle {

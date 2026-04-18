@@ -1834,7 +1834,7 @@ A set of pre-compiled BPF programs (as CBOR program images) for testing:
 5. Inspect `crates/sonde-node/src/bin/node.rs` main function.
 6. Assert: `esp_task_wdt_add()` is called at startup to register the main task.
 7. Assert: `esp_task_wdt_delete()` is called after the wake cycle completes.
-8. Inspect `esp_ble_pairing.rs` main polling loop.
+8. Inspect `crates/sonde-node/src/esp_ble_pairing.rs` main polling loop.
 9. Assert: `esp_task_wdt_reset()` is called on each iteration of the BLE pairing polling loop.
 
 > **Note:** Verifying that the watchdog triggers on a stalled main loop requires a special test firmware build and real hardware (similar to modem T-0304). This test validates configuration, registration, and watchdog-feeding code via source inspection only.

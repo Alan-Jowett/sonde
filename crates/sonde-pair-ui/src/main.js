@@ -201,7 +201,8 @@ class Navigator {
     }
 
     // Pages 5–6 require ephemeral state (selected node / provisioning-success context)
-    // that cannot survive a restart — fall back to Node Scan (PT-1219 AC 4)
+    // that cannot survive a restart — fall back to Node Scan when paired,
+    // or Welcome when unpaired, consistent with the prerequisite check above (PT-1219 AC 4)
     if (target >= 4) {
       target = isPaired ? 3 : 0;
     }

@@ -1234,7 +1234,7 @@ The UI MUST persist the current page index to `localStorage` so that the wizard 
 1. On page transition, the current page index (0-based) is saved to `localStorage`.
 2. On app launch, the saved page index is read and the corresponding page is displayed, provided the page's prerequisites are met (e.g., pairing artifacts for pages 3–6).
 3. If `localStorage` is empty, contains an invalid page index, or the saved page's prerequisites are not met, the app navigates to the earliest valid page (page 1 if unpaired, page 4 if already paired).
-4. The selected BLE node address is ephemeral and is never persisted across restarts.  Page 5 (Node Provision) requires a selected node address; page 6 (Done) requires in-memory provisioning-success context.  Both are ephemeral.  If the saved page is 5 or 6, the app MUST fall back to page 4 (Node Scan) regardless of pairing state, so the user can scan and select a node.
+4. The selected BLE node address is ephemeral and is never persisted across restarts.  Page 5 (Node Provision) requires a selected node address; page 6 (Done) requires in-memory provisioning-success context.  Both are ephemeral.  If the saved page is 5 or 6, the app MUST fall back to page 4 (Node Scan) if page 4's prerequisites are met (i.e., the app is paired); otherwise, the app MUST fall back to the earliest valid page as defined in AC 3.
 
 ---
 

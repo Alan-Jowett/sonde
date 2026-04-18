@@ -1407,7 +1407,6 @@ TestNode {
 
 ### T-PT-1221a  RSSI indicator shows correct quality level
 
-**Validates:** PT-1221 (AC 1–4)
 **Validates:** PT-1221 (AC 1–4)  
 **Type:** Manual / platform test
 

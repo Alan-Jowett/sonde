@@ -586,7 +586,7 @@ All inbound protocol errors result in **silent discard** — the node does not s
 ## 14  Boot sequence
 
 1. ESP-IDF initialization (clocks, peripherals, wifi/ESP-NOW).
-2. Task watchdog timer is configured and the main task is registered (ND-0919): `CONFIG_ESP_TASK_WDT_EN=y`, 20 s timeout, panic-on-expiry. The main task calls `esp_task_wdt_add()` at startup and `esp_task_wdt_delete()` after the wake cycle completes. If the wake cycle hangs, the watchdog triggers a hardware reset.
+2. Task watchdog timer is configured and the main task is registered (ND-0919): `CONFIG_ESP_TASK_WDT_EN=y`, 20 s timeout, panic-on-expiry. The main task calls `esp_task_wdt_add()` at startup and `esp_task_wdt_delete()` after the wake cycle completes. If the wake cycle hangs, the watchdog triggers a hardware reset. For long-running modes (BLE pairing), the polling loop calls `esp_task_wdt_reset()` on each iteration to prevent spurious resets while still detecting hangs within a single 20 s polling window.
 3. Sample pairing button GPIO for 500 ms (ND-0901).
 4. Read key partition: check magic bytes and load credentials if present. Read NVS `reg_complete` flag (§6.1a).
 5. Determine boot path (ND-0900):

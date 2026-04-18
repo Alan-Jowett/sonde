@@ -394,7 +394,10 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         }
 
         // Busy-wait with a short sleep to avoid spinning.
+        // Feed the task watchdog on each iteration so the indefinite-duration
+        // BLE pairing session does not trigger the 20 s watchdog (ND-0919 AC 7).
         unsafe {
+            esp_idf_svc::sys::esp_task_wdt_reset();
             esp_idf_svc::sys::vTaskDelay(
                 (POLL_INTERVAL.as_millis() as u32 * esp_idf_svc::sys::CONFIG_FREERTOS_HZ) / 1000,
             );

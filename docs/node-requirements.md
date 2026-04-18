@@ -1137,6 +1137,8 @@ The ESP-IDF main task stack MUST be at least 16 KB (`CONFIG_ESP_MAIN_TASK_STACK_
 **Description:**  
 The node firmware MUST enable the ESP-IDF task watchdog timer on the main task. The timeout MUST be long enough to cover a full wake cycle (WAKE retries + chunked program transfer + BPF execution + APP_DATA exchanges) but short enough to recover from firmware hangs before excessive battery drain. On expiry, the watchdog MUST trigger a panic/reset so the node reboots into the next scheduled wake cycle.
 
+During long-running modes that exceed the watchdog timeout (e.g., BLE pairing mode), the firmware MUST feed the watchdog periodically via `esp_task_wdt_reset()` to prevent spurious resets while still detecting genuine hangs within each polling iteration.
+
 **Acceptance criteria:**
 
 1. `CONFIG_ESP_TASK_WDT_EN=y` is set in `sdkconfig.defaults`.
@@ -1145,6 +1147,7 @@ The node firmware MUST enable the ESP-IDF task watchdog timer on the main task. 
 4. The main task is explicitly registered with the task watchdog at startup via `esp_task_wdt_add()`.
 5. The main task is deregistered from the task watchdog after the wake cycle completes, before entering deep sleep.
 6. The node completes a normal wake cycle (including maximum WAKE retries and chunked transfer) without triggering the watchdog.
+7. The BLE pairing mode polling loop feeds the watchdog on each iteration via `esp_task_wdt_reset()`, preventing watchdog resets during the indefinite-duration pairing session.
 
 ---
 

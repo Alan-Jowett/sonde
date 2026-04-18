@@ -1233,7 +1233,7 @@ impl GatewayAdmin for AdminService {
 
         // Spawn a task that forwards BLE events to the stream, handles
         // timeout, cancellation, and client disconnect.
-        tokio::spawn(async move {
+        let event_handle = tokio::spawn(async move {
             use crate::ble_pairing::BlePairingEventKind;
 
             let timeout = tokio::time::sleep(std::time::Duration::from_secs(duration_s as u64));
@@ -1322,6 +1322,8 @@ impl GatewayAdmin for AdminService {
             }
         });
 
+        controller.set_event_task(event_handle).await;
+
         Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
             rx,
         )))
@@ -1338,8 +1340,8 @@ impl GatewayAdmin for AdminService {
             .as_ref()
             .ok_or_else(|| Status::unavailable("modem transport not configured"))?;
 
-        // Cancel the timeout task from OpenBlePairing (if running).
-        controller.cancel_timeout().await;
+        // Cancel the timeout task from OpenBlePairing (if running) and await it.
+        controller.cancel_and_wait().await;
         controller.close_window().await;
         transport
             .send_ble_disable()

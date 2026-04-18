@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sonde contributors
 
 //! Modem transport tests (T-1100 through T-1108 except T-1105 which is
-//! already in phase2d.rs).
+//! already in phase2d.rs). Also includes T-1104d (warm reboot detection).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -632,5 +632,69 @@ async fn t1104c_health_poll_sustained_failures_trigger_reconnect() {
     assert!(
         reconnect_needed,
         "health monitor must signal reconnect after sustained failures"
+    );
+}
+
+// ── T-1104d: Warm reboot — unexpected MODEM_READY fires notify and flag ──
+
+/// T-1104d  Unexpected MODEM_READY fires warm_reboot_notify and sets warm_reboot_flag.
+///
+/// After startup, an unsolicited MODEM_READY (modem warm reboot) must:
+///   - set the warm_reboot_flag to true (GW-1103 AC7)
+///   - fire warm_reboot_notify (GW-1103 AC7)
+///   - cancel any pending waiters (tested via channel_ack_slot via change_channel)
+#[tokio::test]
+async fn t1104d_unexpected_modem_ready_fires_warm_reboot_notify() {
+    let (transport, mut server) = create_transport_and_server(6).await;
+
+    let warm_reboot_notify = transport.warm_reboot_notify();
+    let warm_reboot_flag = transport.warm_reboot_flag();
+
+    // Register a pending change_channel waiter. This exercises the
+    // channel_ack_slot cancellation path inside dispatch_message.
+    let transport_arc = Arc::new(transport);
+    let ch_task = {
+        let t = Arc::clone(&transport_arc);
+        tokio::spawn(async move { t.change_channel(7).await })
+    };
+
+    // Consume the SET_CHANNEL command sent by change_channel.
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 256];
+    let msg = read_next_message(&mut server, &mut decoder, &mut buf).await;
+    assert!(
+        matches!(msg, ModemMessage::SetChannel(7)),
+        "expected SetChannel(7) from change_channel"
+    );
+
+    // Now inject an unsolicited MODEM_READY (simulates modem warm reboot).
+    let ready = ModemMessage::ModemReady(ModemReady {
+        firmware_version: [1, 0, 0, 0],
+        mac_address: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+    });
+    server
+        .write_all(&encode_modem_frame(&ready).unwrap())
+        .await
+        .unwrap();
+
+    // warm_reboot_notify must fire.
+    tokio::time::timeout(Duration::from_secs(1), warm_reboot_notify.notified())
+        .await
+        .expect("warm_reboot_notify must fire on unexpected MODEM_READY");
+
+    assert!(
+        warm_reboot_flag.load(std::sync::atomic::Ordering::Acquire),
+        "warm_reboot_flag must be set after unexpected MODEM_READY"
+    );
+
+    // The pending change_channel waiter must have been cancelled (channel
+    // closed → Err returned).
+    let ch_result = tokio::time::timeout(Duration::from_secs(1), ch_task)
+        .await
+        .expect("change_channel task did not complete in time")
+        .expect("change_channel task panicked");
+    assert!(
+        ch_result.is_err(),
+        "change_channel must return Err when cancelled by warm reboot"
     );
 }

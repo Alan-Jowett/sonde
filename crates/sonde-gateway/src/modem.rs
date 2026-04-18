@@ -103,12 +103,18 @@ pub struct UsbEspNowTransport {
     channel_ack_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
     scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
     modem_mac: [u8; 6],
-    reader_handle: tokio::task::JoinHandle<()>,
+    reader_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    warm_reboot_notify: Arc<tokio::sync::Notify>,
+    warm_reboot_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for UsbEspNowTransport {
     fn drop(&mut self) {
-        self.reader_handle.abort();
+        if let Ok(mut guard) = self.reader_handle.lock() {
+            if let Some(h) = guard.take() {
+                h.abort();
+            }
+        }
     }
 }
 
@@ -136,11 +142,18 @@ impl UsbEspNowTransport {
         let scan_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>> =
             Arc::new(std::sync::Mutex::new(None));
 
+        let warm_reboot_notify: Arc<tokio::sync::Notify> =
+            Arc::new(tokio::sync::Notify::new());
+        let warm_reboot_flag: Arc<std::sync::atomic::AtomicBool> =
+            Arc::new(std::sync::atomic::AtomicBool::new(false));
+
         // Start background reader task.
         let reader_handle = {
             let status_slot = Arc::clone(&status_slot);
             let channel_ack_slot = Arc::clone(&channel_ack_slot);
             let scan_slot = Arc::clone(&scan_slot);
+            let warm_reboot_notify = Arc::clone(&warm_reboot_notify);
+            let warm_reboot_flag = Arc::clone(&warm_reboot_flag);
             let mut read_half = read_half;
             let mut decoder = FrameDecoder::new();
             // Oneshots are registered before RESET is sent. A stale
@@ -172,6 +185,8 @@ impl UsbEspNowTransport {
                                             &status_slot,
                                             &channel_ack_slot,
                                             &scan_slot,
+                                            &warm_reboot_notify,
+                                            &warm_reboot_flag,
                                         )
                                         .await;
                                     }
@@ -264,7 +279,9 @@ impl UsbEspNowTransport {
                     channel_ack_slot,
                     scan_slot,
                     modem_mac,
-                    reader_handle,
+                    reader_handle: std::sync::Mutex::new(Some(reader_handle)),
+                    warm_reboot_notify,
+                    warm_reboot_flag,
                 })
             }
             Err(e) => {
@@ -277,6 +294,43 @@ impl UsbEspNowTransport {
     /// Return the modem's MAC address reported during startup.
     pub fn modem_mac(&self) -> &[u8; 6] {
         &self.modem_mac
+    }
+
+    /// Return a clone of the warm-reboot notification primitive.
+    ///
+    /// The notify fires when the reader task detects an unexpected `MODEM_READY`
+    /// (GW-1103 AC7).  Pair with [`warm_reboot_flag`] to avoid losing the
+    /// notification if a competing `select!` arm wins.
+    pub fn warm_reboot_notify(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.warm_reboot_notify)
+    }
+
+    /// Return a clone of the warm-reboot flag.
+    ///
+    /// Set to `true` (Release ordering) immediately before
+    /// [`warm_reboot_notify`] fires so the caller can detect a warm reboot
+    /// even if the `notified()` future was dropped by a competing `select!` arm.
+    pub fn warm_reboot_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.warm_reboot_flag)
+    }
+
+    /// Abort the background reader task and wait for it to exit.
+    ///
+    /// Must be called before dropping the transport during warm-reboot
+    /// recovery to ensure the serial port read half is released before the
+    /// next `UsbEspNowTransport::new()` call opens the port.
+    pub async fn abort_reader_and_wait(&self) {
+        let handle = {
+            let mut guard = self
+                .reader_handle
+                .lock()
+                .expect("reader_handle poisoned");
+            guard.take()
+        };
+        if let Some(h) = handle {
+            h.abort();
+            let _ = h.await;
+        }
     }
 
     /// Receive the next BLE event from the modem.
@@ -730,6 +784,8 @@ async fn dispatch_message(
     status_slot: &Arc<Mutex<Option<oneshot::Sender<ModemStatus>>>>,
     channel_ack_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<u8>>>>,
     scan_slot: &Arc<std::sync::Mutex<Option<oneshot::Sender<ScanResult>>>>,
+    warm_reboot_notify: &Arc<tokio::sync::Notify>,
+    warm_reboot_flag: &Arc<std::sync::atomic::AtomicBool>,
 ) {
     match msg {
         ModemMessage::RecvFrame(rf) => {
@@ -797,7 +853,36 @@ async fn dispatch_message(
             if let Some(tx) = ready_tx.take() {
                 let _ = tx.send(mr);
             } else {
-                info!("unexpected MODEM_READY (no pending waiter)");
+                // GW-1103 AC7: unexpected MODEM_READY signals a modem warm reboot.
+                // Cancel all pending waiters so in-flight operations fail immediately.
+                warn!(
+                    guidance = "gateway will abort consumer tasks and re-run startup sequence",
+                    "modem warm reboot detected"
+                );
+                if ack_tx.take().is_some() {
+                    debug!("cancelling startup SET_CHANNEL_ACK waiter due to warm reboot");
+                }
+                {
+                    let mut slot = status_slot.lock().await;
+                    if slot.take().is_some() {
+                        debug!("cancelling pending STATUS waiter due to warm reboot");
+                    }
+                }
+                {
+                    let mut slot = channel_ack_slot.lock().expect("channel_ack_slot poisoned");
+                    if slot.take().is_some() {
+                        debug!("cancelling pending SET_CHANNEL_ACK waiter due to warm reboot");
+                    }
+                }
+                {
+                    let mut slot = scan_slot.lock().expect("scan_slot poisoned");
+                    if slot.take().is_some() {
+                        debug!("cancelling pending SCAN_RESULT waiter due to warm reboot");
+                    }
+                }
+                // Set the flag before notifying so the caller can't miss the event.
+                warm_reboot_flag.store(true, std::sync::atomic::Ordering::Release);
+                warm_reboot_notify.notify_one();
             }
         }
         ModemMessage::SetChannelAck(ch) => {

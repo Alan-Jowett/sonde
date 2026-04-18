@@ -112,6 +112,8 @@ pub struct BlePairingController {
     passkey_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
     /// Cancel token for the auto-close timeout task.
     timeout_cancel: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// JoinHandle for the active open_ble_pairing event-forwarding task.
+    event_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Broadcast channel for forwarding BLE pairing events to admin streams.
     event_tx: tokio::sync::broadcast::Sender<BlePairingEventKind>,
 }
@@ -138,6 +140,7 @@ impl BlePairingController {
             window: tokio::sync::Mutex::new(RegistrationWindow::new()),
             passkey_tx: tokio::sync::Mutex::new(None),
             timeout_cancel: tokio::sync::Mutex::new(None),
+            event_task: tokio::sync::Mutex::new(None),
             event_tx,
         }
     }
@@ -183,6 +186,29 @@ impl BlePairingController {
     pub async fn cancel_timeout(&self) {
         if let Some(token) = self.timeout_cancel.lock().await.take() {
             token.cancel();
+        }
+    }
+
+    /// Store the JoinHandle of the event-forwarding task spawned by OpenBlePairing.
+    pub async fn set_event_task(&self, handle: tokio::task::JoinHandle<()>) {
+        if let Some(old) = self.event_task.lock().await.replace(handle) {
+            old.abort();
+        }
+    }
+
+    /// Cancel the timeout token and await the event-forwarding task.
+    ///
+    /// Used during warm reboot recovery to ensure the task releases its
+    /// `Arc<UsbEspNowTransport>` before the transport is dropped.
+    pub async fn cancel_and_wait(&self) {
+        // Fire the cancel token so the task's cancel arm fires.
+        if let Some(token) = self.timeout_cancel.lock().await.take() {
+            token.cancel();
+        }
+        // Await graceful exit; the task sends WindowClosed before returning
+        // so we must not abort it here.
+        if let Some(handle) = self.event_task.lock().await.take() {
+            let _ = handle.await;
         }
     }
 

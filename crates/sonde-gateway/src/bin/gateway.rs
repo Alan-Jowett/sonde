@@ -484,6 +484,12 @@ async fn run_gateway(
         info!(channel = channel_for_transport, "modem transport ready");
         backoff = Duration::from_secs(1); // reset on success
 
+        // Extract warm-reboot signals before moving the transport into tasks.
+        // The flag is set (Release) before the notify fires, guarding against
+        // a competing select! arm winning the same poll cycle (GW-1103 AC7).
+        let warm_reboot_notify = transport.warm_reboot_notify();
+        let warm_reboot_flag = transport.warm_reboot_flag();
+
         // 7. Start gRPC admin server (only on first iteration)
         // Re-create the admin service with the new transport reference each time.
         let ble_controller = Arc::new(sonde_gateway::ble_pairing::BlePairingController::new());
@@ -497,7 +503,7 @@ async fn run_gateway(
         .with_handler_router(handler_router.clone());
         let admin_socket = cli.admin_socket.clone();
 
-        let grpc_handle = tokio::spawn(async move {
+        let mut grpc_handle = tokio::spawn(async move {
             if let Err(e) = sonde_gateway::admin::serve_admin(admin_service, &admin_socket).await {
                 error!("gRPC server error: {}", e);
             }
@@ -508,7 +514,7 @@ async fn run_gateway(
         let transport_ref = transport.clone();
         let gateway_ref = gateway.clone();
 
-        let frame_loop = tokio::spawn(async move {
+        let mut frame_loop = tokio::spawn(async move {
             loop {
                 match transport_ref.recv_with_rssi().await {
                     Ok((raw_frame, peer_addr, rssi)) => {
@@ -536,7 +542,7 @@ async fn run_gateway(
         // rather than capturing the CLI startup value.
         let ble_channel = channel_for_transport;
         let ble_ctrl = Arc::clone(&ble_controller);
-        let ble_loop = tokio::spawn(async move {
+        let mut ble_loop = tokio::spawn(async move {
             use sonde_gateway::ble_pairing::handle_ble_recv;
             use sonde_gateway::modem::BleEvent;
             use tracing::{debug, warn};
@@ -656,7 +662,7 @@ async fn run_gateway(
 
         // 8b. Modem health monitor (GW-1102).
         let health_cancel = tokio_util::sync::CancellationToken::new();
-        let health_handle = sonde_gateway::modem::spawn_health_monitor(
+        let mut health_handle = sonde_gateway::modem::spawn_health_monitor(
             Arc::downgrade(&transport),
             Duration::from_secs(30),
             health_cancel.clone(),
@@ -670,18 +676,18 @@ async fn run_gateway(
                 health_cancel.cancel();
                 break; // exit the outer reconnect loop
             }
-            _ = frame_loop => {
+            _ = &mut frame_loop => {
                 error!("frame processing loop exited — modem likely disconnected");
             }
-            _ = ble_loop => {
+            _ = &mut ble_loop => {
                 error!("BLE event loop exited — modem likely disconnected");
             }
-            _ = grpc_handle => {
+            _ = &mut grpc_handle => {
                 error!("gRPC server exited unexpectedly");
                 health_cancel.cancel();
                 break; // gRPC failure is not recoverable
             }
-            result = health_handle => {
+            result = &mut health_handle => {
                 let reconnect = result.unwrap_or(false);
                 if reconnect {
                     error!("health monitor: sustained poll failures — triggering modem reconnect");
@@ -689,6 +695,32 @@ async fn run_gateway(
                     error!("health monitor exited — modem likely disconnected");
                 }
             }
+            // Wake up when the reader task signals a modem warm reboot.
+            // The warm_reboot_flag acts as a latch so the event is not lost
+            // if this arm does not win the select! poll (GW-1103 AC7).
+            _ = warm_reboot_notify.notified() => {}
+        }
+
+        // GW-1103 AC7-9: warm reboot recovery — re-run full startup immediately.
+        if warm_reboot_flag.load(std::sync::atomic::Ordering::Acquire) {
+            info!("modem warm reboot detected — reconnecting immediately");
+            // Cancel the BLE pairing session before dropping the transport so
+            // the event-forwarding task releases its Arc<UsbEspNowTransport>.
+            ble_controller.cancel_and_wait().await;
+            health_cancel.cancel();
+            frame_loop.abort();
+            ble_loop.abort();
+            grpc_handle.abort();
+            let _ = frame_loop.await;
+            let _ = ble_loop.await;
+            let _ = grpc_handle.await;
+            let _ = health_handle.await;
+            // Explicitly await the reader task so the serial port read half is
+            // released before the next open() call (GW-1103 AC8).
+            transport.abort_reader_and_wait().await;
+            drop(transport);
+            // Skip the backoff sleep — reconnect immediately (GW-1103 AC8).
+            continue;
         }
 
         // GW-1301: log modem disconnecting before reconnect attempt.

@@ -943,7 +943,7 @@ The gateway MUST persist the current ESP-NOW radio channel in the database so th
 
 1. The `--channel` CLI flag seeds the initial channel value **only** if no channel entry exists in the database yet. If a persisted channel exists, the database value takes precedence.
 2. `SetModemChannel` (admin RPC) MUST update both the modem and the database atomically — if the modem channel change succeeds, the new channel MUST be written to the database before the RPC returns.
-3. On modem reconnect (GW-1103), the gateway MUST restore the channel from the database (not the CLI `--channel` value).
+3. On modem reconnect (GW-1103), the gateway MUST restore the channel from the database (not the CLI `--channel` value). This applies to both serial-disconnect reconnects and modem warm reboots (GW-1103 criteria 3–5 and 7–8).
 4. BLE pairing (`REGISTER_PHONE` response) MUST include the `rf_channel` read from the database, not the CLI startup value.
 
 **Acceptance criteria:**
@@ -953,6 +953,7 @@ The gateway MUST persist the current ESP-NOW radio channel in the database so th
 3. After `SetModemChannel(7)`, a BLE `REGISTER_PHONE` response contains `rf_channel = 7`.
 4. On a fresh database with `--channel 3`, the database is seeded with channel 3.
 5. On an existing database with persisted channel 7, `--channel 3` is ignored — the gateway starts on channel 7.
+6. After `SetModemChannel(7)`, a modem warm reboot (unexpected `MODEM_READY` while serial port is open) causes the gateway to re-execute the startup sequence and send `SET_CHANNEL(7)` (not channel 1).
 
 ---
 
@@ -1177,6 +1178,8 @@ On receiving an `ERROR` message from the modem, the gateway MUST log the error c
 
 When the serial port itself becomes unavailable (e.g. USB-CDC disconnect due to modem reset, OS error 995 on Windows), the gateway MUST NOT exit. Instead, the serial reader task MUST signal the transport layer, which MUST attempt to reopen the serial port with exponential backoff (starting at 1 s, capped at 30 s). Once the port reopens, the gateway MUST re-execute the modem startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`), using the persisted channel from the database (GW-0808), not the CLI `--channel` startup value. Frame processing and BLE event loops MUST block (not exit) while reconnection is in progress.
 
+When the modem firmware reboots while the serial port remains physically open (a "warm reboot"), the gateway detects this via an unexpected `MODEM_READY` message. The gateway MUST re-execute the same startup re-initialization as a serial-disconnect reconnect (`RESET` → `MODEM_READY` → `SET_CHANNEL` with the persisted database channel per GW-0808), **except** that no port-reopen or backoff phase is needed — recovery MUST begin immediately. The exponential backoff counter MUST be reset to its initial value (1 s) after a successful warm reboot recovery. Any pending in-flight operations (`change_channel`, `scan_channels`, `poll_status`) MUST fail promptly when the warm reboot is detected.
+
 **Acceptance criteria:**
 
 1. `ERROR` messages are logged with the error code and message text.
@@ -1185,6 +1188,9 @@ When the serial port itself becomes unavailable (e.g. USB-CDC disconnect due to 
 4. Once the port is reopened and `MODEM_READY` is received, the gateway resumes normal frame processing without requiring a restart.
 5. The gateway process does not exit due to a transient modem serial disconnect.
 6. When the health monitor detects N consecutive poll failures (default 3), it MUST log at `ERROR` level and signal the caller that a modem reconnect is needed. The failure counter MUST reset to zero on any successful poll.
+7. When the gateway receives an unexpected `MODEM_READY` (modem warm reboot without serial disconnect), it MUST immediately re-execute the full startup sequence (`RESET` → `MODEM_READY` → `SET_CHANNEL`) using the persisted channel from the database, with no backoff delay.
+8. After a successful warm reboot recovery, the exponential backoff counter MUST be reset to its initial value (1 s).
+9. When a warm reboot is detected, any in-flight `change_channel`, `scan_channels`, or `poll_status` operations MUST fail promptly (callers receive an error, not a hang).
 
 ---
 

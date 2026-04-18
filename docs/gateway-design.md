@@ -169,6 +169,24 @@ When the serial reader task encounters an OS I/O error (e.g. USB-CDC disconnect,
 4. The `recv()` and BLE event channels remain open during reconnection — callers block until the transport recovers.
 5. If the port cannot be reopened (e.g. device permanently removed), the backoff loop continues indefinitely; the operator can shut down the gateway via Ctrl-C or service stop.
 
+**Warm reboot recovery (GW-1103 criteria 7–8):**
+
+When the modem firmware reboots without dropping the USB-CDC serial connection (a "warm reboot"), the modem sends an unsolicited `MODEM_READY`. The gateway detects this via an unexpected `MODEM_READY` arriving outside the startup handshake.
+
+The `UsbEspNowTransport` exposes:
+- `warm_reboot_notify: Arc<tokio::sync::Notify>` — fired by the reader task when it receives an unexpected `MODEM_READY`, after cancelling all pending operation waiters (channel-ack, status, and scan slots).
+- A cancellation mechanism (e.g. `CancellationToken`) that allows the reader task to be cleanly stopped on demand. The reader task polls the token each iteration; on cancellation it exits, releasing the serial port.
+
+The gateway main loop `select!`s on `warm_reboot_notify.notified()` alongside the normal shutdown and frame-loop exit paths. On warm reboot notification:
+
+1. The gateway aborts all spawned consumer tasks (`frame_loop`, `ble_loop`, `grpc_handle`) and cancels the health monitor. This releases all `Arc<UsbEspNowTransport>` clones held by those tasks.
+2. The gateway calls the transport's cancel method, causing the reader task to exit and release the serial port.
+3. The local `transport` Arc is dropped; all transport resources are freed.
+4. The gateway immediately (no backoff) reopens the serial port and calls `UsbEspNowTransport::new()` with the persisted channel read from the database (GW-0808). All consumer tasks are re-spawned as on first startup.
+5. After successful warm reboot recovery, the exponential backoff counter is reset to its initial value (1 s), so any subsequent serial disconnect starts fresh.
+
+Note: If multiple `MODEM_READY` messages arrive in rapid succession (overlapping warm reboots), `tokio::sync::Notify` coalesces them — at most one notification is delivered. Notifications that arrive while recovery is already in progress are absorbed by the already-pending notify permit and handled in the next reconnect iteration if recovery fails, or discarded if recovery succeeds (the reader task is no longer running and cannot fire further notifications).
+
 **`send()` implementation:**
 
 Constructs a `SEND_FRAME` envelope (`peer_mac || frame_data`) and writes it to the serial port. Does not wait for any modem or radio delivery acknowledgement — fire-and-forget at the radio layer, while still awaiting the serial write as needed. The 250-byte ESP-NOW frame limit is enforced by the modem.

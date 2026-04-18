@@ -578,7 +578,8 @@ The store-and-forward mechanism piggybacks application data on the mandatory WAK
 1. BPF program calls `send_async(buf, len)` — data queued in sleep-retained RAM (max 10 messages).
 2. On next wake:
    - If exactly 1 message queued AND it fits in the WAKE payload budget → include as `blob` (key 10) in WAKE.
-   - Otherwise → send all queued messages via APP_DATA after COMMAND (existing mechanism).
+   - Otherwise, if COMMAND is NOP → send all queued messages as individual APP_DATA frames before BPF execution.
+   - Otherwise (non-NOP command) → queued blobs remain for the next NOP cycle.
 3. Gateway receives WAKE, extracts `blob`, routes to handler as a `DATA` message.
 4. Handler reply is always deferred to next cycle.
 

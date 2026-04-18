@@ -7,12 +7,24 @@
 //! length + CBOR on stdin), decodes SHT40 payloads, and writes JSON
 //! records to `sht40_log.jsonl`.
 //!
-//! # SHT40 payload format (14 bytes)
+//! # SHT40 payload formats
 //!
-//! The BPF program (`test-programs/sht40_sensor.c`) sends:
+//! The BPF program (`test-programs/sht40_sensor.c`) sends one of two
+//! payload formats:
+//!
+//! ## V2 (22 bytes) — store-and-forward with embedded timestamp
 //!
 //! ```text
-//! [0..5]   raw frame (T_msb, T_lsb, CRC_T, RH_msb, RH_lsb, CRC_RH)
+//! [0..7]   timestamp     (little-endian u64, ms since epoch)
+//! [8..13]  raw frame     (T_msb, T_lsb, CRC_T, RH_msb, RH_lsb, CRC_RH)
+//! [14..17] temp_mC       (little-endian i32, milli-°C)
+//! [18..21] rh_mpercent   (little-endian i32, milli-%RH)
+//! ```
+//!
+//! ## V1 (14 bytes) — legacy synchronous format (backward compatible)
+//!
+//! ```text
+//! [0..5]   raw frame     (T_msb, T_lsb, CRC_T, RH_msb, RH_lsb, CRC_RH)
 //! [6..9]   temp_mC       (little-endian i32, milli-°C)
 //! [10..13] rh_mpercent   (little-endian i32, milli-%RH)
 //! ```
@@ -60,8 +72,11 @@ const KEY_NODE_ID: i64 = 3;
 const KEY_REPLY_DATA: i64 = 3;
 const KEY_DATA: i64 = 5;
 
-/// SHT40 payload size: 6 raw bytes + 4 temp_mC + 4 rh_mpercent.
-const SHT40_PAYLOAD_LEN: usize = 14;
+/// SHT40 V1 payload size: 6 raw bytes + 4 temp_mC + 4 rh_mpercent.
+const SHT40_PAYLOAD_V1_LEN: usize = 14;
+
+/// SHT40 V2 payload size: 8 timestamp + 6 raw bytes + 4 temp_mC + 4 rh_mpercent.
+const SHT40_PAYLOAD_V2_LEN: usize = 22;
 
 /// CRC-8 per Sensirion SHT4x: polynomial 0x31, init 0xFF.
 fn crc8_sensirion(data: &[u8; 2]) -> u8 {
@@ -90,37 +105,58 @@ struct Sht40Reading {
     temperature_c: f64,
     /// Relative humidity in percent.
     humidity_pct: f64,
+    /// Collection timestamp in milliseconds since epoch (V2 payloads only).
+    collection_timestamp_ms: Option<u64>,
 }
 
-/// Decode a 14-byte SHT40 payload.
+/// Decode an SHT40 payload (14-byte V1 or 22-byte V2).
 ///
-/// Returns `Err` if the payload length is wrong or CRC validation fails.
+/// V2 payloads prepend a little-endian u64 timestamp before the raw frame.
+/// V1 payloads contain only the raw frame and computed values.
 fn decode_sht40(data: &[u8]) -> Result<Sht40Reading, &'static str> {
-    if data.len() != SHT40_PAYLOAD_LEN {
-        return Err("wrong payload length");
-    }
+    let (timestamp_ms, sensor_data) = match data.len() {
+        SHT40_PAYLOAD_V2_LEN => {
+            let ts = u64::from_le_bytes([
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+            ]);
+            (Some(ts), &data[8..])
+        }
+        SHT40_PAYLOAD_V1_LEN => (None, data),
+        _ => return Err("wrong payload length (expected 14 or 22 bytes)"),
+    };
 
     // Validate CRCs on the raw frame
-    let t_crc = crc8_sensirion(&[data[0], data[1]]);
-    if t_crc != data[2] {
+    let t_crc = crc8_sensirion(&[sensor_data[0], sensor_data[1]]);
+    if t_crc != sensor_data[2] {
         return Err("temperature CRC mismatch");
     }
-    let rh_crc = crc8_sensirion(&[data[3], data[4]]);
-    if rh_crc != data[5] {
+    let rh_crc = crc8_sensirion(&[sensor_data[3], sensor_data[4]]);
+    if rh_crc != sensor_data[5] {
         return Err("humidity CRC mismatch");
     }
 
-    let t_raw = u16::from_be_bytes([data[0], data[1]]);
-    let rh_raw = u16::from_be_bytes([data[3], data[4]]);
+    let t_raw = u16::from_be_bytes([sensor_data[0], sensor_data[1]]);
+    let rh_raw = u16::from_be_bytes([sensor_data[3], sensor_data[4]]);
 
-    let temp_mc = i32::from_le_bytes([data[6], data[7], data[8], data[9]]);
-    let rh_mpercent = i32::from_le_bytes([data[10], data[11], data[12], data[13]]);
+    let temp_mc = i32::from_le_bytes([
+        sensor_data[6],
+        sensor_data[7],
+        sensor_data[8],
+        sensor_data[9],
+    ]);
+    let rh_mpercent = i32::from_le_bytes([
+        sensor_data[10],
+        sensor_data[11],
+        sensor_data[12],
+        sensor_data[13],
+    ]);
 
     Ok(Sht40Reading {
         t_raw,
         rh_raw,
         temperature_c: temp_mc as f64 / 1000.0,
         humidity_pct: rh_mpercent as f64 / 1000.0,
+        collection_timestamp_ms: timestamp_ms,
     })
 }
 
@@ -272,10 +308,30 @@ fn main() {
 
         // Build JSON record
         let mut record = serde_json::Map::new();
-        record.insert(
-            "timestamp".into(),
-            serde_json::Value::String(format_utc_now()),
-        );
+
+        // Use embedded collection timestamp (V2) if available, else wall-clock
+        if let Ok(reading) = &decoded {
+            if let Some(ts_ms) = reading.collection_timestamp_ms {
+                record.insert(
+                    "timestamp".into(),
+                    serde_json::Value::String(format_utc_secs(ts_ms / 1000)),
+                );
+                record.insert(
+                    "timestamp_ms".into(),
+                    serde_json::Value::Number(serde_json::Number::from(ts_ms)),
+                );
+            } else {
+                record.insert(
+                    "timestamp".into(),
+                    serde_json::Value::String(format_utc_now()),
+                );
+            }
+        } else {
+            record.insert(
+                "timestamp".into(),
+                serde_json::Value::String(format_utc_now()),
+            );
+        }
         record.insert(
             "device".into(),
             serde_json::Value::String(node_id.to_string()),
@@ -404,9 +460,9 @@ fn format_utc_secs(secs: u64) -> String {
 mod tests {
     use super::*;
 
-    /// Build a valid 14-byte SHT40 payload from raw values and pre-computed
+    /// Build a valid 14-byte SHT40 V1 payload from raw values and pre-computed
     /// integer results.
-    fn build_payload(t_raw: u16, rh_raw: u16, temp_mc: i32, rh_mpercent: i32) -> [u8; 14] {
+    fn build_payload_v1(t_raw: u16, rh_raw: u16, temp_mc: i32, rh_mpercent: i32) -> [u8; 14] {
         let t_bytes = t_raw.to_be_bytes();
         let rh_bytes = rh_raw.to_be_bytes();
         let t_crc = crc8_sensirion(&t_bytes);
@@ -432,6 +488,22 @@ mod tests {
         ]
     }
 
+    /// Build a valid 22-byte SHT40 V2 payload with embedded timestamp.
+    fn build_payload_v2(
+        timestamp_ms: u64,
+        t_raw: u16,
+        rh_raw: u16,
+        temp_mc: i32,
+        rh_mpercent: i32,
+    ) -> [u8; 22] {
+        let ts_le = timestamp_ms.to_le_bytes();
+        let v1 = build_payload_v1(t_raw, rh_raw, temp_mc, rh_mpercent);
+        let mut out = [0u8; 22];
+        out[..8].copy_from_slice(&ts_le);
+        out[8..].copy_from_slice(&v1);
+        out
+    }
+
     #[test]
     fn test_crc8_sensirion_known_values() {
         // Sensirion application note example: bytes [0xBE, 0xEF] → CRC 0x92
@@ -439,51 +511,82 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_sht40_typical_reading() {
+    fn test_decode_sht40_v1_typical_reading() {
         // ~25°C, ~50%RH (representative mid-range values)
-        // t_raw = 26214 → temp_mC = -45000 + 175000*26214/65535 ≈ 25003
-        // rh_raw = 29360 → rh_mpercent = -6000 + 125000*29360/65535 ≈ 49979
         let temp_mc: i32 = 25003;
         let rh_mp: i32 = 49979;
-        let data = build_payload(26214, 29360, temp_mc, rh_mp);
+        let data = build_payload_v1(26214, 29360, temp_mc, rh_mp);
 
         let reading = decode_sht40(&data).unwrap();
         assert_eq!(reading.t_raw, 26214);
         assert_eq!(reading.rh_raw, 29360);
         assert!((reading.temperature_c - 25.003).abs() < 0.001);
         assert!((reading.humidity_pct - 49.979).abs() < 0.001);
+        assert_eq!(reading.collection_timestamp_ms, None);
+    }
+
+    #[test]
+    fn test_decode_sht40_v2_with_timestamp() {
+        let ts: u64 = 1_775_347_860_000; // 2026-04-05T00:11:00Z in ms
+        let temp_mc: i32 = 25003;
+        let rh_mp: i32 = 49979;
+        let data = build_payload_v2(ts, 26214, 29360, temp_mc, rh_mp);
+
+        let reading = decode_sht40(&data).unwrap();
+        assert_eq!(reading.t_raw, 26214);
+        assert_eq!(reading.rh_raw, 29360);
+        assert!((reading.temperature_c - 25.003).abs() < 0.001);
+        assert!((reading.humidity_pct - 49.979).abs() < 0.001);
+        assert_eq!(reading.collection_timestamp_ms, Some(ts));
     }
 
     #[test]
     fn test_decode_sht40_negative_temperature() {
-        // Sub-zero reading
+        // Sub-zero reading (V1)
         let temp_mc: i32 = -10500;
         let rh_mp: i32 = 80000;
-        let data = build_payload(5000, 45000, temp_mc, rh_mp);
+        let data = build_payload_v1(5000, 45000, temp_mc, rh_mp);
 
         let reading = decode_sht40(&data).unwrap();
         assert!((reading.temperature_c - (-10.5)).abs() < 0.001);
         assert!((reading.humidity_pct - 80.0).abs() < 0.001);
+        assert_eq!(reading.collection_timestamp_ms, None);
     }
 
     #[test]
     fn test_decode_sht40_wrong_length() {
         assert!(decode_sht40(&[0x00; 13]).is_err());
         assert!(decode_sht40(&[0x00; 15]).is_err());
+        assert!(decode_sht40(&[0x00; 21]).is_err());
+        assert!(decode_sht40(&[0x00; 23]).is_err());
         assert!(decode_sht40(&[]).is_err());
     }
 
     #[test]
-    fn test_decode_sht40_bad_temp_crc() {
-        let mut data = build_payload(26214, 29360, 25003, 49979);
+    fn test_decode_sht40_bad_temp_crc_v1() {
+        let mut data = build_payload_v1(26214, 29360, 25003, 49979);
         data[2] ^= 0xFF; // corrupt temperature CRC
         assert_eq!(decode_sht40(&data), Err("temperature CRC mismatch"));
     }
 
     #[test]
-    fn test_decode_sht40_bad_rh_crc() {
-        let mut data = build_payload(26214, 29360, 25003, 49979);
+    fn test_decode_sht40_bad_rh_crc_v1() {
+        let mut data = build_payload_v1(26214, 29360, 25003, 49979);
         data[5] ^= 0xFF; // corrupt humidity CRC
+        assert_eq!(decode_sht40(&data), Err("humidity CRC mismatch"));
+    }
+
+    #[test]
+    fn test_decode_sht40_bad_temp_crc_v2() {
+        let mut data = build_payload_v2(1_000_000, 26214, 29360, 25003, 49979);
+        data[10] ^= 0xFF; // corrupt temperature CRC (offset +8 for timestamp)
+        assert_eq!(decode_sht40(&data), Err("temperature CRC mismatch"));
+    }
+
+    #[test]
+    fn test_decode_sht40_bad_rh_crc_v2() {
+        let mut data = build_payload_v2(1_000_000, 26214, 29360, 25003, 49979);
+        data[13] ^= 0xFF; // corrupt humidity CRC (offset +8 for timestamp)
         assert_eq!(decode_sht40(&data), Err("humidity CRC mismatch"));
     }
 

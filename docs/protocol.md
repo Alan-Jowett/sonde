@@ -578,7 +578,8 @@ The store-and-forward mechanism piggybacks application data on the mandatory WAK
 1. BPF program calls `send_async(buf, len)` — data queued in sleep-retained RAM (max 10 messages).
 2. On next wake:
    - If exactly 1 message queued AND it fits in the WAKE payload budget → include as `blob` (key 10) in WAKE.
-   - Otherwise → send all queued messages via APP_DATA after COMMAND (existing mechanism).
+   - Otherwise, if COMMAND is NOP → send all queued messages as individual APP_DATA frames before BPF execution.
+   - Otherwise (non-NOP command) → queued blobs remain for the next NOP cycle.
 3. Gateway receives WAKE, extracts `blob`, routes to handler as a `DATA` message.
 4. Handler reply is always deferred to next cycle.
 
@@ -623,7 +624,7 @@ Note: The COMMAND blob (`reply_N-1`) is the handler's response to a *previous* c
 
 **Backward compatibility:** The `blob` field is optional in both WAKE and COMMAND. Nodes and gateways that predate this feature silently ignore unknown CBOR keys (forward compatibility). A new node talking to an old gateway functions normally — piggybacked data is silently dropped but the node remains operational.
 
-**Fallback:** When the async queue contains multiple messages or an oversized message, the node sends them as standard APP_DATA frames after receiving COMMAND, exactly as `send()` / `send_recv()` do today.
+**Fallback:** When the async queue contains multiple messages or an oversized message, the node sends them as standard APP_DATA frames before BPF execution on the next NOP cycle. Non-NOP commands (UpdateProgram, RunEphemeral, UpdateSchedule, Reboot) skip the overflow drain to avoid contending for radio time with command-specific traffic; queued blobs remain for the next NOP cycle.
 
 ---
 

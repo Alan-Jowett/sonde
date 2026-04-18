@@ -767,9 +767,8 @@ where
                     log::warn!("failed to erase peer_payload after WAKE success: {}", e);
                 }
             }
-            // Consume the piggybacked async blob so step 9b does not
-            // resend it as APP_DATA.  single_for_piggyback() only reads
-            // without removing, so clear() is required here.
+            // Consume the piggybacked async blob so it is not resent.
+            // single_for_piggyback() only reads without removing.
             if piggybacked {
                 async_queue.clear();
             }
@@ -787,6 +786,8 @@ where
             return log_and_sleep(&sleep_mgr);
         }
     };
+
+    let mut current_seq = starting_seq;
 
     // Log the received COMMAND (ND-1003).
     match &command_payload {
@@ -816,14 +817,34 @@ where
     let command_received_at = clock.elapsed_ms();
 
     // 8. Dispatch command
-    let mut current_seq = starting_seq;
     let mut loaded_program: Option<LoadedProgram> = None;
 
     let is_ephemeral = matches!(&command_payload, CommandPayload::RunEphemeral { .. });
 
     match command_payload {
         CommandPayload::Nop => {
-            // Proceed to BPF execution
+            // 8a. Drain remaining async queue blobs as APP_DATA.
+            // Piggybacking (step 5a) handles at most one blob; send the
+            // rest now, before BPF execution, so that blobs queued by the
+            // current cycle's BPF stay in the queue for piggybacking on the
+            // next WAKE.  Only drain on NOP cycles — non-NOP commands have
+            // their own radio work and the queue can wait.
+            if !async_queue.is_empty() {
+                let pending = async_queue.drain();
+                for queued_blob in &pending {
+                    if let Err(e) = send_app_data(
+                        transport,
+                        &identity,
+                        &mut current_seq,
+                        queued_blob,
+                        aead,
+                        sha,
+                    ) {
+                        log::warn!("async queue APP_DATA send failed: {}", e);
+                        break;
+                    }
+                }
+            }
         }
         CommandPayload::Reboot => {
             return WakeCycleOutcome::Reboot;
@@ -1034,27 +1055,6 @@ where
         let _ = exec_result;
 
         flush_trace_log(&trace_log);
-    }
-
-    // 9b. Drain async queue — send queued blobs as APP_DATA.
-    // Piggybacked blobs were already consumed during WAKE; send the rest.
-    if !piggybacked || !async_queue.is_empty() {
-        let pending = async_queue.drain();
-        for queued_blob in &pending {
-            if let Err(e) = send_app_data(
-                transport,
-                &identity,
-                &mut current_seq,
-                queued_blob,
-                aead,
-                sha,
-            ) {
-                log::warn!("async queue APP_DATA send failed: {}", e);
-                // On failure, remaining blobs are lost (radio may be down).
-                // Don't re-queue — the node is about to sleep.
-                break;
-            }
-        }
     }
 
     // 10. Determine sleep duration

@@ -880,14 +880,14 @@ class Navigator {
   goTo(pageIndex)              // show page, hide others, update stepper, persist
   next()                       // goTo(currentPage + 1), clamped
   back()                       // goTo(currentPage - 1), clamped at 0
-  restore()                    // read localStorage, goTo saved page (or 0)
+  restore()                    // read localStorage, validate prerequisites, push intermediate history, goTo saved page (or earliest valid)
   get current()                // returns currentPage index
 }
 ```
 
 **Page transitions:** `goTo()` applies CSS classes (`slide-in-right` for forward, `slide-in-left` for back) to animate the transition.  Transitions are ≤ 300 ms.  The previous page gets `slide-out-left` or `slide-out-right` respectively.
 
-**Persistence:** `goTo()` saves `currentPage` (0-based) to `localStorage` key `sonde-pair-page`.  `restore()` reads this key on startup, validates that the saved page's prerequisites are met (e.g., pairing artifacts exist for pages 3–6), and navigates to the saved page or the earliest valid page if prerequisites are missing.  Invalid values default to page 0.
+**Persistence:** `goTo()` saves `currentPage` (0-based) to `localStorage` key `sonde-pair-page`.  `restore()` reads this key on startup, validates prerequisites (pairing artifacts for pages 3–6; non-ephemeral context for pages 5–6), and navigates to the saved page or the earliest valid page if prerequisites are missing.  Pages 5–6 (Node Provision, Done) require ephemeral state (selected node address and provisioning-success context respectively) that cannot survive a restart; if the saved page is 5 or 6, `restore()` falls back to page 4 (Node Scan).  Invalid or out-of-range values default to the earliest valid page (page 1 if unpaired, page 4 if paired).  After determining the target page N, `restore()` pushes all intermediate states (pages 1 through N) into the history stack so that back navigation traverses each page in sequence.
 
 ### Stepper bar
 
@@ -906,9 +906,9 @@ The stepper is non-interactive (no click handlers).
 
 ### Back navigation
 
-Back navigation uses the History API (`history.pushState` / `popstate`).  Each `goTo()` call pushes a state entry `{ page: N }`.  On startup, an initial sentinel state `{ page: 0 }` is pushed via `history.replaceState` so that `popstate` on page 1 replays the sentinel (staying on page 1) rather than exiting the app.
+Back navigation uses the History API (`history.pushState` / `popstate`).  Each `goTo()` call pushes a state entry `{ page: N }`.  On startup, a sentinel state `{ sentinel: true }` is installed via `history.replaceState` at the bottom of the stack; all intermediate pages (1 through N) are then pushed so the history stack is `[sentinel, page1, ..., pageN]`.
 
-The `popstate` listener reads `event.state.page` and calls `navigator.goTo()` without pushing another history entry (to avoid infinite loops).
+When `popstate` fires with the sentinel state, the handler MUST navigate the UI to page 1 (Welcome) and push a new `{ page: 0 }` state so subsequent back actions remain on page 1 and do not navigate away.  Non-sentinel states invoke `navigator.goTo()` without pushing another history entry (to avoid duplicates).
 
 On Android, the Tauri WebView dispatches hardware-back as a browser back event, which triggers `popstate`.  The sentinel state ensures the app does not exit on page 1.
 

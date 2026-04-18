@@ -1234,6 +1234,7 @@ The UI MUST persist the current page index to `localStorage` so that the wizard 
 1. On page transition, the current page index (0-based) is saved to `localStorage`.
 2. On app launch, the saved page index is read and the corresponding page is displayed, provided the page's prerequisites are met (e.g., pairing artifacts for pages 3–6).
 3. If `localStorage` is empty, contains an invalid page index, or the saved page's prerequisites are not met, the app navigates to the earliest valid page (page 1 if unpaired, page 4 if already paired).
+4. The selected BLE node address is ephemeral and is never persisted across restarts.  Page 5 (Node Provision) requires a selected node address; page 6 (Done) requires in-memory provisioning-success context.  Both are ephemeral.  If the saved page is 5 or 6, the app MUST fall back to page 4 (Node Scan) if page 4's prerequisites are met (i.e., the app is paired); otherwise, the app MUST fall back to the earliest valid page as defined in AC 3.
 
 ---
 
@@ -1251,7 +1252,7 @@ Additionally, a visible back arrow button MUST be rendered in the header bar on 
 
 1. Pressing back on pages 2–6 navigates to the previous page.
 2. Pressing back on page 1 does nothing (the app does not exit).
-3. Back navigation uses the History API (`pushState`/`popstate`) with a sentinel state on page 1.
+3. Back navigation uses the History API (`pushState`/`popstate`) with a sentinel state at the bottom of the history stack.  When the app restores to page N on launch, all intermediate pages (1 through N) MUST be pushed into history so that back navigation traverses each page in sequence.  On encountering the sentinel, the app MUST update the visible UI to page 1 (Welcome) and MUST re-establish a no-exit state so that further back actions while on page 1 remain on page 1 and do not navigate away.
 4. The stepper bar updates correctly on back navigation.
 5. Navigating back from a scan page stops any active scan and clears the selected device.
 6. A back arrow button is visible in the header on pages 2–6.

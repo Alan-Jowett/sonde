@@ -205,11 +205,18 @@ impl BlePairingController {
         if let Some(token) = self.timeout_cancel.lock().await.take() {
             token.cancel();
         }
-        // Await graceful exit; the task sends WindowClosed before returning
-        // so we must not abort it here.
+        // Await graceful exit up to 500 ms (task sends WindowClosed before
+        // returning). If the channel is full or the task is otherwise stuck,
+        // abort it so warm-reboot recovery is never blocked indefinitely.
         let handle = self.event_task.lock().await.take();
         if let Some(handle) = handle {
-            let _ = handle.await;
+            let abort = handle.abort_handle();
+            if tokio::time::timeout(std::time::Duration::from_millis(500), handle)
+                .await
+                .is_err()
+            {
+                abort.abort();
+            }
         }
     }
 

@@ -723,6 +723,20 @@ async fn run_gateway(
             continue;
         }
 
+        // Normal disconnect: abort all remaining tasks before reconnecting so
+        // the old gRPC server releases its UDS/named-pipe socket and its
+        // Arc<UsbEspNowTransport> clone, preventing bind failures and transport
+        // leaks on the next reconnect iteration (GW-1103, GW-1301).
+        ble_controller.cancel_and_wait().await;
+        health_cancel.cancel();
+        frame_loop.abort();
+        ble_loop.abort();
+        grpc_handle.abort();
+        let _ = frame_loop.await;
+        let _ = ble_loop.await;
+        let _ = grpc_handle.await;
+        let _ = health_handle.await;
+
         // GW-1301: log modem disconnecting before reconnect attempt.
         info!("modem disconnecting");
 

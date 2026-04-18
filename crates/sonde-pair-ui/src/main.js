@@ -41,6 +41,7 @@ const pairStatus = document.getElementById("pair-status");
 // Page 3: Pairing Complete
 const pairDetails = document.getElementById("pair-details");
 const btnToNode = document.getElementById("btn-to-node");
+const btnClearGwDone = document.getElementById("btn-clear-gw-done");
 
 // Page 4: Node Scan
 const btnScanStartNode = document.getElementById("btn-scan-start-node");
@@ -617,7 +618,7 @@ btnPair.addEventListener("click", pairGateway);
 
 // Page 3: Pairing Complete
 btnToNode.addEventListener("click", () => navigator_.next());
-document.getElementById("btn-clear-gw-done").addEventListener("click", clearPairing);
+btnClearGwDone.addEventListener("click", clearPairing);
 
 // Page 4: Node Scan
 btnScanStartNode.addEventListener("click", startScan);

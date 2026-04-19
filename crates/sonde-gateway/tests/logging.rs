@@ -819,7 +819,10 @@ async fn t1309_wake_blob_no_handler_warn() {
     let frame = encode_frame(&header, &cbor, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
 
     let resp = gw.process_frame(&frame, node.peer_address()).await;
-    assert!(resp.is_some(), "expected COMMAND response even when no handler");
+    assert!(
+        resp.is_some(),
+        "expected COMMAND response even when no handler"
+    );
 
     // Allow the background task to run.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;

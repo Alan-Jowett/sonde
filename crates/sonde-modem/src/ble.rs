@@ -715,7 +715,11 @@ impl Ble for EspBleDriver {
             {
                 return;
             }
-            (s.conn_handle, s.confirm_sent_at.is_some(), s.confirm_sent_at)
+            (
+                s.conn_handle,
+                s.confirm_sent_at.is_some(),
+                s.confirm_sent_at,
+            )
         };
         // Only applies to the NC pairing path.
         if !in_nc_pairing {

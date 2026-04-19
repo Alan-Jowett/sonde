@@ -191,8 +191,11 @@ impl BlePairingController {
 
     /// Store the JoinHandle of the event-forwarding task spawned by OpenBlePairing.
     pub async fn set_event_task(&self, handle: tokio::task::JoinHandle<()>) {
-        if let Some(old) = self.event_task.lock().await.replace(handle) {
+        if let Some(mut old) = self.event_task.lock().await.replace(handle) {
             old.abort();
+            // Await with a bounded timeout so the aborted task releases any
+            // captured Arc<UsbEspNowTransport> before this call returns.
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), &mut old).await;
         }
     }
 

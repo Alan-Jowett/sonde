@@ -1729,9 +1729,9 @@ A configurable stub handler process (or in-process mock) that:
 **Procedure:**
 1. Start a gateway instance (simulated with a mock modem duplex stream). Persist channel 7 via `SetModemChannel(7)`.
 2. Simulate a modem warm reboot: send an unsolicited `MODEM_READY` from the mock stream.
-3. Assert: the gateway does **not** sleep before starting recovery (no measurable delay between warm reboot detection and the next `RESET` being sent).
+3. Assert: the gateway does **not** sleep before starting recovery (no measurable delay between warm reboot detection and the next `RESET` being sent). *(Manual/expected — not yet automated; requires a gateway-level test harness.)*
 4. Assert: the gateway sends `RESET` and then `SET_CHANNEL(7)` — not `SET_CHANNEL(1)` — as part of the re-initialization.
-5. Assert: after successful recovery, a subsequent simulated serial disconnect triggers a reconnect with a 1 s backoff (not a previously accumulated backoff value).
+5. Assert: after successful recovery, a subsequent simulated serial disconnect triggers a reconnect with a 1 s backoff (not a previously accumulated backoff value). *(Manual/expected — not yet automated; requires a gateway-level test harness.)*
 
 ---
 

@@ -711,10 +711,21 @@ async fn run_gateway(
             frame_loop.abort();
             ble_loop.abort();
             grpc_handle.abort();
-            let _ = frame_loop.await;
-            let _ = ble_loop.await;
-            let _ = grpc_handle.await;
-            let _ = health_handle.await;
+            // Guard each await with is_finished(): if a handle's output was already
+            // consumed by the select! arm above, awaiting it again would hang
+            // (poll returns Pending indefinitely once the output is taken).
+            if !frame_loop.is_finished() {
+                let _ = frame_loop.await;
+            }
+            if !ble_loop.is_finished() {
+                let _ = ble_loop.await;
+            }
+            if !grpc_handle.is_finished() {
+                let _ = grpc_handle.await;
+            }
+            if !health_handle.is_finished() {
+                let _ = health_handle.await;
+            }
             // Explicitly await the reader task so the serial port read half is
             // released before the next open() call (GW-1103 AC8).
             transport.abort_reader_and_wait().await;
@@ -732,10 +743,18 @@ async fn run_gateway(
         frame_loop.abort();
         ble_loop.abort();
         grpc_handle.abort();
-        let _ = frame_loop.await;
-        let _ = ble_loop.await;
-        let _ = grpc_handle.await;
-        let _ = health_handle.await;
+        if !frame_loop.is_finished() {
+            let _ = frame_loop.await;
+        }
+        if !ble_loop.is_finished() {
+            let _ = ble_loop.await;
+        }
+        if !grpc_handle.is_finished() {
+            let _ = grpc_handle.await;
+        }
+        if !health_handle.is_finished() {
+            let _ = health_handle.await;
+        }
 
         // GW-1301: log modem disconnecting before reconnect attempt.
         info!("modem disconnecting");

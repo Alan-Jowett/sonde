@@ -357,7 +357,11 @@ impl EspBleDriver {
                         );
                         true
                     } else {
-                        complete_pairing_under_lock(&mut s, peer_addr, "pairing complete");
+                        EspBleDriver::complete_pairing_under_lock(
+                            &mut s,
+                            peer_addr,
+                            "pairing complete",
+                        );
                         false
                     }
                 } else {
@@ -753,7 +757,7 @@ impl Ble for EspBleDriver {
             return;
         }
         s.mtu = current_mtu;
-        complete_pairing_under_lock(&mut s, peer_addr_raw, "enc fallback");
+        Self::complete_pairing_under_lock(&mut s, peer_addr_raw, "enc fallback");
     }
 }
 

@@ -779,3 +779,80 @@ fn decode_command(raw: &[u8], psk: &[u8; 32]) -> (FrameHeader, GatewayMessage) {
     let msg = GatewayMessage::decode(decoded.header.msg_type, &plaintext).unwrap();
     (decoded.header, msg)
 }
+
+// ── T-1309  WAKE blob no-handler warning ───────────────────────────────
+
+/// T-1309: Validates that a WAKE blob with no matching handler emits a WARN
+/// containing node_id, program_hash, and handler_count (GW-0504 AC6 parity
+/// for WAKE-originated blobs).
+#[tokio::test]
+#[traced_test]
+async fn t1309_wake_blob_no_handler_warn() {
+    use sonde_protocol::encode_frame;
+
+    let storage = Arc::new(InMemoryStorage::new());
+    let gw = make_gateway(storage.clone());
+
+    let psk = [0x77u8; 32];
+    let key_hint = compute_key_hint(&psk);
+    let node = TestNode::new("node-1309", key_hint, psk);
+    let program_hash = store_test_program(&storage, b"prog-1309").await;
+
+    let mut record = node.to_record();
+    record.assigned_program_hash = Some(program_hash.clone());
+    storage.upsert_node(&record).await.unwrap();
+
+    // Build a WAKE that includes a non-empty blob.
+    let header = FrameHeader {
+        key_hint: node.key_hint,
+        msg_type: MSG_WAKE,
+        nonce: 9900,
+    };
+    let msg = NodeMessage::Wake {
+        firmware_abi_version: 1,
+        program_hash: program_hash.clone(),
+        battery_mv: 3300,
+        firmware_version: "0.4.0".into(),
+        blob: Some(vec![0x01, 0x02, 0x03]),
+    };
+    let cbor = msg.encode().unwrap();
+    let frame = encode_frame(&header, &cbor, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
+
+    let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+
+    let resp = gw.process_frame(&frame, node.peer_address()).await;
+    assert!(
+        resp.is_some(),
+        "expected COMMAND response even when no handler"
+    );
+
+    // Poll for the background task's warning log instead of a fixed delay.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !logs_contain("WAKE blob dropped: no handler matched") {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        logs_contain("WAKE blob dropped: no handler matched"),
+        "expected WARN for unhandled WAKE blob"
+    );
+    assert!(
+        logs_contain("node_id=node-1309"),
+        "WARN must include node_id"
+    );
+    assert!(
+        logs_contain("program_hash="),
+        "WARN must include program_hash field key"
+    );
+    assert!(
+        logs_contain(&ph_hex),
+        "WARN must include program_hash hex value"
+    );
+    assert!(
+        logs_contain("handler_count=0"),
+        "WARN must include handler_count"
+    );
+}

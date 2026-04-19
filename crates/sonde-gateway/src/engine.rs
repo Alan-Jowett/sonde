@@ -953,9 +953,12 @@ impl Gateway {
                 let program_hash = program_hash.clone();
                 let nonce = header.nonce;
                 tokio::spawn(async move {
-                    let handler_result = {
+                    let (handler_result, handler_count) = {
                         let router = handler_router.read().await;
-                        router.find_handler_cloned(&program_hash)
+                        (
+                            router.find_handler_cloned(&program_hash),
+                            router.handler_count(),
+                        )
                     };
                     if let Some((config, process_arc)) = handler_result {
                         let timestamp = SystemTime::now()
@@ -994,6 +997,15 @@ impl Gateway {
                                 );
                             }
                         }
+                    } else {
+                        let ph_hex: String =
+                            program_hash.iter().map(|b| format!("{b:02x}")).collect();
+                        warn!(
+                            node_id = %node_id,
+                            program_hash = %ph_hex,
+                            handler_count,
+                            "WAKE blob dropped: no handler matched `program_hash`"
+                        );
                     }
                 });
             }

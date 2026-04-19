@@ -175,13 +175,13 @@ When the modem firmware reboots without dropping the USB-CDC serial connection (
 
 The `UsbEspNowTransport` exposes:
 - `warm_reboot_notify: Arc<tokio::sync::Notify>` — fired by the reader task when it receives an unexpected `MODEM_READY`, after cancelling all pending operation waiters (channel-ack, status, and scan slots).
-- A cancellation mechanism (e.g. `CancellationToken`) that allows the reader task to be cleanly stopped on demand. The reader task polls the token each iteration; on cancellation it exits, releasing the serial port.
+- `abort_reader_and_wait()` — aborts the reader task's `JoinHandle` and waits for it to finish so the serial port is released before reconnect.
 
 The gateway main loop `select!`s on `warm_reboot_notify.notified()` alongside the normal shutdown and frame-loop exit paths. On warm reboot notification:
 
 1. The gateway aborts all spawned consumer tasks (`frame_loop`, `ble_loop`, `grpc_handle`) and cancels the health monitor. This releases all `Arc<UsbEspNowTransport>` clones held by those tasks.
-2. The gateway calls the transport's cancel method, causing the reader task to exit and release the serial port.
-3. The local `transport` Arc is dropped; all transport resources are freed.
+2. The gateway calls `abort_reader_and_wait()`, which aborts the transport reader task and waits for it to release the serial port.
+3. The local `transport` Arc is dropped; once the remaining clones are gone, the transport's remaining resources are freed.
 4. The gateway immediately (no backoff) reopens the serial port and calls `UsbEspNowTransport::new()` with the persisted channel read from the database (GW-0808). All consumer tasks are re-spawned as on first startup.
 5. After successful warm reboot recovery, the exponential backoff counter is reset to its initial value (1 s), so any subsequent serial disconnect starts fresh.
 

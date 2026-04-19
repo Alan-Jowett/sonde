@@ -687,11 +687,16 @@ async fn t1104d_unexpected_modem_ready_fires_warm_reboot_notify() {
         "warm_reboot_flag must be set after unexpected MODEM_READY"
     );
 
-    // The pending change_channel waiter must have been cancelled (channel
-    // closed → Err returned).
-    let ch_result = tokio::time::timeout(Duration::from_secs(1), ch_task)
+    // The pending change_channel waiter must have been cancelled BEFORE the
+    // notify fired (GW-1103 AC7: waiters are cancelled before notify_one()).
+    // Use a tight 50ms timeout: if ch_task isn't already resolved by the time
+    // warm_reboot_notify fires, the ordering invariant is violated.
+    let ch_result = tokio::time::timeout(Duration::from_millis(50), ch_task)
         .await
-        .expect("change_channel task did not complete in time")
+        .expect(
+            "change_channel must already be resolved before warm_reboot_notify fires \
+             — waiters are cancelled before notify_one() per GW-1103 AC7",
+        )
         .expect("change_channel task panicked");
     assert!(
         ch_result.is_err(),

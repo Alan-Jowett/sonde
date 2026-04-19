@@ -774,8 +774,15 @@ impl Ble for EspBleDriver {
         );
 
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        // Re-check all guards after re-acquiring the lock.
-        if s.authenticated || s.timeout_fired || s.pairing_rejected {
+        // Re-check all guards after re-acquiring the lock.  Also verify the
+        // conn_handle hasn't changed (a disconnect+reconnect resets all flags,
+        // so without this check we'd complete pairing on the new connection
+        // using the old connection's peer address).
+        if s.conn_handle != Some(conn_handle)
+            || s.authenticated
+            || s.timeout_fired
+            || s.pairing_rejected
+        {
             return;
         }
         s.mtu = current_mtu;

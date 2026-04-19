@@ -833,12 +833,19 @@ impl EspBleDriver {
             s.connection_start = None;
             s.confirm_sent_at = None;
             if let Some(data) = s.pending_write.take() {
-                info!(
-                    "BLE: {}: flushing buffered GATT write {} bytes",
-                    log_prefix,
-                    data.len()
-                );
-                s.events.push_back(BleEvent::Recv(data));
+                if s.events.len() < MAX_BLE_EVENT_QUEUE {
+                    info!(
+                        "BLE: {}: flushing buffered GATT write {} bytes",
+                        log_prefix,
+                        data.len()
+                    );
+                    s.events.push_back(BleEvent::Recv(data));
+                } else {
+                    warn!(
+                        "BLE: {}: dropping buffered GATT write — event queue full",
+                        log_prefix
+                    );
+                }
             }
             let mtu = s.mtu;
             if s.events.len() < MAX_BLE_EVENT_QUEUE {

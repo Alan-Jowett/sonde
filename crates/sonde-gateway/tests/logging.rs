@@ -843,7 +843,14 @@ async fn t1309_wake_blob_no_handler_warn() {
         logs_contain("node_id=node-1309"),
         "WARN must include node_id"
     );
-    assert!(logs_contain(&ph_hex), "WARN must include program_hash hex");
+    assert!(
+        logs_contain("program_hash="),
+        "WARN must include program_hash field key"
+    );
+    assert!(
+        logs_contain(&ph_hex),
+        "WARN must include program_hash hex value"
+    );
     assert!(
         logs_contain("handler_count=0"),
         "WARN must include handler_count"

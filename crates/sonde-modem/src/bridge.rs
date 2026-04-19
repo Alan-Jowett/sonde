@@ -166,6 +166,12 @@ pub trait Ble {
     ///
     /// Must be called once per poll cycle.
     fn check_pairing_timeout(&self) {}
+    /// Poll the NimBLE link security state as a fallback for Android LESC
+    /// Numeric Comparison, in case `on_authentication_complete` did not fire
+    /// due to a `ble_gap_conn_find` race in the ENC_CHANGE event handler.
+    ///
+    /// Must be called once per poll cycle.
+    fn check_encryption_fallback(&self) {}
     /// Drain one queued BLE event, or `None` if empty.
     fn drain_event(&self) -> Option<BleEvent>;
 }
@@ -353,6 +359,9 @@ impl<S: SerialPort, R: Radio, B: Ble> Bridge<S, R, B> {
 
         // Enforce BLE pairing timeout (MD-0414 AC#4).
         self.ble.check_pairing_timeout();
+
+        // Android LESC NC: polling fallback for missed on_authentication_complete.
+        self.ble.check_encryption_fallback();
 
         // Forward any BLE events to the gateway over USB-CDC.
         // Cap at MAX_BLE_EVENTS_PER_POLL to prevent starvation of serial
@@ -1170,6 +1179,7 @@ mod tests {
         pairing_replies: Vec<bool>,
         event_queue: RefCell<VecDeque<BleEvent>>,
         check_pairing_timeout_count: Cell<usize>,
+        check_encryption_fallback_count: Cell<usize>,
         enable_count: Cell<usize>,
         disable_count: Cell<usize>,
     }
@@ -1182,6 +1192,7 @@ mod tests {
                 pairing_replies: Vec::new(),
                 event_queue: RefCell::new(VecDeque::new()),
                 check_pairing_timeout_count: Cell::new(0),
+                check_encryption_fallback_count: Cell::new(0),
                 enable_count: Cell::new(0),
                 disable_count: Cell::new(0),
             }
@@ -1217,6 +1228,10 @@ mod tests {
         fn check_pairing_timeout(&self) {
             self.check_pairing_timeout_count
                 .set(self.check_pairing_timeout_count.get() + 1);
+        }
+        fn check_encryption_fallback(&self) {
+            self.check_encryption_fallback_count
+                .set(self.check_encryption_fallback_count.get() + 1);
         }
         fn drain_event(&self) -> Option<BleEvent> {
             self.event_queue.borrow_mut().pop_front()
@@ -1371,6 +1386,17 @@ mod tests {
         assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 1);
         bridge.poll();
         assert_eq!(bridge.ble.check_pairing_timeout_count.get(), 2);
+    }
+
+    /// Validates: poll() calls check_encryption_fallback() exactly once per cycle.
+    #[test]
+    fn poll_calls_check_encryption_fallback() {
+        let mut bridge = make_bridge_with_ble();
+        assert_eq!(bridge.ble.check_encryption_fallback_count.get(), 0);
+        bridge.poll();
+        assert_eq!(bridge.ble.check_encryption_fallback_count.get(), 1);
+        bridge.poll();
+        assert_eq!(bridge.ble.check_encryption_fallback_count.get(), 2);
     }
 
     /// Validates: T-0613 (BLE_RECV forwarded to gateway)

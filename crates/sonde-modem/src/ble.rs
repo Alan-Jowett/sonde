@@ -121,6 +121,11 @@ struct BleState {
     /// while `check_pairing_timeout()` retries `disconnect()` on subsequent
     /// polls until `on_disconnect` clears `conn_handle`.
     timeout_fired: bool,
+    /// True after the operator has rejected the Numeric Comparison (i.e.,
+    /// `pairing_confirm_reply(false)` was called).  Prevents the encryption
+    /// fallback and a late `on_authentication_complete` from promoting a
+    /// rejected client to `authenticated`.
+    pairing_rejected: bool,
     /// GATT write received before authentication completed.  Buffered here
     /// and flushed to `events` once `authenticated` becomes `true`, so
     /// clients that write immediately after connecting (before the
@@ -143,6 +148,7 @@ impl BleState {
             connection_start: None,
             confirm_sent_at: None,
             timeout_fired: false,
+            pairing_rejected: false,
             pending_write: None,
         }
     }
@@ -267,6 +273,7 @@ impl EspBleDriver {
                 s.connection_start = None;
                 s.confirm_sent_at = None;
                 s.timeout_fired = false;
+                s.pairing_rejected = false;
                 s.pending_write = None;
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::Disconnected {
@@ -338,6 +345,11 @@ impl EspBleDriver {
                         // approval (MD-0414 AC#4).
                         warn!("BLE: ignoring late SMP completion after pairing timeout");
                         true
+                    } else if s.pairing_rejected {
+                        // Operator rejected this session — discard the late
+                        // SMP completion to prevent promoting a rejected peer.
+                        warn!("BLE: ignoring late SMP completion after operator rejection");
+                        true
                     } else if s.mtu < BLE_MTU_MIN {
                         warn!(
                             "BLE: pairing complete but MTU too low ({}); disconnecting (MD-0402)",
@@ -345,25 +357,29 @@ impl EspBleDriver {
                         );
                         true
                     } else if s.pairing_pending {
-                        info!("BLE: LESC pairing complete — deferring BLE_CONNECTED until operator confirms");
-                        s.deferred_connected = Some((peer_addr, s.mtu));
+                        if s.deferred_connected.is_none() {
+                            info!("BLE: LESC pairing complete — deferring BLE_CONNECTED until operator confirms");
+                            s.deferred_connected = Some((peer_addr, s.mtu));
+                        }
                         false
                     } else {
-                        info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
-                        s.authenticated = true;
-                        s.connection_start = None;
-                        s.confirm_sent_at = None;
-                        // Flush any GATT write that arrived before auth completed.
-                        if let Some(data) = s.pending_write.take() {
-                            info!("BLE: flushing buffered GATT write {} bytes", data.len());
-                            s.events.push_back(BleEvent::Recv(data));
-                        }
-                        let mtu = s.mtu;
-                        if s.events.len() < MAX_BLE_EVENT_QUEUE {
-                            s.events.push_back(BleEvent::Connected {
-                                peer_addr,
-                                mtu,
-                            });
+                        if !s.authenticated {
+                            info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
+                            s.authenticated = true;
+                            s.connection_start = None;
+                            s.confirm_sent_at = None;
+                            // Flush any GATT write that arrived before auth completed.
+                            if let Some(data) = s.pending_write.take() {
+                                info!("BLE: flushing buffered GATT write {} bytes", data.len());
+                                s.events.push_back(BleEvent::Recv(data));
+                            }
+                            let mtu = s.mtu;
+                            if s.events.len() < MAX_BLE_EVENT_QUEUE {
+                                s.events.push_back(BleEvent::Connected {
+                                    peer_addr,
+                                    mtu,
+                                });
+                            }
                         }
                         false
                     }
@@ -516,6 +532,7 @@ impl Ble for EspBleDriver {
             s.connection_start = None;
             s.confirm_sent_at = None;
             s.timeout_fired = false;
+            s.pairing_rejected = false;
             s.pending_write = None;
             // Events are NOT cleared here — BLE_DISABLE needs
             // BLE_DISCONNECTED to flow through (modem-protocol.md §4.14).
@@ -595,6 +612,7 @@ impl Ble for EspBleDriver {
                     }
                     s.pairing_pending = false;
                     s.deferred_connected = None;
+                    s.pairing_rejected = true;
                     s.conn_handle
                 } else {
                     None
@@ -683,6 +701,97 @@ impl Ble for EspBleDriver {
                 warn!("BLE: pairing timeout exceeded — disconnecting (MD-0414 AC#4)");
             }
             let _ = BLEDevice::take().get_server().disconnect(handle);
+        }
+    }
+
+    /// Polling fallback for Android LESC Numeric Comparison.
+    ///
+    /// Some versions of esp32-nimble fail to call `on_authentication_complete`
+    /// when `ble_gap_conn_find` returns an error inside the `ENC_CHANGE` event
+    /// handler.  This method probes NimBLE directly for link encryption state
+    /// each poll cycle, completing the pairing state machine when the callback
+    /// was silently dropped.
+    ///
+    /// Only runs during an active NC pairing session (`confirm_sent_at` set)
+    /// and is a no-op once `authenticated` or `timeout_fired` is set.
+    fn check_encryption_fallback(&self) {
+        // Acquire initial state under the lock, then release before the unsafe
+        // NimBLE call to avoid holding the mutex across a potential NimBLE lock.
+        let (conn_handle, in_nc_pairing) = {
+            let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if s.authenticated || s.timeout_fired || s.pairing_rejected {
+                return;
+            }
+            (s.conn_handle, s.confirm_sent_at.is_some())
+        };
+        // Only applies to the NC pairing path.
+        if !in_nc_pairing {
+            return;
+        }
+        let conn_handle = match conn_handle {
+            Some(h) => h,
+            None => return,
+        };
+
+        // Query NimBLE for the connection security state directly.
+        let (encrypted, current_mtu, peer_addr_raw) = unsafe {
+            let mut desc = esp_idf_sys::ble_gap_conn_desc::default();
+            if esp_idf_sys::ble_gap_conn_find(conn_handle, &mut desc) != 0 {
+                return; // Connection not found — not yet established.
+            }
+            (
+                desc.sec_state.encrypted() != 0,
+                esp_idf_sys::ble_att_mtu(conn_handle),
+                desc.peer_ota_addr.val,
+            )
+        };
+
+        if !encrypted {
+            return;
+        }
+
+        // Android delays ATT MTU exchange until after SMP.  If MTU is still
+        // at the default 23, wait for the MTU update instead of disconnecting.
+        if current_mtu < BLE_MTU_MIN {
+            return;
+        }
+
+        info!(
+            "BLE: enc fallback: link encrypted mtu={} — completing authentication (MD-0410)",
+            current_mtu
+        );
+
+        let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        // Re-check all guards after re-acquiring the lock.
+        if s.authenticated || s.timeout_fired || s.pairing_rejected {
+            return;
+        }
+        s.mtu = current_mtu;
+        if s.pairing_pending {
+            // Operator has not confirmed yet — defer until they do.
+            if s.deferred_connected.is_none() {
+                info!("BLE: enc fallback: deferring BLE_CONNECTED until operator confirms");
+                s.deferred_connected = Some((peer_addr_raw, s.mtu));
+            }
+        } else if !s.authenticated {
+            // Operator already confirmed (or confirmed first) — authenticate now.
+            s.authenticated = true;
+            s.connection_start = None;
+            s.confirm_sent_at = None;
+            if let Some(data) = s.pending_write.take() {
+                info!(
+                    "BLE: enc fallback: flushing buffered GATT write {} bytes",
+                    data.len()
+                );
+                s.events.push_back(BleEvent::Recv(data));
+            }
+            let mtu = s.mtu;
+            if s.events.len() < MAX_BLE_EVENT_QUEUE {
+                s.events.push_back(BleEvent::Connected {
+                    peer_addr: peer_addr_raw,
+                    mtu,
+                });
+            }
         }
     }
 }

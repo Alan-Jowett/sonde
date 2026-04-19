@@ -126,6 +126,10 @@ struct BleState {
     /// fallback and a late `on_authentication_complete` from promoting a
     /// rejected client to `authenticated`.
     pairing_rejected: bool,
+    /// True once an unexpected `ble_gap_conn_find` error has been logged by
+    /// `check_encryption_fallback()`, so the warning fires at most once per
+    /// connection rather than every poll cycle (~5 ms).
+    enc_fallback_err_logged: bool,
     /// GATT write received before authentication completed.  Buffered here
     /// and flushed to `events` once `authenticated` becomes `true`, so
     /// clients that write immediately after connecting (before the
@@ -149,6 +153,7 @@ impl BleState {
             confirm_sent_at: None,
             timeout_fired: false,
             pairing_rejected: false,
+            enc_fallback_err_logged: false,
             pending_write: None,
         }
     }
@@ -274,6 +279,7 @@ impl EspBleDriver {
                 s.confirm_sent_at = None;
                 s.timeout_fired = false;
                 s.pairing_rejected = false;
+                s.enc_fallback_err_logged = false;
                 s.pending_write = None;
                 if s.events.len() < MAX_BLE_EVENT_QUEUE {
                     s.events.push_back(BleEvent::Disconnected {
@@ -514,6 +520,7 @@ impl Ble for EspBleDriver {
             s.confirm_sent_at = None;
             s.timeout_fired = false;
             s.pairing_rejected = false;
+            s.enc_fallback_err_logged = false;
             s.pending_write = None;
             // Events are NOT cleared here — BLE_DISABLE needs
             // BLE_DISCONNECTED to flow through (modem-protocol.md §4.14).
@@ -716,23 +723,38 @@ impl Ble for EspBleDriver {
         };
 
         // Query NimBLE for the connection security state directly.
-        let (encrypted, current_mtu, peer_addr_raw) = unsafe {
+        // Split into two unsafe blocks: the first captures the raw descriptor
+        // (so the error path can re-acquire the state lock outside unsafe),
+        // the second reads the field values from the descriptor.
+        let (rc, raw_desc) = unsafe {
             let mut desc = esp_idf_sys::ble_gap_conn_desc::default();
             let rc = esp_idf_sys::ble_gap_conn_find(conn_handle, &mut desc);
-            if rc != 0 {
-                if rc != esp_idf_sys::BLE_HS_ENOTCONN as i32 {
-                    // Unexpected error — log once for field diagnostics.
+            (rc, desc)
+        };
+        if rc != 0 {
+            if rc != esp_idf_sys::BLE_HS_ENOTCONN as i32 {
+                // Rate-limit to once per connection — the fallback runs every
+                // ~5 ms so an unguarded warn! would flood the log.
+                let should_log = {
+                    let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                    let first = !s.enc_fallback_err_logged;
+                    s.enc_fallback_err_logged = true;
+                    first
+                };
+                if should_log {
                     warn!(
                         "BLE: enc fallback: ble_gap_conn_find(handle={}) rc={}",
                         conn_handle, rc
                     );
                 }
-                return;
             }
+            return;
+        }
+        let (encrypted, current_mtu, peer_addr_raw) = unsafe {
             (
-                desc.sec_state.encrypted() != 0,
+                raw_desc.sec_state.encrypted() != 0,
                 esp_idf_sys::ble_att_mtu(conn_handle),
-                desc.peer_ota_addr.val,
+                raw_desc.peer_ota_addr.val,
             )
         };
 

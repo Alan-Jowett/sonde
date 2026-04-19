@@ -818,14 +818,22 @@ async fn t1309_wake_blob_no_handler_warn() {
     let cbor = msg.encode().unwrap();
     let frame = encode_frame(&header, &cbor, &node.psk, &GatewayAead, &RustCryptoSha256).unwrap();
 
+    let ph_hex: String = program_hash.iter().map(|b| format!("{b:02x}")).collect();
+
     let resp = gw.process_frame(&frame, node.peer_address()).await;
     assert!(
         resp.is_some(),
         "expected COMMAND response even when no handler"
     );
 
-    // Allow the background task to run.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Poll for the background task's warning log instead of a fixed delay.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !logs_contain("WAKE blob dropped: no handler matched") {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     assert!(
         logs_contain("WAKE blob dropped: no handler matched"),
@@ -835,6 +843,7 @@ async fn t1309_wake_blob_no_handler_warn() {
         logs_contain("node_id=node-1309"),
         "WARN must include node_id"
     );
+    assert!(logs_contain(&ph_hex), "WARN must include program_hash hex");
     assert!(
         logs_contain("handler_count=0"),
         "WARN must include handler_count"

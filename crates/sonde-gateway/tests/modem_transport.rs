@@ -703,14 +703,15 @@ async fn t1104d_unexpected_modem_ready_fires_warm_reboot_notify() {
 
 /// T-1104e  After modem warm reboot, gateway recovers with persisted channel.
 ///
-/// Validates GW-1103 (criteria 7–8) and GW-0808 (AC6):
-///   - warm reboot sets flag + fires notify (transport-level precondition)
+/// Validates GW-1103 (criteria 7–8) and GW-0808 (AC6) at the transport level:
+///   - warm reboot detection: flag set, notify fires (transport precondition)
 ///   - after abort_reader_and_wait() + drop, a new transport created with the
 ///     persisted channel (7) sends RESET → SET_CHANNEL(7), not SET_CHANNEL(1)
 ///
-/// The no-backoff and backoff-reset properties are validated by code inspection
-/// of `run_gateway` (the reconnect loop `continue`s without sleeping, and
-/// `backoff` is reset to 1 s after each successful `UsbEspNowTransport::new()`).
+/// Note: The no-backoff and backoff-reset requirements (GW-1103 AC8–AC9) live
+/// in `run_gateway`'s reconnect loop and cannot be asserted at this transport
+/// level. They require a gateway-level harness to exercise `run_gateway` with
+/// a mock serial port, which is tracked as a future test improvement.
 #[tokio::test]
 async fn t1104e_warm_reboot_recovery_uses_persisted_channel() {
     use std::sync::atomic::Ordering;

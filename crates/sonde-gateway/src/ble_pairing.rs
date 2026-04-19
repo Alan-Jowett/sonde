@@ -207,15 +207,17 @@ impl BlePairingController {
         }
         // Await graceful exit up to 500 ms (task sends WindowClosed before
         // returning). If the channel is full or the task is otherwise stuck,
-        // abort it so warm-reboot recovery is never blocked indefinitely.
+        // abort it and wait again so the transport Arc is released before
+        // warm-reboot recovery proceeds.
         let handle = self.event_task.lock().await.take();
-        if let Some(handle) = handle {
-            let abort = handle.abort_handle();
-            if tokio::time::timeout(std::time::Duration::from_millis(500), handle)
+        if let Some(mut handle) = handle {
+            if tokio::time::timeout(std::time::Duration::from_millis(500), &mut handle)
                 .await
                 .is_err()
             {
-                abort.abort();
+                handle.abort();
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_millis(500), &mut handle).await;
             }
         }
     }

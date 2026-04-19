@@ -427,7 +427,7 @@ impl UsbEspNowTransport {
             let mut slot = self
                 .channel_ack_slot
                 .lock()
-                .expect("channel_ack_slot poisoned");
+                .unwrap_or_else(|e| e.into_inner());
             if slot.is_some() {
                 return Err(TransportError::Io(
                     "channel change already in progress".into(),
@@ -468,7 +468,7 @@ impl UsbEspNowTransport {
     /// The slot is cleared on drop (cancellation-safe).
     pub async fn scan_channels(&self) -> Result<ScanResult, TransportError> {
         let rx = {
-            let mut slot = self.scan_slot.lock().expect("scan_slot poisoned");
+            let mut slot = self.scan_slot.lock().unwrap_or_else(|e| e.into_inner());
             if slot.is_some() {
                 return Err(TransportError::Io(
                     "channel scan already in progress".into(),
@@ -767,7 +767,7 @@ struct SlotGuard<T>(Arc<std::sync::Mutex<Option<T>>>);
 
 impl<T> Drop for SlotGuard<T> {
     fn drop(&mut self) {
-        self.0.lock().expect("slot guard poisoned").take();
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 }
 
@@ -867,13 +867,13 @@ async fn dispatch_message(
                     }
                 }
                 {
-                    let mut slot = channel_ack_slot.lock().expect("channel_ack_slot poisoned");
+                    let mut slot = channel_ack_slot.lock().unwrap_or_else(|e| e.into_inner());
                     if slot.take().is_some() {
                         debug!("cancelling pending SET_CHANNEL_ACK waiter due to warm reboot");
                     }
                 }
                 {
-                    let mut slot = scan_slot.lock().expect("scan_slot poisoned");
+                    let mut slot = scan_slot.lock().unwrap_or_else(|e| e.into_inner());
                     if slot.take().is_some() {
                         debug!("cancelling pending SCAN_RESULT waiter due to warm reboot");
                     }
@@ -889,7 +889,7 @@ async fn dispatch_message(
             if let Some(tx) = ack_tx.take() {
                 let _ = tx.send(ch);
             } else {
-                let mut slot = channel_ack_slot.lock().expect("channel_ack_slot poisoned");
+                let mut slot = channel_ack_slot.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(tx) = slot.take() {
                     let _ = tx.send(ch);
                 } else {
@@ -906,7 +906,7 @@ async fn dispatch_message(
             }
         }
         ModemMessage::ScanResult(sr) => {
-            let mut slot = scan_slot.lock().expect("scan_slot poisoned");
+            let mut slot = scan_slot.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(tx) = slot.take() {
                 let _ = tx.send(sr);
             } else {
@@ -940,13 +940,13 @@ async fn dispatch_message(
                 }
             }
             {
-                let mut slot = channel_ack_slot.lock().expect("channel_ack_slot poisoned");
+                let mut slot = channel_ack_slot.lock().unwrap_or_else(|e| e.into_inner());
                 if slot.take().is_some() {
                     debug!("cancelling pending SET_CHANNEL_ACK waiter due to modem error");
                 }
             }
             {
-                let mut slot = scan_slot.lock().expect("scan_slot poisoned");
+                let mut slot = scan_slot.lock().unwrap_or_else(|e| e.into_inner());
                 if slot.take().is_some() {
                     debug!("cancelling pending SCAN_RESULT waiter due to modem error");
                 }

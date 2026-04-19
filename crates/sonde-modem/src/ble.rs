@@ -706,12 +706,16 @@ impl Ble for EspBleDriver {
     fn check_encryption_fallback(&self) {
         // Acquire initial state under the lock, then release before the unsafe
         // NimBLE call to avoid holding the mutex across a potential NimBLE lock.
-        let (conn_handle, in_nc_pairing) = {
+        let (conn_handle, in_nc_pairing, confirm_sent_at) = {
             let s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            if s.authenticated || s.timeout_fired || s.pairing_rejected {
+            if s.authenticated
+                || s.timeout_fired
+                || s.pairing_rejected
+                || s.deferred_connected.is_some()
+            {
                 return;
             }
-            (s.conn_handle, s.confirm_sent_at.is_some())
+            (s.conn_handle, s.confirm_sent_at.is_some(), s.confirm_sent_at)
         };
         // Only applies to the NC pairing path.
         if !in_nc_pairing {
@@ -774,14 +778,21 @@ impl Ble for EspBleDriver {
         );
 
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        // Re-check all guards after re-acquiring the lock.  Also verify the
-        // conn_handle hasn't changed (a disconnect+reconnect resets all flags,
-        // so without this check we'd complete pairing on the new connection
-        // using the old connection's peer address).
+        // Re-check all guards after re-acquiring the lock.
+        // - conn_handle: a disconnect resets the handle to None; prevents acting
+        //   on a stale snapshot.
+        // - confirm_sent_at: NimBLE reuses small connection-handle integers, so
+        //   conn_handle alone isn't sufficient.  confirm_sent_at is set to
+        //   Some(Instant::now()) when NC pairing starts; a reused-handle new
+        //   connection will have a different (or None) value.
+        // - deferred_connected: set when pairing completes while pairing_pending;
+        //   would make complete_pairing_under_lock a no-op anyway, skip early.
         if s.conn_handle != Some(conn_handle)
+            || s.confirm_sent_at != confirm_sent_at
             || s.authenticated
             || s.timeout_fired
             || s.pairing_rejected
+            || s.deferred_connected.is_some()
         {
             return;
         }

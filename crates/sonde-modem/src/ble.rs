@@ -356,31 +356,8 @@ impl EspBleDriver {
                             s.mtu
                         );
                         true
-                    } else if s.pairing_pending {
-                        if s.deferred_connected.is_none() {
-                            info!("BLE: LESC pairing complete — deferring BLE_CONNECTED until operator confirms");
-                            s.deferred_connected = Some((peer_addr, s.mtu));
-                        }
-                        false
                     } else {
-                        if !s.authenticated {
-                            info!("BLE: pairing complete — sending BLE_CONNECTED (MD-0410)");
-                            s.authenticated = true;
-                            s.connection_start = None;
-                            s.confirm_sent_at = None;
-                            // Flush any GATT write that arrived before auth completed.
-                            if let Some(data) = s.pending_write.take() {
-                                info!("BLE: flushing buffered GATT write {} bytes", data.len());
-                                s.events.push_back(BleEvent::Recv(data));
-                            }
-                            let mtu = s.mtu;
-                            if s.events.len() < MAX_BLE_EVENT_QUEUE {
-                                s.events.push_back(BleEvent::Connected {
-                                    peer_addr,
-                                    mtu,
-                                });
-                            }
-                        }
+                        complete_pairing_under_lock(&mut s, peer_addr, "pairing complete");
                         false
                     }
                 } else {
@@ -713,7 +690,8 @@ impl Ble for EspBleDriver {
     /// was silently dropped.
     ///
     /// Only runs during an active NC pairing session (`confirm_sent_at` set)
-    /// and is a no-op once `authenticated` or `timeout_fired` is set.
+    /// and is a no-op once `authenticated`, `timeout_fired`, or `pairing_rejected`
+    /// is set.
     fn check_encryption_fallback(&self) {
         // Acquire initial state under the lock, then release before the unsafe
         // NimBLE call to avoid holding the mutex across a potential NimBLE lock.
@@ -736,8 +714,16 @@ impl Ble for EspBleDriver {
         // Query NimBLE for the connection security state directly.
         let (encrypted, current_mtu, peer_addr_raw) = unsafe {
             let mut desc = esp_idf_sys::ble_gap_conn_desc::default();
-            if esp_idf_sys::ble_gap_conn_find(conn_handle, &mut desc) != 0 {
-                return; // Connection not found — not yet established.
+            let rc = esp_idf_sys::ble_gap_conn_find(conn_handle, &mut desc);
+            if rc != 0 {
+                if rc != esp_idf_sys::BLE_HS_ENOTCONN as i32 {
+                    // Unexpected error — log once for field diagnostics.
+                    warn!(
+                        "BLE: enc fallback: ble_gap_conn_find(handle={}) rc={}",
+                        conn_handle, rc
+                    );
+                }
+                return;
             }
             (
                 desc.sec_state.encrypted() != 0,
@@ -767,36 +753,52 @@ impl Ble for EspBleDriver {
             return;
         }
         s.mtu = current_mtu;
+        complete_pairing_under_lock(&mut s, peer_addr_raw, "enc fallback");
+    }
+}
+
+impl EspBleDriver {
+    /// Advance the pairing state machine under the held state lock.
+    ///
+    /// Handles the two final pairing outcomes after all guards have passed
+    /// (`timeout_fired`, `pairing_rejected`, and `mtu < BLE_MTU_MIN` checked
+    /// by the caller):
+    ///
+    /// - If `pairing_pending`, defer `BleEvent::Connected` until the operator
+    ///   confirms (sets `deferred_connected` if not already set).
+    /// - Otherwise, mark the session authenticated and emit the event.
+    ///
+    /// `log_prefix` appears in info/debug messages to identify the call site
+    /// (e.g., `"pairing complete"` or `"enc fallback"`).
+    fn complete_pairing_under_lock(s: &mut BleState, peer_addr: [u8; MAC_SIZE], log_prefix: &str) {
         if s.pairing_pending {
-            // Operator has not confirmed yet — defer until they do.
             if s.deferred_connected.is_none() {
-                info!("BLE: enc fallback: deferring BLE_CONNECTED until operator confirms");
-                s.deferred_connected = Some((peer_addr_raw, s.mtu));
+                info!(
+                    "BLE: {}: deferring BLE_CONNECTED until operator confirms",
+                    log_prefix
+                );
+                s.deferred_connected = Some((peer_addr, s.mtu));
             }
         } else if !s.authenticated {
-            // Operator already confirmed (or confirmed first) — authenticate now.
+            info!("BLE: {}: sending BLE_CONNECTED (MD-0410)", log_prefix);
             s.authenticated = true;
             s.connection_start = None;
             s.confirm_sent_at = None;
             if let Some(data) = s.pending_write.take() {
                 info!(
-                    "BLE: enc fallback: flushing buffered GATT write {} bytes",
+                    "BLE: {}: flushing buffered GATT write {} bytes",
+                    log_prefix,
                     data.len()
                 );
                 s.events.push_back(BleEvent::Recv(data));
             }
             let mtu = s.mtu;
             if s.events.len() < MAX_BLE_EVENT_QUEUE {
-                s.events.push_back(BleEvent::Connected {
-                    peer_addr: peer_addr_raw,
-                    mtu,
-                });
+                s.events.push_back(BleEvent::Connected { peer_addr, mtu });
             }
         }
     }
-}
 
-impl EspBleDriver {
     /// Send the next indication chunk from the queue, if any.
     ///
     /// Uses `notify_with()` which queues the indication via

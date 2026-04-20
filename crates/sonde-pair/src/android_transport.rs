@@ -223,7 +223,7 @@ impl AndroidBleTransport {
                     self.inner.helper.as_obj(),
                     jni_str!("setSkipBonding"),
                     jni_sig!("(Z)V"),
-                    &[JValue::Bool(skip as u8)],
+                    &[JValue::Bool(skip)],
                 )
                 .map_err(|e| jni_exception_or(env, "setSkipBonding", e))?;
                 Ok(())
@@ -734,7 +734,7 @@ impl BleTransport for AndroidBleTransport {
     }
 
     fn set_skip_bonding(&mut self, skip: bool) {
-        if let Err(e) = self.set_skip_bonding(skip) {
+        if let Err(e) = AndroidBleTransport::set_skip_bonding(self, skip) {
             tracing::warn!(error = ?e, "failed to set skipBonding on BleHelper");
         }
     }

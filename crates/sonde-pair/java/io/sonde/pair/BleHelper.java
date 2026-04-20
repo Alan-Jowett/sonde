@@ -57,6 +57,10 @@ public class BleHelper {
     private static final UUID CCCD_UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
 
+    // Hidden extra key for bond failure reason code (not a public SDK constant).
+    private static final String EXTRA_BOND_REASON =
+            "android.bluetooth.device.extra.REASON";
+
     private final Context context;
     private final BluetoothAdapter adapter;
 
@@ -82,7 +86,7 @@ public class BleHelper {
 
     // --- Bonding state -----------------------------------------------------
     private volatile boolean bonded;
-    private volatile boolean bondingStarted;
+    private volatile boolean createBondCalled;
     private volatile boolean bondReceiverRegistered;
     private volatile BluetoothDevice bondTarget;
 
@@ -113,16 +117,22 @@ public class BleHelper {
             }
             int state = intent.getIntExtra(
                     BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
-            Log.i("BleHelper", "bond state changed: " + state);
+            int prevState = intent.getIntExtra(
+                    BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE);
+            Log.i("BleHelper", "bond state changed: " + prevState + " -> " + state);
             if (state == BluetoothDevice.BOND_BONDED) {
                 bonded = true;
                 CountDownLatch l = bondLatch;
                 if (l != null) l.countDown();
-            } else if (state == BluetoothDevice.BOND_NONE && bondingStarted) {
-                // Only treat BOND_NONE as a failure if we actually started
-                // bonding.  Ignore BOND_NONE from removeBond() cleanup.
-                int reason = intent.getIntExtra(
-                        "android.bluetooth.device.extra.REASON", -1);
+            } else if (state == BluetoothDevice.BOND_NONE && createBondCalled
+                    && prevState == BluetoothDevice.BOND_BONDING) {
+                // Only treat BOND_NONE as a failure if:
+                // 1. createBond() has actually been called (not just async queued)
+                // 2. Previous state was BOND_BONDING (i.e., we initiated bonding)
+                // This distinguishes bonding failures from stale BOND_BONDED->BOND_NONE
+                // broadcasts from Step 0's removeBond() cleanup, which transition from
+                // BOND_BONDED (not BOND_BONDING).
+                int reason = intent.getIntExtra(EXTRA_BOND_REASON, -1);
                 lastError = "bonding failed (reason=" + reason + ")";
                 bonded = false;
                 CountDownLatch l = bondLatch;
@@ -493,14 +503,16 @@ public class BleHelper {
     /**
      * Connect to the device, bond, negotiate MTU, and discover services.
      *
-     * <p>Blocks until all four steps complete or {@code timeoutMs} elapses.
+     * <p>Blocks until all steps complete or {@code timeoutMs} elapses.
      * On failure or timeout the connection is cleaned up before returning.
      *
      * <p>Step 0 removes any stale Android bond (the modem does not persist
-     * bonds across reboots).  Step 2 always initiates a fresh LESC pairing
-     * via {@code createBond()}.  On the modem this triggers Numeric
-     * Comparison — the operator must confirm the passkey before the modem
-     * will accept GATT writes.
+     * bonds across reboots).  Steps 1–2 start the GATT connection and
+     * immediately call {@code createBond()} before the LE link is established,
+     * placing Android in "bonding mode" before the modem's BLE Security
+     * Request arrives.  This ensures LESC Numeric Comparison (not Just Works)
+     * is negotiated (PT-0904).  Steps 3–4 wait for GATT connect and for
+     * bonding to complete.  Steps 5–6 negotiate MTU and discover services.
      *
      * @param address   6-byte BLE device address
      * @param timeoutMs overall deadline in milliseconds
@@ -528,33 +540,38 @@ public class BleHelper {
             Thread.sleep(500);
         }
 
-        // Step 1 — connect
+        // Step 1 — start GATT connection (asynchronous; LE link not yet established).
         connectLatch = new CountDownLatch(1);
         gatt = device.connectGatt(context, false, gattCallback,
                 BluetoothDevice.TRANSPORT_LE);
         if (gatt == null) throw new Exception("connectGatt returned null");
 
-        long remaining = deadline - System.currentTimeMillis();
-        if (remaining <= 0
-                || !connectLatch.await(remaining, TimeUnit.MILLISECONDS)) {
-            disconnectInner();
-            throw new Exception("connect timed out");
-        }
-        if (connectionState != BluetoothProfile.STATE_CONNECTED) {
-            String err = lastError;
-            disconnectInner();
-            throw new Exception(err != null ? err : "connection failed");
-        }
-
-        // Step 2 — initiate LESC bonding (Numeric Comparison)
-        // The modem requires a bonded link before it will accept GATT writes.
+        // Step 2 — initiate LESC bonding BEFORE waiting for the GATT connect
+        // callback.  connectGatt() is asynchronous: the LE connection has not
+        // been established when it returns, so calling createBond() here races
+        // ahead of the modem's Security Request.
+        //
+        // The modem calls ble_gap_security_initiate() immediately in its
+        // on_connect callback, sending a BLE Security Request to Android.
+        // If createBond() has not been called before that Security Request
+        // arrives, Android handles the incoming SMP as a background pairing
+        // and may advertise NoInputNoOutput IO capabilities, forcing Just
+        // Works instead of LESC Numeric Comparison.
+        //
+        // Calling createBond() here, while the LE link is still being
+        // established, places Android in "bonding mode" with KeyboardDisplay
+        // IO capabilities before the Security Request arrives, which ensures
+        // LESC Numeric Comparison is negotiated (PT-0904).
         {
             bonded = false;
-            bondingStarted = false;
+            createBondCalled = false;
             bondTarget = device;
             bondLatch = new CountDownLatch(1);
-            lastError = null;
             observedPairingVariant = -1;
+            // Note: do NOT reset lastError here — it may have been set by
+            // onConnectionStateChange() racing with this bonding setup, and we
+            // need to preserve any GATT status code captured before checking it
+            // in Step 3.
 
             // Register receivers before calling createBond to avoid races.
             if (!pairingReceiverRegistered) {
@@ -583,7 +600,7 @@ public class BleHelper {
                 }
             }
 
-            bondingStarted = true;
+            createBondCalled = true;
             if (!device.createBond()) {
                 // createBond can return false if bonding is already in
                 // progress or if removeBond failed.  Check current state.
@@ -600,21 +617,36 @@ public class BleHelper {
                             "createBond() failed — try unpairing the device manually in Android Bluetooth settings");
                 }
             }
-
-            remaining = deadline - System.currentTimeMillis();
-            if (remaining <= 0
-                    || !bondLatch.await(remaining, TimeUnit.MILLISECONDS)) {
-                disconnectInner();
-                throw new Exception("bonding timed out");
-            }
-            if (!bonded) {
-                String err = lastError;
-                disconnectInner();
-                throw new Exception(err != null ? err : "bonding failed");
-            }
         }
 
-        // Step 3 — request MTU (best effort; proceed even if request fails)
+        // Step 3 — wait for GATT connection.
+        long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0
+                || !connectLatch.await(remaining, TimeUnit.MILLISECONDS)) {
+            disconnectInner();
+            throw new Exception("connect timed out");
+        }
+        if (connectionState != BluetoothProfile.STATE_CONNECTED) {
+            String err = lastError;
+            disconnectInner();
+            throw new Exception(err != null ? err : "connection failed");
+        }
+
+        // Step 4 — wait for bonding to complete (Numeric Comparison requires
+        // gateway confirmation, so this may take several seconds).
+        remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0
+                || !bondLatch.await(remaining, TimeUnit.MILLISECONDS)) {
+            disconnectInner();
+            throw new Exception("bonding timed out");
+        }
+        if (!bonded) {
+            String err = lastError;
+            disconnectInner();
+            throw new Exception(err != null ? err : "bonding failed");
+        }
+
+        // Step 5 — request MTU (best effort; proceed even if request fails)
         mtuLatch = new CountDownLatch(1);
         if (gatt.requestMtu(517)) {
             remaining = deadline - System.currentTimeMillis();
@@ -623,7 +655,7 @@ public class BleHelper {
         // Clear any MTU error so it doesn't abort service discovery.
         lastError = null;
 
-        // Step 4 — discover services
+        // Step 6 — discover services
         discoveryLatch = new CountDownLatch(1);
         if (!gatt.discoverServices()) {
             disconnectInner();
@@ -653,7 +685,7 @@ public class BleHelper {
         subscribedChars.clear();
         indicationQueues.clear();
         bondTarget = null;
-        bondingStarted = false;
+        createBondCalled = false;
         if (pairingReceiverRegistered) {
             try { context.unregisterReceiver(pairingReceiver); }
             catch (Exception ignored) { }

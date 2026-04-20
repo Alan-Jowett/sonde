@@ -426,11 +426,15 @@ fn check_encryption_fallback(
         Some(h) => h,
         None => return false,
     };
-    let desc = match esp32_nimble::utilities::ble_gap_conn_find(handle) {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    if !desc.encrypted() {
+    // Use raw NimBLE API — esp32_nimble::utilities::ble_gap_conn_find is
+    // pub(crate) and not accessible from application code.
+    let mut desc: esp_idf_sys::ble_gap_conn_desc = unsafe { core::mem::zeroed() };
+    let rc = unsafe { esp_idf_sys::ble_gap_conn_find(handle, &mut desc) };
+    if rc != 0 {
+        return false;
+    }
+    let encrypted = desc.sec_state.encrypted() != 0;
+    if !encrypted {
         return false;
     }
     let Ok(mut a) = authenticated.lock() else {
@@ -439,7 +443,7 @@ fn check_encryption_fallback(
     if *a {
         return true;
     }
-    let mtu = desc.mtu();
+    let mtu = unsafe { esp_idf_sys::ble_att_mtu(handle) };
     if !is_mtu_acceptable(mtu) {
         warn!(
             "BLE: encrypted but MTU too low ({} < {}); disconnecting (ND-0904)",

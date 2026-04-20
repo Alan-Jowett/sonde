@@ -61,6 +61,15 @@ pub trait BleTransport {
     /// implementations are forced to make an explicit choice — forgetting
     /// to implement it is a compile error, not a silent security bypass.
     fn pairing_method(&self) -> Option<PairingMethod>;
+
+    /// Hint to the transport that the next `connect()` should skip
+    /// client-initiated bonding and let the remote device's server-initiated
+    /// Security Request drive pairing.
+    ///
+    /// Used for node connections where both sides initiating pairing
+    /// simultaneously confuses NimBLE's SMP state machine.  Desktop
+    /// transports can ignore this (default is a no-op).
+    fn set_skip_bonding(&mut self, _skip: bool) {}
 }
 
 /// Mock BLE transport for testing pairing logic without hardware.

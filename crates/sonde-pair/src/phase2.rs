@@ -88,6 +88,11 @@ pub async fn provision_node(
     let encrypted_frame = crypto::encrypt_pairing_request(&artifacts.phone_psk, &cbor)?;
 
     // Step 6: Connect to node
+    // Skip client-initiated bonding — the node calls
+    // ble_gap_security_initiate() in its on_connect callback to drive
+    // LESC Just Works pairing.  Having both sides initiate simultaneously
+    // confuses NimBLE's SMP state machine ("No open connection").
+    transport.set_skip_bonding(true);
     debug!(address = ?device_address, "connecting to node (AEAD provision)");
     let mtu = transport.connect(device_address).await?;
     if mtu < BLE_MTU_MIN {

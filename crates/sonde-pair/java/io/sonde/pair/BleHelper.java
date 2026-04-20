@@ -82,7 +82,6 @@ public class BleHelper {
 
     // --- Bonding state -----------------------------------------------------
     private volatile boolean bonded;
-    private volatile boolean bondingStarted;
     private volatile boolean createBondCalled;
     private volatile boolean bondReceiverRegistered;
     private volatile BluetoothDevice bondTarget;
@@ -114,15 +113,21 @@ public class BleHelper {
             }
             int state = intent.getIntExtra(
                     BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
-            Log.i("BleHelper", "bond state changed: " + state);
+            int prevState = intent.getIntExtra(
+                    "android.bluetooth.device.extra.PREVIOUS_BOND_STATE", BluetoothDevice.BOND_NONE);
+            Log.i("BleHelper", "bond state changed: " + prevState + " -> " + state);
             if (state == BluetoothDevice.BOND_BONDED) {
                 bonded = true;
                 CountDownLatch l = bondLatch;
                 if (l != null) l.countDown();
-            } else if (state == BluetoothDevice.BOND_NONE && createBondCalled) {
-                // Only treat BOND_NONE as a failure if createBond() has actually
-                // been called (not just queued for async execution).  Ignore
-                // BOND_NONE from removeBond() cleanup in Step 0.
+            } else if (state == BluetoothDevice.BOND_NONE && createBondCalled
+                    && prevState == BluetoothDevice.BOND_BONDING) {
+                // Only treat BOND_NONE as a failure if:
+                // 1. createBond() has actually been called (not just async queued)
+                // 2. Previous state was BOND_BONDING (i.e., we initiated bonding)
+                // This distinguishes bonding failures from stale BOND_BONDED->BOND_NONE
+                // broadcasts from Step 0's removeBond() cleanup, which transition from
+                // BOND_BONDED (not BOND_BONDING).
                 int reason = intent.getIntExtra(
                         "android.bluetooth.device.extra.REASON", -1);
                 lastError = "bonding failed (reason=" + reason + ")";
@@ -556,7 +561,6 @@ public class BleHelper {
         // LESC Numeric Comparison is negotiated (PT-0904).
         {
             bonded = false;
-            bondingStarted = false;
             createBondCalled = false;
             bondTarget = device;
             bondLatch = new CountDownLatch(1);
@@ -593,7 +597,6 @@ public class BleHelper {
                 }
             }
 
-            bondingStarted = true;
             createBondCalled = true;
             if (!device.createBond()) {
                 // createBond can return false if bonding is already in
@@ -679,7 +682,7 @@ public class BleHelper {
         subscribedChars.clear();
         indicationQueues.clear();
         bondTarget = null;
-        bondingStarted = false;
+        createBondCalled = false;
         if (pairingReceiverRegistered) {
             try { context.unregisterReceiver(pairingReceiver); }
             catch (Exception ignored) { }

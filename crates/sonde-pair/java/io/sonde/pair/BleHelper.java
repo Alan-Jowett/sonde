@@ -493,14 +493,16 @@ public class BleHelper {
     /**
      * Connect to the device, bond, negotiate MTU, and discover services.
      *
-     * <p>Blocks until all four steps complete or {@code timeoutMs} elapses.
+     * <p>Blocks until all steps complete or {@code timeoutMs} elapses.
      * On failure or timeout the connection is cleaned up before returning.
      *
      * <p>Step 0 removes any stale Android bond (the modem does not persist
-     * bonds across reboots).  Step 2 always initiates a fresh LESC pairing
-     * via {@code createBond()}.  On the modem this triggers Numeric
-     * Comparison — the operator must confirm the passkey before the modem
-     * will accept GATT writes.
+     * bonds across reboots).  Steps 1–2 start the GATT connection and
+     * immediately call {@code createBond()} before the LE link is established,
+     * placing Android in "bonding mode" before the modem's BLE Security
+     * Request arrives.  This ensures LESC Numeric Comparison (not Just Works)
+     * is negotiated (PT-0904).  Steps 3–4 wait for GATT connect and for
+     * bonding to complete.  Steps 5–6 negotiate MTU and discover services.
      *
      * @param address   6-byte BLE device address
      * @param timeoutMs overall deadline in milliseconds
@@ -528,26 +530,28 @@ public class BleHelper {
             Thread.sleep(500);
         }
 
-        // Step 1 — connect
+        // Step 1 — start GATT connection (asynchronous; LE link not yet established).
         connectLatch = new CountDownLatch(1);
         gatt = device.connectGatt(context, false, gattCallback,
                 BluetoothDevice.TRANSPORT_LE);
         if (gatt == null) throw new Exception("connectGatt returned null");
 
-        long remaining = deadline - System.currentTimeMillis();
-        if (remaining <= 0
-                || !connectLatch.await(remaining, TimeUnit.MILLISECONDS)) {
-            disconnectInner();
-            throw new Exception("connect timed out");
-        }
-        if (connectionState != BluetoothProfile.STATE_CONNECTED) {
-            String err = lastError;
-            disconnectInner();
-            throw new Exception(err != null ? err : "connection failed");
-        }
-
-        // Step 2 — initiate LESC bonding (Numeric Comparison)
-        // The modem requires a bonded link before it will accept GATT writes.
+        // Step 2 — initiate LESC bonding BEFORE waiting for the GATT connect
+        // callback.  connectGatt() is asynchronous: the LE connection has not
+        // been established when it returns, so calling createBond() here races
+        // ahead of the modem's Security Request.
+        //
+        // The modem calls ble_gap_security_initiate() immediately in its
+        // on_connect callback, sending a BLE Security Request to Android.
+        // If createBond() has not been called before that Security Request
+        // arrives, Android handles the incoming SMP as a background pairing
+        // and may advertise NoInputNoOutput IO capabilities, forcing Just
+        // Works instead of LESC Numeric Comparison.
+        //
+        // Calling createBond() here, while the LE link is still being
+        // established, places Android in "bonding mode" with KeyboardDisplay
+        // IO capabilities before the Security Request arrives, which ensures
+        // LESC Numeric Comparison is negotiated (PT-0904).
         {
             bonded = false;
             bondingStarted = false;
@@ -600,21 +604,36 @@ public class BleHelper {
                             "createBond() failed — try unpairing the device manually in Android Bluetooth settings");
                 }
             }
-
-            remaining = deadline - System.currentTimeMillis();
-            if (remaining <= 0
-                    || !bondLatch.await(remaining, TimeUnit.MILLISECONDS)) {
-                disconnectInner();
-                throw new Exception("bonding timed out");
-            }
-            if (!bonded) {
-                String err = lastError;
-                disconnectInner();
-                throw new Exception(err != null ? err : "bonding failed");
-            }
         }
 
-        // Step 3 — request MTU (best effort; proceed even if request fails)
+        // Step 3 — wait for GATT connection.
+        long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0
+                || !connectLatch.await(remaining, TimeUnit.MILLISECONDS)) {
+            disconnectInner();
+            throw new Exception("connect timed out");
+        }
+        if (connectionState != BluetoothProfile.STATE_CONNECTED) {
+            String err = lastError;
+            disconnectInner();
+            throw new Exception(err != null ? err : "connection failed");
+        }
+
+        // Step 4 — wait for bonding to complete (Numeric Comparison requires
+        // gateway confirmation, so this may take several seconds).
+        remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0
+                || !bondLatch.await(remaining, TimeUnit.MILLISECONDS)) {
+            disconnectInner();
+            throw new Exception("bonding timed out");
+        }
+        if (!bonded) {
+            String err = lastError;
+            disconnectInner();
+            throw new Exception(err != null ? err : "bonding failed");
+        }
+
+        // Step 5 — request MTU (best effort; proceed even if request fails)
         mtuLatch = new CountDownLatch(1);
         if (gatt.requestMtu(517)) {
             remaining = deadline - System.currentTimeMillis();
@@ -623,7 +642,7 @@ public class BleHelper {
         // Clear any MTU error so it doesn't abort service discovery.
         lastError = null;
 
-        // Step 4 — discover services
+        // Step 6 — discover services
         discoveryLatch = new CountDownLatch(1);
         if (!gatt.discoverServices()) {
             disconnectInner();

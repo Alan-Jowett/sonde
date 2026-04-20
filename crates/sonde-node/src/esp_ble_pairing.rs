@@ -269,45 +269,7 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
         // esp32-nimble doesn't dispatch BLE_GAP_EVENT_ENC_CHANGE on this
         // build), check the connection's encryption status directly.
         let is_auth = authenticated.lock().map(|a| *a).unwrap_or(false);
-        let is_auth = is_auth
-            || {
-                if let Ok(h) = conn_handle.lock() {
-                    if let Some(handle) = *h {
-                        let desc = esp32_nimble::utilities::ble_gap_conn_find(handle);
-                        if let Ok(d) = desc {
-                            let encrypted = d.encrypted();
-                            if encrypted {
-                                // Promote to authenticated so we don't re-check every poll.
-                                if let Ok(mut a) = authenticated.lock() {
-                                    if !*a {
-                                        let mtu = d.mtu();
-                                        if !is_mtu_acceptable(mtu) {
-                                            warn!(
-                                            "BLE: encrypted but MTU too low ({} < {}); disconnecting (ND-0904)",
-                                            mtu, BLE_MIN_ATT_MTU
-                                        );
-                                            let server = BLEDevice::take().get_server();
-                                            let _ = server.disconnect(handle);
-                                        } else {
-                                            info!("BLE: encryption detected via poll, MTU={}", mtu);
-                                            *a = true;
-                                        }
-                                    }
-                                }
-                                encrypted
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            };
+        let is_auth = is_auth || check_encryption_fallback(&conn_handle, &authenticated);
         let write_data = if is_auth {
             if let Ok(mut p) = pending_write.lock() {
                 p.take()
@@ -448,4 +410,46 @@ pub fn run_ble_pairing_mode<S: PlatformStorage>(
     }
 
     Ok(())
+}
+
+/// Fallback encryption check for when `on_authentication_complete` doesn't
+/// fire (e.g., esp32-nimble build that doesn't dispatch ENC_CHANGE event 38).
+/// Returns `true` only if the link is encrypted AND MTU is acceptable,
+/// promoting `authenticated` to `true`.  Returns `false` if not encrypted,
+/// not connected, or MTU is too low (disconnects in that case).
+#[cfg(feature = "esp")]
+fn check_encryption_fallback(
+    conn_handle: &Arc<Mutex<Option<u16>>>,
+    authenticated: &Arc<Mutex<bool>>,
+) -> bool {
+    let handle = match conn_handle.lock().ok().and_then(|h| *h) {
+        Some(h) => h,
+        None => return false,
+    };
+    let desc = match esp32_nimble::utilities::ble_gap_conn_find(handle) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    if !desc.encrypted() {
+        return false;
+    }
+    let Ok(mut a) = authenticated.lock() else {
+        return false;
+    };
+    if *a {
+        return true;
+    }
+    let mtu = desc.mtu();
+    if !is_mtu_acceptable(mtu) {
+        warn!(
+            "BLE: encrypted but MTU too low ({} < {}); disconnecting (ND-0904)",
+            mtu, BLE_MIN_ATT_MTU
+        );
+        let server = BLEDevice::take().get_server();
+        let _ = server.disconnect(handle);
+        return false;
+    }
+    info!("BLE: encryption detected via poll, MTU={}", mtu);
+    *a = true;
+    true
 }
